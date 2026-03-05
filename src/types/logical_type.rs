@@ -86,7 +86,7 @@ impl Drop for LogicalType {
         // SAFETY: `self.inner` was created by `duckdb_create_logical_type` and has not
         // been transferred elsewhere. It is safe to destroy exactly once here.
         unsafe {
-            duckdb_destroy_logical_type(&mut self.inner);
+            duckdb_destroy_logical_type(&raw mut self.inner);
         }
     }
 }

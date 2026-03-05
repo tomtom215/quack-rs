@@ -59,7 +59,7 @@ impl VectorWriter {
     /// - `idx` must be within the vector's capacity.
     /// - The vector must have `TINYINT` type.
     #[inline]
-    pub unsafe fn write_i8(&mut self, idx: usize, value: i8) {
+    pub const unsafe fn write_i8(&mut self, idx: usize, value: i8) {
         // SAFETY: data points to a valid writable TINYINT array. idx is in bounds.
         unsafe { core::ptr::write_unaligned(self.data.add(idx).cast::<i8>(), value) };
     }
@@ -70,7 +70,7 @@ impl VectorWriter {
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_i16(&mut self, idx: usize, value: i16) {
+    pub const unsafe fn write_i16(&mut self, idx: usize, value: i16) {
         // SAFETY: 2-byte aligned write to valid SMALLINT vector.
         unsafe { core::ptr::write_unaligned(self.data.add(idx * 2).cast::<i16>(), value) };
     }
@@ -81,7 +81,7 @@ impl VectorWriter {
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_i32(&mut self, idx: usize, value: i32) {
+    pub const unsafe fn write_i32(&mut self, idx: usize, value: i32) {
         // SAFETY: 4-byte aligned write to valid INTEGER vector.
         unsafe { core::ptr::write_unaligned(self.data.add(idx * 4).cast::<i32>(), value) };
     }
@@ -92,7 +92,7 @@ impl VectorWriter {
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_i64(&mut self, idx: usize, value: i64) {
+    pub const unsafe fn write_i64(&mut self, idx: usize, value: i64) {
         // SAFETY: 8-byte aligned write to valid BIGINT vector.
         unsafe { core::ptr::write_unaligned(self.data.add(idx * 8).cast::<i64>(), value) };
     }
@@ -103,7 +103,7 @@ impl VectorWriter {
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_u8(&mut self, idx: usize, value: u8) {
+    pub const unsafe fn write_u8(&mut self, idx: usize, value: u8) {
         // SAFETY: 1-byte write to valid UTINYINT vector.
         unsafe { *self.data.add(idx) = value };
     }
@@ -114,7 +114,7 @@ impl VectorWriter {
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_u32(&mut self, idx: usize, value: u32) {
+    pub const unsafe fn write_u32(&mut self, idx: usize, value: u32) {
         // SAFETY: 4-byte aligned write to valid UINTEGER vector.
         unsafe { core::ptr::write_unaligned(self.data.add(idx * 4).cast::<u32>(), value) };
     }
@@ -125,7 +125,7 @@ impl VectorWriter {
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_u64(&mut self, idx: usize, value: u64) {
+    pub const unsafe fn write_u64(&mut self, idx: usize, value: u64) {
         // SAFETY: 8-byte aligned write to valid UBIGINT vector.
         unsafe { core::ptr::write_unaligned(self.data.add(idx * 8).cast::<u64>(), value) };
     }
@@ -136,7 +136,7 @@ impl VectorWriter {
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_f32(&mut self, idx: usize, value: f32) {
+    pub const unsafe fn write_f32(&mut self, idx: usize, value: f32) {
         // SAFETY: 4-byte aligned write to valid FLOAT vector.
         unsafe { core::ptr::write_unaligned(self.data.add(idx * 4).cast::<f32>(), value) };
     }
@@ -147,7 +147,7 @@ impl VectorWriter {
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_f64(&mut self, idx: usize, value: f64) {
+    pub const unsafe fn write_f64(&mut self, idx: usize, value: f64) {
         // SAFETY: 8-byte aligned write to valid DOUBLE vector.
         unsafe { core::ptr::write_unaligned(self.data.add(idx * 8).cast::<f64>(), value) };
     }

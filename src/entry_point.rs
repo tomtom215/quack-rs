@@ -160,7 +160,7 @@ where
     // Step 3: Open a connection for function registration.
     let mut raw_con: duckdb_connection = core::ptr::null_mut();
     // SAFETY: db is a valid duckdb_database returned by get_database.
-    let rc = unsafe { duckdb_connect(db, &mut raw_con) };
+    let rc = unsafe { duckdb_connect(db, &raw mut raw_con) };
     if rc != DuckDBSuccess {
         return Err(ExtensionError::new(
             "duckdb_connect failed during extension initialization",
@@ -172,7 +172,7 @@ where
 
     // Step 5: Always disconnect, even if registration failed.
     // SAFETY: raw_con was successfully created by duckdb_connect above.
-    unsafe { duckdb_disconnect(&mut raw_con) };
+    unsafe { duckdb_disconnect(&raw mut raw_con) };
 
     result?;
     Ok(true)
