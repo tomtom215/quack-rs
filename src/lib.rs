@@ -47,6 +47,7 @@
 //! | [`interval`] | `INTERVAL` → microseconds conversion with overflow checking |
 //! | [`error`] | `ExtensionError` for FFI error propagation |
 //! | [`validate`] | Community extension compliance validators |
+//! | [`scaffold`] | Project generator for new extensions (no C++ glue needed) |
 //! | [`testing`] | Test harness for aggregate state logic |
 //!
 //! ## Safety
@@ -86,6 +87,7 @@ pub mod aggregate;
 pub mod entry_point;
 pub mod error;
 pub mod interval;
+pub mod scaffold;
 pub mod scalar;
 pub mod testing;
 pub mod types;

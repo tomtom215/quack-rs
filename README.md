@@ -12,7 +12,7 @@
 
 ## Why quack-rs?
 
-Building a DuckDB extension in Rust requires solving 15+ undocumented FFI problems that are not covered anywhere in the DuckDB documentation or Rust ecosystem. Every developer who tries to build a community extension hits these problems from scratch. (Note: community extensions currently require a thin C++ glue layer for the build system — see [Important Caveats](#important-caveats) below.)
+Building a DuckDB extension in Rust requires solving 15+ undocumented FFI problems that are not covered anywhere in the DuckDB documentation or Rust ecosystem. Every developer who tries to build a community extension hits these problems from scratch. `quack-rs` also includes a [scaffold generator](#pure-rust-extensions-via-the-c-extension-api) that produces a complete, submission-ready project with no C++ glue required.
 
 `quack-rs` was extracted from [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a production DuckDB community extension that implements 7 behavioral analytics aggregate functions. Building it required discovering these problems the hard way.
 
@@ -147,17 +147,30 @@ See [LESSONS.md](LESSONS.md) → Community Extension Submission for the complete
 
 ## Important Caveats
 
-### Rust Extensions Require C++ Glue Code
+### Pure Rust Extensions via the C Extension API
 
-As of DuckDB v1.4.x, **Rust extensions cannot be submitted as pure Rust** to the DuckDB community extensions repository. The community extension build system expects a CMake-based C++ project. Rust extensions must include:
+DuckDB's [C Extension API](https://github.com/duckdb/duckdb/pull/12682) now allows **pure Rust extensions without any C++ glue**. The official [extension-template-rs](https://github.com/duckdb/extension-template-rs) demonstrates this approach.
 
-- A thin C++ glue layer that calls into the Rust `cdylib`
-- A `CMakeLists.txt` that builds the C++ glue and links the Rust library
-- The standard `extension-ci-tools` submodule and `Makefile`
+`quack-rs` includes a **scaffold generator** that produces all the files you need:
 
-`quack-rs` handles the Rust side of this boundary (entry point, FFI safety, function registration), but you still need the C++ scaffolding. See the [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral) repository for a working example of this setup.
+```rust
+use quack_rs::scaffold::{ScaffoldConfig, generate_scaffold};
 
-**The DuckDB team is developing a [C Extension API](https://github.com/duckdb/duckdb/discussions/14286) that will eventually allow pure Rust extensions without C++ glue.** When that API stabilizes, `quack-rs` will be updated to support it.
+let config = ScaffoldConfig {
+    name: "my_analytics".to_string(),
+    description: "Fast analytics for DuckDB".to_string(),
+    version: "0.1.0".to_string(),
+    license: "MIT".to_string(),
+    maintainer: "Your Name".to_string(),
+    github_repo: "yourorg/duckdb-my-analytics".to_string(),
+    excluded_platforms: vec![],
+};
+
+let files = generate_scaffold(&config).unwrap();
+// Generates: Cargo.toml, Makefile, src/lib.rs, description.yml, .gitmodules, .gitignore
+```
+
+The generated project uses the C Extension API directly — no CMakeLists.txt, no C++ files. It includes the `extension-ci-tools` submodule for CI/CD and a `Makefile` that delegates to `cargo build`.
 
 ### Extension Naming
 

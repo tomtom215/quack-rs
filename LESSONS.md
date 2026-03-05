@@ -272,18 +272,23 @@ Month conversion uses the approximation: **1 month = 30 days** (matching DuckDB'
 
 ### Build System Requirements
 
-DuckDB community extensions use a CMake-based build system. As of DuckDB v1.4.x, Rust extensions
-cannot be submitted as pure Rust — they require:
+DuckDB's **C Extension API** now allows pure-Rust extensions **without any C++ glue**.
+The official [extension-template-rs](https://github.com/duckdb/extension-template-rs) demonstrates
+this approach. A pure-Rust extension needs:
 
-1. **C++ glue layer**: A thin `.cpp` file that calls into your Rust `cdylib` shared library
-2. **CMakeLists.txt**: Builds the C++ glue and links the Rust library
+1. **Cargo.toml**: `cdylib` crate type, pinned `duckdb` + `libduckdb-sys` deps, release profile
+2. **Makefile**: Delegates to `cargo build` + metadata scripts from `extension-ci-tools`
 3. **extension-ci-tools**: Git submodule for the DuckDB extension CI/CD pipeline
-4. **Makefile**: Standard targets: `configure`, `debug`, `release`, `test`
-5. **description.yml**: Extension metadata (name, version, language, build, licence, maintainers, repo)
+4. **src/lib.rs**: Entry point using `duckdb_entrypoint_c_api` macro + function registration
+5. **description.yml**: Extension metadata (`language: C` for C API extensions, NOT `C++`)
 6. **test/sql/*.test**: SQLLogicTest format integration tests
 
-The DuckDB team is developing a C Extension API that will eventually allow pure Rust extensions
-without C++ glue. Track progress at: https://github.com/duckdb/duckdb/discussions/14286
+Use `quack_rs::scaffold::generate_scaffold` to auto-generate all of these files from a
+[`ScaffoldConfig`](https://docs.rs/quack-rs/latest/quack_rs/scaffold/struct.ScaffoldConfig.html).
+
+> **Note**: The C Extension API has a stable and unstable part. The official template enables
+> the unstable API via `USE_UNSTABLE_C_API=1` in the Makefile. See
+> [extension-template-rs](https://github.com/duckdb/extension-template-rs) for details.
 
 ### description.yml
 
