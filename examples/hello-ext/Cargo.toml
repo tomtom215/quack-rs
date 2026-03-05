@@ -1,0 +1,13 @@
+[package]
+name = "hello-ext"
+version = "0.1.0"
+edition = "2021"
+description = "Example DuckDB community extension built with quack-rs: word_count aggregate"
+
+[lib]
+name = "hello_ext"
+crate-type = ["cdylib"]
+
+[dependencies]
+quack_rs = { path = "../..", package = "quack-rs" }
+libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
