@@ -243,7 +243,11 @@ unsafe fn report_error(
     access: *const duckdb_extension_access,
     error: &ExtensionError,
 ) {
-    // SAFETY: access is valid per the caller's contract.
+    // Defensive: if access is null, we cannot report the error to DuckDB.
+    if access.is_null() {
+        return;
+    }
+    // SAFETY: access is non-null per the check above and valid per caller's contract.
     if let Some(set_error) = unsafe { (*access).set_error } {
         let c_msg = error.to_c_string();
         // SAFETY: c_msg is a valid CString; info is valid.

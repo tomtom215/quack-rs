@@ -8,6 +8,7 @@
 //! # What is validated
 //!
 //! - **Extension name**: Must be lowercase alphanumeric with hyphens/underscores only
+//! - **Function name**: Must be lowercase alphanumeric with underscores only (SQL-safe)
 //! - **Semantic versioning**: Extension version must be valid semver
 //! - **SPDX license**: Must be a recognized SPDX license identifier
 //! - **`description.yml` structure**: All required fields present and well-formed
@@ -30,12 +31,14 @@
 //! ```
 
 pub mod extension_name;
+pub mod function_name;
 pub mod platform;
 pub mod release_profile;
 pub mod semver;
 pub mod spdx;
 
 pub use extension_name::validate_extension_name;
+pub use function_name::validate_function_name;
 pub use platform::{validate_platform, DUCKDB_PLATFORMS};
 pub use release_profile::{validate_release_profile, ReleaseProfileCheck};
 pub use semver::validate_semver;

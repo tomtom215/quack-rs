@@ -16,6 +16,7 @@ use libduckdb_sys::{
 
 use crate::error::ExtensionError;
 use crate::types::{LogicalType, TypeId};
+use crate::validate::validate_function_name;
 
 /// The scalar function callback signature.
 ///
@@ -78,6 +79,27 @@ impl ScalarFunctionBuilder {
             return_type: None,
             function: None,
         }
+    }
+
+    /// Creates a new builder with function name validation.
+    ///
+    /// Unlike [`new`][Self::new], this method validates the function name against
+    /// `DuckDB` naming conventions and returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError` if the name is invalid.
+    /// See [`validate_function_name`] for the full set of rules.
+    pub fn try_new(name: &str) -> Result<Self, ExtensionError> {
+        validate_function_name(name)?;
+        let c_name = CString::new(name)
+            .map_err(|_| ExtensionError::new("function name contains interior null byte"))?;
+        Ok(Self {
+            name: c_name,
+            params: Vec::new(),
+            return_type: None,
+            function: None,
+        })
     }
 
     /// Adds a positional parameter with the given type.
@@ -219,5 +241,26 @@ mod tests {
 
         let b = ScalarFunctionBuilder::new("f").function(my_func);
         assert!(b.function.is_some());
+    }
+
+    #[test]
+    fn try_new_valid_name() {
+        let b = ScalarFunctionBuilder::try_new("word_count");
+        assert!(b.is_ok());
+    }
+
+    #[test]
+    fn try_new_empty_rejected() {
+        assert!(ScalarFunctionBuilder::try_new("").is_err());
+    }
+
+    #[test]
+    fn try_new_uppercase_rejected() {
+        assert!(ScalarFunctionBuilder::try_new("MyFunc").is_err());
+    }
+
+    #[test]
+    fn try_new_hyphen_rejected() {
+        assert!(ScalarFunctionBuilder::try_new("my-func").is_err());
     }
 }

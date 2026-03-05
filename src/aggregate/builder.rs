@@ -28,6 +28,7 @@ use crate::aggregate::callbacks::{
 use crate::error::ExtensionError;
 use crate::types::LogicalType;
 use crate::types::TypeId;
+use crate::validate::validate_function_name;
 
 /// Builder for registering a single-signature `DuckDB` aggregate function.
 ///
@@ -94,6 +95,32 @@ impl AggregateFunctionBuilder {
             finalize: None,
             destructor: None,
         }
+    }
+
+    /// Creates a new builder with function name validation.
+    ///
+    /// Unlike [`new`][Self::new], this method validates the function name against
+    /// `DuckDB` naming conventions and returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError` if the name is empty, too long, contains invalid
+    /// characters, or does not start with a lowercase letter or underscore.
+    pub fn try_new(name: &str) -> Result<Self, ExtensionError> {
+        validate_function_name(name)?;
+        let c_name = CString::new(name)
+            .map_err(|_| ExtensionError::new("function name contains interior null byte"))?;
+        Ok(Self {
+            name: c_name,
+            params: Vec::new(),
+            return_type: None,
+            state_size: None,
+            init: None,
+            update: None,
+            combine: None,
+            finalize: None,
+            destructor: None,
+        })
     }
 
     /// Adds a positional parameter with the given type.
@@ -314,6 +341,23 @@ impl AggregateFunctionSetBuilder {
             return_type: None,
             overloads: Vec::new(),
         }
+    }
+
+    /// Creates a new builder with function name validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError` if the name is invalid.
+    /// See [`validate_function_name`] for the full set of rules.
+    pub fn try_new(name: &str) -> Result<Self, ExtensionError> {
+        validate_function_name(name)?;
+        let c_name = CString::new(name)
+            .map_err(|_| ExtensionError::new("function name contains interior null byte"))?;
+        Ok(Self {
+            name: c_name,
+            return_type: None,
+            overloads: Vec::new(),
+        })
     }
 
     /// Sets the return type for all overloads in this function set.
@@ -666,5 +710,35 @@ mod tests {
             .param(TypeId::Boolean)
             .param(TypeId::BigInt);
         assert_eq!(ob.params.len(), 3);
+    }
+
+    #[test]
+    fn try_new_valid_name() {
+        assert!(AggregateFunctionBuilder::try_new("word_count").is_ok());
+    }
+
+    #[test]
+    fn try_new_empty_rejected() {
+        assert!(AggregateFunctionBuilder::try_new("").is_err());
+    }
+
+    #[test]
+    fn try_new_uppercase_rejected() {
+        assert!(AggregateFunctionBuilder::try_new("MyFunc").is_err());
+    }
+
+    #[test]
+    fn try_new_hyphen_rejected() {
+        assert!(AggregateFunctionBuilder::try_new("my-func").is_err());
+    }
+
+    #[test]
+    fn set_try_new_valid_name() {
+        assert!(AggregateFunctionSetBuilder::try_new("retention").is_ok());
+    }
+
+    #[test]
+    fn set_try_new_empty_rejected() {
+        assert!(AggregateFunctionSetBuilder::try_new("").is_err());
     }
 }
