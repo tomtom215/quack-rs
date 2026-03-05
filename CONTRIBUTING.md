@@ -16,7 +16,7 @@
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Rust | ≥ 1.80 (MSRV) | Compiler |
+| Rust | ≥ 1.84.1 (MSRV) | Compiler |
 | `rustfmt` | stable | Formatting |
 | `clippy` | stable | Linting |
 | `cargo-msrv` | latest | MSRV verification |
@@ -60,8 +60,8 @@ cargo fmt -- --check
 # 5. Documentation — zero broken links or missing docs
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
-# 6. MSRV — must compile on Rust 1.80
-cargo +1.80 build
+# 6. MSRV — must compile on Rust 1.84.1
+cargo +1.84.1 check
 ```
 
 These same checks run in CI (`.github/workflows/ci.yml`) on every push and pull request.

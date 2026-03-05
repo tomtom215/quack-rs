@@ -242,6 +242,25 @@ impl VectorReader {
         // SAFETY: Caller guarantees data is a VARCHAR vector and idx is in bounds.
         unsafe { crate::vector::string::read_duck_string(self.data, idx) }
     }
+
+    /// Reads an `INTERVAL` value at row `idx`.
+    ///
+    /// Returns a [`DuckInterval`][crate::interval::DuckInterval] struct.
+    ///
+    /// # Pitfall P8
+    ///
+    /// The `INTERVAL` struct is 16 bytes: `{ months: i32, days: i32, micros: i64 }`.
+    /// This method handles the layout correctly using [`read_interval_at`][crate::interval::read_interval_at].
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `INTERVAL` data.
+    #[inline]
+    pub const unsafe fn read_interval(&self, idx: usize) -> crate::interval::DuckInterval {
+        // SAFETY: data is a valid INTERVAL vector and idx is in bounds.
+        unsafe { crate::interval::read_interval_at(self.data, idx) }
+    }
 }
 
 #[cfg(test)]

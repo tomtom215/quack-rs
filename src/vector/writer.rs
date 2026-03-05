@@ -12,8 +12,9 @@
 //! [`VectorWriter::set_null`] calls `ensure_validity_writable` automatically.
 
 use libduckdb_sys::{
-    duckdb_validity_set_row_invalid, duckdb_vector, duckdb_vector_ensure_validity_writable,
-    duckdb_vector_get_data, duckdb_vector_get_validity, idx_t,
+    duckdb_validity_set_row_invalid, duckdb_vector, duckdb_vector_assign_string_element_len,
+    duckdb_vector_ensure_validity_writable, duckdb_vector_get_data, duckdb_vector_get_validity,
+    idx_t,
 };
 
 /// A typed writer for a `DuckDB` output vector in a `finalize` callback.
@@ -150,6 +151,54 @@ impl VectorWriter {
     pub const unsafe fn write_f64(&mut self, idx: usize, value: f64) {
         // SAFETY: 8-byte aligned write to valid DOUBLE vector.
         unsafe { core::ptr::write_unaligned(self.data.add(idx * 8).cast::<f64>(), value) };
+    }
+
+    /// Writes a `bool` (BOOLEAN) value at row `idx`.
+    ///
+    /// Booleans are stored as a single byte: `1` for `true`, `0` for `false`.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `BOOLEAN` type.
+    #[inline]
+    pub unsafe fn write_bool(&mut self, idx: usize, value: bool) {
+        // SAFETY: BOOLEAN stored as 1 byte.
+        unsafe { *self.data.add(idx) = u8::from(value) };
+    }
+
+    /// Writes a `u16` (USMALLINT) value at row `idx`.
+    ///
+    /// # Safety
+    ///
+    /// See [`write_i8`][Self::write_i8].
+    #[inline]
+    pub const unsafe fn write_u16(&mut self, idx: usize, value: u16) {
+        // SAFETY: 2-byte aligned write to valid USMALLINT vector.
+        unsafe { core::ptr::write_unaligned(self.data.add(idx * 2).cast::<u16>(), value) };
+    }
+
+    /// Writes a VARCHAR string value at row `idx`.
+    ///
+    /// This uses `duckdb_vector_assign_string_element_len` which handles both
+    /// the inline (≤12 bytes) and pointer (>12 bytes) storage formats
+    /// automatically. `DuckDB` manages the memory for the string data.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `VARCHAR` type.
+    pub unsafe fn write_varchar(&mut self, idx: usize, value: &str) {
+        // SAFETY: self.vector is valid per constructor's contract.
+        // duckdb_vector_assign_string_element_len copies the string data.
+        unsafe {
+            duckdb_vector_assign_string_element_len(
+                self.vector,
+                idx as idx_t,
+                value.as_ptr().cast::<i8>(),
+                idx_t::try_from(value.len()).unwrap_or(idx_t::MAX),
+            );
+        }
     }
 
     /// Marks row `idx` as NULL in the output vector.

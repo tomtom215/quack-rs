@@ -5,9 +5,9 @@
 //! ## Overview
 //!
 //! `quack-rs` encapsulates the hard-won FFI knowledge required to build `DuckDB`
-//! community extensions in pure Rust. It provides:
+//! community extensions in Rust. It provides:
 //!
-//! - A correct, panic-free entry point helper via [`entry_point`] module
+//! - A correct, panic-free entry point helper via the [`entry_point`](mod@entry_point) module
 //! - Type-safe builders for registering aggregate functions ([`aggregate`])
 //! - Safe vector reading and writing helpers ([`vector`])
 //! - A generic [`FfiState<T>`][aggregate::state::FfiState] that eliminates raw pointer management
@@ -39,12 +39,14 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`entry_point`] | Helper for the correct `{name}_init_c_api` C entry point |
+//! | [`entry_point`](mod@entry_point) | Helper for the correct `{name}_init_c_api` C entry point |
 //! | [`aggregate`] | Builders for aggregate function registration |
+//! | [`scalar`] | Builder for scalar function registration |
 //! | [`vector`] | Safe helpers for reading/writing `DuckDB` data vectors |
 //! | [`types`] | `DuckDB` type system wrappers (`TypeId`, `LogicalType`) |
 //! | [`interval`] | `INTERVAL` → microseconds conversion with overflow checking |
 //! | [`error`] | `ExtensionError` for FFI error propagation |
+//! | [`validate`] | Community extension compliance validators |
 //! | [`testing`] | Test harness for aggregate state logic |
 //!
 //! ## Safety
@@ -84,8 +86,10 @@ pub mod aggregate;
 pub mod entry_point;
 pub mod error;
 pub mod interval;
+pub mod scalar;
 pub mod testing;
 pub mod types;
+pub mod validate;
 pub mod vector;
 
 /// The `DuckDB` C API version string required by [`duckdb_rs_extension_api_init`][libduckdb_sys::duckdb_rs_extension_api_init].

@@ -268,6 +268,93 @@ Month conversion uses the approximation: **1 month = 30 days** (matching DuckDB'
 
 ---
 
+## Community Extension Submission
+
+### Build System Requirements
+
+DuckDB community extensions use a CMake-based build system. As of DuckDB v1.4.x, Rust extensions
+cannot be submitted as pure Rust — they require:
+
+1. **C++ glue layer**: A thin `.cpp` file that calls into your Rust `cdylib` shared library
+2. **CMakeLists.txt**: Builds the C++ glue and links the Rust library
+3. **extension-ci-tools**: Git submodule for the DuckDB extension CI/CD pipeline
+4. **Makefile**: Standard targets: `configure`, `debug`, `release`, `test`
+5. **description.yml**: Extension metadata (name, version, language, build, licence, maintainers, repo)
+6. **test/sql/*.test**: SQLLogicTest format integration tests
+
+The DuckDB team is developing a C Extension API that will eventually allow pure Rust extensions
+without C++ glue. Track progress at: https://github.com/duckdb/duckdb/discussions/14286
+
+### description.yml
+
+Required fields:
+```yaml
+extension:
+  name: your_extension
+  description: One-line description
+  version: 0.1.0
+  language: C++        # Currently required even for Rust extensions (C++ glue)
+  build: cmake
+  license: MIT
+  maintainers:
+    - Your Name
+
+repo:
+  github: yourorg/your_extension
+  ref: main
+```
+
+Use `quack_rs::validate` to check name, version, and license before submission.
+
+### Naming Rules
+
+- Extension names must be globally unique across the entire DuckDB community extensions ecosystem
+- Check existing names at https://community-extensions.duckdb.org/ before choosing
+- Use vendor prefixing to avoid collisions (e.g., `myorg_analytics` instead of `analytics`)
+- Names must match `^[a-z][a-z0-9_-]*$` and not exceed 64 characters
+- The `[lib] name` in `Cargo.toml` MUST match the extension name (Pitfall P1)
+
+### Platform Targets
+
+Community extensions are built for these platform targets:
+
+| Platform | Description |
+|----------|-------------|
+| `linux_amd64` | Linux x86_64 |
+| `linux_amd64_gcc4` | Linux x86_64 (GCC 4 compatible) |
+| `linux_arm64` | Linux AArch64 |
+| `osx_amd64` | macOS x86_64 |
+| `osx_arm64` | macOS Apple Silicon |
+| `windows_amd64` | Windows x86_64 |
+| `windows_arm64` | Windows AArch64 |
+| `wasm_mvp` | WebAssembly (MVP) |
+| `wasm_eh` | WebAssembly (exception handling) |
+| `wasm_threads` | WebAssembly (threads) |
+
+Use `excluded_platforms` in `description.yml` to skip platforms your extension cannot support.
+Validate with `quack_rs::validate::validate_platform` and `validate_excluded_platforms`.
+
+### Security Disclaimer
+
+Community extensions are NOT vetted for security by the DuckDB team. The community extensions
+repository is a distribution mechanism, not a security guarantee. As an extension author:
+
+- Never panic across FFI boundaries (`quack-rs` enforces `panic = "abort"`)
+- Validate all user inputs at system boundaries
+- Do not include secrets, credentials, or API keys in your extension binary
+- Follow the OWASP top 10 where applicable (SQL injection via dynamic SQL, etc.)
+
+### CI Toolchain Notes
+
+The community extension CI uses specific compiler versions and system libraries. Common issues:
+
+- Rust toolchain must be available in CI (add `rustup` setup to your CI workflow)
+- Cross-compilation for `linux_arm64` from `linux_amd64` requires the appropriate target
+- WASM targets (`wasm_mvp`, `wasm_eh`, `wasm_threads`) may not work with all Rust crates
+- Use `excluded_platforms` to skip targets that cannot be built
+
+---
+
 ## Architecture Decision Records
 
 ### ADR-1: `libduckdb-sys` only at runtime (no `duckdb` crate)
