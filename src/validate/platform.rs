@@ -21,6 +21,7 @@ pub const DUCKDB_PLATFORMS: &[&str] = &[
     "osx_amd64",
     "osx_arm64",
     "windows_amd64",
+    "windows_amd64_mingw",
     "windows_arm64",
     "wasm_mvp",
     "wasm_eh",

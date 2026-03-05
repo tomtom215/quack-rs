@@ -3,9 +3,23 @@
 //! Extensions submitted to the `DuckDB` community repository must use
 //! valid semantic versioning for the `extension.version` field.
 //!
+//! # `DuckDB` Extension Versioning Scheme
+//!
+//! `DuckDB` core extensions use a three-tier versioning scheme:
+//!
+//! | Level | Format | Example | Meaning |
+//! |-------|--------|---------|---------|
+//! | **Unstable** | Short git hash | `690bfc5` | No stability guarantees |
+//! | **Pre-release** | `0.y.z` | `0.1.0` | Working toward stability, semver applies |
+//! | **Stable** | `x.y.z` (x>0) | `1.0.0` | Full semver, backwards-compatible API |
+//!
+//! Use [`classify_extension_version`] to determine which tier a version falls into,
+//! or [`validate_extension_version`] to accept both semver and git-hash formats.
+//!
 //! # Reference
 //!
-//! <https://semver.org/>
+//! - <https://semver.org/>
+//! - <https://duckdb.org/docs/extensions/versioning>
 
 use crate::error::ExtensionError;
 
@@ -76,6 +90,131 @@ pub fn validate_semver(version: &str) -> Result<(), ExtensionError> {
         validate_numeric_component(part, label, version)?;
     }
 
+    Ok(())
+}
+
+/// The stability level of a `DuckDB` extension version.
+///
+/// `DuckDB` core extensions use three tiers of stability, each with different
+/// expectations for API stability, release cadence, and semver semantics.
+///
+/// # Reference
+///
+/// See the [`DuckDB` extension versioning docs](https://duckdb.org/docs/extensions/versioning)
+/// for the full specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExtensionStability {
+    /// Version is a short git hash (e.g., `690bfc5`).
+    ///
+    /// No stability guarantees. Functionality may change or be removed
+    /// completely with every release. No structured release cycle.
+    Unstable,
+    /// Version is semver `0.y.z` (e.g., `0.1.0`).
+    ///
+    /// Working toward stability. Semver semantics apply, but the API is
+    /// not yet considered stable. Breaking changes may occur in minor versions.
+    PreRelease,
+    /// Version is semver `x.y.z` where `x > 0` (e.g., `1.0.0`).
+    ///
+    /// Full semver semantics apply. The API is stable and will only change
+    /// in backwards-incompatible ways when the major version is bumped.
+    Stable,
+}
+
+impl std::fmt::Display for ExtensionStability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unstable => f.write_str("unstable"),
+            Self::PreRelease => f.write_str("pre-release"),
+            Self::Stable => f.write_str("stable"),
+        }
+    }
+}
+
+/// Classifies an extension version into its stability level.
+///
+/// This follows the `DuckDB` core extension versioning scheme:
+/// - **Unstable**: a short git hash (7+ lowercase hex characters)
+/// - **Pre-release**: semver `0.y.z`
+/// - **Stable**: semver `x.y.z` where `x > 0`
+///
+/// # Errors
+///
+/// Returns `ExtensionError` if the version string is empty or does not match
+/// any recognized format.
+///
+/// # Example
+///
+/// ```rust
+/// use quack_rs::validate::semver::{classify_extension_version, ExtensionStability};
+///
+/// let (stability, _) = classify_extension_version("1.0.0").unwrap();
+/// assert_eq!(stability, ExtensionStability::Stable);
+///
+/// let (stability, _) = classify_extension_version("0.1.0").unwrap();
+/// assert_eq!(stability, ExtensionStability::PreRelease);
+///
+/// let (stability, _) = classify_extension_version("690bfc5").unwrap();
+/// assert_eq!(stability, ExtensionStability::Unstable);
+/// ```
+pub fn classify_extension_version(
+    version: &str,
+) -> Result<(ExtensionStability, &str), ExtensionError> {
+    if version.is_empty() {
+        return Err(ExtensionError::new("extension version must not be empty"));
+    }
+
+    // Try semver first
+    if version.contains('.') {
+        validate_semver(version)?;
+        let major = version.split('.').next().unwrap_or("0");
+        let stability = if major == "0" {
+            ExtensionStability::PreRelease
+        } else {
+            ExtensionStability::Stable
+        };
+        return Ok((stability, version));
+    }
+
+    // Try git hash: 7+ lowercase hex characters
+    if version.len() >= 7
+        && version.len() <= 40
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Ok((ExtensionStability::Unstable, version));
+    }
+
+    Err(ExtensionError::new(format!(
+        "extension version '{version}' is not a valid semver version or git hash; \
+         expected MAJOR.MINOR.PATCH or a 7-40 character lowercase hex hash"
+    )))
+}
+
+/// Validates an extension version string in any of `DuckDB`'s recognized formats.
+///
+/// Accepts both semver versions (`1.0.0`, `0.1.0-alpha`) and unstable git
+/// hashes (`690bfc5`). Use [`classify_extension_version`] if you also need
+/// the stability level.
+///
+/// # Errors
+///
+/// Returns `ExtensionError` if the version is not valid.
+///
+/// # Example
+///
+/// ```rust
+/// use quack_rs::validate::validate_extension_version;
+///
+/// assert!(validate_extension_version("1.0.0").is_ok());
+/// assert!(validate_extension_version("0.1.0").is_ok());
+/// assert!(validate_extension_version("690bfc5").is_ok());
+/// assert!(validate_extension_version("").is_err());
+/// assert!(validate_extension_version("not-valid").is_err());
+/// ```
+pub fn validate_extension_version(version: &str) -> Result<(), ExtensionError> {
+    classify_extension_version(version)?;
     Ok(())
 }
 
@@ -218,5 +357,88 @@ mod tests {
     #[test]
     fn single_number_rejected() {
         assert!(validate_semver("1").is_err());
+    }
+
+    // --- Extension version classification tests ---
+
+    #[test]
+    fn classify_stable() {
+        let (stability, _) = classify_extension_version("1.0.0").unwrap();
+        assert_eq!(stability, ExtensionStability::Stable);
+    }
+
+    #[test]
+    fn classify_stable_high_major() {
+        let (stability, _) = classify_extension_version("13.11.0").unwrap();
+        assert_eq!(stability, ExtensionStability::Stable);
+    }
+
+    #[test]
+    fn classify_pre_release() {
+        let (stability, _) = classify_extension_version("0.1.0").unwrap();
+        assert_eq!(stability, ExtensionStability::PreRelease);
+    }
+
+    #[test]
+    fn classify_pre_release_with_suffix() {
+        let (stability, _) = classify_extension_version("0.1.0-alpha.1").unwrap();
+        assert_eq!(stability, ExtensionStability::PreRelease);
+    }
+
+    #[test]
+    fn classify_unstable_git_hash() {
+        let (stability, _) = classify_extension_version("690bfc5").unwrap();
+        assert_eq!(stability, ExtensionStability::Unstable);
+    }
+
+    #[test]
+    fn classify_unstable_long_hash() {
+        let (stability, _) =
+            classify_extension_version("d9e5cc104c61e4a2b3f8a9c7d1e5f0a2b4c6d8e0").unwrap();
+        assert_eq!(stability, ExtensionStability::Unstable);
+    }
+
+    #[test]
+    fn classify_empty_rejected() {
+        assert!(classify_extension_version("").is_err());
+    }
+
+    #[test]
+    fn classify_uppercase_hash_rejected() {
+        assert!(classify_extension_version("690BFC5").is_err());
+    }
+
+    #[test]
+    fn classify_too_short_hash_rejected() {
+        assert!(classify_extension_version("abc12").is_err());
+    }
+
+    #[test]
+    fn classify_not_hex_rejected() {
+        assert!(classify_extension_version("not-valid").is_err());
+    }
+
+    #[test]
+    fn validate_extension_version_semver() {
+        assert!(validate_extension_version("1.0.0").is_ok());
+        assert!(validate_extension_version("0.1.0").is_ok());
+    }
+
+    #[test]
+    fn validate_extension_version_hash() {
+        assert!(validate_extension_version("690bfc5").is_ok());
+    }
+
+    #[test]
+    fn validate_extension_version_invalid() {
+        assert!(validate_extension_version("").is_err());
+        assert!(validate_extension_version("xyz").is_err());
+    }
+
+    #[test]
+    fn stability_display() {
+        assert_eq!(ExtensionStability::Unstable.to_string(), "unstable");
+        assert_eq!(ExtensionStability::PreRelease.to_string(), "pre-release");
+        assert_eq!(ExtensionStability::Stable.to_string(), "stable");
     }
 }

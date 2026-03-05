@@ -326,6 +326,7 @@ Community extensions are built for these platform targets:
 | `osx_amd64` | macOS x86_64 |
 | `osx_arm64` | macOS Apple Silicon |
 | `windows_amd64` | Windows x86_64 |
+| `windows_amd64_mingw` | Windows x86_64 (MinGW) |
 | `windows_arm64` | Windows AArch64 |
 | `wasm_mvp` | WebAssembly (MVP) |
 | `wasm_eh` | WebAssembly (exception handling) |
@@ -343,6 +344,36 @@ repository is a distribution mechanism, not a security guarantee. As an extensio
 - Validate all user inputs at system boundaries
 - Do not include secrets, credentials, or API keys in your extension binary
 - Follow the OWASP top 10 where applicable (SQL injection via dynamic SQL, etc.)
+
+### Extension Versioning
+
+DuckDB core extensions use a three-tier versioning scheme. Community extensions should follow
+the same convention:
+
+| Level | Format | Example | Meaning |
+|-------|--------|---------|---------|
+| **Unstable** | Short git hash (7+ hex chars) | `690bfc5` | No stability guarantees |
+| **Pre-release** | Semver `0.y.z` | `0.1.0` | Working toward stability |
+| **Stable** | Semver `x.y.z` (x>0) | `1.0.0` | Full semver, stable API |
+
+Key points:
+
+- **Unstable** extensions may change or remove functionality at any time
+- **Pre-release** extensions follow semver but the API may still have breaking changes in minor versions
+- **Stable** extensions guarantee backwards-compatible APIs; breaking changes require a major version bump
+- Use `quack_rs::validate::validate_extension_version` to accept all three formats
+- Use `quack_rs::validate::semver::classify_extension_version` to determine the stability tier
+
+### Extension Binary Compatibility
+
+Extension binaries are tied to a specific DuckDB version and platform. Key implications:
+
+- New binaries must be built for each DuckDB release
+- Extensions compiled for one DuckDB version will not load in another
+- DuckDB verifies binary compatibility before loading and will refuse mismatched binaries
+- All official extensions are cryptographically signed by the DuckDB team
+- Unsigned extensions require `allow_unsigned_extensions` to load (development only)
+- The DuckDB extension template provides CI workflows for automated cross-platform builds
 
 ### CI Toolchain Notes
 
