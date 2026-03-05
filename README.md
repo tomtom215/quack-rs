@@ -4,17 +4,32 @@
 [![Crates.io](https://img.shields.io/crates/v/quack-rs.svg)](https://crates.io/crates/quack-rs)
 [![docs.rs](https://img.shields.io/docsrs/quack-rs)](https://docs.rs/quack-rs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![MSRV: 1.80](https://img.shields.io/badge/MSRV-1.80-blue.svg)](https://blog.rust-lang.org/2024/07/25/Rust-1.80.0.html)
+[![MSRV: 1.84.1](https://img.shields.io/badge/MSRV-1.84.1-blue.svg)](https://blog.rust-lang.org/2025/01/30/Rust-1.84.1.html)
 
-**A production-grade Rust SDK for building DuckDB loadable extensions.**
+**A Rust SDK for building DuckDB loadable extensions.**
 
-`quack-rs` solves the hard FFI problems that every DuckDB Rust extension author hits — so you can focus on your business logic, not on debugging silent segfaults.
+Provides safe wrappers for the DuckDB C API, builders for aggregate and scalar function registration, and a project scaffold generator for community extension submission.
 
 ## Why quack-rs?
 
-Building a DuckDB extension in pure Rust requires solving 15+ undocumented FFI problems that are not covered anywhere in the DuckDB documentation or Rust ecosystem. Every developer who tries to build a community extension hits these problems from scratch.
+DuckDB's Rust FFI surface has undocumented pitfalls — struct layouts, callback contracts, and initialization sequences that are not covered in the DuckDB documentation or the `libduckdb-sys` crate docs. `quack-rs` was extracted from [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a production DuckDB community extension, where each of these problems was encountered and solved.
 
-`quack-rs` was extracted from [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a production DuckDB community extension that implements 7 behavioral analytics aggregate functions. Building it required discovering these problems the hard way.
+### What quack-rs Solves
+
+Each row below corresponds to a documented pitfall in [LESSONS.md](LESSONS.md) with symptoms, root cause, and fix.
+
+| Pitfall | Without quack-rs | With quack-rs |
+|---------|-----------------|---------------|
+| P3: Entry point SEGFAULT | `extract_raw_connection` dereferences invalid pointer | `init_extension` helper with correct init sequence |
+| L6: Silent registration failure | Function set members missing names → silently ignored | `AggregateFunctionSetBuilder` sets name on each member |
+| L1: combine config loss | Zero-initialized target state → wrong results | `AggregateTestHarness` catches missing field propagation |
+| L4: NULL output crash | Forgetting `ensure_validity_writable` → SEGFAULT | `VectorWriter::set_null` calls it automatically |
+| L5: Boolean UB | `as bool` cast on non-0/1 value → undefined behavior | `VectorReader::read_bool` reads `u8 != 0` |
+| L7: Memory leak | `duckdb_logical_type` not freed after registration | `LogicalType` RAII wrapper with `Drop` |
+| P7: `duckdb_string_t` format | Two undocumented inline/pointer layouts | `read_duck_string` handles both formats |
+| P8: C API version confusion | Metadata script fails with DuckDB release version | `DUCKDB_API_VERSION` constant documents the distinction |
+
+The SDK also generates complete, submission-ready extension projects via [`scaffold::generate_scaffold`](#pure-rust-extensions-via-the-c-extension-api) — no C++ glue required.
 
 ## Quick Start
 
@@ -99,32 +114,20 @@ let result = AggregateTestHarness::<WordCountState>::aggregate(
 assert_eq!(result.count, 5);
 ```
 
-## What quack-rs Solves
-
-| Problem | Without quack-rs | With quack-rs |
-|---------|-----------------|---------------|
-| Entry point SEGFAULT | `extract_raw_connection` crashes | `init_extension` helper, panic-free |
-| Silent registration failure | Function set silently not registered | Builder enforces name on each member |
-| combine config loss | Wrong results, silent | Harness test catches this |
-| NULL output crash | Need to remember `ensure_validity_writable` | `VectorWriter::set_null` does it automatically |
-| Boolean UB | `as bool` cast, undefined behavior | `read_bool` uses `u8 != 0` |
-| Memory leak | `duckdb_logical_type` never freed | `LogicalType` RAII wrapper |
-| `duckdb_string_t` format | Undocumented, confusing | `read_duck_string` handles both formats |
-| Interval conversion | Undocumented struct layout | `DuckInterval` with overflow checking |
-
-See [LESSONS.md](LESSONS.md) for all 15 pitfalls with symptoms, root causes, and fixes.
-
 ## SDK Modules
 
 | Module | Purpose |
 |--------|---------|
-| `entry_point` | Panic-free `{name}_init_c_api` entry point helper |
+| `entry_point` | Panic-free `{name}_init_c_api` entry point helper + `entry_point!` macro |
 | `aggregate` | Builders for registering aggregate functions |
 | `aggregate::state` | Generic `FfiState<T>` — no raw pointer lifecycle code |
-| `vector` | Safe readers/writers for DuckDB data vectors |
+| `scalar` | Builder for registering scalar functions |
+| `vector` | Safe readers/writers for DuckDB data vectors (including VARCHAR and INTERVAL) |
 | `types` | `TypeId` enum, `LogicalType` RAII wrapper |
 | `interval` | `INTERVAL` → microseconds with overflow checking |
 | `error` | `ExtensionError` for `?`-based error propagation |
+| `validate` | Community extension compliance validators (name, semver, SPDX, platform) |
+| `scaffold` | Project generator for new extensions (no C++ glue needed) |
 | `testing` | `AggregateTestHarness` — test logic without DuckDB |
 
 ## Examples
@@ -143,13 +146,50 @@ See [LESSONS.md](LESSONS.md) → Community Extension Submission for the complete
 
 **Critical**: The `[lib] name` in `Cargo.toml` must match the extension name in `description.yml`. See Pitfall P1.
 
+## Pure Rust Extensions via the C Extension API
+
+DuckDB's [C Extension API](https://github.com/duckdb/duckdb/pull/12682) now allows **pure Rust extensions without any C++ glue**. The official [extension-template-rs](https://github.com/duckdb/extension-template-rs) demonstrates this approach.
+
+`quack-rs` includes a **scaffold generator** that produces all the files you need:
+
+```rust
+use quack_rs::scaffold::{ScaffoldConfig, generate_scaffold};
+
+let config = ScaffoldConfig {
+    name: "my_analytics".to_string(),
+    description: "Fast analytics for DuckDB".to_string(),
+    version: "0.1.0".to_string(),
+    license: "MIT".to_string(),
+    maintainer: "Your Name".to_string(),
+    github_repo: "yourorg/duckdb-my-analytics".to_string(),
+    excluded_platforms: vec![],
+};
+
+let files = generate_scaffold(&config).unwrap();
+// Generates: Cargo.toml, Makefile, src/lib.rs, description.yml, .gitmodules, .gitignore
+```
+
+The generated project uses the C Extension API directly — no CMakeLists.txt, no C++ files. It includes the `extension-ci-tools` submodule for CI/CD and a `Makefile` that delegates to `cargo build`.
+
+## Extension Naming
+
+DuckDB community extensions must have **globally unique names**. Before submitting:
+
+- Check existing extensions at <https://community-extensions.duckdb.org/>
+- Use vendor prefixing if needed (e.g., `myorg_analytics` instead of `analytics`)
+- Names must match `^[a-z][a-z0-9_-]*$` — use `quack_rs::validate::validate_extension_name` to check
+
+## Security
+
+Community extensions are **not vetted for security** by the DuckDB team. The community extensions repository is a distribution mechanism, not a security guarantee. Extension authors are responsible for the safety and correctness of their code. `quack-rs` enforces `panic = "abort"` and provides safe FFI wrappers, but the overall security of your extension is your responsibility.
+
 ## Design Constraints
 
 - **Runtime dependency**: Only `libduckdb-sys = "=1.4.4"` with `loadable-extension` feature.
   The `=` pin is required — the DuckDB C API can change between minor versions.
 - **No proc macros**: The SDK uses declarative macros only.
 - **No panics in FFI**: All entry points and callbacks use `Result` propagation.
-- **MSRV 1.80**: Required for `c""` literal syntax in entry points.
+- **MSRV 1.84.1**: Required for `&raw mut` syntax and `const` extern fn support.
 
 ## Contributing
 
@@ -158,6 +198,10 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting PRs. All contri
 ```
 cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt -- --check && cargo doc --no-deps
 ```
+
+## AI-Assisted Development
+
+This project was developed with assistance from [Claude Code](https://claude.ai/code) (Anthropic). AI was used for code generation, documentation drafting, test authoring, and research into DuckDB's C Extension API and community extension infrastructure. All AI-generated code was reviewed, tested, and validated by the project maintainer.
 
 ## License
 

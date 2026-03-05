@@ -268,6 +268,132 @@ Month conversion uses the approximation: **1 month = 30 days** (matching DuckDB'
 
 ---
 
+## Community Extension Submission
+
+### Build System Requirements
+
+DuckDB's **C Extension API** now allows pure-Rust extensions **without any C++ glue**.
+The official [extension-template-rs](https://github.com/duckdb/extension-template-rs) demonstrates
+this approach. A pure-Rust extension needs:
+
+1. **Cargo.toml**: `cdylib` crate type, pinned `duckdb` + `libduckdb-sys` deps, release profile
+2. **Makefile**: Delegates to `cargo build` + metadata scripts from `extension-ci-tools`
+3. **extension-ci-tools**: Git submodule for the DuckDB extension CI/CD pipeline
+4. **src/lib.rs**: Entry point using `duckdb_entrypoint_c_api` macro + function registration
+5. **description.yml**: Extension metadata (`language: C` for C API extensions, NOT `C++`)
+6. **test/sql/*.test**: SQLLogicTest format integration tests
+
+Use `quack_rs::scaffold::generate_scaffold` to auto-generate all of these files from a
+[`ScaffoldConfig`](https://docs.rs/quack-rs/latest/quack_rs/scaffold/struct.ScaffoldConfig.html).
+
+> **Note**: The C Extension API has a stable and unstable part. The official template enables
+> the unstable API via `USE_UNSTABLE_C_API=1` in the Makefile. See
+> [extension-template-rs](https://github.com/duckdb/extension-template-rs) for details.
+
+### description.yml
+
+Required fields:
+```yaml
+extension:
+  name: your_extension
+  description: One-line description
+  version: 0.1.0
+  language: Rust
+  build: cargo
+  license: MIT
+  requires_toolchains: rust;python3
+  excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads"  # optional
+  maintainers:
+    - Your Name
+
+repo:
+  github: yourorg/your_extension
+  ref: main
+```
+
+Use `quack_rs::validate` to check name, version, and license before submission,
+or use `quack_rs::scaffold::generate_scaffold` to auto-generate all project files.
+
+### Naming Rules
+
+- Extension names must be globally unique across the entire DuckDB community extensions ecosystem
+- Check existing names at https://community-extensions.duckdb.org/ before choosing
+- Use vendor prefixing to avoid collisions (e.g., `myorg_analytics` instead of `analytics`)
+- Names must match `^[a-z][a-z0-9_-]*$` and not exceed 64 characters
+- The `[lib] name` in `Cargo.toml` MUST match the extension name (Pitfall P1)
+
+### Platform Targets
+
+Community extensions are built for these platform targets:
+
+| Platform | Description |
+|----------|-------------|
+| `linux_amd64` | Linux x86_64 |
+| `linux_amd64_gcc4` | Linux x86_64 (GCC 4 compatible) |
+| `linux_arm64` | Linux AArch64 |
+| `osx_amd64` | macOS x86_64 |
+| `osx_arm64` | macOS Apple Silicon |
+| `windows_amd64` | Windows x86_64 |
+| `windows_amd64_mingw` | Windows x86_64 (MinGW) |
+| `windows_arm64` | Windows AArch64 |
+| `wasm_mvp` | WebAssembly (MVP) |
+| `wasm_eh` | WebAssembly (exception handling) |
+| `wasm_threads` | WebAssembly (threads) |
+
+Use `excluded_platforms` in `description.yml` to skip platforms your extension cannot support.
+Validate with `quack_rs::validate::validate_platform` and `validate_excluded_platforms`.
+
+### Security Disclaimer
+
+Community extensions are NOT vetted for security by the DuckDB team. The community extensions
+repository is a distribution mechanism, not a security guarantee. As an extension author:
+
+- Never panic across FFI boundaries (`quack-rs` enforces `panic = "abort"`)
+- Validate all user inputs at system boundaries
+- Do not include secrets, credentials, or API keys in your extension binary
+- Follow the OWASP top 10 where applicable (SQL injection via dynamic SQL, etc.)
+
+### Extension Versioning
+
+DuckDB core extensions use a three-tier versioning scheme. Community extensions should follow
+the same convention:
+
+| Level | Format | Example | Meaning |
+|-------|--------|---------|---------|
+| **Unstable** | Short git hash (7+ hex chars) | `690bfc5` | No stability guarantees |
+| **Pre-release** | Semver `0.y.z` | `0.1.0` | Working toward stability |
+| **Stable** | Semver `x.y.z` (x>0) | `1.0.0` | Full semver, stable API |
+
+Key points:
+
+- **Unstable** extensions may change or remove functionality at any time
+- **Pre-release** extensions follow semver but the API may still have breaking changes in minor versions
+- **Stable** extensions guarantee backwards-compatible APIs; breaking changes require a major version bump
+- Use `quack_rs::validate::validate_extension_version` to accept all three formats
+- Use `quack_rs::validate::semver::classify_extension_version` to determine the stability tier
+
+### Extension Binary Compatibility
+
+Extension binaries are tied to a specific DuckDB version and platform. Key implications:
+
+- New binaries must be built for each DuckDB release
+- Extensions compiled for one DuckDB version will not load in another
+- DuckDB verifies binary compatibility before loading and will refuse mismatched binaries
+- All official extensions are cryptographically signed by the DuckDB team
+- Unsigned extensions require `allow_unsigned_extensions` to load (development only)
+- The DuckDB extension template provides CI workflows for automated cross-platform builds
+
+### CI Toolchain Notes
+
+The community extension CI uses specific compiler versions and system libraries. Common issues:
+
+- Rust toolchain must be available in CI (add `rustup` setup to your CI workflow)
+- Cross-compilation for `linux_arm64` from `linux_amd64` requires the appropriate target
+- WASM targets (`wasm_mvp`, `wasm_eh`, `wasm_threads`) may not work with all Rust crates
+- Use `excluded_platforms` to skip targets that cannot be built
+
+---
+
 ## Architecture Decision Records
 
 ### ADR-1: `libduckdb-sys` only at runtime (no `duckdb` crate)
