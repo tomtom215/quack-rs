@@ -1,0 +1,211 @@
+//! Extension entry point helper.
+//!
+//! Provides [`init_extension`], the core helper called by the `entry_point!` macro.
+//!
+//! # Problem 1: Custom C entry point
+//!
+//! `DuckDB`'s Rust crate does not provide a safe way to obtain a raw
+//! `duckdb_connection` handle for function registration. The prior approach
+//! using `extract_raw_connection` relied on `Rc<RefCell<InnerConnection>>` layout,
+//! causing SEGFAULTs. The correct approach is a hand-written C entry point that:
+//!
+//! 1. Calls `duckdb_rs_extension_api_init(info, access, "v1.2.0")`
+//! 2. Calls `access.get_database(info)` to get a `duckdb_database`
+//! 3. Calls `duckdb_connect(db, &mut raw_con)` to get a `duckdb_connection`
+//! 4. Registers all functions
+//! 5. Calls `duckdb_disconnect(&mut raw_con)`
+//!
+//! # Problem 13: No panic across FFI
+//!
+//! `init_extension` uses `Result` for all error propagation and never calls
+//! `unwrap()` or `panic!()` inside an FFI callback.
+//!
+//! # Usage
+//!
+//! Extension authors typically use the `entry_point!` macro,
+//! which generates the required `#[no_mangle] extern "C"` function automatically.
+//!
+//! If you need full control over the entry point, you can call `init_extension`
+//! directly:
+//!
+//! ```rust,no_run
+//! use quack_rs::entry_point::init_extension;
+//!
+//! #[no_mangle]
+//! pub unsafe extern "C" fn my_extension_init_c_api(
+//!     info: libduckdb_sys::duckdb_extension_info,
+//!     access: *const libduckdb_sys::duckdb_extension_access,
+//! ) -> bool {
+//!     unsafe {
+//!         init_extension(info, access, quack_rs::DUCKDB_API_VERSION, |con| {
+//!             // register functions with `con: libduckdb_sys::duckdb_connection`
+//!             Ok(())
+//!         })
+//!     }
+//! }
+//! ```
+
+use libduckdb_sys::{
+    duckdb_connect, duckdb_connection, duckdb_disconnect, duckdb_extension_access,
+    duckdb_extension_info, duckdb_rs_extension_api_init, DuckDBSuccess,
+};
+
+use crate::error::ExtensionError;
+
+/// Core entry point helper — sets up a connection and calls your registration closure.
+///
+/// This function encapsulates the correct initialization sequence for a `DuckDB`
+/// loadable extension written in Rust:
+///
+/// 1. Calls `duckdb_rs_extension_api_init` with the given `api_version`.
+/// 2. Extracts the `duckdb_database` via `access.get_database`.
+/// 3. Opens a `duckdb_connection` via `duckdb_connect`.
+/// 4. Calls `register(connection)`.
+/// 5. Disconnects with `duckdb_disconnect`.
+/// 6. On any error, reports via `access.set_error` and returns `false`.
+///
+/// # Return value
+///
+/// Returns `true` if initialization succeeded, `false` on any error.
+///
+/// # Safety
+///
+/// - `info` must be the `duckdb_extension_info` passed by `DuckDB` to your entry point.
+/// - `access` must be the `*const duckdb_extension_access` passed by `DuckDB`.
+/// - Both pointers must remain valid for the duration of this call.
+///
+/// # Pitfall P13: No panic across FFI
+///
+/// This function never panics. All errors are reported via `access.set_error`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use quack_rs::entry_point::init_extension;
+///
+/// #[no_mangle]
+/// pub unsafe extern "C" fn my_ext_init_c_api(
+///     info: libduckdb_sys::duckdb_extension_info,
+///     access: *const libduckdb_sys::duckdb_extension_access,
+/// ) -> bool {
+///     unsafe {
+///         init_extension(info, access, quack_rs::DUCKDB_API_VERSION, |_con| {
+///             // Register your functions here
+///             Ok(())
+///         })
+///     }
+/// }
+/// ```
+pub unsafe fn init_extension<F>(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    api_version: &str,
+    register: F,
+) -> bool
+where
+    F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
+{
+    match unsafe { init_extension_internal(info, access, api_version, register) } {
+        Ok(result) => result,
+        Err(e) => {
+            // SAFETY: access is a valid pointer per the caller's contract.
+            unsafe { report_error(info, access, &e) };
+            false
+        }
+    }
+}
+
+/// Internal implementation using `?` for ergonomic error propagation.
+///
+/// # Safety
+///
+/// Same invariants as [`init_extension`].
+unsafe fn init_extension_internal<F>(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    api_version: &str,
+    register: F,
+) -> Result<bool, ExtensionError>
+where
+    F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
+{
+    // Step 1: Initialize the DuckDB C API. This must be called before any other
+    // libduckdb_sys function in a loadable extension. The version string must be
+    // the C API version (e.g. "v1.2.0"), NOT the DuckDB release version.
+    //
+    // PITFALL P8: Use the C API version, not the DuckDB release version.
+    // DuckDB v1.4.4 uses C API version v1.2.0.
+    //
+    // SAFETY: info and access are valid pointers provided by DuckDB.
+    let have_api = unsafe {
+        duckdb_rs_extension_api_init(info, access, api_version)
+            .map_err(|e| ExtensionError::new(e.to_string()))?
+    };
+
+    if !have_api {
+        // DuckDB indicated that the API version is not available. Return false
+        // without an error — this can happen when the extension is loaded by
+        // an older DuckDB version that predates the requested API version.
+        return Ok(false);
+    }
+
+    // Step 2: Get the database handle.
+    // SAFETY: access is valid and have_api is true, so get_database is non-null.
+    let get_database = unsafe { (*access).get_database }
+        .ok_or_else(|| ExtensionError::new("get_database function pointer is null"))?;
+
+    // SAFETY: info is valid. The returned pointer is DuckDB-managed.
+    let db = unsafe { *get_database(info) };
+
+    // Step 3: Open a connection for function registration.
+    let mut raw_con: duckdb_connection = core::ptr::null_mut();
+    // SAFETY: db is a valid duckdb_database returned by get_database.
+    let rc = unsafe { duckdb_connect(db, &mut raw_con) };
+    if rc != DuckDBSuccess {
+        return Err(ExtensionError::new(
+            "duckdb_connect failed during extension initialization",
+        ));
+    }
+
+    // Step 4: Call the user's registration closure.
+    let result = register(raw_con);
+
+    // Step 5: Always disconnect, even if registration failed.
+    // SAFETY: raw_con was successfully created by duckdb_connect above.
+    unsafe { duckdb_disconnect(&mut raw_con) };
+
+    result?;
+    Ok(true)
+}
+
+/// Reports an `ExtensionError` back to `DuckDB` via `access.set_error`.
+///
+/// # Safety
+///
+/// `info` and `access` must be valid pointers provided by `DuckDB`.
+unsafe fn report_error(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    error: &ExtensionError,
+) {
+    // SAFETY: access is valid per the caller's contract.
+    if let Some(set_error) = unsafe { (*access).set_error } {
+        let c_msg = error.to_c_string();
+        // SAFETY: c_msg is a valid CString; info is valid.
+        unsafe { set_error(info, c_msg.as_ptr()) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Integration tests for init_extension require a DuckDB instance and are in
+    // tests/integration_test.rs. Unit tests here verify pure-Rust logic.
+
+    #[test]
+    fn extension_error_to_c_string() {
+        use crate::error::ExtensionError;
+        let err = ExtensionError::new("test error message");
+        let cstr = err.to_c_string();
+        assert_eq!(cstr.to_str().unwrap(), "test error message");
+    }
+}
