@@ -112,6 +112,14 @@ pub fn generate_scaffold(config: &ScaffoldConfig) -> Result<Vec<GeneratedFile>, 
             path: ".gitignore".to_string(),
             content: generate_gitignore(),
         },
+        GeneratedFile {
+            path: ".cargo/config.toml".to_string(),
+            content: generate_cargo_config(),
+        },
+        GeneratedFile {
+            path: "src/wasm_lib.rs".to_string(),
+            content: generate_wasm_lib(),
+        },
     ];
 
     Ok(files)
@@ -133,7 +141,7 @@ crate-type = ["cdylib"]
 [[example]]
 name = "{name}"
 crate-type = ["staticlib"]
-path = "src/lib.rs"
+path = "src/wasm_lib.rs"
 
 [dependencies]
 quack-rs = {{ version = "0.1.0" }}
@@ -269,36 +277,36 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
 }
 
 fn generate_description_yml(config: &ScaffoldConfig) -> String {
+    use std::fmt::Write;
+
     let mut yml = format!(
         r"extension:
   name: {name}
   description: {description}
   version: {version}
-  language: C
+  language: Rust
   build: cargo
   license: {license}
-  maintainers:
-    - {maintainer}
-
-repo:
-  github: {github_repo}
-  ref: main
+  requires_toolchains: rust;python3
 ",
         name = config.name,
         description = config.description,
         version = config.version,
         license = config.license,
-        maintainer = config.maintainer,
-        github_repo = config.github_repo,
     );
 
     if !config.excluded_platforms.is_empty() {
-        use std::fmt::Write;
-        yml.push_str("\nextension:\n  excluded_platforms:\n");
-        for platform in &config.excluded_platforms {
-            let _ = writeln!(yml, "    - {platform}");
-        }
+        let platforms = config.excluded_platforms.join(";");
+        let _ = writeln!(yml, "  excluded_platforms: \"{platforms}\"");
     }
+
+    let _ = writeln!(yml, "  maintainers:");
+    let _ = writeln!(yml, "    - {}", config.maintainer);
+
+    let _ = writeln!(yml);
+    let _ = writeln!(yml, "repo:");
+    let _ = writeln!(yml, "  github: {}", config.github_repo);
+    let _ = writeln!(yml, "  ref: main");
 
     yml
 }
@@ -309,6 +317,25 @@ fn generate_gitmodules() -> String {
 
 fn generate_gitignore() -> String {
     "/target\n*.duckdb\n*.wal\nbuild/\n.env\n__pycache__/\n".to_string()
+}
+
+fn generate_cargo_config() -> String {
+    "# Statically link the C runtime on Windows MSVC targets.\n\
+     # This avoids requiring vcredist on end-user machines.\n\
+     [target.x86_64-pc-windows-msvc]\n\
+     rustflags = [\"-Ctarget-feature=+crt-static\"]\n\
+     \n\
+     [target.aarch64-pc-windows-msvc]\n\
+     rustflags = [\"-Ctarget-feature=+crt-static\"]\n"
+        .to_string()
+}
+
+fn generate_wasm_lib() -> String {
+    "// WASM shim: re-exports lib.rs as a staticlib for emscripten compilation.\n\
+     // The [[example]] target in Cargo.toml points here with crate-type = [\"staticlib\"].\n\
+     // See extension-ci-tools/makefiles/c_api_extensions/rust.Makefile for details.\n\
+     mod lib;\n"
+        .to_string()
 }
 
 #[cfg(test)]
@@ -334,9 +361,11 @@ mod tests {
         assert!(paths.contains(&"Cargo.toml"));
         assert!(paths.contains(&"Makefile"));
         assert!(paths.contains(&"src/lib.rs"));
+        assert!(paths.contains(&"src/wasm_lib.rs"));
         assert!(paths.contains(&"description.yml"));
         assert!(paths.contains(&".gitmodules"));
         assert!(paths.contains(&".gitignore"));
+        assert!(paths.contains(&".cargo/config.toml"));
     }
 
     #[test]
@@ -402,12 +431,12 @@ mod tests {
     }
 
     #[test]
-    fn description_yml_uses_c_language() {
-        // C Extension API extensions use language: C, not C++
+    fn description_yml_uses_rust_language() {
         let files = generate_scaffold(&valid_config()).unwrap();
         let desc = files.iter().find(|f| f.path == "description.yml").unwrap();
-        assert!(desc.content.contains("language: C"));
-        assert!(!desc.content.contains("language: C++"));
+        assert!(desc.content.contains("language: Rust"));
+        assert!(desc.content.contains("build: cargo"));
+        assert!(desc.content.contains("requires_toolchains: rust;python3"));
     }
 
     #[test]
@@ -444,8 +473,10 @@ mod tests {
         config.excluded_platforms = vec!["wasm_mvp".to_string(), "wasm_eh".to_string()];
         let files = generate_scaffold(&config).unwrap();
         let desc = files.iter().find(|f| f.path == "description.yml").unwrap();
-        assert!(desc.content.contains("wasm_mvp"));
-        assert!(desc.content.contains("wasm_eh"));
+        // Platforms are semicolon-separated per DuckDB convention
+        assert!(desc
+            .content
+            .contains("excluded_platforms: \"wasm_mvp;wasm_eh\""));
     }
 
     #[test]
@@ -469,5 +500,25 @@ mod tests {
         let files = generate_scaffold(&valid_config()).unwrap();
         let cargo = files.iter().find(|f| f.path == "Cargo.toml").unwrap();
         assert!(cargo.content.contains("staticlib"));
+        assert!(cargo.content.contains("wasm_lib.rs"));
+    }
+
+    #[test]
+    fn cargo_config_has_windows_crt_static() {
+        let files = generate_scaffold(&valid_config()).unwrap();
+        let cfg = files
+            .iter()
+            .find(|f| f.path == ".cargo/config.toml")
+            .unwrap();
+        assert!(cfg.content.contains("crt-static"));
+        assert!(cfg.content.contains("x86_64-pc-windows-msvc"));
+        assert!(cfg.content.contains("aarch64-pc-windows-msvc"));
+    }
+
+    #[test]
+    fn wasm_lib_shim_exists() {
+        let files = generate_scaffold(&valid_config()).unwrap();
+        let wasm = files.iter().find(|f| f.path == "src/wasm_lib.rs").unwrap();
+        assert!(wasm.content.contains("mod lib"));
     }
 }

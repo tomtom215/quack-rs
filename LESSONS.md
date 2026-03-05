@@ -298,9 +298,11 @@ extension:
   name: your_extension
   description: One-line description
   version: 0.1.0
-  language: C++        # Currently required even for Rust extensions (C++ glue)
-  build: cmake
+  language: Rust
+  build: cargo
   license: MIT
+  requires_toolchains: rust;python3
+  excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads"  # optional
   maintainers:
     - Your Name
 
@@ -309,7 +311,8 @@ repo:
   ref: main
 ```
 
-Use `quack_rs::validate` to check name, version, and license before submission.
+Use `quack_rs::validate` to check name, version, and license before submission,
+or use `quack_rs::scaffold::generate_scaffold` to auto-generate all project files.
 
 ### Naming Rules
 
