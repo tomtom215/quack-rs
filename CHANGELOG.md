@@ -9,12 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Scaffold: `extension_config.cmake` generation** — the scaffold generator now produces
+  `extension_config.cmake`, which is referenced by the `EXT_CONFIG` variable in the Makefile
+  and required by `extension-ci-tools` for CI integration. Previously this file was missing,
+  causing `make configure` to fail on fresh scaffolded projects.
+
+- **Scaffold: SQLLogicTest skeleton** — `generate_scaffold` now produces
+  `test/sql/{name}.test`, a ready-to-fill SQLLogicTest file with `require` directive, format
+  comments, and example query/result blocks. E2E tests are required for community extension
+  submission (Pitfall P3).
+
+- **Scaffold: GitHub Actions CI workflow** — `generate_scaffold` now produces
+  `.github/workflows/extension-ci.yml`, a complete cross-platform CI workflow that builds and
+  tests the extension on Linux, macOS, and Windows against a real DuckDB binary.
+
+- **`validate::validate_excluded_platforms_str`** — validates the
+  `excluded_platforms` field from `description.yml` as a semicolon-delimited string
+  (e.g., `"wasm_mvp;wasm_eh;wasm_threads"`). Splits on `;` and validates each token.
+  An empty string is valid (no exclusions). Exported at the `validate` module level.
+
+- **`validate::validate_excluded_platforms`** — re-exported at the `validate` module level
+  (previously only accessible as `validate::platform::validate_excluded_platforms`).
+
+- **CI: Windows testing** — the CI matrix now includes `windows-latest` in the `test` job,
+  covering all three major platforms (Linux, macOS, Windows).
+
+- **CI: `example-check` job** — CI now checks, lints, and tests `examples/hello-ext`
+  as part of every PR, ensuring the example extension always compiles and its tests pass.
+
 - `validate` module: community extension compliance validators
   - `validate_extension_name` — enforces `^[a-z][a-z0-9_-]*$` naming rules
+  - `validate_function_name` — enforces SQL-safe identifier rules
   - `validate_semver` — validates semantic versioning (MAJOR.MINOR.PATCH)
+  - `validate_extension_version` — validates semver or 7+ char git hash
   - `validate_spdx_license` — validates SPDX license identifiers
   - `validate_platform` — validates DuckDB build target identifiers
   - `validate_release_profile` — checks release profile settings for loadable extensions
+  - `semver::classify_extension_version` — returns `VersionClass` (Unstable/PreRelease/Stable)
 - `scalar` module: `ScalarFunctionBuilder` for registering scalar functions
 - `entry_point!` macro for generating the extension entry point with zero boilerplate
 - `VectorWriter::write_varchar` for writing VARCHAR string values to output vectors
