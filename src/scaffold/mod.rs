@@ -714,9 +714,7 @@ mod tests {
     #[test]
     fn sqllogictest_file_exists() {
         let files = generate_scaffold(&valid_config()).unwrap();
-        assert!(files
-            .iter()
-            .any(|f| f.path == "test/sql/my_analytics.test"));
+        assert!(files.iter().any(|f| f.path == "test/sql/my_analytics.test"));
     }
 
     #[test]
