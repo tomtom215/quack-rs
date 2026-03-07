@@ -70,6 +70,8 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 ## What quack-rs Solves
 
+Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics that exist only in DuckDB's source code, and that surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically: every abstraction is backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever possible, across the full extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, lowering the barrier to Rust participation in the DuckDB open-source ecosystem to be comparable with C++.
+
 `quack-rs` encapsulates **15 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
