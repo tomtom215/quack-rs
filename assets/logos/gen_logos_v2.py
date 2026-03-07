@@ -288,62 +288,66 @@ def logo3():
     _save(svg, "logo3-badge-icon")
 
 
-# ── Logo 4: Rust Split — colour-block horizontal ──────────────────────────────
+# ── Logo 4: Rust Ember — warm gradient wash, no harsh panel split ─────────────
 
 def logo4():
     W, H = 660, 210
-    SPLIT = 212   # divider x — slightly wider rust panel than v2
 
-    # Duck spans both panels (intentional); beak crosses into dark zone.
-    # Warm near-white duck on rust panel pops cleanly.
-    # Tagline contrast fixed: #907060 vs previous near-invisible #5A4040.
+    # Design intent: evoke Rust-language warmth without a jarring red block.
+    # A deep ember gradient bleeds in from the left — dark ochre-rust at the
+    # edge, dissolving into the same charcoal used by the other dark logos.
+    # The duck sits in the warm zone; wordmark and tagline on the cool side.
 
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}">
   <defs>
+    <!-- Duck gold — slightly warmer/more orange to harmonise with the ember bg -->
     <radialGradient id="dg" cx="62%" cy="24%" r="68%">
-      <stop offset="0%"   stop-color="#FFF8D0"/>
-      <stop offset="38%"  stop-color="#F5D050"/>
-      <stop offset="100%" stop-color="#C8A020"/>
+      <stop offset="0%"   stop-color="#FFF4B0"/>
+      <stop offset="38%"  stop-color="#F0B818"/>
+      <stop offset="100%" stop-color="#9E6A00"/>
     </radialGradient>
     <filter id="ds" x="-25%" y="-25%" width="175%" height="175%">
       <feDropShadow dx="0" dy="5" stdDeviation="10"
-                    flood-color="#4A0800" flood-opacity="0.50"/>
+                    flood-color="#2A0800" flood-opacity="0.55"/>
     </filter>
-    <!-- Gradient for the panel divider: rust → transparent (softens the edge) -->
-    <linearGradient id="divgrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%"   stop-color="#6A1400" stop-opacity="0.9"/>
-      <stop offset="100%" stop-color="#6A1400" stop-opacity="0"/>
+    <!-- Background: deep charcoal with a warm ember wash on the left -->
+    <linearGradient id="bg4" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#2A1208"/>
+      <stop offset="42%"  stop-color="#1A100A"/>
+      <stop offset="100%" stop-color="#111622"/>
     </linearGradient>
+    <!-- Ember radial: extra warmth pooled where the duck lives -->
+    <radialGradient id="ember" cx="24%" cy="50%" r="44%">
+      <stop offset="0%"   stop-color="#7A2C10" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#7A2C10" stop-opacity="0"/>
+    </radialGradient>
     <clipPath id="full">
       <rect width="{W}" height="{H}" rx="22"/>
     </clipPath>
   </defs>
 
-  <!-- Two colour panels clipped to rounded rect -->
   <g clip-path="url(#full)">
-    <rect x="0"        y="0" width="{SPLIT}"       height="{H}" fill="#AA2610"/>
-    <rect x="{SPLIT}"  y="0" width="{W - SPLIT}"   height="{H}" fill="#16100C"/>
+    <!-- Dark background with horizontal warm fade -->
+    <rect width="{W}" height="{H}" fill="url(#bg4)"/>
+    <!-- Radial ember pool behind the duck -->
+    <rect width="{W}" height="{H}" fill="url(#ember)"/>
   </g>
 
-  <!-- Soft divider: 8 px gradient strip instead of hard line -->
-  <rect x="{SPLIT - 1}" y="0" width="8" height="{H}"
-        fill="url(#divgrad)" clip-path="url(#full)"/>
-
   {duck(110, 108, s=0.92,
-        dark_color="#C8A020",
-        bill_color="#FF8A20")}
+        dark_color="#9E6A00",
+        bill_color="#E06418")}
 
-  <!-- Wordmark on dark panel -->
+  <!-- Wordmark -->
   <text x="234" y="122"
         font-family="{FONT}" font-size="80" font-weight="700"
         letter-spacing="-2">
-    <tspan fill="#F5EAE0">quack</tspan><tspan fill="#FF6644">-rs</tspan>
+    <tspan fill="{TEXT_LT}">quack</tspan><tspan fill="#D4563C">-rs</tspan>
   </text>
 
-  <!-- Tagline — fixed contrast (#907060 vs old near-invisible #5A4040) -->
+  <!-- Tagline — warm slate, readable -->
   <text x="236" y="151"
         font-family="{FONT}" font-size="15" font-weight="400"
-        letter-spacing="2.0" fill="#907060">DUCKDB · EXTENSIONS</text>
+        letter-spacing="2.0" fill="#7A8898">DUCKDB · EXTENSIONS</text>
 </svg>"""
     _save(svg, "logo4-rust-split")
 
