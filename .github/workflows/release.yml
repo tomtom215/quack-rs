@@ -222,7 +222,7 @@ jobs:
       # SLSA Level 2 build provenance — creates a signed attestation linking
       # the .crate artifact to this workflow run, verifiable with `gh attestation verify`.
       - name: Attest build provenance (SLSA)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: target/package/*.crate
 
