@@ -23,8 +23,8 @@ When DuckDB loads your extension, it:
 macro generates the required `#[no_mangle] extern "C"` symbol:
 
 ```rust
-entry_point!(my_extension, |con| register(con));
-// generates: pub unsafe extern "C" fn my_extension_init_c_api(...)
+entry_point!(my_extension_init_c_api, |con| register(con));
+// emits: #[no_mangle] pub unsafe extern "C" fn my_extension_init_c_api(...)
 ```
 
 ---
@@ -36,11 +36,11 @@ If the symbol is missing or misnamed, DuckDB fails to load the extension.
 
 ```
 Extension name: "word_count_ext"
-Expected symbol: word_count_ext_init_c_api
+Required symbol: word_count_ext_init_c_api
 ```
 
-The `entry_point!` macro uses the [`paste`](https://docs.rs/paste) crate to concatenate
-`{name}_init_c_api` at compile time, so the symbol is always correct.
+Pass the full symbol name to `entry_point!`. This keeps the exported name explicit and
+visible at the call site — no hidden identifier manipulation at compile time.
 
 ---
 

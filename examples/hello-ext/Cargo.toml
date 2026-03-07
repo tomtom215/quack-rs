@@ -2,7 +2,10 @@
 name = "hello-ext"
 version = "0.1.0"
 edition = "2021"
-description = "Example DuckDB community extension built with quack-rs: word_count aggregate"
+rust-version = "1.84.1"
+authors = ["Tom F"]
+license = "MIT"
+description = "Example DuckDB community extension built with quack-rs: word_count + first_word"
 
 [lib]
 name = "hello_ext"

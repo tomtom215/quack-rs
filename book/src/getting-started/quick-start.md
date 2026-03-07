@@ -80,7 +80,7 @@ fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
     Ok(())
 }
 
-entry_point!(my_extension, |con| register(con));
+entry_point!(my_extension_init_c_api, |con| register(con));
 ```
 
 ---

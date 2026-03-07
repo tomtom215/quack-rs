@@ -187,7 +187,7 @@ quack-rs/
 ├── benches/
 │   └── interval_bench.rs          # Criterion benchmarks
 ├── examples/
-│   └── hello-ext/                 # Complete word_count aggregate example
+│   └── hello-ext/                 # Reference example: word_count (aggregate) + first_word (scalar)
 ├── book/                          # mdBook documentation source
 │   ├── src/                       # Markdown pages (this site)
 │   └── theme/custom.css
