@@ -104,6 +104,6 @@ jobs:
         with:
           cache-targets: false
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked --version "0.16.3"
+        run: cargo install cargo-deny --locked --version "0.19.0"
       - name: Run cargo-deny check
         run: cargo deny check
