@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 210" width="660" height="210">
+  <defs>
+    <radialGradient id="dg" cx="58%" cy="32%" r="65%">
+      <stop offset="0%"   stop-color="#FFE87A"/>
+      <stop offset="100%" stop-color="#C08A06"/>
+    </radialGradient>
+    <filter id="ds" x="-25%" y="-25%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12"
+                    flood-color="#000000" flood-opacity="0.50"/>
+    </filter>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#0D1117"/>
+      <stop offset="100%" stop-color="#161B22"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="660" height="210" rx="22" fill="url(#bg)"/>
+
+  <!-- Duck -->
+  <g transform="translate(20,6)">
+  <g filter="url(#ds)">
+    <path d="M 37.4,118.0 C 24.6,101.4 19.0,77.5 31.9,66.5 C 44.8,62.8 52.2,77.5 48.5,97.8 C 44.8,110.6  39.3,116.2  37.4,118.0 Z" fill="url(#dg)" stroke="none"/>
+    <ellipse cx="100.0" cy="118.0" rx="62.6" ry="42.3"
+             transform="rotate(-4,100.0,118.0)"
+             fill="url(#dg)" stroke="none"/>
+    <circle  cx="147.8" cy="79.4" r="29.4"
+             fill="url(#dg)" stroke="none"/>
+    <path d="M 169.9,71.1 Q 205.8,71.1 201.2,80.3 Q 205.8,91.3 169.9,91.3 Q 164.4,79.4 169.9,71.1 Z" fill="#E06010" stroke="none"/>
+    <circle  cx="152.4" cy="70.2" r="6.0" fill="#0D1117" stroke="none"/>
+    <circle  cx="154.7" cy="67.6" r="2.3" fill="white" stroke="none"/>
+    <path d="M 83.4,125.4 Q 116.6,106.0 146.0,125.4"
+          fill="none" stroke="#C88E08" stroke-width="2.6"
+          stroke-linecap="round" opacity="0.55"/>
+  </g></g>
+
+  <!-- Wordmark: quack-rs in one <text> with tspan → no gap -->
+  <text x="224" y="126"
+        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="80" font-weight="800" letter-spacing="-2">
+    <tspan fill="#F0F6FC">quack</tspan><tspan fill="#CE422B">-rs</tspan>
+  </text>
+
+  <!-- Tagline -->
+  <text x="226" y="157"
+        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="17" letter-spacing="2.5" fill="#4B6080">DUCKDB  ·  RUST  ·  FAST</text>
+</svg>

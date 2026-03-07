@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 210" width="660" height="210">
+  <defs>
+    <radialGradient id="dg" cx="55%" cy="28%" r="65%">
+      <stop offset="0%"   stop-color="#FFF0A0"/>
+      <stop offset="100%" stop-color="#E0A010"/>
+    </radialGradient>
+    <filter id="ds" x="-25%" y="-25%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="5" stdDeviation="10"
+                    flood-color="#5A0800" flood-opacity="0.45"/>
+    </filter>
+    <clipPath id="full">
+      <rect width="660" height="210" rx="22"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#full)">
+    <rect x="0"   y="0" width="205" height="210" fill="#B02810"/>
+    <rect x="205" y="0" width="455" height="210" fill="#18100E"/>
+  </g>
+  <!-- Clean edge between the two blocks -->
+  <line x1="205" y1="0" x2="205" y2="210" stroke="#7A1808" stroke-width="1.5"/>
+
+  <!-- Duck spanning both colour blocks -->
+  <g transform="translate(10,5)">
+  <g filter="url(#ds)">
+    <path d="M 42.4,118.0 C 29.6,101.4 24.0,77.5 36.9,66.5 C 49.8,62.8 57.2,77.5 53.5,97.8 C 49.8,110.6  44.3,116.2  42.4,118.0 Z" fill="url(#dg)" stroke="none"/>
+    <ellipse cx="105.0" cy="118.0" rx="62.6" ry="42.3"
+             transform="rotate(-4,105.0,118.0)"
+             fill="url(#dg)" stroke="none"/>
+    <circle  cx="152.8" cy="79.4" r="29.4"
+             fill="url(#dg)" stroke="none"/>
+    <path d="M 174.9,71.1 Q 210.8,71.1 206.2,80.3 Q 210.8,91.3 174.9,91.3 Q 169.4,79.4 174.9,71.1 Z" fill="#FF9020" stroke="none"/>
+    <circle  cx="157.4" cy="70.2" r="6.0" fill="#0D1117" stroke="none"/>
+    <circle  cx="159.7" cy="67.6" r="2.3" fill="white" stroke="none"/>
+    <path d="M 88.4,125.4 Q 121.6,106.0 151.0,125.4"
+          fill="none" stroke="#C8A020" stroke-width="2.6"
+          stroke-linecap="round" opacity="0.55"/>
+  </g></g>
+
+  <!-- Wordmark on dark panel -->
+  <text x="228" y="126"
+        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="80" font-weight="800" letter-spacing="-2">
+    <tspan fill="#F0E0D8">quack</tspan><tspan fill="#FF6644">-rs</tspan>
+  </text>
+
+  <text x="230" y="158"
+        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
+        font-size="16" letter-spacing="2" fill="#5A4040">DUCKDB  ·  EXTENSIONS</text>
+</svg>
