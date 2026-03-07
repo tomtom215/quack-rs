@@ -1,0 +1,34 @@
+[book]
+title = "quack-rs"
+authors = ["Tom F."]
+language = "en"
+multilingual = false
+src = "book/src"
+
+[build]
+build-dir = "book/book"
+create-missing = false
+
+[output.html]
+site-url = "/quack-rs/"
+git-repository-url = "https://github.com/tomtom215/quack-rs"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/tomtom215/quack-rs/edit/main/{path}"
+additional-css = ["book/theme/custom.css"]
+no-section-label = false
+cname = ""
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+copy-js = true
+
+[output.html.fold]
+enable = false

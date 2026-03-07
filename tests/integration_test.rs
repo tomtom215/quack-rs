@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community and encouraging more Rust development!
+
 //! Integration tests for `quack-rs`.
 //!
 //! # Why no `duckdb::Connection` here?
@@ -15,6 +19,7 @@
 
 use quack_rs::aggregate::AggregateState;
 use quack_rs::interval::{interval_to_micros, interval_to_micros_saturating, DuckInterval};
+use quack_rs::sql_macro::{MacroBody, SqlMacro};
 use quack_rs::types::TypeId;
 
 // ---------------------------------------------------------------------------
@@ -404,4 +409,101 @@ fn duck_string_view_empty_string() {
     let view = DuckStringView::from_bytes(&bytes);
     assert_eq!(view.len(), 0);
     assert!(view.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// SqlMacro pure-Rust tests (no DuckDB connection required)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sql_macro_scalar_to_sql_no_params() {
+    let m = SqlMacro::scalar("pi", &[], "3.14159265358979").unwrap();
+    assert_eq!(
+        m.to_sql(),
+        "CREATE OR REPLACE MACRO pi() AS (3.14159265358979)"
+    );
+}
+
+#[test]
+fn sql_macro_scalar_to_sql_multiple_params() {
+    let m = SqlMacro::scalar("add", &["a", "b"], "a + b").unwrap();
+    assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO add(a, b) AS (a + b)");
+}
+
+#[test]
+fn sql_macro_scalar_clamp_to_sql() {
+    let m = SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))").unwrap();
+    assert_eq!(
+        m.to_sql(),
+        "CREATE OR REPLACE MACRO clamp(x, lo, hi) AS (greatest(lo, least(hi, x)))"
+    );
+}
+
+#[test]
+fn sql_macro_table_to_sql() {
+    let m = SqlMacro::table(
+        "active_rows",
+        &["tbl"],
+        "SELECT * FROM tbl WHERE active = true",
+    )
+    .unwrap();
+    assert_eq!(
+        m.to_sql(),
+        "CREATE OR REPLACE MACRO active_rows(tbl) AS TABLE SELECT * FROM tbl WHERE active = true"
+    );
+}
+
+#[test]
+fn sql_macro_invalid_name_rejected() {
+    assert!(SqlMacro::scalar("MyMacro", &[], "1").is_err());
+    assert!(SqlMacro::scalar("my-macro", &[], "1").is_err());
+    assert!(SqlMacro::scalar("", &[], "1").is_err());
+    assert!(SqlMacro::scalar("1func", &[], "1").is_err());
+}
+
+#[test]
+fn sql_macro_invalid_param_rejected() {
+    assert!(SqlMacro::scalar("f", &["BadParam"], "1").is_err());
+    assert!(SqlMacro::scalar("f", &["a-b"], "1").is_err());
+    assert!(SqlMacro::scalar("f", &[""], "1").is_err());
+}
+
+#[test]
+fn sql_macro_valid_underscore_param() {
+    assert!(SqlMacro::scalar("f", &["_x", "_y"], "1").is_ok());
+}
+
+#[test]
+fn sql_macro_name_and_params_accessors() {
+    let m = SqlMacro::scalar("my_fn", &["a", "b"], "a + b").unwrap();
+    assert_eq!(m.name(), "my_fn");
+    assert_eq!(m.params(), ["a", "b"]);
+}
+
+#[test]
+fn sql_macro_body_accessor_scalar() {
+    let m = SqlMacro::scalar("f", &["x"], "x * 2").unwrap();
+    assert_eq!(m.body(), &MacroBody::Scalar("x * 2".to_string()));
+}
+
+#[test]
+fn sql_macro_body_accessor_table() {
+    let m = SqlMacro::table("t", &[], "SELECT 42 AS answer").unwrap();
+    assert_eq!(
+        m.body(),
+        &MacroBody::Table("SELECT 42 AS answer".to_string())
+    );
+}
+
+#[test]
+fn sql_macro_clone_produces_equal_sql() {
+    let m = SqlMacro::scalar("f", &["x"], "x + 1").unwrap();
+    let m2 = m.clone();
+    assert_eq!(m.to_sql(), m2.to_sql());
+}
+
+#[test]
+fn sql_macro_error_mentions_bad_param_name() {
+    let err = SqlMacro::scalar("f", &["Bad"], "1").unwrap_err();
+    assert!(err.as_str().contains("Bad"));
 }

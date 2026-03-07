@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community and encouraging more Rust development!
+
 //! `DuckDB` `INTERVAL` type conversion utilities.
 //!
 //! A `DuckDB` `INTERVAL` is a 16-byte struct with three fields:

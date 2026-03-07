@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community and encouraging more Rust development!
+
 //! # quack-rs
 //!
 //! A production-grade Rust SDK for building `DuckDB` loadable extensions.
@@ -42,6 +46,7 @@
 //! | [`entry_point`](mod@entry_point) | Helper for the correct `{name}_init_c_api` C entry point |
 //! | [`aggregate`] | Builders for aggregate function registration |
 //! | [`scalar`] | Builder for scalar function registration |
+//! | [`sql_macro`] | SQL macro registration (`CREATE MACRO`) — no FFI callbacks |
 //! | [`vector`] | Safe helpers for reading/writing `DuckDB` data vectors |
 //! | [`types`] | `DuckDB` type system wrappers (`TypeId`, `LogicalType`) |
 //! | [`interval`] | `INTERVAL` → microseconds conversion with overflow checking |
@@ -89,6 +94,7 @@ pub mod error;
 pub mod interval;
 pub mod scaffold;
 pub mod scalar;
+pub mod sql_macro;
 pub mod testing;
 pub mod types;
 pub mod validate;

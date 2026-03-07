@@ -1062,9 +1062,30 @@ safe FFI wrappers, but cannot make security guarantees about your extension's lo
 
 **Q: Can I expose SQL macros as an extension?**
 
-Yes. Writing macros in SQL and packaging them as a DuckDB extension is well-established
-(see `pivot_table` and `chsql`). This currently requires some C++ wrapper code, but is one
-of the simplest extension patterns.
+Yes, and quack-rs makes this pure Rust — no C++ required. Use `SqlMacro` from the
+[`sql_macro`] module to declare scalar and table macros and register them via
+`CREATE OR REPLACE MACRO` during extension initialization:
+
+```rust
+use quack_rs::sql_macro::SqlMacro;
+
+fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
+    unsafe {
+        // Scalar macro: clamp(x, lo, hi)
+        SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))")?
+            .register(con)?;
+
+        // Table macro: active_rows(tbl)
+        SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM tbl WHERE active = true")?
+            .register(con)?;
+    }
+    Ok(())
+}
+```
+
+Call `SqlMacro::to_sql()` to inspect the generated `CREATE OR REPLACE MACRO` statement
+without a live connection. This pattern is well-established in extensions like `pivot_table`
+and `chsql`; quack-rs now handles the `duckdb_query` plumbing for you.
 
 **Q: How do I handle naming collisions?**
 

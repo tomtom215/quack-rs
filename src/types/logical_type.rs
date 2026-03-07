@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community and encouraging more Rust development!
+
 //! RAII wrapper for `duckdb_logical_type`.
 //!
 //! # Pitfall L7: `LogicalType` memory leak
