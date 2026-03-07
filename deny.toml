@@ -27,32 +27,6 @@ allow = [
     "OpenSSL",
 ]
 
-# Copyleft licenses that must never appear in any transitive dependency.
-# A crate matching any of these causes the build to fail.
-deny = [
-    "GPL-2.0",
-    "GPL-2.0-only",
-    "GPL-3.0",
-    "GPL-3.0-only",
-    "LGPL-2.0",
-    "LGPL-2.0-only",
-    "LGPL-2.1",
-    "LGPL-2.1-only",
-    "LGPL-3.0",
-    "LGPL-3.0-only",
-    "AGPL-3.0",
-    "AGPL-3.0-only",
-    "EUPL-1.1",
-    "EUPL-1.2",
-]
-
-# Treat unlicensed crates as an error.
-unlicensed = "deny"
-
-# Copyleft-flagged crates that aren't explicitly denied above — warn rather
-# than hard-fail so we catch anything new without blocking CI immediately.
-copyleft = "warn"
-
 # ── Security advisories ───────────────────────────────────────────────────────
 [advisories]
 # RustSec advisory database
