@@ -432,8 +432,7 @@ fn sql_macro_scalar_to_sql_multiple_params() {
 
 #[test]
 fn sql_macro_scalar_clamp_to_sql() {
-    let m =
-        SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))").unwrap();
+    let m = SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))").unwrap();
     assert_eq!(
         m.to_sql(),
         "CREATE OR REPLACE MACRO clamp(x, lo, hi) AS (greatest(lo, least(hi, x)))"
@@ -490,7 +489,10 @@ fn sql_macro_body_accessor_scalar() {
 #[test]
 fn sql_macro_body_accessor_table() {
     let m = SqlMacro::table("t", &[], "SELECT 42 AS answer").unwrap();
-    assert_eq!(m.body(), &MacroBody::Table("SELECT 42 AS answer".to_string()));
+    assert_eq!(
+        m.body(),
+        &MacroBody::Table("SELECT 42 AS answer".to_string())
+    );
 }
 
 #[test]

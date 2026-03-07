@@ -40,7 +40,7 @@
 //! # SQL injection safety
 //!
 //! Macro names and parameter names are validated against
-//! [`validate_function_name`](crate::validate::validate_function_name):
+//! [`validate_function_name`]:
 //! only `[a-z][a-z0-9_]*` identifiers are accepted. These names are
 //! interpolated literally into the generated SQL (no quoting required
 //! because they are already restricted to safe characters).
@@ -107,7 +107,7 @@ impl SqlMacro {
     /// # Errors
     ///
     /// Returns [`ExtensionError`] if `name` or any parameter name is invalid.
-    /// See [`validate_function_name`](crate::validate::validate_function_name)
+    /// See [`validate_function_name`]
     /// for naming rules.
     ///
     /// # Example
@@ -249,9 +249,8 @@ fn validate_name_and_params(
 ) -> Result<(String, Vec<String>), ExtensionError> {
     validate_function_name(name)?;
     for &param in params {
-        validate_function_name(param).map_err(|e| {
-            ExtensionError::new(format!("invalid parameter name '{param}': {e}"))
-        })?;
+        validate_function_name(param)
+            .map_err(|e| ExtensionError::new(format!("invalid parameter name '{param}': {e}")))?;
     }
     Ok((
         name.to_owned(),
