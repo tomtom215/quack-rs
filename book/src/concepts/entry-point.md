@@ -85,6 +85,9 @@ flowchart TD
     A --> B --> C --> D --> E --> F
     F -->|no| G
     F -->|yes| H
+
+    style G fill:#1c3b1c,stroke:#4a9e4a,color:#c8ecc8
+    style H fill:#3b1c1c,stroke:#9e4a4a,color:#ecc8c8
 ```
 
 Errors from step 4 are reported back to DuckDB via `access.set_error` and the function

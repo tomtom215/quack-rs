@@ -22,7 +22,7 @@ flowchart TD
     SIZE["**state_size**()<br/>How many bytes to allocate per group?"]
     INIT["**state_init**(state)<br/>Initialize a fresh state"]
     UPDATE["**update**(chunk, states[])<br/>Process one input batch"]
-    COMBINE["**combine**(src[], tgt[], count)<br/>Merge parallel states<br/>⚠️ target states are always fresh — copy ALL fields"]
+    COMBINE["**combine**(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
     FINAL["**finalize**(states[], out, count)<br/>Write results to output vector"]
     DESTROY["**state_destroy**(states[], count)<br/>Free memory"]
 

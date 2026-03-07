@@ -481,27 +481,52 @@ assert!(err.as_str().contains("panic"));
 ### Module dependency graph
 
 ```mermaid
-graph TD
-    Author(["**Extension Author**<br/>use quack_rs::prelude::*"])
+flowchart TB
+    Author(["**Extension Author**<br/>use quack_rs::prelude::*"]):::author
 
-    Author --> EP[entry_point]
-    Author --> AS["aggregate / scalar"]
-    Author --> SM[sql_macro]
+    subgraph RUNTIME ["Runtime path · runs inside the DuckDB process"]
+        direction TB
 
-    EP  --> VTI["vector / types / interval"]
-    AS  --> VTI
-    SM  --> VTI
+        subgraph REG ["Registration layer"]
+            direction LR
+            EP["**entry_point**<br/>entry_point! · init_extension"]
+            AGG["**aggregate**<br/>AggregateFunctionBuilder<br/>AggregateFunctionSetBuilder · FfiState&lt;T&gt;"]
+            SCL["**scalar**<br/>ScalarFunctionBuilder"]
+            SM["**sql_macro**<br/>SqlMacro · MacroBody"]
+        end
 
-    VTI --> SYS["libduckdb-sys<br/>C Extension API"]
-    SYS --> RT[DuckDB runtime]
+        subgraph DATA ["Data layer"]
+            direction LR
+            VEC["**vector**<br/>VectorReader · VectorWriter<br/>ValidityBitmap · DuckStringView"]
+            TYP["**types**<br/>TypeId · LogicalType"]
+            INT["**interval**<br/>DuckInterval · interval_to_micros"]
+        end
 
-    subgraph util ["Separate from runtime path"]
-        direction LR
-        SCF[scaffold] --> VAL[validate]
-        VAL --> V1["description_yml · extension_name<br/>semver · spdx · platform"]
-        TST[testing] --> T1["AggregateTestHarness<br/>pure Rust · no FFI"]
-        ERR[error]   --> E1["ExtensionError<br/>no DuckDB dependency"]
+        SYS["**libduckdb-sys** =1.4.4 · loadable-extension<br/>DuckDB C Extension API · headers only · no linked library"]:::ffi
     end
+
+    RT[("**DuckDB**<br/>Runtime")]:::duckdb
+
+    subgraph DEV ["Dev-time utilities · zero runtime DuckDB dependency"]
+        direction LR
+        ERR["**error**<br/>ExtensionError · ExtResult&lt;T&gt;"]
+        TST["**testing**<br/>AggregateTestHarness&lt;S&gt;<br/>pure Rust · no FFI"]
+        VAL["**validate**<br/>extension_name · semver · spdx<br/>platform · description_yml"]
+        SCF["**scaffold**<br/>generate_scaffold · ScaffoldConfig"]
+    end
+
+    Author --> EP & AGG & SCL & SM
+    EP  --> VEC & TYP
+    AGG --> VEC & TYP & INT
+    SCL --> VEC & TYP
+    SM  --> TYP
+    VEC & TYP & INT --> SYS
+    SYS --> RT
+    Author -.-> ERR & TST & VAL & SCF
+
+    classDef author fill:#1e3a5f,stroke:#5a9fd4,color:#ddf0ff
+    classDef ffi fill:#3d2406,stroke:#c87941,color:#f5dbb4
+    classDef duckdb fill:#1c3b1c,stroke:#4a9e4a,color:#c8ecc8
 ```
 
 ### Design principles

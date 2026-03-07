@@ -149,20 +149,20 @@ Understanding this lifecycle is essential for writing correct aggregate callback
 
 ```mermaid
 flowchart TD
-    REG["**Registration**<br/>duckdb_register_aggregate_function(con, func)<br/>configures: state_size · state_init · update · combine · finalize · destroy"]
+    REG["**Registration**<br/>duckdb_register_aggregate_function(con, func)<br/>state_size · state_init · update · combine · finalize · destroy"]
 
-    REG    --> ALLOC
-    ALLOC  --> INIT
-    INIT   --> UPDATE
-    UPDATE --> COMBINE
+    REG     --> ALLOC
+    ALLOC   --> INIT
+    INIT    --> UPDATE
+    UPDATE  --> COMBINE
     COMBINE --> FINAL
-    FINAL  --> DESTROY
+    FINAL   --> DESTROY
 
     ALLOC["**Allocate**<br/>DuckDB allocates state_size() bytes per group"]
     INIT["**state_init**(info, state)<br/>Called once per group — FfiState&lt;T&gt; handles this"]
-    UPDATE["**update**(info, chunk, states[])<br/>Called per input batch · states[i] ↔ chunk row i"]
-    COMBINE["**combine**(info, source[], target[], count)<br/>Parallel merge · target states are freshly zero-initialized<br/>⚠️ Pitfall L1: copy ALL config fields from source to target"]
-    FINAL["**finalize**(info, source[], result_vector, count, offset)<br/>Write results to output vector"]
+    UPDATE["**update**(info, chunk, states[])<br/>Process one input batch · states[i] maps to chunk row i"]
+    COMBINE["**combine**(info, source[], target[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: copy ALL config fields from source → target"]
+    FINAL["**finalize**(info, source[], result, count, offset)<br/>Write group results to the output vector"]
     DESTROY["**destroy**(states[], count)<br/>Free heap memory — FfiState&lt;T&gt; handles this"]
 
     style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
