@@ -201,8 +201,8 @@ name = "my_extension"       # Must match description.yml `name`
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-quack_rs = "=0.1.0"          # Pin with = for binary compatibility
-libduckdb-sys = { version = "=1.2.0", features = ["loadable-extension"] }
+quack-rs = "=0.2.0"          # Pin with = for binary compatibility
+libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
 
 [profile.release]
 panic = "abort"              # Required — no stack unwinding in FFI
