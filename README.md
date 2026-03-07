@@ -484,26 +484,22 @@ assert!(err.as_str().contains("panic"));
 flowchart TB
     Author(["**Extension Author**<br/>use quack_rs::prelude::*"]):::author
 
-    subgraph RUNTIME ["Runtime path · runs inside the DuckDB process"]
-        direction TB
-
-        subgraph REG ["Registration layer"]
-            direction LR
-            EP["**entry_point**<br/>entry_point! · init_extension"]
-            AGG["**aggregate**<br/>AggregateFunctionBuilder<br/>AggregateFunctionSetBuilder · FfiState&lt;T&gt;"]
-            SCL["**scalar**<br/>ScalarFunctionBuilder"]
-            SM["**sql_macro**<br/>SqlMacro · MacroBody"]
-        end
-
-        subgraph DATA ["Data layer"]
-            direction LR
-            VEC["**vector**<br/>VectorReader · VectorWriter<br/>ValidityBitmap · DuckStringView"]
-            TYP["**types**<br/>TypeId · LogicalType"]
-            INT["**interval**<br/>DuckInterval · interval_to_micros"]
-        end
-
-        SYS["**libduckdb-sys** =1.4.4 · loadable-extension<br/>DuckDB C Extension API · headers only · no linked library"]:::ffi
+    subgraph REG ["Registration layer"]
+        direction LR
+        EP["**entry_point**<br/>entry_point! · init_extension"]
+        AGG["**aggregate**<br/>AggregateFunctionBuilder<br/>AggregateFunctionSetBuilder · FfiState&lt;T&gt;"]
+        SCL["**scalar**<br/>ScalarFunctionBuilder"]
+        SM["**sql_macro**<br/>SqlMacro · MacroBody"]
     end
+
+    subgraph DATA ["Data layer"]
+        direction LR
+        VEC["**vector**<br/>VectorReader · VectorWriter<br/>ValidityBitmap · DuckStringView"]
+        TYP["**types**<br/>TypeId · LogicalType"]
+        INT["**interval**<br/>DuckInterval · interval_to_micros"]
+    end
+
+    SYS["**libduckdb-sys** =1.4.4<br/>DuckDB C Extension API · headers only · no linked library"]:::ffi
 
     RT[("**DuckDB**<br/>Runtime")]:::duckdb
 
@@ -515,14 +511,11 @@ flowchart TB
         SCF["**scaffold**<br/>generate_scaffold · ScaffoldConfig"]
     end
 
-    Author --> EP & AGG & SCL & SM
-    EP  --> VEC & TYP
-    AGG --> VEC & TYP & INT
-    SCL --> VEC & TYP
-    SM  --> TYP
-    VEC & TYP & INT --> SYS
-    SYS --> RT
-    Author -.-> ERR & TST & VAL & SCF
+    Author --> REG
+    REG    --> DATA
+    DATA   --> SYS
+    SYS    --> RT
+    Author -.->|"dev-time"| DEV
 
     classDef author fill:#1e3a5f,stroke:#5a9fd4,color:#ddf0ff
     classDef ffi fill:#3d2406,stroke:#c87941,color:#f5dbb4
