@@ -1,0 +1,391 @@
+# Release pipeline for quack-rs
+#
+# Triggered by pushing a semver tag (e.g. `git tag -s v0.3.0 && git push origin v0.3.0`).
+# See RELEASING.md for the complete release runbook.
+#
+# Job dependency graph:
+#
+#   validate ──┬──► ci (matrix) ──┬──► package ──────► github-release ──► publish
+#              └──► security ─────┘                                         (crates-io env)
+#              └──► publish-dry-run ──────────────────────────────────────►/
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"        # stable:     v1.2.3
+      - "v[0-9]+.[0-9]+.[0-9]+-*"      # pre-release: v1.2.3-alpha.1
+
+# Prevent concurrent releases for the same ref.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Minimal default — individual jobs escalate only what they need.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUSTDOCFLAGS: "-D warnings"
+
+# ── Job 1: Validate tag & extract metadata ────────────────────────────────────
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version:       ${{ steps.meta.outputs.version }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      crate_name:    ${{ steps.meta.outputs.crate_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Extract version metadata
+        id: meta
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+
+          echo "::group::Tag metadata"
+          printf 'Tag:        %s\n' "$TAG"
+          printf 'Version:    %s\n' "$VERSION"
+
+          # Validate semver (X.Y.Z with optional pre-release and build metadata)
+          SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?(\+[A-Za-z0-9.]+)?$'
+          if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
+            echo "::error::Tag '$TAG' is not a valid semantic version."
+            echo "Expected format: vX.Y.Z  or  vX.Y.Z-pre.1"
+            exit 1
+          fi
+
+          # Detect pre-release (contains a hyphen after X.Y.Z)
+          if [[ "$VERSION" =~ - ]]; then
+            IS_PRE=true
+          else
+            IS_PRE=false
+          fi
+
+          CRATE_NAME=$(grep '^name = ' Cargo.toml | head -1 | sed 's/name = "\(.*\)"/\1/')
+
+          printf 'Crate:      %s\n' "$CRATE_NAME"
+          printf 'Pre-release:%s\n' "$IS_PRE"
+          echo "::endgroup::"
+
+          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRE"  >> "$GITHUB_OUTPUT"
+          echo "crate_name=$CRATE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Cargo.toml version matches tag
+        shell: bash
+        run: |
+          CARGO_VER=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          TAG_VER="${{ steps.meta.outputs.version }}"
+
+          echo "::group::Version consistency"
+          printf 'Cargo.toml: %s\n' "$CARGO_VER"
+          printf 'Tag:        %s\n' "$TAG_VER"
+          echo "::endgroup::"
+
+          if [[ "$CARGO_VER" != "$TAG_VER" ]]; then
+            echo "::error file=Cargo.toml::Cargo.toml version ($CARGO_VER) != tag ($TAG_VER)."
+            echo "Update Cargo.toml to match the tag before releasing."
+            exit 1
+          fi
+          echo "::notice::Cargo.toml and tag versions agree: $CARGO_VER"
+
+      - name: Verify CHANGELOG entry exists
+        shell: bash
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+
+          if ! grep -qE "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::No '## [$VERSION]' entry in CHANGELOG.md."
+            echo "Add release notes before tagging."
+            exit 1
+          fi
+          echo "::notice::CHANGELOG.md entry found for v$VERSION"
+
+# ── Job 2: Full CI gate (parallel matrix) ────────────────────────────────────
+  ci:
+    name: CI / ${{ matrix.name }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: "test · Linux"
+            os: ubuntu-latest
+            toolchain: stable
+            command: cargo test --all-targets --all-features
+          - name: "test · macOS"
+            os: macos-latest
+            toolchain: stable
+            command: cargo test --all-targets --all-features
+          - name: "test · Windows"
+            os: windows-latest
+            toolchain: stable
+            command: cargo test --all-targets --all-features
+          - name: "clippy"
+            os: ubuntu-latest
+            toolchain: stable
+            components: clippy
+            command: cargo clippy --all-targets -- -D warnings
+          - name: "fmt"
+            os: ubuntu-latest
+            toolchain: stable
+            components: rustfmt
+            command: cargo fmt -- --check
+          - name: "doc"
+            os: ubuntu-latest
+            toolchain: stable
+            command: cargo doc --no-deps
+          - name: "MSRV 1.84.1"
+            os: ubuntu-latest
+            toolchain: "1.84.1"
+            command: cargo check
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: ${{ matrix.components || '' }}
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.command }}
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+# ── Job 3: Security audit ─────────────────────────────────────────────────────
+  security:
+    name: Security audit (cargo-deny)
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          cache-targets: false
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version "0.16.3"
+      - name: Run cargo-deny
+        run: |
+          echo "::group::cargo deny check"
+          cargo deny check
+          echo "::endgroup::"
+          echo "::notice::No license, advisory, or source policy violations found"
+
+# ── Job 4: Package crate and generate provenance ─────────────────────────────
+  package:
+    name: Package and attest
+    needs: [ci, security]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write      # OIDC token for SLSA attestation
+      attestations: write  # write attestation to the repository
+    outputs:
+      crate_file: ${{ steps.pkg.outputs.crate_file }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+
+      - name: cargo package
+        id: pkg
+        shell: bash
+        run: |
+          echo "::group::Package contents (files included in .crate)"
+          cargo package --list --no-verify
+          echo "::endgroup::"
+
+          echo "::group::Build .crate archive"
+          cargo package --no-verify
+          echo "::endgroup::"
+
+          CRATE_FILE=$(ls target/package/*.crate)
+          CRATE_SIZE=$(wc -c < "$CRATE_FILE")
+          echo "crate_file=$CRATE_FILE" >> "$GITHUB_OUTPUT"
+          printf '::notice::Packaged %s (%s bytes)\n' "$(basename "$CRATE_FILE")" "$CRATE_SIZE"
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          cd target/package
+          sha256sum ./*.crate | tee SHA256SUMS
+          echo "::notice::SHA-256 checksums written to SHA256SUMS"
+
+      # SLSA Level 2 build provenance — creates a signed attestation linking
+      # the .crate artifact to this workflow run, verifiable with `gh attestation verify`.
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/package/*.crate
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            target/package/*.crate
+            target/package/SHA256SUMS
+          retention-days: 90
+          if-no-files-found: error
+
+# ── Job 5: Publish dry-run (validates package is publishable) ─────────────────
+  publish-dry-run:
+    name: Publish dry-run
+    needs: [ci, security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - name: cargo publish --dry-run
+        shell: bash
+        run: |
+          echo "::group::cargo publish --dry-run"
+          cargo publish --dry-run
+          echo "::endgroup::"
+          echo "::notice::Dry-run succeeded — package passes crates.io validation"
+
+# ── Job 6: Create GitHub release with artifacts & release notes ───────────────
+  github-release:
+    name: Create GitHub release
+    needs: [validate, package, publish-dry-run]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create release, upload assets
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: release-artifacts/
+
+      - name: Extract CHANGELOG section for this version
+        id: notes
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+
+          echo "::group::Extracting release notes for v$VERSION"
+
+          # Extract everything between ## [VERSION] and the next ## [ heading
+          awk "
+            /^## \[$VERSION\]/ { found=1; next }
+            found && /^## \[/  { exit }
+            found              { print }
+          " CHANGELOG.md > release_notes.md
+
+          if [[ ! -s release_notes.md ]]; then
+            echo "::error::Empty release notes extracted for $VERSION"
+            echo "Ensure CHANGELOG.md has a non-empty ## [$VERSION] section."
+            exit 1
+          fi
+
+          echo "Release notes preview:"
+          cat release_notes.md
+          echo "::endgroup::"
+
+      - name: List release artifacts
+        shell: bash
+        run: |
+          echo "::group::Artifacts to attach"
+          ls -lh release-artifacts/
+          echo "::endgroup::"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          IS_PRE="${{ needs.validate.outputs.is_prerelease }}"
+          CRATE="${{ needs.validate.outputs.crate_name }}"
+
+          PRE_FLAG=""
+          [[ "$IS_PRE" == "true" ]] && PRE_FLAG="--prerelease"
+
+          echo "::group::Creating GitHub release v$VERSION"
+          gh release create "v${VERSION}" \
+            $PRE_FLAG \
+            --title "${CRATE} v${VERSION}" \
+            --notes-file release_notes.md \
+            release-artifacts/*.crate \
+            release-artifacts/SHA256SUMS
+          echo "::endgroup::"
+
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/v${VERSION}"
+          echo "::notice::GitHub release created: $RELEASE_URL"
+
+          # ── Step summary ──────────────────────────────────────────────────
+          {
+            echo "## Release v${VERSION} created"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Version | \`${VERSION}\` |"
+            echo "| Pre-release | \`${IS_PRE}\` |"
+            echo "| Crate | \`${CRATE}\` |"
+            echo "| GitHub Release | [v${VERSION}](${RELEASE_URL}) |"
+            echo ""
+            echo "### Artifacts"
+            echo "\`\`\`"
+            ls -lh release-artifacts/
+            echo "\`\`\`"
+            echo ""
+            echo "### Next step"
+            echo "Approve the **crates-io** deployment environment to publish to crates.io."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+# ── Job 7: Publish to crates.io (protected environment, requires approval) ────
+  publish:
+    name: Publish to crates.io
+    needs: [validate, github-release]
+    runs-on: ubuntu-latest
+    # The 'crates-io' environment requires a manual approval step.
+    # Configure it at: Settings → Environments → crates-io → Required reviewers
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/${{ needs.validate.outputs.crate_name }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          CRATE="${{ needs.validate.outputs.crate_name }}"
+
+          echo "::group::cargo publish — $CRATE v$VERSION"
+          cargo publish
+          echo "::endgroup::"
+
+          CRATES_URL="https://crates.io/crates/${CRATE}/${VERSION}"
+          DOCS_URL="https://docs.rs/${CRATE}/${VERSION}"
+          echo "::notice::Published $CRATE v$VERSION to crates.io"
+
+          # ── Step summary ──────────────────────────────────────────────────
+          {
+            echo "## Published to crates.io"
+            echo ""
+            echo "| Link | URL |"
+            echo "|------|-----|"
+            echo "| crates.io | [${CRATE} v${VERSION}](${CRATES_URL}) |"
+            echo "| docs.rs   | [${CRATE} v${VERSION}](${DOCS_URL}) |"
+            echo ""
+            echo "> docs.rs may take a few minutes to build and index the documentation."
+          } >> "$GITHUB_STEP_SUMMARY"

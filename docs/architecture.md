@@ -147,21 +147,25 @@ then use `AggregateTestHarness` to simulate the aggregate lifecycle.
 
 Understanding this lifecycle is essential for writing correct aggregate callbacks.
 
-```
-Registration time:
-  duckdb_register_aggregate_function(con, func)
-    └── func configured with: state_size, state_init, update, combine, finalize, destroy
+```mermaid
+flowchart TD
+    REG["**Registration**<br/>duckdb_register_aggregate_function(con, func)<br/>state_size · state_init · update · combine · finalize · destroy"]
 
-Query execution:
-  1. For each group, DuckDB allocates state_size() bytes.
-  2. state_init(info, state) — called once per group allocation.
-  3. update(info, chunk, states[]) — called per input batch.
-     states[i] corresponds to chunk row i.
-  4. combine(info, source[], target[], count) — called during parallel merge.
-     CRITICAL (Pitfall L1): target states are fresh (zero-initialized via state_init).
-     Your combine MUST copy ALL configuration fields from source to target.
-  5. finalize(info, source[], result_vector, count, offset) — write results.
-  6. destroy(states[], count) — free heap memory.
+    REG     --> ALLOC
+    ALLOC   --> INIT
+    INIT    --> UPDATE
+    UPDATE  --> COMBINE
+    COMBINE --> FINAL
+    FINAL   --> DESTROY
+
+    ALLOC["**Allocate**<br/>DuckDB allocates state_size() bytes per group"]
+    INIT["**state_init**(info, state)<br/>Called once per group — FfiState&lt;T&gt; handles this"]
+    UPDATE["**update**(info, chunk, states[])<br/>Process one input batch · states[i] maps to chunk row i"]
+    COMBINE["**combine**(info, source[], target[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: copy ALL config fields from source → target"]
+    FINAL["**finalize**(info, source[], result, count, offset)<br/>Write group results to the output vector"]
+    DESTROY["**destroy**(states[], count)<br/>Free heap memory — FfiState&lt;T&gt; handles this"]
+
+    style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```
 
 The `FfiState<T>` wrapper handles steps 2 and 6 automatically. Your callbacks

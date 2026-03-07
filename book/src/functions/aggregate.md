@@ -8,17 +8,25 @@ step that merges partial results from parallel workers.
 
 ## The aggregate lifecycle
 
-```
-Registration:
-  AggregateFunctionBuilder → duckdb_register_aggregate_function
+```mermaid
+flowchart TD
+    REG["**Registration**<br/>AggregateFunctionBuilder<br/>→ duckdb_register_aggregate_function"]
 
-Query execution (per group):
-  1. state_size()         → how many bytes to allocate?
-  2. state_init(state)    → initialize a fresh state
-  3. update(chunk, states[]) → process one input batch
-  4. combine(src[], tgt[], count) → merge parallel states
-  5. finalize(states[], out, count) → write results
-  6. state_destroy(states[], count) → free memory
+    REG     --> SIZE
+    SIZE    --> INIT
+    INIT    --> UPDATE
+    UPDATE  --> COMBINE
+    COMBINE --> FINAL
+    FINAL   --> DESTROY
+
+    SIZE["**state_size**()<br/>How many bytes to allocate per group?"]
+    INIT["**state_init**(state)<br/>Initialize a fresh state"]
+    UPDATE["**update**(chunk, states[])<br/>Process one input batch"]
+    COMBINE["**combine**(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
+    FINAL["**finalize**(states[], out, count)<br/>Write results to output vector"]
+    DESTROY["**state_destroy**(states[], count)<br/>Free memory"]
+
+    style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```
 
 DuckDB may call `combine` multiple times as it merges results from parallel segments.

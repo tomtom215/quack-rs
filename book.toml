@@ -15,6 +15,7 @@ git-repository-url = "https://github.com/tomtom215/quack-rs"
 git-repository-icon = "fa-github"
 edit-url-template = "https://github.com/tomtom215/quack-rs/edit/main/{path}"
 additional-css = ["book/theme/custom.css"]
+additional-js = ["book/theme/mermaid-loader.js"]
 no-section-label = false
 cname = ""
 

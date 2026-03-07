@@ -1,0 +1,16 @@
+# CODEOWNERS for quack-rs
+#
+# Each line is a file pattern followed by one or more owners.
+# Owners are automatically requested for review when a pull request
+# touches the matching files.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+* @tomtom215
+
+# Release and security infrastructure — require explicit maintainer review
+/.github/workflows/release.yml   @tomtom215
+/RELEASING.md                    @tomtom215
+/SECURITY.md                     @tomtom215
+/deny.toml                       @tomtom215
+/Cargo.toml                      @tomtom215

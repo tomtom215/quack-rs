@@ -1,5 +1,7 @@
 # quack-rs
 
+**/ˈkwækərz/** — rhymes with *crackers*; inspired by DuckDB
+
 [![CI](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/quack-rs.svg)](https://crates.io/crates/quack-rs)
 [![docs.rs](https://img.shields.io/docsrs/quack-rs)](https://docs.rs/quack-rs)
@@ -69,6 +71,8 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 ---
 
 ## What quack-rs Solves
+
+Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, bringing Rust extension development to parity with C++ in the DuckDB open-source ecosystem.
 
 `quack-rs` encapsulates **15 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
@@ -480,34 +484,46 @@ assert!(err.as_str().contains("panic"));
 
 ### Module dependency graph
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Extension Author                     │
-│                      use quack_rs::prelude::*               │
-└───────────────────────┬─────────────────────────────────────┘
-                        │
-          ┌─────────────┼──────────────────┐
-          ▼             ▼                  ▼
-    entry_point    aggregate/scalar    sql_macro
-          │             │                  │
-          └──────────── ┼──────────────────┘
-                        ▼
-                  vector / types / interval
-                        │
-                        ▼
-              libduckdb-sys (C Extension API)
-                        │
-                        ▼
-                  DuckDB runtime
-```
+```mermaid
+flowchart TB
+    Author(["**Extension Author**<br/>use quack_rs::prelude::*"]):::author
 
-**Separate from the runtime path:**
+    subgraph REG ["Registration layer"]
+        direction LR
+        EP["**entry_point**<br/>entry_point! · init_extension"]
+        AGG["**aggregate**<br/>AggregateFunctionBuilder<br/>AggregateFunctionSetBuilder · FfiState&lt;T&gt;"]
+        SCL["**scalar**<br/>ScalarFunctionBuilder"]
+        SM["**sql_macro**<br/>SqlMacro · MacroBody"]
+    end
 
-```
-    validate ─────── description_yml, extension_name, semver, spdx, platform
-    scaffold ─────── generate_scaffold (uses validate)
-    testing  ─────── AggregateTestHarness (pure Rust, no FFI)
-    error    ─────── ExtensionError (no DuckDB dependency)
+    subgraph DATA ["Data layer"]
+        direction LR
+        VEC["**vector**<br/>VectorReader · VectorWriter<br/>ValidityBitmap · DuckStringView"]
+        TYP["**types**<br/>TypeId · LogicalType"]
+        INT["**interval**<br/>DuckInterval · interval_to_micros"]
+    end
+
+    SYS["**libduckdb-sys** =1.4.4<br/>DuckDB C Extension API<br/>headers only · no linked library"]:::ffi
+
+    RT[("**DuckDB**<br/>Runtime")]:::duckdb
+
+    subgraph DEV ["Dev-time utilities"]
+        direction LR
+        ERR["**error**<br/>ExtensionError · ExtResult&lt;T&gt;"]
+        TST["**testing**<br/>AggregateTestHarness&lt;S&gt;<br/>pure Rust · no FFI"]
+        VAL["**validate**<br/>extension_name · semver<br/>spdx · platform<br/>description_yml"]
+        SCF["**scaffold**<br/>generate_scaffold<br/>ScaffoldConfig"]
+    end
+
+    Author --> REG
+    REG    --> DATA
+    DATA   --> SYS
+    SYS    --> RT
+    Author -.->|"dev-time"| DEV
+
+    classDef author fill:#1e3a5f,stroke:#5a9fd4,color:#ddf0ff
+    classDef ffi fill:#3d2406,stroke:#c87941,color:#f5dbb4
+    classDef duckdb fill:#1c3b1c,stroke:#4a9e4a,color:#c8ecc8
 ```
 
 ### Design principles

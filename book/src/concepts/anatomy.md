@@ -67,12 +67,15 @@ lifecycle in pure Rust, with zero DuckDB API calls.
 
 ## Dependency model
 
-```
-your-extension
-├── quack-rs
-│   └── libduckdb-sys =1.4.4 { loadable-extension }
-│           (headers only — no bundled DuckDB library)
-└── libduckdb-sys =1.4.4 { loadable-extension }
+```mermaid
+graph TD
+    EXT["your-extension"]
+    QR["quack-rs"]
+    LDS["libduckdb-sys =1.4.4<br/>{loadable-extension}<br/>(headers only — no linked library)"]
+
+    EXT --> QR
+    EXT --> LDS
+    QR  --> LDS
 ```
 
 The `loadable-extension` feature produces a shared library that **does not statically link

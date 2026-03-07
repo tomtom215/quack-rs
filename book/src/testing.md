@@ -28,8 +28,11 @@ E2E tests prove the extension actually works inside DuckDB.
 `AggregateTestHarness<S>` simulates the DuckDB aggregate lifecycle in pure Rust
 without any DuckDB dependency:
 
-```
-new() → N × update() → combine() (optional) → finalize()
+```mermaid
+flowchart LR
+    N["new()"] --> U["update() × N"]
+    U --> C["combine() *(optional)*"]
+    C --> F["finalize()"]
 ```
 
 ### Basic usage
@@ -290,7 +293,7 @@ harness properties.
 
 ```toml
 [dev-dependencies]
-quack_rs = { version = "0.1", features = [] }
+quack-rs = { version = "0.2", features = [] }
 proptest = "1"
 ```
 

@@ -94,3 +94,16 @@ jobs:
       - run: cargo check --manifest-path examples/hello-ext/Cargo.toml --all-targets
       - run: cargo clippy --manifest-path examples/hello-ext/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path examples/hello-ext/Cargo.toml
+
+  security:
+    name: Security (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          cache-targets: false
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version "0.19.0"
+      - name: Run cargo-deny check
+        run: cargo deny check

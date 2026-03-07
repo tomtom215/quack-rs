@@ -23,9 +23,10 @@ See the [Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?
 
-quack-rs pins `libduckdb-sys = "=1.2.0"` (the C API version, not the DuckDB
-release version). This corresponds to DuckDB release v1.4.x. The C API version
-string `"v1.2.0"` is available as `quack_rs::DUCKDB_API_VERSION`.
+quack-rs pins `libduckdb-sys = "=1.4.4"` (DuckDB 1.4.x). The C API version
+string passed to the dispatch-table initializer is separately `"v1.2.0"`,
+available as `quack_rs::DUCKDB_API_VERSION`. These are two distinct version
+identifiers — the crate version and the C API protocol version.
 
 ### What is the minimum supported Rust version (MSRV)?
 
@@ -97,7 +98,7 @@ Yes. Pass an empty slice to `param`:
 ```rust
 ScalarFunctionBuilder::new("current_quack")
     .returns(TypeId::Varchar)
-    .callback(quack_callback)
+    .function(quack_callback)
     .register(con)?;
 ```
 
