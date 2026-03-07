@@ -1,5 +1,7 @@
 # quack-rs
 
+**/ˈkwækərz/** — rhymes with *crackers*; inspired by DuckDB
+
 [![CI](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/quack-rs.svg)](https://crates.io/crates/quack-rs)
 [![docs.rs](https://img.shields.io/docsrs/quack-rs)](https://docs.rs/quack-rs)
