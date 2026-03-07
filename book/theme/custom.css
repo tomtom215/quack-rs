@@ -1,0 +1,150 @@
+/* quack-rs documentation — custom theme */
+
+/* ── Typography ─────────────────────────────────────────────────────────── */
+:root {
+  --mono-font: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace,
+    SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+code, kbd, pre {
+  font-family: var(--mono-font);
+  font-size: 0.875em;
+}
+
+/* ── Content width ───────────────────────────────────────────────────────── */
+.content main {
+  max-width: 820px;
+}
+
+/* ── Inline code ─────────────────────────────────────────────────────────── */
+/* light */
+.light code:not(pre > code),
+.rust code:not(pre > code),
+.ayu code:not(pre > code) {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+/* dark */
+.navy code:not(pre > code),
+.coal code:not(pre > code) {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+/* ── Callout boxes ───────────────────────────────────────────────────────── */
+/* Usage: wrap a blockquote with a bold keyword prefix */
+blockquote {
+  border-left: 4px solid #5b9bd5;
+  margin: 1.2em 0;
+  padding: 0.6em 1em;
+  border-radius: 0 4px 4px 0;
+}
+
+.navy blockquote, .coal blockquote {
+  border-left-color: #6ab0de;
+  background: rgba(100, 160, 210, 0.08);
+}
+
+.light blockquote, .rust blockquote {
+  background: rgba(91, 155, 213, 0.07);
+}
+
+.ayu blockquote {
+  border-left-color: #e6b450;
+  background: rgba(230, 180, 80, 0.06);
+}
+
+/* ── Warning callout (> ⚠️ ...) ─────────────────────────────────────────── */
+blockquote:has(p:first-child > strong:first-child) {
+  border-left-color: #e07b39;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+
+th {
+  text-align: left;
+  padding: 8px 12px;
+}
+
+td {
+  padding: 6px 12px;
+}
+
+/* light mode table stripes */
+.light tr:nth-child(even),
+.rust tr:nth-child(even),
+.ayu tr:nth-child(even) {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* dark mode table stripes */
+.navy tr:nth-child(even),
+.coal tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* ── Chapter headers ─────────────────────────────────────────────────────── */
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  border-bottom: 2px solid currentColor;
+  padding-bottom: 0.25em;
+  margin-bottom: 0.75em;
+  opacity: 0.9;
+}
+
+/* ── Nav sidebar ─────────────────────────────────────────────────────────── */
+.chapter li.chapter-item a {
+  padding: 3px 6px;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+/* ── Pitfall badge ───────────────────────────────────────────────────────── */
+.pitfall-badge {
+  display: inline-block;
+  background: #c0392b;
+  color: #fff;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 0.75em;
+  font-family: var(--mono-font);
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+/* ── Safe badge ──────────────────────────────────────────────────────────── */
+.safe-badge {
+  display: inline-block;
+  background: #27ae60;
+  color: #fff;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 0.75em;
+  font-family: var(--mono-font);
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+/* ── Anchor links ────────────────────────────────────────────────────────── */
+a.header {
+  opacity: 0.5;
+  font-size: 0.8em;
+}
+a.header:hover {
+  opacity: 1;
+}
+
+/* ── Print: hide sidebar ─────────────────────────────────────────────────── */
+@media print {
+  nav, .sidebar { display: none !important; }
+}
