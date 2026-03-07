@@ -52,8 +52,10 @@
 //! | [`interval`] | `INTERVAL` → microseconds conversion with overflow checking |
 //! | [`error`] | `ExtensionError` for FFI error propagation |
 //! | [`validate`] | Community extension compliance validators |
+//! | [`validate::description_yml`] | Parse and validate `description.yml` metadata |
 //! | [`scaffold`] | Project generator for new extensions (no C++ glue needed) |
 //! | [`testing`] | Test harness for aggregate state logic |
+//! | [`prelude`] | Convenience re-exports of the most commonly used items |
 //!
 //! ## Safety
 //!
@@ -92,6 +94,7 @@ pub mod aggregate;
 pub mod entry_point;
 pub mod error;
 pub mod interval;
+pub mod prelude;
 pub mod scaffold;
 pub mod scalar;
 pub mod sql_macro;

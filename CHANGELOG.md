@@ -7,12 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-07
+
 ### Added
+
+- **`validate::description_yml` module** — parse and validate a complete `description.yml`
+  metadata file end-to-end. Includes:
+  - `DescriptionYml` struct — structured representation of all required and optional fields
+  - `parse_description_yml(content: &str)` — parse and validate in one step
+  - `validate_description_yml_str(content: &str)` — pass/fail validation
+  - `validate_rust_extension(desc: &DescriptionYml)` — enforce Rust-specific fields
+    (`language: Rust`, `build: cargo`, `requires_toolchains` includes `rust`)
+  - 25+ unit tests covering all required fields, optional fields, error paths, and edge cases
+
+- **`prelude` module** — ergonomic glob-import for the most commonly used items.
+  `use quack_rs::prelude::*;` brings in all builder types, state traits, vector helpers,
+  types, error handling, and the API version constant. Reduces boilerplate for extension authors.
 
 - **Scaffold: `extension_config.cmake` generation** — the scaffold generator now produces
   `extension_config.cmake`, which is referenced by the `EXT_CONFIG` variable in the Makefile
-  and required by `extension-ci-tools` for CI integration. Previously this file was missing,
-  causing `make configure` to fail on fresh scaffolded projects.
+  and required by `extension-ci-tools` for CI integration.
 
 - **Scaffold: SQLLogicTest skeleton** — `generate_scaffold` now produces
   `test/sql/{name}.test`, a ready-to-fill SQLLogicTest file with `require` directive, format
@@ -26,10 +40,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`validate::validate_excluded_platforms_str`** — validates the
   `excluded_platforms` field from `description.yml` as a semicolon-delimited string
   (e.g., `"wasm_mvp;wasm_eh;wasm_threads"`). Splits on `;` and validates each token.
-  An empty string is valid (no exclusions). Exported at the `validate` module level.
+  An empty string is valid (no exclusions).
 
 - **`validate::validate_excluded_platforms`** — re-exported at the `validate` module level
   (previously only accessible as `validate::platform::validate_excluded_platforms`).
+
+- **`validate::semver::classify_extension_version`** — returns `ExtensionStability`
+  (`Unstable`/`PreRelease`/`Stable`) classifying the tier a version falls into.
+
+- **`validate::semver::ExtensionStability`** — enum for DuckDB extension version stability tiers
+  (`Unstable`, `PreRelease`, `Stable`) with `Display` implementation.
+
+- **`scalar` module** — `ScalarFunctionBuilder` for registering scalar functions with the
+  DuckDB C Extension API. Includes `try_new` with name validation, `param`, `returns`,
+  `function` setters, and `register`. Full unit tests included.
+
+- **`entry_point!` macro** — generates the required `#[no_mangle] extern "C"` entry point
+  with zero boilerplate from an identifier and registration closure.
+
+- **`VectorWriter::write_varchar`** — writes VARCHAR string values to output vectors using
+  `duckdb_vector_assign_string_element_len` (handles both inline and pointer formats).
+
+- **`VectorWriter::write_bool`** — writes BOOLEAN values as a single byte.
+
+- **`VectorWriter::write_u16`** — writes USMALLINT values.
+
+- **`VectorWriter::write_i16`** — writes SMALLINT values.
+
+- **`VectorReader::read_interval`** — reads INTERVAL values from input vectors via
+  the correct 16-byte layout helper.
 
 - **CI: Windows testing** — the CI matrix now includes `windows-latest` in the `test` job,
   covering all three major platforms (Linux, macOS, Windows).
@@ -37,29 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI: `example-check` job** — CI now checks, lints, and tests `examples/hello-ext`
   as part of every PR, ensuring the example extension always compiles and its tests pass.
 
-- `validate` module: community extension compliance validators
-  - `validate_extension_name` — enforces `^[a-z][a-z0-9_-]*$` naming rules
-  - `validate_function_name` — enforces SQL-safe identifier rules
-  - `validate_semver` — validates semantic versioning (MAJOR.MINOR.PATCH)
-  - `validate_extension_version` — validates semver or 7+ char git hash
-  - `validate_spdx_license` — validates SPDX license identifiers
-  - `validate_platform` — validates DuckDB build target identifiers
-  - `validate_release_profile` — checks release profile settings for loadable extensions
-  - `semver::classify_extension_version` — returns `VersionClass` (Unstable/PreRelease/Stable)
-- `scalar` module: `ScalarFunctionBuilder` for registering scalar functions
-- `entry_point!` macro for generating the extension entry point with zero boilerplate
-- `VectorWriter::write_varchar` for writing VARCHAR string values to output vectors
-- `VectorWriter::write_bool` for writing BOOLEAN values
-- `VectorWriter::write_u16` for writing USMALLINT values
-- `VectorWriter::write_i16` for writing SMALLINT values
-- `VectorReader::read_interval` for reading INTERVAL values from input vectors
-- `CHANGELOG.md` for tracking releases
-- `SECURITY.md` for vulnerability disclosure policy
+- **`validate::validate_release_profile`** — checks Cargo release profile settings for
+  loadable-extension correctness. Validates `panic`, `lto`, `opt-level`, and `codegen-units`.
 
 ### Fixed
 
-- MSRV documentation now consistently states 1.84.1 across README, CONTRIBUTING.md,
-  and Cargo.toml (previously README said 1.80)
+- MSRV documentation now consistently states 1.84.1 across `README.md`, `CONTRIBUTING.md`,
+  and `Cargo.toml` (previously `README.md` stated 1.80).
 
 ## [0.1.0] - 2025-05-01
 
@@ -75,9 +98,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `interval` module: `DuckInterval`, `interval_to_micros`, `read_interval_at`
 - `error` module: `ExtensionError`, `ExtResult<T>`
 - `testing` module: `AggregateTestHarness<S>` for pure-Rust aggregate testing
+- `validate` module: `validate_extension_name`, `validate_function_name`,
+  `validate_semver`, `validate_extension_version`, `validate_spdx_license`,
+  `validate_platform`, `validate_release_profile`
+- `scaffold` module: `generate_scaffold` for generating complete extension projects
+- `sql_macro` module: `SqlMacro` for registering SQL macros without FFI callbacks
 - Complete `hello-ext` example extension
-- Documentation of all 15 DuckDB Rust FFI pitfalls (LESSONS.md)
+- Documentation of all 15 DuckDB Rust FFI pitfalls (`LESSONS.md`)
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
+- `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tomtom215/quack-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomtom215/quack-rs/releases/tag/v0.1.0
