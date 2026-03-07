@@ -236,7 +236,7 @@ impl SqlMacro {
 
     /// Returns the macro body.
     #[must_use]
-    pub fn body(&self) -> &MacroBody {
+    pub const fn body(&self) -> &MacroBody {
         &self.body
     }
 }
