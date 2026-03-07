@@ -132,16 +132,17 @@ let h = AggregateTestHarness::with_state(initial);
 Scalar logic is pure Rust — test it directly:
 
 ```rust
-// From examples/hello-ext/src/lib.rs
-pub fn count_words(s: &str) -> i64 {
-    s.split_whitespace().count() as i64
+// From examples/hello-ext/src/lib.rs — scalar function logic
+pub fn first_word(s: &str) -> &str {
+    s.split_whitespace().next().unwrap_or("")
 }
 
 #[test]
-fn count_words_basic() {
-    assert_eq!(count_words("hello world"), 2);
-    assert_eq!(count_words("one"), 1);
-    assert_eq!(count_words(""), 0);
+fn first_word_basic() {
+    assert_eq!(first_word("hello world"), "hello");
+    assert_eq!(first_word("  padded  "), "padded");
+    assert_eq!(first_word(""), "");
+    assert_eq!(first_word("   "), "");
 }
 ```
 

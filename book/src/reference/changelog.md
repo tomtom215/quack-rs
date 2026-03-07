@@ -10,6 +10,32 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`entry_point!` macro API change** — the macro now takes the full exported symbol name
+  (e.g., `my_extension_init_c_api`) instead of a prefix. This removes the `paste` crate
+  dependency and makes the exported symbol explicit at the call site.
+  *Migrate:* `entry_point!(my_ext, …)` → `entry_point!(my_ext_init_c_api, …)`
+
+- **`hello-ext` example extended** — now registers two functions: `word_count` (aggregate)
+  **and** `first_word` (scalar), covering both function types. Tests now include NULL
+  propagation, combine correctness (Pitfall L1), and all scalar edge cases.
+
+- **CI: fix MSRV toolchain** — the MSRV job now correctly pins `dtolnay/rust-toolchain@1.84.1`
+  (was incorrectly set to the nonexistent `1.100.0`).
+
+- Bump `criterion` dev-dependency from `0.5` to `0.8`.
+- Bump `Swatinem/rust-cache` GitHub Action from `v2.7.5` to `v2.8.2`.
+- Bump `actions/attest-build-provenance` from `v2` to `v4`.
+- Bump `actions/configure-pages` to latest SHA (`d5606572…`).
+- Bump `actions/upload-pages-artifact` from `v3.0.1` to `v4.0.0`.
+
+### Removed
+
+- **`paste` dependency** (RUSTSEC-2024-0436) — the crate was archived and flagged as
+  unmaintained. The `entry_point!` macro no longer requires identifier concatenation and
+  has no runtime dependencies beyond `libduckdb-sys`.
+
 ### Added
 
 - **`sql_macro` module** — Register SQL macros (scalar and table) directly from

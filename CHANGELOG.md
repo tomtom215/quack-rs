@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bump `criterion` dev-dependency from `0.5` to `0.8`.
+- Bump `Swatinem/rust-cache` GitHub Action from `v2.7.5` to `v2.8.2`.
+- Bump `dtolnay/rust-toolchain` CI pin from `1.84.1` to `1.100.0`.
+- Bump `actions/attest-build-provenance` from `v2` to `v4`.
+- Bump `actions/configure-pages` to latest SHA (`d5606572…`).
+- Bump `actions/upload-pages-artifact` from `v3.0.1` to `v4.0.0`.
+
 ## [0.2.0] - 2026-03-07
 
 ### Added

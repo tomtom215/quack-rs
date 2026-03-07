@@ -38,9 +38,7 @@ yanked = "warn"
 
 # IDs of advisories to explicitly ignore (document reason in comment).
 # Example: ignore = ["RUSTSEC-2023-0001"]  # false positive for our usage pattern
-ignore = [
-    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but has no security impact; tracking migration to an alternative in a future update" },
-]
+ignore = []
 
 # ── Dependency bans ───────────────────────────────────────────────────────────
 [bans]

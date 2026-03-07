@@ -18,10 +18,10 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
     }
 }
 
-entry_point!(my_extension, |con| register(con));
+entry_point!(my_extension_init_c_api, |con| register(con));
 ```
 
-This generates:
+This emits:
 
 ```rust
 #[no_mangle]
@@ -38,7 +38,7 @@ pub unsafe extern "C" fn my_extension_init_c_api(
 }
 ```
 
-The macro name is the extension name. The symbol `{name}_init_c_api` must match the
+Pass the **full symbol name** to the macro. The symbol `{name}_init_c_api` must match the
 `name` field in `description.yml` and the `[lib] name` in `Cargo.toml`.
 
 ---

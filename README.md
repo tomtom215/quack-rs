@@ -180,8 +180,8 @@ fn register(con: libduckdb_sys::duckdb_connection) -> ExtResult<()> {
     Ok(())
 }
 
-// Step 4: One macro call generates the entry point
-entry_point!(my_extension, |con| register(con));
+// Step 4: One macro call generates the entry point (pass the full symbol name DuckDB expects)
+entry_point!(my_extension_init_c_api, |con| register(con));
 ```
 
 ### 3. Scaffold a new project
