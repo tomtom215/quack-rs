@@ -1,0 +1,107 @@
+# cargo-deny configuration for quack-rs
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+# ── Dependency graph ──────────────────────────────────────────────────────────
+[graph]
+all-features = false
+no-default-features = false
+
+# ── License policy ────────────────────────────────────────────────────────────
+[licenses]
+# Confidence threshold for automated license detection (0.0 – 1.0).
+# A crate whose license cannot be detected above this threshold is flagged.
+confidence-threshold = 0.8
+
+# SPDX license identifiers that are acceptable across all dependency crates.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "OpenSSL",
+]
+
+# Copyleft licenses that must never appear in any transitive dependency.
+# A crate matching any of these causes the build to fail.
+deny = [
+    "GPL-2.0",
+    "GPL-2.0-only",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "LGPL-2.0",
+    "LGPL-2.0-only",
+    "LGPL-2.1",
+    "LGPL-2.1-only",
+    "LGPL-3.0",
+    "LGPL-3.0-only",
+    "AGPL-3.0",
+    "AGPL-3.0-only",
+    "EUPL-1.1",
+    "EUPL-1.2",
+]
+
+# Treat unlicensed crates as an error.
+unlicensed = "deny"
+
+# Copyleft-flagged crates that aren't explicitly denied above — warn rather
+# than hard-fail so we catch anything new without blocking CI immediately.
+copyleft = "warn"
+
+# ── Security advisories ───────────────────────────────────────────────────────
+[advisories]
+# RustSec advisory database
+db-urls = ["https://github.com/rustsec/advisory-db"]
+
+# Yanked crates: warn rather than fail (may be pinned intentionally)
+yanked = "warn"
+
+# IDs of advisories to explicitly ignore (document reason in comment).
+# Example: ignore = ["RUSTSEC-2023-0001"]  # false positive for our usage pattern
+ignore = []
+
+# ── Dependency bans ───────────────────────────────────────────────────────────
+[bans]
+# Warn when multiple versions of the same crate are pulled in transitively.
+# This flags bloat and potential inconsistencies (e.g., two versions of the
+# same unsafe crate with different soundness properties).
+multiple-versions = "warn"
+
+# Wildcard version requirements (e.g., "*") in direct dependencies: warn.
+wildcards = "warn"
+
+# Highlight which dependency paths cause multiple-version warnings.
+highlight = "all"
+
+# Crates that must never appear anywhere in the dependency graph.
+deny = []
+
+# Skip specific duplicate-version warnings (document the reason).
+# Example:
+# skip = [
+#     { name = "some-crate", version = "=1.0.0" },  # transitively pinned by foo
+# ]
+skip = []
+
+# Skip the duplicate-version check for an entire subtree rooted at a crate.
+skip-tree = []
+
+# ── Source policy ─────────────────────────────────────────────────────────────
+[sources]
+# Reject crates from registries other than crates.io.
+unknown-registry = "deny"
+
+# Reject crates sourced directly from git (pinned SHAs in Cargo.toml).
+# Git sources bypass the crates.io review pipeline and complicate auditing.
+unknown-git = "deny"
+
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Uncomment to allow specific git sources (e.g., for unreleased patches):
+# allow-git = ["https://github.com/some-org/some-repo"]
+allow-git = []

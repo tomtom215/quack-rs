@@ -14,41 +14,59 @@ concurrency:
   group: "pages"
   cancel-in-progress: false
 
+env:
+  MDBOOK_VERSION: "0.4.40"
+
 jobs:
   build:
     name: Build mdBook
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
+      - name: Cache Cargo registry and mdBook binary
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c6158d # v4.2.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-mdbook-0.4.40
-          restore-keys: ${{ runner.os }}-cargo-mdbook-
+          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
 
       - name: Install mdBook
         run: |
           if ! command -v mdbook &>/dev/null; then
-            cargo install mdbook --locked --version 0.4.40
+            echo "Installing mdBook ${{ env.MDBOOK_VERSION }}..."
+            cargo install mdbook --locked --version "${{ env.MDBOOK_VERSION }}"
+          else
+            echo "mdBook $(mdbook --version) already cached."
           fi
 
       - name: Build documentation
         run: mdbook build
 
+      - name: Write build summary
+        run: |
+          PAGE_COUNT=$(find book/book -name '*.html' | wc -l)
+          {
+            echo "## Documentation built successfully"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| mdBook version | \`${{ env.MDBOOK_VERSION }}\` |"
+            echo "| HTML pages generated | \`${PAGE_COUNT}\` |"
+            echo "| Output directory | \`book/book/\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Setup GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745 # v5.0.0
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: book/book
 
@@ -62,4 +80,12 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03 # v4.0.5
+
+      - name: Write deploy summary
+        run: |
+          {
+            echo "## Documentation deployed"
+            echo ""
+            echo "Live at: ${{ steps.deployment.outputs.page_url }}"
+          } >> "$GITHUB_STEP_SUMMARY"

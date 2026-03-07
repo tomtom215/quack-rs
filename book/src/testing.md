@@ -293,7 +293,7 @@ harness properties.
 
 ```toml
 [dev-dependencies]
-quack_rs = { version = "0.1", features = [] }
+quack-rs = { version = "0.2", features = [] }
 proptest = "1"
 ```
 
