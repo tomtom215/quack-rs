@@ -53,6 +53,7 @@
 //! assert!(validate_excluded_platforms_str("").is_ok()); // empty means no exclusions
 //! ```
 
+pub mod description_yml;
 pub mod extension_name;
 pub mod function_name;
 pub mod platform;
