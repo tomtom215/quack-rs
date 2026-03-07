@@ -499,16 +499,16 @@ flowchart TB
         INT["**interval**<br/>DuckInterval · interval_to_micros"]
     end
 
-    SYS["**libduckdb-sys** =1.4.4<br/>DuckDB C Extension API · headers only · no linked library"]:::ffi
+    SYS["**libduckdb-sys** =1.4.4<br/>DuckDB C Extension API<br/>headers only · no linked library"]:::ffi
 
     RT[("**DuckDB**<br/>Runtime")]:::duckdb
 
-    subgraph DEV ["Dev-time utilities · zero runtime DuckDB dependency"]
+    subgraph DEV ["Dev-time utilities"]
         direction LR
         ERR["**error**<br/>ExtensionError · ExtResult&lt;T&gt;"]
         TST["**testing**<br/>AggregateTestHarness&lt;S&gt;<br/>pure Rust · no FFI"]
-        VAL["**validate**<br/>extension_name · semver · spdx<br/>platform · description_yml"]
-        SCF["**scaffold**<br/>generate_scaffold · ScaffoldConfig"]
+        VAL["**validate**<br/>extension_name · semver<br/>spdx · platform<br/>description_yml"]
+        SCF["**scaffold**<br/>generate_scaffold<br/>ScaffoldConfig"]
     end
 
     Author --> REG
