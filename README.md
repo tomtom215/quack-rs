@@ -480,34 +480,28 @@ assert!(err.as_str().contains("panic"));
 
 ### Module dependency graph
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Extension Author                     │
-│                      use quack_rs::prelude::*               │
-└───────────────────────┬─────────────────────────────────────┘
-                        │
-          ┌─────────────┼──────────────────┐
-          ▼             ▼                  ▼
-    entry_point    aggregate/scalar    sql_macro
-          │             │                  │
-          └──────────── ┼──────────────────┘
-                        ▼
-                  vector / types / interval
-                        │
-                        ▼
-              libduckdb-sys (C Extension API)
-                        │
-                        ▼
-                  DuckDB runtime
-```
+```mermaid
+graph TD
+    Author(["**Extension Author**<br/>use quack_rs::prelude::*"])
 
-**Separate from the runtime path:**
+    Author --> EP[entry_point]
+    Author --> AS["aggregate / scalar"]
+    Author --> SM[sql_macro]
 
-```
-    validate ─────── description_yml, extension_name, semver, spdx, platform
-    scaffold ─────── generate_scaffold (uses validate)
-    testing  ─────── AggregateTestHarness (pure Rust, no FFI)
-    error    ─────── ExtensionError (no DuckDB dependency)
+    EP  --> VTI["vector / types / interval"]
+    AS  --> VTI
+    SM  --> VTI
+
+    VTI --> SYS["libduckdb-sys<br/>C Extension API"]
+    SYS --> RT[DuckDB runtime]
+
+    subgraph util ["Separate from runtime path"]
+        direction LR
+        SCF[scaffold] --> VAL[validate]
+        VAL --> V1["description_yml · extension_name<br/>semver · spdx · platform"]
+        TST[testing] --> T1["AggregateTestHarness<br/>pure Rust · no FFI"]
+        ERR[error]   --> E1["ExtensionError<br/>no DuckDB dependency"]
+    end
 ```
 
 ### Design principles

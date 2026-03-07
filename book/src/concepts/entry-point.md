@@ -71,22 +71,20 @@ pub unsafe extern "C" fn my_extension_init_c_api(
 
 ## What `init_extension` does
 
-```
-1. duckdb_rs_extension_api_init(info, access, "v1.2.0")
-   └─ fills the global AtomicPtr dispatch table
+```mermaid
+flowchart TD
+    A["**1. duckdb_rs_extension_api_init**(info, access, version)<br/>Fills the global AtomicPtr dispatch table"]
+    B["**2. access.get_database**(info)<br/>Returns the duckdb_database handle"]
+    C["**3. duckdb_connect**(db, &amp;mut con)<br/>Opens a connection for function registration"]
+    D["**4. register**(con) ← your closure"]
+    E["**5. duckdb_disconnect**(&amp;mut con)<br/>Always runs, even if registration failed"]
+    F{Error?}
+    G["return **true**"]
+    H["return **false**<br/>error reported via access.set_error"]
 
-2. access.get_database(info)
-   └─ returns the duckdb_database handle
-
-3. duckdb_connect(db, &mut con)
-   └─ opens a connection for function registration
-
-4. register(con)  ← your closure
-
-5. duckdb_disconnect(&mut con)
-   └─ always runs, even if registration failed
-
-6. returns true/false to DuckDB
+    A --> B --> C --> D --> E --> F
+    F -->|no| G
+    F -->|yes| H
 ```
 
 Errors from step 4 are reported back to DuckDB via `access.set_error` and the function
