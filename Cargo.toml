@@ -20,7 +20,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
-paste = "1"
 
 [dev-dependencies]
 duckdb = { version = "=1.4.4", features = ["bundled"] }
