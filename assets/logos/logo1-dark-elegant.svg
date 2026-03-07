@@ -1,47 +1,55 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 210" width="660" height="210">
   <defs>
-    <radialGradient id="dg" cx="58%" cy="32%" r="65%">
-      <stop offset="0%"   stop-color="#FFE87A"/>
-      <stop offset="100%" stop-color="#C08A06"/>
+    <radialGradient id="dg" cx="62%" cy="24%" r="68%">
+      <stop offset="0%"   stop-color="#FFF2A8"/>
+      <stop offset="38%"  stop-color="#F5C420"/>
+      <stop offset="100%" stop-color="#A87200"/>
     </radialGradient>
-    <filter id="ds" x="-25%" y="-25%" width="170%" height="170%">
+    <filter id="ds" x="-28%" y="-28%" width="180%" height="180%">
       <feDropShadow dx="0" dy="6" stdDeviation="12"
-                    flood-color="#000000" flood-opacity="0.50"/>
+                    flood-color="#000000" flood-opacity="0.55"/>
     </filter>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%"   stop-color="#0D1117"/>
+      <stop offset="0%"   stop-color="#0F1419"/>
       <stop offset="100%" stop-color="#161B22"/>
     </linearGradient>
   </defs>
 
   <rect width="660" height="210" rx="22" fill="url(#bg)"/>
 
-  <!-- Duck -->
-  <g transform="translate(20,6)">
+  
   <g filter="url(#ds)">
-    <path d="M 37.4,118.0 C 24.6,101.4 19.0,77.5 31.9,66.5 C 44.8,62.8 52.2,77.5 48.5,97.8 C 44.8,110.6  39.3,116.2  37.4,118.0 Z" fill="url(#dg)" stroke="none"/>
-    <ellipse cx="100.0" cy="118.0" rx="62.6" ry="42.3"
-             transform="rotate(-4,100.0,118.0)"
+    <path d="M 45.44,109.84 C 28.88,95.12   21.52,62.00   36.24,47.28 C 49.12,38.08   62.00,54.64   58.32,80.40 C 54.64,96.96   49.12,105.24   45.44,109.84 Z" fill="url(#dg)" stroke="none"/>
+    <ellipse cx="108.00" cy="108.00" rx="62.56" ry="42.32"
+             transform="rotate(-4,108.00,108.00)"
              fill="url(#dg)" stroke="none"/>
-    <circle  cx="147.8" cy="79.4" r="29.4"
+    <circle  cx="155.84" cy="69.36" r="29.44"
              fill="url(#dg)" stroke="none"/>
-    <path d="M 169.9,71.1 Q 205.8,71.1 201.2,80.3 Q 205.8,91.3 169.9,91.3 Q 164.4,79.4 169.9,71.1 Z" fill="#E06010" stroke="none"/>
-    <circle  cx="152.4" cy="70.2" r="6.0" fill="#0D1117" stroke="none"/>
-    <circle  cx="154.7" cy="67.6" r="2.3" fill="white" stroke="none"/>
-    <path d="M 83.4,125.4 Q 116.6,106.0 146.0,125.4"
-          fill="none" stroke="#C88E08" stroke-width="2.6"
-          stroke-linecap="round" opacity="0.55"/>
-  </g></g>
+    <path d="M 100.64,106.16 Q 124.56,82.24 154.00,106.16 Q 124.56,98.80 100.64,106.16 Z" fill="#A87200" opacity="0.28" stroke="none"/>
+    <path d="M 177.92,60.16 Q 216.56,60.16 212.88,70.28 Q 216.56,82.24 177.92,82.24 Q 172.40,71.20 177.92,60.16 Z" fill="#E06818" stroke="none"/>
+    <circle  cx="160.44" cy="60.16" r="5.98"
+             fill="#0D1117" stroke="none"/>
+    <circle  cx="162.74" cy="57.58" r="2.30"
+             fill="white" stroke="none"/>
+    <ellipse cx="146.64" cy="56.48"
+             rx="8.28" ry="5.52"
+             transform="rotate(-30,146.64,56.48)"
+             fill="white" opacity="0.18" stroke="none"/>
+    <ellipse cx="115.36" cy="84.08"
+             rx="14.72" ry="8.28"
+             transform="rotate(-20,115.36,84.08)"
+             fill="white" opacity="0.10" stroke="none"/>
+  </g>
 
-  <!-- Wordmark: quack-rs in one <text> with tspan → no gap -->
-  <text x="224" y="126"
-        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
-        font-size="80" font-weight="800" letter-spacing="-2">
-    <tspan fill="#F0F6FC">quack</tspan><tspan fill="#CE422B">-rs</tspan>
+  <!-- Wordmark -->
+  <text x="228" y="122"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="80" font-weight="700"
+        letter-spacing="-2">
+    <tspan fill="#E6EDF3">quack</tspan><tspan fill="#CE422B">-rs</tspan>
   </text>
 
-  <!-- Tagline -->
-  <text x="226" y="157"
-        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
-        font-size="17" letter-spacing="2.5" fill="#4B6080">DUCKDB  ·  RUST  ·  FAST</text>
+  <!-- Tagline: left-aligned to wordmark, refined spacing -->
+  <text x="230" y="151"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="16" font-weight="400"
+        letter-spacing="1.8" fill="#526880">DUCKDB · RUST · FAST</text>
 </svg>

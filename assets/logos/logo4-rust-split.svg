@@ -1,50 +1,71 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 210" width="660" height="210">
   <defs>
-    <radialGradient id="dg" cx="55%" cy="28%" r="65%">
-      <stop offset="0%"   stop-color="#FFF0A0"/>
-      <stop offset="100%" stop-color="#E0A010"/>
+    <!-- Duck gold — slightly warmer/more orange to harmonise with the ember bg -->
+    <radialGradient id="dg" cx="62%" cy="24%" r="68%">
+      <stop offset="0%"   stop-color="#FFF4B0"/>
+      <stop offset="38%"  stop-color="#F0B818"/>
+      <stop offset="100%" stop-color="#9E6A00"/>
     </radialGradient>
-    <filter id="ds" x="-25%" y="-25%" width="170%" height="170%">
+    <filter id="ds" x="-25%" y="-25%" width="175%" height="175%">
       <feDropShadow dx="0" dy="5" stdDeviation="10"
-                    flood-color="#5A0800" flood-opacity="0.45"/>
+                    flood-color="#2A0800" flood-opacity="0.55"/>
     </filter>
+    <!-- Background: deep charcoal with a warm ember wash on the left -->
+    <linearGradient id="bg4" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#2A1208"/>
+      <stop offset="42%"  stop-color="#1A100A"/>
+      <stop offset="100%" stop-color="#111622"/>
+    </linearGradient>
+    <!-- Ember radial: extra warmth pooled where the duck lives -->
+    <radialGradient id="ember" cx="24%" cy="50%" r="44%">
+      <stop offset="0%"   stop-color="#7A2C10" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#7A2C10" stop-opacity="0"/>
+    </radialGradient>
     <clipPath id="full">
       <rect width="660" height="210" rx="22"/>
     </clipPath>
   </defs>
 
   <g clip-path="url(#full)">
-    <rect x="0"   y="0" width="205" height="210" fill="#B02810"/>
-    <rect x="205" y="0" width="455" height="210" fill="#18100E"/>
+    <!-- Dark background with horizontal warm fade -->
+    <rect width="660" height="210" fill="url(#bg4)"/>
+    <!-- Radial ember pool behind the duck -->
+    <rect width="660" height="210" fill="url(#ember)"/>
   </g>
-  <!-- Clean edge between the two blocks -->
-  <line x1="205" y1="0" x2="205" y2="210" stroke="#7A1808" stroke-width="1.5"/>
 
-  <!-- Duck spanning both colour blocks -->
-  <g transform="translate(10,5)">
+  
   <g filter="url(#ds)">
-    <path d="M 42.4,118.0 C 29.6,101.4 24.0,77.5 36.9,66.5 C 49.8,62.8 57.2,77.5 53.5,97.8 C 49.8,110.6  44.3,116.2  42.4,118.0 Z" fill="url(#dg)" stroke="none"/>
-    <ellipse cx="105.0" cy="118.0" rx="62.6" ry="42.3"
-             transform="rotate(-4,105.0,118.0)"
+    <path d="M 47.44,109.84 C 30.88,95.12   23.52,62.00   38.24,47.28 C 51.12,38.08   64.00,54.64   60.32,80.40 C 56.64,96.96   51.12,105.24   47.44,109.84 Z" fill="url(#dg)" stroke="none"/>
+    <ellipse cx="110.00" cy="108.00" rx="62.56" ry="42.32"
+             transform="rotate(-4,110.00,108.00)"
              fill="url(#dg)" stroke="none"/>
-    <circle  cx="152.8" cy="79.4" r="29.4"
+    <circle  cx="157.84" cy="69.36" r="29.44"
              fill="url(#dg)" stroke="none"/>
-    <path d="M 174.9,71.1 Q 210.8,71.1 206.2,80.3 Q 210.8,91.3 174.9,91.3 Q 169.4,79.4 174.9,71.1 Z" fill="#FF9020" stroke="none"/>
-    <circle  cx="157.4" cy="70.2" r="6.0" fill="#0D1117" stroke="none"/>
-    <circle  cx="159.7" cy="67.6" r="2.3" fill="white" stroke="none"/>
-    <path d="M 88.4,125.4 Q 121.6,106.0 151.0,125.4"
-          fill="none" stroke="#C8A020" stroke-width="2.6"
-          stroke-linecap="round" opacity="0.55"/>
-  </g></g>
+    <path d="M 102.64,106.16 Q 126.56,82.24 156.00,106.16 Q 126.56,98.80 102.64,106.16 Z" fill="#9E6A00" opacity="0.28" stroke="none"/>
+    <path d="M 179.92,60.16 Q 218.56,60.16 214.88,70.28 Q 218.56,82.24 179.92,82.24 Q 174.40,71.20 179.92,60.16 Z" fill="#E06418" stroke="none"/>
+    <circle  cx="162.44" cy="60.16" r="5.98"
+             fill="#0D1117" stroke="none"/>
+    <circle  cx="164.74" cy="57.58" r="2.30"
+             fill="white" stroke="none"/>
+    <ellipse cx="148.64" cy="56.48"
+             rx="8.28" ry="5.52"
+             transform="rotate(-30,148.64,56.48)"
+             fill="white" opacity="0.18" stroke="none"/>
+    <ellipse cx="117.36" cy="84.08"
+             rx="14.72" ry="8.28"
+             transform="rotate(-20,117.36,84.08)"
+             fill="white" opacity="0.10" stroke="none"/>
+  </g>
 
-  <!-- Wordmark on dark panel -->
-  <text x="228" y="126"
-        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
-        font-size="80" font-weight="800" letter-spacing="-2">
-    <tspan fill="#F0E0D8">quack</tspan><tspan fill="#FF6644">-rs</tspan>
+  <!-- Wordmark -->
+  <text x="234" y="122"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="80" font-weight="700"
+        letter-spacing="-2">
+    <tspan fill="#E6EDF3">quack</tspan><tspan fill="#D4563C">-rs</tspan>
   </text>
 
-  <text x="230" y="158"
-        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
-        font-size="16" letter-spacing="2" fill="#5A4040">DUCKDB  ·  EXTENSIONS</text>
+  <!-- Tagline — warm slate, readable -->
+  <text x="236" y="151"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="15" font-weight="400"
+        letter-spacing="2.0" fill="#7A8898">DUCKDB · EXTENSIONS</text>
 </svg>

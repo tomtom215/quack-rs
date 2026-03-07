@@ -1,57 +1,70 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="60%" y2="100%">
+    <linearGradient id="bg" x1="0%" y1="0%" x2="55%" y2="100%">
       <stop offset="0%"   stop-color="#111927"/>
       <stop offset="100%" stop-color="#060C14"/>
     </linearGradient>
-    <radialGradient id="dg" cx="60%" cy="28%" r="65%">
-      <stop offset="0%"   stop-color="#FFE870"/>
-      <stop offset="100%" stop-color="#C08A06"/>
+    <radialGradient id="dg" cx="62%" cy="24%" r="68%">
+      <stop offset="0%"   stop-color="#FFF2A8"/>
+      <stop offset="38%"  stop-color="#F5C420"/>
+      <stop offset="100%" stop-color="#A87200"/>
     </radialGradient>
-    <radialGradient id="glow" cx="50%" cy="55%" r="48%">
-      <stop offset="0%"   stop-color="#F5C842" stop-opacity="0.08"/>
-      <stop offset="100%" stop-color="#F5C842" stop-opacity="0"/>
+    <!-- Subtle radial glow behind duck -->
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#F5C840" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#F5C840" stop-opacity="0"/>
     </radialGradient>
     <filter id="ds" x="-30%" y="-30%" width="190%" height="190%">
       <feDropShadow dx="0" dy="10" stdDeviation="16"
-                    flood-color="#000" flood-opacity="0.60"/>
+                    flood-color="#000" flood-opacity="0.62"/>
     </filter>
   </defs>
 
+  <!-- Rounded-square background -->
   <rect width="400" height="400" rx="68" fill="url(#bg)"/>
 
-  <!-- Duck centred -->
+  <!-- Warm glow centred behind duck -->
+  <ellipse cx="200" cy="175" rx="140" ry="100" fill="url(#glow)"/>
+
   
   <g filter="url(#ds)">
-    <path d="M 134.6,170.0 C 120.4,151.6 114.2,125.1 128.5,112.9 C 142.8,108.8 151.0,125.1 146.9,147.6 C 142.8,161.8  136.7,168.0  134.6,170.0 Z" fill="url(#dg)" stroke="none"/>
-    <ellipse cx="204.0" cy="170.0" rx="69.4" ry="46.9"
-             transform="rotate(-4,204.0,170.0)"
+    <path d="M 130.64,164.04 C 112.28,147.72   104.12,111.00   120.44,94.68 C 134.72,84.48   149.00,102.84   144.92,131.40 C 140.84,149.76   134.72,158.94   130.64,164.04 Z" fill="url(#dg)" stroke="none"/>
+    <ellipse cx="200.00" cy="162.00" rx="69.36" ry="46.92"
+             transform="rotate(-4,200.00,162.00)"
              fill="url(#dg)" stroke="none"/>
-    <circle  cx="257.0" cy="127.2" r="32.6"
+    <circle  cx="253.04" cy="119.16" r="32.64"
              fill="url(#dg)" stroke="none"/>
-    <path d="M 281.5,118.0 Q 321.3,118.0 316.2,128.2 Q 321.3,140.4 281.5,140.4 Q 275.4,127.2 281.5,118.0 Z" fill="#E06010" stroke="none"/>
-    <circle  cx="262.1" cy="117.0" r="6.6" fill="#0D1117" stroke="none"/>
-    <circle  cx="264.7" cy="114.1" r="2.5" fill="white" stroke="none"/>
-    <path d="M 185.6,178.2 Q 222.4,156.7 255.0,178.2"
-          fill="none" stroke="#C88E08" stroke-width="2.9"
-          stroke-linecap="round" opacity="0.55"/>
+    <path d="M 191.84,159.96 Q 218.36,133.44 251.00,159.96 Q 218.36,151.80 191.84,159.96 Z" fill="#A87200" opacity="0.28" stroke="none"/>
+    <path d="M 277.52,108.96 Q 320.36,108.96 316.28,120.18 Q 320.36,133.44 277.52,133.44 Q 271.40,121.20 277.52,108.96 Z" fill="#E06818" stroke="none"/>
+    <circle  cx="258.14" cy="108.96" r="6.63"
+             fill="#0D1117" stroke="none"/>
+    <circle  cx="260.69" cy="106.10" r="2.55"
+             fill="white" stroke="none"/>
+    <ellipse cx="242.84" cy="104.88"
+             rx="9.18" ry="6.12"
+             transform="rotate(-30,242.84,104.88)"
+             fill="white" opacity="0.18" stroke="none"/>
+    <ellipse cx="208.16" cy="135.48"
+             rx="16.32" ry="9.18"
+             transform="rotate(-20,208.16,135.48)"
+             fill="white" opacity="0.10" stroke="none"/>
   </g>
 
-  <!-- Water ripples snug under the duck body -->
-  <ellipse cx="196" cy="238" rx="90" ry="9"
-           fill="none" stroke="#243C58" stroke-width="2.2" opacity="0.65"/>
-  <ellipse cx="196" cy="248" rx="64" ry="6.5"
-           fill="none" stroke="#243C58" stroke-width="1.6" opacity="0.45"/>
-  <ellipse cx="196" cy="256" rx="40" ry="4.5"
-           fill="none" stroke="#243C58" stroke-width="1.0" opacity="0.30"/>
+  <!-- Water ripples — all centred on duck body cx -->
+  <ellipse cx="200" cy="222" rx="88" ry="8.0"
+           fill="none" stroke="#243C58" stroke-width="2.2" opacity="0.68"/>
+  <ellipse cx="200" cy="233" rx="62" ry="5.8"
+           fill="none" stroke="#243C58" stroke-width="1.6" opacity="0.46"/>
+  <ellipse cx="200" cy="242" rx="38" ry="3.8"
+           fill="none" stroke="#243C58" stroke-width="1.0" opacity="0.28"/>
 
-  <!-- Split anchored at 228 so the full "quack-rs" is visually centred -->
-  <text x="228" y="348"
-        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
-        font-size="50" font-weight="800" letter-spacing="-1.5"
-        text-anchor="end" fill="#F0F6FC">quack</text>
-  <text x="228" y="348"
-        font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif"
-        font-size="50" font-weight="800" letter-spacing="-1.5"
-        text-anchor="start" fill="#CE422B">-rs</text>
+  <!-- Wordmark centred: "quack" anchor=end / "-rs" anchor=start at x=228 -->
+  <text x="228" y="340"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="50" font-weight="700"
+        letter-spacing="-1.5" text-anchor="end"
+        fill="#E6EDF3">quack</text>
+  <text x="228" y="340"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="50" font-weight="700"
+        letter-spacing="-1.5" text-anchor="start"
+        fill="#CE422B">-rs</text>
 </svg>
