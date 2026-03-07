@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community and encouraging more Rust development!
+
 //! Error types for `DuckDB` extension FFI error propagation.
 //!
 //! [`ExtensionError`] is the primary error type. It implements [`std::error::Error`],

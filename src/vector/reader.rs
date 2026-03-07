@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community and encouraging more Rust development!
+
 //! Safe typed reading from `DuckDB` data vectors.
 //!
 //! [`VectorReader`] provides safe access to the typed data in a `DuckDB` vector

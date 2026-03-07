@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community and encouraging more Rust development!
+
 //! Builder for registering `DuckDB` scalar functions.
 //!
 //! Scalar functions (also called "table functions" in some contexts) take a data

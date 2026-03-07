@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community and encouraging more Rust development!
+
 //! Type aliases for the five required `DuckDB` aggregate callback signatures.
 //!
 //! Import these type aliases when defining your callback functions to ensure
