@@ -3,8 +3,8 @@
 //! Run with: `cargo bench`
 #![allow(missing_docs)]
 use criterion::{criterion_group, criterion_main, Criterion};
-use std::hint::black_box;
 use quack_rs::interval::{interval_to_micros, interval_to_micros_saturating, DuckInterval};
+use std::hint::black_box;
 
 fn bench_interval_to_micros(c: &mut Criterion) {
     let iv = DuckInterval {
