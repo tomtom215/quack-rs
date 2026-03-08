@@ -122,8 +122,7 @@ impl DbConfig {
 
         // SAFETY: out-pointers are valid stack locations; DuckDB sets them to
         // pointers into its own static tables (no allocation, no free needed).
-        let state =
-            unsafe { duckdb_get_config_flag(index, &raw mut name_ptr, &raw mut desc_ptr) };
+        let state = unsafe { duckdb_get_config_flag(index, &raw mut name_ptr, &raw mut desc_ptr) };
 
         if state != DuckDBSuccess {
             return Err(ExtensionError::new(format!(

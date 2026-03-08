@@ -197,7 +197,7 @@ impl TableFunctionBuilder {
     ///
     /// The bind callback is called once at query-parse time. It must:
     /// - Declare all output columns via [`BindInfo::add_result_column`].
-    /// - Optionally read parameters and store bind data via [`FfiBindData::set`].
+    /// - Optionally read parameters and store bind data via [`crate::table::FfiBindData::set`].
     pub fn bind(mut self, f: BindFn) -> Self {
         self.bind = Some(f);
         self
@@ -205,7 +205,7 @@ impl TableFunctionBuilder {
 
     /// Sets the global init callback.
     ///
-    /// Called once per query. Use [`FfiInitData::set`] to store global scan state.
+    /// Called once per query. Use [`crate::table::FfiInitData::set`] to store global scan state.
     pub fn init(mut self, f: InitFn) -> Self {
         self.init = Some(f);
         self
@@ -213,7 +213,7 @@ impl TableFunctionBuilder {
 
     /// Sets the per-thread local init callback (optional).
     ///
-    /// When set, `DuckDB` calls this once per worker thread. Use [`FfiLocalInitData::set`]
+    /// When set, `DuckDB` calls this once per worker thread. Use [`crate::table::FfiLocalInitData::set`]
     /// to store thread-local scan state. Setting a local init enables parallel scanning.
     pub fn local_init(mut self, f: InitFn) -> Self {
         self.local_init = Some(f);

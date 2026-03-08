@@ -54,7 +54,7 @@
 //! The following items are intentionally excluded from the prelude because they
 //! are used less frequently and benefit from explicit import paths:
 //!
-//! - [`config::DbConfig`] — RAII wrapper for opening secondary `DuckDB` databases;
+//! - [`crate::config::DbConfig`] — RAII wrapper for opening secondary `DuckDB` databases;
 //!   import explicitly via `use quack_rs::config::DbConfig` when needed
 //! - `validate::*` — validation utilities (use explicitly to make intent clear)
 //! - `scaffold::*` — project generation (use explicitly)

@@ -22,7 +22,6 @@ use libduckdb_sys::{
     idx_t,
 };
 
-
 /// A typed writer for a `DuckDB` output vector in a `finalize` callback.
 ///
 /// # Example

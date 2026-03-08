@@ -13,10 +13,9 @@ use libduckdb_sys::{
     duckdb_cast_function_set_error, duckdb_cast_function_set_extra_info,
     duckdb_cast_function_set_function, duckdb_cast_function_set_implicit_cast_cost,
     duckdb_cast_function_set_row_error, duckdb_cast_function_set_source_type,
-    duckdb_cast_function_set_target_type, duckdb_cast_mode_DUCKDB_CAST_TRY,
-    duckdb_connection, duckdb_create_cast_function, duckdb_delete_callback_t,
-    duckdb_destroy_cast_function, duckdb_function_info, duckdb_register_cast_function,
-    duckdb_vector, idx_t, DuckDBSuccess,
+    duckdb_cast_function_set_target_type, duckdb_cast_mode_DUCKDB_CAST_TRY, duckdb_connection,
+    duckdb_create_cast_function, duckdb_delete_callback_t, duckdb_destroy_cast_function,
+    duckdb_function_info, duckdb_register_cast_function, duckdb_vector, idx_t, DuckDBSuccess,
 };
 
 use crate::error::ExtensionError;
@@ -240,7 +239,11 @@ impl CastFunctionBuilder {
     ///
     /// `ptr` must remain valid until `DuckDB` calls `destroy`, or for the
     /// lifetime of the database if `destroy` is `None`.
-    pub unsafe fn extra_info(mut self, ptr: *mut c_void, destroy: duckdb_delete_callback_t) -> Self {
+    pub unsafe fn extra_info(
+        mut self,
+        ptr: *mut c_void,
+        destroy: duckdb_delete_callback_t,
+    ) -> Self {
         self.extra_info = Some((ptr, destroy));
         self
     }

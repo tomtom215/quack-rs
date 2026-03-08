@@ -144,9 +144,7 @@ impl LogicalType {
         let inner = unsafe {
             duckdb_create_struct_type(
                 type_ptrs.as_mut_ptr(),
-                name_ptrs
-                    .as_mut_ptr()
-                    .cast::<*const std::os::raw::c_char>(),
+                name_ptrs.as_mut_ptr().cast::<*const std::os::raw::c_char>(),
                 fields.len() as libduckdb_sys::idx_t,
             )
         };
