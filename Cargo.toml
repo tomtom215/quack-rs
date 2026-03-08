@@ -3,16 +3,28 @@ name = "quack-rs"
 version = "0.3.0"
 edition = "2021"
 rust-version = "1.84.1"
-authors = ["Tom F."]
+authors = ["Tom F. <tomtom215@users.noreply.github.com>"]
 description = "Production-grade Rust SDK for building DuckDB loadable extensions"
 license = "MIT"
 repository = "https://github.com/tomtom215/quack-rs"
-homepage = "https://docs.rs/quack-rs"
+homepage = "https://tomtom215.github.io/quack-rs/"
 documentation = "https://docs.rs/quack-rs"
 readme = "README.md"
 keywords = ["duckdb", "extension", "ffi", "sql", "analytics"]
-categories = ["database", "api-bindings"]
-exclude = ["docs/", "examples/hello-ext/", ".github/", "book/"]
+categories = ["database", "api-bindings", "development-tools::ffi"]
+exclude = [
+    "docs/",
+    "examples/",
+    ".github/",
+    "book/",
+    "book.toml",
+    "assets/",
+    "deny.toml",
+    "AUDIT.md",
+    "RELEASING.md",
+    "LESSONS.md",
+    "benches/",
+]
 
 [lib]
 name = "quack_rs"

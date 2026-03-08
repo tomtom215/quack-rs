@@ -95,6 +95,15 @@ Update the comparison link at the bottom of `CHANGELOG.md`:
 [0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
 ```
 
+Also update the **book changelog** (`book/src/reference/changelog.md`) to mirror the
+new CHANGELOG.md entry — these must stay in sync.
+
+### Step 2b — Update SECURITY.md
+
+If this is a **minor or major** release, update the supported versions table in
+`SECURITY.md` to list the new version as supported and mark old versions
+as end-of-life if appropriate.
+
 ### Step 3 — Bump the version in `Cargo.toml`
 
 ```toml

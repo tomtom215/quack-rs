@@ -147,6 +147,16 @@ jobs:
           }
           echo "Found _hello_ext_init_c_api in $DYLIB"
 
+  publish-dry-run:
+    name: Publish dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run
+
   security:
     name: Security (cargo-deny)
     runs-on: ubuntu-latest
