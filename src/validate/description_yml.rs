@@ -876,10 +876,11 @@ mod tests {
                    repo:\n\
                    \x20\x20github: j/r\n\
                    \x20\x20ref: main # default branch\n";
-        // Should parse without error despite comments
+        // Should parse without error despite full-line comments
         let result = parse_description_yml(yml);
-        // The parser is simple and may include comment text in values.
-        // The key constraint is that it doesn't crash and required fields are found.
-        assert!(result.is_ok() || result.is_err()); // not a hard assertion; smoke test
+        // The parser handles full-line comments (lines starting with #) correctly.
+        // Inline comments (e.g., "ref: main # default branch") may be included in values,
+        // which is a known limitation of this simple parser.
+        assert!(result.is_ok(), "parsing failed: {result:?}");
     }
 }

@@ -45,7 +45,7 @@
 //! - **L1**: Combine propagates all fields because your type `T`'s `combine`
 //!   method is responsible — the `FfiState` wrapper ensures `T`'s method is called.
 //! - **L2**: No double-free — `destroy_callback` sets `inner` to null after freeing.
-//! - **L13**: No panic across FFI — `with_state_mut` returns an `Option`, not a panic.
+//! - **L3**: No panic across FFI — `with_state_mut` returns an `Option`, not a panic.
 
 use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
 
@@ -197,7 +197,7 @@ impl<T: AggregateState> FfiState<T> {
     /// Returns `None` if `inner` is null (which should not happen after a
     /// successful `init_callback`, but is checked defensively).
     ///
-    /// # Pitfall L13: No panic across FFI
+    /// # Pitfall L3: No panic across FFI
     ///
     /// This method returns `Option<&mut T>` rather than unwrapping, so callers
     /// can use `if let Some(state) = ...` patterns without panicking.

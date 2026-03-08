@@ -12,7 +12,7 @@ documentation = "https://docs.rs/quack-rs"
 readme = "README.md"
 keywords = ["duckdb", "extension", "ffi", "sql", "analytics"]
 categories = ["database", "api-bindings"]
-exclude = ["docs/", "examples/hello-ext/", ".github/"]
+exclude = ["docs/", "examples/hello-ext/", ".github/", "book/"]
 
 [lib]
 name = "quack_rs"

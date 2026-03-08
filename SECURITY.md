@@ -13,7 +13,7 @@ If you discover a security vulnerability in quack-rs, please report it responsib
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email the maintainer directly or use GitHub's
+Instead, please use GitHub's
 [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
 feature on this repository.
 
@@ -49,7 +49,7 @@ This policy does **not** cover:
 
 quack-rs is designed with safety as a primary concern:
 
-1. **`#![deny(unsafe_op_in_unsafe_fn)]`**: All unsafe operations require explicit `unsafe` blocks with `// SAFETY:` comments, even inside `unsafe fn`.
+1. **`#![deny(unsafe_op_in_unsafe_fn)]`** in `src/lib.rs` and **`unsafe_op_in_unsafe_fn = "warn"`** in `Cargo.toml` (promoted to error in CI via `RUSTFLAGS="-D warnings"`): All unsafe operations require explicit `unsafe` blocks with `// SAFETY:` comments, even inside `unsafe fn`.
 2. **No panics across FFI**: All entry points and callbacks use `Result`/`Option`. The release profile sets `panic = "abort"` as defense-in-depth.
 3. **Double-free prevention**: `FfiState<T>::destroy_callback` nulls pointers after freeing.
 4. **Boolean UB prevention**: `VectorReader::read_bool` reads as `u8 != 0`, never transmutes to `bool`.

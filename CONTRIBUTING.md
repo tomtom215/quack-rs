@@ -19,7 +19,7 @@
 | Rust | ≥ 1.84.1 (MSRV) | Compiler |
 | `rustfmt` | stable | Formatting |
 | `clippy` | stable | Linting |
-| `cargo-msrv` | latest | MSRV verification |
+| `cargo-deny` | latest | License/advisory checks |
 
 Install the Rust toolchain via [rustup](https://rustup.rs/).
 
@@ -61,7 +61,7 @@ cargo fmt -- --check
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 # 6. MSRV — must compile on Rust 1.84.1
-cargo +1.84.1 check
+cargo +1.84.1 check --all-targets
 ```
 
 These same checks run in CI (`.github/workflows/ci.yml`) on every push and pull request.
@@ -157,14 +157,18 @@ semantics should also be documented. Doc comments follow these conventions:
 quack-rs/
 ├── src/
 │   ├── lib.rs                     # Crate root; module declarations; DUCKDB_API_VERSION
-│   ├── entry_point.rs             # init_extension() — correct extension init sequence
+│   ├── entry_point.rs             # init_extension() + entry_point! macro
 │   ├── error.rs                   # ExtensionError, ExtResult<T>
 │   ├── interval.rs                # DuckInterval, interval_to_micros (checked + saturating)
+│   ├── prelude.rs                 # Convenience re-exports for extension authors
+│   ├── sql_macro.rs               # SQL macro registration (CREATE MACRO, no FFI)
 │   ├── aggregate/
 │   │   ├── mod.rs                 # Re-exports
 │   │   ├── builder.rs             # AggregateFunctionBuilder, AggregateFunctionSetBuilder
 │   │   ├── callbacks.rs           # Type aliases for the 6 callback signatures
 │   │   └── state.rs               # AggregateState trait, FfiState<T>
+│   ├── scalar/
+│   │   └── builder.rs             # ScalarFunctionBuilder
 │   ├── types/
 │   │   ├── mod.rs
 │   │   ├── type_id.rs             # TypeId enum (all DuckDB column types)
@@ -175,6 +179,11 @@ quack-rs/
 │   │   ├── writer.rs              # VectorWriter — typed writes to a DuckDB result vector
 │   │   ├── validity.rs            # ValidityBitmap — NULL flag management
 │   │   └── string.rs              # DuckStringView, read_duck_string (16-byte string format)
+│   ├── validate/
+│   │   ├── mod.rs                 # Extension compliance validators
+│   │   └── description_yml.rs     # Parse and validate description.yml metadata
+│   ├── scaffold/
+│   │   └── mod.rs                 # Project generator for new extensions
 │   └── testing/
 │       ├── mod.rs
 │       └── harness.rs             # AggregateTestHarness<S> — unit-test aggregate logic
@@ -186,7 +195,10 @@ quack-rs/
 │   └── hello-ext/                 # Complete word_count aggregate extension example
 │       ├── Cargo.toml
 │       └── src/lib.rs
-├── .github/workflows/ci.yml       # CI: check, test, clippy, fmt, doc, msrv, bench-compile
+├── book/                          # mdBook documentation source
+├── .github/workflows/
+│   ├── ci.yml                     # CI: check, test, clippy, fmt, doc, msrv, bench-compile
+│   └── release.yml                # Release pipeline: CI gate, package, publish
 ├── CONTRIBUTING.md                # This file
 ├── LESSONS.md                     # The 15 DuckDB Rust FFI pitfalls, documented in full
 └── README.md                      # Quick start, SDK overview, badge table

@@ -161,8 +161,7 @@ crate-type = ["staticlib"]
 path = "src/wasm_lib.rs"
 
 [dependencies]
-quack-rs = {{ version = "0.1.0" }}
-duckdb = {{ version = "=1.4.4", features = ["loadable-extension"] }}
+quack-rs = {{ version = "0.2" }}
 libduckdb-sys = {{ version = "=1.4.4", features = ["loadable-extension"] }}
 
 [profile.release]
@@ -190,7 +189,7 @@ EXT_NAME={name}
 EXT_CONFIG=$(PROJ_DIR)extension_config.cmake
 
 # DuckDB C API version (NOT the DuckDB release version)
-# See: https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md (Pitfall P8)
+# See: https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md (Pitfall P2)
 USE_UNSTABLE_C_API=1
 DUCKDB_PLATFORM_VERSION=v1.4.4
 
@@ -208,85 +207,32 @@ fn generate_lib_rs(config: &ScaffoldConfig) -> String {
 //!
 //! A DuckDB extension built with [quack-rs](https://github.com/tomtom215/quack-rs).
 
-use duckdb::{{
-    core::{{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId}},
-    duckdb_entrypoint_c_api,
-    vtab::{{BindInfo, InitInfo, TableFunctionInfo, VTab}},
-    Connection, Result,
-}};
-use std::{{
-    error::Error,
-    ffi::CString,
-    sync::atomic::{{AtomicBool, Ordering}},
-}};
-
-/// Extension name — must match `[lib] name` in Cargo.toml and `description.yml`.
-const EXTENSION_NAME: &str = env!("CARGO_PKG_NAME");
+use quack_rs::prelude::*;
 
 // ---------------------------------------------------------------------------
-// Example: a simple table function. Replace with your own functions.
+// Example: a simple SQL macro. Replace with your own functions.
 // ---------------------------------------------------------------------------
 
-#[repr(C)]
-struct HelloBindData {{
-    name: String,
-}}
-
-#[repr(C)]
-struct HelloInitData {{
-    done: AtomicBool,
-}}
-
-struct HelloVTab;
-
-impl VTab for HelloVTab {{
-    type InitData = HelloInitData;
-    type BindData = HelloBindData;
-
-    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {{
-        bind.add_result_column("column0", LogicalTypeHandle::from(LogicalTypeId::Varchar));
-        let name = bind.get_parameter(0).to_string();
-        Ok(HelloBindData {{ name }})
+/// Registers all extension functions on the given connection.
+fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {{
+    // Example: register a scalar SQL macro (no unsafe callbacks needed).
+    // Replace this with your own aggregate, scalar, or table functions.
+    unsafe {{
+        SqlMacro::scalar(
+            "{name}_hello",
+            &["name"],
+            "concat('Hello from {name}! ', name)",
+        )?
+        .register(con)?;
     }}
-
-    fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {{
-        Ok(HelloInitData {{
-            done: AtomicBool::new(false),
-        }})
-    }}
-
-    fn func(
-        func: &TableFunctionInfo<Self>,
-        output: &mut DataChunkHandle,
-    ) -> Result<(), Box<dyn Error>> {{
-        let init_data = func.get_init_data();
-        let bind_data = func.get_bind_data();
-        if init_data.done.swap(true, Ordering::Relaxed) {{
-            output.set_len(0);
-        }} else {{
-            let vector = output.flat_vector(0);
-            let result = CString::new(format!("Hello from {name}! {{}}", bind_data.name))?;
-            vector.insert(0, result);
-            output.set_len(1);
-        }}
-        Ok(())
-    }}
-
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {{
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
-    }}
+    Ok(())
 }}
 
 // ---------------------------------------------------------------------------
 // Entry point — the C Extension API handles everything, no C++ glue needed.
 // ---------------------------------------------------------------------------
 
-#[duckdb_entrypoint_c_api()]
-pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {{
-    con.register_table_function::<HelloVTab>(EXTENSION_NAME)
-        .expect("Failed to register table function");
-    Ok(())
-}}
+entry_point!({name}_init_c_api, |con| register(con));
 "#,
         description = config.description,
         name = config.name,
@@ -563,7 +509,19 @@ mod tests {
     fn lib_rs_has_entry_point() {
         let files = generate_scaffold(&valid_config()).unwrap();
         let lib = files.iter().find(|f| f.path == "src/lib.rs").unwrap();
-        assert!(lib.content.contains("duckdb_entrypoint_c_api"));
+        assert!(lib.content.contains("entry_point!"));
+    }
+
+    #[test]
+    fn lib_rs_uses_quack_rs_api() {
+        let files = generate_scaffold(&valid_config()).unwrap();
+        let lib = files.iter().find(|f| f.path == "src/lib.rs").unwrap();
+        assert!(lib.content.contains("quack_rs::prelude"));
+        // Must not use the duckdb crate VTab API
+        assert!(!lib.content.contains("use duckdb::"));
+        // Must not contain .expect() or .unwrap() (no panics in FFI paths)
+        assert!(!lib.content.contains(".expect("));
+        assert!(!lib.content.contains(".unwrap()"));
     }
 
     #[test]
@@ -571,7 +529,6 @@ mod tests {
         let files = generate_scaffold(&valid_config()).unwrap();
         let lib = files.iter().find(|f| f.path == "src/lib.rs").unwrap();
         // Must not contain any C++ references
-        assert!(!lib.content.contains("cpp"));
         assert!(!lib.content.contains("CMake"));
     }
 

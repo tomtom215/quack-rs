@@ -60,9 +60,11 @@
 //!
 //! ## Safety
 //!
-//! All unsafe code is confined to this SDK. Extension authors using the high-level
-//! API write 100% safe Rust. Every `unsafe` block inside this crate has a
-//! `// SAFETY:` comment explaining the invariants being upheld.
+//! All `unsafe` code within this SDK is sound and documented. Extension authors
+//! must write `unsafe extern "C"` callback functions (required by `DuckDB`'s C API),
+//! but the SDK's helpers minimize the surface area of unsafe code within those
+//! callbacks. Every `unsafe` block inside this crate has a `// SAFETY:` comment
+//! explaining the invariants being upheld.
 //!
 //! ## Design Principles
 //!
@@ -109,11 +111,11 @@ pub mod vector;
 /// This constant corresponds to `DuckDB` release v1.4.x. If you are targeting a
 /// different `DuckDB` release, consult the `DuckDB` changelog for the C API version.
 ///
-/// # Pitfall P8: C API version ≠ `DuckDB` release version
+/// # Pitfall P2: C API version ≠ `DuckDB` release version
 ///
 /// The `-dv` flag passed to `append_extension_metadata.py` must be this value
 /// (`"v1.2.0"`), **not** the `DuckDB` release version (`"v1.4.4"`). Using the wrong
 /// value causes the metadata script to fail silently or produce incorrect metadata.
 ///
-/// See `LESSONS.md` → Pitfall P8 for full details.
+/// See `LESSONS.md` → Pitfall P2 for full details.
 pub const DUCKDB_API_VERSION: &str = "v1.2.0";
