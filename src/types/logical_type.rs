@@ -96,6 +96,15 @@ impl Drop for LogicalType {
     }
 }
 
+impl From<TypeId> for LogicalType {
+    /// Creates a `LogicalType` from a `TypeId`.
+    ///
+    /// This is equivalent to calling [`LogicalType::new`].
+    fn from(type_id: TypeId) -> Self {
+        Self::new(type_id)
+    }
+}
+
 // LogicalType is not Clone or Copy because the underlying handle is not reference-counted.
 // If you need to pass it to multiple places, use `as_raw()` to borrow the handle temporarily.
 

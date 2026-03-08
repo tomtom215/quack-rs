@@ -23,6 +23,8 @@ quack_rs
 │   ├── state        FfiState<T> — raw-pointer lifecycle wrapper
 │   ├── callbacks    Type aliases for the 6 DuckDB aggregate callback signatures
 │   └── builder      AggregateFunctionBuilder, AggregateFunctionSetBuilder
+├── scalar
+│   └── builder      ScalarFunctionBuilder, ScalarFunctionSetBuilder
 ├── vector
 │   ├── reader       VectorReader — typed reads from duckdb_data_chunk
 │   ├── writer       VectorWriter — typed writes to duckdb_vector
@@ -30,7 +32,8 @@ quack_rs
 │   └── string       DuckStringView — 16-byte duckdb_string_t format
 ├── types
 │   ├── type_id      TypeId enum — all DuckDB column types
-│   └── logical_type LogicalType — RAII for duckdb_logical_type
+│   ├── logical_type LogicalType — RAII for duckdb_logical_type
+│   └── null_handling NullHandling — NULL propagation behaviour
 ├── interval         DuckInterval, interval_to_micros (checked + saturating)
 ├── error            ExtensionError, ExtResult<T>
 └── testing
@@ -44,7 +47,8 @@ quack_rs
 | `entry_point` | Correct initialization sequence | Yes |
 | `aggregate::state` | `Box<T>` lifecycle behind a raw pointer | Yes |
 | `aggregate::callbacks` | Signature documentation only (type aliases) | No |
-| `aggregate::builder` | Builder API for function registration | Yes |
+| `aggregate::builder` | Builder API for aggregate function registration | Yes |
+| `scalar::builder` | Builder API for scalar function registration | Yes |
 | `vector::reader` | Typed reads with correct alignment and boolean semantics | Yes |
 | `vector::writer` | Typed writes with NULL flag support | Yes |
 | `vector::validity` | Bit-packed validity bitmap abstraction | Yes |

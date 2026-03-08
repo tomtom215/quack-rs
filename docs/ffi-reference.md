@@ -8,6 +8,7 @@ each pitfall in detail; this page is the quick-reference.
 ## Table of Contents
 
 - [Extension Entry Point](#extension-entry-point)
+- [Scalar Function Registration](#scalar-function-registration)
 - [Aggregate Function Registration](#aggregate-function-registration)
 - [Aggregate Callback Signatures](#aggregate-callback-signatures)
 - [Vector API](#vector-api)
@@ -53,6 +54,51 @@ duckdb_disconnect(&mut con)
 **Critical**: The version string passed to `duckdb_rs_extension_api_init` is the
 *C API version* (`"v1.2.0"` for DuckDB 1.4.x), not the DuckDB release version
 (`"v1.4.4"`). See [Pitfall P8](../LESSONS.md).
+
+---
+
+## Scalar Function Registration
+
+### Single function
+
+```rust
+unsafe {
+    ScalarFunctionBuilder::new("double_it")
+        .param(TypeId::BigInt)
+        .returns(TypeId::BigInt)
+        .function(double_it_fn)
+        .register(con)?
+}
+```
+
+### Function set (multiple overloads)
+
+```rust
+unsafe {
+    ScalarFunctionSetBuilder::new("my_add")
+        .overload(
+            ScalarOverloadBuilder::new()
+                .param(TypeId::Integer).param(TypeId::Integer)
+                .returns(TypeId::Integer)
+                .function(add_ints)
+        )
+        .overload(
+            ScalarOverloadBuilder::new()
+                .param(TypeId::Double).param(TypeId::Double)
+                .returns(TypeId::Double)
+                .function(add_doubles)
+        )
+        .register(con)?
+}
+```
+
+### NULL handling
+
+```rust
+ScalarFunctionBuilder::new("my_fn")
+    .null_handling(NullHandling::SpecialNullHandling) // receive NULLs in callback
+    // ...
+```
 
 ---
 
@@ -284,7 +330,7 @@ dealing with these constants directly.
 | L2 | Double-free / crash on destroy | `destroy` called twice, `inner` not nulled | Null `inner` after `Box::from_raw` |
 | L4 | Segfault writing NULL | `get_validity` before `ensure_validity_writable` | Call `ensure_validity_writable` first |
 | L5 | Wrong boolean values | Cast `*const u8` to `*const bool` | Use `*data.add(i) != 0` |
-| L6 | Function silently not registered | Missing `set_name` on individual function in set | Use `AggregateFunctionSetBuilder` |
+| L6 | Function silently not registered | Missing `set_name` on individual function in set | Use `AggregateFunctionSetBuilder` / `ScalarFunctionSetBuilder` |
 | L7 | Memory leak | `duckdb_create_logical_type` without `destroy` | Use `LogicalType` RAII wrapper |
 | P1 | Extension fails to load | `[lib] name` ≠ description.yml `name` | Match them exactly |
 | P8 | Extension fails API init | Using DuckDB release version in `api_init` | Use C API version (`"v1.2.0"`) |

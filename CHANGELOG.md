@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`VectorWriter::write_interval`** — writes INTERVAL values to output vectors using
+  the correct 16-byte `{ months: i32, days: i32, micros: i64 }` layout.
+
+- **`ScalarFunctionSetBuilder`** — builder for registering scalar function sets
+  (multiple overloads under one name), mirroring `AggregateFunctionSetBuilder`.
+
+- **`TypeId` variants** — `Decimal`, `Struct`, `Map`, `UHugeInt`, `TimeTz`,
+  `TimestampS`, `TimestampMs`, `TimestampNs`, `Array`, `Enum`, `Union`, `Bit`.
+
+- **`From<TypeId> for LogicalType`** — idiomatic conversion from `TypeId`.
+
+- **`#[must_use]` on builder structs** — `ScalarFunctionBuilder`,
+  `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder`, and `OverloadBuilder`
+  now warn at compile time if constructed but never consumed.
+
+- **`NullHandling` enum and `.null_handling()` builder method** — configurable
+  NULL propagation for scalar and aggregate functions via
+  `duckdb_scalar_function_set_special_handling` /
+  `duckdb_aggregate_function_set_special_handling`.
+
 ### Changed
 
 - Bump `criterion` dev-dependency from `0.5` to `0.8`.

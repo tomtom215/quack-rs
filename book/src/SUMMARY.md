@@ -24,6 +24,7 @@
 - [Aggregate Functions](functions/aggregate.md)
   - [State Management](functions/aggregate-state.md)
   - [Overloading with Function Sets](functions/aggregate-sets.md)
+- [NULL Handling](functions/null-handling.md)
 - [SQL Macros](functions/sql-macros.md)
 
 # Working with Data

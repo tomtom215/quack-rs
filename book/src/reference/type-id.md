@@ -29,8 +29,20 @@ from `libduckdb-sys` and provides safe, named variants.
 | `TypeId::Interval` | `INTERVAL` | `DUCKDB_TYPE_INTERVAL` | months + days + µs |
 | `TypeId::Varchar` | `VARCHAR` | `DUCKDB_TYPE_VARCHAR` | UTF-8 string |
 | `TypeId::Blob` | `BLOB` | `DUCKDB_TYPE_BLOB` | binary data |
+| `TypeId::Decimal` | `DECIMAL` | `DUCKDB_TYPE_DECIMAL` | fixed-point decimal |
+| `TypeId::TimestampS` | `TIMESTAMP_S` | `DUCKDB_TYPE_TIMESTAMP_S` | seconds since epoch |
+| `TypeId::TimestampMs` | `TIMESTAMP_MS` | `DUCKDB_TYPE_TIMESTAMP_MS` | milliseconds since epoch |
+| `TypeId::TimestampNs` | `TIMESTAMP_NS` | `DUCKDB_TYPE_TIMESTAMP_NS` | nanoseconds since epoch |
+| `TypeId::Enum` | `ENUM` | `DUCKDB_TYPE_ENUM` | enumeration type |
 | `TypeId::List` | `LIST` | `DUCKDB_TYPE_LIST` | variable-length list |
+| `TypeId::Struct` | `STRUCT` | `DUCKDB_TYPE_STRUCT` | named fields (row type) |
+| `TypeId::Map` | `MAP` | `DUCKDB_TYPE_MAP` | key-value pairs |
 | `TypeId::Uuid` | `UUID` | `DUCKDB_TYPE_UUID` | 128-bit UUID |
+| `TypeId::Union` | `UNION` | `DUCKDB_TYPE_UNION` | tagged union of types |
+| `TypeId::Bit` | `BIT` | `DUCKDB_TYPE_BIT` | bitstring |
+| `TypeId::TimeTz` | `TIMETZ` | `DUCKDB_TYPE_TIME_TZ` | timezone-aware time |
+| `TypeId::UHugeInt` | `UHUGEINT` | `DUCKDB_TYPE_UHUGEINT` | 128-bit unsigned |
+| `TypeId::Array` | `ARRAY` | `DUCKDB_TYPE_ARRAY` | fixed-length array |
 
 ---
 
@@ -86,11 +98,12 @@ variants as follows:
 | `Float` | `read_f32` | `write_f32` | `f32` |
 | `Double` | `read_f64` | `write_f64` | `f64` |
 | `Varchar` | `read_str` | `write_varchar` | `&str` |
-| `Interval` | `read_interval` | — | `DuckInterval` |
+| `Interval` | `read_interval` | `write_interval` | `DuckInterval` |
 
-`HugeInt`, `Blob`, `List`, `Uuid`, `Date`, `Time`, `Timestamp`, `TimestampTz`
-do not yet have dedicated read/write helpers. Access these via the raw data
-pointer from `duckdb_vector_get_data`.
+`HugeInt`, `Blob`, `List`, `Struct`, `Map`, `Uuid`, `Date`, `Time`, `Timestamp`,
+`TimestampTz`, `Decimal`, `TimestampS`, `TimestampMs`, `TimestampNs`, `Enum`,
+`Union`, `Bit`, `TimeTz`, `UHugeInt`, `Array` do not yet have dedicated read/write
+helpers. Access these via the raw data pointer from `duckdb_vector_get_data`.
 
 ---
 
@@ -132,9 +145,11 @@ For types that require runtime parameters (such as `DECIMAL(p, s)` or
 parameterized `LIST`), use `quack_rs::types::LogicalType`:
 
 ```rust
-use quack_rs::types::LogicalType;
+use quack_rs::types::{LogicalType, TypeId};
 
 let lt = LogicalType::new(TypeId::BigInt);
+// or use the From impl:
+let lt: LogicalType = TypeId::BigInt.into();
 // LogicalType implements Drop → calls duckdb_destroy_logical_type automatically
 ```
 

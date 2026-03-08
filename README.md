@@ -88,7 +88,7 @@ L2  State destroy double-free → FfiState<T> nulls pointers after free
 L3  No panics across FFI → init_extension uses Result throughout
 L4  ensure_validity_writable required before NULL output → VectorWriter handles it
 L5  Boolean reading must use u8 != 0 → VectorReader enforces this
-L6  Function set name must be set on EACH member → AggregateFunctionSetBuilder enforces
+L6  Function set name must be set on EACH member → Set builders enforce on every member
 L7  LogicalType memory leak → LogicalType implements Drop
 
 P1  Library name must match [lib] name in Cargo.toml exactly
@@ -253,11 +253,11 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 | [`aggregate`] | Aggregate function registration | `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` |
 | [`aggregate::state`] | Generic FFI state management | `AggregateState`, `FfiState<T>` |
 | [`aggregate::callbacks`] | Callback type aliases | `UpdateFn`, `CombineFn`, `FinalizeFn`, … |
-| [`scalar`] | Scalar function registration | `ScalarFunctionBuilder` |
+| [`scalar`] | Scalar function registration | `ScalarFunctionBuilder`, `ScalarFunctionSetBuilder` |
 | [`sql_macro`] | SQL macro registration (no FFI callbacks) | `SqlMacro`, `MacroBody` |
 | [`vector`] | Safe reading/writing of DuckDB vectors | `VectorReader`, `VectorWriter` |
 | [`vector::string`] | 16-byte DuckDB string format | `DuckStringView`, `read_duck_string` |
-| [`types`] | DuckDB type system wrappers | `TypeId`, `LogicalType` |
+| [`types`] | DuckDB type system wrappers | `TypeId`, `LogicalType`, `NullHandling` |
 | [`interval`] | INTERVAL ↔ microseconds conversion | `DuckInterval`, `interval_to_micros` |
 | [`error`] | FFI-safe error type | `ExtensionError`, `ExtResult<T>` |
 | [`validate`] | Community extension compliance | All validators below |
@@ -312,7 +312,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L3** | Panic across FFI | Process abort / UB | `init_extension` propagates `Result`, never panics |
 | **L4** | Missing `ensure_validity_writable` | Segfault / silent NULL corruption | `VectorWriter::set_null` calls it automatically |
 | **L5** | Boolean undefined behavior | Non-deterministic bool semantics | `VectorReader::read_bool` reads `u8 != 0` |
-| **L6** | Function set name on each member | Silent registration failure | `AggregateFunctionSetBuilder` sets name on every member |
+| **L6** | Function set name on each member | Silent registration failure | `AggregateFunctionSetBuilder` and `ScalarFunctionSetBuilder` set name on every member |
 | **L7** | `LogicalType` memory leak | RSS grows with each extension load | `LogicalType` implements `Drop` |
 
 ### Practical Pitfalls (P)
@@ -513,7 +513,7 @@ flowchart TB
         direction LR
         EP["**entry_point**<br/>entry_point! · init_extension"]
         AGG["**aggregate**<br/>AggregateFunctionBuilder<br/>AggregateFunctionSetBuilder · FfiState&lt;T&gt;"]
-        SCL["**scalar**<br/>ScalarFunctionBuilder"]
+        SCL["**scalar**<br/>ScalarFunctionBuilder<br/>ScalarFunctionSetBuilder"]
         SM["**sql_macro**<br/>SqlMacro · MacroBody"]
     end
 

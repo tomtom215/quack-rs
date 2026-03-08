@@ -95,7 +95,7 @@ SELECT category, word_count(text) FROM my_table GROUP BY category;
 - [ ] Add `repository`, `homepage`, `documentation` to `Cargo.toml`
 - [ ] Add a `description.yml` (see `quack_rs::validate::parse_description_yml`)
 - [ ] Verify your `[profile.release]` has `panic = "abort"`, `lto = true`
-      (use `quack_rs::validate::check_release_profile`)
+      (use `quack_rs::validate::validate_release_profile`)
 - [ ] Add integration tests using `duckdb = { features = ["bundled"] }`
 
 ## Code tour
@@ -143,7 +143,7 @@ src/lib.rs
 | L1 | `combine` must copy **all** state fields | `wc_combine` | Comment + test |
 | L4 | `set_null` requires `ensure_validity_writable` first | `VectorWriter::set_null` | Handled inside `VectorWriter` |
 | P8 | C API version ≠ DuckDB release version | `DUCKDB_API_VERSION` | Provided by `quack_rs` |
-| P13 | No `panic!` across FFI | entry point | `init_extension` catches errors |
+| L3 | No `panic!` across FFI | entry point | `init_extension` catches errors |
 
 [quack-rs]: https://docs.rs/quack-rs
 [duckdb-releases]: https://github.com/duckdb/duckdb/releases

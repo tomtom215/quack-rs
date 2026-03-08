@@ -88,6 +88,7 @@ unsafe { writer.write_f32(row, value) };
 unsafe { writer.write_f64(row, value) };
 unsafe { writer.write_bool(row, value) };
 unsafe { writer.write_varchar(row, s) };   // &str
+unsafe { writer.write_interval(row, interval) };  // DuckInterval
 ```
 
 ### Writing NULL
