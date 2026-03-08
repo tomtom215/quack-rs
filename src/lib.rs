@@ -98,6 +98,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+// DuckDB's C API and duckdb_string_t layout assume 64-bit pointers.
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("quack-rs requires a 64-bit target (DuckDB does not support 32-bit platforms).");
+
 pub mod aggregate;
 pub mod cast;
 pub mod config;
