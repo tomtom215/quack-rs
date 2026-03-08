@@ -16,7 +16,7 @@ If you discover a security vulnerability in quack-rs, please report it responsib
 
 Instead, please use GitHub's
 [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
-feature on this repository. Alternatively, email **tomtom215@users.noreply.github.com**
+feature on this repository. Alternatively, email **tomf@tomtomtech.net**
 with the subject line `[quack-rs security]`.
 
 ### What to include

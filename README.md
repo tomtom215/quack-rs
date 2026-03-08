@@ -7,7 +7,7 @@
   <p>
     <a href="https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml"><img src="https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://crates.io/crates/quack-rs"><img src="https://img.shields.io/crates/v/quack-rs.svg" alt="Crates.io"></a>
-    <a href="https://tomtom215.github.io/quack-rs/"><img src="https://img.shields.io/badge/docs-book-blue.svg" alt="Documentation"></a>
+    <a href="https://quack-rs.com/"><img src="https://img.shields.io/badge/docs-book-blue.svg" alt="Documentation"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://blog.rust-lang.org/2025/01/30/Rust-1.84.1.html"><img src="https://img.shields.io/badge/MSRV-1.84.1-blue.svg" alt="MSRV: 1.84.1"></a>
   </p>
