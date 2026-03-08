@@ -56,9 +56,8 @@ pub struct DuckStringView<'a> {
 impl<'a> DuckStringView<'a> {
     /// Creates a `DuckStringView` from the raw 16-byte representation.
     ///
-    /// # Panics
-    ///
-    /// Panics if `raw` is not exactly 16 bytes.
+    /// The input is a fixed-size `[u8; 16]` reference, so the size is
+    /// enforced at compile time.
     #[must_use]
     pub const fn from_bytes(raw: &'a [u8; DUCK_STRING_SIZE]) -> Self {
         let length = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;

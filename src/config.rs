@@ -81,12 +81,17 @@ impl DbConfig {
     /// Returns `ExtensionError` if the option name or value is not recognised
     /// by `DuckDB`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `name` or `value` contain interior null bytes.
+    /// Returns `ExtensionError` if `name` or `value` contain interior null bytes,
+    /// or if `DuckDB` does not recognise the option.
     pub fn set(self, name: &str, value: &str) -> Result<Self, ExtensionError> {
-        let c_name = CString::new(name).expect("config name must not contain null bytes");
-        let c_value = CString::new(value).expect("config value must not contain null bytes");
+        let c_name = CString::new(name).map_err(|_| {
+            ExtensionError::new(format!("config name '{name}' contains a null byte"))
+        })?;
+        let c_value = CString::new(value).map_err(|_| {
+            ExtensionError::new(format!("config value '{value}' contains a null byte"))
+        })?;
         // SAFETY: self.config is a valid handle; c_name and c_value are NUL-terminated.
         let state = unsafe { duckdb_set_config(self.config, c_name.as_ptr(), c_value.as_ptr()) };
         if state == DuckDBSuccess {
