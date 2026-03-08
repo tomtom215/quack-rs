@@ -75,39 +75,19 @@ To load the extension into a live DuckDB session you must first append a
 ### Step 1: Package the extension
 
 ```bash
-# From the hello-ext directory, after cargo build --release:
-python3 ../../scripts/append_metadata.py \
-    target/release/libhello_ext.so \
+# From the workspace root, after cargo build --release:
+cargo run --bin append_metadata -- \
+    examples/hello-ext/target/release/libhello_ext.so \
     hello_ext.duckdb_extension \
     --abi-type C_STRUCT \
-    --duckdb-version v1.4.0 \
-    --api-version v1.2.0 \
+    --extension-version v0.1.0 \
+    --duckdb-version v1.2.0 \
     --platform linux_amd64
-```
 
-Or manually in Python (one-liner for CI):
-
-```python
-python3 - << 'EOF'
-import sys, pathlib
-
-def make_field(s, size=32):
-    b = s.encode('ascii')
-    return b + b'\x00' * (size - len(b))
-
-so = pathlib.Path('target/release/libhello_ext.so').read_bytes()
-metadata = (
-    make_field('') * 3 +         # fields 0-2: reserved
-    make_field('C_STRUCT') +      # field 3: ABI type
-    make_field('v0.1.0') +        # field 4: extension version
-    make_field('v1.2.0') +        # field 5: DuckDB C API version (min for C_STRUCT)
-    make_field('linux_amd64') +   # field 6: platform
-    make_field('4') +             # field 7: magic
-    b'\x00' * 256                 # signature (empty = unsigned)
-)
-pathlib.Path('hello_ext.duckdb_extension').write_bytes(so + metadata)
-print('Done')
-EOF
+# Or install once and use from anywhere:
+cargo install --path . --bin append_metadata
+append_metadata libhello_ext.so hello_ext.duckdb_extension \
+    --extension-version v0.1.0 --duckdb-version v1.2.0 --platform linux_amd64
 ```
 
 > **Metadata format:** The last 512 bytes of a `.duckdb_extension` file contain
