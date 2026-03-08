@@ -555,7 +555,10 @@ fn scaffold_generated_code_compiles() {
             // Rewrite quack-rs dep to use local path
             let patched = f.content.replace(
                 r#"quack-rs = { version = "0.2" }"#,
-                &format!("quack-rs = {{ path = \"{}\" }}", workspace_root.display()),
+                &format!(
+                    "quack-rs = {{ path = \"{}\" }}",
+                    workspace_root.display().to_string().replace('\\', "/")
+                ),
             );
             fs::write(&dest, patched).unwrap();
         } else {
