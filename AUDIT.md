@@ -198,7 +198,7 @@ references the `warn` level, which could confuse contributors.
 - **Copyright dates** — "2026" is correct (current year)
 - **MSRV** — 1.84.1 consistent across all documents
 - **`&raw mut` syntax** — Valid Rust 1.82+, MSRV is 1.84.1
-- **CI pipelines** — 11-job CI, 7-job release, 2-job docs — all correctly configured
+- **CI pipelines** — 11-job CI (16 matrix instances across Linux/macOS/Windows), 7-job release, 2-job docs — all correctly configured
 - **deny.toml** — Security audits, license policy, source restrictions
 - **dependabot.yml** — Weekly updates for both cargo and GitHub Actions
 - **Cargo.lock** — Committed (correct for library with binary)
