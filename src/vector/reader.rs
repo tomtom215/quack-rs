@@ -31,8 +31,8 @@
 
 use libduckdb_sys::{
     duckdb_data_chunk, duckdb_data_chunk_get_size, duckdb_data_chunk_get_vector,
-    duckdb_validity_row_is_valid, duckdb_vector, duckdb_vector_get_data, duckdb_vector_get_validity,
-    idx_t,
+    duckdb_validity_row_is_valid, duckdb_vector, duckdb_vector_get_data,
+    duckdb_vector_get_validity, idx_t,
 };
 
 /// A typed reader for a single column in a `DuckDB` data chunk.

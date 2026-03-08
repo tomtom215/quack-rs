@@ -63,9 +63,9 @@ use std::os::raw::{c_char, c_void};
 
 use libduckdb_sys::{
     duckdb_add_replacement_scan, duckdb_create_varchar_length, duckdb_database,
-    duckdb_delete_callback_t, duckdb_destroy_value,
-    duckdb_replacement_scan_add_parameter, duckdb_replacement_scan_info,
-    duckdb_replacement_scan_set_error, duckdb_replacement_scan_set_function_name,
+    duckdb_delete_callback_t, duckdb_destroy_value, duckdb_replacement_scan_add_parameter,
+    duckdb_replacement_scan_info, duckdb_replacement_scan_set_error,
+    duckdb_replacement_scan_set_function_name,
 };
 
 /// The replacement scan callback signature.

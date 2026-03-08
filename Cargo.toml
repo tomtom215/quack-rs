@@ -16,7 +16,7 @@ exclude = ["docs/", "examples/hello-ext/", ".github/", "book/"]
 
 [lib]
 name = "quack_rs"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }

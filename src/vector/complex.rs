@@ -18,8 +18,8 @@
 //! - Use [`StructVector`] / [`ListVector`] / [`MapVector`] to access child vectors
 //!   from input or output vectors.
 //! - Child vectors are themselves `duckdb_vector` handles — pass them to
-//!   [`VectorReader`][crate::vector::VectorReader] or
-//!   [`VectorWriter`][crate::vector::VectorWriter] to read/write the actual values.
+//!   [`VectorReader`] or
+//!   [`VectorWriter`] to read/write the actual values.
 //!
 //! # Example: Reading a STRUCT column
 //!

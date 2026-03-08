@@ -3,8 +3,6 @@
   <img class="book-logo-dark"  src="assets/logos/logo1-dark-elegant.svg" alt="quack-rs">
 </div>
 
-# quack-rs
-
 **The Rust SDK for building DuckDB loadable extensions — no C++ required.**
 
 [![CI](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml)
@@ -39,10 +37,18 @@ DuckDB's own documentation acknowledges the gap:
 | Extension type | quack-rs support |
 |----------------|-----------------|
 | Scalar functions | ✅ `ScalarFunctionBuilder` |
+| Overloaded scalars | ✅ `ScalarFunctionSetBuilder` |
 | Aggregate functions | ✅ `AggregateFunctionBuilder` |
 | Overloaded aggregates | ✅ `AggregateFunctionSetBuilder` |
+| Table functions | ✅ `TableFunctionBuilder` |
+| Cast / TRY\_CAST functions | ✅ `CastFunctionBuilder` |
+| Replacement scans | ✅ `ReplacementScanBuilder` |
 | SQL macros (scalar) | ✅ `SqlMacro::scalar` |
 | SQL macros (table) | ✅ `SqlMacro::table` |
+
+> **Note:** Window functions and COPY format handlers have no counterpart in DuckDB's
+> public C Extension API and cannot be implemented from Rust (or any language) via that
+> API. See [Known Limitations](reference/known-limitations.md).
 
 ---
 
@@ -59,7 +65,7 @@ being caught by end-to-end tests:
 
 1. A SEGFAULT on load (wrong entry point sequence)
 2. 6 of 7 functions silently not registered (undocumented function-set naming rule)
-3. Wrong results from window aggregates (combine not propagating configuration fields)
+3. Wrong aggregate results under parallel plans (combine callback not propagating configuration fields to fresh target states)
 
 `quack-rs` makes each of these impossible through type-safe builders and safe wrappers.
 The full catalog is documented in the [Pitfall Reference](reference/pitfalls.md).
@@ -69,10 +75,11 @@ The full catalog is documented in the [Pitfall Reference](reference/pitfalls.md)
 ## Key features
 
 - **Zero C++** — no `CMakeLists.txt`, no header files, no glue code
+- **All C API function types** — scalar, aggregate, table, cast, replacement scan, SQL macro
 - **Panic-free FFI** — `init_extension` never panics; errors surface via `Result`
 - **RAII memory management** — `LogicalType` and `FfiState<T>` prevent leaks and double-frees
-- **Type-safe builders** — `ScalarFunctionBuilder` and `AggregateFunctionBuilder` enforce correct configuration
-- **SQL macros** — register `CREATE MACRO` statements without any callbacks
+- **Type-safe builders** — `ScalarFunctionBuilder`, `AggregateFunctionBuilder`, `TableFunctionBuilder`, `CastFunctionBuilder`, `ReplacementScanBuilder`
+- **SQL macros** — register `CREATE MACRO` statements without any FFI callbacks
 - **Testable state** — `AggregateTestHarness<T>` tests aggregate logic without a live DuckDB
 - **Scaffold generator** — produces a submission-ready community extension project from code
 - **15 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptoms and fixes

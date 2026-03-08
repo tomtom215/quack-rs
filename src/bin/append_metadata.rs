@@ -63,14 +63,14 @@ fn build_metadata(
     platform: &str,
 ) -> Result<[u8; METADATA_SIZE], String> {
     let fields: [[u8; FIELD_SIZE]; NUM_FIELDS] = [
-        make_field("")?,               // Field 0: reserved
-        make_field("")?,               // Field 1: reserved
-        make_field("")?,               // Field 2: reserved
-        make_field(abi_type)?,         // Field 3: ABI type
+        make_field("")?,                // Field 0: reserved
+        make_field("")?,                // Field 1: reserved
+        make_field("")?,                // Field 2: reserved
+        make_field(abi_type)?,          // Field 3: ABI type
         make_field(extension_version)?, // Field 4: extension version
-        make_field(duckdb_version)?,   // Field 5: DuckDB C API version
-        make_field(platform)?,         // Field 6: platform
-        make_field("4")?,              // Field 7: magic (must be "4")
+        make_field(duckdb_version)?,    // Field 5: DuckDB C API version
+        make_field(platform)?,          // Field 6: platform
+        make_field("4")?,               // Field 7: magic (must be "4")
     ];
 
     let mut block = [0u8; METADATA_SIZE];
@@ -159,9 +159,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--abi-type" => {
                 i += 1;
-                abi_type.clone_from(raw
-                    .get(i)
-                    .ok_or("--abi-type requires a value")?);
+                abi_type.clone_from(raw.get(i).ok_or("--abi-type requires a value")?);
                 if !VALID_ABI_TYPES.contains(&abi_type.as_str()) {
                     return Err(format!(
                         "--abi-type must be one of {VALID_ABI_TYPES:?}, got {abi_type:?}"
@@ -170,21 +168,16 @@ fn parse_args() -> Result<Args, String> {
             }
             "--extension-version" => {
                 i += 1;
-                extension_version.clone_from(raw
-                    .get(i)
-                    .ok_or("--extension-version requires a value")?);
+                extension_version
+                    .clone_from(raw.get(i).ok_or("--extension-version requires a value")?);
             }
             "--duckdb-version" => {
                 i += 1;
-                duckdb_version.clone_from(raw
-                    .get(i)
-                    .ok_or("--duckdb-version requires a value")?);
+                duckdb_version.clone_from(raw.get(i).ok_or("--duckdb-version requires a value")?);
             }
             "--platform" => {
                 i += 1;
-                platform.clone_from(raw
-                    .get(i)
-                    .ok_or("--platform requires a value")?);
+                platform.clone_from(raw.get(i).ok_or("--platform requires a value")?);
             }
             "--dump" => {
                 dump = true;
@@ -223,10 +216,7 @@ fn run() -> Result<(), String> {
     let args = parse_args()?;
 
     if !args.input.exists() {
-        return Err(format!(
-            "input file not found: {}",
-            args.input.display()
-        ));
+        return Err(format!("input file not found: {}", args.input.display()));
     }
 
     let so_data = fs::read(&args.input)
@@ -245,11 +235,7 @@ fn run() -> Result<(), String> {
     fs::write(&args.output, &output)
         .map_err(|e| format!("failed to write {}: {e}", args.output.display()))?;
 
-    println!(
-        "Written {} bytes → {}",
-        output.len(),
-        args.output.display()
-    );
+    println!("Written {} bytes → {}", output.len(), args.output.display());
 
     if args.dump {
         dump_fields(&metadata);
@@ -400,8 +386,7 @@ mod tests {
         let fake_so: Vec<u8> = (0u8..=15).collect();
         fs::write(&input, &fake_so).unwrap();
 
-        let metadata =
-            build_metadata("C_STRUCT", "v0.2.0", "v1.2.0", "linux_arm64").unwrap();
+        let metadata = build_metadata("C_STRUCT", "v0.2.0", "v1.2.0", "linux_arm64").unwrap();
 
         let mut combined = fake_so.clone();
         combined.extend_from_slice(&metadata);

@@ -39,18 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   types with working code examples in the module doc.
 
 - **`prelude` additions** — `TableFunctionBuilder`, `BindInfo`, `FfiBindData`,
-  `FfiInitData`, `ReplacementScanBuilder`, `StructVector`, `ListVector`, `MapVector`
+  `FfiInitData`, `ReplacementScanBuilder`, `StructVector`, `ListVector`, `MapVector`,
+  `CastFunctionBuilder`, `CastFunctionInfo`, `CastMode`
   are now all re-exported from `quack_rs::prelude`.
 
-### Fixed
+- **`CastFunctionBuilder`** — type-safe builder for registering custom type cast
+  functions via `duckdb_cast_function_*`. Covers both explicit `CAST(x AS T)` and
+  implicit coercions (with optional `implicit_cost`). The companion `CastFunctionInfo`
+  wrapper exposes `cast_mode()`, `set_error()`, and `set_row_error()` inside callbacks,
+  giving correct `TRY_CAST` / `CAST` error handling with zero raw pointer boilerplate.
+  See [`cast`](src/cast/) for the full API.
 
-- **`hello-ext` `gs_bind` callback** — replaced incorrect `duckdb_value_int64(param)`
-  (wrong arity: takes 3 arguments) with `duckdb_get_int64(param)` (correct 1-argument
-  form). The extension now builds cleanly and all 11 live SQL tests pass against
-  DuckDB 1.4.4.
-
-- **`VectorWriter::write_interval`** — writes INTERVAL values to output vectors using
-  the correct 16-byte `{ months: i32, days: i32, micros: i64 }` layout.
+- **`DbConfig`** — RAII wrapper for `duckdb_config` (extension configuration
+  parameters). Builder-style `.set(name, value)?` chain, automatic `duckdb_destroy_config`
+  on drop, and `flag_count()` / `get_flag(index)` for enumerating all available options.
+  Useful when an extension needs to open a secondary `DuckDB` database from within its
+  callbacks. See [`config`](src/config.rs).
 
 - **`ScalarFunctionSetBuilder`** — builder for registering scalar function sets
   (multiple overloads under one name), mirroring `AggregateFunctionSetBuilder`.
@@ -68,6 +72,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NULL propagation for scalar and aggregate functions via
   `duckdb_scalar_function_set_special_handling` /
   `duckdb_aggregate_function_set_special_handling`.
+
+- **`VectorWriter::write_interval`** — writes INTERVAL values to output vectors using
+  the correct 16-byte `{ months: i32, days: i32, micros: i64 }` layout.
+
+- **`append_metadata` binary** — native Rust replacement for the Python
+  `append_extension_metadata.py` script, now shipping with the crate.
+  Install with `cargo install quack-rs --bin append_metadata`.
+
+- **`hello-ext` cast function demo** — `examples/hello-ext` now registers a
+  `CAST(VARCHAR AS INTEGER)` cast function using `CastFunctionBuilder`,
+  demonstrating both `CAST` (abort-on-error) and `TRY_CAST` (NULL-on-error)
+  code paths. Five unit tests cover `parse_varchar_to_int`, including
+  boundary values and overflow.
+
+### Not implemented (upstream C API gap)
+
+- **Window functions** — `duckdb_create_window_function` and related symbols do
+  not exist in DuckDB's public C extension API.  They are implemented only in the
+  C++ layer and are therefore not wrappable by `quack-rs` or any other C-API
+  binding.  Verified against the
+  [DuckDB stable C API reference](https://duckdb.org/docs/stable/clients/c/api)
+  and `libduckdb-sys` 1.4.4 bindings.
+
+- **COPY format handlers** — `duckdb_create_copy_function` and related symbols are
+  similarly absent from the C extension API for the same reason.
+
+### Fixed
+
+- **`hello-ext` `gs_bind` callback** — replaced incorrect `duckdb_value_int64(param)`
+  (wrong arity: takes 3 arguments) with `duckdb_get_int64(param)` (correct 1-argument
+  form). The extension now builds cleanly and all 11 live SQL tests pass against
+  DuckDB 1.4.4.
 
 ### Changed
 

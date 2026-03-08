@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.84.1"
 authors = ["Tom F"]
 license = "MIT"
-description = "Example DuckDB community extension built with quack-rs: word_count + first_word"
+description = "Example DuckDB community extension built with quack-rs: word_count, first_word, generate_series_ext, VARCHAR→INTEGER cast"
 
 [lib]
 name = "hello_ext"

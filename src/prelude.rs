@@ -18,6 +18,9 @@
 //! |------|------|
 //! | [`init_extension`] | `entry_point` module |
 //! | `entry_point!` | `entry_point` module (macro) |
+//! | [`CastFunctionBuilder`] | `cast` module |
+//! | [`CastFunctionInfo`] | `cast` module |
+//! | [`CastMode`] | `cast` module |
 //! | [`AggregateFunctionBuilder`] | `aggregate` module |
 //! | [`AggregateFunctionSetBuilder`] | `aggregate` module |
 //! | [`AggregateState`] | `aggregate` module |
@@ -51,6 +54,8 @@
 //! The following items are intentionally excluded from the prelude because they
 //! are used less frequently and benefit from explicit import paths:
 //!
+//! - [`crate::config::DbConfig`] — RAII wrapper for opening secondary `DuckDB` databases;
+//!   import explicitly via `use quack_rs::config::DbConfig` when needed
 //! - `validate::*` — validation utilities (use explicitly to make intent clear)
 //! - `scaffold::*` — project generation (use explicitly)
 //! - `testing::*` — test harness (typically imported only in `#[cfg(test)]`)
@@ -82,6 +87,9 @@
 
 // Entry point
 pub use crate::entry_point::init_extension;
+
+// Cast functions
+pub use crate::cast::{CastFn, CastFunctionBuilder, CastFunctionInfo, CastMode};
 
 // Aggregate functions
 pub use crate::aggregate::{
