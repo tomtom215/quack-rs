@@ -1,5 +1,30 @@
 /* quack-rs documentation — custom theme */
 
+/* ── Book logo ───────────────────────────────────────────────────────────── */
+.book-logo {
+  text-align: center;
+  margin: 2em 0 1.6em;
+}
+
+.book-logo img {
+  max-width: 560px;
+  width: 100%;
+  height: auto;
+  display: none;        /* hidden until theme class reveals one */
+}
+
+/* light / rust / ayu → show light logo */
+.light  .book-logo-light,
+.rust   .book-logo-light,
+.ayu    .book-logo-light { display: inline-block; }
+
+/* coal / navy → show dark logo */
+.coal   .book-logo-dark,
+.navy   .book-logo-dark  { display: inline-block; }
+
+/* fallback: if no theme class yet (first paint), show light logo */
+body:not(.coal):not(.navy) .book-logo-light { display: inline-block; }
+
 /* ── Typography ─────────────────────────────────────────────────────────── */
 :root {
   --mono-font: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace,

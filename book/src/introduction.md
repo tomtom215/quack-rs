@@ -1,3 +1,8 @@
+<div class="book-logo">
+  <img class="book-logo-light" src="assets/logos/logo2-light-docs.svg" alt="quack-rs">
+  <img class="book-logo-dark"  src="assets/logos/logo1-dark-elegant.svg" alt="quack-rs">
+</div>
+
 # quack-rs
 
 **The Rust SDK for building DuckDB loadable extensions — no C++ required.**
