@@ -99,8 +99,8 @@ so = pathlib.Path('target/release/libhello_ext.so').read_bytes()
 metadata = (
     make_field('') * 3 +         # fields 0-2: reserved
     make_field('C_STRUCT') +      # field 3: ABI type
-    make_field('v1.4.0') +        # field 4: DuckDB version
-    make_field('v1.2.0') +        # field 5: C API version
+    make_field('v0.1.0') +        # field 4: extension version
+    make_field('v1.2.0') +        # field 5: DuckDB C API version (min for C_STRUCT)
     make_field('linux_amd64') +   # field 6: platform
     make_field('4') +             # field 7: magic
     b'\x00' * 256                 # signature (empty = unsigned)
