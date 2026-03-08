@@ -171,6 +171,14 @@ impl<T: AggregateState> FfiState<T> {
     /// After `Box::from_raw`, we set `inner = null` so that if `destroy_callback`
     /// is accidentally called twice, the second call is a no-op.
     ///
+    /// # Count conversion
+    ///
+    /// If `count` (an `idx_t`) cannot be converted to `usize`, the loop iterates
+    /// zero times — no states are freed. This is a defensive choice to avoid
+    /// panicking across FFI. In practice, `idx_t` is `u64` and `usize` is at
+    /// least 64 bits on all `DuckDB`-supported platforms, so this path is
+    /// unreachable on supported targets.
+    ///
     /// # Safety
     ///
     /// - `states` must point to an array of `count` valid `duckdb_aggregate_state`

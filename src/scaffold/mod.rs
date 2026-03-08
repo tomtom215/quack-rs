@@ -406,6 +406,8 @@ fn generate_extension_ci(config: &ScaffoldConfig) -> String {
          \x20\x20\x20\x20\x20\x20\x20\x20with:\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20submodules: recursive\n\
          \n\
+         \x20\x20\x20\x20\x20\x20# dtolnay/rust-toolchain is intentionally ref-pinned (not SHA-pinned)\n\
+         \x20\x20\x20\x20\x20\x20# because its SHA changes with each Rust release.\n\
          \x20\x20\x20\x20\x20\x20- uses: dtolnay/rust-toolchain@stable\n\
          \n\
          \x20\x20\x20\x20\x20\x20- uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5\n\

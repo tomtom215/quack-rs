@@ -227,6 +227,29 @@ impl VectorReader {
         unsafe { *self.data.add(idx) != 0 }
     }
 
+    /// Reads an `i128` (HUGEINT) value at row `idx`.
+    ///
+    /// `DuckDB` stores HUGEINT as `{ lower: u64, upper: i64 }` in little-endian
+    /// layout, totaling 16 bytes per value.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `HUGEINT` data.
+    /// - The value at `idx` must not be NULL (check with [`is_valid`][Self::is_valid]).
+    #[inline]
+    pub const unsafe fn read_i128(&self, idx: usize) -> i128 {
+        // SAFETY: HUGEINT is stored as { lower: u64, upper: i64 } = 16 bytes.
+        // DuckDB lays this out in little-endian order: lower at offset 0, upper at offset 8.
+        let base = unsafe { self.data.add(idx * 16) };
+        let lower = unsafe { core::ptr::read_unaligned(base.cast::<u64>()) };
+        let upper = unsafe { core::ptr::read_unaligned(base.add(8).cast::<i64>()) };
+        // Widening casts: u64→i128 and i64→i128 are always lossless.
+        #[allow(clippy::cast_lossless)]
+        let result = (upper as i128) << 64 | (lower as i128);
+        result
+    }
+
     /// Reads a VARCHAR value at row `idx`.
     ///
     /// Returns an empty string if the data is not valid UTF-8 or if the internal
