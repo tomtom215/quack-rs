@@ -10,7 +10,29 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [0.3.0] — 2026-03-08
+
 ### Added
+
+- **`TableFunctionBuilder`** — type-safe builder for registering DuckDB table functions
+  (`SELECT * FROM my_function(args)`). Covers the full bind/init/scan lifecycle with
+  ergonomic callbacks; `BindInfo`, `FfiBindData<T>`, and `FfiInitData<T>` eliminate all
+  raw pointer manipulation. Verified end-to-end against DuckDB 1.4.4.
+  See [Table Functions](../functions/table-functions.md).
+
+- **`ReplacementScanBuilder`** — builder for registering DuckDB replacement scans
+  (`SELECT * FROM 'file.xyz'` patterns). 4-method chain handles callback registration,
+  path extraction, and bind-info population.
+  See [Replacement Scans](../functions/replacement-scans.md).
+
+- **`StructVector`**, **`ListVector`**, **`MapVector`** — safe wrappers for reading and
+  writing nested-type vectors. Eliminate manual offset arithmetic and raw pointer casts
+  over child vector handles. Re-exported from `quack_rs::vector::complex`.
+  See [Complex Types](../data/complex-types.md).
 
 - **`CastFunctionBuilder`** — type-safe builder for registering custom type cast
   functions. Covers explicit `CAST(x AS T)` and implicit coercions (optional
@@ -23,20 +45,42 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `get_flag(index)` for enumerating all available options.
   See [`quack_rs::config`](https://docs.rs/quack-rs/latest/quack_rs/config/index.html).
 
+- **`ScalarFunctionSetBuilder`** — builder for registering scalar function overload sets,
+  mirroring `AggregateFunctionSetBuilder`.
+
+- **`NullHandling` enum and `.null_handling()` builder method** — configurable NULL
+  propagation for scalar and aggregate functions.
+
+- **`TypeId` variants** — `Decimal`, `Struct`, `Map`, `UHugeInt`, `TimeTz`,
+  `TimestampS`, `TimestampMs`, `TimestampNs`, `Array`, `Enum`, `Union`, `Bit`.
+
+- **`From<TypeId> for LogicalType`** — idiomatic conversion from `TypeId`.
+
+- **`#[must_use]` on builder structs** — compile-time warning if a builder is
+  constructed but never consumed.
+
+- **`VectorWriter::write_interval`** — writes INTERVAL values to output vectors.
+
+- **`append_metadata` binary** — native Rust replacement for the Python metadata
+  script. Install with `cargo install quack-rs --bin append_metadata`.
+
 - **`hello-ext` cast demo** — the example extension now registers
   `CAST(VARCHAR AS INTEGER)` and `TRY_CAST(VARCHAR AS INTEGER)` using
   `CastFunctionBuilder`, demonstrating both error modes with five unit tests.
 
-- **`ScalarFunctionSetBuilder`**, additional `TypeId` variants (`Decimal`, `Struct`,
-  `Map`, `UHugeInt`, `TimeTz`, `TimestampS`, `TimestampMs`, `TimestampNs`, `Array`,
-  `Enum`, `Union`, `Bit`), `NullHandling` enum, `From<TypeId> for LogicalType`,
-  `#[must_use]` on builder structs, `VectorWriter::write_interval`, and
-  `append_metadata` native binary (replaces Python metadata script).
+- **`prelude` additions** — `TableFunctionBuilder`, `BindInfo`, `FfiBindData`,
+  `FfiInitData`, `ReplacementScanBuilder`, `StructVector`, `ListVector`, `MapVector`,
+  `CastFunctionBuilder`, `CastFunctionInfo`, `CastMode` added to `quack_rs::prelude`.
 
 ### Not implemented (upstream C API gap)
 
 - **Window functions** and **COPY format handlers** are absent from DuckDB's public
   C extension API and cannot be wrapped. See [Known Limitations](known-limitations.md).
+
+### Fixed
+
+- **`hello-ext` `gs_bind` callback** — replaced incorrect `duckdb_value_int64(param)`
+  with `duckdb_get_int64(param)`. All 11 live SQL tests now pass against DuckDB 1.4.4.
 
 ### Changed
 
@@ -151,6 +195,7 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tomtom215/quack-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomtom215/quack-rs/releases/tag/v0.1.0

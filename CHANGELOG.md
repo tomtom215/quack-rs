@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-03-08
+
 ### Added
 
 - **`TableFunctionBuilder`** — type-safe builder for registering DuckDB table functions
@@ -114,6 +118,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump `actions/configure-pages` to latest SHA (`d5606572…`).
 - Bump `actions/upload-pages-artifact` from `v3.0.1` to `v4.0.0`.
 
+---
+
 ## [0.2.0] - 2026-03-07
 
 ### Added
@@ -215,6 +221,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tomtom215/quack-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomtom215/quack-rs/releases/tag/v0.1.0
