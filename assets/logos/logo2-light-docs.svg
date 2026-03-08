@@ -18,14 +18,15 @@
 
   
   <g filter="url(#ds)">
-    <path d="M 40.16,109.76 C 24.32,95.68   17.28,64.00   31.36,49.92 C 43.68,41.12   56.00,56.96   52.48,81.60 C 48.96,97.44   43.68,105.36   40.16,109.76 Z" fill="url(#dg)" stroke="none"/>
+    <path d="M 44,110 C 32,92 16,64 20,46 C 24,32 36,30 44,40 C 50,48 52,70 50,92 Z" fill="url(#dg)" stroke="none"/>
     <ellipse cx="100.00" cy="108.00" rx="59.84" ry="40.48"
              transform="rotate(-4,100.00,108.00)"
              fill="url(#dg)" stroke="none"/>
+    <path d="M 92.96,106.24 Q 115.84,83.36 144.00,106.24 Q 115.84,99.20 92.96,106.24 Z" fill="#A87200" opacity="0.28" stroke="none"/>
+    <path d="M 68,88 Q 104,74 144,86" fill="none" stroke="#C8A000" stroke-width="2" stroke-linecap="round" opacity="0.40"/>
+    <path d="M 164,57 Q 202,54 206,68 Q 202,82 164,79 Z" fill="#E06818" stroke="none"/>
     <circle  cx="145.76" cy="71.04" r="28.16"
              fill="url(#dg)" stroke="none"/>
-    <path d="M 92.96,106.24 Q 115.84,83.36 144.00,106.24 Q 115.84,99.20 92.96,106.24 Z" fill="#A87200" opacity="0.28" stroke="none"/>
-    <path d="M 166.88,62.24 Q 203.84,62.24 200.32,71.92 Q 203.84,83.36 166.88,83.36 Q 161.60,72.80 166.88,62.24 Z" fill="#E06818" stroke="none"/>
     <circle  cx="150.16" cy="62.24" r="5.72"
              fill="#1A1A1A" stroke="none"/>
     <circle  cx="152.36" cy="59.78" r="2.20"
