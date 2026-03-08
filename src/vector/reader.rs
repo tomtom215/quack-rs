@@ -31,7 +31,8 @@
 
 use libduckdb_sys::{
     duckdb_data_chunk, duckdb_data_chunk_get_size, duckdb_data_chunk_get_vector,
-    duckdb_validity_row_is_valid, duckdb_vector_get_data, duckdb_vector_get_validity, idx_t,
+    duckdb_validity_row_is_valid, duckdb_vector, duckdb_vector_get_data,
+    duckdb_vector_get_validity, idx_t,
 };
 
 /// A typed reader for a single column in a `DuckDB` data chunk.
@@ -64,6 +65,27 @@ impl VectorReader {
         // SAFETY: vector is non-null for valid column indices.
         let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
         // SAFETY: may be null if all values are valid (no NULLs); checked in is_valid.
+        let validity = unsafe { duckdb_vector_get_validity(vector) };
+        Self {
+            data,
+            validity,
+            row_count,
+        }
+    }
+
+    /// Creates a `VectorReader` directly from a raw `duckdb_vector` handle.
+    ///
+    /// Use this when you already have a child vector (e.g., from
+    /// [`StructVector::get_child`][crate::vector::complex::StructVector::get_child] or
+    /// [`ListVector::get_child`][crate::vector::complex::ListVector::get_child]).
+    ///
+    /// # Safety
+    ///
+    /// - `vector` must be a valid `duckdb_vector` for the duration of this reader's lifetime.
+    /// - `row_count` must equal the number of valid rows in the vector.
+    pub unsafe fn from_vector(vector: duckdb_vector, row_count: usize) -> Self {
+        // SAFETY: vector is valid per caller's contract.
+        let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
         let validity = unsafe { duckdb_vector_get_validity(vector) };
         Self {
             data,

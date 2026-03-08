@@ -1,6 +1,6 @@
 [package]
 name = "quack-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.84.1"
 authors = ["Tom F."]
@@ -16,7 +16,7 @@ exclude = ["docs/", "examples/hello-ext/", ".github/", "book/"]
 
 [lib]
 name = "quack_rs"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }

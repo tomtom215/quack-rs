@@ -40,6 +40,7 @@
   - [Safety model](#safety-model)
   - [Architecture Decision Records](#architecture-decision-records)
 - [Testing strategy](#testing-strategy)
+- [Known Limitations](#known-limitations)
 - [Changelog](#changelog)
 - [Contributing](#contributing)
 - [License](#license)
@@ -69,6 +70,9 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 | LogicalType memory | Leak if not freed | `LogicalType` implements `Drop` |
 | Aggregate combine | Config fields lost on segment-tree merges | Testable with `AggregateTestHarness` |
 | FFI panics | Process abort or undefined behavior | `init_extension` never panics |
+| Table functions | ~100 lines of raw bind/init/scan callbacks | `TableFunctionBuilder` 5-method chain |
+| Replacement scans | Undocumented vtable + manual string allocation | `ReplacementScanBuilder` 4-method chain |
+| Complex types (STRUCT/LIST/MAP) | Manual offset arithmetic over child vectors | `StructVector`, `ListVector`, `MapVector` helpers |
 | Extension naming | Rejected by DuckDB CI with no explanation | `validate_extension_name` catches issues before submission |
 | description.yml | No tooling to validate before submission | `validate_description_yml_str` validates the whole file |
 | New project setup | Hours of boilerplate + reading DuckDB internals | `generate_scaffold` produces all 11 required files |
@@ -77,7 +81,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 ## What quack-rs Solves
 
-Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, bringing Rust extension development to parity with C++ in the DuckDB open-source ecosystem.
+Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, replacement scan, and SQL macro functions.
 
 `quack-rs` encapsulates **15 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
@@ -243,6 +247,27 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 .cargo/config.toml                  ← Windows CRT static linking
 ```
 
+### 4. Append extension metadata
+
+DuckDB loadable extensions require a metadata footer appended to the `.so`/`.dylib`/`.dll`
+after `cargo build --release`. `quack-rs` ships a native Rust binary for this step,
+replacing the Python `append_extension_metadata.py` script from the C++ template:
+
+```shell
+# Install the binary from the published crate
+cargo install quack-rs --bin append_metadata
+
+# Append metadata to your built extension (input .so → output .duckdb_extension)
+append_metadata target/release/libmy_extension.so \
+    my_extension.duckdb_extension \
+    --duckdb-version v1.2.0 \
+    --platform linux_amd64
+```
+
+> **Pitfall P2**: The `--duckdb-version` flag must be `v1.2.0` (the C API version),
+> **not** `v1.4.4` (the DuckDB release version). Use the `DUCKDB_API_VERSION`
+> constant from `quack_rs` to avoid hard-coding the wrong value.
+
 ---
 
 ## Module Reference
@@ -254,12 +279,17 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 | [`aggregate::state`] | Generic FFI state management | `AggregateState`, `FfiState<T>` |
 | [`aggregate::callbacks`] | Callback type aliases | `UpdateFn`, `CombineFn`, `FinalizeFn`, … |
 | [`scalar`] | Scalar function registration | `ScalarFunctionBuilder`, `ScalarFunctionSetBuilder` |
+| [`cast`] | Custom type cast functions | `CastFunctionBuilder`, `CastFunctionInfo`, `CastMode` |
+| [`table`] | Table function registration (bind/init/scan) | `TableFunctionBuilder`, `BindInfo`, `FfiBindData`, `FfiInitData` |
+| [`replacement_scan`] | `SELECT * FROM 'file.xyz'` replacement scans | `ReplacementScanBuilder` |
 | [`sql_macro`] | SQL macro registration (no FFI callbacks) | `SqlMacro`, `MacroBody` |
 | [`vector`] | Safe reading/writing of DuckDB vectors | `VectorReader`, `VectorWriter` |
+| [`vector::complex`] | STRUCT / LIST / MAP child vector access | `StructVector`, `ListVector`, `MapVector` |
 | [`vector::string`] | 16-byte DuckDB string format | `DuckStringView`, `read_duck_string` |
 | [`types`] | DuckDB type system wrappers | `TypeId`, `LogicalType`, `NullHandling` |
 | [`interval`] | INTERVAL ↔ microseconds conversion | `DuckInterval`, `interval_to_micros` |
 | [`error`] | FFI-safe error type | `ExtensionError`, `ExtResult<T>` |
+| [`config`] | RAII wrapper for DuckDB database configuration | `DbConfig` |
 | [`validate`] | Community extension compliance | All validators below |
 | [`validate::description_yml`] | description.yml parsing and validation | `parse_description_yml`, `DescriptionYml` |
 | [`validate::extension_name`] | Extension naming rules | `validate_extension_name` |
@@ -277,12 +307,17 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 [`aggregate::state`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/state/index.html
 [`aggregate::callbacks`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/callbacks/index.html
 [`scalar`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/index.html
+[`cast`]: https://docs.rs/quack-rs/latest/quack_rs/cast/index.html
+[`table`]: https://docs.rs/quack-rs/latest/quack_rs/table/index.html
+[`replacement_scan`]: https://docs.rs/quack-rs/latest/quack_rs/replacement_scan/index.html
 [`sql_macro`]: https://docs.rs/quack-rs/latest/quack_rs/sql_macro/index.html
 [`vector`]: https://docs.rs/quack-rs/latest/quack_rs/vector/index.html
+[`vector::complex`]: https://docs.rs/quack-rs/latest/quack_rs/vector/complex/index.html
 [`vector::string`]: https://docs.rs/quack-rs/latest/quack_rs/vector/string/index.html
 [`types`]: https://docs.rs/quack-rs/latest/quack_rs/types/index.html
 [`interval`]: https://docs.rs/quack-rs/latest/quack_rs/interval/index.html
 [`error`]: https://docs.rs/quack-rs/latest/quack_rs/error/index.html
+[`config`]: https://docs.rs/quack-rs/latest/quack_rs/config/index.html
 [`validate`]: https://docs.rs/quack-rs/latest/quack_rs/validate/index.html
 [`validate::description_yml`]: https://docs.rs/quack-rs/latest/quack_rs/validate/description_yml/index.html
 [`validate::extension_name`]: https://docs.rs/quack-rs/latest/quack_rs/validate/extension_name/index.html
@@ -320,7 +355,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | ID | Name | Symptom | quack-rs Solution |
 |----|------|---------|-------------------|
 | **P1** | Library name mismatch | Extension fails to load | Documented; scaffold sets it correctly |
-| **P2** | C API version ≠ release version | `append_extension_metadata.py` fails | `DUCKDB_API_VERSION = "v1.2.0"` constant |
+| **P2** | C API version ≠ release version | Wrong `-dv` flag corrupts extension metadata | `DUCKDB_API_VERSION = "v1.2.0"` constant; `append_metadata` binary ships with the crate |
 | **P3** | Missing E2E tests | Community submission rejected | Scaffold generates SQLLogicTest skeleton |
 | **P4** | Uninitialized submodule | `make` fails with missing files | Documented; scaffold generates `.gitmodules` |
 | **P5** | SQLLogicTest format mismatch | Tests fail with exact-match errors | Documented with format reference |
@@ -514,12 +549,15 @@ flowchart TB
         EP["**entry_point**<br/>entry_point! · init_extension"]
         AGG["**aggregate**<br/>AggregateFunctionBuilder<br/>AggregateFunctionSetBuilder · FfiState&lt;T&gt;"]
         SCL["**scalar**<br/>ScalarFunctionBuilder<br/>ScalarFunctionSetBuilder"]
+        TBL["**table**<br/>TableFunctionBuilder<br/>BindInfo · FfiBindData · FfiInitData"]
+        RSC["**replacement_scan**<br/>ReplacementScanBuilder"]
         SM["**sql_macro**<br/>SqlMacro · MacroBody"]
     end
 
     subgraph DATA ["Data layer"]
         direction LR
         VEC["**vector**<br/>VectorReader · VectorWriter<br/>ValidityBitmap · DuckStringView"]
+        CMP["**vector::complex**<br/>StructVector · ListVector · MapVector"]
         TYP["**types**<br/>TypeId · LogicalType"]
         INT["**interval**<br/>DuckInterval · interval_to_micros"]
     end
@@ -667,6 +705,27 @@ target.combine(&source, |src, tgt| tgt.total += src.total);
 
 assert_eq!(target.finalize().total, 100);
 ```
+
+---
+
+## Known Limitations
+
+### Window functions and COPY functions are not available
+
+DuckDB's **window functions** (`OVER (...)` clauses) and **COPY format handlers** (custom
+file-format readers/writers) are implemented entirely in the C++ API layer and have
+**no counterpart in DuckDB's public C extension API**. This is not a gap in `quack-rs` or
+in `libduckdb-sys` — the symbols (`duckdb_create_window_function`,
+`duckdb_create_copy_function`, etc.) do not exist in the C API at all.
+
+This has been verified against:
+- The [DuckDB stable C API reference](https://duckdb.org/docs/stable/clients/c/api)
+  (no window or COPY function registration symbols listed)
+- The `libduckdb-sys` 1.4.4 bindings (`bindgen_bundled_version.rs` and
+  `bindgen_bundled_version_loadable.rs`) — neither file contains these symbols
+
+If DuckDB exposes these APIs in a future C API version, `quack-rs` will add wrappers
+in the relevant release.
 
 ---
 

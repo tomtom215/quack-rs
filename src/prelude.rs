@@ -18,6 +18,9 @@
 //! |------|------|
 //! | [`init_extension`] | `entry_point` module |
 //! | `entry_point!` | `entry_point` module (macro) |
+//! | [`CastFunctionBuilder`] | `cast` module |
+//! | [`CastFunctionInfo`] | `cast` module |
+//! | [`CastMode`] | `cast` module |
 //! | [`AggregateFunctionBuilder`] | `aggregate` module |
 //! | [`AggregateFunctionSetBuilder`] | `aggregate` module |
 //! | [`AggregateState`] | `aggregate` module |
@@ -25,6 +28,15 @@
 //! | [`ScalarFunctionBuilder`] | `scalar` module |
 //! | [`ScalarFunctionSetBuilder`] | `scalar` module |
 //! | [`ScalarOverloadBuilder`] | `scalar` module |
+//! | [`TableFunctionBuilder`] | `table` module |
+//! | [`BindInfo`] | `table` module |
+//! | [`InitInfo`] | `table` module |
+//! | [`FunctionInfo`] | `table` module |
+//! | [`FfiBindData`] | `table` module |
+//! | [`FfiInitData`] | `table` module |
+//! | [`FfiLocalInitData`] | `table` module |
+//! | [`ReplacementScanBuilder`] | `replacement_scan` module |
+//! | [`ReplacementScanInfo`] | `replacement_scan` module |
 //! | [`SqlMacro`] | `sql_macro` module |
 //! | [`VectorReader`] | `vector` module |
 //! | [`VectorWriter`] | `vector` module |
@@ -42,10 +54,13 @@
 //! The following items are intentionally excluded from the prelude because they
 //! are used less frequently and benefit from explicit import paths:
 //!
+//! - [`crate::config::DbConfig`] — RAII wrapper for opening secondary `DuckDB` databases;
+//!   import explicitly via `use quack_rs::config::DbConfig` when needed
 //! - `validate::*` — validation utilities (use explicitly to make intent clear)
 //! - `scaffold::*` — project generation (use explicitly)
 //! - `testing::*` — test harness (typically imported only in `#[cfg(test)]`)
 //! - `interval::read_interval_at` — low-level; use [`VectorReader::read_interval`] instead
+//! - `vector::complex::*` — low-level; import explicitly when working with complex types
 //!
 //! # Example
 //!
@@ -73,6 +88,9 @@
 // Entry point
 pub use crate::entry_point::init_extension;
 
+// Cast functions
+pub use crate::cast::{CastFn, CastFunctionBuilder, CastFunctionInfo, CastMode};
+
 // Aggregate functions
 pub use crate::aggregate::{
     AggregateFunctionBuilder, AggregateFunctionSetBuilder, AggregateState, FfiState,
@@ -80,6 +98,15 @@ pub use crate::aggregate::{
 
 // Scalar functions
 pub use crate::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};
+
+// Table functions
+pub use crate::table::{
+    BindInfo, FfiBindData, FfiInitData, FfiLocalInitData, FunctionInfo, InitInfo,
+    TableFunctionBuilder,
+};
+
+// Replacement scans
+pub use crate::replacement_scan::{ReplacementScanBuilder, ReplacementScanInfo};
 
 // SQL macros
 pub use crate::sql_macro::SqlMacro;

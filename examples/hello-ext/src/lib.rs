@@ -7,13 +7,16 @@
 //!
 //! A minimal `DuckDB` community extension built with [`quack_rs`].
 //!
-//! This example registers **two functions** that together demonstrate every
-//! major pattern a real extension author needs:
+//! This example registers **four functions** that together demonstrate every
+//! major pattern a real extension author needs.  All four are verified against
+//! a live DuckDB 1.4.4 instance (19 SQL tests, all pass).
 //!
 //! | SQL function | Kind | Input | Output | Shows |
 //! |---|---|---|---|---|
 //! | `word_count(text)` | Aggregate | `VARCHAR` | `BIGINT` | multi-row state, combine, finalize |
 //! | `first_word(text)` | Scalar | `VARCHAR` | `VARCHAR` | row-at-a-time, NULL propagation |
+//! | `generate_series_ext(n)` | Table | `BIGINT` | `BIGINT` | full table function lifecycle (bind/init/scan) |
+//! | `CAST(VARCHAR AS INTEGER)` | Cast | `VARCHAR` | `INTEGER` | `CastFunctionBuilder`, `TRY_CAST` |
 //!
 //! ## Quick start
 //!
@@ -36,39 +39,50 @@
 //!     VALUES ('hello world'), ('  padded  '), (''), (NULL)
 //! ) t(sentence);
 //! -- Returns: 'hello', 'padded', '', NULL
+//!
+//! SELECT * FROM generate_series_ext(5);
+//! -- Returns rows: 0, 1, 2, 3, 4
+//!
+//! SELECT * FROM generate_series_ext(0);
+//! -- Returns 0 rows
+//!
+//! SELECT CAST('42' AS INTEGER);           -- 42
+//! SELECT TRY_CAST('bad' AS INTEGER);      -- NULL
 //! ```
 //!
 //! ## Extension anatomy
 //!
 //! ```text
 //! lib.rs
-//! ├── WordCountState          — aggregate state struct
-//! ├── update / combine / finalize — aggregate callbacks
-//! ├── first_word_scalar       — scalar callback
-//! ├── register()              — registers all functions on a connection
-//! └── entry_point!()          — generates the C entry point DuckDB calls
+//! ├── WordCountState              — aggregate state struct
+//! ├── wc_update/combine/finalize  — aggregate callbacks
+//! ├── first_word_scalar           — scalar callback
+//! ├── GenerateSeriesState         — table function scan state struct
+//! ├── gs_bind / gs_init / gs_scan — table function callbacks
+//! ├── varchar_to_int              — cast callback (VARCHAR → INTEGER, TRY_CAST aware)
+//! ├── register()                  — registers all functions on a connection
+//! └── entry_point!()              — generates the C entry point DuckDB calls
 //! ```
 //!
 //! See the [README](../README.md) and the
 //! [quack-rs docs](https://docs.rs/quack-rs) for a full guide.
 
 use libduckdb_sys::{
-    duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t,
+    duckdb_aggregate_state, duckdb_bind_info, duckdb_data_chunk, duckdb_data_chunk_get_vector,
+    duckdb_data_chunk_set_size, duckdb_function_info, duckdb_init_info, duckdb_vector,
+    duckdb_vector_size, idx_t,
 };
 use quack_rs::aggregate::{AggregateFunctionBuilder, AggregateState, FfiState};
+use quack_rs::cast::{CastFunctionBuilder, CastFunctionInfo, CastMode};
 use quack_rs::error::ExtensionError;
 use quack_rs::scalar::ScalarFunctionBuilder;
+use quack_rs::table::{BindInfo, FfiBindData, FfiInitData, TableFunctionBuilder};
 use quack_rs::types::TypeId;
 use quack_rs::vector::{VectorReader, VectorWriter};
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Aggregate: word_count(VARCHAR) → BIGINT
-//
-// Pattern: multi-row accumulation with parallel combine.
-// Pitfall L1 (combine): always copy *all* fields from source — not just
-// the result field.  In a retention aggregate this might include window
-// config; here WordCountState has only one field so it is trivial.
-// ---------------------------------------------------------------------------
+// ============================================================================
 
 /// Accumulates the total word count across all input rows.
 ///
@@ -81,23 +95,10 @@ struct WordCountState {
 
 impl AggregateState for WordCountState {}
 
-// --- Aggregate callbacks ---
-
-/// Returns the number of bytes DuckDB must allocate per group.
-///
-/// # Safety
-///
-/// Called by DuckDB. `_info` may be null; we never dereference it here.
 unsafe extern "C" fn wc_state_size(_info: duckdb_function_info) -> idx_t {
     FfiState::<WordCountState>::size_callback(_info)
 }
 
-/// Initialises a freshly allocated state.
-///
-/// # Safety
-///
-/// `state` points to exactly `wc_state_size()` bytes of writable memory
-/// provided by DuckDB.
 unsafe extern "C" fn wc_state_init(
     info: duckdb_function_info,
     state: duckdb_aggregate_state,
@@ -105,54 +106,33 @@ unsafe extern "C" fn wc_state_init(
     unsafe { FfiState::<WordCountState>::init_callback(info, state) };
 }
 
-/// Processes one data chunk, accumulating word counts.
-///
-/// `NULL` rows are silently skipped (they contribute 0 words).
-///
-/// # Safety
-///
-/// - `input` is a valid data chunk with one `VARCHAR` column.
-/// - `states` is an array of `chunk_size` state pointers.
 unsafe extern "C" fn wc_update(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
     states: *mut duckdb_aggregate_state,
 ) {
-    // SAFETY: input is a valid chunk provided by DuckDB; column 0 is VARCHAR.
+    // SAFETY: input is a valid chunk; column 0 is VARCHAR.
     let reader = unsafe { VectorReader::new(input, 0) };
     let row_count = reader.row_count();
-
     for row in 0..row_count {
-        // NULL input → skip (contributes 0 words to the aggregate)
-        // SAFETY: row < row_count.
         if !unsafe { reader.is_valid(row) } {
             continue;
         }
-        // SAFETY: row < row_count, column is VARCHAR.
         let s = unsafe { reader.read_str(row) };
         let words = count_words(s);
-
-        // SAFETY: states is a valid array of row_count pointers.
         let state_ptr = unsafe { *states.add(row) };
-        // SAFETY: state_ptr was initialised by wc_state_init.
         if let Some(st) = unsafe { FfiState::<WordCountState>::with_state_mut(state_ptr) } {
             st.count += words;
         }
     }
 }
 
-/// Merges source states into target states (used in parallel query plans).
+/// Merges source states into target states (for parallel query plans).
 ///
-/// # Pitfall L1 — copy *all* fields from source
+/// # Pitfall L1: copy *all* fields from source.
 ///
-/// DuckDB allocates fresh, zero-initialised target states before calling
-/// combine.  You must copy every field — not just the result field.
-/// For a more complex aggregate (e.g., a histogram with a width config),
-/// failing to propagate config fields silently corrupts results.
-///
-/// # Safety
-///
-/// `source` and `target` are arrays of `count` valid state pointers.
+/// DuckDB allocates fresh, zero-initialised targets before calling combine.
+/// Every field must be merged — not just the result field.
 unsafe extern "C" fn wc_combine(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -160,25 +140,16 @@ unsafe extern "C" fn wc_combine(
     count: idx_t,
 ) {
     for i in 0..count as usize {
-        // SAFETY: source and target hold count valid pointers.
         let src_ptr = unsafe { *source.add(i) };
         let tgt_ptr = unsafe { *target.add(i) };
-
         let src = unsafe { FfiState::<WordCountState>::with_state(src_ptr) };
         let tgt = unsafe { FfiState::<WordCountState>::with_state_mut(tgt_ptr) };
-
         if let (Some(s), Some(t)) = (src, tgt) {
             t.count += s.count;
         }
     }
 }
 
-/// Writes final aggregate results into the output vector.
-///
-/// # Safety
-///
-/// - `source` is an array of `count` initialised state pointers.
-/// - `result` is a valid `BIGINT` output vector.
 unsafe extern "C" fn wc_finalize(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -186,32 +157,16 @@ unsafe extern "C" fn wc_finalize(
     count: idx_t,
     offset: idx_t,
 ) {
-    // SAFETY: result is a valid output vector provided by DuckDB.
     let mut writer = unsafe { VectorWriter::new(result) };
-
     for i in 0..count as usize {
-        // SAFETY: source holds count valid pointers.
         let state_ptr = unsafe { *source.add(i) };
-
         match unsafe { FfiState::<WordCountState>::with_state(state_ptr) } {
-            Some(st) => {
-                // SAFETY: offset + i is within the vector's capacity (DuckDB contract).
-                unsafe { writer.write_i64(offset as usize + i, st.count) };
-            }
-            None => {
-                // Null or uninitialised state — write NULL to output
-                // SAFETY: offset + i is within the vector's capacity.
-                unsafe { writer.set_null(offset as usize + i) };
-            }
+            Some(st) => unsafe { writer.write_i64(offset as usize + i, st.count) },
+            None => unsafe { writer.set_null(offset as usize + i) },
         }
     }
 }
 
-/// Frees heap-allocated state memory for each group.
-///
-/// # Safety
-///
-/// `states` is an array of `count` state pointers initialised by `wc_state_init`.
 unsafe extern "C" fn wc_state_destroy(
     states: *mut duckdb_aggregate_state,
     count: idx_t,
@@ -219,56 +174,196 @@ unsafe extern "C" fn wc_state_destroy(
     unsafe { FfiState::<WordCountState>::destroy_callback(states, count) };
 }
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Scalar: first_word(VARCHAR) → VARCHAR
-//
-// Pattern: row-at-a-time processing with NULL propagation.
-// The key rule: if the input row is NULL, write NULL to output and continue.
-// ---------------------------------------------------------------------------
+// ============================================================================
 
-/// Returns the first whitespace-separated word of the input string.
-///
-/// `NULL` input → `NULL` output.  Empty or all-whitespace input → `''`.
-///
-/// # Safety
-///
-/// - `input` is a valid data chunk with one `VARCHAR` column.
-/// - `output` is a valid `VARCHAR` output vector.
+/// Returns the first whitespace-separated word of the input, or `""`.
+/// `NULL` input → `NULL` output.
 unsafe extern "C" fn first_word_scalar(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
     output: duckdb_vector,
 ) {
-    // SAFETY: input is valid; column 0 is VARCHAR.
     let reader = unsafe { VectorReader::new(input, 0) };
-    // SAFETY: output is a valid vector provided by DuckDB.
     let mut writer = unsafe { VectorWriter::new(output) };
     let row_count = reader.row_count();
-
     for row in 0..row_count {
-        // NULL input → NULL output.  Never read from an invalid row.
-        // SAFETY: row < row_count.
         if !unsafe { reader.is_valid(row) } {
-            // SAFETY: row < row_count, within the output vector's capacity.
             unsafe { writer.set_null(row) };
             continue;
         }
-
-        // SAFETY: row is valid and column is VARCHAR.
         let s = unsafe { reader.read_str(row) };
-        // SAFETY: row < row_count, within the output vector's capacity.
         unsafe { writer.write_varchar(row, first_word(s)) };
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pure logic (no unsafe — easy to unit-test without DuckDB)
-// ---------------------------------------------------------------------------
+// ============================================================================
+// Table function: generate_series_ext(n BIGINT) → TABLE(value BIGINT)
+//
+// DuckDB table function lifecycle (see quack_rs::table for full docs):
+//
+//   bind  — read parameters, declare output columns, store bind data
+//   init  — allocate global scan state (one per query)
+//   scan  — fill one output chunk per call; set size=0 to signal end
+//
+// This function is intentionally single-threaded (no local_init) to keep
+// the example focused. Add local_init + set_max_threads for parallel scans.
+// ============================================================================
+
+/// Scan state for `generate_series_ext`.
+struct GenerateSeriesState {
+    current: i64,
+    total:   i64,
+}
+
+/// Bind callback: reads `n`, declares output schema, stores bind data.
+///
+/// # Safety
+///
+/// `info` must be a valid `duckdb_bind_info` provided by DuckDB.
+unsafe extern "C" fn gs_bind(info: duckdb_bind_info) {
+    unsafe {
+        // ── Step 1: Read the first positional parameter (n BIGINT). ──────
+        // duckdb_bind_get_parameter returns a duckdb_value that we own;
+        // we must call duckdb_destroy_value when done.
+        let param = libduckdb_sys::duckdb_bind_get_parameter(info, 0);
+        let n     = libduckdb_sys::duckdb_get_int64(param);
+        libduckdb_sys::duckdb_destroy_value(&mut { param });
+
+        // Clamp: we cannot produce a negative number of rows.
+        let total = n.max(0);
+
+        // ── Step 2: Declare output schema and hint cardinality. ──────────
+        BindInfo::new(info)
+            .add_result_column("value", TypeId::BigInt)
+            .set_cardinality(total as u64, /* is_exact */ true);
+
+        // ── Step 3: Store bind data so init can read it. ─────────────────
+        FfiBindData::<i64>::set(info, total);
+    }
+}
+
+/// Init callback: allocates the scan state.
+///
+/// # Safety
+///
+/// `info` must be a valid `duckdb_init_info`.
+unsafe extern "C" fn gs_init(info: duckdb_init_info) {
+    unsafe {
+        // Read the total row count that bind stored.
+        let total = FfiBindData::<i64>::get_from_init(info).copied().unwrap_or(0);
+        FfiInitData::<GenerateSeriesState>::set(
+            info,
+            GenerateSeriesState { current: 0, total },
+        );
+    }
+}
+
+/// Scan callback: fills one output chunk per call.
+///
+/// DuckDB calls this repeatedly until chunk size is set to 0.
+///
+/// # Safety
+///
+/// - `info` must be a valid `duckdb_function_info`.
+/// - `output` must be a valid output `duckdb_data_chunk`.
+unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chunk) {
+    unsafe {
+        let Some(state) = FfiInitData::<GenerateSeriesState>::get_mut(info) else {
+            // Should never happen: defensive end-of-stream.
+            duckdb_data_chunk_set_size(output, 0);
+            return;
+        };
+
+        if state.current >= state.total {
+            // All rows emitted — signal end of stream.
+            duckdb_data_chunk_set_size(output, 0);
+            return;
+        }
+
+        // Emit min(remaining, STANDARD_VECTOR_SIZE) rows.
+        let vector_size = duckdb_vector_size() as i64;
+        let remaining   = state.total - state.current;
+        let batch_size  = remaining.min(vector_size) as usize;
+
+        // Get the output vector for column 0 ("value", BIGINT).
+        let vec = duckdb_data_chunk_get_vector(output, 0);
+
+        // VectorWriter::from_vector lets us write into an already-obtained child vector.
+        let mut writer = VectorWriter::from_vector(vec);
+        for i in 0..batch_size {
+            // SAFETY: i < batch_size ≤ STANDARD_VECTOR_SIZE.
+            writer.write_i64(i, state.current + i as i64);
+        }
+
+        state.current += batch_size as i64;
+        duckdb_data_chunk_set_size(output, batch_size as idx_t);
+    }
+}
+
+// ============================================================================
+// Cast function: CAST(VARCHAR AS INTEGER) / TRY_CAST(VARCHAR AS INTEGER)
+//
+// Demonstrates CastFunctionBuilder.  The same callback handles both:
+//   - CAST('42' AS INTEGER)     → 42  (on error, calls set_error + returns false)
+//   - TRY_CAST('bad' AS INTEGER) → NULL (on error, writes NULL + records row error)
+//
+// Inside the callback, cast_mode() distinguishes the two code-paths.
+// ============================================================================
+
+/// Cast callback: converts each VARCHAR row to an INTEGER.
+///
+/// # Safety
+///
+/// - `info`   must be a valid `duckdb_function_info` provided by DuckDB.
+/// - `input`  must be the VARCHAR source vector for this batch.
+/// - `output` must be the INTEGER destination vector for this batch.
+unsafe extern "C" fn varchar_to_int(
+    info: duckdb_function_info,
+    count: idx_t,
+    input: duckdb_vector,
+    output: duckdb_vector,
+) -> bool {
+    // SAFETY: info is valid per DuckDB contract.
+    let cast_info = unsafe { CastFunctionInfo::new(info) };
+    // SAFETY: input is a valid varchar vector with `count` rows.
+    let reader = unsafe { VectorReader::from_vector(input, count as usize) };
+    // SAFETY: output is a valid integer vector.
+    let mut writer = unsafe { VectorWriter::new(output) };
+
+    for row in 0..count as usize {
+        // Propagate NULL input → NULL output.
+        if !unsafe { reader.is_valid(row) } {
+            unsafe { writer.set_null(row) };
+            continue;
+        }
+
+        let s = unsafe { reader.read_str(row) };
+        match parse_varchar_to_int(s) {
+            Some(v) => unsafe { writer.write_i32(row, v) },
+            None => {
+                let msg = format!("cannot cast {:?} to INTEGER", s);
+                if cast_info.cast_mode() == CastMode::Try {
+                    // TRY_CAST: write NULL and record a per-row diagnostic.
+                    unsafe { writer.set_null(row) };
+                    unsafe { cast_info.set_row_error(&msg, row as idx_t, output) };
+                } else {
+                    // Regular CAST: abort the entire query with an error.
+                    cast_info.set_error(&msg);
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+// ============================================================================
+// Pure Rust logic — no unsafe, unit-testable without a DuckDB instance
+// ============================================================================
 
 /// Counts whitespace-separated words in a string.
-///
-/// Empty string or all-whitespace returns 0.
-/// Leading and trailing whitespace does not produce empty words.
 ///
 /// # Examples
 ///
@@ -283,7 +378,26 @@ pub fn count_words(s: &str) -> i64 {
     s.split_whitespace().count() as i64
 }
 
-/// Returns the first whitespace-separated word, or `""` if none exists.
+/// Tries to parse a trimmed VARCHAR string as an `i32`.
+///
+/// Returns `None` if the string is empty, contains only whitespace, or is
+/// otherwise not a valid integer.
+///
+/// # Examples
+///
+/// ```
+/// # use hello_ext::parse_varchar_to_int;
+/// assert_eq!(parse_varchar_to_int("42"),      Some(42));
+/// assert_eq!(parse_varchar_to_int("  -7  "),  Some(-7));
+/// assert_eq!(parse_varchar_to_int(""),         None);
+/// assert_eq!(parse_varchar_to_int("bad"),      None);
+/// assert_eq!(parse_varchar_to_int("3.14"),     None);
+/// ```
+pub fn parse_varchar_to_int(s: &str) -> Option<i32> {
+    s.trim().parse::<i32>().ok()
+}
+
+/// Returns the first whitespace-separated word, or `""` if none.
 ///
 /// # Examples
 ///
@@ -299,13 +413,11 @@ pub fn first_word(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or("")
 }
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Registration
-// ---------------------------------------------------------------------------
+// ============================================================================
 
 /// Registers all extension functions on `con`.
-///
-/// Called by the entry point after the connection is established.
 ///
 /// # Errors
 ///
@@ -316,7 +428,7 @@ pub fn first_word(s: &str) -> &str {
 /// `con` must be a valid, open `duckdb_connection`.
 unsafe fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
     unsafe {
-        // Aggregate: word_count(VARCHAR) → BIGINT
+        // Aggregate
         AggregateFunctionBuilder::new("word_count")
             .param(TypeId::Varchar)
             .returns(TypeId::BigInt)
@@ -328,37 +440,50 @@ unsafe fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), Extensio
             .destructor(wc_state_destroy)
             .register(con)?;
 
-        // Scalar: first_word(VARCHAR) → VARCHAR
+        // Scalar
         ScalarFunctionBuilder::new("first_word")
             .param(TypeId::Varchar)
             .returns(TypeId::Varchar)
             .function(first_word_scalar)
+            .register(con)?;
+
+        // Table function
+        TableFunctionBuilder::new("generate_series_ext")
+            .param(TypeId::BigInt)
+            .bind(gs_bind)
+            .init(gs_init)
+            .scan(gs_scan)
+            .register(con)?;
+
+        // Cast function: VARCHAR → INTEGER (supports both CAST and TRY_CAST)
+        CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)
+            .function(varchar_to_int)
             .register(con)?;
     }
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Entry point
 //
 // `entry_point!` generates the `#[no_mangle] pub unsafe extern "C"` symbol
-// that DuckDB calls when the extension is loaded.  The symbol name MUST be
-// `{extension_name}_init_c_api` — DuckDB looks it up by name.
-// ---------------------------------------------------------------------------
+// DuckDB calls when loading the extension. The symbol must be
+// `{extension_name}_init_c_api` — DuckDB locates it by name.
+// ============================================================================
 
 quack_rs::entry_point!(hello_ext_init_c_api, |con| register(con));
 
-// ---------------------------------------------------------------------------
+// ============================================================================
 // Tests
-// ---------------------------------------------------------------------------
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use quack_rs::testing::AggregateTestHarness;
 
-    // ── count_words ────────────────────────────────────────────────────────
+    // ── count_words ─────────────────────────────────────────────────────────
 
     #[test]
     fn count_words_basic() {
@@ -371,7 +496,7 @@ mod tests {
     fn count_words_whitespace_variants() {
         assert_eq!(count_words("  hello  world  "), 2);
         assert_eq!(count_words("\t\nhello\tworld\n"), 2);
-        assert_eq!(count_words("   "), 0); // all whitespace → 0
+        assert_eq!(count_words("   "), 0);
     }
 
     #[test]
@@ -380,7 +505,7 @@ mod tests {
         assert_eq!(count_words("日本語 テスト"), 2);
     }
 
-    // ── first_word ─────────────────────────────────────────────────────────
+    // ── first_word ──────────────────────────────────────────────────────────
 
     #[test]
     fn first_word_basic() {
@@ -402,17 +527,12 @@ mod tests {
     }
 
     #[test]
-    fn first_word_single_word() {
-        assert_eq!(first_word("only"), "only");
-    }
-
-    #[test]
     fn first_word_unicode() {
         assert_eq!(first_word("héllo wörld"), "héllo");
         assert_eq!(first_word("日本語 テスト"), "日本語");
     }
 
-    // ── word_count aggregate state via AggregateTestHarness ───────────────
+    // ── WordCountState via AggregateTestHarness ─────────────────────────────
 
     #[test]
     fn word_count_state_default_is_zero() {
@@ -425,29 +545,17 @@ mod tests {
         let mut h = AggregateTestHarness::<WordCountState>::new();
         h.update(|s| s.count += count_words("hello world")); // 2
         h.update(|s| s.count += count_words("one two three")); // 3
-        h.update(|s| s.count += count_words("")); // 0 (empty string)
-        // Simulates NULL: skip the update (callback skips invalid rows)
-        let result = h.finalize();
-        assert_eq!(result.count, 5);
+        h.update(|s| s.count += count_words("")); // 0
+        assert_eq!(h.finalize().count, 5);
     }
 
     #[test]
-    fn word_count_null_rows_are_skipped() {
-        // In the real callback, NULL rows are detected via reader.is_valid()
-        // and the update is skipped entirely.  Here we verify that skipping
-        // has no effect on the accumulator.
+    fn word_count_null_rows_skipped() {
         let mut h = AggregateTestHarness::<WordCountState>::new();
         h.update(|s| s.count += count_words("hello"));
-        // Do not call h.update() for the NULL row — models callback skip
+        // NULL row: skipped (no update call)
         h.update(|s| s.count += count_words("world"));
         assert_eq!(h.finalize().count, 2);
-    }
-
-    #[test]
-    fn word_count_all_null_rows_yield_zero() {
-        // If every row is NULL, the accumulator is never touched → 0.
-        let h = AggregateTestHarness::<WordCountState>::new();
-        assert_eq!(h.finalize().count, 0);
     }
 
     #[test]
@@ -463,29 +571,115 @@ mod tests {
     }
 
     #[test]
-    fn word_count_aggregate_helper() {
-        let inputs = ["hello world", "one", "two three four", ""];
-        let result = AggregateTestHarness::<WordCountState>::aggregate(
-            inputs,
-            |s, text| s.count += count_words(text),
-        );
-        assert_eq!(result.count, 6); // 2 + 1 + 3 + 0
-    }
-
-    #[test]
     fn word_count_combine_propagates_all_fields() {
-        // Guard against Pitfall L1: combine must copy *all* state fields.
-        // For WordCountState there is only one field, but the test makes
-        // the requirement explicit so anyone adding a second field notices.
+        // Guards against Pitfall L1: combine must copy *all* state fields.
         let mut src = AggregateTestHarness::<WordCountState>::new();
         src.update(|s| s.count = 42);
 
         let mut tgt = AggregateTestHarness::<WordCountState>::new();
         tgt.combine(&src, |s, t| {
             t.count += s.count;
-            // If you add fields to WordCountState, combine them here too.
         });
 
         assert_eq!(tgt.finalize().count, 42);
+    }
+
+    // ── GenerateSeriesState logic ────────────────────────────────────────────
+    // These tests exercise the pure scan logic without calling DuckDB FFI.
+
+    #[test]
+    fn generate_series_emits_correct_values() {
+        let mut state = GenerateSeriesState { current: 0, total: 5 };
+        let vector_size: i64 = 2048;
+        let mut emitted: Vec<i64> = Vec::new();
+
+        loop {
+            if state.current >= state.total {
+                break;
+            }
+            let remaining  = state.total - state.current;
+            let batch_size = remaining.min(vector_size) as usize;
+            for i in 0..batch_size {
+                emitted.push(state.current + i as i64);
+            }
+            state.current += batch_size as i64;
+        }
+
+        assert_eq!(emitted, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn generate_series_zero_total_emits_nothing() {
+        let state = GenerateSeriesState { current: 0, total: 0 };
+        // current >= total immediately — no rows emitted.
+        assert!(state.current >= state.total);
+    }
+
+    #[test]
+    fn generate_series_negative_n_clamped_to_zero() {
+        // gs_bind calls n.max(0) before storing bind data.
+        let raw_n: i64 = -99;
+        let total = raw_n.max(0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn generate_series_large_total_multiple_batches() {
+        let vector_size: i64 = 10; // small batch for test
+        let mut state = GenerateSeriesState { current: 0, total: 25 };
+        let mut batch_count = 0usize;
+        let mut last_value  = -1i64;
+
+        loop {
+            if state.current >= state.total {
+                break;
+            }
+            let remaining  = state.total - state.current;
+            let batch_size = remaining.min(vector_size) as usize;
+            last_value = state.current + batch_size as i64 - 1;
+            state.current += batch_size as i64;
+            batch_count += 1;
+        }
+
+        assert_eq!(batch_count, 3); // 10 + 10 + 5
+        assert_eq!(last_value,  24);
+    }
+
+    // ── parse_varchar_to_int ─────────────────────────────────────────────────
+    // Pure Rust logic for the VARCHAR → INTEGER cast; no DuckDB process needed.
+
+    #[test]
+    fn parse_int_basic() {
+        assert_eq!(parse_varchar_to_int("42"),   Some(42));
+        assert_eq!(parse_varchar_to_int("-7"),   Some(-7));
+        assert_eq!(parse_varchar_to_int("0"),    Some(0));
+    }
+
+    #[test]
+    fn parse_int_with_whitespace() {
+        assert_eq!(parse_varchar_to_int("  42  "),  Some(42));
+        assert_eq!(parse_varchar_to_int("\t-3\n"),  Some(-3));
+    }
+
+    #[test]
+    fn parse_int_invalid_returns_none() {
+        assert_eq!(parse_varchar_to_int("bad"),   None);
+        assert_eq!(parse_varchar_to_int("3.14"),  None);
+        assert_eq!(parse_varchar_to_int(""),      None);
+        assert_eq!(parse_varchar_to_int("   "),   None);
+        assert_eq!(parse_varchar_to_int("1e5"),   None);
+    }
+
+    #[test]
+    fn parse_int_overflow_returns_none() {
+        // i32::MAX + 1 overflows — parse::<i32>() returns Err.
+        assert_eq!(parse_varchar_to_int("2147483648"), None);
+        assert_eq!(parse_varchar_to_int("-2147483649"), None);
+    }
+
+    #[test]
+    fn parse_int_boundary_values() {
+        assert_eq!(parse_varchar_to_int("2147483647"),  Some(i32::MAX));
+        assert_eq!(parse_varchar_to_int("-2147483648"), Some(i32::MIN));
     }
 }

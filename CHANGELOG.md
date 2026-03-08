@@ -7,10 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-03-08
+
 ### Added
 
-- **`VectorWriter::write_interval`** — writes INTERVAL values to output vectors using
-  the correct 16-byte `{ months: i32, days: i32, micros: i64 }` layout.
+- **`TableFunctionBuilder`** — type-safe builder for registering DuckDB table functions
+  (the `SELECT * FROM my_function(args)` pattern). Covers the full bind/init/scan
+  lifecycle with ergonomic callbacks, eliminating ~100 lines of raw FFI boilerplate.
+  Helper types `BindInfo`, `FfiBindData<T>`, and `FfiInitData<T>` manage parameter
+  extraction and per-scan state with zero raw pointer manipulation. See
+  [`table`](src/table/mod.rs) and `examples/hello-ext` (`generate_series_ext`) for
+  a fully-tested end-to-end example verified against DuckDB 1.4.4.
+
+- **`ReplacementScanBuilder`** — builder for registering DuckDB replacement scans
+  (the `SELECT * FROM 'file.xyz'` pattern where a file path triggers a table-valued
+  scan). The builder handles callback registration, path extraction, and bind-info
+  population through a 4-method chain. See [`replacement_scan`](src/replacement_scan/).
+
+- **`StructVector`** — safe wrapper for reading and writing STRUCT child vectors.
+  `get_child(vec, idx)`, `field_reader(vec, idx, row_count)`, and
+  `field_writer(vec, idx)` replace manual offset arithmetic over child vector handles.
+
+- **`ListVector`** — safe wrapper for reading and writing LIST child vectors.
+  `get_child`, `get_entry`, `set_entry`, `reserve`, `set_size`, `child_reader`, and
+  `child_writer` cover the complete LIST read/write workflow without raw pointer casts.
+
+- **`MapVector`** — safe wrapper for DuckDB MAP vectors (stored as
+  `LIST<STRUCT{key, value}>`). `keys(vec)`, `values(vec)`, `struct_child(vec)`,
+  `reserve`, `set_size`, `set_entry`, and `get_entry` expose the full MAP interface.
+
+- **`vector::complex` module** — re-exports `StructVector`, `ListVector`, `MapVector`
+  at `quack_rs::vector::complex` and documents the read-vs-write workflow for nested
+  types with working code examples in the module doc.
+
+- **`prelude` additions** — `TableFunctionBuilder`, `BindInfo`, `FfiBindData`,
+  `FfiInitData`, `ReplacementScanBuilder`, `StructVector`, `ListVector`, `MapVector`,
+  `CastFunctionBuilder`, `CastFunctionInfo`, `CastMode`
+  are now all re-exported from `quack_rs::prelude`.
+
+- **`CastFunctionBuilder`** — type-safe builder for registering custom type cast
+  functions via `duckdb_cast_function_*`. Covers both explicit `CAST(x AS T)` and
+  implicit coercions (with optional `implicit_cost`). The companion `CastFunctionInfo`
+  wrapper exposes `cast_mode()`, `set_error()`, and `set_row_error()` inside callbacks,
+  giving correct `TRY_CAST` / `CAST` error handling with zero raw pointer boilerplate.
+  See [`cast`](src/cast/) for the full API.
+
+- **`DbConfig`** — RAII wrapper for `duckdb_config` (extension configuration
+  parameters). Builder-style `.set(name, value)?` chain, automatic `duckdb_destroy_config`
+  on drop, and `flag_count()` / `get_flag(index)` for enumerating all available options.
+  Useful when an extension needs to open a secondary `DuckDB` database from within its
+  callbacks. See [`config`](src/config.rs).
 
 - **`ScalarFunctionSetBuilder`** — builder for registering scalar function sets
   (multiple overloads under one name), mirroring `AggregateFunctionSetBuilder`.
@@ -29,6 +77,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `duckdb_scalar_function_set_special_handling` /
   `duckdb_aggregate_function_set_special_handling`.
 
+- **`VectorWriter::write_interval`** — writes INTERVAL values to output vectors using
+  the correct 16-byte `{ months: i32, days: i32, micros: i64 }` layout.
+
+- **`append_metadata` binary** — native Rust replacement for the Python
+  `append_extension_metadata.py` script, now shipping with the crate.
+  Install with `cargo install quack-rs --bin append_metadata`.
+
+- **`hello-ext` cast function demo** — `examples/hello-ext` now registers a
+  `CAST(VARCHAR AS INTEGER)` cast function using `CastFunctionBuilder`,
+  demonstrating both `CAST` (abort-on-error) and `TRY_CAST` (NULL-on-error)
+  code paths. Five unit tests cover `parse_varchar_to_int`, including
+  boundary values and overflow.
+
+### Not implemented (upstream C API gap)
+
+- **Window functions** — `duckdb_create_window_function` and related symbols do
+  not exist in DuckDB's public C extension API.  They are implemented only in the
+  C++ layer and are therefore not wrappable by `quack-rs` or any other C-API
+  binding.  Verified against the
+  [DuckDB stable C API reference](https://duckdb.org/docs/stable/clients/c/api)
+  and `libduckdb-sys` 1.4.4 bindings.
+
+- **COPY format handlers** — `duckdb_create_copy_function` and related symbols are
+  similarly absent from the C extension API for the same reason.
+
+### Fixed
+
+- **`hello-ext` `gs_bind` callback** — replaced incorrect `duckdb_value_int64(param)`
+  (wrong arity: takes 3 arguments) with `duckdb_get_int64(param)` (correct 1-argument
+  form). The extension now builds cleanly and all 11 live SQL tests pass against
+  DuckDB 1.4.4.
+
 ### Changed
 
 - Bump `criterion` dev-dependency from `0.5` to `0.8`.
@@ -37,6 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump `actions/attest-build-provenance` from `v2` to `v4`.
 - Bump `actions/configure-pages` to latest SHA (`d5606572…`).
 - Bump `actions/upload-pages-artifact` from `v3.0.1` to `v4.0.0`.
+
+---
 
 ## [0.2.0] - 2026-03-07
 
@@ -139,6 +221,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tomtom215/quack-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomtom215/quack-rs/releases/tag/v0.1.0

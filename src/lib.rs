@@ -47,11 +47,16 @@
 //! | [`entry_point`](mod@entry_point) | Helper for the correct `{name}_init_c_api` C entry point |
 //! | [`aggregate`] | Builders for aggregate function registration |
 //! | [`scalar`] | Builder for scalar function registration |
+//! | [`cast`] | Builder for custom type cast functions |
+//! | [`table`] | Builder for table function registration |
+//! | [`replacement_scan`] | `SELECT * FROM 'file.xyz'` replacement scan registration |
 //! | [`sql_macro`] | SQL macro registration (`CREATE MACRO`) — no FFI callbacks |
 //! | [`vector`] | Safe helpers for reading/writing `DuckDB` data vectors |
+//! | [`vector::complex`] | STRUCT / LIST / MAP vector access (child vectors, offsets) |
 //! | [`types`] | `DuckDB` type system wrappers (`TypeId`, `LogicalType`) |
 //! | [`interval`] | `INTERVAL` → microseconds conversion with overflow checking |
 //! | [`error`] | `ExtensionError` for FFI error propagation |
+//! | [`config`] | RAII wrapper for `DuckDB` database configuration |
 //! | [`validate`] | Community extension compliance validators |
 //! | [`validate::description_yml`] | Parse and validate `description.yml` metadata |
 //! | [`scaffold`] | Project generator for new extensions (no C++ glue needed) |
@@ -94,13 +99,17 @@
 #![warn(missing_docs)]
 
 pub mod aggregate;
+pub mod cast;
+pub mod config;
 pub mod entry_point;
 pub mod error;
 pub mod interval;
 pub mod prelude;
+pub mod replacement_scan;
 pub mod scaffold;
 pub mod scalar;
 pub mod sql_macro;
+pub mod table;
 pub mod testing;
 pub mod types;
 pub mod validate;
