@@ -180,8 +180,14 @@ quack-rs/
 │   │   ├── validity.rs            # ValidityBitmap — NULL flag management
 │   │   └── string.rs              # DuckStringView, read_duck_string (16-byte string format)
 │   ├── validate/
-│   │   ├── mod.rs                 # Extension compliance validators
-│   │   └── description_yml.rs     # Parse and validate description.yml metadata
+│   │   ├── mod.rs                 # Extension compliance validators + re-exports
+│   │   ├── description_yml.rs     # Parse and validate description.yml metadata
+│   │   ├── extension_name.rs      # Extension name validation (^[a-z][a-z0-9_-]*$)
+│   │   ├── function_name.rs       # SQL function name validation
+│   │   ├── platform.rs            # DuckDB build platform validation
+│   │   ├── release_profile.rs     # Cargo release profile validation
+│   │   ├── semver.rs              # Semantic versioning + extension version tiers
+│   │   └── spdx.rs                # SPDX license identifier validation
 │   ├── scaffold/
 │   │   └── mod.rs                 # Project generator for new extensions
 │   └── testing/

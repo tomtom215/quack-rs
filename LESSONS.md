@@ -396,20 +396,24 @@ The community extension CI uses specific compiler versions and system libraries.
 
 ## Architecture Decision Records
 
-### ADR-1: `libduckdb-sys` only at runtime (no `duckdb` crate)
+> **Note**: ADR-1 through ADR-3 (design principles) are in
+> [README.md](./README.md#architecture-decision-records). The ADRs below cover
+> implementation-level decisions specific to FFI integration.
+
+### ADR-4: `libduckdb-sys` only at runtime (no `duckdb` crate)
 
 The `duckdb` crate provides a high-level Rust API but also includes a bundled DuckDB (via
 the `bundled` feature). For loadable extensions, we must NOT bundle DuckDB — we link against
 the DuckDB that loads us. The `libduckdb-sys` with `loadable-extension` feature provides
 exactly this: lazy-initialized function pointers populated by DuckDB at load time.
 
-### ADR-2: Function sets instead of varargs
+### ADR-5: Function sets instead of varargs
 
 `duckdb_aggregate_function_set_varargs` does not exist for aggregate functions. For variadic
 signatures (e.g., `retention(c1, c2, ..., c32)`), you must register N overloads using a
 `duckdb_aggregate_function_set`. `AggregateFunctionSetBuilder` handles this.
 
-### ADR-3: Custom C entry point instead of `duckdb-loadable-macros`
+### ADR-6: Custom C entry point instead of `duckdb-loadable-macros`
 
 `duckdb-loadable-macros` relies on `extract_raw_connection` which uses the internal
 `Rc<RefCell<InnerConnection>>` layout. This is fragile and causes SEGFAULTs when the layout
