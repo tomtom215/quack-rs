@@ -172,6 +172,29 @@ impl VectorWriter {
         unsafe { *self.data.add(idx) = u8::from(value) };
     }
 
+    /// Writes an `i128` (HUGEINT) value at row `idx`.
+    ///
+    /// `DuckDB` stores HUGEINT as `{ lower: u64, upper: i64 }` in little-endian
+    /// layout, totaling 16 bytes per value.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `HUGEINT` type.
+    #[inline]
+    pub const unsafe fn write_i128(&mut self, idx: usize, value: i128) {
+        // SAFETY: HUGEINT = { lower: u64, upper: i64 } = 16 bytes.
+        let base = unsafe { self.data.add(idx * 16) };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let lower = value as u64;
+        #[allow(clippy::cast_possible_truncation)]
+        let upper = (value >> 64) as i64;
+        unsafe {
+            core::ptr::write_unaligned(base.cast::<u64>(), lower);
+            core::ptr::write_unaligned(base.add(8).cast::<i64>(), upper);
+        }
+    }
+
     /// Writes a `u16` (USMALLINT) value at row `idx`.
     ///
     /// # Safety
@@ -188,6 +211,13 @@ impl VectorWriter {
     /// This uses `duckdb_vector_assign_string_element_len` which handles both
     /// the inline (≤12 bytes) and pointer (>12 bytes) storage formats
     /// automatically. `DuckDB` manages the memory for the string data.
+    ///
+    /// # Note on very long strings
+    ///
+    /// If `value.len()` exceeds `idx_t::MAX` (2^64 − 1 on 64-bit platforms),
+    /// the length is silently clamped to `idx_t::MAX`. In practice, this limit
+    /// is unreachable on any current hardware (≈18 exabytes), so no explicit
+    /// error path is provided.
     ///
     /// # Safety
     ///

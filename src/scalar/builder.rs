@@ -5,9 +5,8 @@
 
 //! Builder for registering `DuckDB` scalar functions.
 //!
-//! Scalar functions (also called "table functions" in some contexts) take a data
-//! chunk of input rows and produce one output value per row. This is the most
-//! common function type in `DuckDB` extensions.
+//! Scalar functions take a data chunk of input rows and produce one output value
+//! per row. This is the most common function type in `DuckDB` extensions.
 
 use std::ffi::CString;
 

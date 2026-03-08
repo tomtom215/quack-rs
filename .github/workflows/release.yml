@@ -5,9 +5,9 @@
 #
 # Job dependency graph:
 #
-#   validate ──┬──► ci (matrix) ──┬──► package ──────► github-release ──► publish
-#              └──► security ─────┘                                         (crates-io env)
-#              └──► publish-dry-run ──────────────────────────────────────►/
+#   validate ──┬──► ci (matrix) ──┬──► package ─────────┬──► github-release ──► publish
+#              └──► security ────┘                     │                       (crates-io env)
+#                                └──► publish-dry-run ─┘
 
 name: Release
 
@@ -146,7 +146,7 @@ jobs:
             command: cargo doc --no-deps
           - name: "MSRV 1.84.1"
             os: ubuntu-latest
-            toolchain: "1.100.0"
+            toolchain: "1.84.1"
             command: cargo check
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -171,7 +171,7 @@ jobs:
         with:
           cache-targets: false
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked --version "0.16.3"
+        run: cargo install cargo-deny --locked --version "0.19.0"
       - name: Run cargo-deny
         run: |
           echo "::group::cargo deny check"
@@ -222,12 +222,12 @@ jobs:
       # SLSA Level 2 build provenance — creates a signed attestation linking
       # the .crate artifact to this workflow run, verifiable with `gh attestation verify`.
       - name: Attest build provenance (SLSA)
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v4
         with:
           subject-path: target/package/*.crate
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9ce0b178 # v4
         with:
           name: release-artifacts
           path: |
@@ -264,7 +264,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@cc203385981b70ca67c1cc2e0571f2cb2f0c5082 # v4
         with:
           name: release-artifacts
           path: release-artifacts/

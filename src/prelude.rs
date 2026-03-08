@@ -96,5 +96,5 @@ pub use crate::error::{ExtResult, ExtensionError};
 // API version constant
 pub use crate::DUCKDB_API_VERSION;
 
-// Re-export the entry_point! macro (already exported at crate root via #[macro_export])
-pub use crate::entry_point;
+// The entry_point! macro is already available at the crate root via #[macro_export],
+// so `use quack_rs::prelude::*` brings it into scope automatically.

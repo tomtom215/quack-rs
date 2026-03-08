@@ -280,7 +280,7 @@ this approach. A pure-Rust extension needs:
 2. **Makefile**: Delegates to `cargo build` + metadata scripts from `extension-ci-tools`
 3. **extension-ci-tools**: Git submodule for the DuckDB extension CI/CD pipeline
 4. **src/lib.rs**: Entry point using `duckdb_entrypoint_c_api` macro + function registration
-5. **description.yml**: Extension metadata (`language: C` for C API extensions, NOT `C++`)
+5. **description.yml**: Extension metadata (`language: Rust` and `build: cargo` for Rust extensions)
 6. **test/sql/*.test**: SQLLogicTest format integration tests
 
 Use `quack_rs::scaffold::generate_scaffold` to auto-generate all of these files from a

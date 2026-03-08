@@ -207,13 +207,13 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         if in_maintainers {
             let trimmed = line.trim();
             if let Some(name_val) = trimmed.strip_prefix("- ") {
-                let m = name_val.trim().to_string();
+                let m = strip_inline_comment(name_val.trim()).to_string();
                 if !m.is_empty() {
                     maintainers.push(m);
                 }
             } else if trimmed.starts_with('-') {
                 // bare "- " with no content
-                let m = trimmed.trim_start_matches('-').trim().to_string();
+                let m = strip_inline_comment(trimmed.trim_start_matches('-').trim()).to_string();
                 if !m.is_empty() {
                     maintainers.push(m);
                 }
@@ -395,8 +395,30 @@ pub fn validate_description_yml_str(content: &str) -> Result<(), ExtensionError>
 }
 
 /// Parses a `key: value` line. Returns the trimmed value if the key matches.
+///
+/// Inline comments (e.g., `key: value # comment`) are stripped unless the value
+/// is surrounded by quotes, in which case the quoted content is returned as-is
+/// (quotes included — the caller is responsible for stripping them if needed).
 fn parse_kv<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    line.strip_prefix(key).map(str::trim)
+    line.strip_prefix(key).map(|v| {
+        let v = v.trim();
+        // If the value is quoted, return it as-is (preserve content inside quotes).
+        if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+            return v;
+        }
+        // Strip inline comment: "value # comment" → "value"
+        v.find(" #").map_or(v, |pos| v[..pos].trim_end())
+    })
+}
+
+/// Strips an inline YAML comment from a value string.
+///
+/// Returns the portion before ` #` (space-hash), trimmed. If no inline comment
+/// is found, returns the input unchanged.
+fn strip_inline_comment(value: &str) -> &str {
+    value
+        .find(" #")
+        .map_or(value, |pos| value[..pos].trim_end())
 }
 
 /// Validates that a Rust extension's `description.yml` follows pure-Rust best practices.
@@ -876,10 +898,60 @@ mod tests {
                    repo:\n\
                    \x20\x20github: j/r\n\
                    \x20\x20ref: main # default branch\n";
-        // Should parse without error despite comments
-        let result = parse_description_yml(yml);
-        // The parser is simple and may include comment text in values.
-        // The key constraint is that it doesn't crash and required fields are found.
-        assert!(result.is_ok() || result.is_err()); // not a hard assertion; smoke test
+        // Should parse without error despite full-line and inline comments
+        let desc = parse_description_yml(yml).expect("parsing failed");
+        // Inline comments must be stripped from values
+        assert_eq!(desc.git_ref, "main", "inline comment not stripped from ref");
+        // Maintainer inline comments must also be stripped
+        assert_eq!(
+            desc.maintainers,
+            vec!["Jane"],
+            "inline comment not stripped from maintainer"
+        );
+    }
+
+    #[test]
+    fn inline_comments_stripped_from_values() {
+        let yml = "extension:\n\
+                   \x20\x20name: my_ext\n\
+                   \x20\x20description: Fast analytics # for DuckDB\n\
+                   \x20\x20version: 0.1.0 # initial release\n\
+                   \x20\x20language: Rust # not C++\n\
+                   \x20\x20build: cargo # build system\n\
+                   \x20\x20license: MIT # open source\n\
+                   \x20\x20requires_toolchains: rust;python3 # both needed\n\
+                   \x20\x20maintainers:\n\
+                   \x20\x20\x20\x20- Jane\n\
+                   repo:\n\
+                   \x20\x20github: j/r # github repo\n\
+                   \x20\x20ref: main # default branch\n";
+        let desc = parse_description_yml(yml).unwrap();
+        assert_eq!(desc.description, "Fast analytics");
+        assert_eq!(desc.version, "0.1.0");
+        assert_eq!(desc.language, "Rust");
+        assert_eq!(desc.build, "cargo");
+        assert_eq!(desc.license, "MIT");
+        assert_eq!(desc.requires_toolchains, "rust;python3");
+        assert_eq!(desc.github, "j/r");
+        assert_eq!(desc.git_ref, "main");
+    }
+
+    #[test]
+    fn parse_kv_preserves_hash_in_quoted_values() {
+        // Quoted values should not have inline comments stripped
+        let result = parse_kv("key: \"value # not a comment\"", "key:");
+        assert_eq!(result, Some("\"value # not a comment\""));
+    }
+
+    #[test]
+    fn parse_kv_strips_inline_comment_from_unquoted() {
+        let result = parse_kv("key: value # a comment", "key:");
+        assert_eq!(result, Some("value"));
+    }
+
+    #[test]
+    fn parse_kv_no_comment() {
+        let result = parse_kv("key: plain_value", "key:");
+        assert_eq!(result, Some("plain_value"));
     }
 }

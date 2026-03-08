@@ -17,7 +17,7 @@ edit-url-template = "https://github.com/tomtom215/quack-rs/edit/main/{path}"
 additional-css = ["book/theme/custom.css"]
 additional-js = ["book/theme/mermaid-loader.js"]
 no-section-label = false
-cname = ""
+# cname = "your-custom-domain.com"  # Uncomment and set if using a custom domain
 
 [output.html.search]
 enable = true

@@ -20,7 +20,7 @@
 //! 4. Registers all functions
 //! 5. Calls `duckdb_disconnect(&mut raw_con)`
 //!
-//! # Problem 13: No panic across FFI
+//! # Pitfall L3: No panic across FFI
 //!
 //! `init_extension` uses `Result` for all error propagation and never calls
 //! `unwrap()` or `panic!()` inside an FFI callback.
@@ -133,7 +133,7 @@ macro_rules! entry_point {
 /// - `access` must be the `*const duckdb_extension_access` passed by `DuckDB`.
 /// - Both pointers must remain valid for the duration of this call.
 ///
-/// # Pitfall P13: No panic across FFI
+/// # Pitfall L3: No panic across FFI
 ///
 /// This function never panics. All errors are reported via `access.set_error`.
 ///
@@ -192,7 +192,7 @@ where
     // libduckdb_sys function in a loadable extension. The version string must be
     // the C API version (e.g. "v1.2.0"), NOT the DuckDB release version.
     //
-    // PITFALL P8: Use the C API version, not the DuckDB release version.
+    // PITFALL P2: Use the C API version, not the DuckDB release version.
     // DuckDB v1.4.4 uses C API version v1.2.0.
     //
     // SAFETY: info and access are valid pointers provided by DuckDB.

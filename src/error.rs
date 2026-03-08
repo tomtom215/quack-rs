@@ -88,11 +88,6 @@ impl ExtensionError {
     /// If the message contains a null byte (which is valid in a Rust `String` but
     /// not in a C string), the message is truncated at the first null byte.
     ///
-    /// # Panics
-    ///
-    /// This function panics if the truncated message still contains a null byte,
-    /// which cannot happen in practice because we truncate at the first null byte.
-    ///
     /// # Example
     ///
     /// ```rust
@@ -105,16 +100,19 @@ impl ExtensionError {
     #[must_use]
     pub fn to_c_string(&self) -> CString {
         CString::new(self.message.as_bytes()).unwrap_or_else(|_| {
-            // Truncate at the first null byte to produce a valid C string
+            // Truncate at the first null byte to produce a valid C string.
+            // No panic: if CString::new fails again (logically impossible since
+            // we truncate at the first null byte), fall back to a generic message.
             let pos = self
                 .message
                 .bytes()
                 .position(|b| b == 0)
                 .unwrap_or(self.message.len());
-            // SAFETY: We have found the first null byte position; the slice before it
-            // contains no null bytes, so CString::new cannot fail.
-            CString::new(&self.message.as_bytes()[..pos])
-                .expect("truncated message must not contain null bytes")
+            CString::new(&self.message.as_bytes()[..pos]).unwrap_or_else(|_| {
+                // Defensive fallback — should never be reached.
+                CString::new("extension error (message contained null bytes)")
+                    .unwrap_or_else(|_| CString::default())
+            })
         })
     }
 

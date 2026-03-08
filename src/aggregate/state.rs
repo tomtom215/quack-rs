@@ -45,7 +45,7 @@
 //! - **L1**: Combine propagates all fields because your type `T`'s `combine`
 //!   method is responsible — the `FfiState` wrapper ensures `T`'s method is called.
 //! - **L2**: No double-free — `destroy_callback` sets `inner` to null after freeing.
-//! - **L13**: No panic across FFI — `with_state_mut` returns an `Option`, not a panic.
+//! - **L3**: No panic across FFI — `with_state_mut` returns an `Option`, not a panic.
 
 use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
 
@@ -171,6 +171,14 @@ impl<T: AggregateState> FfiState<T> {
     /// After `Box::from_raw`, we set `inner = null` so that if `destroy_callback`
     /// is accidentally called twice, the second call is a no-op.
     ///
+    /// # Count conversion
+    ///
+    /// If `count` (an `idx_t`) cannot be converted to `usize`, the loop iterates
+    /// zero times — no states are freed. This is a defensive choice to avoid
+    /// panicking across FFI. In practice, `idx_t` is `u64` and `usize` is at
+    /// least 64 bits on all `DuckDB`-supported platforms, so this path is
+    /// unreachable on supported targets.
+    ///
     /// # Safety
     ///
     /// - `states` must point to an array of `count` valid `duckdb_aggregate_state`
@@ -197,7 +205,7 @@ impl<T: AggregateState> FfiState<T> {
     /// Returns `None` if `inner` is null (which should not happen after a
     /// successful `init_callback`, but is checked defensively).
     ///
-    /// # Pitfall L13: No panic across FFI
+    /// # Pitfall L3: No panic across FFI
     ///
     /// This method returns `Option<&mut T>` rather than unwrapping, so callers
     /// can use `if let Some(state) = ...` patterns without panicking.

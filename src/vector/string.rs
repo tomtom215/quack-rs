@@ -101,6 +101,12 @@ impl<'a> DuckStringView<'a> {
     ///
     /// The returned bytes have lifetime `'a` (the lifetime of the underlying data).
     ///
+    /// # Platform assumption
+    ///
+    /// The pointer-format branch reads bytes 8–15 as a `usize` pointer, which
+    /// assumes a 64-bit platform (8-byte pointers). `DuckDB` itself only supports
+    /// 64-bit platforms, so this is a safe assumption.
+    ///
     /// # Safety (internal)
     ///
     /// This method dereferences the pointer stored in the `duckdb_string_t` struct

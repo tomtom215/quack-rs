@@ -164,9 +164,14 @@ pub fn interval_to_micros(iv: DuckInterval) -> Option<i64> {
 /// ```
 #[inline]
 pub fn interval_to_micros_saturating(iv: DuckInterval) -> i64 {
-    interval_to_micros(iv).unwrap_or({
-        // Determine sign of overflow to saturate correctly
-        if iv.months >= 0 && iv.days >= 0 && iv.micros >= 0 {
+    interval_to_micros(iv).unwrap_or_else(|| {
+        // Determine sign of the true (overflowed) result using i128 arithmetic.
+        // This correctly handles mixed-sign cases where some components are
+        // positive and others are negative.
+        let months_us = i128::from(iv.months) * i128::from(MICROS_PER_MONTH);
+        let days_us = i128::from(iv.days) * i128::from(MICROS_PER_DAY);
+        let total = months_us + days_us + i128::from(iv.micros);
+        if total >= 0 {
             i64::MAX
         } else {
             i64::MIN
@@ -199,8 +204,6 @@ pub fn interval_to_micros_saturating(iv: DuckInterval) -> i64 {
 /// assert_eq!(read.days, 15);
 /// assert_eq!(read.micros, 1_000);
 /// ```
-///
-/// # Safety
 #[inline]
 pub const unsafe fn read_interval_at(data: *const u8, idx: usize) -> DuckInterval {
     // SAFETY: Each INTERVAL is exactly 16 bytes (repr(C) struct with i32, i32, i64).
@@ -389,6 +392,57 @@ mod tests {
         assert_eq!(interval_to_micros(iv), Some(expected));
     }
 
+    // Mixed-sign overflow saturation tests (CRIT-5 regression tests)
+
+    #[test]
+    fn saturating_positive_overflow_with_negative_days() {
+        // months = i32::MAX overflows to massive positive; days = -1 is tiny negative.
+        // True result is still massively positive → should saturate to i64::MAX.
+        let iv = DuckInterval {
+            months: i32::MAX,
+            days: -1,
+            micros: 0,
+        };
+        assert_eq!(interval_to_micros(iv), None); // confirm it overflows
+        assert_eq!(interval_to_micros_saturating(iv), i64::MAX);
+    }
+
+    #[test]
+    fn saturating_negative_overflow_with_positive_days() {
+        // months = i32::MIN overflows to massive negative; days = 1 is tiny positive.
+        // True result is still massively negative → should saturate to i64::MIN.
+        let iv = DuckInterval {
+            months: i32::MIN,
+            days: 1,
+            micros: 0,
+        };
+        assert_eq!(interval_to_micros(iv), None);
+        assert_eq!(interval_to_micros_saturating(iv), i64::MIN);
+    }
+
+    #[test]
+    fn saturating_positive_overflow_negative_micros() {
+        // Months alone overflow positive; negative micros doesn't change sign.
+        let iv = DuckInterval {
+            months: i32::MAX,
+            days: 0,
+            micros: -1_000_000,
+        };
+        assert_eq!(interval_to_micros(iv), None);
+        assert_eq!(interval_to_micros_saturating(iv), i64::MAX);
+    }
+
+    #[test]
+    fn saturating_negative_overflow_all_negative() {
+        let iv = DuckInterval {
+            months: i32::MIN,
+            days: i32::MIN,
+            micros: i64::MIN,
+        };
+        assert_eq!(interval_to_micros(iv), None);
+        assert_eq!(interval_to_micros_saturating(iv), i64::MIN);
+    }
+
     mod proptest_interval {
         use super::*;
         use proptest::prelude::*;
@@ -406,6 +460,23 @@ mod tests {
                 let iv = DuckInterval { months, days, micros };
                 // Must not panic for any input
                 let _ = interval_to_micros_saturating(iv);
+            }
+
+            #[test]
+            fn saturating_direction_matches_i128(months: i32, days: i32, micros: i64) {
+                let iv = DuckInterval { months, days, micros };
+                let sat = interval_to_micros_saturating(iv);
+                if interval_to_micros(iv).is_none() {
+                    // Verify saturation direction using i128 ground truth
+                    let total = i128::from(months) * i128::from(MICROS_PER_MONTH)
+                        + i128::from(days) * i128::from(MICROS_PER_DAY)
+                        + i128::from(micros);
+                    if total >= 0 {
+                        prop_assert_eq!(sat, i64::MAX);
+                    } else {
+                        prop_assert_eq!(sat, i64::MIN);
+                    }
+                }
             }
 
             #[test]

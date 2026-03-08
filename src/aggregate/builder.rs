@@ -282,7 +282,7 @@ impl AggregateFunctionBuilder {
 /// Use this when your function accepts a variable number of arguments by
 /// registering N overloads (one per arity) under a single name.
 ///
-/// # Problem 3: Function sets for variadic signatures
+/// # ADR-2: Function sets for variadic signatures
 ///
 /// `DuckDB` does not support true varargs for aggregate functions. For functions
 /// that accept 2–32 boolean conditions, register 31 overloads.

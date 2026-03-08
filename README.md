@@ -168,6 +168,22 @@ unsafe extern "C" fn finalize(
     }
 }
 
+unsafe extern "C" fn combine(
+    _info: libduckdb_sys::duckdb_function_info,
+    source: *mut libduckdb_sys::duckdb_aggregate_state,
+    target: *mut libduckdb_sys::duckdb_aggregate_state,
+    count: libduckdb_sys::idx_t,
+) {
+    for i in 0..count as usize {
+        if let (Some(src), Some(tgt)) = (
+            unsafe { FfiState::<WordCountState>::with_state(*source.add(i)) },
+            unsafe { FfiState::<WordCountState>::with_state_mut(*target.add(i)) },
+        ) {
+            tgt.count += src.count;
+        }
+    }
+}
+
 // Step 3: Register using the builder
 fn register(con: libduckdb_sys::duckdb_connection) -> ExtResult<()> {
     unsafe {
@@ -551,8 +567,10 @@ flowchart TB
 
 ### Safety model
 
-All `unsafe` code is confined to `quack-rs`. Extension authors using the high-level API
-write **100% safe Rust**. Every `unsafe` block in this crate has a `// SAFETY:` comment
+All `unsafe` code within `quack-rs` is sound and documented. Extension authors must write
+`unsafe extern "C"` callback functions (required by DuckDB's C API), but the SDK's helpers
+(`FfiState`, `VectorReader`, `VectorWriter`) minimize the surface area of unsafe code
+within those callbacks. Every `unsafe` block in this crate has a `// SAFETY:` comment
 explaining the invariants being upheld.
 
 ```rust
