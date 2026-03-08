@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 210" width="660" height="210">
+  <defs>
+    <radialGradient id="dg" cx="62%" cy="24%" r="68%">
+      <stop offset="0%"   stop-color="#FFF2A8"/>
+      <stop offset="38%"  stop-color="#F5C420"/>
+      <stop offset="100%" stop-color="#A87200"/>
+    </radialGradient>
+    <filter id="ds" x="-28%" y="-28%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="4" stdDeviation="9"
+                    flood-color="#7A5500" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <!-- White card with subtle border -->
+  <rect width="660" height="210" rx="18" fill="#FFFFFF"/>
+  <rect width="660" height="210" rx="18" fill="none"
+        stroke="#DDE3EA" stroke-width="1.5"/>
+
+  
+  <g filter="url(#ds)">
+    <path d="M 44,110 C 32,92 16,64 20,46 C 24,32 36,30 44,40 C 50,48 52,70 50,92 Z" fill="url(#dg)" stroke="none"/>
+    <ellipse cx="100.00" cy="108.00" rx="59.84" ry="40.48"
+             transform="rotate(-4,100.00,108.00)"
+             fill="url(#dg)" stroke="none"/>
+    <path d="M 92.96,106.24 Q 115.84,83.36 144.00,106.24 Q 115.84,99.20 92.96,106.24 Z" fill="#A87200" opacity="0.28" stroke="none"/>
+    <path d="M 68,88 Q 104,74 144,86" fill="none" stroke="#C8A000" stroke-width="2" stroke-linecap="round" opacity="0.40"/>
+    <path d="M 164,57 Q 202,54 206,68 Q 202,82 164,79 Z" fill="#E06818" stroke="none"/>
+    <circle  cx="145.76" cy="71.04" r="28.16"
+             fill="url(#dg)" stroke="none"/>
+    <circle  cx="150.16" cy="62.24" r="5.72"
+             fill="#1A1A1A" stroke="none"/>
+    <circle  cx="152.36" cy="59.78" r="2.20"
+             fill="white" stroke="none"/>
+    <ellipse cx="136.96" cy="58.72"
+             rx="7.92" ry="5.28"
+             transform="rotate(-30,136.96,58.72)"
+             fill="white" opacity="0.18" stroke="none"/>
+    <ellipse cx="107.04" cy="85.12"
+             rx="14.08" ry="7.92"
+             transform="rotate(-20,107.04,85.12)"
+             fill="white" opacity="0.10" stroke="none"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="214" y="122"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="80" font-weight="700"
+        letter-spacing="-2">
+    <tspan fill="#0D1117">quack</tspan><tspan fill="#CE422B">-rs</tspan>
+  </text>
+
+  <!-- Tagline: same left edge as wordmark -->
+  <text x="216" y="151"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="16" font-weight="400"
+        letter-spacing="0.4" fill="#6B7280">DuckDB extensions in Rust</text>
+</svg>

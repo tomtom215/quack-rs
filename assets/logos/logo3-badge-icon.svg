@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 360" width="360" height="360">
+  <defs>
+    <radialGradient id="bgr" cx="38%" cy="34%" r="68%">
+      <stop offset="0%"   stop-color="#1C2330"/>
+      <stop offset="100%" stop-color="#080C14"/>
+    </radialGradient>
+    <radialGradient id="dg" cx="62%" cy="24%" r="68%">
+      <stop offset="0%"   stop-color="#FFF2A8"/>
+      <stop offset="38%"  stop-color="#F5C420"/>
+      <stop offset="100%" stop-color="#A87200"/>
+    </radialGradient>
+    <!-- Double ring: outer gold, inner rust — refined border detail -->
+    <linearGradient id="ring1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#F5C840"/>
+      <stop offset="100%" stop-color="#D4A020"/>
+    </linearGradient>
+    <filter id="ds" x="-30%" y="-30%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12"
+                    flood-color="#000" flood-opacity="0.60"/>
+    </filter>
+    <clipPath id="circ">
+      <circle cx="180" cy="180" r="179"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background disc -->
+  <circle cx="180" cy="180" r="180" fill="url(#bgr)"/>
+
+  <!-- Outer ring (gold gradient) -->
+  <circle cx="180" cy="180" r="175"
+          fill="none" stroke="url(#ring1)" stroke-width="4.5"/>
+  <!-- Inner accent ring (rust, thinner) -->
+  <circle cx="180" cy="180" r="168"
+          fill="none" stroke="#CE422B" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Duck clipped to circle -->
+  <g clip-path="url(#circ)">
+    
+  <g filter="url(#ds)">
+    <path d="M 114,152 C 102,134 84,106 88,88 C 92,74 104,72 112,82 C 118,90 120,114 118,136 Z" fill="url(#dg)" stroke="none"/>
+    <ellipse cx="172.00" cy="148.00" rx="63.24" ry="42.78"
+             transform="rotate(-4,172.00,148.00)"
+             fill="url(#dg)" stroke="none"/>
+    <path d="M 164.56,146.14 Q 188.74,121.96 218.50,146.14 Q 188.74,138.70 164.56,146.14 Z" fill="#A87200" opacity="0.28" stroke="none"/>
+    <path d="M 140,132 Q 176,118 216,130" fill="none" stroke="#8B6000" stroke-width="2" stroke-linecap="round" opacity="0.45"/>
+    <path d="M 238,99 Q 278,96 282,109 Q 278,122 238,119 Z" fill="#E06818" stroke="none"/>
+    <circle  cx="220.36" cy="108.94" r="29.76"
+             fill="url(#dg)" stroke="none"/>
+    <circle  cx="225.01" cy="99.64" r="6.04"
+             fill="#0D1117" stroke="none"/>
+    <circle  cx="227.34" cy="97.04" r="2.33"
+             fill="white" stroke="none"/>
+    <ellipse cx="211.06" cy="95.92"
+             rx="8.37" ry="5.58"
+             transform="rotate(-30,211.06,95.92)"
+             fill="white" opacity="0.18" stroke="none"/>
+    <ellipse cx="179.44" cy="123.82"
+             rx="14.88" ry="8.37"
+             transform="rotate(-20,179.44,123.82)"
+             fill="white" opacity="0.10" stroke="none"/>
+  </g>
+  </g>
+
+  <!-- Water ripples (bridge between duck and label) -->
+  <ellipse cx="172" cy="210" rx="72" ry="7.5"
+           fill="none" stroke="#2A4060" stroke-width="2.0" opacity="0.70"/>
+  <ellipse cx="172" cy="221" rx="50" ry="5.5"
+           fill="none" stroke="#2A4060" stroke-width="1.4" opacity="0.48"/>
+  <ellipse cx="172" cy="230" rx="30" ry="3.5"
+           fill="none" stroke="#2A4060" stroke-width="0.9" opacity="0.28"/>
+
+  <!-- Label: two tspan trick centred in badge -->
+  <!-- "quack" anchor=end / "-rs" anchor=start at the same split x=203 -->
+  <text x="203" y="314"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="40" font-weight="700"
+        letter-spacing="-0.5" text-anchor="end"
+        fill="#E6EDF3">quack</text>
+  <text x="203" y="314"
+        font-family="'Liberation Sans', Arial, sans-serif" font-size="40" font-weight="700"
+        letter-spacing="-0.5" text-anchor="start"
+        fill="#CE422B">-rs</text>
+</svg>
