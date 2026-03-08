@@ -75,7 +75,7 @@ unknown-registry = "deny"
 # Git sources bypass the crates.io review pipeline and complicate auditing.
 unknown-git = "deny"
 
-allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-registry = ["https://github.com/rust-lang/crates.io-index", "sparse+https://index.crates.io/"]
 
 # Uncomment to allow specific git sources (e.g., for unreleased patches):
 # allow-git = ["https://github.com/some-org/some-repo"]

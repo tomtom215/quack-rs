@@ -1,2 +1,6 @@
 /target/
 examples/hello-ext/target/
+book/book/
+.DS_Store
+*.swp
+*.swo

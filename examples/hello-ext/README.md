@@ -180,10 +180,9 @@ src/lib.rs
 │
 ├── first_word_scalar           reads VARCHAR, propagates NULL, writes VARCHAR output
 │
-├── GsBindData                  struct — holds n (the series limit); FfiBindData<GsBindData>
-├── GsScanState                 struct — holds current index; FfiInitData<GsScanState>
-├── gs_bind                     extracts n from duckdb_value via duckdb_get_int64
-├── gs_init                     zero-initialises scan state via FfiInitData::init_callback
+├── GenerateSeriesState         struct — holds current index + total; FfiInitData<GenerateSeriesState>
+├── gs_bind                     extracts n via duckdb_get_int64; stores via FfiBindData::<i64>::set
+├── gs_init                     reads bind data, allocates scan state via FfiInitData::set
 ├── gs_scan                     emits a batch of i64 rows; sets duckdb_data_chunk_set_size
 │
 ├── varchar_to_int              cast callback (VARCHAR → INTEGER)

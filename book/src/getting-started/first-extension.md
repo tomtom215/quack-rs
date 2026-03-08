@@ -1,12 +1,14 @@
 # Your First Extension
 
 This page walks through `hello-ext`, the complete reference example bundled with quack-rs.
-It registers **two functions** that together cover the most important patterns:
+It registers **four functions** that together cover every major pattern:
 
 | SQL | Kind | Signature |
 |-----|------|-----------|
 | `word_count(text)` | Aggregate | `VARCHAR → BIGINT` |
 | `first_word(text)` | Scalar    | `VARCHAR → VARCHAR` |
+| `generate_series_ext(n)` | Table | `BIGINT → TABLE(value BIGINT)` |
+| `CAST(VARCHAR AS INTEGER)` | Cast | `VARCHAR → INTEGER` |
 
 Full source: [`examples/hello-ext/src/lib.rs`](https://github.com/tomtom215/quack-rs/blob/main/examples/hello-ext/src/lib.rs)
 

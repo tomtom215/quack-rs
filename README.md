@@ -7,7 +7,7 @@
   <p>
     <a href="https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml"><img src="https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://crates.io/crates/quack-rs"><img src="https://img.shields.io/crates/v/quack-rs.svg" alt="Crates.io"></a>
-    <a href="https://docs.rs/quack-rs"><img src="https://img.shields.io/docsrs/quack-rs" alt="docs.rs"></a>
+    <a href="https://quack-rs.com/"><img src="https://img.shields.io/badge/docs-book-blue.svg" alt="Documentation"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://blog.rust-lang.org/2025/01/30/Rust-1.84.1.html"><img src="https://img.shields.io/badge/MSRV-1.84.1-blue.svg" alt="MSRV: 1.84.1"></a>
   </p>
@@ -115,7 +115,7 @@ See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
 
 ```toml
 [dependencies]
-quack-rs = "0.2"
+quack-rs = "0.3"
 libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
 ```
 
@@ -732,6 +732,10 @@ in the relevant release.
 ## Changelog
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
+
+**v0.3.0** (2026-03-08) — Added `TableFunctionBuilder`, `ReplacementScanBuilder`,
+`CastFunctionBuilder`, complex vector types (`StructVector`, `ListVector`, `MapVector`),
+`write_interval`, `DbConfig`, `append_metadata` binary, cross-platform CI (Linux/macOS/Windows).
 
 **v0.2.0** (2026-03-07) — Added `validate::description_yml` module, `prelude` module,
 scaffold improvements (`extension_config.cmake`, SQLLogicTest, GitHub Actions CI),

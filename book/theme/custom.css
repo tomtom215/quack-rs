@@ -13,7 +13,8 @@
   display: none;        /* hidden until theme class reveals one */
 }
 
-/* light / rust / ayu → show light logo */
+/* light / rust / ayu → show light logo.
+   mdBook sets the theme class on <html>, not <body>. */
 .light  .book-logo-light,
 .rust   .book-logo-light,
 .ayu    .book-logo-light { display: inline-block; }
@@ -22,8 +23,9 @@
 .coal   .book-logo-dark,
 .navy   .book-logo-dark  { display: inline-block; }
 
-/* fallback: if no theme class yet (first paint), show light logo */
-body:not(.coal):not(.navy) .book-logo-light { display: inline-block; }
+/* fallback: if no theme class yet (first paint), show light logo.
+   Must target html (not body) because mdBook sets the theme class on <html>. */
+html:not(.coal):not(.navy) .book-logo-light { display: inline-block; }
 
 /* ── Typography ─────────────────────────────────────────────────────────── */
 :root {

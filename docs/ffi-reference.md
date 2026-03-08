@@ -53,7 +53,7 @@ duckdb_disconnect(&mut con)
 
 **Critical**: The version string passed to `duckdb_rs_extension_api_init` is the
 *C API version* (`"v1.2.0"` for DuckDB 1.4.x), not the DuckDB release version
-(`"v1.4.4"`). See [Pitfall P8](../LESSONS.md).
+(`"v1.4.4"`). See [Pitfall P2](../LESSONS.md).
 
 ---
 
