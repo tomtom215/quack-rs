@@ -24,12 +24,15 @@
 - [Aggregate Functions](functions/aggregate.md)
   - [State Management](functions/aggregate-state.md)
   - [Overloading with Function Sets](functions/aggregate-sets.md)
+- [Table Functions](functions/table-functions.md)
+- [Replacement Scans](functions/replacement-scan.md)
 - [NULL Handling](functions/null-handling.md)
 - [SQL Macros](functions/sql-macros.md)
 
 # Working with Data
 
 - [Reading & Writing Vectors](data/vectors.md)
+- [Complex Types (STRUCT, LIST, MAP)](data/complex-types.md)
 - [NULL Handling & Strings](data/nulls-and-strings.md)
 - [INTERVAL Type](data/intervals.md)
 

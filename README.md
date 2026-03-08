@@ -69,6 +69,9 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 | LogicalType memory | Leak if not freed | `LogicalType` implements `Drop` |
 | Aggregate combine | Config fields lost on segment-tree merges | Testable with `AggregateTestHarness` |
 | FFI panics | Process abort or undefined behavior | `init_extension` never panics |
+| Table functions | ~100 lines of raw bind/init/scan callbacks | `TableFunctionBuilder` 5-method chain |
+| Replacement scans | Undocumented vtable + manual string allocation | `ReplacementScanBuilder` 4-method chain |
+| Complex types (STRUCT/LIST/MAP) | Manual offset arithmetic over child vectors | `StructVector`, `ListVector`, `MapVector` helpers |
 | Extension naming | Rejected by DuckDB CI with no explanation | `validate_extension_name` catches issues before submission |
 | description.yml | No tooling to validate before submission | `validate_description_yml_str` validates the whole file |
 | New project setup | Hours of boilerplate + reading DuckDB internals | `generate_scaffold` produces all 11 required files |
@@ -254,8 +257,11 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 | [`aggregate::state`] | Generic FFI state management | `AggregateState`, `FfiState<T>` |
 | [`aggregate::callbacks`] | Callback type aliases | `UpdateFn`, `CombineFn`, `FinalizeFn`, … |
 | [`scalar`] | Scalar function registration | `ScalarFunctionBuilder`, `ScalarFunctionSetBuilder` |
+| [`table`] | Table function registration (bind/init/scan) | `TableFunctionBuilder`, `BindInfo`, `FfiBindData`, `FfiInitData` |
+| [`replacement_scan`] | `SELECT * FROM 'file.xyz'` replacement scans | `ReplacementScanBuilder` |
 | [`sql_macro`] | SQL macro registration (no FFI callbacks) | `SqlMacro`, `MacroBody` |
 | [`vector`] | Safe reading/writing of DuckDB vectors | `VectorReader`, `VectorWriter` |
+| [`vector::complex`] | STRUCT / LIST / MAP child vector access | `StructVector`, `ListVector`, `MapVector` |
 | [`vector::string`] | 16-byte DuckDB string format | `DuckStringView`, `read_duck_string` |
 | [`types`] | DuckDB type system wrappers | `TypeId`, `LogicalType`, `NullHandling` |
 | [`interval`] | INTERVAL ↔ microseconds conversion | `DuckInterval`, `interval_to_micros` |
@@ -277,8 +283,11 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 [`aggregate::state`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/state/index.html
 [`aggregate::callbacks`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/callbacks/index.html
 [`scalar`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/index.html
+[`table`]: https://docs.rs/quack-rs/latest/quack_rs/table/index.html
+[`replacement_scan`]: https://docs.rs/quack-rs/latest/quack_rs/replacement_scan/index.html
 [`sql_macro`]: https://docs.rs/quack-rs/latest/quack_rs/sql_macro/index.html
 [`vector`]: https://docs.rs/quack-rs/latest/quack_rs/vector/index.html
+[`vector::complex`]: https://docs.rs/quack-rs/latest/quack_rs/vector/complex/index.html
 [`vector::string`]: https://docs.rs/quack-rs/latest/quack_rs/vector/string/index.html
 [`types`]: https://docs.rs/quack-rs/latest/quack_rs/types/index.html
 [`interval`]: https://docs.rs/quack-rs/latest/quack_rs/interval/index.html
@@ -514,12 +523,15 @@ flowchart TB
         EP["**entry_point**<br/>entry_point! · init_extension"]
         AGG["**aggregate**<br/>AggregateFunctionBuilder<br/>AggregateFunctionSetBuilder · FfiState&lt;T&gt;"]
         SCL["**scalar**<br/>ScalarFunctionBuilder<br/>ScalarFunctionSetBuilder"]
+        TBL["**table**<br/>TableFunctionBuilder<br/>BindInfo · FfiBindData · FfiInitData"]
+        RSC["**replacement_scan**<br/>ReplacementScanBuilder"]
         SM["**sql_macro**<br/>SqlMacro · MacroBody"]
     end
 
     subgraph DATA ["Data layer"]
         direction LR
         VEC["**vector**<br/>VectorReader · VectorWriter<br/>ValidityBitmap · DuckStringView"]
+        CMP["**vector::complex**<br/>StructVector · ListVector · MapVector"]
         TYP["**types**<br/>TypeId · LogicalType"]
         INT["**interval**<br/>DuckInterval · interval_to_micros"]
     end

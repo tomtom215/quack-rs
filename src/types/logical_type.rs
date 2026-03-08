@@ -12,7 +12,10 @@
 //! memory. [`LogicalType`] implements `Drop` to prevent this.
 
 use crate::types::TypeId;
-use libduckdb_sys::{duckdb_create_logical_type, duckdb_destroy_logical_type, duckdb_logical_type};
+use libduckdb_sys::{
+    duckdb_create_list_type, duckdb_create_logical_type, duckdb_create_map_type,
+    duckdb_create_struct_type, duckdb_destroy_logical_type, duckdb_logical_type,
+};
 
 /// An RAII wrapper around a `duckdb_logical_type` handle.
 ///
@@ -58,6 +61,96 @@ impl LogicalType {
         // It returns a heap-allocated handle that must be freed with duckdb_destroy_logical_type.
         let inner = unsafe { duckdb_create_logical_type(type_id.to_duckdb_type()) };
         assert!(!inner.is_null(), "duckdb_create_logical_type returned null");
+        Self { inner }
+    }
+
+    /// Creates a `LIST<element_type>` logical type.
+    ///
+    /// Lists are variable-length sequences of the given element type.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::types::{LogicalType, TypeId};
+    ///
+    /// // Requires DuckDB runtime.
+    /// let list_of_int = LogicalType::list(TypeId::Integer);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `duckdb_create_list_type` returns null (should never happen).
+    #[must_use]
+    pub fn list(element_type: TypeId) -> Self {
+        let element_lt = Self::new(element_type);
+        // SAFETY: element_lt.as_raw() is a valid logical type.
+        let inner = unsafe { duckdb_create_list_type(element_lt.as_raw()) };
+        assert!(!inner.is_null(), "duckdb_create_list_type returned null");
+        Self { inner }
+    }
+
+    /// Creates a `MAP<key_type, value_type>` logical type.
+    ///
+    /// DuckDB maps are stored as `LIST<STRUCT{key: K, value: V}>`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `duckdb_create_map_type` returns null.
+    #[must_use]
+    pub fn map(key_type: TypeId, value_type: TypeId) -> Self {
+        let key_lt = Self::new(key_type);
+        let val_lt = Self::new(value_type);
+        // SAFETY: both logical types are valid.
+        let inner = unsafe { duckdb_create_map_type(key_lt.as_raw(), val_lt.as_raw()) };
+        assert!(!inner.is_null(), "duckdb_create_map_type returned null");
+        Self { inner }
+    }
+
+    /// Creates a `STRUCT` logical type from a slice of `(name, type)` field definitions.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::types::{LogicalType, TypeId};
+    ///
+    /// // Requires DuckDB runtime.
+    /// let point = LogicalType::struct_type(&[
+    ///     ("x", TypeId::Double),
+    ///     ("y", TypeId::Double),
+    /// ]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if any field name contains an interior null byte, or if
+    /// `duckdb_create_struct_type` returns null.
+    #[must_use]
+    pub fn struct_type(fields: &[(&str, TypeId)]) -> Self {
+        use std::ffi::CString;
+
+        // Build arrays of logical type handles and C name pointers.
+        // The logical types must outlive the duckdb_create_struct_type call.
+        let field_types: Vec<Self> = fields.iter().map(|&(_, t)| Self::new(t)).collect();
+        let c_names: Vec<CString> = fields
+            .iter()
+            .map(|&(n, _)| CString::new(n).expect("field name must not contain null bytes"))
+            .collect();
+
+        let mut type_ptrs: Vec<duckdb_logical_type> =
+            field_types.iter().map(|lt| lt.as_raw()).collect();
+        let mut name_ptrs: Vec<*const i8> = c_names.iter().map(|s| s.as_ptr()).collect();
+
+        // SAFETY: type_ptrs and name_ptrs are valid for the duration of this call.
+        let inner = unsafe {
+            duckdb_create_struct_type(
+                type_ptrs.as_mut_ptr(),
+                name_ptrs
+                    .as_mut_ptr()
+                    .cast::<*const std::os::raw::c_char>(),
+                fields.len() as libduckdb_sys::idx_t,
+            )
+        };
+        assert!(!inner.is_null(), "duckdb_create_struct_type returned null");
         Self { inner }
     }
 

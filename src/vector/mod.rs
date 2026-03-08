@@ -19,6 +19,7 @@
 //! - **P7**: `duckdb_string_t` format — [`string`] handles both the inline (≤12 bytes)
 //!   and pointer (>12 bytes) cases.
 
+pub mod complex;
 pub mod reader;
 pub mod string;
 pub mod validity;

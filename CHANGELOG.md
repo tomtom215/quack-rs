@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`TableFunctionBuilder`** — type-safe builder for registering DuckDB table functions
+  (the `SELECT * FROM my_function(args)` pattern). Covers the full bind/init/scan
+  lifecycle with ergonomic callbacks, eliminating ~100 lines of raw FFI boilerplate.
+  Helper types `BindInfo`, `FfiBindData<T>`, and `FfiInitData<T>` manage parameter
+  extraction and per-scan state with zero raw pointer manipulation. See
+  [`table`](src/table/mod.rs) and `examples/hello-ext` (`generate_series_ext`) for
+  a fully-tested end-to-end example verified against DuckDB 1.4.4.
+
+- **`ReplacementScanBuilder`** — builder for registering DuckDB replacement scans
+  (the `SELECT * FROM 'file.xyz'` pattern where a file path triggers a table-valued
+  scan). The builder handles callback registration, path extraction, and bind-info
+  population through a 4-method chain. See [`replacement_scan`](src/replacement_scan/).
+
+- **`StructVector`** — safe wrapper for reading and writing STRUCT child vectors.
+  `get_child(vec, idx)`, `field_reader(vec, idx, row_count)`, and
+  `field_writer(vec, idx)` replace manual offset arithmetic over child vector handles.
+
+- **`ListVector`** — safe wrapper for reading and writing LIST child vectors.
+  `get_child`, `get_entry`, `set_entry`, `reserve`, `set_size`, `child_reader`, and
+  `child_writer` cover the complete LIST read/write workflow without raw pointer casts.
+
+- **`MapVector`** — safe wrapper for DuckDB MAP vectors (stored as
+  `LIST<STRUCT{key, value}>`). `keys(vec)`, `values(vec)`, `struct_child(vec)`,
+  `reserve`, `set_size`, `set_entry`, and `get_entry` expose the full MAP interface.
+
+- **`vector::complex` module** — re-exports `StructVector`, `ListVector`, `MapVector`
+  at `quack_rs::vector::complex` and documents the read-vs-write workflow for nested
+  types with working code examples in the module doc.
+
+- **`prelude` additions** — `TableFunctionBuilder`, `BindInfo`, `FfiBindData`,
+  `FfiInitData`, `ReplacementScanBuilder`, `StructVector`, `ListVector`, `MapVector`
+  are now all re-exported from `quack_rs::prelude`.
+
+### Fixed
+
+- **`hello-ext` `gs_bind` callback** — replaced incorrect `duckdb_value_int64(param)`
+  (wrong arity: takes 3 arguments) with `duckdb_get_int64(param)` (correct 1-argument
+  form). The extension now builds cleanly and all 11 live SQL tests pass against
+  DuckDB 1.4.4.
+
 - **`VectorWriter::write_interval`** — writes INTERVAL values to output vectors using
   the correct 16-byte `{ months: i32, days: i32, micros: i64 }` layout.
 

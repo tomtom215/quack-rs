@@ -25,6 +25,15 @@
 //! | [`ScalarFunctionBuilder`] | `scalar` module |
 //! | [`ScalarFunctionSetBuilder`] | `scalar` module |
 //! | [`ScalarOverloadBuilder`] | `scalar` module |
+//! | [`TableFunctionBuilder`] | `table` module |
+//! | [`BindInfo`] | `table` module |
+//! | [`InitInfo`] | `table` module |
+//! | [`FunctionInfo`] | `table` module |
+//! | [`FfiBindData`] | `table` module |
+//! | [`FfiInitData`] | `table` module |
+//! | [`FfiLocalInitData`] | `table` module |
+//! | [`ReplacementScanBuilder`] | `replacement_scan` module |
+//! | [`ReplacementScanInfo`] | `replacement_scan` module |
 //! | [`SqlMacro`] | `sql_macro` module |
 //! | [`VectorReader`] | `vector` module |
 //! | [`VectorWriter`] | `vector` module |
@@ -46,6 +55,7 @@
 //! - `scaffold::*` — project generation (use explicitly)
 //! - `testing::*` — test harness (typically imported only in `#[cfg(test)]`)
 //! - `interval::read_interval_at` — low-level; use [`VectorReader::read_interval`] instead
+//! - `vector::complex::*` — low-level; import explicitly when working with complex types
 //!
 //! # Example
 //!
@@ -80,6 +90,15 @@ pub use crate::aggregate::{
 
 // Scalar functions
 pub use crate::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};
+
+// Table functions
+pub use crate::table::{
+    BindInfo, FfiBindData, FfiInitData, FfiLocalInitData, FunctionInfo, InitInfo,
+    TableFunctionBuilder,
+};
+
+// Replacement scans
+pub use crate::replacement_scan::{ReplacementScanBuilder, ReplacementScanInfo};
 
 // SQL macros
 pub use crate::sql_macro::SqlMacro;

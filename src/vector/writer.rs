@@ -22,6 +22,7 @@ use libduckdb_sys::{
     idx_t,
 };
 
+
 /// A typed writer for a `DuckDB` output vector in a `finalize` callback.
 ///
 /// # Example
@@ -54,6 +55,23 @@ impl VectorWriter {
     /// callback. The vector must not be destroyed while this writer is live.
     pub unsafe fn new(vector: duckdb_vector) -> Self {
         // SAFETY: Caller guarantees vector is valid.
+        let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
+        Self { vector, data }
+    }
+
+    /// Creates a `VectorWriter` directly from a raw `duckdb_vector` handle.
+    ///
+    /// Use this when you need to write into a child vector (e.g., a STRUCT field
+    /// or LIST element vector) obtained from
+    /// [`StructVector::get_child`][crate::vector::complex::StructVector::get_child] or
+    /// [`ListVector::get_child`][crate::vector::complex::ListVector::get_child].
+    ///
+    /// # Safety
+    ///
+    /// `vector` must be a valid, writable `duckdb_vector`. The vector must not be
+    /// destroyed while this writer is live.
+    pub unsafe fn from_vector(vector: duckdb_vector) -> Self {
+        // SAFETY: caller guarantees vector is valid.
         let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
         Self { vector, data }
     }
