@@ -23,7 +23,7 @@
 //!
 //! | Type | Purpose |
 //! |------|---------|
-//! | [`TableFunctionBuilder`] | Registers the table function with DuckDB |
+//! | [`TableFunctionBuilder`] | Registers the table function with `DuckDB` |
 //! | [`BindInfo`] | Ergonomic wrapper for `duckdb_bind_info` in bind callbacks |
 //! | [`InitInfo`] | Ergonomic wrapper for `duckdb_init_info` in init callbacks |
 //! | [`FunctionInfo`] | Ergonomic wrapper for `duckdb_function_info` in scan callbacks |

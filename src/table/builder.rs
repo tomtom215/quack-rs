@@ -3,9 +3,9 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! Builder for registering DuckDB table functions.
+//! Builder for registering `DuckDB` table functions.
 //!
-//! Table functions are the backbone of "real" DuckDB extensions: they are
+//! Table functions are the backbone of "real" `DuckDB` extensions: they are
 //! SELECT-able, support projection pushdown, named parameters, and can
 //! produce arbitrary output schemas determined at query-parse time.
 //!
@@ -88,7 +88,7 @@ pub type InitFn = unsafe extern "C" fn(info: duckdb_init_info);
 /// The scan callback: fill one output chunk; set chunk size to 0 when done.
 pub type ScanFn = unsafe extern "C" fn(info: duckdb_function_info, output: duckdb_data_chunk);
 
-/// The extra-info destructor callback: called by DuckDB to free function-level extra data.
+/// The extra-info destructor callback: called by `DuckDB` to free function-level extra data.
 pub type ExtraDestroyFn = unsafe extern "C" fn(data: *mut c_void);
 
 /// A named parameter specification: (name, type).
@@ -97,7 +97,7 @@ struct NamedParam {
     type_id: TypeId,
 }
 
-/// Builder for registering a DuckDB table function.
+/// Builder for registering a `DuckDB` table function.
 ///
 /// Table functions are the most powerful extension type — they can return
 /// arbitrary result schemas, support named parameters, projection pushdown,
@@ -114,7 +114,7 @@ struct NamedParam {
 /// - [`param`][TableFunctionBuilder::param]: positional parameters.
 /// - [`named_param`][TableFunctionBuilder::named_param]: named parameters (`name := value`).
 /// - [`local_init`][TableFunctionBuilder::local_init]: per-thread init (enables parallel scan).
-/// - [`projection_pushdown`][TableFunctionBuilder::projection_pushdown]: hint projection info to DuckDB.
+/// - [`projection_pushdown`][TableFunctionBuilder::projection_pushdown]: hint projection info to `DuckDB`.
 /// - [`extra_info`][TableFunctionBuilder::extra_info]: function-level data available in all callbacks.
 #[must_use]
 pub struct TableFunctionBuilder {
@@ -213,7 +213,7 @@ impl TableFunctionBuilder {
 
     /// Sets the per-thread local init callback (optional).
     ///
-    /// When set, DuckDB calls this once per worker thread. Use [`FfiLocalInitData::set`]
+    /// When set, `DuckDB` calls this once per worker thread. Use [`FfiLocalInitData::set`]
     /// to store thread-local scan state. Setting a local init enables parallel scanning.
     pub fn local_init(mut self, f: InitFn) -> Self {
         self.local_init = Some(f);
@@ -231,7 +231,7 @@ impl TableFunctionBuilder {
 
     /// Enables or disables projection pushdown support (default: disabled).
     ///
-    /// When enabled, DuckDB informs the `init` callback which columns were
+    /// When enabled, `DuckDB` informs the `init` callback which columns were
     /// requested. Use `duckdb_init_get_column_count` and `duckdb_init_get_column_index`
     /// in your init callback to skip producing unrequested columns.
     pub const fn projection_pushdown(mut self, enable: bool) -> Self {
@@ -243,11 +243,11 @@ impl TableFunctionBuilder {
     ///
     /// This data is available via `duckdb_function_get_extra_info` and
     /// `duckdb_bind_get_extra_info` in all callbacks. The `destroy` callback
-    /// is called by DuckDB when the function is dropped.
+    /// is called by `DuckDB` when the function is dropped.
     ///
     /// # Safety
     ///
-    /// `data` must remain valid until DuckDB calls `destroy`. The typical pattern
+    /// `data` must remain valid until `DuckDB` calls `destroy`. The typical pattern
     /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
     pub unsafe fn extra_info(mut self, data: *mut c_void, destroy: ExtraDestroyFn) -> Self {
         self.extra_info = Some((data, destroy));
@@ -260,7 +260,7 @@ impl TableFunctionBuilder {
     ///
     /// Returns `ExtensionError` if:
     /// - The bind, init, or scan callback was not set.
-    /// - DuckDB reports a registration failure.
+    /// - `DuckDB` reports a registration failure.
     ///
     /// # Safety
     ///
@@ -382,7 +382,7 @@ impl BindInfo {
     ///
     /// # Safety
     ///
-    /// `info` must be a valid `duckdb_bind_info` provided by DuckDB in a bind callback.
+    /// `info` must be a valid `duckdb_bind_info` provided by `DuckDB` in a bind callback.
     #[inline]
     #[must_use]
     pub const unsafe fn new(info: duckdb_bind_info) -> Self {
@@ -425,7 +425,7 @@ impl BindInfo {
 
     /// Sets a cardinality hint for the query optimizer.
     ///
-    /// `is_exact` — if `true`, DuckDB treats this as the exact row count;
+    /// `is_exact` — if `true`, `DuckDB` treats this as the exact row count;
     /// if `false`, it is treated as an estimate.
     pub fn set_cardinality(&self, rows: u64, is_exact: bool) -> &Self {
         // SAFETY: self.info is valid.
@@ -437,7 +437,7 @@ impl BindInfo {
 
     /// Reports an error from the bind callback.
     ///
-    /// After calling this, DuckDB will abort query parsing and report the error.
+    /// After calling this, `DuckDB` will abort query parsing and report the error.
     ///
     /// # Panics
     ///
@@ -478,7 +478,7 @@ impl InitInfo {
     ///
     /// # Safety
     ///
-    /// `info` must be a valid `duckdb_init_info` provided by DuckDB.
+    /// `info` must be a valid `duckdb_init_info` provided by `DuckDB`.
     #[inline]
     #[must_use]
     pub const unsafe fn new(info: duckdb_init_info) -> Self {
@@ -544,7 +544,7 @@ impl FunctionInfo {
     ///
     /// # Safety
     ///
-    /// `info` must be a valid `duckdb_function_info` provided by DuckDB in a scan callback.
+    /// `info` must be a valid `duckdb_function_info` provided by `DuckDB` in a scan callback.
     #[inline]
     #[must_use]
     pub const unsafe fn new(info: duckdb_function_info) -> Self {
@@ -553,7 +553,7 @@ impl FunctionInfo {
 
     /// Reports an error from the scan callback.
     ///
-    /// DuckDB will abort the query and propagate this as a SQL error.
+    /// `DuckDB` will abort the query and propagate this as a SQL error.
     ///
     /// # Panics
     ///
