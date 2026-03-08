@@ -6,7 +6,7 @@
 //! Builder for registering `DuckDB` replacement scans.
 //!
 //! Replacement scans enable the `SELECT * FROM 'my_file.xyz'` pattern.
-//! When DuckDB encounters an unrecognized table reference (including a string
+//! When `DuckDB` encounters an unrecognized table reference (including a string
 //! literal like `'data.parquet'`), it calls all registered replacement scan
 //! callbacks in registration order, giving each a chance to redirect the scan
 //! to a known table function.
@@ -16,7 +16,7 @@
 //! ```text
 //! SELECT * FROM 'data.myformat'
 //!   ↓
-//! DuckDB does not know 'data.myformat' as a table
+//! `DuckDB` does not know 'data.myformat' as a table
 //!   ↓
 //! Calls each registered replacement scan callback with:
 //!   - info: duckdb_replacement_scan_info   (use to redirect or error)
@@ -25,7 +25,7 @@
 //!   ↓
 //! Callback either:
 //!   - Redirects: duckdb_replacement_scan_set_function_name + add_parameter
-//!   - Ignores: returns without calling any scan API (DuckDB tries the next callback)
+//!   - Ignores: returns without calling any scan API (`DuckDB` tries the next callback)
 //!   - Errors: duckdb_replacement_scan_set_error
 //! ```
 //!
@@ -43,7 +43,7 @@
 //! ) {
 //!     let name = unsafe { std::ffi::CStr::from_ptr(table_name).to_string_lossy() };
 //!     if !name.ends_with(".xyz") {
-//!         return; // not ours — let DuckDB try other callbacks
+//!         return; // not ours — let `DuckDB` try other callbacks
 //!     }
 //!     // Redirect to our table function and pass the filename as a parameter.
 //!     unsafe {
@@ -72,7 +72,7 @@ use libduckdb_sys::{
 ///
 /// - `info` — use to redirect the scan or report an error.
 /// - `table_name` — the unrecognized table identifier from the query.
-/// - `data` — your extra_data pointer, if any.
+/// - `data` — your `extra_data` pointer, if any.
 pub type ReplacementScanFn = unsafe extern "C" fn(
     info: duckdb_replacement_scan_info,
     table_name: *const c_char,
@@ -91,7 +91,7 @@ impl ReplacementScanInfo {
     ///
     /// # Safety
     ///
-    /// `info` must be a valid `duckdb_replacement_scan_info` provided by DuckDB.
+    /// `info` must be a valid `duckdb_replacement_scan_info` provided by `DuckDB`.
     #[inline]
     #[must_use]
     pub const unsafe fn new(info: duckdb_replacement_scan_info) -> Self {
@@ -136,7 +136,7 @@ impl ReplacementScanInfo {
         self
     }
 
-    /// Reports an error, causing DuckDB to abort this replacement scan attempt.
+    /// Reports an error, causing `DuckDB` to abort this replacement scan attempt.
     ///
     /// # Panics
     ///
@@ -157,7 +157,7 @@ impl ReplacementScanInfo {
     }
 }
 
-/// Builder / registration helper for DuckDB replacement scans.
+/// Builder / registration helper for `DuckDB` replacement scans.
 ///
 /// Unlike other builders in quack-rs, registration is a single static call
 /// because the replacement scan API takes a raw function pointer and optional
@@ -174,7 +174,7 @@ impl ReplacementScanBuilder {
     /// - `callback` — your replacement scan function.
     /// - `extra_data` — user data passed as the third argument to `callback`.
     ///   Pass `std::ptr::null_mut()` if you need no extra data.
-    /// - `delete_callback` — called by DuckDB when the replacement scan is
+    /// - `delete_callback` — called by `DuckDB` when the replacement scan is
     ///   removed (e.g., database closed). Pass `None` if `extra_data` needs
     ///   no special cleanup.
     ///
@@ -208,13 +208,14 @@ impl ReplacementScanBuilder {
         callback: ReplacementScanFn,
         data: T,
     ) {
-        let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
-
+        // Define the destructor before any statement so clippy is satisfied.
         unsafe extern "C" fn drop_box<T>(ptr: *mut c_void) {
             if !ptr.is_null() {
                 unsafe { drop(Box::from_raw(ptr.cast::<T>())) };
             }
         }
+
+        let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
 
         // SAFETY: db is valid; raw is a heap allocation; drop_box is a valid destructor.
         unsafe {
@@ -229,7 +230,7 @@ mod tests {
 
     #[test]
     fn replacement_scan_info_wraps_null() {
-        // Constructing with null should not crash in itself (no DuckDB calls made).
+        // Constructing with null should not crash in itself (no `DuckDB` calls made).
         let _info = unsafe { ReplacementScanInfo::new(std::ptr::null_mut()) };
     }
 }

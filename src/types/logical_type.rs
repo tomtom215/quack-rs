@@ -91,7 +91,7 @@ impl LogicalType {
 
     /// Creates a `MAP<key_type, value_type>` logical type.
     ///
-    /// DuckDB maps are stored as `LIST<STRUCT{key: K, value: V}>`.
+    /// `DuckDB` maps are stored as `LIST<STRUCT{key: K, value: V}>`.
     ///
     /// # Panics
     ///
@@ -137,7 +137,7 @@ impl LogicalType {
             .collect();
 
         let mut type_ptrs: Vec<duckdb_logical_type> =
-            field_types.iter().map(|lt| lt.as_raw()).collect();
+            field_types.iter().map(Self::as_raw).collect();
         let mut name_ptrs: Vec<*const i8> = c_names.iter().map(|s| s.as_ptr()).collect();
 
         // SAFETY: type_ptrs and name_ptrs are valid for the duration of this call.

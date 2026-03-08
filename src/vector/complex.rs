@@ -5,7 +5,7 @@
 
 //! Complex type vector operations: STRUCT fields, LIST elements, MAP entries.
 //!
-//! DuckDB stores complex types as nested vectors:
+//! `DuckDB` stores complex types as nested vectors:
 //!
 //! - **STRUCT**: a parent vector with N child vectors, one per field.
 //! - **LIST**: a parent vector holding `duckdb_list_entry { offset, length }` per row,
@@ -73,8 +73,8 @@ impl StructVector {
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB STRUCT vector.
-    /// - `field_idx` must be a valid field index (0 ≤ field_idx < number of struct fields).
+    /// - `vector` must be a valid `DuckDB` STRUCT vector.
+    /// - `field_idx` must be a valid field index (0 ≤ `field_idx` < number of struct fields).
     /// - The returned vector is borrowed from `vector` and must not outlive it.
     #[inline]
     #[must_use]
@@ -87,7 +87,7 @@ impl StructVector {
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB STRUCT vector.
+    /// - `vector` must be a valid `DuckDB` STRUCT vector.
     /// - `field_idx` must be a valid field index.
     /// - `row_count` must match the number of rows in the parent chunk.
     pub unsafe fn field_reader(
@@ -104,7 +104,7 @@ impl StructVector {
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB STRUCT vector.
+    /// - `vector` must be a valid `DuckDB` STRUCT vector.
     /// - `field_idx` must be a valid field index.
     pub unsafe fn field_writer(vector: duckdb_vector, field_idx: usize) -> VectorWriter {
         let child = unsafe { Self::get_child(vector, field_idx) };
@@ -124,7 +124,7 @@ impl StructVector {
 ///
 /// 1. [`reserve`][ListVector::reserve] — ensure child vector has capacity.
 /// 2. Write element values into the child via [`get_child`][ListVector::get_child] + [`VectorWriter`].
-/// 3. [`set_size`][ListVector::set_size] — tell DuckDB how many elements were written.
+/// 3. [`set_size`][ListVector::set_size] — tell `DuckDB` how many elements were written.
 /// 4. [`set_entry`][ListVector::set_entry] — write the offset/length for each parent row.
 pub struct ListVector;
 
@@ -133,7 +133,7 @@ impl ListVector {
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB LIST vector.
+    /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - The returned handle is borrowed from `vector`.
     #[inline]
     #[must_use]
@@ -146,7 +146,7 @@ impl ListVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid DuckDB LIST vector.
+    /// `vector` must be a valid `DuckDB` LIST vector.
     #[inline]
     #[must_use]
     pub unsafe fn get_size(vector: duckdb_vector) -> usize {
@@ -155,12 +155,12 @@ impl ListVector {
 
     /// Sets the number of elements in the child vector.
     ///
-    /// Call after writing all element values. DuckDB uses this to know how many
+    /// Call after writing all element values. `DuckDB` uses this to know how many
     /// child elements are valid.
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB LIST vector.
+    /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - `size` must equal the number of elements written into the child vector.
     #[inline]
     pub unsafe fn set_size(vector: duckdb_vector, size: usize) {
@@ -174,7 +174,7 @@ impl ListVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid DuckDB LIST vector.
+    /// `vector` must be a valid `DuckDB` LIST vector.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
         // SAFETY: caller guarantees vector is valid.
@@ -183,12 +183,12 @@ impl ListVector {
 
     /// Writes the offset/length metadata entry for a parent row.
     ///
-    /// This tells DuckDB where in the flat child vector this row's elements start
+    /// This tells `DuckDB` where in the flat child vector this row's elements start
     /// and how many elements it has.
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB LIST vector.
+    /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - `row_idx` must be a valid row index in the parent vector.
     /// - `offset + length` must not exceed the size of the child vector.
     pub unsafe fn set_entry(vector: duckdb_vector, row_idx: usize, offset: u64, length: u64) {
@@ -207,7 +207,7 @@ impl ListVector {
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB LIST vector.
+    /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - `row_idx` must be a valid row index.
     #[must_use]
     pub unsafe fn get_entry(vector: duckdb_vector, row_idx: usize) -> duckdb_list_entry {
@@ -221,7 +221,7 @@ impl ListVector {
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB LIST vector.
+    /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - The child must have been reserved with at least `capacity` elements.
     pub unsafe fn child_writer(vector: duckdb_vector) -> VectorWriter {
         let child = unsafe { Self::get_child(vector) };
@@ -232,7 +232,7 @@ impl ListVector {
     ///
     /// # Safety
     ///
-    /// - `vector` must be a valid DuckDB LIST vector.
+    /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - `element_count` must equal the total number of elements in the child.
     pub unsafe fn child_reader(vector: duckdb_vector, element_count: usize) -> VectorReader {
         let child = unsafe { Self::get_child(vector) };
@@ -244,7 +244,7 @@ impl ListVector {
 
 /// Operations on MAP vectors.
 ///
-/// DuckDB stores maps as `LIST<STRUCT{key: K, value: V}>`.
+/// `DuckDB` stores maps as `LIST<STRUCT{key: K, value: V}>`.
 /// The child of the list vector is a STRUCT vector with two fields:
 /// - field index 0: keys
 /// - field index 1: values
@@ -266,7 +266,7 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid DuckDB MAP vector.
+    /// `vector` must be a valid `DuckDB` MAP vector.
     #[inline]
     #[must_use]
     pub unsafe fn struct_child(vector: duckdb_vector) -> duckdb_vector {
@@ -278,7 +278,7 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid DuckDB MAP vector.
+    /// `vector` must be a valid `DuckDB` MAP vector.
     #[inline]
     #[must_use]
     pub unsafe fn keys(vector: duckdb_vector) -> duckdb_vector {
@@ -291,7 +291,7 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid DuckDB MAP vector.
+    /// `vector` must be a valid `DuckDB` MAP vector.
     #[inline]
     #[must_use]
     pub unsafe fn values(vector: duckdb_vector) -> duckdb_vector {
@@ -304,7 +304,7 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid DuckDB MAP vector.
+    /// `vector` must be a valid `DuckDB` MAP vector.
     #[inline]
     #[must_use]
     pub unsafe fn total_entry_count(vector: duckdb_vector) -> usize {
@@ -315,7 +315,7 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid DuckDB MAP vector.
+    /// `vector` must be a valid `DuckDB` MAP vector.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
         unsafe { duckdb_list_vector_reserve(vector, capacity as idx_t) };
@@ -325,7 +325,7 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid DuckDB MAP vector.
+    /// `vector` must be a valid `DuckDB` MAP vector.
     #[inline]
     pub unsafe fn set_size(vector: duckdb_vector, size: usize) {
         unsafe { duckdb_list_vector_set_size(vector, size as idx_t) };

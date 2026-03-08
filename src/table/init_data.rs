@@ -5,7 +5,7 @@
 
 //! Type-safe init data management for table functions.
 //!
-//! DuckDB table functions have two init phases:
+//! `DuckDB` table functions have two init phases:
 //!
 //! - **Global init** (`init`): Called once per query. Use [`FfiInitData`] to store
 //!   global scan state (e.g., a file handle, row counter shared across threads).
@@ -42,7 +42,7 @@ use libduckdb_sys::{
     duckdb_init_info, duckdb_init_set_init_data,
 };
 
-/// Type-safe global init data for DuckDB table functions.
+/// Type-safe global init data for `DuckDB` table functions.
 ///
 /// Set in the global `init` callback; retrieved in `scan`.
 pub struct FfiInitData<T: 'static> {
@@ -112,7 +112,7 @@ impl<T: 'static> FfiInitData<T> {
     }
 }
 
-/// Type-safe per-thread local init data for DuckDB table functions.
+/// Type-safe per-thread local init data for `DuckDB` table functions.
 ///
 /// Set in the `local_init` callback; retrieved in `scan`.
 pub struct FfiLocalInitData<T: 'static> {
@@ -127,7 +127,7 @@ impl<T: 'static> FfiLocalInitData<T> {
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_init_info`.
-    /// - Must be called at most once per local_init invocation.
+    /// - Must be called at most once per `local_init` invocation.
     pub unsafe fn set(info: duckdb_init_info, data: T) {
         let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
         // SAFETY: info is valid; raw is non-null. The same duckdb_init_set_init_data

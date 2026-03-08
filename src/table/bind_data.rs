@@ -8,7 +8,7 @@
 //! [`FfiBindData<T>`] stores user-defined data during the `bind` phase of a table
 //! function and provides safe retrieval in the `init` and `scan` phases.
 //!
-//! # DuckDB table function lifecycle
+//! # `DuckDB` table function lifecycle
 //!
 //! ```text
 //! bind  → stores bind_data (T)
@@ -45,17 +45,17 @@ use libduckdb_sys::{
     duckdb_function_info, duckdb_init_get_bind_data, duckdb_init_info,
 };
 
-/// Type-safe bind data wrapper for DuckDB table functions.
+/// Type-safe bind data wrapper for `DuckDB` table functions.
 ///
 /// `FfiBindData<T>` boxes a `T` on the heap during bind and provides
-/// safe access in subsequent phases. DuckDB owns the allocation lifetime
+/// safe access in subsequent phases. `DuckDB` owns the allocation lifetime
 /// and calls the provided `destroy` callback when the query is done.
 ///
 /// # Memory model
 ///
 /// - [`set`][FfiBindData::set] — boxes `T` via `Box::into_raw`, registers
-///   the pointer and the [`destroy`][FfiBindData::destroy] destructor with DuckDB.
-/// - DuckDB calls `destroy` when the query completes, which drops the `Box<T>`.
+///   the pointer and the [`destroy`][FfiBindData::destroy] destructor with `DuckDB`.
+/// - `DuckDB` calls `destroy` when the query completes, which drops the `Box<T>`.
 /// - Retrieval methods borrow the `T` for the duration of the callback.
 pub struct FfiBindData<T: 'static> {
     _marker: std::marker::PhantomData<T>,
@@ -69,7 +69,7 @@ impl<T: 'static> FfiBindData<T> {
     ///
     /// # Safety
     ///
-    /// - `info` must be a valid `duckdb_bind_info` provided by DuckDB in a bind callback.
+    /// - `info` must be a valid `duckdb_bind_info` provided by `DuckDB` in a bind callback.
     /// - Must be called at most once per bind invocation; calling twice leaks the first allocation.
     pub unsafe fn set(info: duckdb_bind_info, data: T) {
         let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
@@ -88,7 +88,7 @@ impl<T: 'static> FfiBindData<T> {
     /// - `info` must be a valid `duckdb_bind_info`.
     /// - No mutable reference to the same data must exist.
     /// - The returned reference is valid for the duration of the bind callback.
-    pub unsafe fn get_from_bind<'a>(info: duckdb_bind_info) -> Option<&'a T> {
+    pub const fn get_from_bind<'a>(info: duckdb_bind_info) -> Option<&'a T> {
         // Note: duckdb_bind_get_extra_info retrieves the extra_info set on the *function*,
         // not the bind_data. There is no "get bind data from bind info" in the C API —
         // that is intentional: bind data is write-only during bind and read-only afterward.
@@ -144,12 +144,12 @@ impl<T: 'static> FfiBindData<T> {
 
     /// The destroy callback passed to `duckdb_bind_set_bind_data`.
     ///
-    /// DuckDB calls this when the query is complete. It drops the `Box<T>`.
+    /// `DuckDB` calls this when the query is complete. It drops the `Box<T>`.
     ///
     /// # Safety
     ///
     /// - `ptr` must have been allocated by [`set`][FfiBindData::set] via `Box::into_raw`.
-    /// - Must be called exactly once (DuckDB guarantees this for bind data destroyers).
+    /// - Must be called exactly once (`DuckDB` guarantees this for bind data destroyers).
     pub unsafe extern "C" fn destroy(ptr: *mut c_void) {
         if !ptr.is_null() {
             // SAFETY: ptr was created by Box::into_raw(Box::<T>::new(...)) in set().
