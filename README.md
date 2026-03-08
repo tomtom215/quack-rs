@@ -1,12 +1,17 @@
-# quack-rs
-
-**/ˈkwækərz/** — rhymes with *crackers*; inspired by DuckDB
-
-[![CI](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/quack-rs.svg)](https://crates.io/crates/quack-rs)
-[![docs.rs](https://img.shields.io/docsrs/quack-rs)](https://docs.rs/quack-rs)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![MSRV: 1.84.1](https://img.shields.io/badge/MSRV-1.84.1-blue.svg)](https://blog.rust-lang.org/2025/01/30/Rust-1.84.1.html)
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logos/logo1-dark-elegant.svg">
+    <img src="assets/logos/logo2-light-docs.svg" alt="quack-rs — The Rust SDK for DuckDB extensions" width="600">
+  </picture>
+  <p><em>/ˈkwækərz/ &nbsp;·&nbsp; rhymes with <em>crackers</em> &nbsp;·&nbsp; inspired by DuckDB</em></p>
+  <p>
+    <a href="https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml"><img src="https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://crates.io/crates/quack-rs"><img src="https://img.shields.io/crates/v/quack-rs.svg" alt="Crates.io"></a>
+    <a href="https://docs.rs/quack-rs"><img src="https://img.shields.io/docsrs/quack-rs" alt="docs.rs"></a>
+    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+    <a href="https://blog.rust-lang.org/2025/01/30/Rust-1.84.1.html"><img src="https://img.shields.io/badge/MSRV-1.84.1-blue.svg" alt="MSRV: 1.84.1"></a>
+  </p>
+</div>
 
 **The Rust SDK for building DuckDB loadable extensions — no C, no C++, no glue code.**
 

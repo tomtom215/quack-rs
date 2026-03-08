@@ -16,7 +16,7 @@
   <rect width="660" height="210" rx="18" fill="none"
         stroke="#DDE3EA" stroke-width="1.5"/>
 
-  
+
   <g filter="url(#ds)">
     <path d="M 44,110 C 32,92 16,64 20,46 C 24,32 36,30 44,40 C 50,48 52,70 50,92 Z" fill="url(#dg)" stroke="none"/>
     <ellipse cx="100.00" cy="108.00" rx="59.84" ry="40.48"
