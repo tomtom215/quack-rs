@@ -73,6 +73,17 @@ These are 6 different decisions using the same numbering.
 
 - [x] Fixed
 
+### F6 — book/src/reference/changelog.md out of sync with CHANGELOG.md [HIGH]
+
+**File**: `book/src/reference/changelog.md`
+**Evidence**: The book changelog had no `[0.2.0]` section. All v0.2.0 features
+were still listed under `[Unreleased]`. The comparison link pointed to
+`v0.1.0...HEAD` instead of `v0.2.0...HEAD`. The v0.1.0 section was also missing
+several items present in the actual CHANGELOG.md (scaffold, sql_macro, validate).
+**Fix**: Rewrote to mirror the actual CHANGELOG.md exactly.
+
+- [x] Fixed
+
 ---
 
 ## Verification Results
