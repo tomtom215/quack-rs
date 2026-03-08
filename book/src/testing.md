@@ -212,14 +212,44 @@ Directives:
 | `query T` | Query returning one TEXT column |
 | `----` | Expected output follows |
 
+### Installing DuckDB 1.4.4
+
+A live DuckDB CLI is **required** for E2E testing. Install it via `curl`
+(no system package manager needed):
+
+```bash
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.4.4/duckdb_cli-linux-amd64.zip \
+    -o /tmp/duckdb.zip \
+    && unzip -o /tmp/duckdb.zip -d /tmp/ \
+    && chmod +x /tmp/duckdb \
+    && /tmp/duckdb --version
+# → v1.4.4
+```
+
+For macOS, replace `linux-amd64` with `osx-universal`. For Windows, use
+`windows-amd64` and unzip to a directory on `%PATH%`.
+
 ### Running E2E tests
 
 ```bash
 # Build the extension
 cargo build --release
 
-# Load it in DuckDB CLI
-duckdb -cmd "LOAD './target/release/libmy_extension.so';" test.sql
+# Package with metadata footer (required by DuckDB's extension loader)
+cargo run --bin append_metadata -- \
+    target/release/libmy_extension.so \
+    /tmp/my_extension.duckdb_extension \
+    --abi-type C_STRUCT \
+    --extension-version v0.1.0 \
+    --duckdb-version v1.2.0 \
+    --platform linux_amd64
+
+# Load it in DuckDB CLI (-unsigned allows loading without a signed certificate)
+/tmp/duckdb -unsigned -c "
+SET allow_extensions_metadata_mismatch=true;
+LOAD '/tmp/my_extension.duckdb_extension';
+SELECT my_function('hello world');
+"
 ```
 
 The community extension CI runs SQLLogicTest automatically. Each function must

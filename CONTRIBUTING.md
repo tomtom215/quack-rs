@@ -20,8 +20,20 @@
 | `rustfmt` | stable | Formatting |
 | `clippy` | stable | Linting |
 | `cargo-deny` | latest | License/advisory checks |
+| DuckDB CLI | 1.4.4 | Live extension testing (required) |
 
 Install the Rust toolchain via [rustup](https://rustup.rs/).
+
+Install DuckDB 1.4.4 via `curl` (no system package manager needed):
+
+```bash
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.4.4/duckdb_cli-linux-amd64.zip \
+    -o /tmp/duckdb.zip \
+    && unzip -o /tmp/duckdb.zip -d /tmp/ \
+    && chmod +x /tmp/duckdb \
+    && /tmp/duckdb --version
+# → v1.4.4
+```
 
 ---
 
@@ -62,6 +74,23 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 # 6. MSRV — must compile on Rust 1.84.1
 cargo +1.84.1 check --all-targets
+
+# 7. Live extension test — build hello-ext, package it, load in DuckDB 1.4.4
+cargo build --release --manifest-path examples/hello-ext/Cargo.toml
+cargo run --bin append_metadata -- \
+    examples/hello-ext/target/release/libhello_ext.so \
+    /tmp/hello_ext.duckdb_extension \
+    --abi-type C_STRUCT --extension-version v0.1.0 \
+    --duckdb-version v1.2.0 --platform linux_amd64
+/tmp/duckdb -unsigned -c "
+SET allow_extensions_metadata_mismatch=true;
+LOAD '/tmp/hello_ext.duckdb_extension';
+SELECT word_count('hello world foo');   -- 3
+SELECT first_word('hello world');       -- hello
+SELECT list(value ORDER BY value) FROM generate_series_ext(5);  -- [0,1,2,3,4]
+SELECT CAST('42' AS INTEGER);           -- 42
+SELECT TRY_CAST('bad' AS INTEGER);      -- NULL
+"
 ```
 
 These same checks run in CI (`.github/workflows/ci.yml`) on every push and pull request.
@@ -96,8 +125,12 @@ Selected modules include `proptest`-based tests for mathematical properties:
 ### Example-extension tests (`examples/hello-ext/`)
 
 The `hello-ext` example compiles as a `cdylib` and contains `#[cfg(test)]` unit
-tests for the pure logic (`count_words`). Full end-to-end testing (loading the
-`.so` into a DuckDB CLI or embedding in a test binary) is left to consumers.
+tests for all pure-Rust logic (`count_words`, `first_word`, `parse_varchar_to_int`,
+aggregate state transitions). **Full end-to-end testing against a live DuckDB 1.4.4
+instance is required** — not left to consumers. This means building the `.so`,
+appending the extension metadata footer with `append_metadata`, and running all 19
+SQL tests via the DuckDB CLI. See the [Quality Gates](#quality-gates) section for
+the exact commands and `examples/hello-ext/README.md` for the full test listing.
 
 ---
 
