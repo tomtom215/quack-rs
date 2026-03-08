@@ -246,6 +246,27 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 .cargo/config.toml                  ← Windows CRT static linking
 ```
 
+### 4. Append extension metadata
+
+DuckDB loadable extensions require a metadata footer appended to the `.so`/`.dylib`/`.dll`
+after `cargo build --release`. `quack-rs` ships a native Rust binary for this step,
+replacing the Python `append_extension_metadata.py` script from the C++ template:
+
+```shell
+# Install the binary from the published crate
+cargo install quack-rs --bin append_metadata
+
+# Append metadata to your built extension (input .so → output .duckdb_extension)
+append_metadata target/release/libmy_extension.so \
+    my_extension.duckdb_extension \
+    --duckdb-version v1.2.0 \
+    --platform linux_amd64
+```
+
+> **Pitfall P2**: The `--duckdb-version` flag must be `v1.2.0` (the C API version),
+> **not** `v1.4.4` (the DuckDB release version). Use the `DUCKDB_API_VERSION`
+> constant from `quack_rs` to avoid hard-coding the wrong value.
+
 ---
 
 ## Module Reference
@@ -257,6 +278,7 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 | [`aggregate::state`] | Generic FFI state management | `AggregateState`, `FfiState<T>` |
 | [`aggregate::callbacks`] | Callback type aliases | `UpdateFn`, `CombineFn`, `FinalizeFn`, … |
 | [`scalar`] | Scalar function registration | `ScalarFunctionBuilder`, `ScalarFunctionSetBuilder` |
+| [`cast`] | Custom type cast functions | `CastFunctionBuilder`, `CastFunctionInfo`, `CastMode` |
 | [`table`] | Table function registration (bind/init/scan) | `TableFunctionBuilder`, `BindInfo`, `FfiBindData`, `FfiInitData` |
 | [`replacement_scan`] | `SELECT * FROM 'file.xyz'` replacement scans | `ReplacementScanBuilder` |
 | [`sql_macro`] | SQL macro registration (no FFI callbacks) | `SqlMacro`, `MacroBody` |
@@ -266,6 +288,7 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 | [`types`] | DuckDB type system wrappers | `TypeId`, `LogicalType`, `NullHandling` |
 | [`interval`] | INTERVAL ↔ microseconds conversion | `DuckInterval`, `interval_to_micros` |
 | [`error`] | FFI-safe error type | `ExtensionError`, `ExtResult<T>` |
+| [`config`] | RAII wrapper for DuckDB database configuration | `DbConfig` |
 | [`validate`] | Community extension compliance | All validators below |
 | [`validate::description_yml`] | description.yml parsing and validation | `parse_description_yml`, `DescriptionYml` |
 | [`validate::extension_name`] | Extension naming rules | `validate_extension_name` |
@@ -283,6 +306,7 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 [`aggregate::state`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/state/index.html
 [`aggregate::callbacks`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/callbacks/index.html
 [`scalar`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/index.html
+[`cast`]: https://docs.rs/quack-rs/latest/quack_rs/cast/index.html
 [`table`]: https://docs.rs/quack-rs/latest/quack_rs/table/index.html
 [`replacement_scan`]: https://docs.rs/quack-rs/latest/quack_rs/replacement_scan/index.html
 [`sql_macro`]: https://docs.rs/quack-rs/latest/quack_rs/sql_macro/index.html
@@ -292,6 +316,7 @@ test/sql/my_extension.test          ← SQLLogicTest skeleton
 [`types`]: https://docs.rs/quack-rs/latest/quack_rs/types/index.html
 [`interval`]: https://docs.rs/quack-rs/latest/quack_rs/interval/index.html
 [`error`]: https://docs.rs/quack-rs/latest/quack_rs/error/index.html
+[`config`]: https://docs.rs/quack-rs/latest/quack_rs/config/index.html
 [`validate`]: https://docs.rs/quack-rs/latest/quack_rs/validate/index.html
 [`validate::description_yml`]: https://docs.rs/quack-rs/latest/quack_rs/validate/description_yml/index.html
 [`validate::extension_name`]: https://docs.rs/quack-rs/latest/quack_rs/validate/extension_name/index.html
@@ -329,7 +354,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | ID | Name | Symptom | quack-rs Solution |
 |----|------|---------|-------------------|
 | **P1** | Library name mismatch | Extension fails to load | Documented; scaffold sets it correctly |
-| **P2** | C API version ≠ release version | `append_extension_metadata.py` fails | `DUCKDB_API_VERSION = "v1.2.0"` constant |
+| **P2** | C API version ≠ release version | Wrong `-dv` flag corrupts extension metadata | `DUCKDB_API_VERSION = "v1.2.0"` constant; `append_metadata` binary ships with the crate |
 | **P3** | Missing E2E tests | Community submission rejected | Scaffold generates SQLLogicTest skeleton |
 | **P4** | Uninitialized submodule | `make` fails with missing files | Documented; scaffold generates `.gitmodules` |
 | **P5** | SQLLogicTest format mismatch | Tests fail with exact-match errors | Documented with format reference |

@@ -186,6 +186,7 @@ impl<T: 'static> FfiLocalInitData<T> {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     struct MyState {
         counter: u64,
     }

@@ -26,6 +26,7 @@
   - [Overloading with Function Sets](functions/aggregate-sets.md)
 - [Table Functions](functions/table-functions.md)
 - [Replacement Scans](functions/replacement-scan.md)
+- [Cast Functions](functions/cast-functions.md)
 - [NULL Handling](functions/null-handling.md)
 - [SQL Macros](functions/sql-macros.md)
 

@@ -163,6 +163,7 @@ impl<T: 'static> FfiBindData<T> {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     struct Config {
         value: i32,
     }
@@ -186,7 +187,7 @@ mod tests {
     fn get_from_bind_returns_none() {
         // get_from_bind is intentionally unimplemented (returns None by design)
         // Test that calling it with null doesn't panic.
-        let result = unsafe { FfiBindData::<Config>::get_from_bind(std::ptr::null_mut()) };
+        let result = FfiBindData::<Config>::get_from_bind(std::ptr::null_mut());
         assert!(result.is_none());
     }
 }

@@ -18,6 +18,9 @@
 //! |------|------|
 //! | [`init_extension`] | `entry_point` module |
 //! | `entry_point!` | `entry_point` module (macro) |
+//! | [`CastFunctionBuilder`] | `cast` module |
+//! | [`CastFunctionInfo`] | `cast` module |
+//! | [`CastMode`] | `cast` module |
 //! | [`AggregateFunctionBuilder`] | `aggregate` module |
 //! | [`AggregateFunctionSetBuilder`] | `aggregate` module |
 //! | [`AggregateState`] | `aggregate` module |
@@ -82,6 +85,9 @@
 
 // Entry point
 pub use crate::entry_point::init_extension;
+
+// Cast functions
+pub use crate::cast::{CastFn, CastFunctionBuilder, CastFunctionInfo, CastMode};
 
 // Aggregate functions
 pub use crate::aggregate::{
