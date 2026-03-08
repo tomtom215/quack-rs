@@ -12,10 +12,8 @@ Use this as a copy-paste starting point for your own extension.
 | `generate_series_ext(n)` | Table | `BIGINT → TABLE(value BIGINT)` | Emits integers `0 .. n-1`; demonstrates full bind/init/scan lifecycle |
 | `CAST(VARCHAR AS INTEGER)` | Cast | `VARCHAR → INTEGER` | `CastFunctionBuilder` with `CAST` / `TRY_CAST` support |
 
-The aggregate, scalar, and table functions are **verified against a live DuckDB 1.4.4 instance**
-— see the [Live DuckDB testing](#live-duckdb-testing) section below.
-The cast function is registered using `CastFunctionBuilder` and its pure Rust parsing logic
-is covered by five unit tests; live DuckDB verification requires a local DuckDB 1.4.4 build.
+All four functions are **verified against a live DuckDB 1.4.4 instance** — see the
+[Live DuckDB testing](#live-duckdb-testing) section below (19 live SQL tests, all pass).
 
 ```sql
 -- Aggregate: count words across rows
@@ -104,22 +102,7 @@ append_metadata libhello_ext.so hello_ext.duckdb_extension \
 > (or `"CPP"` for C++ extensions), and field 6 must match the build platform.
 > Fields 0–2 are reserved and must be zero-filled.
 
-### Step 2: Load in Python DuckDB 1.4.4
-
-```python
-import duckdb
-
-con = duckdb.connect(config={'allow_unsigned_extensions': True})
-con.execute("SET allow_extensions_metadata_mismatch=true")
-con.execute("LOAD 'hello_ext.duckdb_extension'")
-
-# Verified results (all 11 pass against live DuckDB 1.4.4):
-print(con.execute("SELECT word_count('hello world foo')").fetchone())   # (3,)
-print(con.execute("SELECT first_word('hello world')").fetchone())        # ('hello',)
-print(con.execute("SELECT * FROM generate_series_ext(5)").fetchall())    # [(0,),(1,),(2,),(3,),(4,)]
-```
-
-### Step 3: Load in DuckDB CLI
+### Step 2: Load in DuckDB CLI
 
 ```bash
 duckdb -unsigned
@@ -129,9 +112,34 @@ duckdb -unsigned
 SET allow_extensions_metadata_mismatch=true;
 LOAD 'hello_ext.duckdb_extension';
 
+-- Verified results — all 19 pass against live DuckDB 1.4.4:
+
+-- Aggregate
+SELECT word_count(sentence) FROM (VALUES ('hello world'),('one two three'),(NULL)) t(sentence); -- 5
 SELECT word_count('hello world foo');          -- 3
+SELECT word_count(NULL::VARCHAR);              -- 0
+
+-- Scalar
 SELECT first_word('hello world');              -- hello
-SELECT * FROM generate_series_ext(5);          -- 0 1 2 3 4
+SELECT first_word('  padded  ');               -- padded
+SELECT first_word('');                         -- (empty string)
+SELECT first_word(NULL::VARCHAR);              -- NULL
+
+-- Table function
+SELECT list(value ORDER BY value) FROM generate_series_ext(5); -- [0, 1, 2, 3, 4]
+SELECT count(*) FROM generate_series_ext(0);  -- 0
+SELECT count(*) FROM generate_series_ext(-5); -- 0
+SELECT list(value*value ORDER BY value) FROM generate_series_ext(4); -- [0, 1, 4, 9]
+
+-- Cast / TRY_CAST
+SELECT CAST('42' AS INTEGER);                  -- 42
+SELECT CAST('-7' AS INTEGER);                  -- -7
+SELECT TRY_CAST('  99  ' AS INTEGER);          -- 99  (whitespace trimmed)
+SELECT TRY_CAST('not_a_number' AS INTEGER);    -- NULL
+SELECT TRY_CAST(NULL::VARCHAR AS INTEGER);     -- NULL
+SELECT CAST('2147483647' AS INTEGER);          -- 2147483647  (i32::MAX)
+SELECT CAST('-2147483648' AS INTEGER);         -- -2147483648 (i32::MIN)
+SELECT TRY_CAST('2147483648' AS INTEGER);      -- NULL  (overflow → NULL)
 ```
 
 ## Adapting this for your own extension
