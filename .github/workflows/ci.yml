@@ -116,8 +116,8 @@ jobs:
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Verify extension entry point symbol
         run: |
-          SO=$(find examples/hello-ext/target/release -name '*.so' -o -name '*.dylib' | head -1)
-          if [ -z "$SO" ]; then echo "No .so/.dylib found"; exit 1; fi
+          SO=$(find examples/hello-ext/target/release -maxdepth 1 -name 'libhello_ext.so' -o -name 'libhello_ext.dylib' | head -1)
+          if [ -z "$SO" ]; then echo "No libhello_ext.so/.dylib found"; exit 1; fi
           nm -D "$SO" | grep -q 'T hello_ext_init_c_api' || {
             echo "ERROR: entry point symbol hello_ext_init_c_api not found in $SO"
             nm -D "$SO" | head -20
