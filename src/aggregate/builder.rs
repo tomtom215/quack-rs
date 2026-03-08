@@ -21,18 +21,17 @@ use std::ffi::CString;
 use libduckdb_sys::{
     duckdb_add_aggregate_function_to_set, duckdb_aggregate_function_set_destructor,
     duckdb_aggregate_function_set_functions, duckdb_aggregate_function_set_name,
-    duckdb_aggregate_function_set_return_type, duckdb_connection, duckdb_create_aggregate_function,
-    duckdb_create_aggregate_function_set, duckdb_destroy_aggregate_function,
-    duckdb_destroy_aggregate_function_set, duckdb_register_aggregate_function,
-    duckdb_register_aggregate_function_set, DuckDBSuccess,
+    duckdb_aggregate_function_set_return_type, duckdb_aggregate_function_set_special_handling,
+    duckdb_connection, duckdb_create_aggregate_function, duckdb_create_aggregate_function_set,
+    duckdb_destroy_aggregate_function, duckdb_destroy_aggregate_function_set,
+    duckdb_register_aggregate_function, duckdb_register_aggregate_function_set, DuckDBSuccess,
 };
 
 use crate::aggregate::callbacks::{
     CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn,
 };
 use crate::error::ExtensionError;
-use crate::types::LogicalType;
-use crate::types::TypeId;
+use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
 
 /// Builder for registering a single-signature `DuckDB` aggregate function.
@@ -69,6 +68,7 @@ use crate::validate::validate_function_name;
 /// //         .register(con)
 /// // }
 /// ```
+#[must_use]
 pub struct AggregateFunctionBuilder {
     name: CString,
     params: Vec<TypeId>,
@@ -79,6 +79,7 @@ pub struct AggregateFunctionBuilder {
     combine: Option<CombineFn>,
     finalize: Option<FinalizeFn>,
     destructor: Option<DestroyFn>,
+    null_handling: NullHandling,
 }
 
 impl AggregateFunctionBuilder {
@@ -87,7 +88,6 @@ impl AggregateFunctionBuilder {
     /// # Panics
     ///
     /// Panics if `name` contains an interior null byte.
-    #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
             name: CString::new(name).expect("function name must not contain null bytes"),
@@ -99,6 +99,7 @@ impl AggregateFunctionBuilder {
             combine: None,
             finalize: None,
             destructor: None,
+            null_handling: NullHandling::DefaultNullHandling,
         }
     }
 
@@ -125,6 +126,7 @@ impl AggregateFunctionBuilder {
             combine: None,
             finalize: None,
             destructor: None,
+            null_handling: NullHandling::DefaultNullHandling,
         })
     }
 
@@ -178,6 +180,17 @@ impl AggregateFunctionBuilder {
     /// [`FfiState<T>`][crate::aggregate::FfiState]).
     pub fn destructor(mut self, f: DestroyFn) -> Self {
         self.destructor = Some(f);
+        self
+    }
+
+    /// Sets the NULL handling behaviour for this aggregate function.
+    ///
+    /// By default, `DuckDB` skips NULL rows in aggregate functions
+    /// ([`DefaultNullHandling`][NullHandling::DefaultNullHandling]).
+    /// Set to [`SpecialNullHandling`][NullHandling::SpecialNullHandling] to receive
+    /// NULL values in your `update` callback.
+    pub const fn null_handling(mut self, handling: NullHandling) -> Self {
+        self.null_handling = handling;
         self
     }
 
@@ -257,6 +270,14 @@ impl AggregateFunctionBuilder {
             }
         }
 
+        // Set special NULL handling if requested
+        if self.null_handling == NullHandling::SpecialNullHandling {
+            // SAFETY: func is a valid aggregate function handle.
+            unsafe {
+                duckdb_aggregate_function_set_special_handling(func);
+            }
+        }
+
         // Register
         // SAFETY: con is a valid open connection, func is fully configured.
         let result = unsafe { duckdb_register_aggregate_function(con, func) };
@@ -316,6 +337,7 @@ impl AggregateFunctionBuilder {
 /// //         .register(con)
 /// // }
 /// ```
+#[must_use]
 pub struct AggregateFunctionSetBuilder {
     name: CString,
     return_type: Option<TypeId>,
@@ -339,7 +361,6 @@ impl AggregateFunctionSetBuilder {
     /// # Panics
     ///
     /// Panics if `name` contains an interior null byte.
-    #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
             name: CString::new(name).expect("function name must not contain null bytes"),
@@ -547,6 +568,7 @@ impl AggregateFunctionSetBuilder {
 /// A builder for one overload within a [`AggregateFunctionSetBuilder`].
 ///
 /// Returned by the closure passed to [`AggregateFunctionSetBuilder::overloads`].
+#[must_use]
 pub struct OverloadBuilder {
     params: Vec<TypeId>,
     state_size: Option<StateSizeFn>,
@@ -559,7 +581,6 @@ pub struct OverloadBuilder {
 
 impl OverloadBuilder {
     /// Creates a new `OverloadBuilder`.
-    #[must_use]
     fn new() -> Self {
         Self {
             params: Vec::new(),

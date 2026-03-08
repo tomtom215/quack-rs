@@ -9,14 +9,19 @@
 //! provides a safe, exhaustive enum for use in builder APIs.
 
 use libduckdb_sys::{
-    DUCKDB_TYPE, DUCKDB_TYPE_DUCKDB_TYPE_BIGINT, DUCKDB_TYPE_DUCKDB_TYPE_BLOB,
-    DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN, DUCKDB_TYPE_DUCKDB_TYPE_DATE, DUCKDB_TYPE_DUCKDB_TYPE_DOUBLE,
-    DUCKDB_TYPE_DUCKDB_TYPE_FLOAT, DUCKDB_TYPE_DUCKDB_TYPE_HUGEINT,
+    DUCKDB_TYPE, DUCKDB_TYPE_DUCKDB_TYPE_ARRAY, DUCKDB_TYPE_DUCKDB_TYPE_BIGINT,
+    DUCKDB_TYPE_DUCKDB_TYPE_BIT, DUCKDB_TYPE_DUCKDB_TYPE_BLOB, DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN,
+    DUCKDB_TYPE_DUCKDB_TYPE_DATE, DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL, DUCKDB_TYPE_DUCKDB_TYPE_DOUBLE,
+    DUCKDB_TYPE_DUCKDB_TYPE_ENUM, DUCKDB_TYPE_DUCKDB_TYPE_FLOAT, DUCKDB_TYPE_DUCKDB_TYPE_HUGEINT,
     DUCKDB_TYPE_DUCKDB_TYPE_INTEGER, DUCKDB_TYPE_DUCKDB_TYPE_INTERVAL,
-    DUCKDB_TYPE_DUCKDB_TYPE_LIST, DUCKDB_TYPE_DUCKDB_TYPE_SMALLINT, DUCKDB_TYPE_DUCKDB_TYPE_TIME,
-    DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP, DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ,
+    DUCKDB_TYPE_DUCKDB_TYPE_LIST, DUCKDB_TYPE_DUCKDB_TYPE_MAP, DUCKDB_TYPE_DUCKDB_TYPE_SMALLINT,
+    DUCKDB_TYPE_DUCKDB_TYPE_STRUCT, DUCKDB_TYPE_DUCKDB_TYPE_TIME,
+    DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP, DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_MS,
+    DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_NS, DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_S,
+    DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ, DUCKDB_TYPE_DUCKDB_TYPE_TIME_TZ,
     DUCKDB_TYPE_DUCKDB_TYPE_TINYINT, DUCKDB_TYPE_DUCKDB_TYPE_UBIGINT,
-    DUCKDB_TYPE_DUCKDB_TYPE_UINTEGER, DUCKDB_TYPE_DUCKDB_TYPE_USMALLINT,
+    DUCKDB_TYPE_DUCKDB_TYPE_UHUGEINT, DUCKDB_TYPE_DUCKDB_TYPE_UINTEGER,
+    DUCKDB_TYPE_DUCKDB_TYPE_UNION, DUCKDB_TYPE_DUCKDB_TYPE_USMALLINT,
     DUCKDB_TYPE_DUCKDB_TYPE_UTINYINT, DUCKDB_TYPE_DUCKDB_TYPE_UUID,
     DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR,
 };
@@ -76,10 +81,34 @@ pub enum TypeId {
     Varchar,
     /// `BLOB` — binary data
     Blob,
+    /// `DECIMAL` — fixed-point decimal (width, scale)
+    Decimal,
+    /// `TIMESTAMP_S` — seconds since epoch
+    TimestampS,
+    /// `TIMESTAMP_MS` — milliseconds since epoch
+    TimestampMs,
+    /// `TIMESTAMP_NS` — nanoseconds since epoch
+    TimestampNs,
+    /// `ENUM` — enumeration type
+    Enum,
     /// `LIST` — variable-length list
     List,
+    /// `STRUCT` — named fields (row type)
+    Struct,
+    /// `MAP` — key-value pairs (LIST of STRUCT)
+    Map,
     /// `UUID` — 128-bit UUID
     Uuid,
+    /// `UNION` — tagged union of types
+    Union,
+    /// `BIT` — bitstring
+    Bit,
+    /// `TIME WITH TIME ZONE` — timezone-aware time
+    TimeTz,
+    /// `UHUGEINT` — 128-bit unsigned integer
+    UHugeInt,
+    /// `ARRAY` — fixed-length array
+    Array,
 }
 
 impl TypeId {
@@ -117,8 +146,20 @@ impl TypeId {
             Self::Interval => DUCKDB_TYPE_DUCKDB_TYPE_INTERVAL,
             Self::Varchar => DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR,
             Self::Blob => DUCKDB_TYPE_DUCKDB_TYPE_BLOB,
+            Self::Decimal => DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL,
+            Self::TimestampS => DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_S,
+            Self::TimestampMs => DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_MS,
+            Self::TimestampNs => DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_NS,
+            Self::Enum => DUCKDB_TYPE_DUCKDB_TYPE_ENUM,
             Self::List => DUCKDB_TYPE_DUCKDB_TYPE_LIST,
+            Self::Struct => DUCKDB_TYPE_DUCKDB_TYPE_STRUCT,
+            Self::Map => DUCKDB_TYPE_DUCKDB_TYPE_MAP,
             Self::Uuid => DUCKDB_TYPE_DUCKDB_TYPE_UUID,
+            Self::Union => DUCKDB_TYPE_DUCKDB_TYPE_UNION,
+            Self::Bit => DUCKDB_TYPE_DUCKDB_TYPE_BIT,
+            Self::TimeTz => DUCKDB_TYPE_DUCKDB_TYPE_TIME_TZ,
+            Self::UHugeInt => DUCKDB_TYPE_DUCKDB_TYPE_UHUGEINT,
+            Self::Array => DUCKDB_TYPE_DUCKDB_TYPE_ARRAY,
         }
     }
 
@@ -154,8 +195,20 @@ impl TypeId {
             Self::Interval => "INTERVAL",
             Self::Varchar => "VARCHAR",
             Self::Blob => "BLOB",
+            Self::Decimal => "DECIMAL",
+            Self::TimestampS => "TIMESTAMP_S",
+            Self::TimestampMs => "TIMESTAMP_MS",
+            Self::TimestampNs => "TIMESTAMP_NS",
+            Self::Enum => "ENUM",
             Self::List => "LIST",
+            Self::Struct => "STRUCT",
+            Self::Map => "MAP",
             Self::Uuid => "UUID",
+            Self::Union => "UNION",
+            Self::Bit => "BIT",
+            Self::TimeTz => "TIMETZ",
+            Self::UHugeInt => "UHUGEINT",
+            Self::Array => "ARRAY",
         }
     }
 }
@@ -192,8 +245,20 @@ mod tests {
             TypeId::Interval,
             TypeId::Varchar,
             TypeId::Blob,
+            TypeId::Decimal,
+            TypeId::TimestampS,
+            TypeId::TimestampMs,
+            TypeId::TimestampNs,
+            TypeId::Enum,
             TypeId::List,
+            TypeId::Struct,
+            TypeId::Map,
             TypeId::Uuid,
+            TypeId::Union,
+            TypeId::Bit,
+            TypeId::TimeTz,
+            TypeId::UHugeInt,
+            TypeId::Array,
         ];
         for t in types {
             // sql_name should not be empty and should match Display

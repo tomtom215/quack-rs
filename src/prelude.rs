@@ -23,11 +23,14 @@
 //! | [`AggregateState`] | `aggregate` module |
 //! | [`FfiState`] | `aggregate` module |
 //! | [`ScalarFunctionBuilder`] | `scalar` module |
+//! | [`ScalarFunctionSetBuilder`] | `scalar` module |
+//! | [`ScalarOverloadBuilder`] | `scalar` module |
 //! | [`SqlMacro`] | `sql_macro` module |
 //! | [`VectorReader`] | `vector` module |
 //! | [`VectorWriter`] | `vector` module |
 //! | [`TypeId`] | `types` module |
 //! | [`LogicalType`] | `types` module |
+//! | [`NullHandling`] | `types` module |
 //! | [`DuckInterval`] | `interval` module |
 //! | [`interval_to_micros`] | `interval` module |
 //! | [`ExtensionError`] | `error` module |
@@ -76,7 +79,7 @@ pub use crate::aggregate::{
 };
 
 // Scalar functions
-pub use crate::scalar::ScalarFunctionBuilder;
+pub use crate::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};
 
 // SQL macros
 pub use crate::sql_macro::SqlMacro;
@@ -85,7 +88,7 @@ pub use crate::sql_macro::SqlMacro;
 pub use crate::vector::{VectorReader, VectorWriter};
 
 // Types
-pub use crate::types::{LogicalType, TypeId};
+pub use crate::types::{LogicalType, NullHandling, TypeId};
 
 // Interval
 pub use crate::interval::{interval_to_micros, DuckInterval};

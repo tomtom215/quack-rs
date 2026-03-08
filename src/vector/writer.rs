@@ -236,6 +236,30 @@ impl VectorWriter {
         }
     }
 
+    /// Writes an INTERVAL value at row `idx`.
+    ///
+    /// `DuckDB` stores INTERVAL as `{ months: i32, days: i32, micros: i64 }` in a
+    /// 16-byte layout. This method writes all three components at the correct offsets.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `INTERVAL` type.
+    #[inline]
+    pub const unsafe fn write_interval(
+        &mut self,
+        idx: usize,
+        value: crate::interval::DuckInterval,
+    ) {
+        // SAFETY: INTERVAL = { months: i32 @ 0, days: i32 @ 4, micros: i64 @ 8 } = 16 bytes.
+        let base = unsafe { self.data.add(idx * 16) };
+        unsafe {
+            core::ptr::write_unaligned(base.cast::<i32>(), value.months);
+            core::ptr::write_unaligned(base.add(4).cast::<i32>(), value.days);
+            core::ptr::write_unaligned(base.add(8).cast::<i64>(), value.micros);
+        }
+    }
+
     /// Marks row `idx` as NULL in the output vector.
     ///
     /// # Pitfall L4: `ensure_validity_writable`

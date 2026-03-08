@@ -3,6 +3,8 @@
 DuckDB supports multiple signatures for the same function name via **function sets**.
 This is how you implement variadic aggregates like `retention(c1, c2, ..., c32)`.
 
+> **Note**: For scalar function overloads, see [`ScalarFunctionSetBuilder`](scalar.md#overloading-with-function-sets).
+
 ---
 
 ## When to use function sets

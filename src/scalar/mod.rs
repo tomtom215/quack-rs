@@ -35,4 +35,4 @@
 
 pub mod builder;
 
-pub use builder::ScalarFunctionBuilder;
+pub use builder::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};

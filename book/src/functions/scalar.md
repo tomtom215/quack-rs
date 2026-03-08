@@ -147,6 +147,64 @@ unsafe extern "C" fn shout(
 
 ---
 
+## Overloading with Function Sets
+
+If your function accepts different parameter types or arities, use `ScalarFunctionSetBuilder`
+to register multiple overloads under a single name:
+
+```rust
+use quack_rs::scalar::{ScalarFunctionSetBuilder, ScalarOverloadBuilder};
+use quack_rs::types::TypeId;
+
+unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
+    unsafe {
+        ScalarFunctionSetBuilder::new("my_add")
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::Integer).param(TypeId::Integer)
+                    .returns(TypeId::Integer)
+                    .function(add_ints)
+            )
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::Double).param(TypeId::Double)
+                    .returns(TypeId::Double)
+                    .function(add_doubles)
+            )
+            .register(con)?;
+    }
+    Ok(())
+}
+```
+
+Like `AggregateFunctionSetBuilder`, this builder calls `duckdb_scalar_function_set_name`
+on every individual function before adding it to the set
+([Pitfall L6](../reference/pitfalls.md#l6-function-set-name-must-be-set-on-each-member)).
+
+---
+
+## NULL Handling
+
+By default, DuckDB returns NULL if any argument is NULL — your function callback is
+never called for those rows. If you need to handle NULLs explicitly (e.g., for a
+`COALESCE`-like function), set `SpecialNullHandling`:
+
+```rust
+use quack_rs::types::NullHandling;
+
+ScalarFunctionBuilder::new("coalesce_custom")
+    .param(TypeId::BigInt)
+    .returns(TypeId::BigInt)
+    .null_handling(NullHandling::SpecialNullHandling)
+    .function(my_coalesce_fn)
+    .register(con)?;
+```
+
+With `SpecialNullHandling`, your callback must check `VectorReader::is_valid(row)`
+and handle NULLs yourself.
+
+---
+
 ## Key points
 
 - **`VectorReader::new(input, column_index)`** — the column index is zero-based
