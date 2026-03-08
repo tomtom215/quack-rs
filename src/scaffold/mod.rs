@@ -232,7 +232,7 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
 // Entry point — the C Extension API handles everything, no C++ glue needed.
 // ---------------------------------------------------------------------------
 
-entry_point!({name}_init_c_api, |con| register(con));
+quack_rs::entry_point!({name}_init_c_api, |con| register(con));
 "#,
         description = config.description,
         name = config.name,

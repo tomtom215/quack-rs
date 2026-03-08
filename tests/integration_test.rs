@@ -508,3 +508,75 @@ fn sql_macro_error_mentions_bad_param_name() {
     let err = SqlMacro::scalar("f", &["Bad"], "1").unwrap_err();
     assert!(err.as_str().contains("Bad"));
 }
+
+// ---------------------------------------------------------------------------
+// TEST-2: Scaffold generated code compiles successfully
+// ---------------------------------------------------------------------------
+
+/// Generates scaffold files, writes them to a temp directory with a path-dep
+/// on the local quack-rs crate, and runs `cargo check` to verify the generated
+/// code actually compiles.  This catches template regressions (like broken
+/// macro paths) that unit tests can't detect.
+#[test]
+fn scaffold_generated_code_compiles() {
+    use quack_rs::scaffold::{generate_scaffold, ScaffoldConfig};
+    use std::fs;
+    use std::process::Command;
+
+    let config = ScaffoldConfig {
+        name: "test_ext".to_string(),
+        description: "Scaffold compile test".to_string(),
+        version: "0.1.0".to_string(),
+        license: "MIT".to_string(),
+        maintainer: "CI".to_string(),
+        github_repo: "test/test-ext".to_string(),
+        excluded_platforms: vec![],
+    };
+
+    let files = generate_scaffold(&config).unwrap();
+
+    // Write to a temp directory
+    let tmp = std::env::temp_dir().join("quack_rs_scaffold_compile_test");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("src")).unwrap();
+
+    // The scaffold Cargo.toml references `quack-rs = "0.2"` from crates.io.
+    // Replace it with a path dependency pointing to this workspace root so
+    // `cargo check` uses the local (possibly-modified) crate.
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    for f in &files {
+        let dest = tmp.join(&f.path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+
+        if f.path == "Cargo.toml" {
+            // Rewrite quack-rs dep to use local path
+            let patched = f.content.replace(
+                r#"quack-rs = { version = "0.2" }"#,
+                &format!("quack-rs = {{ path = \"{}\" }}", workspace_root.display()),
+            );
+            fs::write(&dest, patched).unwrap();
+        } else {
+            fs::write(&dest, &f.content).unwrap();
+        }
+    }
+
+    // Run cargo check on the generated project
+    let output = Command::new("cargo")
+        .args(["check", "--lib"])
+        .current_dir(&tmp)
+        .output()
+        .expect("failed to run cargo check");
+
+    // Clean up before asserting so we don't leave temp dirs on failure
+    let _ = fs::remove_dir_all(&tmp);
+
+    assert!(
+        output.status.success(),
+        "Scaffold-generated code failed to compile!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}

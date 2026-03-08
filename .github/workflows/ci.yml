@@ -95,6 +95,36 @@ jobs:
       - run: cargo clippy --manifest-path examples/hello-ext/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path examples/hello-ext/Cargo.toml
 
+  scaffold-compile:
+    name: Scaffold (compile check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+      - name: Verify scaffold output compiles
+        run: cargo test scaffold_generated_code_compiles -- --nocapture
+
+  symbol-check:
+    name: Symbol check (hello-ext)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+      - name: Build hello-ext as cdylib
+        run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
+      - name: Verify extension entry point symbol
+        run: |
+          SO=$(find examples/hello-ext/target/release -name '*.so' -o -name '*.dylib' | head -1)
+          if [ -z "$SO" ]; then echo "No .so/.dylib found"; exit 1; fi
+          nm -D "$SO" | grep -q 'T hello_ext_init_c_api' || {
+            echo "ERROR: entry point symbol hello_ext_init_c_api not found in $SO"
+            nm -D "$SO" | head -20
+            exit 1
+          }
+          echo "Found hello_ext_init_c_api in $SO"
+
   security:
     name: Security (cargo-deny)
     runs-on: ubuntu-latest
