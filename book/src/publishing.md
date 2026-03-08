@@ -138,9 +138,9 @@ Use `validate_extension_version` to accept all three formats, and
 use quack_rs::validate::semver::classify_extension_version;
 
 match classify_extension_version("0.1.0")? {
-    VersionClass::Unstable => println!("git hash"),
-    VersionClass::PreRelease => println!("0.y.z"),
-    VersionClass::Stable => println!("x.y.z, x>0"),
+    ExtensionStability::Unstable => println!("git hash"),
+    ExtensionStability::PreRelease => println!("0.y.z"),
+    ExtensionStability::Stable => println!("x.y.z, x>0"),
 }
 ```
 
@@ -201,7 +201,7 @@ name = "my_extension"       # Must match description.yml `name`
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-quack-rs = "=0.2.0"          # Pin with = for binary compatibility
+quack-rs = "=0.3.0"          # Pin with = for binary compatibility
 libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
 
 [profile.release]
@@ -226,9 +226,9 @@ correctly configured:
 ```rust
 use quack_rs::validate::validate_release_profile;
 
-// Pass the panic setting from your Cargo.toml
-validate_release_profile("abort")?;   // Ok
-validate_release_profile("unwind")?;  // Err — panics across FFI are UB
+// Pass all four release profile settings from your Cargo.toml
+validate_release_profile("abort", "true", "3", "1")?;   // Ok
+validate_release_profile("unwind", "true", "3", "1")?;   // Err — panics across FFI are UB
 ```
 
 ---

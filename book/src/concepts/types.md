@@ -93,6 +93,6 @@ method:
 | `FLOAT` | `Float` | `read_f32` | `write_f32` |
 | `DOUBLE` | `Double` | `read_f64` | `write_f64` |
 | `VARCHAR` | `Varchar` | `read_str` | `write_varchar` |
-| `INTERVAL` | `Interval` | `read_interval` | — |
+| `INTERVAL` | `Interval` | `read_interval` | `write_interval` |
 
 NULLs are handled separately — see [NULL Handling & Strings](../data/nulls-and-strings.md).

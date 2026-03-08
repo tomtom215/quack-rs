@@ -237,7 +237,8 @@ quack-rs/
 ├── book/                          # mdBook documentation source
 ├── .github/workflows/
 │   ├── ci.yml                     # CI: check, test, clippy, fmt, doc, msrv, bench-compile
-│   └── release.yml                # Release pipeline: CI gate, package, publish
+│   ├── release.yml                # Release pipeline: CI gate, package, publish
+│   └── docs.yml                   # mdBook build & deploy to GitHub Pages
 ├── CONTRIBUTING.md                # This file
 ├── LESSONS.md                     # The 15 DuckDB Rust FFI pitfalls, documented in full
 └── README.md                      # Quick start, SDK overview, badge table
