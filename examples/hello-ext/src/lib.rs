@@ -7,7 +7,7 @@
 //!
 //! A minimal `DuckDB` community extension built with [`quack_rs`].
 //!
-//! This example registers **three functions** that together demonstrate every
+//! This example registers **four functions** that together demonstrate every
 //! major pattern a real extension author needs:
 //!
 //! | SQL function | Kind | Input | Output | Shows |
@@ -15,6 +15,7 @@
 //! | `word_count(text)` | Aggregate | `VARCHAR` | `BIGINT` | multi-row state, combine, finalize |
 //! | `first_word(text)` | Scalar | `VARCHAR` | `VARCHAR` | row-at-a-time, NULL propagation |
 //! | `generate_series_ext(n)` | Table | `BIGINT` | `BIGINT` | full table function lifecycle (bind/init/scan) |
+//! | `CAST(VARCHAR AS INTEGER)` | Cast | `VARCHAR` | `INTEGER` | `CastFunctionBuilder`, `TRY_CAST` |
 //!
 //! ## Quick start
 //!
@@ -43,6 +44,9 @@
 //!
 //! SELECT * FROM generate_series_ext(0);
 //! -- Returns 0 rows
+//!
+//! SELECT CAST('42' AS INTEGER);           -- 42
+//! SELECT TRY_CAST('bad' AS INTEGER);      -- NULL
 //! ```
 //!
 //! ## Extension anatomy
@@ -54,6 +58,7 @@
 //! ├── first_word_scalar           — scalar callback
 //! ├── GenerateSeriesState         — table function scan state struct
 //! ├── gs_bind / gs_init / gs_scan — table function callbacks
+//! ├── varchar_to_int              — cast callback (VARCHAR → INTEGER, TRY_CAST aware)
 //! ├── register()                  — registers all functions on a connection
 //! └── entry_point!()              — generates the C entry point DuckDB calls
 //! ```
@@ -67,6 +72,7 @@ use libduckdb_sys::{
     duckdb_vector_size, idx_t,
 };
 use quack_rs::aggregate::{AggregateFunctionBuilder, AggregateState, FfiState};
+use quack_rs::cast::{CastFunctionBuilder, CastFunctionInfo, CastMode};
 use quack_rs::error::ExtensionError;
 use quack_rs::scalar::ScalarFunctionBuilder;
 use quack_rs::table::{BindInfo, FfiBindData, FfiInitData, TableFunctionBuilder};
@@ -296,6 +302,63 @@ unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chu
 }
 
 // ============================================================================
+// Cast function: CAST(VARCHAR AS INTEGER) / TRY_CAST(VARCHAR AS INTEGER)
+//
+// Demonstrates CastFunctionBuilder.  The same callback handles both:
+//   - CAST('42' AS INTEGER)     → 42  (on error, calls set_error + returns false)
+//   - TRY_CAST('bad' AS INTEGER) → NULL (on error, writes NULL + records row error)
+//
+// Inside the callback, cast_mode() distinguishes the two code-paths.
+// ============================================================================
+
+/// Cast callback: converts each VARCHAR row to an INTEGER.
+///
+/// # Safety
+///
+/// - `info`   must be a valid `duckdb_function_info` provided by DuckDB.
+/// - `input`  must be the VARCHAR source vector for this batch.
+/// - `output` must be the INTEGER destination vector for this batch.
+unsafe extern "C" fn varchar_to_int(
+    info: duckdb_function_info,
+    count: idx_t,
+    input: duckdb_vector,
+    output: duckdb_vector,
+) -> bool {
+    // SAFETY: info is valid per DuckDB contract.
+    let cast_info = unsafe { CastFunctionInfo::new(info) };
+    // SAFETY: input is a valid varchar vector with `count` rows.
+    let reader = unsafe { VectorReader::from_vector(input, count as usize) };
+    // SAFETY: output is a valid integer vector.
+    let mut writer = unsafe { VectorWriter::new(output) };
+
+    for row in 0..count as usize {
+        // Propagate NULL input → NULL output.
+        if !unsafe { reader.is_valid(row) } {
+            unsafe { writer.set_null(row) };
+            continue;
+        }
+
+        let s = unsafe { reader.read_str(row) };
+        match parse_varchar_to_int(s) {
+            Some(v) => unsafe { writer.write_i32(row, v) },
+            None => {
+                let msg = format!("cannot cast {:?} to INTEGER", s);
+                if cast_info.cast_mode() == CastMode::Try {
+                    // TRY_CAST: write NULL and record a per-row diagnostic.
+                    unsafe { writer.set_null(row) };
+                    unsafe { cast_info.set_row_error(&msg, row as idx_t, output) };
+                } else {
+                    // Regular CAST: abort the entire query with an error.
+                    cast_info.set_error(&msg);
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+// ============================================================================
 // Pure Rust logic — no unsafe, unit-testable without a DuckDB instance
 // ============================================================================
 
@@ -312,6 +375,25 @@ unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chu
 /// ```
 pub fn count_words(s: &str) -> i64 {
     s.split_whitespace().count() as i64
+}
+
+/// Tries to parse a trimmed VARCHAR string as an `i32`.
+///
+/// Returns `None` if the string is empty, contains only whitespace, or is
+/// otherwise not a valid integer.
+///
+/// # Examples
+///
+/// ```
+/// # use hello_ext::parse_varchar_to_int;
+/// assert_eq!(parse_varchar_to_int("42"),      Some(42));
+/// assert_eq!(parse_varchar_to_int("  -7  "),  Some(-7));
+/// assert_eq!(parse_varchar_to_int(""),         None);
+/// assert_eq!(parse_varchar_to_int("bad"),      None);
+/// assert_eq!(parse_varchar_to_int("3.14"),     None);
+/// ```
+pub fn parse_varchar_to_int(s: &str) -> Option<i32> {
+    s.trim().parse::<i32>().ok()
 }
 
 /// Returns the first whitespace-separated word, or `""` if none.
@@ -370,6 +452,11 @@ unsafe fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), Extensio
             .bind(gs_bind)
             .init(gs_init)
             .scan(gs_scan)
+            .register(con)?;
+
+        // Cast function: VARCHAR → INTEGER (supports both CAST and TRY_CAST)
+        CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)
+            .function(varchar_to_int)
             .register(con)?;
     }
 
@@ -555,5 +642,43 @@ mod tests {
 
         assert_eq!(batch_count, 3); // 10 + 10 + 5
         assert_eq!(last_value,  24);
+    }
+
+    // ── parse_varchar_to_int ─────────────────────────────────────────────────
+    // Pure Rust logic for the VARCHAR → INTEGER cast; no DuckDB process needed.
+
+    #[test]
+    fn parse_int_basic() {
+        assert_eq!(parse_varchar_to_int("42"),   Some(42));
+        assert_eq!(parse_varchar_to_int("-7"),   Some(-7));
+        assert_eq!(parse_varchar_to_int("0"),    Some(0));
+    }
+
+    #[test]
+    fn parse_int_with_whitespace() {
+        assert_eq!(parse_varchar_to_int("  42  "),  Some(42));
+        assert_eq!(parse_varchar_to_int("\t-3\n"),  Some(-3));
+    }
+
+    #[test]
+    fn parse_int_invalid_returns_none() {
+        assert_eq!(parse_varchar_to_int("bad"),   None);
+        assert_eq!(parse_varchar_to_int("3.14"),  None);
+        assert_eq!(parse_varchar_to_int(""),      None);
+        assert_eq!(parse_varchar_to_int("   "),   None);
+        assert_eq!(parse_varchar_to_int("1e5"),   None);
+    }
+
+    #[test]
+    fn parse_int_overflow_returns_none() {
+        // i32::MAX + 1 overflows — parse::<i32>() returns Err.
+        assert_eq!(parse_varchar_to_int("2147483648"), None);
+        assert_eq!(parse_varchar_to_int("-2147483649"), None);
+    }
+
+    #[test]
+    fn parse_int_boundary_values() {
+        assert_eq!(parse_varchar_to_int("2147483647"),  Some(i32::MAX));
+        assert_eq!(parse_varchar_to_int("-2147483648"), Some(i32::MIN));
     }
 }

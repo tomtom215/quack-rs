@@ -10,6 +10,34 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`CastFunctionBuilder`** — type-safe builder for registering custom type cast
+  functions. Covers explicit `CAST(x AS T)` and implicit coercions (optional
+  `implicit_cost`). `CastFunctionInfo` exposes `cast_mode()`, `set_error()`, and
+  `set_row_error()` inside callbacks for correct `TRY_CAST` / `CAST` error handling.
+  See [Cast Functions](../functions/cast-functions.md).
+
+- **`DbConfig`** — RAII wrapper for `duckdb_config`. Builder-style `.set(name, value)?`
+  chain with automatic `duckdb_destroy_config` on drop and `flag_count()` /
+  `get_flag(index)` for enumerating all available options.
+  See [`quack_rs::config`](https://docs.rs/quack-rs/latest/quack_rs/config/index.html).
+
+- **`hello-ext` cast demo** — the example extension now registers
+  `CAST(VARCHAR AS INTEGER)` and `TRY_CAST(VARCHAR AS INTEGER)` using
+  `CastFunctionBuilder`, demonstrating both error modes with five unit tests.
+
+- **`ScalarFunctionSetBuilder`**, additional `TypeId` variants (`Decimal`, `Struct`,
+  `Map`, `UHugeInt`, `TimeTz`, `TimestampS`, `TimestampMs`, `TimestampNs`, `Array`,
+  `Enum`, `Union`, `Bit`), `NullHandling` enum, `From<TypeId> for LogicalType`,
+  `#[must_use]` on builder structs, `VectorWriter::write_interval`, and
+  `append_metadata` native binary (replaces Python metadata script).
+
+### Not implemented (upstream C API gap)
+
+- **Window functions** and **COPY format handlers** are absent from DuckDB's public
+  C extension API and cannot be wrapped. See [Known Limitations](known-limitations.md).
+
 ### Changed
 
 - Bump `criterion` dev-dependency from `0.5` to `0.8`.

@@ -40,6 +40,7 @@
   - [Safety model](#safety-model)
   - [Architecture Decision Records](#architecture-decision-records)
 - [Testing strategy](#testing-strategy)
+- [Known Limitations](#known-limitations)
 - [Changelog](#changelog)
 - [Contributing](#contributing)
 - [License](#license)
@@ -704,6 +705,27 @@ target.combine(&source, |src, tgt| tgt.total += src.total);
 
 assert_eq!(target.finalize().total, 100);
 ```
+
+---
+
+## Known Limitations
+
+### Window functions and COPY functions are not available
+
+DuckDB's **window functions** (`OVER (...)` clauses) and **COPY format handlers** (custom
+file-format readers/writers) are implemented entirely in the C++ API layer and have
+**no counterpart in DuckDB's public C extension API**. This is not a gap in `quack-rs` or
+in `libduckdb-sys` — the symbols (`duckdb_create_window_function`,
+`duckdb_create_copy_function`, etc.) do not exist in the C API at all.
+
+This has been verified against:
+- The [DuckDB stable C API reference](https://duckdb.org/docs/stable/clients/c/api)
+  (no window or COPY function registration symbols listed)
+- The `libduckdb-sys` 1.4.4 bindings (`bindgen_bundled_version.rs` and
+  `bindgen_bundled_version_loadable.rs`) — neither file contains these symbols
+
+If DuckDB exposes these APIs in a future C API version, `quack-rs` will add wrappers
+in the relevant release.
 
 ---
 

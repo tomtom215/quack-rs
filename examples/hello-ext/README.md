@@ -10,9 +10,12 @@ Use this as a copy-paste starting point for your own extension.
 | `word_count(text)` | Aggregate | `VARCHAR → BIGINT` | Sums whitespace-separated words across all rows |
 | `first_word(text)` | Scalar | `VARCHAR → VARCHAR` | Returns the first word; propagates `NULL` |
 | `generate_series_ext(n)` | Table | `BIGINT → TABLE(value BIGINT)` | Emits integers `0 .. n-1`; demonstrates full bind/init/scan lifecycle |
+| `CAST(VARCHAR AS INTEGER)` | Cast | `VARCHAR → INTEGER` | `CastFunctionBuilder` with `CAST` / `TRY_CAST` support |
 
-All three functions are **verified against a live DuckDB 1.4.4 instance** — see the
-[Live DuckDB testing](#live-duckdb-testing) section below.
+The aggregate, scalar, and table functions are **verified against a live DuckDB 1.4.4 instance**
+— see the [Live DuckDB testing](#live-duckdb-testing) section below.
+The cast function is registered using `CastFunctionBuilder` and its pure Rust parsing logic
+is covered by five unit tests; live DuckDB verification requires a local DuckDB 1.4.4 build.
 
 ```sql
 -- Aggregate: count words across rows
@@ -33,6 +36,11 @@ SELECT * FROM generate_series_ext(5);
 
 SELECT value * value AS square FROM generate_series_ext(4);
 -- → 0, 1, 4, 9
+
+-- Cast function: VARCHAR → INTEGER (explicit and TRY variant)
+SELECT CAST('42' AS INTEGER);             -- 42
+SELECT TRY_CAST('not_a_number' AS INTEGER); -- NULL
+SELECT TRY_CAST('  -7  ' AS INTEGER);    -- -7  (whitespace trimmed)
 ```
 
 ## Prerequisites
@@ -170,10 +178,15 @@ src/lib.rs
 ├── gs_init                     zero-initialises scan state via FfiInitData::init_callback
 ├── gs_scan                     emits a batch of i64 rows; sets duckdb_data_chunk_set_size
 │
+├── varchar_to_int              cast callback (VARCHAR → INTEGER)
+│   ├── CastMode::Normal        → calls set_error() + returns false on bad input
+│   └── CastMode::Try           → writes NULL + calls set_row_error() per bad row
+│
 ├── count_words / first_word    pure Rust — no unsafe, easy to unit-test
+├── parse_varchar_to_int        pure Rust — trims whitespace, parses i32
 │
 ├── register()                  calls AggregateFunctionBuilder + ScalarFunctionBuilder
-│   └──                               + TableFunctionBuilder for generate_series_ext
+│   └──                               + TableFunctionBuilder + CastFunctionBuilder
 │   └── Returns ExtensionError on registration failure
 │
 └── entry_point!(hello_ext_init_c_api, ...)
@@ -193,6 +206,9 @@ src/lib.rs
 | `AggregateFunctionBuilder` | Builder that registers an aggregate with DuckDB |
 | `ScalarFunctionBuilder` | Builder that registers a scalar function with DuckDB |
 | `TableFunctionBuilder` | Builder that registers a table function (bind/init/scan) |
+| `CastFunctionBuilder` | Builder that registers a custom CAST / TRY_CAST with DuckDB |
+| `CastFunctionInfo` | Info handle inside cast callbacks — exposes `cast_mode()`, error reporting |
+| `CastMode` | `Normal` (abort on error) vs `Try` (NULL on error) |
 | `AggregateTestHarness<S>` | Unit-test helper — no DuckDB process needed |
 | `entry_point!` | Macro that emits the `#[no_mangle] extern "C"` entry point |
 

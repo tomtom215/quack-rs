@@ -49,6 +49,7 @@
 
 - [Pitfall Catalog](reference/pitfalls.md)
 - [TypeId Reference](reference/type-id.md)
+- [Known Limitations](reference/known-limitations.md)
 - [Changelog](reference/changelog.md)
 
 ---

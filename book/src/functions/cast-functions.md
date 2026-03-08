@@ -94,6 +94,13 @@ the two modes:
 | `CastMode::Normal` | `CAST(x AS T)` | Call `set_error` and return `false` |
 | `CastMode::Try` | `TRY_CAST(x AS T)` | Call `set_row_error`, write `NULL`, continue |
 
+## Working example
+
+The `examples/hello-ext` extension registers a `CAST(VARCHAR AS INTEGER)` /
+`TRY_CAST(VARCHAR AS INTEGER)` cast using `CastFunctionBuilder`. The `varchar_to_int`
+callback and its pure-Rust `parse_varchar_to_int` helper (with five unit tests) are a
+complete, copy-paste-ready reference.
+
 ## API reference
 
 - [`CastFunctionBuilder`][quack_rs::cast::CastFunctionBuilder] — the main builder

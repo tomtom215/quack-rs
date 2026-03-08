@@ -80,6 +80,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `append_extension_metadata.py` script, now shipping with the crate.
   Install with `cargo install quack-rs --bin append_metadata`.
 
+- **`hello-ext` cast function demo** — `examples/hello-ext` now registers a
+  `CAST(VARCHAR AS INTEGER)` cast function using `CastFunctionBuilder`,
+  demonstrating both `CAST` (abort-on-error) and `TRY_CAST` (NULL-on-error)
+  code paths. Five unit tests cover `parse_varchar_to_int`, including
+  boundary values and overflow.
+
+### Not implemented (upstream C API gap)
+
+- **Window functions** — `duckdb_create_window_function` and related symbols do
+  not exist in DuckDB's public C extension API.  They are implemented only in the
+  C++ layer and are therefore not wrappable by `quack-rs` or any other C-API
+  binding.  Verified against the
+  [DuckDB stable C API reference](https://duckdb.org/docs/stable/clients/c/api)
+  and `libduckdb-sys` 1.4.4 bindings.
+
+- **COPY format handlers** — `duckdb_create_copy_function` and related symbols are
+  similarly absent from the C extension API for the same reason.
+
 ### Fixed
 
 - **`hello-ext` `gs_bind` callback** — replaced incorrect `duckdb_value_int64(param)`
