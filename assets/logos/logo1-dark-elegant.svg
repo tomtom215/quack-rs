@@ -17,28 +17,72 @@
 
   <rect width="660" height="210" rx="22" fill="url(#bg)"/>
 
-  
   <g filter="url(#ds)">
-    <path d="M 45.44,109.84 C 28.88,95.12   21.52,62.00   36.24,47.28 C 49.12,38.08   62.00,54.64   58.32,80.40 C 54.64,96.96   49.12,105.24   45.44,109.84 Z" fill="url(#dg)" stroke="none"/>
-    <ellipse cx="108.00" cy="108.00" rx="62.56" ry="42.32"
-             transform="rotate(-4,108.00,108.00)"
-             fill="url(#dg)" stroke="none"/>
-    <circle  cx="155.84" cy="69.36" r="29.44"
-             fill="url(#dg)" stroke="none"/>
-    <path d="M 100.64,106.16 Q 124.56,82.24 154.00,106.16 Q 124.56,98.80 100.64,106.16 Z" fill="#A87200" opacity="0.28" stroke="none"/>
-    <path d="M 177.92,60.16 Q 216.56,60.16 212.88,70.28 Q 216.56,82.24 177.92,82.24 Q 172.40,71.20 177.92,60.16 Z" fill="#E06818" stroke="none"/>
-    <circle  cx="160.44" cy="60.16" r="5.98"
-             fill="#0D1117" stroke="none"/>
-    <circle  cx="162.74" cy="57.58" r="2.30"
-             fill="white" stroke="none"/>
-    <ellipse cx="146.64" cy="56.48"
-             rx="8.28" ry="5.52"
-             transform="rotate(-30,146.64,56.48)"
-             fill="white" opacity="0.18" stroke="none"/>
-    <ellipse cx="115.36" cy="84.08"
-             rx="14.72" ry="8.28"
-             transform="rotate(-20,115.36,84.08)"
-             fill="white" opacity="0.10" stroke="none"/>
+    <g transform="translate(0,2)">
+      <!--
+        Single continuous silhouette path.
+        Starts at tail tip (upper-left), traces: back → nape → crown → bill →
+        lower-bill → throat → breast → belly → undertail → tail (close).
+        The S-curve at the neck-back junction (segment 4) mimics the
+        anatomical fold where neck muscles rise from the body.
+      -->
+      <path d="
+        M 28,86
+        C 32,78  40,72  56,70
+        C 68,68  82,66  96,66
+        C 110,66 120,68 126,72
+        C 132,76 132,56 142,46
+        C 150,38 160,34 170,38
+        C 178,40 184,50 190,56
+        C 200,60 212,68 218,74
+        C 220,76 220,78 218,80
+        C 214,82 200,84 186,84
+        C 180,88 176,96 174,106
+        C 174,118 182,138 166,148
+        C 154,154 130,157 104,153
+        C 78,149  56,140  42,125
+        C 36,116  30,106  28,100
+        C 28,96   28,92   28,86
+        Z
+      " fill="url(#dg)" stroke="none"/>
+
+      <!-- Bill: orange overlay growing from the face (no floating shape) -->
+      <path d="
+        M 186,84
+        C 184,76 186,66 188,57
+        C 200,59 212,67 218,74
+        C 220,76 220,78 218,80
+        C 212,82 200,84 186,84
+        Z
+      " fill="#E06818" stroke="none"/>
+
+      <!-- Wing fold: subtle filled crescent on mid-body -->
+      <path d="M 86,104 C 106,90 134,90 156,108 C 132,102 106,102 86,104 Z"
+            fill="#A87200" opacity="0.28" stroke="none"/>
+
+      <!-- Neck-body junction shadow -->
+      <path d="M 104,99 Q 132,80 160,102 Q 132,95 104,99 Z"
+            fill="#A87200" opacity="0.22" stroke="none"/>
+
+      <!-- Wing-tip accent stroke (feather edge) -->
+      <path d="M 90,107 C 112,95 136,95 158,110"
+            fill="none" stroke="#8A6000" stroke-width="1.8"
+            stroke-linecap="round" opacity="0.35"/>
+
+      <!-- Eye -->
+      <circle cx="164" cy="54" r="5.5" fill="#0D1117" stroke="none"/>
+      <circle cx="166" cy="51" r="2.1" fill="white"   stroke="none"/>
+
+      <!-- Brow/forehead highlight -->
+      <ellipse cx="148" cy="52" rx="8" ry="5.2"
+               transform="rotate(-30,148,52)"
+               fill="white" opacity="0.18" stroke="none"/>
+
+      <!-- Body specular -->
+      <ellipse cx="115" cy="86" rx="14" ry="8"
+               transform="rotate(-20,115,86)"
+               fill="white" opacity="0.10" stroke="none"/>
+    </g>
   </g>
 
   <!-- Wordmark -->
@@ -48,7 +92,7 @@
     <tspan fill="#E6EDF3">quack</tspan><tspan fill="#CE422B">-rs</tspan>
   </text>
 
-  <!-- Tagline: left-aligned to wordmark, refined spacing -->
+  <!-- Tagline -->
   <text x="230" y="151"
         font-family="'Liberation Sans', Arial, sans-serif" font-size="16" font-weight="400"
         letter-spacing="1.8" fill="#526880">DUCKDB · RUST · FAST</text>
