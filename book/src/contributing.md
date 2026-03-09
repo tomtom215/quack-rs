@@ -153,12 +153,20 @@ quack-rs/
 │   ├── sql_macro.rs               # SqlMacro — CREATE MACRO without FFI callbacks
 │   ├── aggregate/
 │   │   ├── mod.rs
-│   │   ├── builder.rs             # AggregateFunctionBuilder, AggregateFunctionSetBuilder
+│   │   ├── builder/               # Builder types for aggregate function registration
+│   │   │   ├── mod.rs             # Module doc + re-exports
+│   │   │   ├── single.rs          # AggregateFunctionBuilder (single-signature)
+│   │   │   ├── set.rs             # AggregateFunctionSetBuilder, OverloadBuilder
+│   │   │   └── tests.rs           # Unit tests
 │   │   ├── callbacks.rs           # Callback type aliases
 │   │   └── state.rs               # AggregateState trait, FfiState<T>
 │   ├── scalar/
 │   │   ├── mod.rs
-│   │   └── builder.rs             # ScalarFunctionBuilder
+│   │   └── builder/               # Builder types for scalar function registration
+│   │       ├── mod.rs             # Module doc + re-exports
+│   │       ├── single.rs          # ScalarFn type alias, ScalarFunctionBuilder
+│   │       ├── set.rs             # ScalarFunctionSetBuilder, ScalarOverloadBuilder
+│   │       └── tests.rs           # Unit tests
 │   ├── types/
 │   │   ├── mod.rs
 │   │   ├── type_id.rs             # TypeId enum (21 variants)
@@ -171,6 +179,12 @@ quack-rs/
 │   │   └── string.rs              # DuckStringView, read_duck_string
 │   ├── validate/
 │   │   ├── mod.rs
+│   │   ├── description_yml/       # Parse and validate description.yml metadata
+│   │   │   ├── mod.rs             # Module doc + re-exports
+│   │   │   ├── model.rs           # DescriptionYml struct
+│   │   │   ├── parser.rs          # parse_description_yml and helpers
+│   │   │   ├── validator.rs       # validate_description_yml_str, validate_rust_extension
+│   │   │   └── tests.rs           # Unit tests
 │   │   ├── extension_name.rs
 │   │   ├── function_name.rs
 │   │   ├── platform.rs
@@ -178,7 +192,15 @@ quack-rs/
 │   │   ├── semver.rs
 │   │   └── spdx.rs
 │   ├── scaffold/
-│   │   └── mod.rs                 # generate_scaffold, ScaffoldConfig
+│   │   ├── mod.rs                 # ScaffoldConfig, GeneratedFile, generate_scaffold
+│   │   ├── templates.rs           # Template generators for scaffold files (pub(super))
+│   │   └── tests.rs               # Unit tests
+│   ├── table/
+│   │   ├── mod.rs
+│   │   ├── builder.rs             # TableFunctionBuilder, BindFn/InitFn/ScanFn aliases
+│   │   ├── info.rs                # BindInfo, InitInfo, FunctionInfo
+│   │   ├── bind_data.rs           # FfiBindData<T>
+│   │   └── init_data.rs           # FfiInitData<T>, FfiLocalInitData<T>
 │   └── testing/
 │       ├── mod.rs
 │       └── harness.rs             # AggregateTestHarness<S>

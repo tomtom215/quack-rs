@@ -84,8 +84,10 @@
 
 pub mod bind_data;
 pub mod builder;
+pub mod info;
 pub mod init_data;
 
 pub use bind_data::FfiBindData;
-pub use builder::{BindFn, BindInfo, FunctionInfo, InitFn, InitInfo, ScanFn, TableFunctionBuilder};
+pub use builder::{BindFn, InitFn, ScanFn, TableFunctionBuilder};
+pub use info::{BindInfo, FunctionInfo, InitInfo};
 pub use init_data::{FfiInitData, FfiLocalInitData};

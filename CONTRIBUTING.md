@@ -197,11 +197,20 @@ quack-rs/
 │   ├── sql_macro.rs               # SQL macro registration (CREATE MACRO, no FFI)
 │   ├── aggregate/
 │   │   ├── mod.rs                 # Re-exports
-│   │   ├── builder.rs             # AggregateFunctionBuilder, AggregateFunctionSetBuilder
+│   │   ├── builder/               # Builder types for aggregate function registration
+│   │   │   ├── mod.rs             # Module doc + re-exports
+│   │   │   ├── single.rs          # AggregateFunctionBuilder (single-signature)
+│   │   │   ├── set.rs             # AggregateFunctionSetBuilder, OverloadBuilder
+│   │   │   └── tests.rs           # Unit tests (14 tests)
 │   │   ├── callbacks.rs           # Type aliases for the 6 callback signatures
 │   │   └── state.rs               # AggregateState trait, FfiState<T>
 │   ├── scalar/
-│   │   └── builder.rs             # ScalarFunctionBuilder
+│   │   ├── mod.rs                 # Re-exports
+│   │   └── builder/               # Builder types for scalar function registration
+│   │       ├── mod.rs             # Module doc + re-exports
+│   │       ├── single.rs          # ScalarFn type alias, ScalarFunctionBuilder
+│   │       ├── set.rs             # ScalarFunctionSetBuilder, ScalarOverloadBuilder
+│   │       └── tests.rs           # Unit tests (13 tests)
 │   ├── types/
 │   │   ├── mod.rs
 │   │   ├── type_id.rs             # TypeId enum (all DuckDB column types)
@@ -214,7 +223,12 @@ quack-rs/
 │   │   └── string.rs              # DuckStringView, read_duck_string (16-byte string format)
 │   ├── validate/
 │   │   ├── mod.rs                 # Extension compliance validators + re-exports
-│   │   ├── description_yml.rs     # Parse and validate description.yml metadata
+│   │   ├── description_yml/       # Parse and validate description.yml metadata
+│   │   │   ├── mod.rs             # Module doc + re-exports
+│   │   │   ├── model.rs           # DescriptionYml struct (11 fields)
+│   │   │   ├── parser.rs          # parse_description_yml, parse_kv, strip_inline_comment
+│   │   │   ├── validator.rs       # validate_description_yml_str, validate_rust_extension
+│   │   │   └── tests.rs           # Unit tests (20 tests)
 │   │   ├── extension_name.rs      # Extension name validation (^[a-z][a-z0-9_-]*$)
 │   │   ├── function_name.rs       # SQL function name validation
 │   │   ├── platform.rs            # DuckDB build platform validation
@@ -222,7 +236,15 @@ quack-rs/
 │   │   ├── semver.rs              # Semantic versioning + extension version tiers
 │   │   └── spdx.rs                # SPDX license identifier validation
 │   ├── scaffold/
-│   │   └── mod.rs                 # Project generator for new extensions
+│   │   ├── mod.rs                 # ScaffoldConfig, GeneratedFile, generate_scaffold
+│   │   ├── templates.rs           # Template generators for all 11 scaffold files (pub(super))
+│   │   └── tests.rs               # Unit tests (29 tests)
+│   ├── table/
+│   │   ├── mod.rs                 # Re-exports
+│   │   ├── builder.rs             # TableFunctionBuilder, type aliases (BindFn, InitFn, ScanFn)
+│   │   ├── info.rs                # BindInfo, InitInfo, FunctionInfo — callback info wrappers
+│   │   ├── bind_data.rs           # FfiBindData<T> — type-safe bind-phase data
+│   │   └── init_data.rs           # FfiInitData<T>, FfiLocalInitData<T>
 │   └── testing/
 │       ├── mod.rs
 │       └── harness.rs             # AggregateTestHarness<S> — unit-test aggregate logic

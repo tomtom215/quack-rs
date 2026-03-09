@@ -22,9 +22,16 @@ quack_rs
 ├── aggregate
 │   ├── state        FfiState<T> — raw-pointer lifecycle wrapper
 │   ├── callbacks    Type aliases for the 6 DuckDB aggregate callback signatures
-│   └── builder      AggregateFunctionBuilder, AggregateFunctionSetBuilder
+│   └── builder/
+│       ├── single   AggregateFunctionBuilder (single-signature)
+│       └── set      AggregateFunctionSetBuilder, OverloadBuilder
 ├── scalar
-│   └── builder      ScalarFunctionBuilder, ScalarFunctionSetBuilder
+│   └── builder/
+│       ├── single   ScalarFn type alias, ScalarFunctionBuilder
+│       └── set      ScalarFunctionSetBuilder, ScalarOverloadBuilder
+├── table
+│   ├── builder      TableFunctionBuilder, BindFn/InitFn/ScanFn type aliases
+│   └── info         BindInfo, InitInfo, FunctionInfo — callback info wrappers
 ├── vector
 │   ├── reader       VectorReader — typed reads from duckdb_data_chunk
 │   ├── writer       VectorWriter — typed writes to duckdb_vector
@@ -47,8 +54,12 @@ quack_rs
 | `entry_point` | Correct initialization sequence | Yes |
 | `aggregate::state` | `Box<T>` lifecycle behind a raw pointer | Yes |
 | `aggregate::callbacks` | Signature documentation only (type aliases) | No |
-| `aggregate::builder` | Builder API for aggregate function registration | Yes |
-| `scalar::builder` | Builder API for scalar function registration | Yes |
+| `aggregate::builder::single` | `AggregateFunctionBuilder` — single-signature registration | Yes |
+| `aggregate::builder::set` | `AggregateFunctionSetBuilder`, `OverloadBuilder` | Yes |
+| `scalar::builder::single` | `ScalarFn` type alias, `ScalarFunctionBuilder` | Yes |
+| `scalar::builder::set` | `ScalarFunctionSetBuilder`, `ScalarOverloadBuilder` | Yes |
+| `table::builder` | `TableFunctionBuilder`, callback type aliases | Yes |
+| `table::info` | `BindInfo`, `InitInfo`, `FunctionInfo` — callback wrappers | Yes |
 | `vector::reader` | Typed reads with correct alignment and boolean semantics | Yes |
 | `vector::writer` | Typed writes with NULL flag support | Yes |
 | `vector::validity` | Bit-packed validity bitmap abstraction | Yes |
