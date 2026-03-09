@@ -301,7 +301,7 @@ jobs:
           ls -lh release-artifacts/
           echo "::endgroup::"
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -313,14 +313,32 @@ jobs:
           PRE_FLAG=""
           [[ "$IS_PRE" == "true" ]] && PRE_FLAG="--prerelease"
 
-          echo "::group::Creating GitHub release v$VERSION"
-          gh release create "v${VERSION}" \
-            $PRE_FLAG \
-            --title "${CRATE} v${VERSION}" \
-            --notes-file release_notes.md \
-            release-artifacts/*.crate \
-            release-artifacts/SHA256SUMS
-          echo "::endgroup::"
+          # Check if a release already exists (e.g. created by GitHub Desktop or the web UI)
+          if gh release view "v${VERSION}" &>/dev/null; then
+            echo "::notice::Release v${VERSION} already exists — updating it with artifacts and notes"
+
+            echo "::group::Updating GitHub release v$VERSION"
+            gh release edit "v${VERSION}" \
+              $PRE_FLAG \
+              --title "${CRATE} v${VERSION}" \
+              --notes-file release_notes.md
+
+            # Upload artifacts (--clobber overwrites if they already exist)
+            gh release upload "v${VERSION}" \
+              --clobber \
+              release-artifacts/*.crate \
+              release-artifacts/SHA256SUMS
+            echo "::endgroup::"
+          else
+            echo "::group::Creating GitHub release v$VERSION"
+            gh release create "v${VERSION}" \
+              $PRE_FLAG \
+              --title "${CRATE} v${VERSION}" \
+              --notes-file release_notes.md \
+              release-artifacts/*.crate \
+              release-artifacts/SHA256SUMS
+            echo "::endgroup::"
+          fi
 
           RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/v${VERSION}"
           echo "::notice::GitHub release created: $RELEASE_URL"
