@@ -13,19 +13,28 @@
   display: none;        /* hidden until theme class reveals one */
 }
 
-/* light / rust / ayu → show light logo.
-   mdBook sets the theme class on <html>, not <body>. */
-.light  .book-logo-light,
-.rust   .book-logo-light,
-.ayu    .book-logo-light { display: inline-block; }
+/* light / rust → light logo visible, dark logo explicitly hidden.
+   mdBook sets the theme class on <html>, not <body>.
+   Explicit per-theme hide rules ([0,2,1]) prevent any mdBook theme CSS
+   from accidentally overriding the base display:none ([0,1,1]). */
+.light .book-logo-light,
+.rust  .book-logo-light { display: inline-block; }
+.light .book-logo-dark,
+.rust  .book-logo-dark  { display: none; }
 
-/* coal / navy → show dark logo */
-.coal   .book-logo-dark,
-.navy   .book-logo-dark  { display: inline-block; }
+/* ayu / coal / navy → dark logo visible, light logo explicitly hidden.
+   ayu is a dark theme and should show the dark logo. */
+.ayu  .book-logo-dark,
+.coal .book-logo-dark,
+.navy .book-logo-dark  { display: inline-block; }
+.ayu  .book-logo-light,
+.coal .book-logo-light,
+.navy .book-logo-light { display: none; }
 
-/* fallback: if no theme class yet (first paint), show light logo.
-   Must target html (not body) because mdBook sets the theme class on <html>. */
-html:not(.coal):not(.navy) .book-logo-light { display: inline-block; }
+/* fallback: first paint before JS applies the theme class — show light logo.
+   Excludes ayu/coal/navy so they don't flash the light logo before the
+   theme class lands.  Specificity [0,4,1] safely beats the base rule. */
+html:not(.ayu):not(.coal):not(.navy) .book-logo-light { display: inline-block; }
 
 /* ── Typography ─────────────────────────────────────────────────────────── */
 :root {
