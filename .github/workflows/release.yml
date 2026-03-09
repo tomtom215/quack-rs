@@ -301,7 +301,7 @@ jobs:
           ls -lh release-artifacts/
           echo "::endgroup::"
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -309,21 +309,42 @@ jobs:
           VERSION="${{ needs.validate.outputs.version }}"
           IS_PRE="${{ needs.validate.outputs.is_prerelease }}"
           CRATE="${{ needs.validate.outputs.crate_name }}"
+          TAG="v${VERSION}"
 
           PRE_FLAG=""
           [[ "$IS_PRE" == "true" ]] && PRE_FLAG="--prerelease"
 
-          echo "::group::Creating GitHub release v$VERSION"
-          gh release create "v${VERSION}" \
-            $PRE_FLAG \
-            --title "${CRATE} v${VERSION}" \
-            --notes-file release_notes.md \
-            release-artifacts/*.crate \
-            release-artifacts/SHA256SUMS
-          echo "::endgroup::"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
 
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/v${VERSION}"
-          echo "::notice::GitHub release created: $RELEASE_URL"
+          # Idempotent: if a release already exists (e.g. created by GitHub
+          # Desktop or the web UI when pushing a tag), update it in place
+          # instead of failing.
+          if gh release view "$TAG" &>/dev/null; then
+            echo "::warning::Release ${TAG} already exists — updating it."
+            echo "::group::Updating GitHub release ${TAG}"
+            gh release edit "$TAG" \
+              $PRE_FLAG \
+              --title "${CRATE} ${TAG}" \
+              --notes-file release_notes.md
+
+            # Upload assets (--clobber overwrites if they already exist)
+            gh release upload "$TAG" \
+              --clobber \
+              release-artifacts/*.crate \
+              release-artifacts/SHA256SUMS
+            echo "::endgroup::"
+            echo "::notice::GitHub release updated: $RELEASE_URL"
+          else
+            echo "::group::Creating GitHub release ${TAG}"
+            gh release create "$TAG" \
+              $PRE_FLAG \
+              --title "${CRATE} ${TAG}" \
+              --notes-file release_notes.md \
+              release-artifacts/*.crate \
+              release-artifacts/SHA256SUMS
+            echo "::endgroup::"
+            echo "::notice::GitHub release created: $RELEASE_URL"
+          fi
 
           # ── Step summary ──────────────────────────────────────────────────
           {
@@ -371,7 +392,16 @@ jobs:
           CRATE="${{ needs.validate.outputs.crate_name }}"
 
           echo "::group::cargo publish — $CRATE v$VERSION"
-          cargo publish
+          # Idempotent: if a re-run publishes the same version that's
+          # already on crates.io, treat it as success rather than failing.
+          if ! cargo publish 2>&1 | tee /tmp/publish.log; then
+            if grep -q "already uploaded" /tmp/publish.log; then
+              echo "::warning::$CRATE v$VERSION is already published — skipping."
+            else
+              echo "::error::cargo publish failed"
+              exit 1
+            fi
+          fi
           echo "::endgroup::"
 
           CRATES_URL="https://crates.io/crates/${CRATE}/${VERSION}"
