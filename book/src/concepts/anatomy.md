@@ -71,7 +71,7 @@ lifecycle in pure Rust, with zero DuckDB API calls.
 graph TD
     EXT["your-extension"]
     QR["quack-rs"]
-    LDS["libduckdb-sys =1.4.4<br/>{loadable-extension}<br/>(headers only — no linked library)"]
+    LDS["libduckdb-sys >=1.4.4, <2<br/>{loadable-extension}<br/>(headers only — no linked library)"]
 
     EXT --> QR
     EXT --> LDS
@@ -84,18 +84,26 @@ model for extensions: you run inside DuckDB's process, using its memory and thre
 
 ---
 
-## Version pinning
+## Version support
 
-`libduckdb-sys = "=1.4.4"` — the `=` is intentional and important.
+`libduckdb-sys = ">=1.4.4, <2"` — the bounded range is intentional.
 
-DuckDB's C API changes between minor releases:
-- New function signatures
-- Changed constant values
-- Renamed symbols
+DuckDB 1.4.x and 1.5.x both expose **C API version `v1.2.0`** (the version string embedded
+in `duckdb_rs_extension_api_init`). `quack-rs` has been E2E tested against both releases.
+Using a range rather than an exact pin means:
 
-An `=` pin makes every DuckDB version upgrade a deliberate, auditable change. Without it,
-a patch-level Cargo update could silently link against a DuckDB version with breaking API
-changes.
+- Extension authors can choose their DuckDB target (pin to `=1.4.4` or `=1.5.0` in their
+  own `Cargo.toml`) and resolve cleanly against `quack-rs`
+- `quack-rs` itself doesn't force a DuckDB downgrade on users
+
+The `<2` upper bound is equally intentional: it prevents silent adoption of a future major
+release that may introduce breaking C API changes. Upgrading beyond the `1.x` band requires
+an explicit `quack-rs` release that audits the new C API surface.
+
+> **For your own extension's `Cargo.toml`:** pin `libduckdb-sys` to the exact DuckDB version
+> you build and test against (e.g., `=1.5.0`). Your extension binary will only load in the
+> DuckDB version it was compiled for regardless — the range only matters for `quack-rs`
+> itself as a library dependency.
 
 ---
 

@@ -105,6 +105,7 @@ compile_error!("quack-rs requires a 64-bit target (DuckDB does not support 32-bi
 pub mod aggregate;
 pub mod cast;
 pub mod config;
+pub mod connection;
 pub mod entry_point;
 pub mod error;
 pub mod interval;
@@ -121,14 +122,16 @@ pub mod vector;
 
 /// The `DuckDB` C API version string required by [`duckdb_rs_extension_api_init`][libduckdb_sys::duckdb_rs_extension_api_init].
 ///
-/// This constant corresponds to `DuckDB` release v1.4.x. If you are targeting a
-/// different `DuckDB` release, consult the `DuckDB` changelog for the C API version.
+/// This constant corresponds to `DuckDB` releases v1.4.x and v1.5.x. If you are
+/// targeting a different `DuckDB` release, consult the `DuckDB` changelog for the
+/// C API version.
 ///
 /// # Pitfall P2: C API version ≠ `DuckDB` release version
 ///
 /// The `-dv` flag passed to `append_extension_metadata.py` must be this value
-/// (`"v1.2.0"`), **not** the `DuckDB` release version (`"v1.4.4"`). Using the wrong
-/// value causes the metadata script to fail silently or produce incorrect metadata.
+/// (`"v1.2.0"`), **not** the `DuckDB` release version (`"v1.4.4"` / `"v1.5.0"`).
+/// Using the wrong value causes the metadata script to fail silently or produce
+/// incorrect metadata.
 ///
 /// See `LESSONS.md` → Pitfall P2 for full details.
 pub const DUCKDB_API_VERSION: &str = "v1.2.0";

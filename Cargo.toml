@@ -1,6 +1,6 @@
 [package]
 name = "quack-rs"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.84.1"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
@@ -30,13 +30,25 @@ exclude = [
 name = "quack_rs"
 crate-type = ["rlib"]
 
+[features]
+## Enables wrappers for DuckDB 1.5.0 C API additions (e.g. scalar function local
+## states, config option registration). Requires `libduckdb-sys >= 1.5.0` to be
+## resolved by Cargo. Has no effect when compiled against libduckdb-sys 1.4.x.
+##
+## This feature is intentionally empty until libduckdb-sys 1.5.0 is published
+## on crates.io, at which point version-specific wrappers will be added behind it.
+duckdb-1-5 = []
+
 [dependencies]
-libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [dev-dependencies]
-duckdb = { version = "=1.4.4", features = ["bundled"] }
+duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
+# Pin tempfile to avoid getrandom >=0.4 (which requires edition2024 / Rust >=1.85).
+# proptest requires only `tempfile ^3`, so 3.14 satisfies it while keeping MSRV 1.84.1.
+tempfile = "=3.14.0"
 
 [profile.release]
 opt-level = 3

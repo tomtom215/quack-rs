@@ -53,7 +53,7 @@ cargo fmt -- --check
 # Documentation — zero broken links or missing docs
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
-# MSRV — must compile on Rust 1.84.1
+# MSRV — must compile on Rust 1.84.1 (excludes benches; matches CI)
 cargo +1.84.1 check
 ```
 
@@ -147,18 +147,33 @@ Every public item must have a doc comment. Follow these conventions:
 quack-rs/
 ├── src/
 │   ├── lib.rs                     # Crate root; module declarations; DUCKDB_API_VERSION
-│   ├── entry_point.rs             # init_extension()
+│   ├── entry_point.rs             # init_extension() / init_extension_v2() + entry_point! / entry_point_v2!
+│   ├── connection.rs              # Connection facade + Registrar trait (version-agnostic registration)
+│   ├── config.rs                  # DbConfig — RAII wrapper for duckdb_config
 │   ├── error.rs                   # ExtensionError, ExtResult<T>
 │   ├── interval.rs                # DuckInterval, interval_to_micros
 │   ├── sql_macro.rs               # SqlMacro — CREATE MACRO without FFI callbacks
 │   ├── aggregate/
 │   │   ├── mod.rs
-│   │   ├── builder.rs             # AggregateFunctionBuilder, AggregateFunctionSetBuilder
+│   │   ├── builder/               # Builder types for aggregate function registration
+│   │   │   ├── mod.rs             # Module doc + re-exports
+│   │   │   ├── single.rs          # AggregateFunctionBuilder (single-signature)
+│   │   │   ├── set.rs             # AggregateFunctionSetBuilder, OverloadBuilder
+│   │   │   └── tests.rs           # Unit tests
 │   │   ├── callbacks.rs           # Callback type aliases
 │   │   └── state.rs               # AggregateState trait, FfiState<T>
 │   ├── scalar/
 │   │   ├── mod.rs
-│   │   └── builder.rs             # ScalarFunctionBuilder
+│   │   └── builder/               # Builder types for scalar function registration
+│   │       ├── mod.rs             # Module doc + re-exports
+│   │       ├── single.rs          # ScalarFn type alias, ScalarFunctionBuilder
+│   │       ├── set.rs             # ScalarFunctionSetBuilder, ScalarOverloadBuilder
+│   │       └── tests.rs           # Unit tests
+│   ├── cast/
+│   │   ├── mod.rs                 # Re-exports
+│   │   └── builder.rs             # CastFunctionBuilder, CastFunctionInfo, CastMode
+│   ├── replacement_scan/
+│   │   └── mod.rs                 # ReplacementScanBuilder — SELECT * FROM 'file.xyz' patterns
 │   ├── types/
 │   │   ├── mod.rs
 │   │   ├── type_id.rs             # TypeId enum (21 variants)
@@ -171,6 +186,12 @@ quack-rs/
 │   │   └── string.rs              # DuckStringView, read_duck_string
 │   ├── validate/
 │   │   ├── mod.rs
+│   │   ├── description_yml/       # Parse and validate description.yml metadata
+│   │   │   ├── mod.rs             # Module doc + re-exports
+│   │   │   ├── model.rs           # DescriptionYml struct
+│   │   │   ├── parser.rs          # parse_description_yml and helpers
+│   │   │   ├── validator.rs       # validate_description_yml_str, validate_rust_extension
+│   │   │   └── tests.rs           # Unit tests
 │   │   ├── extension_name.rs
 │   │   ├── function_name.rs
 │   │   ├── platform.rs
@@ -178,7 +199,15 @@ quack-rs/
 │   │   ├── semver.rs
 │   │   └── spdx.rs
 │   ├── scaffold/
-│   │   └── mod.rs                 # generate_scaffold, ScaffoldConfig
+│   │   ├── mod.rs                 # ScaffoldConfig, GeneratedFile, generate_scaffold
+│   │   ├── templates.rs           # Template generators for scaffold files (pub(super))
+│   │   └── tests.rs               # Unit tests
+│   ├── table/
+│   │   ├── mod.rs
+│   │   ├── builder.rs             # TableFunctionBuilder, BindFn/InitFn/ScanFn aliases
+│   │   ├── info.rs                # BindInfo, InitInfo, FunctionInfo
+│   │   ├── bind_data.rs           # FfiBindData<T>
+│   │   └── init_data.rs           # FfiInitData<T>, FfiLocalInitData<T>
 │   └── testing/
 │       ├── mod.rs
 │       └── harness.rs             # AggregateTestHarness<S>
@@ -203,14 +232,16 @@ quack-rs/
 
 ## Releasing
 
-quack-rs pins `libduckdb-sys` with `=` (exact version) because the DuckDB C API
-can change between minor releases. Before bumping the pin:
+quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering DuckDB 1.4.x
+and 1.5.x, whose C API (`v1.2.0`) is stable across both releases. The `<2` upper bound
+prevents silent adoption of a future major release that may change the C API.
+Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes
 2. Check the new C API version string (used in `duckdb_rs_extension_api_init`)
 3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed
 4. Audit all callback signatures against the new `bindgen.rs` output
-5. Update all `=x.x.x` pins in `Cargo.toml` (runtime and dev-deps)
+5. Update the range bounds in `Cargo.toml` (runtime and dev-deps)
 
 Versions follow [Semantic Versioning](https://semver.org/). Breaking changes
 to the public API require a major version bump.

@@ -9,7 +9,7 @@
 - [The loadable-extension Feature](#the-loadable-extension-feature)
 - [DuckDB Aggregate Lifecycle](#duckdb-aggregate-lifecycle)
 - [ADR-001: Thin Wrapper Mandate](#adr-001-thin-wrapper-mandate)
-- [ADR-002: Exact Version Pin](#adr-002-exact-version-pin)
+- [ADR-002: Bounded Version Range](#adr-002-bounded-version-range)
 - [ADR-003: No Panics Across FFI](#adr-003-no-panics-across-ffi)
 
 ---
@@ -18,13 +18,24 @@
 
 ```
 quack_rs
-├── entry_point      Extension initialization sequence
+├── entry_point      Extension initialization (init_extension / init_extension_v2, entry_point! / entry_point_v2!)
+├── connection       Connection facade + Registrar trait (version-agnostic registration)
 ├── aggregate
 │   ├── state        FfiState<T> — raw-pointer lifecycle wrapper
 │   ├── callbacks    Type aliases for the 6 DuckDB aggregate callback signatures
-│   └── builder      AggregateFunctionBuilder, AggregateFunctionSetBuilder
+│   └── builder/
+│       ├── single   AggregateFunctionBuilder (single-signature)
+│       └── set      AggregateFunctionSetBuilder, OverloadBuilder
 ├── scalar
-│   └── builder      ScalarFunctionBuilder, ScalarFunctionSetBuilder
+│   └── builder/
+│       ├── single   ScalarFn type alias, ScalarFunctionBuilder
+│       └── set      ScalarFunctionSetBuilder, ScalarOverloadBuilder
+├── cast
+│   └── builder      CastFunctionBuilder, CastFunctionInfo, CastMode
+├── table
+│   ├── builder      TableFunctionBuilder, BindFn/InitFn/ScanFn type aliases
+│   └── info         BindInfo, InitInfo, FunctionInfo — callback info wrappers
+├── replacement_scan ReplacementScanBuilder — SELECT * FROM 'file.xyz' patterns
 ├── vector
 │   ├── reader       VectorReader — typed reads from duckdb_data_chunk
 │   ├── writer       VectorWriter — typed writes to duckdb_vector
@@ -35,6 +46,7 @@ quack_rs
 │   ├── logical_type LogicalType — RAII for duckdb_logical_type
 │   └── null_handling NullHandling — NULL propagation behaviour
 ├── interval         DuckInterval, interval_to_micros (checked + saturating)
+├── config           DbConfig — RAII wrapper for duckdb_config
 ├── error            ExtensionError, ExtResult<T>
 └── testing
     └── harness      AggregateTestHarness<S> — pure-Rust aggregate testing
@@ -44,17 +56,25 @@ quack_rs
 
 | Module | Responsibility | FFI |
 |--------|---------------|-----|
-| `entry_point` | Correct initialization sequence | Yes |
+| `entry_point` | Correct initialization sequence (`init_extension`, `init_extension_v2`) | Yes |
+| `connection` | `Connection` facade + `Registrar` trait — version-agnostic registration | Yes |
 | `aggregate::state` | `Box<T>` lifecycle behind a raw pointer | Yes |
 | `aggregate::callbacks` | Signature documentation only (type aliases) | No |
-| `aggregate::builder` | Builder API for aggregate function registration | Yes |
-| `scalar::builder` | Builder API for scalar function registration | Yes |
+| `aggregate::builder::single` | `AggregateFunctionBuilder` — single-signature registration | Yes |
+| `aggregate::builder::set` | `AggregateFunctionSetBuilder`, `OverloadBuilder` | Yes |
+| `scalar::builder::single` | `ScalarFn` type alias, `ScalarFunctionBuilder` | Yes |
+| `scalar::builder::set` | `ScalarFunctionSetBuilder`, `ScalarOverloadBuilder` | Yes |
+| `cast::builder` | `CastFunctionBuilder`, `CastFunctionInfo`, `CastMode` | Yes |
+| `table::builder` | `TableFunctionBuilder`, callback type aliases | Yes |
+| `table::info` | `BindInfo`, `InitInfo`, `FunctionInfo` — callback wrappers | Yes |
+| `replacement_scan` | `ReplacementScanBuilder` — `SELECT * FROM 'file.xyz'` registration | Yes |
 | `vector::reader` | Typed reads with correct alignment and boolean semantics | Yes |
 | `vector::writer` | Typed writes with NULL flag support | Yes |
 | `vector::validity` | Bit-packed validity bitmap abstraction | Yes |
 | `vector::string` | Inline vs. pointer string format handling | Yes |
 | `types::type_id` | Enum mapping to `DUCKDB_TYPE_*` constants | No |
 | `types::logical_type` | RAII drop for `duckdb_logical_type` | Yes |
+| `config` | `DbConfig` — RAII wrapper for `duckdb_config` | Yes |
 | `interval` | Fixed-point microsecond arithmetic with overflow detection | No |
 | `error` | `std::error::Error` + `CString` conversion | No |
 | `testing::harness` | Simulate DuckDB aggregate lifecycle in pure Rust | No |
@@ -77,11 +97,12 @@ invoked by DuckDB. Panicking across a C FFI boundary is undefined behaviour. All
 error handling uses `Result`/`Option` and the `?` operator. Errors are reported
 back to DuckDB via `access.set_error`.
 
-### 3. Exact version pin
+### 3. Bounded version range
 
-`libduckdb-sys = "=1.4.4"` — the `=` is intentional. DuckDB's C API has changed
-between minor releases in ways that break extensions silently. Exact pinning makes
-upgrades deliberate and auditable.
+`libduckdb-sys = ">=1.4.4, <2"` — the range is intentional. DuckDB's C API is
+stable across the 1.4.x and 1.5.x releases (both use C API `v1.2.0`, verified by
+E2E tests). The upper bound prevents silent adoption of a new major-band whose
+C API may introduce breaking changes.
 
 ### 4. Testable business logic
 
@@ -97,9 +118,9 @@ DuckDB instance. Only the FFI glue code (callbacks, registration) requires DuckD
 ```
 Extension crate
     ├── quack_rs (this crate)
-    │       ├── libduckdb-sys = "=1.4.4" { loadable-extension }
+    │       ├── libduckdb-sys = ">=1.4.4, <2" { loadable-extension }
     │       └── (no other runtime deps)
-    └── libduckdb-sys = "=1.4.4" { loadable-extension }
+    └── libduckdb-sys = ">=1.4.4, <2" { loadable-extension }
             └── (bundled DuckDB headers only — no linked library)
 ```
 
@@ -108,7 +129,7 @@ instead of linking against `libduckdb`, the crate emits a shared library that
 receives a function pointer table from DuckDB at load time. See
 [The loadable-extension Feature](#the-loadable-extension-feature).
 
-At test time, add `duckdb = { version = "=1.4.4", features = ["bundled"] }` as a
+At test time, add `duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }` as a
 dev-dependency if you need a live DuckDB instance. Note the constraint described
 in [CONTRIBUTING.md](../CONTRIBUTING.md#test-strategy).
 
@@ -212,15 +233,18 @@ DuckDB C API changes. Consumers who want a higher-level API can build it on top.
 
 ---
 
-## ADR-002: Exact Version Pin
+## ADR-002: Bounded Version Range
 
-**Context**: `libduckdb-sys` follows DuckDB's version number. Between DuckDB 1.x
-releases, the C API has changed in ways that silently break extensions:
+**Context**: `libduckdb-sys` follows DuckDB's version number. Between DuckDB major
+releases, the C API can change in ways that silently break extensions:
 - New function signatures
 - Changed constant values
 - Renamed symbols
 
-**Decision**: Pin `libduckdb-sys = "=1.4.4"`. Never use a range specifier.
+**Decision**: Use `libduckdb-sys = ">=1.4.4, <2"`. The range covers DuckDB 1.4.x
+and 1.5.x, whose C API (`v1.2.0`) is stable and verified by E2E tests against both
+releases. The `<2` upper bound prevents silent adoption of a future major release
+that may introduce breaking C API changes.
 
 **Consequences**: Extensions must explicitly choose when to upgrade DuckDB.
 The `duckdb-behavioral` experience motivating this library showed that silent

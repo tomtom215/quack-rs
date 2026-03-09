@@ -17,8 +17,8 @@ In your extension's `Cargo.toml`:
 
 ```toml
 [dependencies]
-quack-rs = "0.3"
-libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
+quack-rs = "0.4"
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [lib]
 name = "my_extension"       # must match your extension name — see Pitfall P1

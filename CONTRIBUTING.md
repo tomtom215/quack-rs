@@ -20,19 +20,19 @@
 | `rustfmt` | stable | Formatting |
 | `clippy` | stable | Linting |
 | `cargo-deny` | latest | License/advisory checks |
-| DuckDB CLI | 1.4.4 | Live extension testing (required) |
+| DuckDB CLI | 1.4.4 or 1.5.0 | Live extension testing (required) |
 
 Install the Rust toolchain via [rustup](https://rustup.rs/).
 
-Install DuckDB 1.4.4 via `curl` (no system package manager needed):
+Install DuckDB 1.5.0 (or 1.4.4) via `curl` (no system package manager needed):
 
 ```bash
-curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.4.4/duckdb_cli-linux-amd64.zip \
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.0/duckdb_cli-linux-amd64.zip \
     -o /tmp/duckdb.zip \
     && unzip -o /tmp/duckdb.zip -d /tmp/ \
     && chmod +x /tmp/duckdb \
     && /tmp/duckdb --version
-# → v1.4.4
+# → v1.5.0
 ```
 
 ---
@@ -72,10 +72,10 @@ cargo fmt -- --check
 # 5. Documentation — zero broken links or missing docs
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
-# 6. MSRV — must compile on Rust 1.84.1
-cargo +1.84.1 check --all-targets
+# 6. MSRV — must compile on Rust 1.84.1 (matches CI; excludes benches which use criterion >=1.86)
+cargo +1.84.1 check
 
-# 7. Live extension test — build hello-ext, package it, load in DuckDB 1.4.4
+# 7. Live extension test — build hello-ext, package it, load in DuckDB 1.4.4 or 1.5.0
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
 cargo run --bin append_metadata -- \
     examples/hello-ext/target/release/libhello_ext.so \
@@ -126,7 +126,7 @@ Selected modules include `proptest`-based tests for mathematical properties:
 
 The `hello-ext` example compiles as a `cdylib` and contains `#[cfg(test)]` unit
 tests for all pure-Rust logic (`count_words`, `first_word`, `parse_varchar_to_int`,
-aggregate state transitions). **Full end-to-end testing against a live DuckDB 1.4.4
+aggregate state transitions). **Full end-to-end testing against a live DuckDB 1.4.4 or 1.5.0
 instance is required** — not left to consumers. This means building the `.so`,
 appending the extension metadata footer with `append_metadata`, and running all 19
 SQL tests via the DuckDB CLI. See the [Quality Gates](#quality-gates) section for
@@ -190,18 +190,34 @@ semantics should also be documented. Doc comments follow these conventions:
 quack-rs/
 ├── src/
 │   ├── lib.rs                     # Crate root; module declarations; DUCKDB_API_VERSION
-│   ├── entry_point.rs             # init_extension() + entry_point! macro
+│   ├── entry_point.rs             # init_extension() / init_extension_v2() + entry_point! / entry_point_v2! macros
+│   ├── connection.rs              # Connection facade + Registrar trait (version-agnostic registration)
+│   ├── config.rs                  # DbConfig — RAII wrapper for duckdb_config
 │   ├── error.rs                   # ExtensionError, ExtResult<T>
 │   ├── interval.rs                # DuckInterval, interval_to_micros (checked + saturating)
 │   ├── prelude.rs                 # Convenience re-exports for extension authors
 │   ├── sql_macro.rs               # SQL macro registration (CREATE MACRO, no FFI)
 │   ├── aggregate/
 │   │   ├── mod.rs                 # Re-exports
-│   │   ├── builder.rs             # AggregateFunctionBuilder, AggregateFunctionSetBuilder
+│   │   ├── builder/               # Builder types for aggregate function registration
+│   │   │   ├── mod.rs             # Module doc + re-exports
+│   │   │   ├── single.rs          # AggregateFunctionBuilder (single-signature)
+│   │   │   ├── set.rs             # AggregateFunctionSetBuilder, OverloadBuilder
+│   │   │   └── tests.rs           # Unit tests (14 tests)
 │   │   ├── callbacks.rs           # Type aliases for the 6 callback signatures
 │   │   └── state.rs               # AggregateState trait, FfiState<T>
 │   ├── scalar/
-│   │   └── builder.rs             # ScalarFunctionBuilder
+│   │   ├── mod.rs                 # Re-exports
+│   │   └── builder/               # Builder types for scalar function registration
+│   │       ├── mod.rs             # Module doc + re-exports
+│   │       ├── single.rs          # ScalarFn type alias, ScalarFunctionBuilder
+│   │       ├── set.rs             # ScalarFunctionSetBuilder, ScalarOverloadBuilder
+│   │       └── tests.rs           # Unit tests (13 tests)
+│   ├── cast/
+│   │   ├── mod.rs                 # Re-exports
+│   │   └── builder.rs             # CastFunctionBuilder, CastFunctionInfo, CastMode
+│   ├── replacement_scan/
+│   │   └── mod.rs                 # ReplacementScanBuilder — SELECT * FROM 'file.xyz' patterns
 │   ├── types/
 │   │   ├── mod.rs
 │   │   ├── type_id.rs             # TypeId enum (all DuckDB column types)
@@ -214,7 +230,12 @@ quack-rs/
 │   │   └── string.rs              # DuckStringView, read_duck_string (16-byte string format)
 │   ├── validate/
 │   │   ├── mod.rs                 # Extension compliance validators + re-exports
-│   │   ├── description_yml.rs     # Parse and validate description.yml metadata
+│   │   ├── description_yml/       # Parse and validate description.yml metadata
+│   │   │   ├── mod.rs             # Module doc + re-exports
+│   │   │   ├── model.rs           # DescriptionYml struct (11 fields)
+│   │   │   ├── parser.rs          # parse_description_yml, parse_kv, strip_inline_comment
+│   │   │   ├── validator.rs       # validate_description_yml_str, validate_rust_extension
+│   │   │   └── tests.rs           # Unit tests (20 tests)
 │   │   ├── extension_name.rs      # Extension name validation (^[a-z][a-z0-9_-]*$)
 │   │   ├── function_name.rs       # SQL function name validation
 │   │   ├── platform.rs            # DuckDB build platform validation
@@ -222,7 +243,15 @@ quack-rs/
 │   │   ├── semver.rs              # Semantic versioning + extension version tiers
 │   │   └── spdx.rs                # SPDX license identifier validation
 │   ├── scaffold/
-│   │   └── mod.rs                 # Project generator for new extensions
+│   │   ├── mod.rs                 # ScaffoldConfig, GeneratedFile, generate_scaffold
+│   │   ├── templates.rs           # Template generators for all 11 scaffold files (pub(super))
+│   │   └── tests.rs               # Unit tests (29 tests)
+│   ├── table/
+│   │   ├── mod.rs                 # Re-exports
+│   │   ├── builder.rs             # TableFunctionBuilder, type aliases (BindFn, InitFn, ScanFn)
+│   │   ├── info.rs                # BindInfo, InitInfo, FunctionInfo — callback info wrappers
+│   │   ├── bind_data.rs           # FfiBindData<T> — type-safe bind-phase data
+│   │   └── init_data.rs           # FfiInitData<T>, FfiLocalInitData<T>
 │   └── testing/
 │       ├── mod.rs
 │       └── harness.rs             # AggregateTestHarness<S> — unit-test aggregate logic
@@ -248,14 +277,16 @@ quack-rs/
 
 ## Releasing
 
-This crate is pinned to `libduckdb-sys = "=1.4.4"` because the DuckDB C API
-can change between minor releases. Before bumping the pin:
+This crate supports `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.x and 1.5.x).
+The bounded range is intentional: the C API (`v1.2.0`) is stable across these releases,
+and the `<2` upper bound prevents silent adoption of a future major band.
+Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes.
 2. Check the new C API version string (used in `duckdb_rs_extension_api_init`).
 3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed.
 4. Audit all callback signatures against the new `bindgen.rs` output.
-5. Update all `=1.x.x` pins in `Cargo.toml` (both runtime and dev-deps).
+5. Update the range bounds in `Cargo.toml` (both runtime and dev-deps).
 
 Versions follow [Semantic Versioning](https://semver.org/). Breaking changes to
 public API require a major version bump.
