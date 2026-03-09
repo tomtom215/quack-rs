@@ -53,7 +53,7 @@ cargo fmt -- --check
 # Documentation — zero broken links or missing docs
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
-# MSRV — must compile on Rust 1.84.1
+# MSRV — must compile on Rust 1.84.1 (excludes benches; matches CI)
 cargo +1.84.1 check
 ```
 

@@ -72,8 +72,8 @@ cargo fmt -- --check
 # 5. Documentation — zero broken links or missing docs
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
-# 6. MSRV — must compile on Rust 1.84.1
-cargo +1.84.1 check --all-targets
+# 6. MSRV — must compile on Rust 1.84.1 (matches CI; excludes benches which use criterion >=1.86)
+cargo +1.84.1 check
 
 # 7. Live extension test — build hello-ext, package it, load in DuckDB 1.4.4 or 1.5.0
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml

@@ -46,6 +46,9 @@ libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
+# Pin tempfile to avoid getrandom >=0.4 (which requires edition2024 / Rust >=1.85).
+# proptest requires only `tempfile ^3`, so 3.14 satisfies it while keeping MSRV 1.84.1.
+tempfile = "=3.14.0"
 
 [profile.release]
 opt-level = 3
