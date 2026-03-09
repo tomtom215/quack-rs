@@ -96,7 +96,7 @@ L6  Function set name must be set on EACH member → Set builders enforce on eve
 L7  LogicalType memory leak → LogicalType implements Drop
 
 P1  Library name must match [lib] name in Cargo.toml exactly
-P2  C API version ("v1.2.0") ≠ DuckDB release version ("v1.4.4")
+P2  C API version ("v1.2.0") ≠ DuckDB release version ("v1.4.4" / "v1.5.0")
 P3  E2E SQLLogicTests required for community submission
 P4  extension-ci-tools submodule must be initialized
 P5  SQLLogicTest output must match DuckDB CLI output exactly
@@ -116,10 +116,14 @@ See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
 ```toml
 [dependencies]
 quack-rs = "0.3"
-libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
-> **Note**: `libduckdb-sys` must be pinned with `=` to prevent silent API changes.
+> **DuckDB compatibility**: `quack-rs` supports DuckDB **1.4.x and 1.5.x**.
+> Both releases expose the same C API version (`v1.2.0`), confirmed by E2E tests
+> against DuckDB 1.4.4 and DuckDB 1.5.0. The upper bound `<2` prevents silent
+> adoption of a future major release that may change the C API. When the C API
+> version changes, `quack-rs` will need to be updated and re-released.
 
 ### 2. Write your extension
 
@@ -265,8 +269,9 @@ append_metadata target/release/libmy_extension.so \
 ```
 
 > **Pitfall P2**: The `--duckdb-version` flag must be `v1.2.0` (the C API version),
-> **not** `v1.4.4` (the DuckDB release version). Use the `DUCKDB_API_VERSION`
-> constant from `quack_rs` to avoid hard-coding the wrong value.
+> **not** the DuckDB release version (`v1.4.4` or `v1.5.0`). DuckDB 1.4.x and 1.5.x
+> both use C API version `v1.2.0`. Use the `DUCKDB_API_VERSION` constant from
+> `quack_rs` to avoid hard-coding the wrong value.
 
 ---
 
@@ -562,7 +567,7 @@ flowchart TB
         INT["**interval**<br/>DuckInterval · interval_to_micros"]
     end
 
-    SYS["**libduckdb-sys** =1.4.4<br/>DuckDB C Extension API<br/>headers only · no linked library"]:::ffi
+    SYS["**libduckdb-sys** >=1.4.4, &lt;2<br/>DuckDB C Extension API<br/>headers only · no linked library"]:::ffi
 
     RT[("**DuckDB**<br/>Runtime")]:::duckdb
 
@@ -593,8 +598,10 @@ flowchart TB
 2. **No panics across FFI**: `unwrap()` and `panic!()` are forbidden in any code path that
    crosses the FFI boundary. All errors propagate as `Result<T, ExtensionError>`.
 
-3. **Exact version pin**: `libduckdb-sys = "=1.4.4"` uses the `=` operator deliberately.
-   The DuckDB C API changes between minor versions. Upgrades are explicit and auditable.
+3. **Bounded version range**: `libduckdb-sys = ">=1.4.4, <2"` is deliberate.
+   The C API is stable across DuckDB 1.4.x and 1.5.x (verified by E2E tests on both).
+   The upper bound prevents silent adoption of a future major release. When the C API
+   version changes, `quack-rs` will be updated.
 
 4. **Testable business logic**: Aggregate state structs have zero FFI dependencies. They
    can be tested in isolation using `AggregateTestHarness<S>` without a DuckDB runtime.
@@ -630,12 +637,14 @@ fn register(con: duckdb_connection) -> ExtResult<()> {
 that would require understanding two APIs. Extension authors who want to go below the SDK can
 use `libduckdb-sys` directly — the two libraries compose without conflict.
 
-**ADR-2: Exact Version Pin**
+**ADR-2: Bounded Version Range**
 
-`libduckdb-sys = "=1.4.4"` is intentional. The DuckDB C Extension API introduces breaking
-changes between minor versions. A semver range (`">=1.4"`) would allow cargo to silently
-upgrade to a version where the API changed, breaking compiled extensions or producing
-incorrect results. Every `quack-rs` release is audited against a specific DuckDB version.
+`libduckdb-sys = ">=1.4.4, <2"` is intentional. The DuckDB C Extension API is stable
+across 1.4.x and 1.5.x — verified by E2E tests against DuckDB 1.4.4 and DuckDB 1.5.0.
+Both releases use C API version `v1.2.0`. The upper bound `<2` prevents silent adoption
+of a future major-band release that may change the C API version or callback signatures.
+When a future DuckDB release bumps the C API version, `quack-rs` will need to be updated
+to match.
 
 **ADR-3: No Panics Across FFI**
 

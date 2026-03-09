@@ -30,6 +30,15 @@ exclude = [
 name = "quack_rs"
 crate-type = ["rlib"]
 
+[features]
+## Enables wrappers for DuckDB 1.5.0 C API additions (e.g. scalar function local
+## states, config option registration). Requires `libduckdb-sys >= 1.5.0` to be
+## resolved by Cargo. Has no effect when compiled against libduckdb-sys 1.4.x.
+##
+## This feature is intentionally empty until libduckdb-sys 1.5.0 is published
+## on crates.io, at which point version-specific wrappers will be added behind it.
+duckdb-1-5 = []
+
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 

@@ -17,7 +17,11 @@
 //! | Item | From |
 //! |------|------|
 //! | [`init_extension`] | `entry_point` module |
+//! | [`init_extension_v2`] | `entry_point` module |
 //! | `entry_point!` | `entry_point` module (macro) |
+//! | `entry_point_v2!` | `entry_point` module (macro) |
+//! | [`Connection`] | `connection` module |
+//! | [`Registrar`] | `connection` module |
 //! | [`CastFunctionBuilder`] | `cast` module |
 //! | [`CastFunctionInfo`] | `cast` module |
 //! | [`CastMode`] | `cast` module |
@@ -86,7 +90,10 @@
 //! ```
 
 // Entry point
-pub use crate::entry_point::init_extension;
+pub use crate::entry_point::{init_extension, init_extension_v2};
+
+// Connection facade and Registrar trait
+pub use crate::connection::{Connection, Registrar};
 
 // Cast functions
 pub use crate::cast::{CastFn, CastFunctionBuilder, CastFunctionInfo, CastMode};

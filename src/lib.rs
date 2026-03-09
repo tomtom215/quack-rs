@@ -105,6 +105,7 @@ compile_error!("quack-rs requires a 64-bit target (DuckDB does not support 32-bi
 pub mod aggregate;
 pub mod cast;
 pub mod config;
+pub mod connection;
 pub mod entry_point;
 pub mod error;
 pub mod interval;

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Connection` and `Registrar` trait** — version-agnostic extension registration
+  facade (`src/connection.rs`). `Connection` wraps the `duckdb_connection` and
+  `duckdb_database` handles provided at initialization time. The `Registrar` trait
+  provides uniform methods for registering all extension components (scalar, scalar
+  set, aggregate, aggregate set, table, SQL macro, cast), making registration code
+  interchangeable across DuckDB 1.4.x and 1.5.x. Replacement scans are exposed as
+  direct methods on `Connection` since they require `duckdb_database`, not the
+  connection handle.
+
+- **`init_extension_v2`** — new entry point helper that passes `&Connection` to the
+  registration callback instead of a raw `duckdb_connection`. Prefer this over
+  `init_extension` for new extensions.
+
+- **`entry_point_v2!` macro** — companion macro to `entry_point!` that generates
+  the `#[no_mangle] unsafe extern "C"` entry point using `init_extension_v2`.
+
+- **`duckdb-1-5` cargo feature** — placeholder feature flag for DuckDB 1.5.0-specific
+  C API wrappers. Currently empty; will be populated when `libduckdb-sys` 1.5.0 is
+  published on crates.io.
+
 ### Changed
 
 - **DuckDB version support broadened to 1.4.x and 1.5.x** — the `libduckdb-sys`
