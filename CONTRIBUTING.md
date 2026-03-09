@@ -190,7 +190,9 @@ semantics should also be documented. Doc comments follow these conventions:
 quack-rs/
 ├── src/
 │   ├── lib.rs                     # Crate root; module declarations; DUCKDB_API_VERSION
-│   ├── entry_point.rs             # init_extension() + entry_point! macro
+│   ├── entry_point.rs             # init_extension() / init_extension_v2() + entry_point! / entry_point_v2! macros
+│   ├── connection.rs              # Connection facade + Registrar trait (version-agnostic registration)
+│   ├── config.rs                  # DbConfig — RAII wrapper for duckdb_config
 │   ├── error.rs                   # ExtensionError, ExtResult<T>
 │   ├── interval.rs                # DuckInterval, interval_to_micros (checked + saturating)
 │   ├── prelude.rs                 # Convenience re-exports for extension authors
@@ -211,6 +213,11 @@ quack-rs/
 │   │       ├── single.rs          # ScalarFn type alias, ScalarFunctionBuilder
 │   │       ├── set.rs             # ScalarFunctionSetBuilder, ScalarOverloadBuilder
 │   │       └── tests.rs           # Unit tests (13 tests)
+│   ├── cast/
+│   │   ├── mod.rs                 # Re-exports
+│   │   └── builder.rs             # CastFunctionBuilder, CastFunctionInfo, CastMode
+│   ├── replacement_scan/
+│   │   └── mod.rs                 # ReplacementScanBuilder — SELECT * FROM 'file.xyz' patterns
 │   ├── types/
 │   │   ├── mod.rs
 │   │   ├── type_id.rs             # TypeId enum (all DuckDB column types)
@@ -271,7 +278,8 @@ quack-rs/
 ## Releasing
 
 This crate supports `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.x and 1.5.x).
-The range specifier is intentional: the C API is stable across these releases.
+The bounded range is intentional: the C API (`v1.2.0`) is stable across these releases,
+and the `<2` upper bound prevents silent adoption of a future major band.
 Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes.

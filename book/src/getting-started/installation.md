@@ -6,14 +6,15 @@ Add the following to your extension's `Cargo.toml`:
 
 ```toml
 [dependencies]
-quack-rs = "0.3"
-libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
+quack-rs = "0.4"
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
-> **Why `=1.4.4` with the `=` prefix?**
-> DuckDB's C API has changed between minor releases in ways that silently break extensions.
-> The exact-version pin makes upgrades deliberate and auditable.
-> See [ADR-002](../concepts/anatomy.md#version-pinning).
+> **Why `>=1.4.4, <2`?**
+> DuckDB 1.4.x and 1.5.x expose the same C API version (`v1.2.0`), so `quack-rs` supports
+> both with a single bounded range. The `<2` upper bound prevents silent adoption of a future
+> major release whose C API may change in breaking ways — making any such upgrade an explicit,
+> auditable decision. See [Extension Anatomy](../concepts/anatomy.md#version-support).
 
 ---
 
@@ -77,7 +78,7 @@ For testing with a live DuckDB instance (example-extension tests only):
 
 ```toml
 [dev-dependencies]
-duckdb = { version = "=1.4.4", features = ["bundled"] }
+duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }
 ```
 
 > **Important**: you cannot call any `duckdb_*` function in a `cargo test` process when using

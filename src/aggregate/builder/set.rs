@@ -8,10 +8,9 @@ use std::ffi::CString;
 use libduckdb_sys::{
     duckdb_add_aggregate_function_to_set, duckdb_aggregate_function_set_destructor,
     duckdb_aggregate_function_set_functions, duckdb_aggregate_function_set_name,
-    duckdb_aggregate_function_set_return_type, duckdb_connection,
-    duckdb_create_aggregate_function, duckdb_create_aggregate_function_set,
-    duckdb_destroy_aggregate_function, duckdb_destroy_aggregate_function_set,
-    duckdb_register_aggregate_function_set, DuckDBSuccess,
+    duckdb_aggregate_function_set_return_type, duckdb_connection, duckdb_create_aggregate_function,
+    duckdb_create_aggregate_function_set, duckdb_destroy_aggregate_function,
+    duckdb_destroy_aggregate_function_set, duckdb_register_aggregate_function_set, DuckDBSuccess,
 };
 
 use crate::aggregate::callbacks::{

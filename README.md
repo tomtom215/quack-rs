@@ -115,7 +115,7 @@ See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
 
 ```toml
 [dependencies]
-quack-rs = "0.3"
+quack-rs = "0.4"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
@@ -279,7 +279,8 @@ append_metadata target/release/libmy_extension.so \
 
 | Module | Purpose | Key types / functions |
 |--------|---------|----------------------|
-| [`entry_point`] | Extension initialization entry point | `init_extension`, `entry_point!` |
+| [`entry_point`] | Extension initialization entry point | `init_extension`, `init_extension_v2`, `entry_point!`, `entry_point_v2!` |
+| [`connection`] | Version-agnostic extension registration facade | `Connection`, `Registrar` |
 | [`aggregate`] | Aggregate function registration | `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` |
 | [`aggregate::state`] | Generic FFI state management | `AggregateState`, `FfiState<T>` |
 | [`aggregate::callbacks`] | Callback type aliases | `UpdateFn`, `CombineFn`, `FinalizeFn`, … |
@@ -308,6 +309,7 @@ append_metadata target/release/libmy_extension.so \
 | [`prelude`] | Common re-exports | `use quack_rs::prelude::*` |
 
 [`entry_point`]: https://docs.rs/quack-rs/latest/quack_rs/entry_point/index.html
+[`connection`]: https://docs.rs/quack-rs/latest/quack_rs/connection/index.html
 [`aggregate`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/index.html
 [`aggregate::state`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/state/index.html
 [`aggregate::callbacks`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/callbacks/index.html
@@ -741,6 +743,11 @@ in the relevant release.
 ## Changelog
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
+
+**v0.4.0** (2026-03-09) — Added `Connection` and `Registrar` trait (version-agnostic
+registration facade), `init_extension_v2`, `entry_point_v2!` macro, and `duckdb-1-5` feature
+flag. Broadened `libduckdb-sys` support from an exact `=1.4.4` pin to `>=1.4.4, <2`, covering
+DuckDB 1.4.x and 1.5.x.
 
 **v0.3.0** (2026-03-08) — Added `TableFunctionBuilder`, `ReplacementScanBuilder`,
 `CastFunctionBuilder`, complex vector types (`StructVector`, `ListVector`, `MapVector`),

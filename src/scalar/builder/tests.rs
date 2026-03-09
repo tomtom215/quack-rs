@@ -38,12 +38,7 @@ fn builder_missing_function() {
 
 #[test]
 fn builder_stores_function() {
-    unsafe extern "C" fn my_func(
-        _: duckdb_function_info,
-        _: duckdb_data_chunk,
-        _: duckdb_vector,
-    ) {
-    }
+    unsafe extern "C" fn my_func(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
 
     let b = ScalarFunctionBuilder::new("f").function(my_func);
     assert!(b.function.is_some());

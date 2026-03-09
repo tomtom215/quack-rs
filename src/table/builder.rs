@@ -195,7 +195,7 @@ impl TableFunctionBuilder {
     /// Sets the bind callback.
     ///
     /// The bind callback is called once at query-parse time. It must:
-    /// - Declare all output columns via [`BindInfo::add_result_column`].
+    /// - Declare all output columns via [`crate::table::BindInfo::add_result_column`].
     /// - Optionally read parameters and store bind data via [`crate::table::FfiBindData::set`].
     pub fn bind(mut self, f: BindFn) -> Self {
         self.bind = Some(f);

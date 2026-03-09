@@ -10,7 +10,47 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Notes
+
+- **Upstream fix: `duckdb-loadable-macros` panic-at-FFI-boundary** — the safe entry-point
+  pattern developed in `quack-rs` (using `?` / `ok_or_else` throughout instead of `.unwrap()`)
+  was contributed upstream as
+  [duckdb/duckdb-rs#696](https://github.com/duckdb/duckdb-rs/pull/696) and merged 2026-03-09.
+  All users of the `duckdb_entrypoint_c_api!` macro from `duckdb-loadable-macros` will receive
+  this fix in the next `duckdb-rs` release. `quack-rs` users have always been protected via
+  the safe `entry_point!` / `entry_point_v2!` macros provided by this crate.
+
+---
+
+## [0.4.0] — 2026-03-09
+
+### Added
+
+- **`Connection` and `Registrar` trait** — version-agnostic extension registration facade.
+  `Connection` wraps the `duckdb_connection` and `duckdb_database` handles provided at
+  initialization time. The `Registrar` trait provides uniform methods for registering all
+  extension components (scalar, scalar set, aggregate, aggregate set, table, SQL macro, cast),
+  making registration code interchangeable across DuckDB 1.4.x and 1.5.x.
+
+- **`init_extension_v2`** — new entry point helper that passes `&Connection` to the
+  registration callback instead of a raw `duckdb_connection`. Prefer this over
+  `init_extension` for new extensions.
+
+- **`entry_point_v2!` macro** — companion macro to `entry_point!` that generates the
+  `#[no_mangle] unsafe extern "C"` entry point using `init_extension_v2`.
+
+- **`duckdb-1-5` cargo feature** — placeholder feature flag for DuckDB 1.5.0-specific
+  C API wrappers. Currently empty; will be populated when `libduckdb-sys` 1.5.0 is
+  published on crates.io.
+
+### Changed
+
+- **DuckDB version support broadened to 1.4.x and 1.5.x** — the `libduckdb-sys` dependency
+  requirement was relaxed from an exact pin (`=1.4.4`) to a range (`>=1.4.4, <2`). DuckDB
+  v1.5.0 does not change the C API version string (`v1.2.0`); the existing `DUCKDB_API_VERSION`
+  constant remains correct for both releases. Extension authors can pin their own `libduckdb-sys`
+  to either `=1.4.4` or `=1.5.0` and resolve cleanly against `quack-rs`. The scaffold template
+  and CI workflow template were updated to default to DuckDB v1.5.0.
 
 ---
 
@@ -195,7 +235,8 @@ Nothing yet.
 
 ---
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tomtom215/quack-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tomtom215/quack-rs/releases/tag/v0.1.0

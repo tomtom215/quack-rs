@@ -147,7 +147,9 @@ Every public item must have a doc comment. Follow these conventions:
 quack-rs/
 ├── src/
 │   ├── lib.rs                     # Crate root; module declarations; DUCKDB_API_VERSION
-│   ├── entry_point.rs             # init_extension()
+│   ├── entry_point.rs             # init_extension() / init_extension_v2() + entry_point! / entry_point_v2!
+│   ├── connection.rs              # Connection facade + Registrar trait (version-agnostic registration)
+│   ├── config.rs                  # DbConfig — RAII wrapper for duckdb_config
 │   ├── error.rs                   # ExtensionError, ExtResult<T>
 │   ├── interval.rs                # DuckInterval, interval_to_micros
 │   ├── sql_macro.rs               # SqlMacro — CREATE MACRO without FFI callbacks
@@ -167,6 +169,11 @@ quack-rs/
 │   │       ├── single.rs          # ScalarFn type alias, ScalarFunctionBuilder
 │   │       ├── set.rs             # ScalarFunctionSetBuilder, ScalarOverloadBuilder
 │   │       └── tests.rs           # Unit tests
+│   ├── cast/
+│   │   ├── mod.rs                 # Re-exports
+│   │   └── builder.rs             # CastFunctionBuilder, CastFunctionInfo, CastMode
+│   ├── replacement_scan/
+│   │   └── mod.rs                 # ReplacementScanBuilder — SELECT * FROM 'file.xyz' patterns
 │   ├── types/
 │   │   ├── mod.rs
 │   │   ├── type_id.rs             # TypeId enum (21 variants)
@@ -225,14 +232,16 @@ quack-rs/
 
 ## Releasing
 
-quack-rs pins `libduckdb-sys` with `=` (exact version) because the DuckDB C API
-can change between minor releases. Before bumping the pin:
+quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering DuckDB 1.4.x
+and 1.5.x, whose C API (`v1.2.0`) is stable across both releases. The `<2` upper bound
+prevents silent adoption of a future major release that may change the C API.
+Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes
 2. Check the new C API version string (used in `duckdb_rs_extension_api_init`)
 3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed
 4. Audit all callback signatures against the new `bindgen.rs` output
-5. Update all `=x.x.x` pins in `Cargo.toml` (runtime and dev-deps)
+5. Update the range bounds in `Cargo.toml` (runtime and dev-deps)
 
 Versions follow [Semantic Versioning](https://semver.org/). Breaking changes
 to the public API require a major version bump.
