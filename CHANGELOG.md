@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Notes
+
+- **Upstream fix: `duckdb-loadable-macros` panic-at-FFI-boundary** — the safe
+  entry-point pattern developed in `quack-rs` (using `?` / `ok_or_else` throughout
+  instead of `.unwrap()`) was contributed upstream as
+  [duckdb/duckdb-rs#696](https://github.com/duckdb/duckdb-rs/pull/696) and merged
+  2026-03-09. All users of the `duckdb_entrypoint_c_api!` macro from
+  `duckdb-loadable-macros` will receive this fix in the next `duckdb-rs` release.
+  `quack-rs` users have always been protected via the safe `entry_point!` /
+  `entry_point_v2!` macros provided by this crate.
+
 ## [0.4.0] - 2026-03-09
 
 ### Added
