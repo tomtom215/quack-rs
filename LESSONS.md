@@ -162,8 +162,8 @@ crate-type = ["cdylib", "rlib"]
 **Symptom**: Metadata script fails or produces incorrect metadata.
 
 **Root cause**: The `-dv` flag to `append_extension_metadata.py` must be the C API version
-(e.g., `"v1.2.0"`), NOT the DuckDB release version (e.g., `"v1.4.4"`).
-DuckDB v1.4.4 uses C API version v1.2.0.
+(e.g., `"v1.2.0"`), NOT the DuckDB release version (e.g., `"v1.4.4"` / `"v1.5.0"`).
+DuckDB v1.4.x and v1.5.x both use C API version v1.2.0 (confirmed by E2E tests).
 
 **Fix**: Use `quack_rs::DUCKDB_API_VERSION` constant for the init call, and use the same
 version string with `append_extension_metadata.py -dv v1.2.0`.

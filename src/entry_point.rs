@@ -193,7 +193,7 @@ where
     // the C API version (e.g. "v1.2.0"), NOT the DuckDB release version.
     //
     // PITFALL P2: Use the C API version, not the DuckDB release version.
-    // DuckDB v1.4.4 uses C API version v1.2.0.
+    // DuckDB v1.4.x and v1.5.x use C API version v1.2.0.
     //
     // SAFETY: info and access are valid pointers provided by DuckDB.
     let have_api = unsafe {

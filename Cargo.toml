@@ -31,10 +31,10 @@ name = "quack_rs"
 crate-type = ["rlib"]
 
 [dependencies]
-libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [dev-dependencies]
-duckdb = { version = "=1.4.4", features = ["bundled"] }
+duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
 

@@ -162,7 +162,7 @@ path = "src/wasm_lib.rs"
 
 [dependencies]
 quack-rs = {{ version = "0.3" }}
-libduckdb-sys = {{ version = "=1.4.4", features = ["loadable-extension"] }}
+libduckdb-sys = {{ version = ">=1.4.4, <2", features = ["loadable-extension"] }}
 
 [profile.release]
 opt-level = 3
@@ -191,7 +191,7 @@ EXT_CONFIG=$(PROJ_DIR)extension_config.cmake
 # DuckDB C API version (NOT the DuckDB release version)
 # See: https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md (Pitfall P2)
 USE_UNSTABLE_C_API=1
-DUCKDB_PLATFORM_VERSION=v1.4.4
+DUCKDB_PLATFORM_VERSION=v1.5.0
 
 # Include extension-ci-tools build rules
 include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
@@ -427,7 +427,7 @@ fn generate_extension_ci(config: &ScaffoldConfig) -> String {
          \x20\x20\x20\x20\x20\x20- name: Install DuckDB CLI\n\
          \x20\x20\x20\x20\x20\x20\x20\x20uses: duckdb/duckdb-build@v1\n\
          \x20\x20\x20\x20\x20\x20\x20\x20with:\n\
-         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20version: v1.4.4\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20version: v1.5.0\n\
          \n\
          \x20\x20\x20\x20\x20\x20- name: SQLLogicTest (E2E)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20run: make test\n\

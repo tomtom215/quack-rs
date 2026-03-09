@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 quack_rs = { path = "../..", package = "quack-rs" }
-libduckdb-sys = { version = "=1.4.4", features = ["loadable-extension"] }
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]
 panic = "abort"

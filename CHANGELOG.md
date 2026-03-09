@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **DuckDB version support broadened to 1.4.x and 1.5.x** — the `libduckdb-sys`
+  dependency requirement was relaxed from an exact pin (`=1.4.4`) to a range
+  (`>=1.4.4, <2`). DuckDB v1.5.0 (released 2026-03-09) does not change the C API
+  version string (`v1.2.0`) used in `duckdb_rs_extension_api_init`; the existing
+  `DUCKDB_API_VERSION` constant remains correct for both releases. Extension authors
+  can now pin their own `libduckdb-sys` to either `=1.4.4` or `=1.5.0` and resolve
+  cleanly against `quack-rs`. The scaffold template and CI workflow template were
+  updated to default to DuckDB v1.5.0.
 
 ## [0.3.0] - 2026-03-08
 

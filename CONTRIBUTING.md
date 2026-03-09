@@ -20,19 +20,19 @@
 | `rustfmt` | stable | Formatting |
 | `clippy` | stable | Linting |
 | `cargo-deny` | latest | License/advisory checks |
-| DuckDB CLI | 1.4.4 | Live extension testing (required) |
+| DuckDB CLI | 1.4.4 or 1.5.0 | Live extension testing (required) |
 
 Install the Rust toolchain via [rustup](https://rustup.rs/).
 
-Install DuckDB 1.4.4 via `curl` (no system package manager needed):
+Install DuckDB 1.5.0 (or 1.4.4) via `curl` (no system package manager needed):
 
 ```bash
-curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.4.4/duckdb_cli-linux-amd64.zip \
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.0/duckdb_cli-linux-amd64.zip \
     -o /tmp/duckdb.zip \
     && unzip -o /tmp/duckdb.zip -d /tmp/ \
     && chmod +x /tmp/duckdb \
     && /tmp/duckdb --version
-# → v1.4.4
+# → v1.5.0
 ```
 
 ---
@@ -75,7 +75,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 # 6. MSRV — must compile on Rust 1.84.1
 cargo +1.84.1 check --all-targets
 
-# 7. Live extension test — build hello-ext, package it, load in DuckDB 1.4.4
+# 7. Live extension test — build hello-ext, package it, load in DuckDB 1.4.4 or 1.5.0
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
 cargo run --bin append_metadata -- \
     examples/hello-ext/target/release/libhello_ext.so \
@@ -126,7 +126,7 @@ Selected modules include `proptest`-based tests for mathematical properties:
 
 The `hello-ext` example compiles as a `cdylib` and contains `#[cfg(test)]` unit
 tests for all pure-Rust logic (`count_words`, `first_word`, `parse_varchar_to_int`,
-aggregate state transitions). **Full end-to-end testing against a live DuckDB 1.4.4
+aggregate state transitions). **Full end-to-end testing against a live DuckDB 1.4.4 or 1.5.0
 instance is required** — not left to consumers. This means building the `.so`,
 appending the extension metadata footer with `append_metadata`, and running all 19
 SQL tests via the DuckDB CLI. See the [Quality Gates](#quality-gates) section for
@@ -248,14 +248,15 @@ quack-rs/
 
 ## Releasing
 
-This crate is pinned to `libduckdb-sys = "=1.4.4"` because the DuckDB C API
-can change between minor releases. Before bumping the pin:
+This crate supports `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.x and 1.5.x).
+The range specifier is intentional: the C API is stable across these releases.
+Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes.
 2. Check the new C API version string (used in `duckdb_rs_extension_api_init`).
 3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed.
 4. Audit all callback signatures against the new `bindgen.rs` output.
-5. Update all `=1.x.x` pins in `Cargo.toml` (both runtime and dev-deps).
+5. Update the range bounds in `Cargo.toml` (both runtime and dev-deps).
 
 Versions follow [Semantic Versioning](https://semver.org/). Breaking changes to
 public API require a major version bump.

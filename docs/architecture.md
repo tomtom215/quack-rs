@@ -79,9 +79,9 @@ back to DuckDB via `access.set_error`.
 
 ### 3. Exact version pin
 
-`libduckdb-sys = "=1.4.4"` — the `=` is intentional. DuckDB's C API has changed
-between minor releases in ways that break extensions silently. Exact pinning makes
-upgrades deliberate and auditable.
+`libduckdb-sys = ">=1.4.4, <2"` — the range is intentional. DuckDB's C API is
+stable across the 1.4.x and 1.5.x releases. The upper bound prevents silent
+adoption of a new major-band whose C API may introduce breaking changes.
 
 ### 4. Testable business logic
 
@@ -97,9 +97,9 @@ DuckDB instance. Only the FFI glue code (callbacks, registration) requires DuckD
 ```
 Extension crate
     ├── quack_rs (this crate)
-    │       ├── libduckdb-sys = "=1.4.4" { loadable-extension }
+    │       ├── libduckdb-sys = ">=1.4.4, <2" { loadable-extension }
     │       └── (no other runtime deps)
-    └── libduckdb-sys = "=1.4.4" { loadable-extension }
+    └── libduckdb-sys = ">=1.4.4, <2" { loadable-extension }
             └── (bundled DuckDB headers only — no linked library)
 ```
 
@@ -108,7 +108,7 @@ instead of linking against `libduckdb`, the crate emits a shared library that
 receives a function pointer table from DuckDB at load time. See
 [The loadable-extension Feature](#the-loadable-extension-feature).
 
-At test time, add `duckdb = { version = "=1.4.4", features = ["bundled"] }` as a
+At test time, add `duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }` as a
 dev-dependency if you need a live DuckDB instance. Note the constraint described
 in [CONTRIBUTING.md](../CONTRIBUTING.md#test-strategy).
 
@@ -220,7 +220,9 @@ releases, the C API has changed in ways that silently break extensions:
 - Changed constant values
 - Renamed symbols
 
-**Decision**: Pin `libduckdb-sys = "=1.4.4"`. Never use a range specifier.
+**Decision**: Use `libduckdb-sys = ">=1.4.4, <2"`. The range covers DuckDB 1.4.x
+and 1.5.x, whose C API is stable. Always include an upper bound to prevent silent
+adoption of a future major release that may introduce breaking C API changes.
 
 **Consequences**: Extensions must explicitly choose when to upgrade DuckDB.
 The `duckdb-behavioral` experience motivating this library showed that silent
