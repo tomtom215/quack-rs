@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: "F."
+    given-names: "Tom"
+    alias: "tomtom215"
+    email: "tomf@tomtomtech.net"
+    website: "https://github.com/tomtom215"
+title: "quack-rs"
+abstract: "Production-grade Rust SDK for building DuckDB loadable extensions."
+version: 0.4.0
+date-released: 2026-03-09
+license: MIT
+repository-code: "https://github.com/tomtom215/quack-rs"
+url: "https://quack-rs.com"
+keywords:
+  - duckdb
+  - extension
+  - rust
+  - ffi
+  - sql
+  - analytics
