@@ -8,9 +8,13 @@
 //! This module provides two builder types:
 //!
 //! - [`AggregateFunctionBuilder`]: Register a single aggregate function with
-//!   one fixed signature.
+//!   one fixed signature. Supports complex parameter types via
+//!   [`param_logical`][AggregateFunctionBuilder::param_logical] and complex
+//!   return types via [`returns_logical`][AggregateFunctionBuilder::returns_logical].
 //! - [`AggregateFunctionSetBuilder`]: Register a function set (multiple overloads
-//!   under one name) for functions with variadic signatures.
+//!   under one name) for functions with variadic signatures. Supports complex
+//!   return types via [`returns_logical`][AggregateFunctionSetBuilder::returns_logical]
+//!   and per-overload complex parameters via `OverloadBuilder::param_logical`.
 //!
 //! # Pitfalls solved
 //!

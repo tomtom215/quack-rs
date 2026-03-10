@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`param_logical(LogicalType)` on all builders** — register parameters with
+  complex parameterized types (`LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`,
+  `STRUCT(...)`) that `TypeId` alone cannot express. Available on
+  `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder::OverloadBuilder`,
+  `ScalarFunctionBuilder`, and `ScalarOverloadBuilder`. Parameters added via
+  `param()` and `param_logical()` are interleaved by position, so the order
+  you call them is the order DuckDB sees them.
+
+- **`returns_logical(LogicalType)` on all builders** — set a complex
+  parameterized return type. When both `returns(TypeId)` and
+  `returns_logical(LogicalType)` are called, the logical type takes precedence.
+  Available on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder`,
+  `ScalarFunctionBuilder`, and `ScalarOverloadBuilder`. This eliminates the
+  need for raw FFI when returning `LIST(BOOLEAN)`, `LIST(TIMESTAMP)`,
+  `MAP(K, V)`, or any other parameterized type.
+
+- **`null_handling(NullHandling)` on set overload builders** — per-overload
+  NULL handling configuration for `AggregateFunctionSetBuilder::OverloadBuilder`
+  and `ScalarOverloadBuilder`. Previously only available on single-function
+  builders.
+
 ### Notes
 
 - **Upstream fix: `duckdb-loadable-macros` panic-at-FFI-boundary** — the safe

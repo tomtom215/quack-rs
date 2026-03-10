@@ -174,6 +174,50 @@ preventing double-free. See [Pitfall L2](../reference/pitfalls.md#l2-state-destr
 
 ---
 
+## Complex parameter and return types
+
+For functions that accept or return parameterized types like `LIST(BIGINT)`,
+`MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`, use `param_logical` and
+`returns_logical` instead of `param` and `returns`:
+
+```rust
+use quack_rs::aggregate::AggregateFunctionBuilder;
+use quack_rs::types::{LogicalType, TypeId};
+
+unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
+    unsafe {
+        AggregateFunctionBuilder::new("retention")
+            .param(TypeId::Boolean)
+            .param(TypeId::Boolean)
+            .returns_logical(LogicalType::list(TypeId::Boolean))  // LIST(BOOLEAN)
+            .state_size(state_size)
+            .init(state_init)
+            .update(update)
+            .combine(combine)
+            .finalize(finalize)
+            .destructor(state_destroy)
+            .register(con)?;
+    }
+    Ok(())
+}
+```
+
+`param_logical` and `param` can be interleaved — the parameter position is
+determined by the total number of calls made so far:
+
+```rust
+AggregateFunctionBuilder::new("my_func")
+    .param(TypeId::Varchar)                          // position 0: VARCHAR
+    .param_logical(LogicalType::list(TypeId::BigInt)) // position 1: LIST(BIGINT)
+    .param(TypeId::Integer)                           // position 2: INTEGER
+    .returns(TypeId::BigInt)
+    // ...
+```
+
+If both `returns` and `returns_logical` are called, the logical type takes precedence.
+
+---
+
 ## Next steps
 
 - [State Management](aggregate-state.md) — `FfiState<T>`, `AggregateState`, and lifecycle details
