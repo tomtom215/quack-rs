@@ -5,7 +5,71 @@ quack-rs provides two ways to create it.
 
 ---
 
-## Option A: The `entry_point!` macro (recommended)
+## Option A: `entry_point_v2!` with `Connection` (recommended)
+
+*Added in v0.4.0.*
+
+The `entry_point_v2!` macro gives your closure a `&Connection` instead of a raw
+`duckdb_connection`. The `Connection` type implements the `Registrar` trait, which
+provides ergonomic methods for registering every function type:
+
+```rust
+use quack_rs::entry_point_v2;
+use quack_rs::connection::{Connection, Registrar};
+use quack_rs::error::ExtensionError;
+
+unsafe fn register(con: &Connection) -> Result<(), ExtensionError> {
+    unsafe {
+        con.register_scalar(/* ScalarFunctionBuilder */)?;
+        con.register_aggregate(/* AggregateFunctionBuilder */)?;
+        con.register_table(/* TableFunctionBuilder */)?;
+        con.register_cast(/* CastFunctionBuilder */)?;
+        con.register_scalar_set(/* ScalarFunctionSetBuilder */)?;
+        con.register_aggregate_set(/* AggregateFunctionSetBuilder */)?;
+        con.register_sql_macro(/* SqlMacro */)?;
+        con.register_replacement_scan(/* callback, data, destructor */);
+    }
+    Ok(())
+}
+
+entry_point_v2!(my_extension_init_c_api, |con| register(con));
+```
+
+This emits:
+
+```rust
+#[no_mangle]
+pub unsafe extern "C" fn my_extension_init_c_api(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+) -> bool {
+    unsafe {
+        quack_rs::entry_point::init_extension_v2(
+            info, access, quack_rs::DUCKDB_API_VERSION,
+            |con| register(con),
+        )
+    }
+}
+```
+
+Pass the **full symbol name** to the macro. The symbol `{name}_init_c_api` must match the
+`name` field in `description.yml` and the `[lib] name` in `Cargo.toml`.
+
+### Why `Connection` over raw `duckdb_connection`?
+
+| Feature | `entry_point!` (raw) | `entry_point_v2!` (Connection) |
+|---------|---------------------|-------------------------------|
+| Receives | `duckdb_connection` | `&Connection` |
+| Registration | Call builders' `.register(con)` | Call `con.register_*()` |
+| Type safety | Raw pointer | Wrapper with lifetime |
+| Future-proofing | Tied to C pointer | Can evolve without breaking extensions |
+
+---
+
+## Option B: The `entry_point!` macro
+
+The original macro passes a raw `duckdb_connection` to your closure. It works
+identically but requires you to pass the connection to each builder's `.register()`:
 
 ```rust
 use quack_rs::entry_point;
@@ -21,29 +85,9 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
 entry_point!(my_extension_init_c_api, |con| register(con));
 ```
 
-This emits:
-
-```rust
-#[no_mangle]
-pub unsafe extern "C" fn my_extension_init_c_api(
-    info: duckdb_extension_info,
-    access: *const duckdb_extension_access,
-) -> bool {
-    unsafe {
-        quack_rs::entry_point::init_extension(
-            info, access, quack_rs::DUCKDB_API_VERSION,
-            |con| register(con),
-        )
-    }
-}
-```
-
-Pass the **full symbol name** to the macro. The symbol `{name}_init_c_api` must match the
-`name` field in `description.yml` and the `[lib] name` in `Cargo.toml`.
-
 ---
 
-## Option B: Manual entry point
+## Option C: Manual entry point
 
 If you need full control (e.g., multiple registration functions, conditional logic):
 

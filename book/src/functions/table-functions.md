@@ -120,7 +120,73 @@ TableFunctionBuilder::new("generate_series_ext")
     .register(con)?;
 ```
 
-## Verified output (DuckDB 1.4.4)
+## Advanced features
+
+### Named parameters
+
+Named parameters let callers pass optional arguments by name (e.g., `step := 10`):
+
+```rust
+TableFunctionBuilder::new("gen_series_v2")
+    .param(TypeId::BigInt)                    // positional: n
+    .named_param("step", TypeId::BigInt)      // named: step := <value>
+    .bind(gs_v2_bind)
+    .init(gs_v2_init)
+    .scan(gs_v2_scan)
+    .register(con)?;
+```
+
+In the bind callback, read the named parameter with
+`duckdb_bind_get_named_parameter(info, c"step".as_ptr())`.
+
+### Local init (per-thread state)
+
+For multi-threaded table functions, use `local_init` to allocate per-thread state:
+
+```rust
+TableFunctionBuilder::new("gen_series_v2")
+    .param(TypeId::BigInt)
+    .bind(gs_v2_bind)
+    .init(gs_v2_init)
+    .local_init(gs_v2_local_init)            // per-thread state allocation
+    .scan(gs_v2_scan)
+    .register(con)?;
+```
+
+The local init callback receives `duckdb_init_info` and can use
+`FfiLocalInitData<T>::set` to store per-thread state.
+
+### Thread control
+
+Use `InitInfo::set_max_threads` in the global init callback to tell DuckDB how
+many threads can scan concurrently:
+
+```rust
+unsafe extern "C" fn gs_v2_init(info: duckdb_init_info) {
+    let init_info = unsafe { InitInfo::new(info) };
+    unsafe { init_info.set_max_threads(1) };
+    unsafe { FfiInitData::<MyState>::set(info, MyState { pos: 0 }) };
+}
+```
+
+### Projection pushdown
+
+Enable projection pushdown to let DuckDB skip unrequested columns:
+
+```rust
+TableFunctionBuilder::new("my_func")
+    .projection_pushdown(true)
+    // ...
+```
+
+> **Caution:** When projection pushdown is enabled, your scan callback must check
+> which columns DuckDB actually needs using `InitInfo::projected_column_count` and
+> `InitInfo::projected_column_index`. Writing to non-projected columns causes crashes.
+
+See `examples/hello-ext/src/lib.rs` for a complete example using `named_param`,
+`local_init`, and `set_max_threads`.
+
+## Verified output (DuckDB 1.4.4 and 1.5.0)
 
 ```sql
 SELECT * FROM generate_series_ext(5);
