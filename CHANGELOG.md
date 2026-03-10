@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-10
+
 ### Added
 
 - **`param_logical(LogicalType)` on all builders** — register parameters with
@@ -288,7 +290,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tomtom215/quack-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/tomtom215/quack-rs/compare/v0.1.0...v0.2.0

@@ -9,8 +9,8 @@ authors:
     website: "https://github.com/tomtom215"
 title: "quack-rs"
 abstract: "Production-grade Rust SDK for building DuckDB loadable extensions."
-version: 0.4.0
-date-released: 2026-03-09
+version: 0.5.0
+date-released: 2026-03-10
 license: MIT
 repository-code: "https://github.com/tomtom215/quack-rs"
 url: "https://quack-rs.com"
