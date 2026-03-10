@@ -685,9 +685,12 @@ These cover `DuckInterval`, `TypeId`, `FfiState<T>` lifecycle, `AggregateTestHar
 
 ### 4. Example extension (`examples/hello-ext`)
 
-A complete, working aggregate extension (`word_count`) that compiles and runs against a real
-DuckDB process. This serves as both a comprehensive end-to-end test and a reference
-implementation for extension authors.
+A comprehensive extension that exercises **every feature** in `quack-rs`: scalar, aggregate,
+table, cast, replacement scan, and SQL macro functions — plus complex types (STRUCT, LIST, MAP),
+`entry_point_v2!`/`Connection`/`Registrar`, aggregate sets, scalar sets with per-overload NULL
+handling, `DuckInterval`, `ValidityBitmap`, `named_param`, `local_init`, `implicit_cost`,
+`extra_info`, and all `VectorReader`/`VectorWriter` type variants. All 29 live SQL tests pass
+against both DuckDB 1.4.4 and 1.5.0.
 
 ### Testing aggregate logic without DuckDB
 

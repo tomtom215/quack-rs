@@ -84,6 +84,33 @@ unsafe {
 # }
 ```
 
+## Extra info
+
+Attach arbitrary data to a cast function using `extra_info`. This is useful for
+parameterising the cast behaviour (e.g., a rounding mode):
+
+```rust,no_run
+# use quack_rs::cast::CastFunctionBuilder;
+# use quack_rs::types::TypeId;
+# use libduckdb_sys::{duckdb_function_info, duckdb_vector, idx_t};
+# use std::os::raw::c_void;
+# unsafe extern "C" fn my_cast(_: duckdb_function_info, _: idx_t, _: duckdb_vector, _: duckdb_vector) -> bool { true }
+# unsafe extern "C" fn my_destroy(_: *mut c_void) {}
+# fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
+let mode = Box::into_raw(Box::new("round".to_string())).cast::<c_void>();
+unsafe {
+    CastFunctionBuilder::new(TypeId::Double, TypeId::BigInt)
+        .function(my_cast)
+        .implicit_cost(100)
+        .extra_info(mode, Some(my_destroy))
+        .register(con)
+}
+# }
+```
+
+Inside the cast callback, retrieve the extra info with
+`CastFunctionInfo::get_extra_info()`.
+
 ## TRY_CAST vs CAST
 
 Inside your callback, check [`CastFunctionInfo::cast_mode()`] to distinguish between
@@ -96,10 +123,11 @@ the two modes:
 
 ## Working example
 
-The `examples/hello-ext` extension registers a `CAST(VARCHAR AS INTEGER)` /
-`TRY_CAST(VARCHAR AS INTEGER)` cast using `CastFunctionBuilder`. The `varchar_to_int`
-callback and its pure-Rust `parse_varchar_to_int` helper (with five unit tests) are a
-complete, copy-paste-ready reference.
+The `examples/hello-ext` extension registers two cast functions:
+- `CAST(VARCHAR AS INTEGER)` / `TRY_CAST(VARCHAR AS INTEGER)` — basic cast
+- `CAST(DOUBLE AS BIGINT)` — with `implicit_cost(100)` and `extra_info` for rounding mode
+
+See `examples/hello-ext/src/lib.rs` for complete, copy-paste-ready references.
 
 ## API reference
 

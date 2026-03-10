@@ -1,19 +1,35 @@
 # hello-ext
 
-A minimal, fully-working DuckDB community extension built with [quack-rs].
-Use this as a copy-paste starting point for your own extension.
+A comprehensive, fully-working DuckDB community extension built with [quack-rs]
+that exercises **every feature** of the SDK. Use it as a reference implementation
+or copy-paste starting point for your own extension.
 
 ## What it registers
 
-| SQL | Kind | Signature | Notes |
-|-----|------|-----------|-------|
-| `word_count(text)` | Aggregate | `VARCHAR → BIGINT` | Sums whitespace-separated words across all rows |
-| `first_word(text)` | Scalar | `VARCHAR → VARCHAR` | Returns the first word; propagates `NULL` |
-| `generate_series_ext(n)` | Table | `BIGINT → TABLE(value BIGINT)` | Emits integers `0 .. n-1`; demonstrates full bind/init/scan lifecycle |
-| `CAST(VARCHAR AS INTEGER)` | Cast | `VARCHAR → INTEGER` | `CastFunctionBuilder` with `CAST` / `TRY_CAST` support |
+| SQL | Kind | Demonstrates |
+|-----|------|-------------|
+| `word_count(text)` | Aggregate | `AggregateFunctionBuilder`, full lifecycle (state/update/combine/finalize) |
+| `first_word(text)` | Scalar | `ScalarFunctionBuilder`, NULL propagation |
+| `generate_series_ext(n)` | Table | `TableFunctionBuilder`, full bind/init/scan lifecycle |
+| `CAST(VARCHAR AS INTEGER)` | Cast | `CastFunctionBuilder`, `CastMode::Normal` vs `CastMode::Try` |
+| `sum_list(LIST(BIGINT))` | Scalar | `param_logical(LogicalType)`, `ListVector` child access |
+| `make_pair(k, v)` | Scalar | `returns_logical(LogicalType)`, `StructVector` child writes |
+| `coalesce_val(a, b)` | Scalar Set | `ScalarFunctionSetBuilder`, per-overload `null_handling` |
+| `typed_sum(a,b)` / `typed_sum(a,b,c)` | Aggregate Set | `AggregateFunctionSetBuilder::overloads` |
+| `double_it(x)` | SQL Macro (scalar) | `SqlMacro::scalar` |
+| `seq_n(n)` | SQL Macro (table) | `SqlMacro::table` |
+| `make_kv_map(k, v)` | Scalar | `MapVector`, `LogicalType::map()` |
+| `gen_series_v2(n, step:=1)` | Table | `named_param`, `local_init`, `set_max_threads` |
+| `CAST(DOUBLE AS BIGINT)` | Cast | `implicit_cost`, `extra_info` |
+| `add_interval(iv, micros)` | Scalar | `DuckInterval` read/write |
+| `all_types_echo(...)` | Scalar | All `VectorReader`/`VectorWriter` types, `ValidityBitmap` |
+| `read_hello(name)` | Table | Backing function for replacement scan |
+| `SELECT * FROM 'hello:xxx'` | Replacement Scan | `ReplacementScanBuilder`, `ReplacementScanInfo` |
 
-All four functions are **verified against a live DuckDB 1.4.4 instance** — see the
-[Live DuckDB testing](#live-duckdb-testing) section below (19 live SQL tests, all pass).
+All functions use `entry_point_v2!` with `Connection`/`Registrar` for type-safe
+registration.
+
+All **29 live SQL tests** pass against both **DuckDB 1.4.4** and **DuckDB 1.5.0**.
 
 ```sql
 -- Aggregate: count words across rows
@@ -22,29 +38,56 @@ SELECT word_count(sentence) FROM (
 ) t(sentence);
 -- → 5  (2 + 3; NULL rows contribute 0)
 
--- Scalar: first word of each row
-SELECT first_word(sentence) FROM (
-    VALUES ('hello world'), ('  padded  '), (''), (NULL)
-) t(sentence);
--- → 'hello', 'padded', '', NULL
+-- Scalar: first word
+SELECT first_word('hello world');           -- → 'hello'
 
--- Table function: generate a series of integers
-SELECT * FROM generate_series_ext(5);
--- → 0, 1, 2, 3, 4
+-- Table function: generate a series
+SELECT * FROM generate_series_ext(5);       -- → 0, 1, 2, 3, 4
 
-SELECT value * value AS square FROM generate_series_ext(4);
--- → 0, 1, 4, 9
+-- Cast / TRY_CAST
+SELECT CAST('42' AS INTEGER);              -- → 42
+SELECT TRY_CAST('bad' AS INTEGER);         -- → NULL
 
--- Cast function: VARCHAR → INTEGER (explicit and TRY variant)
-SELECT CAST('42' AS INTEGER);             -- 42
-SELECT TRY_CAST('not_a_number' AS INTEGER); -- NULL
-SELECT TRY_CAST('  -7  ' AS INTEGER);    -- -7  (whitespace trimmed)
+-- Complex types
+SELECT sum_list([1, 2, 3]);                -- → 6
+SELECT make_pair('hello', 42);             -- → {'key': hello, 'value': 42}
+SELECT make_kv_map('hello', 42);           -- → {hello=42}
+
+-- Aggregate set (overloaded arity)
+SELECT typed_sum(a, b) FROM (VALUES (1, 2), (3, 4)) t(a, b);       -- → 10
+SELECT typed_sum(a, b, c) FROM (VALUES (1, 2, 3), (4, 5, 6)) t(a, b, c); -- → 21
+
+-- Scalar set with NULL handling
+SELECT coalesce_val(NULL::BIGINT, 99);     -- → 99
+SELECT coalesce_val(NULL::VARCHAR, 'fb');  -- → 'fb'
+
+-- SQL macros
+SELECT double_it(21);                      -- → 42
+SELECT * FROM seq_n(5);                    -- → 1..5
+
+-- Table function with named param + local init
+SELECT * FROM gen_series_v2(3, step := 10); -- → 0, 10, 20
+
+-- Cast with implicit cost + extra_info
+SELECT 3.7::BIGINT;                        -- → 4 (rounded)
+
+-- INTERVAL
+SELECT add_interval(INTERVAL '1 day', 1000000); -- → 1 day 00:00:01
+
+-- All types echo (bool, i8-i128, u8-u64, f32, f64)
+SELECT all_types_echo(true, 1::TINYINT, 2::SMALLINT, 3, 4::BIGINT,
+    5::UTINYINT, 6::USMALLINT, 7::UINTEGER, 8::UBIGINT,
+    9.5::FLOAT, 10.5, 11::HUGEINT);
+-- → 'b=true,i8=1,i16=2,i32=3,i64=4,u8=5,u16=6,u32=7,u64=8,f32=9.5,f64=10.5,i128=11'
+
+-- Replacement scan
+SELECT * FROM 'hello:DuckDB';             -- → 'Hello, DuckDB!'
 ```
 
 ## Prerequisites
 
 - Rust 1.84.1 or later (`rustup update stable`)
-- DuckDB v1.4.x CLI for manual testing ([download][duckdb-releases])
+- DuckDB 1.4.x or 1.5.x CLI for live testing ([download][duckdb-releases])
 
 ## Build
 
@@ -63,14 +106,23 @@ Output:
 
 ## Run the unit tests
 
-The pure-Rust logic (`count_words`, `first_word`, `generate_series_ext` state) and
-aggregate state transitions are all testable without a running DuckDB instance:
+The pure-Rust logic and aggregate state transitions are all testable without a
+running DuckDB instance:
 
 ```bash
 cargo test
 ```
 
-All tests live in `src/lib.rs` under `#[cfg(test)]`.
+39 tests live in `src/lib.rs` under `#[cfg(test)]`, covering:
+- `count_words` / `first_word` string helpers
+- `parse_varchar_to_int` parsing and edge cases
+- `WordCountState` aggregate lifecycle via `AggregateTestHarness`
+- `TypedSumState` aggregate set logic
+- `GenerateSeriesState` batching logic
+- `sum_list` / `coalesce` pure logic
+- `DuckInterval` arithmetic
+- `SqlMacro` construction
+- `gen_series_v2` step logic
 
 ## Live DuckDB testing
 
@@ -112,44 +164,86 @@ duckdb -unsigned
 SET allow_extensions_metadata_mismatch=true;
 LOAD 'hello_ext.duckdb_extension';
 
--- Verified results — all 19 pass against live DuckDB 1.4.4:
+-- All 29 tests verified against DuckDB 1.4.4 and DuckDB 1.5.0:
 
--- Aggregate
-SELECT word_count(sentence) FROM (VALUES ('hello world'),('one two three'),(NULL)) t(sentence); -- 5
-SELECT word_count('hello world foo');          -- 3
-SELECT word_count(NULL::VARCHAR);              -- 0
+-- T01: word_count aggregate
+SELECT word_count(sentence) AS wc FROM (
+    VALUES ('hello world'), ('one two three'), (NULL)) t(sentence);  -- 5
 
--- Scalar
-SELECT first_word('hello world');              -- hello
-SELECT first_word('  padded  ');               -- padded
-SELECT first_word('');                         -- (empty string)
-SELECT first_word(NULL::VARCHAR);              -- NULL
+-- T02: first_word scalar
+SELECT first_word('hello world');                                    -- hello
 
--- Table function
-SELECT list(value ORDER BY value) FROM generate_series_ext(5); -- [0, 1, 2, 3, 4]
-SELECT count(*) FROM generate_series_ext(0);  -- 0
-SELECT count(*) FROM generate_series_ext(-5); -- 0
-SELECT list(value*value ORDER BY value) FROM generate_series_ext(4); -- [0, 1, 4, 9]
+-- T03–T04: generate_series_ext table function
+SELECT COUNT(*) FROM generate_series_ext(5);                         -- 5
+SELECT COUNT(*) FROM generate_series_ext(0);                         -- 0
 
--- Cast / TRY_CAST
-SELECT CAST('42' AS INTEGER);                  -- 42
-SELECT CAST('-7' AS INTEGER);                  -- -7
-SELECT TRY_CAST('  99  ' AS INTEGER);          -- 99  (whitespace trimmed)
-SELECT TRY_CAST('not_a_number' AS INTEGER);    -- NULL
-SELECT TRY_CAST(NULL::VARCHAR AS INTEGER);     -- NULL
-SELECT CAST('2147483647' AS INTEGER);          -- 2147483647  (i32::MAX)
-SELECT CAST('-2147483648' AS INTEGER);         -- -2147483648 (i32::MIN)
-SELECT TRY_CAST('2147483648' AS INTEGER);      -- NULL  (overflow → NULL)
+-- T05–T06: CAST / TRY_CAST
+SELECT CAST('42' AS INTEGER);                                        -- 42
+SELECT TRY_CAST('bad' AS INTEGER);                                   -- NULL
+
+-- T07–T08: sum_list with param_logical
+SELECT sum_list([1, 2, 3]);                                          -- 6
+SELECT sum_list([10, NULL, 20]);                                     -- 30
+
+-- T09: make_pair with returns_logical + StructVector
+SELECT make_pair('hello', 42);                   -- {'key': hello, 'value': 42}
+
+-- T10–T12: coalesce_val scalar set with null_handling
+SELECT coalesce_val(NULL::BIGINT, 99);                               -- 99
+SELECT coalesce_val(NULL::VARCHAR, 'fallback');                      -- fallback
+SELECT coalesce_val(42::BIGINT, 99);                                 -- 42
+
+-- T13–T14: typed_sum aggregate set (2-arg and 3-arg overloads)
+SELECT typed_sum(a, b) FROM (VALUES (1, 2), (3, 4)) t(a, b);        -- 10
+SELECT typed_sum(a, b, c) FROM (VALUES (1, 2, 3), (4, 5, 6)) t(a, b, c); -- 21
+
+-- T15: double_it SQL scalar macro
+SELECT double_it(21);                                                -- 42
+
+-- T16: seq_n SQL table macro
+SELECT * FROM seq_n(5);                                              -- 1..5
+
+-- T17: make_kv_map with MapVector + LogicalType::map()
+SELECT make_kv_map('hello', 42);                                     -- {hello=42}
+
+-- T18–T19: gen_series_v2 with named_param + local_init
+SELECT COUNT(*) FROM gen_series_v2(5);                               -- 5
+SELECT * FROM gen_series_v2(3, step := 10);                          -- 0, 10, 20
+
+-- T20: add_interval (DuckInterval read/write)
+SELECT add_interval(INTERVAL '1 day', 1000000);                      -- 1 day 00:00:01
+
+-- T21–T22: all_types_echo (all reader/writer types + ValidityBitmap)
+SELECT all_types_echo(true, 1::TINYINT, 2::SMALLINT, 3, 4::BIGINT,
+    5::UTINYINT, 6::USMALLINT, 7::UINTEGER, 8::UBIGINT,
+    9.5::FLOAT, 10.5, 11::HUGEINT);
+-- → 'b=true,i8=1,i16=2,i32=3,i64=4,u8=5,u16=6,u32=7,u64=8,f32=9.5,f64=10.5,i128=11'
+SELECT all_types_echo(NULL::BOOLEAN, 1::TINYINT, 2::SMALLINT, 3, 4::BIGINT,
+    5::UTINYINT, 6::USMALLINT, 7::UINTEGER, 8::UBIGINT,
+    9.5::FLOAT, 10.5, 11::HUGEINT);                                 -- NULL
+
+-- T23–T24: Replacement scan
+SELECT * FROM read_hello('world');                                   -- Hello, world!
+SELECT * FROM 'hello:DuckDB';                                       -- Hello, DuckDB!
+
+-- T25: DOUBLE→BIGINT cast with implicit_cost + extra_info
+SELECT 3.7::BIGINT;                                                  -- 4
+
+-- T26–T28: NULL edge cases
+SELECT sum_list(NULL::BIGINT[]);                                     -- NULL
+SELECT make_pair(NULL, 42);                                          -- NULL
+SELECT make_kv_map(NULL, 42);                                        -- NULL
+
+-- T29: gen_series_v2 projection pushdown (value column only)
+SELECT value FROM gen_series_v2(3);                                  -- 0, 1, 2
 ```
 
 ## Adapting this for your own extension
 
 1. **Copy** this directory: `cp -r examples/hello-ext ../my-ext`
 2. **Rename** the crate in `Cargo.toml` (`name = "my-ext"`)
-3. **Replace** the functions in `src/lib.rs`:
-   - For a **scalar** function, follow the `first_word_scalar` pattern
-   - For an **aggregate** function, follow the `word_count` pattern
-   - For a **table** function, follow the `generate_series_ext` pattern
+3. **Replace** the functions in `src/lib.rs` — use the existing functions as
+   patterns for the type you need (scalar, aggregate, table, cast, etc.)
 4. **Update the entry point** — the symbol `my_ext_init_c_api` must match
    your crate name with underscores replacing hyphens
 5. **Run** `cargo build --release` and load in DuckDB
@@ -168,65 +262,115 @@ SELECT TRY_CAST('2147483648' AS INTEGER);      -- NULL  (overflow → NULL)
 ```
 src/lib.rs
 │
-├── WordCountState              struct — one i64 field, implements AggregateState
-├── wc_state_size / wc_state_init / wc_state_destroy
-│   └── Thin wrappers around FfiState<WordCountState>::*_callback
-│       FfiState handles the unsafe placement-new / drop-in-place for you.
+├── entry_point_v2!(hello_ext_init_c_api, ...)
+│   └── Uses Connection / Registrar for version-agnostic registration
 │
-├── wc_update                   reads VARCHAR column, calls count_words(), accumulates
-├── wc_combine                  merges source states into target (parallel plans)
-│   └── Pitfall L1: copy *all* fields — not just the result field
-├── wc_finalize                 writes BIGINT output; marks NULL if state is invalid
+├── register_all(&Connection)       orchestrates all registrations below
 │
-├── first_word_scalar           reads VARCHAR, propagates NULL, writes VARCHAR output
+├── Aggregate: word_count
+│   ├── WordCountState              implements AggregateState
+│   ├── wc_update / wc_combine / wc_finalize
+│   │   └── Pitfall L1: combine copies ALL state fields
+│   └── count_words()               pure Rust helper
 │
-├── GenerateSeriesState         struct — holds current index + total; FfiInitData<GenerateSeriesState>
-├── gs_bind                     extracts n via duckdb_get_int64; stores via FfiBindData::<i64>::set
-├── gs_init                     reads bind data, allocates scan state via FfiInitData::set
-├── gs_scan                     emits a batch of i64 rows; sets duckdb_data_chunk_set_size
+├── Scalar: first_word
+│   ├── first_word_scalar           reads VARCHAR, writes VARCHAR
+│   └── first_word()                pure Rust helper
 │
-├── varchar_to_int              cast callback (VARCHAR → INTEGER)
-│   ├── CastMode::Normal        → calls set_error() + returns false on bad input
-│   └── CastMode::Try           → writes NULL + calls set_row_error() per bad row
+├── Table: generate_series_ext
+│   ├── GenerateSeriesState         FfiInitData<T> for scan state
+│   └── gs_bind / gs_init / gs_scan
 │
-├── count_words / first_word    pure Rust — no unsafe, easy to unit-test
-├── parse_varchar_to_int        pure Rust — trims whitespace, parses i32
+├── Cast: VARCHAR → INTEGER
+│   ├── varchar_to_int              handles CastMode::Normal vs Try
+│   └── parse_varchar_to_int()      pure Rust parser
 │
-├── register()                  calls AggregateFunctionBuilder + ScalarFunctionBuilder
-│   └──                               + TableFunctionBuilder + CastFunctionBuilder
-│   └── Returns ExtensionError on registration failure
+├── Scalar: sum_list                param_logical(LogicalType::list(...))
+│                                   ListVector child access
 │
-└── entry_point!(hello_ext_init_c_api, ...)
-    └── Generates the #[no_mangle] extern "C" symbol DuckDB loads by name
+├── Scalar: make_pair               returns_logical(LogicalType::struct_type(...))
+│                                   StructVector child writes
+│
+├── Scalar: make_kv_map             LogicalType::map(), MapVector
+│
+├── Scalar Set: coalesce_val        ScalarFunctionSetBuilder, per-overload null_handling
+│   ├── coalesce_bigint             BIGINT overload
+│   └── coalesce_varchar            VARCHAR overload
+│
+├── Aggregate Set: typed_sum        AggregateFunctionSetBuilder::overloads
+│   ├── TypedSumState               shared state for both overloads
+│   └── 2-arg and 3-arg callbacks
+│
+├── SQL Macros
+│   ├── double_it(x)                SqlMacro::scalar("x * 2")
+│   └── seq_n(n)                    SqlMacro::table("SELECT * FROM generate_series(1, n)")
+│
+├── Table: gen_series_v2            named_param("step"), local_init, set_max_threads
+│   ├── GenSeriesV2Config           FfiBindData for bind-time config
+│   ├── GenSeriesV2State            FfiInitData for scan state
+│   ├── GenSeriesV2Local            FfiLocalInitData for per-thread state
+│   └── gs_v2_bind / gs_v2_init / gs_v2_local_init / gs_v2_scan
+│
+├── Cast: DOUBLE → BIGINT           implicit_cost(100), extra_info (rounding mode)
+│   └── double_to_bigint
+│
+├── Scalar: add_interval            DuckInterval read/write via VectorReader/VectorWriter
+│
+├── Scalar: all_types_echo          exercises ALL VectorReader/VectorWriter types:
+│   └── bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, i128
+│       plus ValidityBitmap for NULL detection
+│
+├── Table: read_hello               backing table function for replacement scan
+│
+└── Replacement Scan                ReplacementScanBuilder / ReplacementScanInfo
+    └── hello_replacement_scan      matches 'hello:xxx' → read_hello('xxx')
 ```
 
 ### Key quack-rs types used
 
 | Type | What it does |
 |------|-------------|
+| `Connection` | Version-agnostic wrapper for `duckdb_connection` |
+| `Registrar` | Trait providing `register_scalar`, `register_aggregate`, etc. |
+| `entry_point_v2!` | Generates `#[no_mangle] extern "C"` entry point with `Connection` |
 | `FfiState<S>` | Manages placement-new / drop-in-place for aggregate state |
 | `FfiBindData<T>` | Manages bind data allocation and destruction for table functions |
 | `FfiInitData<T>` | Manages per-scan init state for table functions |
+| `FfiLocalInitData<T>` | Per-thread local init state for table functions |
 | `BindInfo` | Safe wrapper for `duckdb_bind_info` — parameter extraction, column registration |
-| `VectorReader` | Safe indexed access to a DuckDB column (read_str, is_valid, …) |
+| `InitInfo` | Safe wrapper for `duckdb_init_info` — `set_max_threads`, projection info |
+| `VectorReader` | Safe indexed access to a DuckDB column (read_str, read_i64, read_bool, …) |
 | `VectorWriter` | Safe indexed writes to a DuckDB vector (write_i64, write_varchar, set_null, …) |
-| `AggregateFunctionBuilder` | Builder that registers an aggregate with DuckDB |
-| `ScalarFunctionBuilder` | Builder that registers a scalar function with DuckDB |
-| `TableFunctionBuilder` | Builder that registers a table function (bind/init/scan) |
-| `CastFunctionBuilder` | Builder that registers a custom CAST / TRY_CAST with DuckDB |
-| `CastFunctionInfo` | Info handle inside cast callbacks — exposes `cast_mode()`, error reporting |
-| `CastMode` | `Normal` (abort on error) vs `Try` (NULL on error) |
+| `ValidityBitmap` | Direct NULL bitmap read/write |
+| `LogicalType` | RAII wrapper for complex types (list, struct, map) |
+| `StructVector` | Write to STRUCT child vectors |
+| `ListVector` | Access LIST element vectors |
+| `MapVector` | Write to MAP key/value vectors |
+| `DuckInterval` | 16-byte INTERVAL struct (months, days, micros) |
+| `SqlMacro` | SQL macro registration (scalar and table macros, no FFI callbacks) |
+| `ReplacementScanInfo` | Info handle for replacement scan callbacks |
+| `AggregateFunctionBuilder` | Builder for a single aggregate function |
+| `AggregateFunctionSetBuilder` | Builder for overloaded aggregate functions |
+| `ScalarFunctionBuilder` | Builder for a single scalar function |
+| `ScalarFunctionSetBuilder` | Builder for overloaded scalar functions |
+| `TableFunctionBuilder` | Builder for table functions (bind/init/scan) |
+| `CastFunctionBuilder` | Builder for CAST / TRY_CAST functions |
+| `CastFunctionInfo` | Info handle inside cast callbacks — `cast_mode()`, error reporting |
 | `AggregateTestHarness<S>` | Unit-test helper — no DuckDB process needed |
-| `entry_point!` | Macro that emits the `#[no_mangle] extern "C"` entry point |
 
 ### Common pitfalls (with mitigations in this example)
 
 | # | Pitfall | Where it shows up | Mitigation here |
 |---|---------|-------------------|-----------------|
-| L1 | `combine` must copy **all** state fields | `wc_combine` | Comment + test |
+| L1 | `combine` must copy **all** state fields | `wc_combine`, `typed_sum_combine` | Comment + test |
 | L4 | `set_null` requires `ensure_validity_writable` first | `VectorWriter::set_null` | Handled inside `VectorWriter` |
+| L5 | Boolean reads must use `u8 != 0` | `all_types_echo` | `VectorReader::read_bool` |
+| L6 | Set name must be set on each member | `coalesce_val`, `typed_sum` | Set builders handle it |
+| L7 | `LogicalType` memory leak if not freed | `sum_list`, `make_pair`, `make_kv_map` | `LogicalType` implements `Drop` |
 | P2 | C API version ≠ DuckDB release version | `DUCKDB_API_VERSION` | Provided by `quack_rs` |
-| L3 | No `panic!` across FFI | entry point | `init_extension` catches errors |
+| P7 | 16-byte string format | `VectorReader::read_str` | Handled inside `VectorReader` |
+| P8 | INTERVAL layout | `add_interval` | `DuckInterval` struct |
+| L3 | No `panic!` across FFI | entry point | `init_extension_v2` catches errors |
 
 [quack-rs]: https://docs.rs/quack-rs
 [duckdb-releases]: https://github.com/duckdb/duckdb/releases
