@@ -3,10 +3,17 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! Builder for registering `DuckDB` scalar (table) functions.
+//! Builder for registering `DuckDB` scalar functions.
 //!
-//! Scalar functions process one row at a time and return a single value per row.
-//! They are the most common type of function in `DuckDB` extensions.
+//! Scalar functions process one data chunk at a time and return a single value
+//! per row. They are the most common type of function in `DuckDB` extensions.
+//!
+//! Both [`ScalarFunctionBuilder`] and [`ScalarFunctionSetBuilder`] support:
+//! - Simple parameter types via `param(TypeId)`
+//! - Complex parameterized types via `param_logical(LogicalType)` (e.g.,
+//!   `LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`, `STRUCT(...)`)
+//! - Complex return types via `returns_logical(LogicalType)`
+//! - Per-function NULL handling via `null_handling(NullHandling)`
 //!
 //! # Example
 //!

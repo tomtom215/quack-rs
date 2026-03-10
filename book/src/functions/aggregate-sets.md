@@ -81,6 +81,41 @@ See [Pitfall L6](../reference/pitfalls.md#l6-function-set-name-must-be-set-on-ea
 
 ---
 
+## Complex return types
+
+If all overloads share a complex return type, use `returns_logical` on the set builder:
+
+```rust
+use quack_rs::aggregate::AggregateFunctionSetBuilder;
+use quack_rs::types::{LogicalType, TypeId};
+
+AggregateFunctionSetBuilder::new("retention")
+    .returns_logical(LogicalType::list(TypeId::Boolean))  // LIST(BOOLEAN) for all overloads
+    .overloads(2..=32, |n, builder| {
+        (0..n).fold(builder, |b, _| b.param(TypeId::Boolean))
+            .state_size(state_size)
+            .init(state_init)
+            .update(update)
+            .combine(combine)
+            .finalize(finalize)
+            .destructor(destroy)
+    })
+    .register(con)?;
+```
+
+Individual overloads can also use `param_logical` for complex parameter types:
+
+```rust
+.overloads(2..=8, |n, builder| {
+    builder
+        .param(TypeId::Interval)
+        .param_logical(LogicalType::list(TypeId::Timestamp)) // LIST(TIMESTAMP) parameter
+        // ...
+})
+```
+
+---
+
 ## Why not varargs?
 
 DuckDB's C API does not provide `duckdb_aggregate_function_set_varargs`. For true variadic

@@ -73,6 +73,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 | Table functions | ~100 lines of raw bind/init/scan callbacks | `TableFunctionBuilder` 5-method chain |
 | Replacement scans | Undocumented vtable + manual string allocation | `ReplacementScanBuilder` 4-method chain |
 | Complex types (STRUCT/LIST/MAP) | Manual offset arithmetic over child vectors | `StructVector`, `ListVector`, `MapVector` helpers |
+| Complex param/return types | Raw `duckdb_create_logical_type` + manual lifecycle | `param_logical(LogicalType)` / `returns_logical(LogicalType)` on all builders |
 | Extension naming | Rejected by DuckDB CI with no explanation | `validate_extension_name` catches issues before submission |
 | description.yml | No tooling to validate before submission | `validate_description_yml_str` validates the whole file |
 | New project setup | Hours of boilerplate + reading DuckDB internals | `generate_scaffold` produces all 11 required files |
@@ -743,6 +744,11 @@ in the relevant release.
 ## Changelog
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
+
+**Unreleased** — Added `param_logical(LogicalType)` and `returns_logical(LogicalType)` on
+all function builders (scalar, aggregate, and their set variants), enabling complex
+parameterized types like `LIST(BOOLEAN)` or `MAP(VARCHAR, INTEGER)` without raw FFI.
+Added per-overload `null_handling(NullHandling)` on set overload builders.
 
 **v0.4.0** (2026-03-09) — Added `Connection` and `Registrar` trait (version-agnostic
 registration facade), `init_extension_v2`, `entry_point_v2!` macro, and `duckdb-1-5` feature

@@ -61,7 +61,9 @@ pub type ScalarFn = unsafe extern "C" fn(
 pub struct ScalarFunctionBuilder {
     pub(super) name: CString,
     pub(super) params: Vec<TypeId>,
+    pub(super) logical_params: Vec<(usize, LogicalType)>,
     pub(super) return_type: Option<TypeId>,
+    pub(super) return_logical: Option<LogicalType>,
     pub(super) function: Option<ScalarFn>,
     pub(super) null_handling: NullHandling,
 }
@@ -76,7 +78,9 @@ impl ScalarFunctionBuilder {
         Self {
             name: CString::new(name).expect("function name must not contain null bytes"),
             params: Vec::new(),
+            logical_params: Vec::new(),
             return_type: None,
+            return_logical: None,
             function: None,
             null_handling: NullHandling::DefaultNullHandling,
         }
@@ -98,7 +102,9 @@ impl ScalarFunctionBuilder {
         Ok(Self {
             name: c_name,
             params: Vec::new(),
+            logical_params: Vec::new(),
             return_type: None,
+            return_logical: None,
             function: None,
             null_handling: NullHandling::DefaultNullHandling,
         })
@@ -106,15 +112,44 @@ impl ScalarFunctionBuilder {
 
     /// Adds a positional parameter with the given type.
     ///
-    /// Call this once per parameter in order.
+    /// Call this once per parameter in order. For complex types like
+    /// `LIST(BIGINT)` or `MAP(VARCHAR, INTEGER)`, use [`param_logical`][Self::param_logical].
     pub fn param(mut self, type_id: TypeId) -> Self {
         self.params.push(type_id);
         self
     }
 
+    /// Adds a positional parameter with a complex [`LogicalType`].
+    ///
+    /// Use this for parameterized types that [`TypeId`] cannot express, such as
+    /// `LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`.
+    ///
+    /// The parameter position is determined by the total number of `param` and
+    /// `param_logical` calls made so far.
+    pub fn param_logical(mut self, logical_type: LogicalType) -> Self {
+        let position = self.params.len() + self.logical_params.len();
+        self.logical_params.push((position, logical_type));
+        self
+    }
+
     /// Sets the return type for this function.
+    ///
+    /// For complex return types like `LIST(BIGINT)`, use
+    /// [`returns_logical`][Self::returns_logical] instead.
     pub const fn returns(mut self, type_id: TypeId) -> Self {
         self.return_type = Some(type_id);
+        self
+    }
+
+    /// Sets the return type to a complex [`LogicalType`].
+    ///
+    /// Use this for parameterized return types that [`TypeId`] cannot express,
+    /// such as `LIST(BOOLEAN)`, `LIST(TIMESTAMP)`, `MAP(VARCHAR, INTEGER)`, etc.
+    ///
+    /// If both `returns` and `returns_logical` are called, the logical type takes
+    /// precedence.
+    pub fn returns_logical(mut self, logical_type: LogicalType) -> Self {
+        self.return_logical = Some(logical_type);
         self
     }
 
@@ -148,9 +183,15 @@ impl ScalarFunctionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
-        let return_type = self
-            .return_type
-            .ok_or_else(|| ExtensionError::new("return type not set"))?;
+        // Resolve return type: prefer explicit LogicalType over TypeId.
+        let ret_lt = if let Some(lt) = self.return_logical {
+            lt
+        } else if let Some(id) = self.return_type {
+            LogicalType::new(id)
+        } else {
+            return Err(ExtensionError::new("return type not set"));
+        };
+
         let function = self
             .function
             .ok_or_else(|| ExtensionError::new("function callback not set"))?;
@@ -163,17 +204,36 @@ impl ScalarFunctionBuilder {
             duckdb_scalar_function_set_name(func, self.name.as_ptr());
         }
 
-        // Add parameters
-        for param_type in &self.params {
-            let lt = LogicalType::new(*param_type);
-            // SAFETY: func and lt.as_raw() are valid.
-            unsafe {
-                duckdb_scalar_function_add_parameter(func, lt.as_raw());
+        // Add parameters: merge simple TypeId params and complex LogicalType params
+        // in the order they were added (tracked by position).
+        {
+            let mut simple_idx = 0;
+            let mut logical_idx = 0;
+            let total = self.params.len() + self.logical_params.len();
+            for pos in 0..total {
+                if logical_idx < self.logical_params.len()
+                    && self.logical_params[logical_idx].0 == pos
+                {
+                    // SAFETY: func and logical type handle are valid.
+                    unsafe {
+                        duckdb_scalar_function_add_parameter(
+                            func,
+                            self.logical_params[logical_idx].1.as_raw(),
+                        );
+                    }
+                    logical_idx += 1;
+                } else if simple_idx < self.params.len() {
+                    let lt = LogicalType::new(self.params[simple_idx]);
+                    // SAFETY: func and lt.as_raw() are valid.
+                    unsafe {
+                        duckdb_scalar_function_add_parameter(func, lt.as_raw());
+                    }
+                    simple_idx += 1;
+                }
             }
         }
 
         // Set return type
-        let ret_lt = LogicalType::new(return_type);
         // SAFETY: func and ret_lt.as_raw() are valid.
         unsafe {
             duckdb_scalar_function_set_return_type(func, ret_lt.as_raw());

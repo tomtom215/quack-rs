@@ -205,6 +205,33 @@ and handle NULLs yourself.
 
 ---
 
+## Complex parameter and return types
+
+For scalar functions that accept or return parameterized types like `LIST(BIGINT)`,
+use `param_logical` and `returns_logical`:
+
+```rust
+use quack_rs::scalar::ScalarFunctionBuilder;
+use quack_rs::types::{LogicalType, TypeId};
+
+ScalarFunctionBuilder::new("flatten_list")
+    .param_logical(LogicalType::list(TypeId::BigInt))  // LIST(BIGINT) input
+    .returns(TypeId::BigInt)
+    .function(flatten_list_fn)
+    .register(con)?;
+```
+
+These methods are also available on `ScalarOverloadBuilder` for function sets:
+
+```rust
+ScalarOverloadBuilder::new()
+    .param(TypeId::Varchar)
+    .returns_logical(LogicalType::list(TypeId::Timestamp))  // LIST(TIMESTAMP) output
+    .function(my_fn)
+```
+
+---
+
 ## Key points
 
 - **`VectorReader::new(input, column_index)`** — the column index is zero-based

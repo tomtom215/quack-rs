@@ -23,10 +23,11 @@ See the [Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?
 
-quack-rs pins `libduckdb-sys = "=1.4.4"` (DuckDB 1.4.x). The C API version
-string passed to the dispatch-table initializer is separately `"v1.2.0"`,
-available as `quack_rs::DUCKDB_API_VERSION`. These are two distinct version
-identifiers — the crate version and the C API protocol version.
+quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.x and 1.5.x).
+The C API version string passed to the dispatch-table initializer is `"v1.2.0"`,
+available as `quack_rs::DUCKDB_API_VERSION`. Both DuckDB 1.4.x and 1.5.x use
+the same C API version. These are two distinct version identifiers — the crate
+version and the C API protocol version.
 
 ### What is the minimum supported Rust version (MSRV)?
 
@@ -66,8 +67,10 @@ scalar functions. See [SQL Macros](functions/sql-macros.md).
 
 ### Can I register multiple overloads of the same function?
 
-Yes, using `AggregateFunctionSetBuilder` (for aggregates) or multiple
-`ScalarFunctionBuilder` registrations (for scalars). See
+Yes, using `AggregateFunctionSetBuilder` (for aggregates) or
+`ScalarFunctionSetBuilder` (for scalars). Both support complex parameter types
+via `param_logical(LogicalType)` and complex return types via
+`returns_logical(LogicalType)`. See
 [Overloading with Function Sets](functions/aggregate-sets.md).
 
 ### Can I register multiple functions in one extension?

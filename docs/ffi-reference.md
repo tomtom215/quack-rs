@@ -92,6 +92,25 @@ unsafe {
 }
 ```
 
+### Complex parameter and return types
+
+```rust
+use quack_rs::types::{LogicalType, TypeId};
+
+ScalarFunctionBuilder::new("flatten_list")
+    .param_logical(LogicalType::list(TypeId::BigInt))  // LIST(BIGINT) parameter
+    .returns(TypeId::BigInt)
+    .function(flatten_fn)
+    .register(con)?
+```
+
+```rust
+ScalarOverloadBuilder::new()
+    .param(TypeId::Varchar)
+    .returns_logical(LogicalType::list(TypeId::Timestamp))  // LIST(TIMESTAMP) return
+    .function(my_fn)
+```
+
 ### NULL handling
 
 ```rust
@@ -126,7 +145,7 @@ unsafe {
 ```rust
 unsafe {
     AggregateFunctionSetBuilder::new("retention")
-        .returns(TypeId::BigInt)
+        .returns_logical(LogicalType::list(TypeId::Boolean))  // LIST(BOOLEAN) return
         .overloads(2..=32, |n, builder| {
             (0..n).fold(builder, |b, _| b.param(TypeId::Boolean))
                 .state_size(state_size)
@@ -139,6 +158,9 @@ unsafe {
         .register(con)?
 }
 ```
+
+For simple return types, `returns(TypeId)` still works. If both are called,
+`returns_logical` takes precedence.
 
 **Pitfall L6**: `duckdb_aggregate_function_set_name` must be called on each
 individual function in the set, not just the set itself.
