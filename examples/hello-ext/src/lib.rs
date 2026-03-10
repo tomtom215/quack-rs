@@ -1304,14 +1304,14 @@ mod tests {
 
     #[test]
     fn sum_list_logic_basic() {
-        let values = vec![Some(1i64), Some(2), Some(3)];
+        let values = [Some(1i64), Some(2), Some(3)];
         let sum: i64 = values.iter().filter_map(|v| *v).sum();
         assert_eq!(sum, 6);
     }
 
     #[test]
     fn sum_list_logic_with_nulls() {
-        let values = vec![Some(10i64), None, Some(20)];
+        let values = [Some(10i64), None, Some(20)];
         let sum: i64 = values.iter().filter_map(|v| *v).sum();
         assert_eq!(sum, 30);
     }
@@ -1325,8 +1325,8 @@ mod tests {
 
     #[test]
     fn sum_list_logic_all_null_elements() {
-        let values = vec![None, None, None];
-        let sum: i64 = values.iter().filter_map(|v: &Option<i64>| *v).sum();
+        let values: [Option<i64>; 3] = [None, None, None];
+        let sum: i64 = values.iter().filter_map(|v| *v).sum();
         assert_eq!(sum, 0);
     }
 
