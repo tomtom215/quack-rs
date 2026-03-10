@@ -76,8 +76,8 @@
 //! 1. **Thin wrapper**: every abstraction must pay for itself in reduced boilerplate
 //!    or improved safety. When in doubt, prefer simplicity.
 //! 2. **No panics across FFI**: `unwrap()` is forbidden in FFI callbacks and entry points.
-//! 3. **Exact version pin**: `libduckdb-sys` is pinned with `=` because the `DuckDB` C API
-//!    can change between minor versions.
+//! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2` to support `DuckDB` 1.4.x
+//!    and 1.5.x while preventing silent adoption of breaking changes in future major releases.
 //! 4. **Testable business logic**: state structs have zero FFI dependencies.
 //!
 //! ## Pitfalls

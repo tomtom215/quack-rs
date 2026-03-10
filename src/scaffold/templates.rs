@@ -31,7 +31,7 @@ crate-type = ["staticlib"]
 path = "src/wasm_lib.rs"
 
 [dependencies]
-quack-rs = {{ version = "0.3" }}
+quack-rs = {{ version = "0.5" }}
 libduckdb-sys = {{ version = ">=1.4.4, <2", features = ["loadable-extension"] }}
 
 [profile.release]

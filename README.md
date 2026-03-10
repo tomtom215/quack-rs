@@ -116,7 +116,7 @@ See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
 
 ```toml
 [dependencies]
-quack-rs = "0.4"
+quack-rs = "0.5"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
@@ -745,7 +745,7 @@ in the relevant release.
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
 
-**Unreleased** — Added `param_logical(LogicalType)` and `returns_logical(LogicalType)` on
+**v0.5.0** (2026-03-10) — Added `param_logical(LogicalType)` and `returns_logical(LogicalType)` on
 all function builders (scalar, aggregate, and their set variants), enabling complex
 parameterized types like `LIST(BOOLEAN)` or `MAP(VARCHAR, INTEGER)` without raw FFI.
 Added per-overload `null_handling(NullHandling)` on set overload builders.
