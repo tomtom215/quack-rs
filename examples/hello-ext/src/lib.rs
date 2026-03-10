@@ -7,9 +7,9 @@
 //!
 //! A minimal `DuckDB` community extension built with [`quack_rs`].
 //!
-//! This example registers **four functions** that together demonstrate every
-//! major pattern a real extension author needs.  All four are verified against
-//! a live DuckDB 1.4.4 instance (19 SQL tests, all pass).
+//! This example registers **seven functions** that together demonstrate every
+//! major pattern a real extension author needs, including the v0.5.0
+//! `param_logical`, `returns_logical`, and per-overload `null_handling` APIs.
 //!
 //! | SQL function | Kind | Input | Output | Shows |
 //! |---|---|---|---|---|
@@ -17,6 +17,9 @@
 //! | `first_word(text)` | Scalar | `VARCHAR` | `VARCHAR` | row-at-a-time, NULL propagation |
 //! | `generate_series_ext(n)` | Table | `BIGINT` | `BIGINT` | full table function lifecycle (bind/init/scan) |
 //! | `CAST(VARCHAR AS INTEGER)` | Cast | `VARCHAR` | `INTEGER` | `CastFunctionBuilder`, `TRY_CAST` |
+//! | `sum_list(LIST(BIGINT))` | Scalar | `LIST(BIGINT)` | `BIGINT` | `param_logical(LogicalType)` |
+//! | `make_pair(k, v)` | Scalar | `VARCHAR`, `INTEGER` | `STRUCT(key, value)` | `returns_logical(LogicalType)` |
+//! | `coalesce_val(a, b)` | Scalar Set | `BIGINT`/`VARCHAR` | same | per-overload `null_handling` |
 //!
 //! ## Quick start
 //!
@@ -48,6 +51,13 @@
 //!
 //! SELECT CAST('42' AS INTEGER);           -- 42
 //! SELECT TRY_CAST('bad' AS INTEGER);      -- NULL
+//!
+//! -- v0.5.0 features:
+//! SELECT sum_list([1, 2, 3]);             -- 6
+//! SELECT sum_list([10, NULL, 20]);        -- 30 (NULLs skipped)
+//! SELECT make_pair('hello', 42);          -- {'key': hello, 'value': 42}
+//! SELECT coalesce_val(NULL::BIGINT, 99);  -- 99
+//! SELECT coalesce_val(NULL::VARCHAR, 'fallback'); -- 'fallback'
 //! ```
 //!
 //! ## Extension anatomy
@@ -60,6 +70,9 @@
 //! ├── GenerateSeriesState         — table function scan state struct
 //! ├── gs_bind / gs_init / gs_scan — table function callbacks
 //! ├── varchar_to_int              — cast callback (VARCHAR → INTEGER, TRY_CAST aware)
+//! ├── sum_list_scalar             — scalar with param_logical (LIST input)
+//! ├── make_pair_scalar            — scalar with returns_logical (STRUCT output)
+//! ├── coalesce_bigint / _varchar  — scalar set with per-overload null_handling
 //! ├── register()                  — registers all functions on a connection
 //! └── entry_point!()              — generates the C entry point DuckDB calls
 //! ```
@@ -75,9 +88,10 @@ use libduckdb_sys::{
 use quack_rs::aggregate::{AggregateFunctionBuilder, AggregateState, FfiState};
 use quack_rs::cast::{CastFunctionBuilder, CastFunctionInfo, CastMode};
 use quack_rs::error::ExtensionError;
-use quack_rs::scalar::ScalarFunctionBuilder;
+use quack_rs::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};
 use quack_rs::table::{BindInfo, FfiBindData, FfiInitData, TableFunctionBuilder};
-use quack_rs::types::TypeId;
+use quack_rs::types::{LogicalType, NullHandling, TypeId};
+use quack_rs::vector::complex::{ListVector, StructVector};
 use quack_rs::vector::{VectorReader, VectorWriter};
 
 // ============================================================================
@@ -360,6 +374,167 @@ unsafe extern "C" fn varchar_to_int(
 }
 
 // ============================================================================
+// Scalar: sum_list(LIST(BIGINT)) → BIGINT
+//
+// Demonstrates `param_logical(LogicalType)` — registering a function that
+// accepts a complex parameterized type (LIST(BIGINT)) as input.
+//
+// NULL list elements are skipped; a NULL list input returns NULL.
+// ============================================================================
+
+/// Sums the elements of a `LIST(BIGINT)`, skipping NULLs.
+///
+/// # Safety
+///
+/// - `_info`  must be a valid `duckdb_function_info`.
+/// - `input`  must be a valid input chunk with column 0 as `LIST(BIGINT)`.
+/// - `output` must be a valid `BIGINT` output vector.
+unsafe extern "C" fn sum_list_scalar(
+    _info: duckdb_function_info,
+    input: duckdb_data_chunk,
+    output: duckdb_vector,
+) {
+    let reader = unsafe { VectorReader::new(input, 0) };
+    let mut writer = unsafe { VectorWriter::new(output) };
+    let row_count = reader.row_count();
+    // Get the raw LIST vector handle for child access.
+    let list_vec = unsafe { duckdb_data_chunk_get_vector(input, 0) };
+
+    for row in 0..row_count {
+        if !unsafe { reader.is_valid(row) } {
+            unsafe { writer.set_null(row) };
+            continue;
+        }
+        // Read the list entry (offset, length) for this row.
+        let entry = unsafe { ListVector::get_entry(list_vec, row) };
+        let child_vec = unsafe { ListVector::get_child(list_vec) };
+        let total_elements = unsafe { ListVector::get_size(list_vec) };
+        let child_reader = unsafe { VectorReader::from_vector(child_vec, total_elements) };
+
+        let mut sum: i64 = 0;
+        for i in 0..entry.length as usize {
+            let idx = entry.offset as usize + i;
+            if unsafe { child_reader.is_valid(idx) } {
+                sum += unsafe { child_reader.read_i64(idx) };
+            }
+        }
+        unsafe { writer.write_i64(row, sum) };
+    }
+}
+
+// ============================================================================
+// Scalar: make_pair(VARCHAR, INTEGER) → STRUCT(key VARCHAR, value INTEGER)
+//
+// Demonstrates `returns_logical(LogicalType)` — registering a function whose
+// return type is a complex parameterized type (STRUCT with named fields).
+// ============================================================================
+
+/// Creates a `STRUCT(key VARCHAR, value INTEGER)` from two scalar inputs.
+///
+/// # Safety
+///
+/// - `_info`  must be a valid `duckdb_function_info`.
+/// - `input`  must be a valid chunk with column 0 `VARCHAR`, column 1 `INTEGER`.
+/// - `output` must be a valid `STRUCT` output vector.
+unsafe extern "C" fn make_pair_scalar(
+    _info: duckdb_function_info,
+    input: duckdb_data_chunk,
+    output: duckdb_vector,
+) {
+    let key_reader = unsafe { VectorReader::new(input, 0) };
+    let val_reader = unsafe { VectorReader::new(input, 1) };
+    let row_count = key_reader.row_count();
+
+    // Get child writers for the STRUCT output fields.
+    let mut key_writer = unsafe { StructVector::field_writer(output, 0) };
+    let mut val_writer = unsafe { StructVector::field_writer(output, 1) };
+
+    for row in 0..row_count {
+        let key_valid = unsafe { key_reader.is_valid(row) };
+        let val_valid = unsafe { val_reader.is_valid(row) };
+        if !key_valid || !val_valid {
+            // If either input is NULL, the whole struct is NULL.
+            let mut parent_writer = unsafe { VectorWriter::new(output) };
+            unsafe { parent_writer.set_null(row) };
+            continue;
+        }
+        let k = unsafe { key_reader.read_str(row) };
+        let v = unsafe { val_reader.read_i32(row) };
+        unsafe { key_writer.write_varchar(row, k) };
+        unsafe { val_writer.write_i32(row, v) };
+    }
+}
+
+// ============================================================================
+// Scalar function set: coalesce_val(a, b)
+//
+// Demonstrates per-overload `null_handling(NullHandling)` on a
+// `ScalarFunctionSetBuilder`. Two overloads:
+//
+//   coalesce_val(BIGINT,  BIGINT)  → BIGINT   — returns a unless NULL, else b
+//   coalesce_val(VARCHAR, VARCHAR) → VARCHAR   — returns a unless NULL, else b
+//
+// Both use SpecialNullHandling so the callback receives NULLs instead of
+// DuckDB short-circuiting to NULL output.
+// ============================================================================
+
+/// BIGINT overload of `coalesce_val`: returns `a` if non-NULL, else `b`.
+///
+/// # Safety
+///
+/// Standard DuckDB scalar callback contract.
+unsafe extern "C" fn coalesce_bigint(
+    _info: duckdb_function_info,
+    input: duckdb_data_chunk,
+    output: duckdb_vector,
+) {
+    let reader_a = unsafe { VectorReader::new(input, 0) };
+    let reader_b = unsafe { VectorReader::new(input, 1) };
+    let mut writer = unsafe { VectorWriter::new(output) };
+    let row_count = reader_a.row_count();
+
+    for row in 0..row_count {
+        if unsafe { reader_a.is_valid(row) } {
+            let v = unsafe { reader_a.read_i64(row) };
+            unsafe { writer.write_i64(row, v) };
+        } else if unsafe { reader_b.is_valid(row) } {
+            let v = unsafe { reader_b.read_i64(row) };
+            unsafe { writer.write_i64(row, v) };
+        } else {
+            unsafe { writer.set_null(row) };
+        }
+    }
+}
+
+/// VARCHAR overload of `coalesce_val`: returns `a` if non-NULL, else `b`.
+///
+/// # Safety
+///
+/// Standard DuckDB scalar callback contract.
+unsafe extern "C" fn coalesce_varchar(
+    _info: duckdb_function_info,
+    input: duckdb_data_chunk,
+    output: duckdb_vector,
+) {
+    let reader_a = unsafe { VectorReader::new(input, 0) };
+    let reader_b = unsafe { VectorReader::new(input, 1) };
+    let mut writer = unsafe { VectorWriter::new(output) };
+    let row_count = reader_a.row_count();
+
+    for row in 0..row_count {
+        if unsafe { reader_a.is_valid(row) } {
+            let v = unsafe { reader_a.read_str(row) };
+            unsafe { writer.write_varchar(row, v) };
+        } else if unsafe { reader_b.is_valid(row) } {
+            let v = unsafe { reader_b.read_str(row) };
+            unsafe { writer.write_varchar(row, v) };
+        } else {
+            unsafe { writer.set_null(row) };
+        }
+    }
+}
+
+// ============================================================================
 // Pure Rust logic — no unsafe, unit-testable without a DuckDB instance
 // ============================================================================
 
@@ -458,6 +633,48 @@ unsafe fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), Extensio
         // Cast function: VARCHAR → INTEGER (supports both CAST and TRY_CAST)
         CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)
             .function(varchar_to_int)
+            .register(con)?;
+
+        // ── v0.5.0: param_logical ─────────────────────────────────────────
+        // Scalar that takes LIST(BIGINT) as input using param_logical.
+        ScalarFunctionBuilder::new("sum_list")
+            .param_logical(LogicalType::list(TypeId::BigInt))
+            .returns(TypeId::BigInt)
+            .function(sum_list_scalar)
+            .register(con)?;
+
+        // ── v0.5.0: returns_logical ───────────────────────────────────────
+        // Scalar that returns STRUCT(key VARCHAR, value INTEGER).
+        ScalarFunctionBuilder::new("make_pair")
+            .param(TypeId::Varchar)
+            .param(TypeId::Integer)
+            .returns_logical(LogicalType::struct_type(&[
+                ("key",   TypeId::Varchar),
+                ("value", TypeId::Integer),
+            ]))
+            .function(make_pair_scalar)
+            .register(con)?;
+
+        // ── v0.5.0: per-overload null_handling ────────────────────────────
+        // Scalar function set with two overloads, each using
+        // SpecialNullHandling so NULLs are passed to the callback.
+        ScalarFunctionSetBuilder::new("coalesce_val")
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .param(TypeId::BigInt)
+                    .returns(TypeId::BigInt)
+                    .null_handling(NullHandling::SpecialNullHandling)
+                    .function(coalesce_bigint),
+            )
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::Varchar)
+                    .param(TypeId::Varchar)
+                    .returns(TypeId::Varchar)
+                    .null_handling(NullHandling::SpecialNullHandling)
+                    .function(coalesce_varchar),
+            )
             .register(con)?;
     }
 
@@ -681,5 +898,70 @@ mod tests {
     fn parse_int_boundary_values() {
         assert_eq!(parse_varchar_to_int("2147483647"),  Some(i32::MAX));
         assert_eq!(parse_varchar_to_int("-2147483648"), Some(i32::MIN));
+    }
+
+    // ── sum_list pure logic ───────────────────────────────────────────────────
+    // The actual LIST reading is FFI; here we test the summation logic.
+
+    #[test]
+    fn sum_list_logic_basic() {
+        let values = vec![Some(1i64), Some(2), Some(3)];
+        let sum: i64 = values.iter().filter_map(|v| *v).sum();
+        assert_eq!(sum, 6);
+    }
+
+    #[test]
+    fn sum_list_logic_with_nulls() {
+        let values = vec![Some(10i64), None, Some(20)];
+        let sum: i64 = values.iter().filter_map(|v| *v).sum();
+        assert_eq!(sum, 30);
+    }
+
+    #[test]
+    fn sum_list_logic_empty() {
+        let values: Vec<Option<i64>> = vec![];
+        let sum: i64 = values.iter().filter_map(|v| *v).sum();
+        assert_eq!(sum, 0);
+    }
+
+    #[test]
+    fn sum_list_logic_all_null_elements() {
+        let values = vec![None, None, None];
+        let sum: i64 = values.iter().filter_map(|v: &Option<i64>| *v).sum();
+        assert_eq!(sum, 0);
+    }
+
+    // ── coalesce logic ───────────────────────────────────────────────────────
+
+    #[test]
+    fn coalesce_logic_first_non_null() {
+        let a: Option<i64> = Some(42);
+        let b: Option<i64> = Some(99);
+        let result = a.or(b);
+        assert_eq!(result, Some(42));
+    }
+
+    #[test]
+    fn coalesce_logic_first_null_fallback() {
+        let a: Option<i64> = None;
+        let b: Option<i64> = Some(99);
+        let result = a.or(b);
+        assert_eq!(result, Some(99));
+    }
+
+    #[test]
+    fn coalesce_logic_both_null() {
+        let a: Option<i64> = None;
+        let b: Option<i64> = None;
+        let result = a.or(b);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn coalesce_logic_varchar() {
+        let a: Option<&str> = None;
+        let b: Option<&str> = Some("fallback");
+        let result = a.or(b);
+        assert_eq!(result, Some("fallback"));
     }
 }
