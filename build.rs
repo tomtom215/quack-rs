@@ -13,6 +13,14 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // On Windows, bundled DuckDB uses the Restart Manager API (RmStartSession,
+    // RmEndSession, RmRegisterResources, RmGetList) in its AdditionalLockInfo()
+    // function.  libduckdb-sys's build script does not emit a link directive for
+    // rstrtmgr.lib, so we add it here whenever we're building for Windows.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rustc-link-lib=rstrtmgr");
+    }
+
     // Only needed when bundled-test is enabled.
     if env::var("CARGO_FEATURE_BUNDLED_TEST").is_err() {
         return;
