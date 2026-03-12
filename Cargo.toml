@@ -39,8 +39,31 @@ crate-type = ["rlib"]
 ## on crates.io, at which point version-specific wrappers will be added behind it.
 duckdb-1-5 = []
 
+## Links a bundled copy of DuckDB for integration testing.
+##
+## When this feature is enabled, the `testing::InMemoryDb` helper becomes available.
+## It opens a real in-memory DuckDB database using the `duckdb` Rust crate, which
+## bypasses the `loadable-extension` dispatch mechanism entirely.
+##
+## # Important: architectural limitation
+##
+## Even with this feature, quack-rs's own wrappers (`VectorReader`, `VectorWriter`,
+## `Connection::register_*`) still route through the `loadable-extension` dispatch
+## table and cannot be called in `cargo test`. Use `InMemoryDb` for SQL-level
+## assertions (e.g. verifying SQL macro output) and `MockVectorWriter` /
+## `MockVectorReader` for callback logic tests.
+##
+## # Usage in your extension
+##
+## ```toml
+## [dev-dependencies]
+## quack-rs = { version = "0.5", features = ["bundled-test"] }
+## ```
+bundled-test = ["dep:duckdb"]
+
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+duckdb = { version = ">=1.4.4, <2", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }

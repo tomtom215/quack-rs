@@ -213,6 +213,20 @@ impl CastFunctionBuilder {
         }
     }
 
+    /// Returns the source type this cast converts from.
+    ///
+    /// Useful for introspection and for [`MockRegistrar`][crate::testing::MockRegistrar].
+    pub const fn source(&self) -> TypeId {
+        self.source
+    }
+
+    /// Returns the target type this cast converts to.
+    ///
+    /// Useful for introspection and for [`MockRegistrar`][crate::testing::MockRegistrar].
+    pub const fn target(&self) -> TypeId {
+        self.target
+    }
+
     /// Sets the cast callback.
     pub fn function(mut self, f: CastFn) -> Self {
         self.function = Some(f);

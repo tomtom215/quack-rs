@@ -114,6 +114,13 @@ impl AggregateFunctionSetBuilder {
         })
     }
 
+    /// Returns the function set name.
+    ///
+    /// Useful for introspection and for [`MockRegistrar`][crate::testing::MockRegistrar].
+    pub fn name(&self) -> &str {
+        self.name.to_str().unwrap_or("")
+    }
+
     /// Sets the return type for all overloads in this function set.
     ///
     /// For complex return types like `LIST(BIGINT)`, use

@@ -122,6 +122,13 @@ impl AggregateFunctionBuilder {
         })
     }
 
+    /// Returns the function name.
+    ///
+    /// Useful for introspection and for [`MockRegistrar`][crate::testing::MockRegistrar].
+    pub fn name(&self) -> &str {
+        self.name.to_str().unwrap_or("")
+    }
+
     /// Adds a positional parameter with the given type.
     ///
     /// Call this once per parameter in order. For complex types like
