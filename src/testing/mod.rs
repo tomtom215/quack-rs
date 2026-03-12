@@ -14,7 +14,7 @@
 //! | [`MockVectorWriter`] | Write values to an in-memory buffer (replaces real output vector) |
 //! | [`MockVectorReader`] | Read values from an in-memory buffer (replaces real input vector) |
 //! | [`MockRegistrar`] | Verify which functions are registered, without a `DuckDB` connection |
-//! | [`InMemoryDb`] | Open a real bundled `DuckDB` for SQL-level tests (`bundled-test` feature) |
+//! | `InMemoryDb` | Open a real bundled `DuckDB` for SQL-level tests (`bundled-test` feature) |
 //!
 //! # Architectural limitation: `loadable-extension` dispatch
 //!
@@ -44,13 +44,13 @@
 //!
 //! - **Aggregate state logic** — use [`AggregateTestHarness`]
 //! - **Callback output logic** — extract into pure Rust, test with [`MockVectorWriter`] / [`MockVectorReader`]
-//! - **Registration structure** — use [`MockRegistrar`] (builders with only [`TypeId`][crate::types::TypeId] params)
+//! - **Registration structure** — use [`MockRegistrar`] (builders with only [`TypeId`][crate::types::TypeId] parameters)
 //! - **SQL macro SQL generation** — [`SqlMacro::to_sql()`][crate::sql_macro::SqlMacro::to_sql] is pure Rust
 //! - **Interval conversions** — [`interval_to_micros`][crate::interval::interval_to_micros] is pure Rust
 //! - **Validation / scaffold** — [`validate`][crate::validate] and [`scaffold`][crate::scaffold] are pure Rust
-//! - **SQL-level results** — use [`InMemoryDb`] (requires `bundled-test` Cargo feature)
+//! - **SQL-level results** — use `InMemoryDb` (requires `bundled-test` Cargo feature)
 //!
-//! # What requires E2E tests (SQLLogicTest)
+//! # What requires E2E tests (`SQLLogicTest`)
 //!
 //! - FFI wiring correctness (entry point, callback signatures)
 //! - Function registration success (Pitfall P6: registration can fail silently)
@@ -66,7 +66,7 @@
 //! `MyState::combine` methods produce correct results. They run fast and
 //! catch logical bugs.
 //!
-//! **E2E tests (`DuckDB` CLI / `SQLLogicTest`)** verify that the FFI wiring is
+//! **E2E tests (`DuckDB` CLI / ``SQLLogicTest``)** verify that the FFI wiring is
 //! correct — that `state_size`, `state_init`, `state_destroy`, and the
 //! callback signatures match what `DuckDB` expects.
 //!

@@ -634,12 +634,16 @@ fn mock_vector_writer_grows_beyond_initial_capacity() {
 
 #[test]
 fn mock_vector_writer_boolean_and_interval() {
-    use quack_rs::testing::MockVectorWriter;
     use quack_rs::interval::DuckInterval;
+    use quack_rs::testing::MockVectorWriter;
 
     let mut w = MockVectorWriter::new(2);
     w.write_bool(0, true);
-    let iv = DuckInterval { months: 1, days: 2, micros: 3 };
+    let iv = DuckInterval {
+        months: 1,
+        days: 2,
+        micros: 3,
+    };
     w.write_interval(1, iv);
 
     assert_eq!(w.try_get_bool(0), Some(true));
@@ -686,12 +690,7 @@ fn mock_vector_pattern_extract_and_test_logic() {
     // pure-Rust function that can be called with MockVectorReader/Writer.
     use quack_rs::testing::{MockVectorReader, MockVectorWriter};
 
-    fn clamp_values(
-        reader: &MockVectorReader,
-        writer: &mut MockVectorWriter,
-        lo: i64,
-        hi: i64,
-    ) {
+    fn clamp_values(reader: &MockVectorReader, writer: &mut MockVectorWriter, lo: i64, hi: i64) {
         for i in 0..reader.row_count() {
             if reader.is_valid(i) {
                 let v = reader.try_get_i64(i).unwrap_or(0);

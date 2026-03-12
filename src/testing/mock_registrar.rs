@@ -3,7 +3,7 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! [`MockRegistrar`] — a [`Registrar`][crate::connection::Registrar] implementation for testing.
+//! [`MockRegistrar`] — a [`Registrar`] implementation for testing.
 //!
 //! `MockRegistrar` records which functions were registered without calling any
 //! `DuckDB` C API. Use it to unit-test your registration logic — verifying that
@@ -18,7 +18,7 @@
 //! implementation calls `duckdb_destroy_logical_type`, which panics when the
 //! `DuckDB` dispatch table is uninitialized.
 //!
-//! Stick to [`TypeId`][crate::types::TypeId]-based parameter and return types
+//! Stick to [`TypeId`]-based parameter and return types
 //! when building functions for use with `MockRegistrar`.
 //!
 //! # Example
@@ -38,13 +38,10 @@
 //!     unsafe { reg.register_scalar(scalar) }
 //! }
 //!
-//! #[test]
-//! fn test_register_all_registers_expected_functions() {
-//!     let mock = MockRegistrar::new();
-//!     register_all(&mock).unwrap();
-//!     assert!(mock.has_scalar("word_count"));
-//!     assert_eq!(mock.total_registrations(), 1);
-//! }
+//! let mock = MockRegistrar::new();
+//! register_all(&mock).unwrap();
+//! assert!(mock.has_scalar("word_count"));
+//! assert_eq!(mock.total_registrations(), 1);
 //! ```
 
 use std::cell::RefCell;
@@ -59,7 +56,7 @@ use crate::table::TableFunctionBuilder;
 use crate::types::TypeId;
 
 /// A record of a single cast function registration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CastRecord {
     /// The source type being cast from.
     pub source: TypeId,

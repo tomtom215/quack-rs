@@ -17,7 +17,7 @@
 //! `duckdb_rs_extension_api_init` at extension load time. In `cargo test`, no
 //! `DuckDB` process loads the extension, so the dispatch table is never
 //! initialized and any call to `VectorReader::new` or `VectorWriter::new` panics
-//! with "DuckDB API not initialized".
+//! with `DuckDB API not initialized`.
 //!
 //! These mock types provide the same write/read interface but store data in a
 //! plain `Vec`, with no `DuckDB` dependency at all.
@@ -42,17 +42,14 @@
 //!     }
 //! }
 //!
-//! #[test]
-//! fn test_double_logic() {
-//!     let reader = MockVectorReader::from_i64s([Some(1), Some(5), None, Some(-3)]);
-//!     let mut writer = MockVectorWriter::new(4);
-//!     compute_double(&reader, &mut writer);
+//! let reader = MockVectorReader::from_i64s([Some(1), Some(5), None, Some(-3)]);
+//! let mut writer = MockVectorWriter::new(4);
+//! compute_double(&reader, &mut writer);
 //!
-//!     assert_eq!(writer.try_get_i64(0), Some(2));
-//!     assert_eq!(writer.try_get_i64(1), Some(10));
-//!     assert!(writer.is_null(2));
-//!     assert_eq!(writer.try_get_i64(3), Some(-6));
-//! }
+//! assert_eq!(writer.try_get_i64(0), Some(2));
+//! assert_eq!(writer.try_get_i64(1), Some(10));
+//! assert!(writer.is_null(2));
+//! assert_eq!(writer.try_get_i64(3), Some(-6));
 //! ```
 
 use crate::interval::DuckInterval;
@@ -144,7 +141,7 @@ impl MockVectorWriter {
     /// Returns `true` if row `idx` is NULL or has not been written.
     #[must_use]
     pub fn is_null(&self, idx: usize) -> bool {
-        self.rows.get(idx).map_or(true, |v| v.is_none())
+        self.rows.get(idx).is_none_or(Option::is_none)
     }
 
     /// Returns the number of allocated rows (including NULLs).
@@ -400,7 +397,7 @@ impl MockVectorReader {
     /// Always returns `false` for out-of-bounds indices.
     #[must_use]
     pub fn is_valid(&self, idx: usize) -> bool {
-        self.rows.get(idx).map_or(false, |v| v.is_some())
+        self.rows.get(idx).is_some_and(Option::is_some)
     }
 
     /// Returns the raw value at row `idx`, or `None` if NULL or out of bounds.
@@ -518,7 +515,7 @@ mod tests {
         w.write_u8(4, 255);
         w.write_u32(5, 999);
         w.write_u64(6, u64::MAX);
-        w.write_f32(7, 3.14_f32);
+        w.write_f32(7, std::f32::consts::PI);
         w.write_f64(8, std::f64::consts::PI);
         w.write_bool(9, true);
 
