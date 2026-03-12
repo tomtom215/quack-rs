@@ -155,6 +155,12 @@ DuckDB without going through the `loadable-extension` dispatch:
 quack-rs = { version = "0.5", features = ["bundled-test"] }
 ```
 
+> **Build time**: enabling `bundled-test` compiles a full copy of DuckDB from
+> source (the `duckdb` Rust crate with `features = ["bundled"]`). Expect a
+> 2–5 minute incremental build the first time, depending on your machine. This
+> only affects the test build — it has no impact on your extension's release
+> binary.
+
 ```rust,no_run
 # #[cfg(feature = "bundled-test")]
 use quack_rs::testing::InMemoryDb;
