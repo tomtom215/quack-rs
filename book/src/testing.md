@@ -147,19 +147,20 @@ fn test_register_all() {
 For SQL-level assertions — verifying that a SQL macro produces the correct output,
 or that a CREATE TABLE + INSERT + SELECT pipeline works — enable the `bundled-test`
 Cargo feature. This provides `InMemoryDb`, which wraps the `duckdb` crate's bundled
-DuckDB without going through the `loadable-extension` dispatch:
+DuckDB and automatically initialises the `loadable-extension` dispatch table before
+opening a connection (see [Pitfall P9](reference/pitfalls.md#p9)):
 
 ```toml
 # In your extension's Cargo.toml
 [dev-dependencies]
-quack-rs = { version = "0.5", features = ["bundled-test"] }
+quack-rs = { version = "0.6", features = ["bundled-test"] }
 ```
 
 > **Build time**: enabling `bundled-test` compiles a full copy of DuckDB from
-> source (the `duckdb` Rust crate with `features = ["bundled"]`). Expect a
-> 2–5 minute incremental build the first time, depending on your machine. This
-> only affects the test build — it has no impact on your extension's release
-> binary.
+> source (the `duckdb` Rust crate with `features = ["bundled"]`) and a small
+> C++ shim via the `cc` build dependency. Expect a 2–5 minute incremental build
+> the first time, depending on your machine. This only affects the test build —
+> it has no impact on your extension's release binary.
 
 ```rust,no_run
 # #[cfg(feature = "bundled-test")]
@@ -509,7 +510,7 @@ harness properties.
 
 ```toml
 [dev-dependencies]
-quack-rs = { version = "0.5", features = [] }
+quack-rs = { version = "0.6", features = [] }
 proptest = "1"
 ```
 

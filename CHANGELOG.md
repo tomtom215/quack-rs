@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-12
+
+### Added
+
+- **`InMemoryDb` dispatch table initialisation** — `InMemoryDb::open()` now
+  correctly initialises the `loadable-extension` dispatch table from bundled
+  DuckDB symbols before opening a connection, allowing all three `InMemoryDb`
+  unit tests to pass under `cargo test --features bundled-test`. Previously
+  every call to `InMemoryDb::open()` panicked with
+  `"DuckDB API not initialized or DuckDB feature omitted"` because the
+  `loadable-extension` dispatch table was never populated in `cargo test`.
+
+- **`src/testing/bundled_api_init.cpp`** — thin C++ shim that wraps DuckDB's
+  internal `CreateAPIv1()` function (from `duckdb/main/capi/extension_api.hpp`)
+  as a C-linkage symbol (`quack_rs_create_api_v1`). Called once at test startup
+  to populate all 459 `AtomicPtr` slots in the dispatch table with real bundled
+  DuckDB function pointers.
+
+- **`build.rs`** — Cargo build script that, when the `bundled-test` feature is
+  active, locates the `libduckdb-sys` build output directory, finds the bundled
+  DuckDB include path, and compiles `bundled_api_init.cpp` via the `cc` crate.
+
+- **CI: `test-bundled` job** — new CI job runs
+  `cargo test --all-targets --features bundled-test` on all three platforms
+  (Linux, macOS, Windows) on every push and pull request, closing the gap that
+  allowed this failure to reach the release workflow undetected.
+
+- **Pitfall P9 documented** — `LESSONS.md` now contains a full analysis of the
+  `loadable-extension` dispatch table failure mode: root cause, the
+  `CreateAPIv1()` solution, ABI compatibility details, risks of relying on
+  DuckDB's internal C++ header, and a mitigation table.
+
+### Fixed
+
+- `InMemoryDb::open()` no longer panics when called in `cargo test` with the
+  `bundled-test` feature enabled. This was a regression introduced when
+  `InMemoryDb` was first shipped in 0.5.1 without the dispatch table
+  initialisation step.
+
+### Changed
+
+- `bundled-test` feature documentation updated to accurately describe the
+  dispatch table initialisation behaviour (previously claimed to "bypass" the
+  dispatch mechanism; it now correctly initialises it).
+
 ## [0.5.1] - 2026-03-12
 
 ### Added
@@ -322,7 +367,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tomtom215/quack-rs/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/tomtom215/quack-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/tomtom215/quack-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
