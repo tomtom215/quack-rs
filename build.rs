@@ -28,6 +28,12 @@ fn main() {
         .flag_if_supported("-std=c++11")
         // Suppress warnings from DuckDB headers that we don't own.
         .flag_if_supported("-w")
+        // On Windows/MSVC the DuckDB headers declare all public symbols with
+        // __declspec(dllimport) unless DUCKDB_STATIC_BUILD is defined.  Without
+        // this flag the compiler emits __imp_duckdb_* references, but the
+        // bundled static library exports plain duckdb_* symbols, causing
+        // LNK2019 "unresolved external symbol __imp_duckdb_*" errors at link.
+        .define("DUCKDB_STATIC_BUILD", None)
         .compile("quack_rs_bundled_init");
 
     println!("cargo:rerun-if-changed=src/testing/bundled_api_init.cpp");
