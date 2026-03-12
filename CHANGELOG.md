@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-03-12
+
+### Added
+
+- **Testing primitives (`quack_rs::testing`)** — new mock types for unit-testing
+  extension logic without a live DuckDB process:
+  - `MockVectorWriter` — in-memory output buffer matching the `VectorWriter` API;
+    use to test scalar/aggregate finalize/scan callbacks
+  - `MockVectorReader` — in-memory input buffer with convenience constructors
+    (`from_i64s`, `from_strs`, `from_bools`, `from_f64s`, `from_i32s`)
+  - `MockDuckValue` — typed enum covering all DuckDB scalar types
+  - `MockRegistrar` — implements the `Registrar` trait using interior mutability;
+    records registered functions without any C API call
+  - `CastRecord` — records source/target types for cast registrations
+
+- **`bundled-test` Cargo feature** — links the bundled DuckDB static library via
+  the `duckdb` crate and enables `InMemoryDb::open()` for SQL-level assertions in
+  `cargo test`. Does not initialize the `loadable-extension` dispatch table.
+
+- **`InMemoryDb`** — wraps `duckdb::Connection` for SQL-level integration tests;
+  available behind the `bundled-test` feature.
+
+- **Builder introspection accessors** — `pub fn name(&self) -> &str` added to
+  `ScalarFunctionBuilder`, `ScalarFunctionSetBuilder`, `AggregateFunctionBuilder`,
+  `AggregateFunctionSetBuilder`, and `TableFunctionBuilder`. `pub fn source(&self)
+  -> TypeId` and `pub fn target(&self) -> TypeId` added to `CastFunctionBuilder`.
+
+### Security
+
+- Bump `quinn-proto` 0.11.13 → 0.11.14 in root and `examples/hello-ext`
+  `Cargo.lock` files (addresses RUSTSEC advisory).
+
 ## [0.5.0] - 2026-03-10
 
 ### Added
