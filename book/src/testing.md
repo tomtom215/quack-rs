@@ -6,6 +6,189 @@ inside an actual DuckDB process.
 
 ---
 
+## Architectural limitation: the `loadable-extension` dispatch wall
+
+This is the most important thing to understand before writing tests.
+
+`DuckDB` loadable extensions use `libduckdb-sys` with
+`features = ["loadable-extension"]`. This intentionally **does not link the
+DuckDB runtime** into the extension binary. Instead, every DuckDB C API call
+(`duckdb_vector_get_data`, `duckdb_create_logical_type`, etc.) goes through a
+lazy dispatch table — a global struct of `AtomicPtr<fn>` pointers initialized
+only when DuckDB calls `duckdb_rs_extension_api_init` at extension-load time.
+
+**In `cargo test`, no DuckDB process loads your extension.** The dispatch table
+is never initialized, and the first call to any DuckDB C API function panics:
+
+```text
+DuckDB API not initialized
+```
+
+### What this breaks
+
+| API | Why it fails |
+|-----|--------------|
+| `VectorReader::new` | calls `duckdb_vector_get_data` |
+| `VectorWriter::new` | calls `duckdb_vector_get_data` |
+| `Connection::register_*` | calls DuckDB registration C API |
+| `LogicalType::new` | calls `duckdb_create_logical_type` |
+| `LogicalType::drop` | calls `duckdb_destroy_logical_type` |
+| `BindInfo::add_result_column` | calls `duckdb_bind_add_result_column` |
+
+### What still works in `cargo test`
+
+| API | Why it works |
+|-----|--------------|
+| `AggregateTestHarness` | pure Rust, zero DuckDB dependency |
+| `MockVectorWriter` / `MockVectorReader` | in-memory buffers, zero DuckDB dependency |
+| `MockRegistrar` | records registrations without calling C API |
+| `SqlMacro::to_sql()` | generates SQL strings, no DuckDB needed |
+| `interval_to_micros` | pure arithmetic |
+| `validate` / `scaffold` | pure Rust |
+| `InMemoryDb` | uses bundled DuckDB via `duckdb` crate (`bundled-test` feature) |
+
+---
+
+## Mock types for callback logic
+
+When your scalar or table function callback reads inputs and writes outputs,
+extract that logic into a pure-Rust function. Then test it with
+`MockVectorReader` (input) and `MockVectorWriter` (output):
+
+```rust
+use quack_rs::testing::{MockVectorReader, MockVectorWriter};
+
+// Pure Rust logic — extracted from the FFI callback
+fn compute_upper(reader: &MockVectorReader, writer: &mut MockVectorWriter) {
+    for i in 0..reader.row_count() {
+        if reader.is_valid(i) {
+            let s = reader.try_get_str(i).unwrap_or("");
+            writer.write_varchar(i, &s.to_uppercase());
+        } else {
+            writer.set_null(i);
+        }
+    }
+}
+
+#[test]
+fn test_compute_upper() {
+    let reader = MockVectorReader::from_strs([Some("hello"), None, Some("world")]);
+    let mut writer = MockVectorWriter::new(3);
+    compute_upper(&reader, &mut writer);
+
+    assert_eq!(writer.try_get_str(0), Some("HELLO"));
+    assert!(writer.is_null(1));
+    assert_eq!(writer.try_get_str(2), Some("WORLD"));
+}
+```
+
+The real FFI callback becomes a thin wrapper:
+
+```rust,no_run
+unsafe extern "C" fn my_scalar(
+    _info: duckdb_function_info,
+    input: duckdb_data_chunk,
+    output: duckdb_vector,
+) {
+    // Real DuckDB wrappers — only used in production, not in cargo test
+    let reader = unsafe { VectorReader::new(input, 0) };
+    let mut writer = unsafe { VectorWriter::new(output) };
+    // TODO: adapt mock-compatible logic to real readers/writers
+}
+```
+
+---
+
+## Testing registration with `MockRegistrar`
+
+`MockRegistrar` implements the `Registrar` trait without calling any DuckDB C API.
+Use it to verify your registration function registers the right set of functions:
+
+```rust
+use quack_rs::connection::Registrar;
+use quack_rs::testing::MockRegistrar;
+use quack_rs::scalar::ScalarFunctionBuilder;
+use quack_rs::types::TypeId;
+use quack_rs::error::ExtensionError;
+
+fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
+    let upper = ScalarFunctionBuilder::new("upper_ext")
+        .param(TypeId::Varchar)
+        .returns(TypeId::Varchar);
+    let lower = ScalarFunctionBuilder::new("lower_ext")
+        .param(TypeId::Varchar)
+        .returns(TypeId::Varchar);
+    unsafe {
+        reg.register_scalar(upper)?;
+        reg.register_scalar(lower)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn test_register_all() {
+    let mock = MockRegistrar::new();
+    register_all(&mock).unwrap();
+    assert_eq!(mock.total_registrations(), 2);
+    assert!(mock.has_scalar("upper_ext"));
+    assert!(mock.has_scalar("lower_ext"));
+}
+```
+
+> **Limitation**: `MockRegistrar` cannot be used with builders that hold
+> `LogicalType` values (created via `.returns_logical()` or `.param_logical()`),
+> because `LogicalType::drop` calls `duckdb_destroy_logical_type`. Use `TypeId`
+> parameters with `MockRegistrar`.
+
+---
+
+## SQL-level testing with `InMemoryDb` (`bundled-test` feature)
+
+For SQL-level assertions — verifying that a SQL macro produces the correct output,
+or that a CREATE TABLE + INSERT + SELECT pipeline works — enable the `bundled-test`
+Cargo feature. This provides `InMemoryDb`, which wraps the `duckdb` crate's bundled
+DuckDB without going through the `loadable-extension` dispatch:
+
+```toml
+# In your extension's Cargo.toml
+[dev-dependencies]
+quack-rs = { version = "0.5", features = ["bundled-test"] }
+```
+
+> **Build time**: enabling `bundled-test` compiles a full copy of DuckDB from
+> source (the `duckdb` Rust crate with `features = ["bundled"]`). Expect a
+> 2–5 minute incremental build the first time, depending on your machine. This
+> only affects the test build — it has no impact on your extension's release
+> binary.
+
+```rust,no_run
+# #[cfg(feature = "bundled-test")]
+use quack_rs::testing::InMemoryDb;
+use quack_rs::sql_macro::SqlMacro;
+
+#[test]
+fn test_clamp_macro_sql() {
+    let db = InMemoryDb::open().unwrap();
+
+    // Generate and execute the CREATE MACRO SQL
+    let m = SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))").unwrap();
+    db.execute_batch(&m.to_sql()).unwrap();
+
+    // Verify correct output
+    let result: i64 = db.query_one("SELECT clamp(5, 1, 10)").unwrap();
+    assert_eq!(result, 5);
+
+    let clamped: i64 = db.query_one("SELECT clamp(15, 1, 10)").unwrap();
+    assert_eq!(clamped, 10);
+}
+```
+
+> **Note**: `InMemoryDb` cannot test your FFI callbacks (`VectorReader`,
+> `VectorWriter`) because those still route through the `loadable-extension`
+> dispatch. Use `InMemoryDb` for SQL logic and mocks for callback logic.
+
+---
+
 ## Why two tiers?
 
 > **Pitfall P3** — Unit tests are insufficient. 435 unit tests passed in

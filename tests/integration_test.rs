@@ -583,3 +583,291 @@ fn scaffold_generated_code_compiles() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+// ---------------------------------------------------------------------------
+// MockVectorWriter / MockVectorReader tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mock_vector_writer_basic_write_and_read() {
+    use quack_rs::testing::{MockDuckValue, MockVectorWriter};
+
+    let mut w = MockVectorWriter::new(4);
+    w.write_i64(0, 42);
+    w.write_i64(1, -7);
+    w.set_null(2);
+    w.write_varchar(3, "hello");
+
+    assert_eq!(w.try_get_i64(0), Some(42));
+    assert_eq!(w.try_get_i64(1), Some(-7));
+    assert!(w.is_null(2));
+    assert_eq!(w.try_get_str(3), Some("hello"));
+    // Wrong type returns None
+    assert_eq!(w.try_get_i64(3), None);
+    assert!(matches!(w.get(0), Some(MockDuckValue::I64(42))));
+}
+
+#[test]
+fn mock_vector_writer_set_null_after_write() {
+    use quack_rs::testing::MockVectorWriter;
+
+    let mut w = MockVectorWriter::new(1);
+    w.write_i64(0, 100);
+    assert!(!w.is_null(0));
+    w.set_null(0);
+    assert!(w.is_null(0));
+    assert_eq!(w.try_get_i64(0), None);
+}
+
+#[test]
+fn mock_vector_writer_grows_beyond_initial_capacity() {
+    use quack_rs::testing::MockVectorWriter;
+
+    let mut w = MockVectorWriter::new(0);
+    w.write_i64(3, 99);
+    assert_eq!(w.len(), 4);
+    assert_eq!(w.try_get_i64(3), Some(99));
+    assert!(w.is_null(0));
+    assert!(w.is_null(1));
+    assert!(w.is_null(2));
+}
+
+#[test]
+fn mock_vector_writer_boolean_and_interval() {
+    use quack_rs::interval::DuckInterval;
+    use quack_rs::testing::MockVectorWriter;
+
+    let mut w = MockVectorWriter::new(2);
+    w.write_bool(0, true);
+    let iv = DuckInterval {
+        months: 1,
+        days: 2,
+        micros: 3,
+    };
+    w.write_interval(1, iv);
+
+    assert_eq!(w.try_get_bool(0), Some(true));
+    assert_eq!(w.try_get_interval(1), Some(iv));
+}
+
+#[test]
+fn mock_vector_reader_from_i64s() {
+    use quack_rs::testing::MockVectorReader;
+
+    let r = MockVectorReader::from_i64s([Some(10), None, Some(-5)]);
+    assert_eq!(r.row_count(), 3);
+    assert!(r.is_valid(0));
+    assert!(!r.is_valid(1));
+    assert!(r.is_valid(2));
+    assert_eq!(r.try_get_i64(0), Some(10));
+    assert_eq!(r.try_get_i64(1), None);
+    assert_eq!(r.try_get_i64(2), Some(-5));
+}
+
+#[test]
+fn mock_vector_reader_from_strs() {
+    use quack_rs::testing::MockVectorReader;
+
+    let r = MockVectorReader::from_strs([Some("alpha"), None, Some("beta")]);
+    assert_eq!(r.try_get_str(0), Some("alpha"));
+    assert_eq!(r.try_get_str(1), None);
+    assert_eq!(r.try_get_str(2), Some("beta"));
+    assert!(!r.is_valid(1));
+}
+
+#[test]
+fn mock_vector_reader_out_of_bounds() {
+    use quack_rs::testing::MockVectorReader;
+
+    let r = MockVectorReader::from_i64s([Some(1)]);
+    assert!(!r.is_valid(100));
+    assert_eq!(r.try_get_i64(100), None);
+}
+
+#[test]
+fn mock_vector_pattern_extract_and_test_logic() {
+    // Demonstrates the recommended pattern: extract callback logic into a
+    // pure-Rust function that can be called with MockVectorReader/Writer.
+    use quack_rs::testing::{MockVectorReader, MockVectorWriter};
+
+    fn clamp_values(reader: &MockVectorReader, writer: &mut MockVectorWriter, lo: i64, hi: i64) {
+        for i in 0..reader.row_count() {
+            if reader.is_valid(i) {
+                let v = reader.try_get_i64(i).unwrap_or(0);
+                writer.write_i64(i, v.clamp(lo, hi));
+            } else {
+                writer.set_null(i);
+            }
+        }
+    }
+
+    let reader = MockVectorReader::from_i64s([Some(-5), Some(3), None, Some(15)]);
+    let mut writer = MockVectorWriter::new(4);
+    clamp_values(&reader, &mut writer, 0, 10);
+
+    assert_eq!(writer.try_get_i64(0), Some(0));
+    assert_eq!(writer.try_get_i64(1), Some(3));
+    assert!(writer.is_null(2));
+    assert_eq!(writer.try_get_i64(3), Some(10));
+}
+
+// ---------------------------------------------------------------------------
+// MockRegistrar tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mock_registrar_records_scalar_function() {
+    use quack_rs::connection::Registrar;
+    use quack_rs::scalar::ScalarFunctionBuilder;
+    use quack_rs::testing::MockRegistrar;
+    use quack_rs::types::TypeId;
+
+    let mock = MockRegistrar::new();
+    let b = ScalarFunctionBuilder::new("word_count")
+        .param(TypeId::Varchar)
+        .returns(TypeId::BigInt);
+    unsafe { mock.register_scalar(b).unwrap() };
+
+    assert!(mock.has_scalar("word_count"));
+    assert_eq!(mock.scalar_names(), vec!["word_count"]);
+    assert_eq!(mock.total_registrations(), 1);
+}
+
+#[test]
+fn mock_registrar_records_aggregate_function() {
+    use quack_rs::aggregate::AggregateFunctionBuilder;
+    use quack_rs::connection::Registrar;
+    use quack_rs::testing::MockRegistrar;
+    use quack_rs::types::TypeId;
+
+    let mock = MockRegistrar::new();
+    let b = AggregateFunctionBuilder::new("my_agg")
+        .param(TypeId::BigInt)
+        .returns(TypeId::BigInt);
+    unsafe { mock.register_aggregate(b).unwrap() };
+
+    assert!(mock.has_aggregate("my_agg"));
+    assert_eq!(mock.total_registrations(), 1);
+}
+
+#[test]
+fn mock_registrar_records_table_function() {
+    use quack_rs::connection::Registrar;
+    use quack_rs::table::TableFunctionBuilder;
+    use quack_rs::testing::MockRegistrar;
+
+    let mock = MockRegistrar::new();
+    let b = TableFunctionBuilder::new("my_table_fn");
+    unsafe { mock.register_table(b).unwrap() };
+
+    assert!(mock.has_table("my_table_fn"));
+    assert_eq!(mock.total_registrations(), 1);
+}
+
+#[test]
+fn mock_registrar_records_sql_macro() {
+    use quack_rs::connection::Registrar;
+    use quack_rs::sql_macro::SqlMacro;
+    use quack_rs::testing::MockRegistrar;
+
+    let mock = MockRegistrar::new();
+    let m = SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))").unwrap();
+    unsafe { mock.register_sql_macro(m).unwrap() };
+
+    assert!(mock.has_sql_macro("clamp"));
+    assert_eq!(mock.total_registrations(), 1);
+}
+
+#[test]
+fn mock_registrar_records_cast() {
+    use quack_rs::cast::CastFunctionBuilder;
+    use quack_rs::connection::Registrar;
+    use quack_rs::testing::{CastRecord, MockRegistrar};
+    use quack_rs::types::TypeId;
+
+    let mock = MockRegistrar::new();
+    let b = CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer);
+    unsafe { mock.register_cast(b).unwrap() };
+
+    let casts = mock.casts();
+    assert_eq!(casts.len(), 1);
+    assert_eq!(
+        casts[0],
+        CastRecord {
+            source: TypeId::Varchar,
+            target: TypeId::Integer,
+        }
+    );
+}
+
+#[test]
+fn mock_registrar_used_as_generic_registrar() {
+    // Demonstrates the core use case: passing MockRegistrar where &impl Registrar
+    // is expected, so registration functions can be unit-tested.
+    use quack_rs::connection::Registrar;
+    use quack_rs::error::ExtensionError;
+    use quack_rs::scalar::ScalarFunctionBuilder;
+    use quack_rs::sql_macro::SqlMacro;
+    use quack_rs::testing::MockRegistrar;
+    use quack_rs::types::TypeId;
+
+    fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
+        let upper = ScalarFunctionBuilder::new("upper_ext")
+            .param(TypeId::Varchar)
+            .returns(TypeId::Varchar);
+        let m = SqlMacro::scalar("pi", &[], "3.14159265358979").unwrap();
+        unsafe {
+            reg.register_scalar(upper)?;
+            reg.register_sql_macro(m)?;
+        }
+        Ok(())
+    }
+
+    let mock = MockRegistrar::new();
+    register_all(&mock).unwrap();
+
+    assert_eq!(mock.total_registrations(), 2);
+    assert!(mock.has_scalar("upper_ext"));
+    assert!(mock.has_sql_macro("pi"));
+    assert!(!mock.has_scalar("pi")); // pi is a macro, not a scalar
+}
+
+// ---------------------------------------------------------------------------
+// Builder name() accessor tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scalar_builder_name_accessor() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+    use quack_rs::types::TypeId;
+
+    let b = ScalarFunctionBuilder::new("my_scalar").returns(TypeId::BigInt);
+    assert_eq!(b.name(), "my_scalar");
+}
+
+#[test]
+fn aggregate_builder_name_accessor() {
+    use quack_rs::aggregate::AggregateFunctionBuilder;
+    use quack_rs::types::TypeId;
+
+    let b = AggregateFunctionBuilder::new("my_agg").returns(TypeId::BigInt);
+    assert_eq!(b.name(), "my_agg");
+}
+
+#[test]
+fn table_builder_name_accessor() {
+    use quack_rs::table::TableFunctionBuilder;
+
+    let b = TableFunctionBuilder::new("my_table");
+    assert_eq!(b.name(), "my_table");
+}
+
+#[test]
+fn cast_builder_source_target_accessors() {
+    use quack_rs::cast::CastFunctionBuilder;
+    use quack_rs::types::TypeId;
+
+    let b = CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer);
+    assert_eq!(b.source(), TypeId::Varchar);
+    assert_eq!(b.target(), TypeId::Integer);
+}
