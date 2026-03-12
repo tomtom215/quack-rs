@@ -13,6 +13,14 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // On Windows, bundled DuckDB uses the Restart Manager API (RmStartSession,
+    // RmEndSession, RmRegisterResources, RmGetList) in its AdditionalLockInfo()
+    // function.  libduckdb-sys's build script does not emit a link directive for
+    // rstrtmgr.lib, so we add it here whenever we're building for Windows.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rustc-link-lib=rstrtmgr");
+    }
+
     // Only needed when bundled-test is enabled.
     if env::var("CARGO_FEATURE_BUNDLED_TEST").is_err() {
         return;
@@ -28,6 +36,12 @@ fn main() {
         .flag_if_supported("-std=c++11")
         // Suppress warnings from DuckDB headers that we don't own.
         .flag_if_supported("-w")
+        // On Windows/MSVC the DuckDB headers declare all public symbols with
+        // __declspec(dllimport) unless DUCKDB_STATIC_BUILD is defined.  Without
+        // this flag the compiler emits __imp_duckdb_* references, but the
+        // bundled static library exports plain duckdb_* symbols, causing
+        // LNK2019 "unresolved external symbol __imp_duckdb_*" errors at link.
+        .define("DUCKDB_STATIC_BUILD", None)
         .compile("quack_rs_bundled_init");
 
     println!("cargo:rerun-if-changed=src/testing/bundled_api_init.cpp");
