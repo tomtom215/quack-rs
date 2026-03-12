@@ -299,6 +299,82 @@ uses 1 month = 30 days (DuckDB's approximation).
 
 ---
 
+## P9: `loadable-extension` dispatch table uninitialised in `cargo test` {#p9}
+
+**Status**: Fixed. `InMemoryDb::open()` initialises the dispatch table
+automatically.
+
+**Symptom**: All three `InMemoryDb` unit tests panic at runtime:
+
+```text
+thread 'testing::in_memory_db::tests::in_memory_db_opens' panicked at
+'DuckDB API not initialized or DuckDB feature omitted'
+```
+
+This failure appears only when running `cargo test --features bundled-test`.
+Regular `cargo test` (no feature) does not exercise this code path, so CI can
+miss it entirely.
+
+**Root cause**: Cargo's feature-unification merges `loadable-extension` (from
+the main `libduckdb-sys` dependency) and `bundled-full` (pulled in by the
+`duckdb` crate's `features = ["bundled"]`) into a single `libduckdb-sys` build
+with **both features active**. In `loadable-extension` mode every DuckDB C API
+call is routed through an `AtomicPtr<fn>` dispatch table, which is normally
+populated at extension-load time when DuckDB calls
+`duckdb_rs_extension_api_init`. In `cargo test`, no DuckDB host process loads
+the extension, so the table stays uninitialised and every call panics.
+
+**Discovery**: This was triggered by the crates.io release workflow (which runs
+`--all-features`) failing on macOS. Regular CI (`--no-default-features`,
+`--all-targets`) never compiled the `bundled-test` path, so the bug was hidden
+during development and code review.
+
+**Fix** (implemented in quack-rs 0.6.0):
+
+1. `src/testing/bundled_api_init.cpp` — a thin C++ shim that wraps DuckDB's
+   internal `CreateAPIv1()` (from `duckdb/main/capi/extension_api.hpp`) as a
+   C-linkage symbol:
+
+   ```cpp
+   #include "duckdb/main/capi/extension_api.hpp"
+   extern "C" duckdb_ext_api_v1 quack_rs_create_api_v1() {
+       return CreateAPIv1();
+   }
+   ```
+
+2. `build.rs` — compiles the shim (via the `cc` crate) only when the
+   `bundled-test` feature is active, locating the DuckDB headers from the
+   `libduckdb-sys` build output directory.
+
+3. `InMemoryDb::open()` — calls `init_dispatch_table_once()` before opening
+   the connection. That function calls `quack_rs_create_api_v1()` once and
+   feeds the result through `duckdb_rs_extension_api_init`, populating all 459
+   `AtomicPtr` slots in the dispatch table. A `std::sync::Once` guard makes it
+   safe to call from any number of threads and test cases.
+
+4. CI `test-bundled` job — runs
+   `cargo test --all-targets --features bundled-test` on Linux, macOS, and
+   Windows on every PR, so this class of failure is caught before release.
+
+**ABI compatibility note**: DuckDB's `duckdb_ext_api_v1` struct is defined
+identically in both the public `duckdb_extension.h` (used by `libduckdb-sys`
+bindgen) and the internal `extension_api.hpp` (used by `CreateAPIv1()`). Both
+include the `DUCKDB_EXTENSION_API_VERSION_UNSTABLE` fields. `CreateAPIv1()` sets
+all 459 fields. The Rust and C++ structs are produced from the same DuckDB
+release and therefore stay in sync.
+
+**Risk table** (using DuckDB's internal C++ API):
+
+| Risk | Mitigation |
+|------|-----------|
+| `extension_api.hpp` is renamed or moved | `build.rs` fails with a clear compile error |
+| `CreateAPIv1()` is renamed | Same — C++ compile error |
+| `duckdb_ext_api_v1` gains new fields | `CreateAPIv1()` fills new fields too |
+| `duckdb_ext_api_v1` field order changes | Both structs from same DuckDB release, stay in sync |
+| `libduckdb-sys` drops `loadable-extension` dispatch | Problem disappears; `Once` guard becomes cheap no-op |
+
+---
+
 ## Summary
 
 | Pitfall | SDK status | Your action |
@@ -318,3 +394,4 @@ uses 1 month = 30 days (DuckDB's approximation).
 | P6: register set silent fail | Prevented | Builder returns `Err` |
 | P7: VARCHAR format undocumented | Prevented | Use `VectorReader::read_str` |
 | P8: INTERVAL layout undocumented | Prevented | Use `DuckInterval` |
+| P9: dispatch table uninitialised | Fixed | `InMemoryDb::open()` initialises it via C++ shim |

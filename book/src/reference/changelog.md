@@ -12,6 +12,70 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.6.0] — 2026-03-12
+
+### Added
+
+- **`InMemoryDb` dispatch table initialisation** — `InMemoryDb::open()` now
+  correctly initialises the `loadable-extension` dispatch table from bundled
+  DuckDB symbols before opening a connection. Previously, every call panicked
+  with `"DuckDB API not initialized"` when the `bundled-test` feature was
+  enabled in `cargo test`. See [Pitfall P9](pitfalls.md#p9) for the full
+  technical analysis.
+
+- **`src/testing/bundled_api_init.cpp`** — thin C++ shim exposing DuckDB's
+  internal `CreateAPIv1()` as a C-linkage symbol, compiled at build time via
+  the `cc` crate. Populates all 459 `AtomicPtr` dispatch table slots with real
+  bundled DuckDB function pointers.
+
+- **`build.rs`** — Cargo build script that locates the `libduckdb-sys` include
+  path and compiles the C++ shim when the `bundled-test` feature is active.
+
+- **CI: `test-bundled` job** — new CI job runs
+  `cargo test --all-targets --features bundled-test` on Linux, macOS, and
+  Windows on every PR, closing the gap that allowed this failure to reach the
+  release workflow undetected.
+
+- **Pitfall P9 documented** — full analysis in `LESSONS.md` and the
+  [Pitfall Catalog](pitfalls.md#p9): root cause, `CreateAPIv1()` solution,
+  ABI compatibility details, risks of the internal C++ API, and a mitigation
+  table.
+
+### Fixed
+
+- `InMemoryDb::open()` no longer panics under `cargo test --features
+  bundled-test`. This was broken from the initial 0.5.1 release.
+
+### Changed
+
+- `bundled-test` feature documentation updated to describe dispatch table
+  initialisation accurately.
+
+---
+
+## [0.5.1] — 2026-03-12
+
+### Added
+
+- **Testing primitives (`quack_rs::testing`)** — `MockVectorWriter`,
+  `MockVectorReader`, `MockDuckValue`, `MockRegistrar`, `CastRecord`.
+
+- **`bundled-test` Cargo feature** — enables `InMemoryDb` for SQL-level
+  assertions in `cargo test`. *(Note: `InMemoryDb::open()` was broken in this
+  release and fixed in 0.6.0.)*
+
+- **`InMemoryDb`** — wraps `duckdb::Connection` for SQL-level integration
+  tests; available behind the `bundled-test` feature.
+
+- **Builder introspection accessors** — `name()` on all function builders;
+  `source()`/`target()` on `CastFunctionBuilder`.
+
+### Security
+
+- Bump `quinn-proto` 0.11.13 → 0.11.14 (addresses RUSTSEC advisory).
+
+---
+
 ## [0.5.0] — 2026-03-10
 
 ### Added
@@ -259,7 +323,9 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tomtom215/quack-rs/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/tomtom215/quack-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/tomtom215/quack-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0

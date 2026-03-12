@@ -1516,6 +1516,7 @@ dependencies = [
 name = "quack-rs"
 version = "0.5.1"
 dependencies = [
+ "cc",
  "criterion",
  "duckdb",
  "libduckdb-sys",

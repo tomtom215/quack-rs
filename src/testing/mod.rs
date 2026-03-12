@@ -14,19 +14,24 @@
 //! | [`MockVectorWriter`] | Write values to an in-memory buffer (replaces real output vector) |
 //! | [`MockVectorReader`] | Read values from an in-memory buffer (replaces real input vector) |
 //! | [`MockRegistrar`] | Verify which functions are registered, without a `DuckDB` connection |
-//! | `InMemoryDb` | Open a real bundled `DuckDB` for SQL-level tests (`bundled-test` feature) |
+//! | [`InMemoryDb`] | Open a real bundled `DuckDB` for SQL-level tests (`bundled-test` feature) |
 //!
 //! # Architectural limitation: `loadable-extension` dispatch
 //!
 //! `DuckDB` loadable extensions use `libduckdb-sys` with
 //! `features = ["loadable-extension"]`. This routes every `DuckDB` C API call
 //! through a lazy dispatch table (a global `AtomicPtr` per function). The table
-//! is only initialized when `DuckDB` calls `duckdb_rs_extension_api_init` at
+//! is normally populated when `DuckDB` calls `duckdb_rs_extension_api_init` at
 //! extension-load time.
 //!
-//! **In `cargo test`, no `DuckDB` process loads the extension**, so the dispatch
-//! table is never initialized. Any code that calls a `DuckDB` C API function will
-//! panic with:
+//! **In `cargo test`, no `DuckDB` process loads the extension.** However,
+//! [`InMemoryDb`] works around this automatically: `InMemoryDb::open()` initialises
+//! the dispatch table from the bundled `DuckDB` symbols before opening a connection
+//! (see Pitfall P9 in `LESSONS.md` for the full explanation).
+//!
+//! The dispatch table is **not** initialised for quack-rs's own FFI wrappers.
+//! Any direct `libduckdb-sys` call that is *not* mediated by [`InMemoryDb`] will
+//! still panic with:
 //!
 //! ```text
 //! DuckDB API not initialized
@@ -38,7 +43,7 @@
 //! - `Connection::register_*` — calls registration C API functions
 //! - `LogicalType::new` — calls `duckdb_create_logical_type`; `LogicalType::drop` calls
 //!   `duckdb_destroy_logical_type`
-//! - Any other code that touches `libduckdb-sys` symbols
+//! - Any other code that touches `libduckdb-sys` symbols directly
 //!
 //! # What CAN be tested with `cargo test`
 //!

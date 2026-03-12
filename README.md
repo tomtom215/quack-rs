@@ -84,7 +84,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **15 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **16 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```
@@ -104,6 +104,7 @@ P5  SQLLogicTest output must match DuckDB CLI output exactly
 P6  Function registration can fail silently → builders check return values
 P7  DuckDB strings use 16-byte format with inline and pointer variants
 P8  INTERVAL is { months: i32, days: i32, micros: i64 } — not a single i64
+P9  loadable-extension dispatch table uninitialised in cargo test → InMemoryDb initialises it
 ```
 
 See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
@@ -116,7 +117,7 @@ See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
 
 ```toml
 [dependencies]
-quack-rs = "0.5"
+quack-rs = "0.6"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
@@ -370,6 +371,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **P6** | Registration failure not checked | Function silently not registered | Builders check and propagate return values |
 | **P7** | DuckDB 16-byte string format | Garbled or truncated strings | `DuckStringView`, `read_duck_string` |
 | **P8** | INTERVAL layout misunderstood | INTERVAL computed incorrectly | `DuckInterval` with `interval_to_micros` |
+| **P9** | `loadable-extension` dispatch table uninitialised in `cargo test` | `InMemoryDb::open()` panics with `"DuckDB API not initialized"` | `InMemoryDb::open()` calls `CreateAPIv1()` shim to populate dispatch table before opening connection |
 
 ---
 

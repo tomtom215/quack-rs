@@ -1,6 +1,6 @@
 [package]
 name = "quack-rs"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.84.1"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
@@ -42,8 +42,12 @@ duckdb-1-5 = []
 ## Links a bundled copy of DuckDB for integration testing.
 ##
 ## When this feature is enabled, the `testing::InMemoryDb` helper becomes available.
-## It opens a real in-memory DuckDB database using the `duckdb` Rust crate, which
-## bypasses the `loadable-extension` dispatch mechanism entirely.
+## It opens a real in-memory DuckDB database using the `duckdb` Rust crate.
+##
+## Enabling this feature also initialises the `loadable-extension` dispatch table
+## (the function-pointer table that normally gets populated at extension-load time)
+## from the bundled DuckDB symbols, so that `InMemoryDb::open()` works correctly
+## even in `cargo test` where no DuckDB host process loads the extension.
 ##
 ## # Important: architectural limitation
 ##
@@ -64,6 +68,12 @@ bundled-test = ["dep:duckdb"]
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 duckdb = { version = ">=1.4.4, <2", features = ["bundled"], optional = true }
+
+[build-dependencies]
+# Used only when the `bundled-test` feature is active: compiles the thin C++
+# shim that calls DuckDB's internal CreateAPIv1() to initialise the
+# loadable-extension dispatch table from bundled DuckDB symbols.
+cc = "1"
 
 [dev-dependencies]
 duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }
