@@ -495,9 +495,9 @@ checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "libduckdb-sys"
-version = "1.10501.0"
+version = "1.10502.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12096c1694924782b3fe21e790630b77bacb4fcb7ad9d7ee0fec626f985bf248"
+checksum = "8d7401630ae2abcff642f7156294289e50f2d222e061c026ad797b01bf20c215"
 dependencies = [
  "flate2",
  "pkg-config",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "quack-rs"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "cc",
  "libduckdb-sys",
