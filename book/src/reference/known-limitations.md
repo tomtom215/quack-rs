@@ -76,9 +76,15 @@ All constructors have `_from_logical` variants for nested complex types.
 Introspection methods (`get_type_id`, `list_child_type`, `struct_child_count`,
 `decimal_width`, etc.) are also available.
 
-## VARIANT type (Iceberg v3)
+## VARIANT and GEOMETRY types (in the C API; `TypeId` pending)
 
-DuckDB v1.5.1 introduced the `VARIANT` type for Iceberg v3 support.
-This type is **not yet exposed** in the DuckDB C Extension API
-(`DUCKDB_TYPE_VARIANT` does not exist in libduckdb-sys 1.10501.0).
-quack-rs will add `TypeId::Variant` when the C API exposes it.
+DuckDB v1.5.1 introduced the `VARIANT` type for Iceberg v3 support. As of
+**DuckDB 1.5.3** it is present in the C type enum as `DUCKDB_TYPE_VARIANT` (41),
+and the `GEOMETRY` type (`DUCKDB_TYPE_GEOMETRY`, 40) is present as well.
+
+quack-rs does **not yet** expose `TypeId::Variant` or `TypeId::Geometry`. This
+is a version-floor matter rather than a missing C API: the `duckdb-1-5` feature
+targets DuckDB **1.5.0**, but these enum values only exist in later 1.5.x
+bindings (`VARIANT` requires 1.5.3). Adding them under the current feature flag
+would break consumers pinned to libduckdb-sys 1.5.0–1.5.2, so it needs either a
+1.5.3 version floor or a finer-grained feature gate. Tracked as a follow-up.

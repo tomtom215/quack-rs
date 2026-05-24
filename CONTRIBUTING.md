@@ -298,7 +298,15 @@ quack-rs/
 │   │   └── builder.rs             # CastFunctionBuilder, CastFunctionInfo, CastMode
 │   ├── client_context.rs          # ClientContext wrapper (requires `duckdb-1-5`)
 │   ├── config_option.rs           # ConfigOption registration (requires `duckdb-1-5`)
-│   ├── copy_function.rs           # Copy function registration (requires `duckdb-1-5`)
+│   ├── copy_function/
+│   │   ├── mod.rs                 # CopyFunctionBuilder (requires `duckdb-1-5`)
+│   │   └── info.rs                # CopyBindInfo, CopySinkInfo, CopyGlobalInitInfo, CopyFinalizeInfo
+│   ├── appender.rs                # Appender — bulk row insertion (requires `duckdb-1-5`)
+│   ├── error_data.rs              # ErrorData, DuckDbErrorType — structured errors (requires `duckdb-1-5`)
+│   ├── expression.rs              # Expression — bound expr inspection/folding (requires `duckdb-1-5`)
+│   ├── file_system.rs             # FileSystem, FileHandle — DuckDB virtual file system (requires `duckdb-1-5`)
+│   ├── instance_cache.rs          # InstanceCache — shared DB instance cache (requires `duckdb-1-5`)
+│   ├── selection_vector.rs        # SelectionVector — zero-copy row-index vectors (requires `duckdb-1-5`)
 │   ├── replacement_scan/
 │   │   └── mod.rs                 # ReplacementScanBuilder — SELECT * FROM 'file.xyz' patterns
 │   ├── types/

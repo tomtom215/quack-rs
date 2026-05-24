@@ -805,12 +805,18 @@ does not exist in the C API.
 If DuckDB exposes the window function API in a future C API version, `quack-rs` will
 add wrappers in the relevant release.
 
-### VARIANT type (Iceberg v3)
+### VARIANT and GEOMETRY types
 
-DuckDB v1.5.1 introduced the `VARIANT` type for Iceberg v3 support. This type is
-**not yet exposed** in the DuckDB C Extension API (`DUCKDB_TYPE_VARIANT` does not
-exist in `libduckdb-sys` 1.10501.0). `quack-rs` will add `TypeId::Variant` when the
-C API exposes it.
+DuckDB v1.5.1 introduced the `VARIANT` type (Iceberg v3 support); it landed in
+the C type enum as `DUCKDB_TYPE_VARIANT` (41) in **DuckDB 1.5.3**. The
+`GEOMETRY` type (`DUCKDB_TYPE_GEOMETRY`, 40) is also present in the C API.
+
+`quack-rs` does **not yet** expose `TypeId::Variant` or `TypeId::Geometry`. The
+reason is version-floor, not capability: the `duckdb-1-5` feature is defined
+against DuckDB **1.5.0**, but these constants only exist in later 1.5.x bindings
+(`VARIANT` requires 1.5.3). Exposing them safely needs either a 1.5.3 floor or a
+finer-grained feature gate — a deliberate versioning decision tracked for a
+follow-up release.
 
 > For the full list of resolved and open limitations, see the
 > [Known Limitations](https://quack-rs.com/reference/known-limitations.html) reference page.

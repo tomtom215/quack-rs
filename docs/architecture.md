@@ -44,6 +44,12 @@ quack_rs
 ├── client_context   ClientContext — client context access (requires `duckdb-1-5`)
 ├── config_option    ConfigOptionBuilder — extension-defined configuration options (requires `duckdb-1-5`)
 ├── copy_function    CopyFunctionBuilder, CopyBindInfo, CopySinkInfo — custom COPY TO handlers (requires `duckdb-1-5`)
+├── appender         Appender — bulk row appender (requires `duckdb-1-5`)
+├── error_data       ErrorData, DuckDbErrorType — structured error data + UTF-8 validation (requires `duckdb-1-5`)
+├── expression       Expression — bound expression inspection / constant folding (requires `duckdb-1-5`)
+├── file_system      FileSystem, FileHandle, FileOpenOptions, FileFlag — DuckDB virtual file system (requires `duckdb-1-5`)
+├── instance_cache   InstanceCache — shared database instance cache (requires `duckdb-1-5`)
+├── selection_vector SelectionVector — zero-copy row-index selection vectors (requires `duckdb-1-5`)
 ├── replacement_scan ReplacementScanBuilder — SELECT * FROM 'file.xyz' patterns
 ├── data_chunk       DataChunk — ergonomic wrapper for duckdb_data_chunk
 ├── value            Value — RAII wrapper for duckdb_value with typed extraction
@@ -96,6 +102,12 @@ quack_rs
 | `client_context` | `ClientContext` — access to connection catalog, config options, and connection ID (requires `duckdb-1-5`) | Yes |
 | `config_option` | `ConfigOptionBuilder` — register extension-defined `SET`/`RESET` configuration options (requires `duckdb-1-5`) | Yes |
 | `copy_function` | `CopyFunctionBuilder`, `CopyBindInfo`, `CopySinkInfo`, `CopyGlobalInitInfo`, `CopyFinalizeInfo` — custom `COPY TO` handler registration (requires `duckdb-1-5`) | Yes |
+| `appender` | `Appender` — bulk row insertion: append a `DataChunk`, flush/close/clear, structured errors (requires `duckdb-1-5`) | Yes |
+| `error_data` | `ErrorData`, `DuckDbErrorType`, `check_valid_utf8` — structured error data and UTF-8 validation (requires `duckdb-1-5`) | Yes |
+| `expression` | `Expression` — inspect/constant-fold scalar-function argument expressions at bind time (requires `duckdb-1-5`) | Yes |
+| `file_system` | `FileSystem`, `FileHandle`, `FileOpenOptions`, `FileFlag` — read/write via DuckDB's virtual file system (requires `duckdb-1-5`) | Yes |
+| `instance_cache` | `InstanceCache` — share one database instance across opens of the same path (requires `duckdb-1-5`) | Yes |
+| `selection_vector` | `SelectionVector` — allocate/fill zero-copy row-index vectors (requires `duckdb-1-5`) | Yes |
 | `table_description` | `TableDescription` — query table column count, names, and types at runtime (requires `duckdb-1-5`) | Yes |
 | `replacement_scan` | `ReplacementScanBuilder` — `SELECT * FROM 'file.xyz'` registration | Yes |
 | `vector::reader` | Typed reads with correct alignment and boolean semantics | Yes |
@@ -163,10 +175,13 @@ Extension crate
 ```
 
 The `duckdb-1-5` cargo feature flag gates modules that depend on DuckDB 1.5.0+
-C API symbols: `catalog`, `client_context`, `config_option`, `copy_function`, and
-`table_description`. It also enables `ScalarFunctionBuilder` methods `varargs()`,
-`volatile()`, `bind()`, and `init()`. The feature is defined in the crate's
-`Cargo.toml` and carries no extra dependencies — it only controls `#[cfg]` gates.
+C API symbols: `appender`, `catalog`, `client_context`, `config_option`,
+`copy_function`, `error_data`, `expression`, `file_system`, `instance_cache`,
+`selection_vector`, and `table_description`. It also enables `ScalarFunctionBuilder`
+methods `varargs()`, `volatile()`, `bind()`, and `init()`, the `ScalarBindInfo::argument`
+accessor, and `Value` methods `display_string()`/`time_ns()`/`as_time_ns()`. The
+feature is defined in the crate's `Cargo.toml` and carries no extra dependencies —
+it only controls `#[cfg]` gates.
 
 The `loadable-extension` feature of `libduckdb-sys` changes the linkage model:
 instead of linking against `libduckdb`, the crate emits a shared library that

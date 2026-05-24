@@ -6,7 +6,9 @@ quack-rs provides `TypeId` and `LogicalType` to bridge Rust types and DuckDB col
 
 ## `TypeId`
 
-`TypeId` is an ergonomic enum covering all DuckDB column types:
+`TypeId` is an ergonomic enum covering DuckDB's column types (the `GEOMETRY` and
+`VARIANT` types added in DuckDB 1.5.x are not yet exposed — see
+[Known Limitations](../reference/known-limitations.md)):
 
 ```rust
 use quack_rs::types::TypeId;

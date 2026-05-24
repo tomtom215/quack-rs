@@ -50,6 +50,13 @@ from `libduckdb-sys` and provides safe, named variants.
 | `TypeId::IntegerLiteral` | `INTEGER_LITERAL` | `DUCKDB_TYPE_INTEGER_LITERAL` | unresolved integer literal (`duckdb-1-5`) |
 | `TypeId::StringLiteral` | `STRING_LITERAL` | `DUCKDB_TYPE_STRING_LITERAL` | unresolved string literal (`duckdb-1-5`) |
 
+> **Not yet exposed:** `DUCKDB_TYPE_GEOMETRY` (40) and `DUCKDB_TYPE_VARIANT` (41)
+> exist in the DuckDB 1.5.x C type enum (`VARIANT` was added in DuckDB 1.5.3), but
+> `quack-rs` does not yet provide `TypeId::Geometry` / `TypeId::Variant`. These
+> constants postdate the `duckdb-1-5` feature's 1.5.0 floor, so exposing them
+> requires a version-gating decision (see
+> [Known Limitations](known-limitations.md)).
+
 ---
 
 ## Methods

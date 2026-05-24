@@ -47,9 +47,16 @@ crate-type = ["rlib"]
 ## - Scalar function varargs and volatile flags
 ## - Config option registration (extension-defined settings)
 ## - Copy function support (custom `COPY TO` handlers)
-## - Catalog entry lookup
+## - Catalog entry lookup (incl. `Catalog::type_name`)
 ## - Client context access (file system, config, catalog)
 ## - Table description metadata (column count, names, types)
+## - Structured error data + UTF-8 validation (`ErrorData`, `DuckDbErrorType`, `check_valid_utf8`)
+## - Bound expression inspection / constant folding (`Expression`, `ScalarBindInfo::argument`)
+## - Virtual file system access (`FileSystem`, `FileHandle`, `FileOpenOptions`)
+## - Bulk row appender (`Appender`)
+## - Zero-copy selection vectors (`SelectionVector`)
+## - Database instance cache (`InstanceCache`)
+## - `Value::display_string` and `TIME_NS` accessors (`Value::time_ns` / `as_time_ns`)
 duckdb-1-5 = []
 
 ## Links a bundled copy of DuckDB for integration testing.

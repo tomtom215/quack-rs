@@ -10,11 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 New safe wrappers for the `DuckDB` 1.5.0+ C extension API, all gated behind the
-`duckdb-1-5` feature. Note that the DuckDB 1.5.3 release picked up in this cycle
-is a bugfix-only patch over 1.5.2 — the C extension API surface (version
-`v1.2.0`) is byte-for-byte unchanged between them — so these additions expose
-1.5.x capabilities the SDK had not yet wrapped rather than anything new to 1.5.3
-specifically.
+`duckdb-1-5` feature. DuckDB 1.5.3's C extension *function-pointer* API (version
+`v1.2.0`) is unchanged from 1.5.2; the one new C addition — the
+`DUCKDB_TYPE_VARIANT` (41) type-enum value — is intentionally **not** surfaced
+yet (see Known Limitations for the version-floor reasoning). So the additions
+below mostly expose 1.5.x capabilities the SDK had not previously wrapped rather
+than anything new to 1.5.3 specifically.
 
 - **`error_data` module** — `ErrorData`, an RAII wrapper over
   `duckdb_error_data` (the structured error type returned by several 1.5 APIs).

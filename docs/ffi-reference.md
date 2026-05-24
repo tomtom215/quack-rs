@@ -364,8 +364,8 @@ See [LESSONS.md](../LESSONS.md) for all 16 pitfalls with full analysis.
 
 ## DuckDB 1.5.0 C API Additions (`duckdb-1-5`)
 
-The following C API functions were added in DuckDB 1.5.0 and are wrapped by five
-new modules behind the `duckdb-1-5` feature gate.
+The following C API functions were added in DuckDB 1.5.0 and are wrapped by the
+modules listed below, all behind the `duckdb-1-5` feature gate.
 
 ### Config option registration
 
@@ -404,6 +404,60 @@ Introspect table column metadata.
 
 - `duckdb_table_description_create` / `duckdb_table_description_destroy`
 - `duckdb_table_description_get_column_count`, `duckdb_table_description_get_column_name`, `duckdb_table_description_get_column_type`
+
+### Structured error data (`error_data`)
+
+The structured error type returned by several 1.5 APIs, plus UTF-8 validation.
+
+- `duckdb_create_error_data` / `duckdb_destroy_error_data`
+- `duckdb_error_data_message`, `duckdb_error_data_error_type`, `duckdb_error_data_has_error`
+- `duckdb_valid_utf8_check`
+
+### Bound expressions (`expression`)
+
+Inspect and constant-fold scalar-function argument expressions at bind time.
+
+- `duckdb_scalar_function_bind_get_argument` (via `ScalarBindInfo::argument`)
+- `duckdb_expression_return_type`, `duckdb_expression_is_foldable`, `duckdb_expression_fold`
+- `duckdb_destroy_expression`
+
+### File system (`file_system`)
+
+Read and write files through DuckDB's virtual file system.
+
+- `duckdb_client_context_get_file_system` / `duckdb_destroy_file_system`, `duckdb_file_system_error_data`
+- `duckdb_file_system_open`
+- `duckdb_create_file_open_options`, `duckdb_file_open_options_set_flag`, `duckdb_destroy_file_open_options`
+- `duckdb_file_handle_read`, `duckdb_file_handle_write`, `duckdb_file_handle_seek`, `duckdb_file_handle_tell`, `duckdb_file_handle_sync`, `duckdb_file_handle_size`, `duckdb_file_handle_close`
+- `duckdb_file_handle_error_data`, `duckdb_destroy_file_handle`
+
+### Appender (`appender`)
+
+Bulk row insertion plus the 1.5 appender additions.
+
+- `duckdb_appender_create`, `duckdb_appender_create_ext`, `duckdb_appender_destroy`
+- `duckdb_append_data_chunk`, `duckdb_appender_flush`, `duckdb_appender_close`
+- `duckdb_appender_clear`, `duckdb_appender_error_data`, `duckdb_append_default_to_chunk`
+
+### Selection vectors (`selection_vector`)
+
+Allocate and fill zero-copy row-index selection vectors.
+
+- `duckdb_create_selection_vector` / `duckdb_destroy_selection_vector`
+- `duckdb_selection_vector_get_data_ptr`
+
+### Instance cache (`instance_cache`)
+
+Share a single underlying database instance across opens of the same path.
+
+- `duckdb_create_instance_cache` / `duckdb_destroy_instance_cache`
+- `duckdb_get_or_create_from_cache`
+
+### Value and catalog additions
+
+- `duckdb_value_to_string` — canonical string rendering (`Value::display_string`)
+- `duckdb_create_time_ns` / `duckdb_get_time_ns` — `TIME_NS` value accessors
+- `duckdb_catalog_get_type_name` — catalog storage type name (`Catalog::type_name`)
 
 ### Scalar function additions
 

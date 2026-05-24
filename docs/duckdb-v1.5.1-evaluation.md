@@ -1,5 +1,16 @@
 # DuckDB v1.5.1 Compatibility Evaluation for quack-rs
 
+> **⚠️ Historical / superseded (as of 2026-05).** This is a point-in-time
+> evaluation written for DuckDB v1.5.1 and quack-rs 0.7.0; it is retained as a
+> decision record. Since then the project has moved to **DuckDB 1.5.3**
+> (`libduckdb-sys` 1.10503.1) and wrapped a large part of the 1.5.x C API
+> (see the [CHANGELOG](../CHANGELOG.md)). Two specifics in this document are now
+> out of date: `DUCKDB_TYPE_VARIANT` **does** now exist in the C type enum (added
+> in DuckDB 1.5.3, value 41), and the `TypeId` gaps it calls out (`Any`,
+> `SqlNull`, `Varint`) have since been filled. The C extension function-pointer
+> API version remains `v1.2.0`. For the current state, see the
+> [Known Limitations](../book/src/reference/known-limitations.md) reference.
+
 **Date:** 2026-03-27
 **DuckDB Release:** v1.5.1 (2026-03-23, commit 7dbb2e6, codename "variegata")
 **quack-rs Version:** 0.7.0 (2026-03-22)
