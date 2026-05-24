@@ -61,7 +61,7 @@ impl StructReader {
     #[mutants::skip]
     #[must_use]
     #[inline]
-    pub fn field_count(&self) -> usize {
+    pub const fn field_count(&self) -> usize {
         self.fields.len()
     }
 

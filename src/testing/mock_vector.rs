@@ -148,13 +148,13 @@ impl MockVectorWriter {
 
     /// Returns the number of allocated rows (including NULLs).
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.rows.len()
     }
 
     /// Returns `true` if no rows have been allocated.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
 
@@ -604,7 +604,7 @@ impl MockVectorReader {
 
     /// Returns the number of rows in this reader.
     #[must_use]
-    pub fn row_count(&self) -> usize {
+    pub const fn row_count(&self) -> usize {
         self.rows.len()
     }
 
