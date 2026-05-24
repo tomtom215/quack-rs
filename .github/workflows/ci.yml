@@ -65,7 +65,7 @@ jobs:
       - run: cargo test --all-targets --features bundled-test
 
   test-duckdb-1-5:
-    name: Test duckdb-1-5 feature
+    name: Test duckdb-1-5 / duckdb-1-5-3 features
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -74,6 +74,9 @@ jobs:
       - run: cargo check --all-targets --features duckdb-1-5
       - run: cargo test --all-targets --features duckdb-1-5
       - run: cargo clippy --all-targets --features duckdb-1-5 -- -D warnings
+      - run: cargo check --all-targets --features duckdb-1-5-3
+      - run: cargo test --all-targets --features duckdb-1-5-3
+      - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
 
   clippy:
     name: Clippy
@@ -100,7 +103,7 @@ jobs:
           toolchain: beta
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo clippy --all-targets --features duckdb-1-5 -- -D warnings
+      - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
 
   fmt:
     name: Format
@@ -119,11 +122,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      # Use --features duckdb-1-5 instead of --all-features because
-      # bundled-test requires DuckDB headers from libduckdb-sys, which may
+      # Use --features duckdb-1-5-3 (implies duckdb-1-5) instead of --all-features
+      # because bundled-test requires DuckDB headers from libduckdb-sys, which may
       # not be compiled yet when the build script runs (build scripts only
       # wait for [build-dependencies], not [dependencies]).
-      - run: cargo doc --no-deps --features duckdb-1-5
+      - run: cargo doc --no-deps --features duckdb-1-5-3
         env:
           RUSTDOCFLAGS: "-D warnings"
 
@@ -268,6 +271,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+        with:
+          toolchain: nightly
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Test (nightly, informational)
         run: cargo test --all-targets

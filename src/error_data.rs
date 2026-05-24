@@ -28,6 +28,7 @@
 //! ```
 
 use std::ffi::{CStr, CString};
+use std::fmt;
 
 use libduckdb_sys::{
     duckdb_create_error_data, duckdb_destroy_error_data, duckdb_error_data,
@@ -245,12 +246,70 @@ impl DuckDbErrorType {
             _ => Self::Invalid,
         }
     }
+
+    /// Returns a short, human-readable label for this error category.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid",
+            Self::OutOfRange => "out of range",
+            Self::Conversion => "conversion",
+            Self::UnknownType => "unknown type",
+            Self::Decimal => "decimal",
+            Self::MismatchType => "type mismatch",
+            Self::DivideByZero => "divide by zero",
+            Self::ObjectSize => "object size",
+            Self::InvalidType => "invalid type",
+            Self::Serialization => "serialization",
+            Self::Transaction => "transaction",
+            Self::NotImplemented => "not implemented",
+            Self::Expression => "expression",
+            Self::Catalog => "catalog",
+            Self::Parser => "parser",
+            Self::Planner => "planner",
+            Self::Scheduler => "scheduler",
+            Self::Executor => "executor",
+            Self::Constraint => "constraint",
+            Self::Index => "index",
+            Self::Stat => "statistics",
+            Self::Connection => "connection",
+            Self::Syntax => "syntax",
+            Self::Settings => "settings",
+            Self::Binder => "binder",
+            Self::Network => "network",
+            Self::Optimizer => "optimizer",
+            Self::NullPointer => "null pointer",
+            Self::Io => "I/O",
+            Self::Interrupt => "interrupt",
+            Self::Fatal => "fatal",
+            Self::Internal => "internal",
+            Self::InvalidInput => "invalid input",
+            Self::OutOfMemory => "out of memory",
+            Self::Permission => "permission",
+            Self::ParameterNotResolved => "parameter not resolved",
+            Self::ParameterNotAllowed => "parameter not allowed",
+            Self::Dependency => "dependency",
+            Self::Http => "HTTP",
+            Self::MissingExtension => "missing extension",
+        }
+    }
+}
+
+impl fmt::Display for DuckDbErrorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// RAII wrapper for a `duckdb_error_data` handle.
 ///
 /// Automatically destroyed when dropped. Carries a structured error category
 /// ([`DuckDbErrorType`]) and a human-readable message.
+///
+/// Implements [`Display`][std::fmt::Display] and [`std::error::Error`], and
+/// converts into [`ExtensionError`] via [`From`] (or
+/// [`into_extension_error`][ErrorData::into_extension_error]) so it can be
+/// propagated with `?`.
 pub struct ErrorData {
     raw: duckdb_error_data,
 }
@@ -375,6 +434,33 @@ impl Drop for ErrorData {
     }
 }
 
+impl fmt::Debug for ErrorData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ErrorData")
+            .field("error_type", &self.error_type())
+            .field("message", &self.message())
+            .finish()
+    }
+}
+
+impl fmt::Display for ErrorData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.message() {
+            Some(msg) => write!(f, "{}: {msg}", self.error_type()),
+            None => f.write_str(self.error_type().as_str()),
+        }
+    }
+}
+
+impl std::error::Error for ErrorData {}
+
+impl From<ErrorData> for ExtensionError {
+    #[inline]
+    fn from(err: ErrorData) -> Self {
+        err.into_extension_error()
+    }
+}
+
 /// Checks whether `bytes` form a valid UTF-8 string according to `DuckDB`'s
 /// validator (`DuckDB` 1.5.0+).
 ///
@@ -489,5 +575,47 @@ mod tests {
         let err = unsafe { ErrorData::from_raw(std::ptr::null_mut()) };
         let raw = err.into_raw();
         assert!(raw.is_null());
+    }
+
+    #[test]
+    fn error_type_display_matches_as_str() {
+        for variant in ALL_VARIANTS {
+            assert!(!variant.as_str().is_empty(), "{variant:?} has empty label");
+            assert_eq!(format!("{variant}"), variant.as_str());
+        }
+    }
+
+    #[test]
+    fn error_type_labels_are_distinct() {
+        for (i, a) in ALL_VARIANTS.iter().enumerate() {
+            for b in ALL_VARIANTS.iter().skip(i + 1) {
+                assert_ne!(a.as_str(), b.as_str(), "{a:?} and {b:?} share a label");
+            }
+        }
+    }
+
+    #[test]
+    fn null_error_data_debug_and_display() {
+        // Null handle: error_type()/message() short-circuit without FFI calls,
+        // so Debug/Display are safe to exercise in a unit test.
+        let err = unsafe { ErrorData::from_raw(std::ptr::null_mut()) };
+        assert_eq!(err.to_string(), "invalid");
+        let dbg = format!("{err:?}");
+        assert!(dbg.contains("ErrorData"), "debug was: {dbg}");
+        assert!(dbg.contains("Invalid"), "debug was: {dbg}");
+    }
+
+    #[test]
+    fn from_error_data_for_extension_error() {
+        let err = unsafe { ErrorData::from_raw(std::ptr::null_mut()) };
+        let ext: ExtensionError = err.into();
+        assert_eq!(ext.as_str(), "unknown DuckDB error");
+    }
+
+    #[test]
+    fn error_data_usable_as_std_error() {
+        fn takes_error(_e: &dyn std::error::Error) {}
+        let err = unsafe { ErrorData::from_raw(std::ptr::null_mut()) };
+        takes_error(&err);
     }
 }

@@ -67,17 +67,25 @@ impl TableDescription {
         if rc != libduckdb_sys::DuckDBSuccess || desc.is_null() {
             // Try to get the error message.
             if !desc.is_null() {
+                // SAFETY: desc is non-null and was produced by
+                // duckdb_table_description_create above.
                 let err_ptr = unsafe { duckdb_table_description_error(desc) };
                 if !err_ptr.is_null() {
+                    // SAFETY: err_ptr is a valid null-terminated string owned by
+                    // the table description; it stays valid until we destroy it.
                     let msg = unsafe { CStr::from_ptr(err_ptr) }
                         .to_str()
                         .unwrap_or("unknown error");
                     let err = ExtensionError::new(format!(
                         "failed to describe table '{schema}.{table}': {msg}"
                     ));
+                    // SAFETY: desc is a non-null handle we own and have not yet
+                    // returned; destroying it also frees the error string.
                     unsafe { duckdb_table_description_destroy(&raw mut desc) };
                     return Err(err);
                 }
+                // SAFETY: desc is a non-null handle we own; destroy it before
+                // returning so it does not leak.
                 unsafe { duckdb_table_description_destroy(&raw mut desc) };
             }
             return Err(ExtensionError::new(format!(
@@ -132,13 +140,24 @@ impl TableDescription {
             Some(unsafe { LogicalType::from_raw(lt) })
         }
     }
+
+    /// Returns the raw `duckdb_table_description` handle without consuming the
+    /// wrapper. The wrapper retains ownership and destroys it on drop.
+    #[inline]
+    #[must_use]
+    pub const fn as_raw(&self) -> duckdb_table_description {
+        self.desc
+    }
 }
 
 impl Drop for TableDescription {
     fn drop(&mut self) {
-        // SAFETY: self.desc was obtained from duckdb_table_description_create.
-        unsafe {
-            duckdb_table_description_destroy(&raw mut self.desc);
+        if !self.desc.is_null() {
+            // SAFETY: self.desc is a non-null handle obtained from
+            // duckdb_table_description_create.
+            unsafe {
+                duckdb_table_description_destroy(&raw mut self.desc);
+            }
         }
     }
 }

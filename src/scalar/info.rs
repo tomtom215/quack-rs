@@ -263,7 +263,10 @@ impl ScalarBindInfo {
     /// The inner handle must be valid (requires `DuckDB` runtime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();
+        // SAFETY: self.info is a valid bind-info handle per this fn's contract;
+        // the call writes the client-context handle into `ctx`.
         unsafe { duckdb_scalar_function_get_client_context(self.info, &raw mut ctx) };
+        // SAFETY: `ctx` was just populated by DuckDB with a client-context handle.
         unsafe { crate::client_context::ClientContext::from_raw(ctx) }
     }
 
@@ -369,7 +372,10 @@ impl ScalarInitInfo {
     /// The inner handle must be valid (requires `DuckDB` runtime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();
+        // SAFETY: self.info is a valid init-info handle per this fn's contract;
+        // the call writes the client-context handle into `ctx`.
         unsafe { duckdb_scalar_function_init_get_client_context(self.info, &raw mut ctx) };
+        // SAFETY: `ctx` was just populated by DuckDB with a client-context handle.
         unsafe { crate::client_context::ClientContext::from_raw(ctx) }
     }
 

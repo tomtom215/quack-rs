@@ -544,7 +544,7 @@ fn scaffold_generated_code_compiles() {
     let tmp = tmp.path().to_path_buf();
     fs::create_dir_all(tmp.join("src")).unwrap();
 
-    // The scaffold Cargo.toml references `quack-rs = "0.11"` from crates.io.
+    // The scaffold Cargo.toml references `quack-rs = "0.13"` from crates.io.
     // Replace it with a path dependency pointing to this workspace root so
     // `cargo check` uses the local (possibly-modified) crate.
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -558,7 +558,7 @@ fn scaffold_generated_code_compiles() {
         if f.path == "Cargo.toml" {
             // Rewrite quack-rs dep to use local path
             let patched = f.content.replace(
-                r#"quack-rs = { version = "0.11" }"#,
+                r#"quack-rs = { version = "0.13" }"#,
                 &format!(
                     "quack-rs = {{ path = \"{}\" }}",
                     workspace_root.display().to_string().replace('\\', "/")

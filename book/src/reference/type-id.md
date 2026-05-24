@@ -49,13 +49,16 @@ from `libduckdb-sys` and provides safe, named variants.
 | `TypeId::SqlNull` | `SQLNULL` | `DUCKDB_TYPE_SQLNULL` | explicit SQL NULL type (`duckdb-1-5`) |
 | `TypeId::IntegerLiteral` | `INTEGER_LITERAL` | `DUCKDB_TYPE_INTEGER_LITERAL` | unresolved integer literal (`duckdb-1-5`) |
 | `TypeId::StringLiteral` | `STRING_LITERAL` | `DUCKDB_TYPE_STRING_LITERAL` | unresolved string literal (`duckdb-1-5`) |
+| `TypeId::Geometry` | `GEOMETRY` | `DUCKDB_TYPE_GEOMETRY` | spatial geometry value (`duckdb-1-5-3`) |
+| `TypeId::Variant` | `VARIANT` | `DUCKDB_TYPE_VARIANT` | self-describing nested value, e.g. Iceberg v3 (`duckdb-1-5-3`) |
 
-> **Not yet exposed:** `DUCKDB_TYPE_GEOMETRY` (40) and `DUCKDB_TYPE_VARIANT` (41)
-> exist in the DuckDB 1.5.x C type enum (`VARIANT` was added in DuckDB 1.5.3), but
-> `quack-rs` does not yet provide `TypeId::Geometry` / `TypeId::Variant`. These
-> constants postdate the `duckdb-1-5` feature's 1.5.0 floor, so exposing them
-> requires a version-gating decision (see
-> [Known Limitations](known-limitations.md)).
+> **Feature gate for `Geometry` / `Variant`:** `DUCKDB_TYPE_GEOMETRY` (40) and
+> `DUCKDB_TYPE_VARIANT` (41) require the **`duckdb-1-5-3`** feature, which layers
+> on top of `duckdb-1-5` and needs `libduckdb-sys >= 1.10503.1` (DuckDB 1.5.3).
+> They sit behind a separate feature because these type-enum values postdate the
+> `duckdb-1-5` feature's 1.5.0 floor (`VARIANT` was added in DuckDB 1.5.3); gating
+> them this way avoids breaking consumers pinned to libduckdb-sys 1.5.0–1.5.2.
+> See [Known Limitations](known-limitations.md).
 
 ---
 
@@ -73,8 +76,12 @@ let raw: libduckdb_sys::DUCKDB_TYPE = TypeId::BigInt.to_duckdb_type();
 
 ### `from_duckdb_type(raw) → TypeId`
 
-Converts a raw `DUCKDB_TYPE` constant back into a `TypeId`. Panics if the value
-does not match any known `DUCKDB_TYPE` constant.
+Converts a raw `DUCKDB_TYPE` constant back into a `TypeId`. Recognizes every
+variant available in the active feature set, including the `duckdb-1-5` values
+(`TIME_NS`, `ANY`, `VARINT`, `SQLNULL`, `INTEGER_LITERAL`, `STRING_LITERAL`) and
+the `duckdb-1-5-3` values (`GEOMETRY`, `VARIANT`) when those features are enabled.
+Panics if the value does not correspond to any variant available in the current
+feature configuration.
 
 ```rust
 use quack_rs::types::TypeId;
@@ -128,8 +135,9 @@ variants as follows:
 `HugeInt`, `Blob`, `List`, `Struct`, `Map`, `Uuid`, `Date`, `Time`, `Timestamp`,
 `TimestampTz`, `Decimal`, `TimestampS`, `TimestampMs`, `TimestampNs`, `Enum`,
 `Union`, `Bit`, `TimeTz`, `UHugeInt`, `Array`, `TimeNs`, `Any`, `Varint`, `SqlNull`,
-`IntegerLiteral`, `StringLiteral` do not yet have dedicated read/write helpers.
-Access these via the raw data pointer from `duckdb_vector_get_data`.
+`IntegerLiteral`, `StringLiteral`, `Geometry`, `Variant` do not yet have dedicated
+read/write helpers. Access these via the raw data pointer from
+`duckdb_vector_get_data`.
 
 ---
 

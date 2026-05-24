@@ -31,6 +31,8 @@ use libduckdb_sys::{
     DUCKDB_TYPE_DUCKDB_TYPE_INTEGER_LITERAL, DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL,
     DUCKDB_TYPE_DUCKDB_TYPE_STRING_LITERAL, DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS,
 };
+#[cfg(feature = "duckdb-1-5-3")]
+use libduckdb_sys::{DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY, DUCKDB_TYPE_DUCKDB_TYPE_VARIANT};
 
 /// Identifies a `DuckDB` column type.
 ///
@@ -147,6 +149,18 @@ pub enum TypeId {
     /// concrete column type — used by `DuckDB`'s type resolution system.
     #[cfg(feature = "duckdb-1-5")]
     StringLiteral,
+    /// `GEOMETRY` — spatial geometry value (`DuckDB` 1.5.x; requires `duckdb-1-5-3`)
+    ///
+    /// Present in the C type enum as `DUCKDB_TYPE_GEOMETRY` (40). Gated behind
+    /// the `duckdb-1-5-3` feature; see that feature's documentation for the
+    /// version-floor rationale.
+    #[cfg(feature = "duckdb-1-5-3")]
+    Geometry,
+    /// `VARIANT` — self-describing nested value, e.g. for Iceberg v3 (`DuckDB` 1.5.3; requires `duckdb-1-5-3`)
+    ///
+    /// Added to the C type enum as `DUCKDB_TYPE_VARIANT` (41) in `DuckDB` 1.5.3.
+    #[cfg(feature = "duckdb-1-5-3")]
+    Variant,
 }
 
 impl TypeId {
@@ -210,14 +224,25 @@ impl TypeId {
             Self::IntegerLiteral => DUCKDB_TYPE_DUCKDB_TYPE_INTEGER_LITERAL,
             #[cfg(feature = "duckdb-1-5")]
             Self::StringLiteral => DUCKDB_TYPE_DUCKDB_TYPE_STRING_LITERAL,
+            #[cfg(feature = "duckdb-1-5-3")]
+            Self::Geometry => DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY,
+            #[cfg(feature = "duckdb-1-5-3")]
+            Self::Variant => DUCKDB_TYPE_DUCKDB_TYPE_VARIANT,
         }
     }
 
     /// Converts a raw `DUCKDB_TYPE` constant back into a [`TypeId`].
     ///
+    /// Recognizes every variant available in the active feature set, including
+    /// the `duckdb-1-5` type-enum values (`TIME_NS`, `ANY`, `BIGNUM`/`VARINT`,
+    /// `SQLNULL`, `INTEGER_LITERAL`, `STRING_LITERAL`) and the `duckdb-1-5-3`
+    /// values (`GEOMETRY`, `VARIANT`) when those features are enabled.
+    ///
     /// # Panics
     ///
-    /// Panics if the value does not match any known `DUCKDB_TYPE` constant.
+    /// Panics if `raw` does not correspond to any `TypeId` variant available in
+    /// the current feature configuration — for example, a 1.5.x type value when
+    /// the `duckdb-1-5` feature is disabled, or a future/unknown type value.
     #[must_use]
     pub const fn from_duckdb_type(raw: DUCKDB_TYPE) -> Self {
         // Using if-else chain because match on non-primitive constants is not
@@ -289,6 +314,39 @@ impl TypeId {
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_ARRAY {
             Self::Array
         } else {
+            // DuckDB 1.5.0+ type-enum values (feature-gated). Kept in a nested
+            // block because `#[cfg]` cannot be attached to an `else if` arm.
+            #[cfg(feature = "duckdb-1-5")]
+            {
+                if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS {
+                    return Self::TimeNs;
+                }
+                if raw == DUCKDB_TYPE_DUCKDB_TYPE_ANY {
+                    return Self::Any;
+                }
+                if raw == DUCKDB_TYPE_DUCKDB_TYPE_BIGNUM {
+                    return Self::Varint;
+                }
+                if raw == DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL {
+                    return Self::SqlNull;
+                }
+                if raw == DUCKDB_TYPE_DUCKDB_TYPE_INTEGER_LITERAL {
+                    return Self::IntegerLiteral;
+                }
+                if raw == DUCKDB_TYPE_DUCKDB_TYPE_STRING_LITERAL {
+                    return Self::StringLiteral;
+                }
+            }
+            // DuckDB 1.5.3+ type-enum values (feature-gated).
+            #[cfg(feature = "duckdb-1-5-3")]
+            {
+                if raw == DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY {
+                    return Self::Geometry;
+                }
+                if raw == DUCKDB_TYPE_DUCKDB_TYPE_VARIANT {
+                    return Self::Variant;
+                }
+            }
             panic!("unknown DUCKDB_TYPE value")
         }
     }
@@ -351,6 +409,10 @@ impl TypeId {
             Self::IntegerLiteral => "INTEGER_LITERAL",
             #[cfg(feature = "duckdb-1-5")]
             Self::StringLiteral => "STRING_LITERAL",
+            #[cfg(feature = "duckdb-1-5-3")]
+            Self::Geometry => "GEOMETRY",
+            #[cfg(feature = "duckdb-1-5-3")]
+            Self::Variant => "VARIANT",
         }
     }
 }
@@ -413,6 +475,10 @@ mod tests {
             TypeId::IntegerLiteral,
             #[cfg(feature = "duckdb-1-5")]
             TypeId::StringLiteral,
+            #[cfg(feature = "duckdb-1-5-3")]
+            TypeId::Geometry,
+            #[cfg(feature = "duckdb-1-5-3")]
+            TypeId::Variant,
         ];
         for t in types {
             // sql_name should not be empty and should match Display
@@ -599,11 +665,56 @@ mod tests {
             TypeId::TimeTz,
             TypeId::UHugeInt,
             TypeId::Array,
+            // DuckDB 1.5.0+ variants: from_duckdb_type must handle these too
+            // (previously it panicked on them — see the panic-gap fix).
+            #[cfg(feature = "duckdb-1-5")]
+            TypeId::TimeNs,
+            #[cfg(feature = "duckdb-1-5")]
+            TypeId::Any,
+            #[cfg(feature = "duckdb-1-5")]
+            TypeId::Varint,
+            #[cfg(feature = "duckdb-1-5")]
+            TypeId::SqlNull,
+            #[cfg(feature = "duckdb-1-5")]
+            TypeId::IntegerLiteral,
+            #[cfg(feature = "duckdb-1-5")]
+            TypeId::StringLiteral,
+            #[cfg(feature = "duckdb-1-5-3")]
+            TypeId::Geometry,
+            #[cfg(feature = "duckdb-1-5-3")]
+            TypeId::Variant,
         ];
         for &tid in &variants {
             let raw = tid.to_duckdb_type();
             let back = TypeId::from_duckdb_type(raw);
             assert_eq!(back, tid, "roundtrip failed for {tid:?}");
         }
+    }
+
+    #[cfg(feature = "duckdb-1-5-3")]
+    #[test]
+    fn geometry_maps_to_correct_duckdb_type() {
+        assert_eq!(
+            TypeId::Geometry.to_duckdb_type(),
+            DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY
+        );
+    }
+
+    #[cfg(feature = "duckdb-1-5-3")]
+    #[test]
+    fn variant_maps_to_correct_duckdb_type() {
+        assert_eq!(
+            TypeId::Variant.to_duckdb_type(),
+            DUCKDB_TYPE_DUCKDB_TYPE_VARIANT
+        );
+    }
+
+    #[cfg(feature = "duckdb-1-5-3")]
+    #[test]
+    fn geometry_variant_sql_names_and_display() {
+        assert_eq!(TypeId::Geometry.sql_name(), "GEOMETRY");
+        assert_eq!(TypeId::Variant.sql_name(), "VARIANT");
+        assert_eq!(format!("{}", TypeId::Geometry), "GEOMETRY");
+        assert_eq!(format!("{}", TypeId::Variant), "VARIANT");
     }
 }

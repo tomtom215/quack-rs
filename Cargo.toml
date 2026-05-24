@@ -1,6 +1,6 @@
 [package]
 name = "quack-rs"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 rust-version = "1.87.0"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
@@ -59,6 +59,23 @@ crate-type = ["rlib"]
 ## - `Value::display_string` and `TIME_NS` accessors (`Value::time_ns` / `as_time_ns`)
 duckdb-1-5 = []
 
+## Enables wrappers layered on top of `duckdb-1-5` that require DuckDB **1.5.3+**.
+## Implies (and re-enables) `duckdb-1-5`.
+##
+## Requires `libduckdb-sys >= 1.10503.1` (DuckDB 1.5.3) to be resolved by Cargo:
+## the gated items reference C type-enum constants that do not exist in
+## libduckdb-sys 1.5.0–1.5.2, so enabling this feature against an older binding
+## is a compile error (by design — it surfaces the version mismatch immediately).
+## This is the same soft-contract style as `duckdb-1-5` (which targets 1.5.0).
+##
+## Gates:
+## - `TypeId::Variant` (`DUCKDB_TYPE_VARIANT`, 41) — added to the C type enum in
+##   DuckDB 1.5.3.
+## - `TypeId::Geometry` (`DUCKDB_TYPE_GEOMETRY`, 40) — present earlier in the
+##   1.5.x line, but gated here at the 1.5.3 floor so one feature covers both new
+##   type-enum values behind a single, verifiable version requirement.
+duckdb-1-5-3 = ["duckdb-1-5"]
+
 ## Links a bundled copy of DuckDB for integration testing.
 ##
 ## When this feature is enabled, the `testing::InMemoryDb` helper becomes available.
@@ -81,7 +98,7 @@ duckdb-1-5 = []
 ##
 ## ```toml
 ## [dev-dependencies]
-## quack-rs = { version = "0.11", features = ["bundled-test"] }
+## quack-rs = { version = "0.13", features = ["bundled-test"] }
 ## ```
 bundled-test = ["dep:duckdb"]
 
@@ -131,3 +148,11 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 return_self_not_must_use = "allow"
+
+[package.metadata.docs.rs]
+# Render the full API on docs.rs — including the `duckdb-1-5` / `duckdb-1-5-3`
+# feature-gated modules and `TypeId` variants — so the documentation (and the
+# README's docs.rs links) resolve. Without this, docs.rs builds the empty default
+# feature set and every feature-gated item would be missing. `bundled-test` is
+# intentionally excluded (it compiles DuckDB from source).
+features = ["duckdb-1-5-3"]

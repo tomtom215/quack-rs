@@ -76,15 +76,23 @@ All constructors have `_from_logical` variants for nested complex types.
 Introspection methods (`get_type_id`, `list_child_type`, `struct_child_count`,
 `decimal_width`, etc.) are also available.
 
-## VARIANT and GEOMETRY types (in the C API; `TypeId` pending)
+## VARIANT and GEOMETRY types (resolved — exposed behind `duckdb-1-5-3`)
 
 DuckDB v1.5.1 introduced the `VARIANT` type for Iceberg v3 support. As of
 **DuckDB 1.5.3** it is present in the C type enum as `DUCKDB_TYPE_VARIANT` (41),
 and the `GEOMETRY` type (`DUCKDB_TYPE_GEOMETRY`, 40) is present as well.
 
-quack-rs does **not yet** expose `TypeId::Variant` or `TypeId::Geometry`. This
-is a version-floor matter rather than a missing C API: the `duckdb-1-5` feature
-targets DuckDB **1.5.0**, but these enum values only exist in later 1.5.x
-bindings (`VARIANT` requires 1.5.3). Adding them under the current feature flag
-would break consumers pinned to libduckdb-sys 1.5.0–1.5.2, so it needs either a
-1.5.3 version floor or a finer-grained feature gate. Tracked as a follow-up.
+quack-rs exposes these as `TypeId::Variant` and `TypeId::Geometry`, gated behind
+the **`duckdb-1-5-3`** feature. That feature layers on top of `duckdb-1-5` and
+requires `libduckdb-sys >= 1.10503.1` (DuckDB 1.5.3). The separate gate exists
+because these type-enum values postdate the `duckdb-1-5` feature's 1.5.0 floor
+(`VARIANT` only landed in 1.5.3); keeping them out of `duckdb-1-5` preserves
+compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
+
+```toml
+[dependencies]
+quack-rs = { version = "0.13", features = ["duckdb-1-5-3"] }
+```
+
+Neither type yet has dedicated `VectorReader`/`VectorWriter` helpers; access
+their data via the raw pointer from `duckdb_vector_get_data` when needed.

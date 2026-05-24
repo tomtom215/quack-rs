@@ -128,7 +128,9 @@ impl CopyBindInfo {
     ///
     /// The inner handle must be valid (requires `DuckDB` runtime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
+        // SAFETY: self.info is a valid copy-bind-info handle per this fn's contract.
         let ctx = unsafe { duckdb_copy_function_bind_get_client_context(self.info) };
+        // SAFETY: `ctx` is a client-context handle returned by DuckDB.
         unsafe { crate::client_context::ClientContext::from_raw(ctx) }
     }
 
@@ -243,7 +245,9 @@ impl CopyGlobalInitInfo {
     ///
     /// The inner handle must be valid (requires `DuckDB` runtime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
+        // SAFETY: self.info is a valid copy-global-init-info handle per this fn's contract.
         let ctx = unsafe { duckdb_copy_function_global_init_get_client_context(self.info) };
+        // SAFETY: `ctx` is a client-context handle returned by DuckDB.
         unsafe { crate::client_context::ClientContext::from_raw(ctx) }
     }
 
@@ -329,7 +333,9 @@ impl CopySinkInfo {
     ///
     /// The inner handle must be valid (requires `DuckDB` runtime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
+        // SAFETY: self.info is a valid copy-sink-info handle per this fn's contract.
         let ctx = unsafe { duckdb_copy_function_sink_get_client_context(self.info) };
+        // SAFETY: `ctx` is a client-context handle returned by DuckDB.
         unsafe { crate::client_context::ClientContext::from_raw(ctx) }
     }
 
@@ -415,7 +421,9 @@ impl CopyFinalizeInfo {
     ///
     /// The inner handle must be valid (requires `DuckDB` runtime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
+        // SAFETY: self.info is a valid copy-finalize-info handle per this fn's contract.
         let ctx = unsafe { duckdb_copy_function_finalize_get_client_context(self.info) };
+        // SAFETY: `ctx` is a client-context handle returned by DuckDB.
         unsafe { crate::client_context::ClientContext::from_raw(ctx) }
     }
 

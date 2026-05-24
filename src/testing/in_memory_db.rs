@@ -34,7 +34,7 @@
 //! ```toml
 //! # In your extension's Cargo.toml:
 //! [dev-dependencies]
-//! quack-rs = { version = "0.7", features = ["bundled-test"] }
+//! quack-rs = { version = "0.13", features = ["bundled-test"] }
 //! ```
 //!
 //! # Example

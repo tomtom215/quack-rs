@@ -1,6 +1,8 @@
 /target/
 examples/hello-ext/target/
 book/book/
+mutants.out/
+mutants.out.old/
 .DS_Store
 *.swp
 *.swo

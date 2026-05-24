@@ -10,15 +10,18 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-05-24
+
 ### Added
 
 New safe wrappers for the `DuckDB` 1.5.0+ C extension API, all gated behind the
-`duckdb-1-5` feature. DuckDB 1.5.3's C extension *function-pointer* API (version
-`v1.2.0`) is unchanged from 1.5.2; the one new C addition — the
-`DUCKDB_TYPE_VARIANT` (41) type-enum value — is intentionally **not** surfaced
-yet (see Known Limitations for the version-floor reasoning). So the additions
-below mostly expose 1.5.x capabilities the SDK had not previously wrapped rather
-than anything new to 1.5.3 specifically.
+`duckdb-1-5` feature, plus a new `duckdb-1-5-3` feature that surfaces the two
+DuckDB 1.5.3 type-enum values. DuckDB 1.5.3's C extension *function-pointer* API
+(version `v1.2.0`) is unchanged from 1.5.2; the one new C addition — the
+`DUCKDB_TYPE_VARIANT` (41) type-enum value — is now exposed as `TypeId::Variant`
+behind the `duckdb-1-5-3` feature (see below). So the additions below mostly
+expose 1.5.x capabilities the SDK had not previously wrapped rather than anything
+new to 1.5.3 specifically.
 
 - **`error_data` module** — `ErrorData`, an RAII wrapper over
   `duckdb_error_data` (the structured error type returned by several 1.5 APIs).
@@ -49,6 +52,21 @@ than anything new to 1.5.3 specifically.
   or a storage extension's name).
 - All new public types are re-exported from the `prelude` behind the
   `duckdb-1-5` feature.
+- **`duckdb-1-5-3` feature + `TypeId::Variant` / `TypeId::Geometry`** — a new
+  feature flag (`duckdb-1-5-3`, which implies `duckdb-1-5`) exposes the
+  `DUCKDB_TYPE_VARIANT` (41, added in DuckDB 1.5.3) and `DUCKDB_TYPE_GEOMETRY`
+  (40) type-enum values as `TypeId::Variant` and `TypeId::Geometry`, with full
+  `to_duckdb_type` / `from_duckdb_type` / `sql_name` / `Display` coverage. It is a
+  separate gate because these constants postdate the `duckdb-1-5` feature's 1.5.0
+  floor and require `libduckdb-sys >= 1.10503.1`; keeping them out of `duckdb-1-5`
+  preserves compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
+- **`ErrorData` is now a first-class error type** — implements
+  `std::fmt::Display` and `std::error::Error`, gains a structured `Debug` impl,
+  and converts into `ExtensionError` via `From` (alongside the existing
+  `into_extension_error`) so it propagates through `?`. `DuckDbErrorType` now
+  implements `Display` (backed by a new `pub const fn as_str`).
+- **`TableDescription::as_raw()`** — exposes the raw handle, matching the
+  accessor convention of the other 1.5 wrappers.
 
 ### Changed
 
@@ -72,6 +90,19 @@ than anything new to 1.5.3 specifically.
   and all docs/badges are updated to **1.87.0** — a small headroom margin above
   the 1.85.1 floor.
 
+### Fixed
+
+- **`TypeId::from_duckdb_type` no longer panics on the `duckdb-1-5` type-enum
+  values.** It previously recognised only the base (1.4) values and `panic!`ed on
+  everything else — including the `duckdb-1-5` values (`TIME_NS`, `ANY`,
+  `BIGNUM`/`VARINT`, `SQLNULL`, `INTEGER_LITERAL`, `STRING_LITERAL`). Because the
+  public `LogicalType::get_type_id()` calls it, inspecting such a type inside a
+  bind callback could panic across the FFI boundary (Pitfall L3). It now maps
+  every variant available in the active feature set (plus the `duckdb-1-5-3`
+  `GEOMETRY` / `VARIANT` values when that feature is enabled).
+- **`TableDescription`'s `Drop` now null-checks the handle** before destroying
+  it, matching every other RAII wrapper in the crate.
+
 ### Documentation
 
 - **New book section "DuckDB 1.5+ APIs"** — dedicated guide pages for the
@@ -79,10 +110,16 @@ than anything new to 1.5.3 specifically.
   `instance_cache` modules, wired into `SUMMARY.md`.
 - Refreshed the reference docs (`docs/architecture.md`, `docs/ffi-reference.md`,
   the `TypeId` reference, `CONTRIBUTING.md`/book source trees) to cover the new
-  modules, and corrected the now-resolved VARIANT/GEOMETRY entries in
-  `Known Limitations` (these type-enum values now exist in the C API as of
-  DuckDB 1.5.3 / 1.5.x; `TypeId::Variant`/`Geometry` remain a tracked follow-up
-  pending a version-floor decision).
+  modules, and updated the VARIANT/GEOMETRY entries in `Known Limitations`,
+  `concepts/types.md`, and the `TypeId` reference to document the new
+  `duckdb-1-5-3` gate (previously tracked as a follow-up).
+- Added `// SAFETY:` comments to previously-undocumented `unsafe` blocks in the
+  `get_client_context` accessors (`scalar`, `copy_function`) and
+  `TableDescription::create`, and SPDX headers to `benches/interval_bench.rs` and
+  the test submodule files.
+- Corrected the README install note (it claimed v0.11.0 was the latest published
+  crate; v0.12.1 was in fact already on crates.io) and bumped install-example
+  version references throughout the README, book, and scaffold template to `0.13`.
 
 ## [0.12.1] — 2026-05-01
 

@@ -121,14 +121,9 @@ See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
 
 ```toml
 [dependencies]
-quack-rs = "0.11"
+quack-rs = "0.13"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
-
-> The latest crate published to [crates.io](https://crates.io/crates/quack-rs)
-> is **v0.11.0**. Version v0.12.1 is prepared in this repository but has not
-> yet been published. Until the v0.12.1 release workflow runs,
-> `cargo add quack-rs` resolves to `0.11.0`.
 
 > **DuckDB compatibility**: `quack-rs` supports DuckDB **1.4.x and 1.5.x**.
 > Both releases expose the same C API version (`v1.2.0`), confirmed by E2E tests
@@ -811,12 +806,12 @@ DuckDB v1.5.1 introduced the `VARIANT` type (Iceberg v3 support); it landed in
 the C type enum as `DUCKDB_TYPE_VARIANT` (41) in **DuckDB 1.5.3**. The
 `GEOMETRY` type (`DUCKDB_TYPE_GEOMETRY`, 40) is also present in the C API.
 
-`quack-rs` does **not yet** expose `TypeId::Variant` or `TypeId::Geometry`. The
-reason is version-floor, not capability: the `duckdb-1-5` feature is defined
-against DuckDB **1.5.0**, but these constants only exist in later 1.5.x bindings
-(`VARIANT` requires 1.5.3). Exposing them safely needs either a 1.5.3 floor or a
-finer-grained feature gate — a deliberate versioning decision tracked for a
-follow-up release.
+`quack-rs` exposes these as `TypeId::Variant` and `TypeId::Geometry` behind the
+**`duckdb-1-5-3`** feature flag. That feature layers on top of `duckdb-1-5` and
+requires `libduckdb-sys >= 1.10503.1` (DuckDB 1.5.3). It is a separate gate
+because these type-enum constants postdate the `duckdb-1-5` feature's 1.5.0
+floor (`VARIANT` was added in 1.5.3), so keeping them out of `duckdb-1-5`
+preserves compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
 
 > For the full list of resolved and open limitations, see the
 > [Known Limitations](https://quack-rs.com/reference/known-limitations.html) reference page.
@@ -826,6 +821,17 @@ follow-up release.
 ## Changelog
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
+
+**v0.13.0** (2026-05-24) — DuckDB **1.5.3** bump (`libduckdb-sys`/`duckdb`
+1.10503.1), MSRV corrected to **1.87.0**, and six new `duckdb-1-5`-gated modules
+(`error_data`, `expression`, `file_system`, `appender`, `selection_vector`,
+`instance_cache`) plus `Value`/`Catalog` additions. Adds a new **`duckdb-1-5-3`**
+feature exposing `TypeId::Variant` and `TypeId::Geometry` (the DuckDB 1.5.3
+type-enum values, gated separately to preserve libduckdb-sys 1.5.0–1.5.2
+compatibility). `ErrorData` now implements `Display` + `std::error::Error`;
+`DuckDbErrorType` implements `Display`. Fixes a latent panic-across-FFI in
+`TypeId::from_duckdb_type` (it now maps the `duckdb-1-5` type values instead of
+panicking, e.g. via `LogicalType::get_type_id()`).
 
 **v0.12.1** (2026-05-01) — Security/maintenance patch. Closes nine
 GitHub Dependabot alerts (two High, seven Low) across both lockfiles by
