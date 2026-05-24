@@ -60,8 +60,7 @@ use crate::error::ExtensionError;
 
 /// The category of a `DuckDB` error, mirroring `duckdb_error_type`.
 ///
-/// Unknown or future error categories map to [`DuckDbErrorType::Invalid`] via
-/// [`from_raw`][DuckDbErrorType::from_raw].
+/// Unknown or future error categories map to [`DuckDbErrorType::Invalid`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DuckDbErrorType {
