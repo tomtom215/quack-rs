@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `bundled-test` can now link against a pre-built libduckdb instead of
+  compiling DuckDB from C++ source. Opt in with
+  `default-features = false, features = ["bundled-test"]` plus either
+  `DUCKDB_DOWNLOAD_LIB=1` (libduckdb-sys downloads the upstream release
+  zip) or `DUCKDB_LIB_DIR=...` (use a libduckdb tree you already have).
+  Default behaviour is unchanged.
+- `InMemoryDb::open_unsigned()` opens an in-memory database with
+  `allow_unsigned_extensions=true`, allowing downstream extension crates
+  to `LOAD` their own locally-built (unsigned) `.duckdb_extension`
+  artifact for integration testing.
+
 ## [0.13.0] - 2026-05-24
 
 ### Added

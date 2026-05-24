@@ -35,6 +35,46 @@ name = "quack_rs"
 crate-type = ["rlib"]
 
 [features]
+default = ["bundled"]
+
+## Compiles a bundled copy of DuckDB from C++ source via the `duckdb` crate's
+## `bundled` feature. Required for the default `bundled-test` path. Disable to
+## link against a pre-built libduckdb (see `bundled-test` docs for the env vars).
+bundled = ["duckdb?/bundled"]
+## Enables the `testing::InMemoryDb` helper which opens a real in-memory
+## DuckDB database for integration testing.
+##
+## Two modes:
+## 1. With `bundled` (default): libduckdb is compiled from source by the
+##    `duckdb` crate. No env vars required; cold builds take ~5-10 min.
+## 2. Without `bundled` (`default-features = false, features = ["bundled-test"]`):
+##    quack-rs links against a pre-built libduckdb. Set one of:
+##    - `DUCKDB_DOWNLOAD_LIB=1` — libduckdb-sys downloads the prebuilt zip
+##      from the upstream DuckDB release (~30 MB, cached under `target/`).
+##      Recommended.
+##    - `DUCKDB_LIB_DIR=/path/to/libduckdb` — link against a libduckdb tree
+##      you already have (also set `DUCKDB_INCLUDE_DIR` if `duckdb.hpp` isn't
+##      sitting alongside the library).
+##
+## Enabling this feature also initialises the `loadable-extension` dispatch
+## table from the linked DuckDB symbols, so `InMemoryDb::open()` works in
+## `cargo test` even though no DuckDB host process loads the extension.
+##
+## # Important: architectural limitation
+##
+## Even with this feature, quack-rs's own wrappers (`VectorReader`, `VectorWriter`,
+## `Connection::register_*`) still route through the `loadable-extension` dispatch
+## table and cannot be called in `cargo test`. Use `InMemoryDb` for SQL-level
+## assertions (e.g. verifying SQL macro output) and `MockVectorWriter` /
+## `MockVectorReader` for callback logic tests.
+##
+## # Usage in your extension
+##
+## ```toml
+## [dev-dependencies]
+## quack-rs = { version = "0.11", features = ["bundled-test"] }
+## ```
+bundled-test = ["dep:duckdb"]
 ## Enables wrappers for DuckDB 1.5.0 C API additions (e.g. scalar function local
 ## states, config option registration). Requires `libduckdb-sys >= 1.5.0` to be
 ## resolved by Cargo. Has no effect when compiled against libduckdb-sys 1.4.x.
@@ -76,35 +116,9 @@ duckdb-1-5 = []
 ##   type-enum values behind a single, verifiable version requirement.
 duckdb-1-5-3 = ["duckdb-1-5"]
 
-## Links a bundled copy of DuckDB for integration testing.
-##
-## When this feature is enabled, the `testing::InMemoryDb` helper becomes available.
-## It opens a real in-memory DuckDB database using the `duckdb` Rust crate.
-##
-## Enabling this feature also initialises the `loadable-extension` dispatch table
-## (the function-pointer table that normally gets populated at extension-load time)
-## from the bundled DuckDB symbols, so that `InMemoryDb::open()` works correctly
-## even in `cargo test` where no DuckDB host process loads the extension.
-##
-## # Important: architectural limitation
-##
-## Even with this feature, quack-rs's own wrappers (`VectorReader`, `VectorWriter`,
-## `Connection::register_*`) still route through the `loadable-extension` dispatch
-## table and cannot be called in `cargo test`. Use `InMemoryDb` for SQL-level
-## assertions (e.g. verifying SQL macro output) and `MockVectorWriter` /
-## `MockVectorReader` for callback logic tests.
-##
-## # Usage in your extension
-##
-## ```toml
-## [dev-dependencies]
-## quack-rs = { version = "0.13", features = ["bundled-test"] }
-## ```
-bundled-test = ["dep:duckdb"]
-
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
-duckdb = { version = ">=1.4.4, <2", features = ["bundled"], optional = true }
+duckdb = { version = ">=1.4.4, <2", optional = true }
 mutants = "0.0.4"
 
 [build-dependencies]
@@ -114,7 +128,7 @@ mutants = "0.0.4"
 cc = "1"
 
 [dev-dependencies]
-duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }
+duckdb = { version = ">=1.4.4, <2" }
 criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
 # tempfile is version-pinned for reproducible dev builds. It was originally held
@@ -148,6 +162,9 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 return_self_not_must_use = "allow"
+# Transitive duplicates from arrow/ahash/ring trees — not under our control,
+# and cargo will pick a single version per crate at link time anyway.
+multiple_crate_versions = "allow"
 
 [package.metadata.docs.rs]
 # Render the full API on docs.rs — including the `duckdb-1-5` / `duckdb-1-5-3`
