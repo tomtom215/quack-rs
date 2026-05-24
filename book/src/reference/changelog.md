@@ -58,6 +58,8 @@ than anything new to 1.5.3 specifically.
   since the `>=1.4.4, <2` constraint already permitted it, the bundled fixes are
   picked up purely by the lock-file update with no source changes required for
   the bump itself.
+- **`cc` 1.2.61 → 1.2.62** in the workspace `Cargo.lock` (build-dependency; no
+  API impact). Folds in Dependabot PR #89 (the `patch-updates` group).
 
 ### Documentation
 
