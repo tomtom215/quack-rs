@@ -59,6 +59,18 @@ than anything new to 1.5.3 specifically.
   picked up purely by the lock-file update with no source changes required for
   the bump itself.
 
+### Documentation
+
+- **New book section "DuckDB 1.5+ APIs"** — dedicated guide pages for the
+  `error_data`, `expression`, `appender`, `file_system`, `selection_vector`, and
+  `instance_cache` modules, wired into `SUMMARY.md`.
+- Refreshed the reference docs (`docs/architecture.md`, `docs/ffi-reference.md`,
+  the `TypeId` reference, `CONTRIBUTING.md`/book source trees) to cover the new
+  modules, and corrected the now-resolved VARIANT/GEOMETRY entries in
+  `Known Limitations` (these type-enum values now exist in the C API as of
+  DuckDB 1.5.3 / 1.5.x; `TypeId::Variant`/`Geometry` remain a tracked follow-up
+  pending a version-floor decision).
+
 ## [0.12.1] — 2026-05-01
 
 ### Security

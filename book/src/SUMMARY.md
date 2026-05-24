@@ -39,6 +39,15 @@
 - [NULL Handling & Strings](data/nulls-and-strings.md)
 - [INTERVAL Type](data/intervals.md)
 
+# DuckDB 1.5+ APIs
+
+- [Structured Errors](duckdb-1-5/error-data.md)
+- [Bound Expressions](duckdb-1-5/expression.md)
+- [Bulk Appender](duckdb-1-5/appender.md)
+- [Virtual File System](duckdb-1-5/file-system.md)
+- [Selection Vectors](duckdb-1-5/selection-vector.md)
+- [Instance Cache](duckdb-1-5/instance-cache.md)
+
 # Security
 
 - [TLS Configuration](security/tls.md)
