@@ -50,6 +50,19 @@ exclude_globs = [
     "src/testing/mock_vector.rs",  # test-only vector stub
     "src/testing/mod.rs",       # re-exports only
     "src/bin/**",               # binary entry points
+    # DuckDB 1.5.x FFI wrapper modules: every public method calls a DuckDB C
+    # function that panics in `cargo test` without a live runtime, so their
+    # mutants cannot be killed by unit tests (same rationale as the entries
+    # above). Their pure-logic siblings — e.g. `DuckDbErrorType` in error_data.rs
+    # and the `TypeId` conversions — are NOT excluded and stay mutation-tested.
+    "src/expression.rs",        # Expression: all methods call duckdb_expression_*
+    "src/file_system.rs",       # FileSystem/FileHandle: all methods call duckdb FS API
+    "src/appender.rs",          # Appender: all methods call duckdb_appender_*
+    "src/selection_vector.rs",  # SelectionVector: new() calls duckdb_create_selection_vector
+    "src/instance_cache.rs",    # InstanceCache: all methods call duckdb_*_instance_cache
+    "src/table_description.rs", # TableDescription: FFI methods; tests are bundled-test-gated
+    "src/scalar/info.rs",       # Scalar{Function,Bind,Init}Info: FFI accessor wrappers
+    "src/copy_function/info.rs",# Copy{Bind,GlobalInit,Sink,Finalize}Info: FFI accessor wrappers
 ]
 
 # Skip functions whose mutations are unproductive (Display/Debug impls,

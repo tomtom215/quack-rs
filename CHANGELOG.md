@@ -120,6 +120,28 @@ new to 1.5.3 specifically.
   crate; v0.12.1 was in fact already on crates.io) and bumped install-example
   version references throughout the README, book, and scaffold template to `0.13`.
 
+### CI
+
+- **docs.rs now builds with `duckdb-1-5-3`** (`[package.metadata.docs.rs]`), so
+  the feature-gated modules (`appender`, `error_data`, `file_system`, …) and the
+  new `TypeId` variants render on docs.rs and the README's docs.rs links resolve.
+  Previously docs.rs built the empty default feature set and omitted them.
+- **CI exercises the `duckdb-1-5-3` feature** — the feature job now runs
+  `check` / `test` / `clippy` for `duckdb-1-5-3` alongside `duckdb-1-5`, and the
+  `Clippy (beta)` and `doc` jobs use `duckdb-1-5-3`.
+- **Fixed the `Nightly` CI job silently running stable** — the SHA-pinned
+  `dtolnay/rust-toolchain` step lacked `with: toolchain: nightly`, so it fell
+  back to the `rust-toolchain.toml` stable channel (the same class of bug
+  previously fixed for the MSRV job).
+- **Mutation testing scoped to testable code** — DuckDB FFI-wrapper modules
+  whose methods require a live runtime (and whose tests are `bundled-test`-gated
+  or absent) are excluded from `cargo mutants`, since their mutants can't be
+  killed by unit tests. This extends the existing exclusion pattern to the 1.5.x
+  wrappers — `expression`, `file_system`, `appender`, `selection_vector`,
+  `instance_cache`, `table_description`, and the scalar/copy `*Info` accessors.
+  Pure-logic code (e.g. `DuckDbErrorType`, the `TypeId` conversions) stays in
+  scope. The mutants feature set is bumped to `duckdb-1-5-3`.
+
 ## [0.12.1] - 2026-05-01
 
 ### Security
