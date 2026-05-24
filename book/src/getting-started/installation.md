@@ -51,7 +51,7 @@ dependency or your own code panics.
 
 ## Minimum Supported Rust Version
 
-quack-rs requires **Rust ≥ 1.84.1**.
+quack-rs requires **Rust ≥ 1.87.0**.
 
 This MSRV is required for:
 - `&raw mut expr` syntax for creating raw pointers without references (sound and stable since 1.84.0)
@@ -67,7 +67,7 @@ rustup default stable
 Verify:
 
 ```bash
-rustc --version   # must be ≥ 1.84.1
+rustc --version   # must be ≥ 1.87.0
 ```
 
 ---

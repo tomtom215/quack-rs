@@ -6,7 +6,7 @@ This page gets you from zero to a working DuckDB extension in three steps.
 
 ## Prerequisites
 
-- Rust ≥ 1.84.1 (MSRV) — install via [rustup](https://rustup.rs/)
+- Rust ≥ 1.87.0 (MSRV) — install via [rustup](https://rustup.rs/)
 - DuckDB CLI (for testing the built extension) — [download](https://duckdb.org/docs/installation/)
 
 ---

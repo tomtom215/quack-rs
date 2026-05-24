@@ -32,8 +32,8 @@ version and the C API protocol version.
 
 ### What is the minimum supported Rust version (MSRV)?
 
-Rust **1.84.1** or later. This is enforced in `Cargo.toml` with
-`rust-version = "1.84.1"`.
+Rust **1.87.0** or later. This is enforced in `Cargo.toml` with
+`rust-version = "1.87.0"`.
 
 ### Is quack-rs production-ready?
 

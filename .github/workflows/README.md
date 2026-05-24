@@ -26,7 +26,7 @@ All of these must pass before merging any PR:
 4. `cargo clippy --all-targets -- -D warnings`
 5. `cargo fmt -- --check`
 6. `cargo doc --no-deps` (with `-D warnings`)
-7. `cargo +1.84.1 check` (MSRV)
+7. `cargo +1.87.0 check` (MSRV)
 8. `cargo bench --no-run` (compile check)
 9. Example extension build + clippy + test
 10. Scaffold output compilation

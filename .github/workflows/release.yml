@@ -147,9 +147,9 @@ jobs:
             os: ubuntu-latest
             toolchain: stable
             command: cargo doc --no-deps --all-features
-          - name: "MSRV 1.84.1"
+          - name: "MSRV 1.87.0"
             os: ubuntu-latest
-            toolchain: "1.84.1"
+            toolchain: "1.87.0"
             command: cargo check
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

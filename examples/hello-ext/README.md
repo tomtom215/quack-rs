@@ -86,7 +86,7 @@ SELECT * FROM 'hello:DuckDB';             -- → 'Hello, DuckDB!'
 
 ## Prerequisites
 
-- Rust 1.84.1 or later (`rustup update stable`)
+- Rust 1.87.0 or later (`rustup update stable`)
 - DuckDB 1.4.x or 1.5.x CLI for live testing ([download][duckdb-releases])
 
 ## Build

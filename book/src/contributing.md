@@ -9,7 +9,7 @@ bug reports, documentation improvements, new pitfall discoveries, and code.
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Rust | ≥ 1.84.1 (MSRV) | Compiler |
+| Rust | ≥ 1.87.0 (MSRV) | Compiler |
 | `rustfmt` | stable | Formatting |
 | `clippy` | stable | Linting |
 | `cargo-msrv` | latest | MSRV verification |
@@ -53,8 +53,8 @@ cargo fmt -- --check
 # Documentation — zero broken links or missing docs
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
-# MSRV — must compile on Rust 1.84.1 (excludes benches; matches CI)
-cargo +1.84.1 check
+# MSRV — must compile on Rust 1.87.0 (excludes benches; matches CI)
+cargo +1.87.0 check
 ```
 
 These same checks run in CI on every push and pull request.

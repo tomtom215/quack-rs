@@ -2,7 +2,7 @@
 name = "hello-ext"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.84.1"
+rust-version = "1.87.0"
 authors = ["Tom F"]
 license = "MIT"
 description = "Example DuckDB community extension built with quack-rs: word_count, first_word, generate_series_ext, VARCHAR→INTEGER cast"

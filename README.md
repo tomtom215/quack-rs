@@ -9,7 +9,7 @@
     <a href="https://crates.io/crates/quack-rs"><img src="https://img.shields.io/crates/v/quack-rs.svg" alt="Crates.io"></a>
     <a href="https://quack-rs.com/"><img src="https://img.shields.io/badge/docs-book-blue.svg" alt="Documentation"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-    <a href="https://blog.rust-lang.org/2025/01/30/Rust-1.84.1.html"><img src="https://img.shields.io/badge/MSRV-1.84.1-blue.svg" alt="MSRV: 1.84.1"></a>
+    <a href="https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/"><img src="https://img.shields.io/badge/MSRV-1.87.0-blue.svg" alt="MSRV: 1.87.0"></a>
   </p>
 </div>
 
@@ -913,7 +913,7 @@ cargo test --all-targets                      # all tests pass
 cargo clippy --all-targets -- -D warnings     # no clippy warnings
 cargo fmt -- --check                          # code is formatted
 cargo doc --no-deps                           # docs compile without warnings
-cargo check                                   # MSRV check (Rust 1.84.1)
+cargo check                                   # MSRV check (Rust 1.87.0)
 ```
 
 ---

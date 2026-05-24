@@ -62,6 +62,15 @@ than anything new to 1.5.3 specifically.
   folding in Dependabot PR #89, the `patch-updates` group) and
   `examples/hello-ext` (1.2.57 → 1.2.62, re-syncing the example lock's older
   `cc`). Build-dependency; no API impact.
+- **MSRV corrected to 1.87.0.** The crate declared `rust-version = "1.84.1"`,
+  but `libduckdb-sys` (1.5.x line, a non-optional dependency) is
+  `edition = "2024"` / `rust-version = "1.85.1"` — so quack-rs has in fact
+  required Rust ≥ 1.85.1 since before this release (`cargo +1.84.1 check` cannot
+  even parse the manifest). The declared MSRV, the CI `MSRV` job (now explicitly
+  pinned with `toolchain: "1.87.0"` so it genuinely gates instead of silently
+  falling back to the `rust-toolchain.toml` stable channel), the release matrix,
+  and all docs/badges are updated to **1.87.0** — a small headroom margin above
+  the 1.85.1 floor.
 
 ### Documentation
 

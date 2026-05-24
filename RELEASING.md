@@ -68,7 +68,7 @@ CI / test (Windows)     ✅
 CI / clippy             ✅
 CI / fmt                ✅
 CI / doc                ✅
-CI / MSRV (1.84.1)      ✅
+CI / MSRV (1.87.0)      ✅
 CI / security           ✅
 ```
 
