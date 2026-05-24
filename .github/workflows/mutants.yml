@@ -143,18 +143,18 @@ jobs:
       - name: Determine changed files
         id: changed
         run: |
-          FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'src/**/*.rs')
-          FILE_COUNT=$(echo "$FILES" | grep -c . 2>/dev/null || echo 0)
+          FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- 'src/**/*.rs' | sort -u)
+          FILE_COUNT=$(printf '%s\n' "$FILES" | grep -c . 2>/dev/null || echo 0)
 
           if [ -z "$FILES" ] || [ "$FILE_COUNT" -eq 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "No Rust source files changed in src/ — mutation testing will be skipped."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "files=$(echo "$FILES" | tr '\n' ',')" >> "$GITHUB_OUTPUT"
+            echo "files=$(printf '%s\n' "$FILES" | tr '\n' ',')" >> "$GITHUB_OUTPUT"
             echo ""
-            echo "Changed files to mutate (${FILE_COUNT}):"
-            echo "$FILES" | sed 's/^/  /'
+            echo "Changed files (${FILE_COUNT}):"
+            printf '%s\n' "$FILES" | sed 's/^/  /'
           fi
 
       - name: Run mutation tests on changed files
@@ -163,16 +163,39 @@ jobs:
         run: |
           echo "::group::cargo-mutants execution log"
 
-          IFS=',' read -ra FILE_ARRAY <<< "${{ steps.changed.outputs.files }}"
-          GLOB_ARGS=""
-          for f in "${FILE_ARRAY[@]}"; do
-            if [ -n "$f" ]; then
-              GLOB_ARGS="$GLOB_ARGS --file $f"
-            fi
+          # `--file` for each changed source file.
+          IFS=',' read -ra CHANGED <<< "${{ steps.changed.outputs.files }}"
+          ARGS=()
+          for f in "${CHANGED[@]}"; do
+            [ -n "$f" ] && ARGS+=(--file "$f")
           done
 
+          # Re-apply mutants.toml `exclude_globs` as CLI `--exclude` flags.
+          # `--file` bypasses config excludes, so without this an edit to an
+          # excluded module (test helper / FFI wrapper) gets mutated and reports
+          # unkillable "missed" mutants. mutants.toml stays the single source of
+          # truth; `--exclude` wins over `--file` for the same path.
+          while IFS= read -r glob; do
+            [ -n "$glob" ] && ARGS+=(--exclude "$glob")
+          done < <(sed -n '/^exclude_globs = \[/,/^]/p' mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
+
+          # `--features duckdb-1-5-3` MUST be explicit: cargo-mutants does not
+          # apply mutants.toml `features` to this invocation, so without it the
+          # duckdb-1-5-gated code (type_id's 1.5 type arms, the whole error_data
+          # module) is cfg'd out — its mutations would be inert and reported as
+          # false "missed".
+          #
+          # `--cargo-arg=--lib` kills mutants with FAST, deterministic *unit*
+          # tests: the bundled-DuckDB integration suite is slow, and run
+          # per-mutant under --jobs its contention misclassifies caught mutants.
+          # `--exclude-re ErrorData` drops the error_data FFI methods (ErrorData /
+          # check_valid_utf8) that need a live runtime; the pure DuckDbErrorType
+          # logic stays mutation-tested.
           set +e
-          cargo mutants $GLOB_ARGS \
+          cargo mutants "${ARGS[@]}" \
+            --features duckdb-1-5-3 \
+            --cargo-arg=--lib \
+            --exclude-re 'ErrorData' \
             --output mutants.out \
             --timeout 120 \
             --jobs 4 2>&1 | tee /tmp/mutants-run.log
