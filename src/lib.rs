@@ -72,10 +72,16 @@
 //! | [`scaffold`] | Project generator for new extensions (no C++ glue needed) |
 //! | [`testing`] | Test harness for aggregate state logic |
 //! | [`prelude`] | Convenience re-exports of the most commonly used items |
+//! | `appender` | Bulk row appender (`duckdb-1-5` feature) |
 //! | `catalog` | Catalog entry lookup (`duckdb-1-5` feature) |
 //! | `client_context` | Client context access (`duckdb-1-5` feature) |
 //! | `config_option` | Extension-defined configuration options (`duckdb-1-5` feature) |
 //! | `copy_function` | Custom `COPY TO` handlers (`duckdb-1-5` feature) |
+//! | `error_data` | Structured error type + UTF-8 validation (`duckdb-1-5` feature) |
+//! | `expression` | Bound expression inspection / constant folding (`duckdb-1-5` feature) |
+//! | `file_system` | `DuckDB` virtual file system access (`duckdb-1-5` feature) |
+//! | `instance_cache` | Shared database instance cache (`duckdb-1-5` feature) |
+//! | `selection_vector` | Zero-copy row-index selection vectors (`duckdb-1-5` feature) |
 //! | `table_description` | Table metadata queries (`duckdb-1-5` feature) |
 //!
 //! ## Safety
@@ -92,7 +98,7 @@
 //!    or improved safety. When in doubt, prefer simplicity.
 //! 2. **No panics across FFI**: `unwrap()` is forbidden in FFI callbacks and entry points.
 //! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2` to support `DuckDB` 1.4.x
-//!    and 1.5.x (including v1.5.1) while preventing silent adoption of breaking changes in
+//!    and 1.5.x (through v1.5.3) while preventing silent adoption of breaking changes in
 //!    future major releases.
 //! 4. **Testable business logic**: state structs have zero FFI dependencies.
 //!
@@ -145,6 +151,8 @@ pub mod warning;
 
 // DuckDB 1.5.0+ modules — gated behind the `duckdb-1-5` feature flag.
 #[cfg(feature = "duckdb-1-5")]
+pub mod appender;
+#[cfg(feature = "duckdb-1-5")]
 pub mod catalog;
 #[cfg(feature = "duckdb-1-5")]
 pub mod client_context;
@@ -153,20 +161,31 @@ pub mod config_option;
 #[cfg(feature = "duckdb-1-5")]
 pub mod copy_function;
 #[cfg(feature = "duckdb-1-5")]
+pub mod error_data;
+#[cfg(feature = "duckdb-1-5")]
+pub mod expression;
+#[cfg(feature = "duckdb-1-5")]
+pub mod file_system;
+#[cfg(feature = "duckdb-1-5")]
+pub mod instance_cache;
+#[cfg(feature = "duckdb-1-5")]
+pub mod selection_vector;
+#[cfg(feature = "duckdb-1-5")]
 pub mod table_description;
 
 /// The `DuckDB` C API version string required by [`duckdb_rs_extension_api_init`][libduckdb_sys::duckdb_rs_extension_api_init].
 ///
-/// This constant corresponds to `DuckDB` releases v1.4.x, v1.5.0, and v1.5.1.
-/// The C API version did **not** change between v1.5.0 and v1.5.1. If you are
-/// targeting a different `DuckDB` release, consult the `DuckDB` changelog for the
-/// C API version.
+/// This constant corresponds to every `DuckDB` release from v1.4.x through
+/// v1.5.3: the C extension API version has remained `v1.2.0` across all of them
+/// (it did **not** change in the v1.5.1, v1.5.2, or v1.5.3 patch releases). If
+/// you are targeting a different `DuckDB` release, consult the `DuckDB` changelog
+/// for the C API version.
 ///
 /// # Pitfall P2: C API version ≠ `DuckDB` release version
 ///
 /// The `-dv` flag passed to `append_extension_metadata.py` must be this value
 /// (`"v1.2.0"`), **not** the `DuckDB` release version (`"v1.4.4"` / `"v1.5.0"` /
-/// `"v1.5.1"`). Using the wrong value causes the metadata script to fail silently
+/// `"v1.5.3"`). Using the wrong value causes the metadata script to fail silently
 /// or produce incorrect metadata.
 ///
 /// See `LESSONS.md` → Pitfall P2 for full details.

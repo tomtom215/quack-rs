@@ -327,10 +327,16 @@ append_metadata target/release/libmy_extension.so \
 | [`scaffold`] | Project generator | `generate_scaffold`, `ScaffoldConfig` |
 | [`testing`] | Mock vectors, aggregate harness, and registrar | `AggregateTestHarness<S>`, `MockVectorWriter`, `MockVectorReader`, `MockRegistrar` |
 | [`prelude`] | Common re-exports | `use quack_rs::prelude::*` |
+| [`appender`]¹ | Bulk row appender | `Appender` |
 | [`catalog`]¹ | Catalog entry lookup | `CatalogEntry`, `Catalog`, `CatalogEntryType` |
 | [`client_context`]¹ | Client context access (catalog, config, connection ID) | `ClientContext` |
 | [`config_option`]¹ | Extension-defined configuration options | `ConfigOptionBuilder`, `ConfigOptionScope` |
 | [`copy_function`]¹ | Custom `COPY TO` handlers | `CopyFunctionBuilder`, `CopyBindInfo`, `CopyGlobalInitInfo`, `CopySinkInfo`, `CopyFinalizeInfo` |
+| [`error_data`]¹ | Structured error data + UTF-8 validation | `ErrorData`, `DuckDbErrorType`, `check_valid_utf8` |
+| [`expression`]¹ | Bound expression inspection / constant folding | `Expression` |
+| [`file_system`]¹ | DuckDB virtual file system access | `FileSystem`, `FileHandle`, `FileOpenOptions`, `FileFlag` |
+| [`instance_cache`]¹ | Shared database instance cache | `InstanceCache` |
+| [`selection_vector`]¹ | Zero-copy row-index selection vectors | `SelectionVector` |
 | [`table_description`]¹ | Table metadata (column count, names, types) | `TableDescription` |
 
 > ¹ Requires the `duckdb-1-5` feature flag (DuckDB 1.5.0+).
@@ -372,10 +378,16 @@ append_metadata target/release/libmy_extension.so \
 [`scaffold`]: https://docs.rs/quack-rs/latest/quack_rs/scaffold/index.html
 [`testing`]: https://docs.rs/quack-rs/latest/quack_rs/testing/index.html
 [`prelude`]: https://docs.rs/quack-rs/latest/quack_rs/prelude/index.html
+[`appender`]: https://docs.rs/quack-rs/latest/quack_rs/appender/index.html
 [`catalog`]: https://docs.rs/quack-rs/latest/quack_rs/catalog/index.html
 [`client_context`]: https://docs.rs/quack-rs/latest/quack_rs/client_context/index.html
 [`config_option`]: https://docs.rs/quack-rs/latest/quack_rs/config_option/index.html
 [`copy_function`]: https://docs.rs/quack-rs/latest/quack_rs/copy_function/index.html
+[`error_data`]: https://docs.rs/quack-rs/latest/quack_rs/error_data/index.html
+[`expression`]: https://docs.rs/quack-rs/latest/quack_rs/expression/index.html
+[`file_system`]: https://docs.rs/quack-rs/latest/quack_rs/file_system/index.html
+[`instance_cache`]: https://docs.rs/quack-rs/latest/quack_rs/instance_cache/index.html
+[`selection_vector`]: https://docs.rs/quack-rs/latest/quack_rs/selection_vector/index.html
 [`table_description`]: https://docs.rs/quack-rs/latest/quack_rs/table_description/index.html
 
 ---

@@ -74,6 +74,17 @@
 //! | [`WarningSeverity`] | `warning` module |
 //! | [`DUCKDB_API_VERSION`] | crate root |
 //!
+//! ## `DuckDB` 1.5.0+ items (require the `duckdb-1-5` feature)
+//!
+//! | Item | From |
+//! |------|------|
+//! | `Appender` | `appender` module |
+//! | `ErrorData` / `DuckDbErrorType` | `error_data` module |
+//! | `Expression` | `expression` module |
+//! | `FileSystem` / `FileHandle` / `FileOpenOptions` / `FileFlag` | `file_system` module |
+//! | `SelectionVector` | `selection_vector` module |
+//! | `InstanceCache` | `instance_cache` module |
+//!
 //! # What is NOT included
 //!
 //! The following items are intentionally excluded from the prelude because they
@@ -138,6 +149,20 @@ pub use crate::copy_function::{
     CopyBindFn, CopyBindInfo, CopyFinalizeFn, CopyFinalizeInfo, CopyFunctionBuilder,
     CopyGlobalInitFn, CopyGlobalInitInfo, CopySinkFn, CopySinkInfo,
 };
+
+// DuckDB 1.5.0+ API surfaces (require the `duckdb-1-5` feature).
+#[cfg(feature = "duckdb-1-5")]
+pub use crate::appender::Appender;
+#[cfg(feature = "duckdb-1-5")]
+pub use crate::error_data::{DuckDbErrorType, ErrorData};
+#[cfg(feature = "duckdb-1-5")]
+pub use crate::expression::Expression;
+#[cfg(feature = "duckdb-1-5")]
+pub use crate::file_system::{FileFlag, FileHandle, FileOpenOptions, FileSystem};
+#[cfg(feature = "duckdb-1-5")]
+pub use crate::instance_cache::InstanceCache;
+#[cfg(feature = "duckdb-1-5")]
+pub use crate::selection_vector::SelectionVector;
 
 // Table functions
 pub use crate::table::{

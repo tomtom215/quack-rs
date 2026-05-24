@@ -29,7 +29,8 @@ use libduckdb_sys::{
     duckdb_catalog_entry_type_DUCKDB_CATALOG_ENTRY_TYPE_TABLE,
     duckdb_catalog_entry_type_DUCKDB_CATALOG_ENTRY_TYPE_TYPE,
     duckdb_catalog_entry_type_DUCKDB_CATALOG_ENTRY_TYPE_VIEW, duckdb_catalog_get_entry,
-    duckdb_client_context, duckdb_destroy_catalog, duckdb_destroy_catalog_entry,
+    duckdb_catalog_get_type_name, duckdb_client_context, duckdb_destroy_catalog,
+    duckdb_destroy_catalog_entry,
 };
 
 /// Types of entries in the `DuckDB` catalog.
@@ -196,6 +197,22 @@ impl Catalog {
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_catalog {
         self.catalog
+    }
+
+    /// Returns the type name of this catalog (e.g. `"duckdb"`, `"system"`, or a
+    /// storage extension's name like `"sqlite"`).
+    ///
+    /// Returns `None` if the name is not valid UTF-8.
+    #[must_use]
+    pub fn type_name(&self) -> Option<&str> {
+        // SAFETY: self.catalog is valid per constructor contract. The returned
+        // pointer is owned by DuckDB and remains valid while the catalog lives.
+        let ptr = unsafe { duckdb_catalog_get_type_name(self.catalog) };
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: ptr is a valid null-terminated UTF-8 string owned by DuckDB.
+        unsafe { CStr::from_ptr(ptr) }.to_str().ok()
     }
 
     /// Look up a catalog entry by type, schema, and name.

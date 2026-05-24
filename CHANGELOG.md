@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+New safe wrappers for the `DuckDB` 1.5.0+ C extension API, all gated behind the
+`duckdb-1-5` feature. Note that the DuckDB 1.5.3 release picked up in this cycle
+is a bugfix-only patch over 1.5.2 — the C extension API surface (version
+`v1.2.0`) is byte-for-byte unchanged between them — so these additions expose
+1.5.x capabilities the SDK had not yet wrapped rather than anything new to 1.5.3
+specifically.
+
+- **`error_data` module** — `ErrorData`, an RAII wrapper over
+  `duckdb_error_data` (the structured error type returned by several 1.5 APIs).
+  Carries a `DuckDbErrorType` category and a message, and converts into
+  `ExtensionError`. Adds the free function `check_valid_utf8`, exposing
+  `DuckDB`'s own UTF-8 validator.
+- **`expression` module** — `Expression`, an RAII wrapper over
+  `duckdb_expression`, with `return_type`, `is_foldable`, and `fold`. This
+  closes a real gap: `ScalarBindInfo` already returned a raw, unusable
+  `duckdb_expression` from `get_argument`; the new `ScalarBindInfo::argument`
+  returns a safe `Expression`, so bind callbacks can inspect argument types and
+  pre-fold constant arguments once at bind time.
+- **`file_system` module** — `FileSystem`, `FileHandle`, `FileOpenOptions`, and
+  `FileFlag`: read and write files through `DuckDB`'s virtual file system
+  (honouring `httpfs`, in-memory files, and other registered file systems)
+  instead of reaching for `std::fs`.
+- **`appender` module** — `Appender`: bulk row insertion (create, append a
+  `DataChunk`, flush, close) plus the 1.5 additions `clear` (revert buffered
+  rows), `error_data` (structured errors), and `append_default_to_chunk`.
+- **`selection_vector` module** — `SelectionVector`: allocate and fill
+  zero-copy row-index selection vectors.
+- **`instance_cache` module** — `InstanceCache`: share one underlying database
+  instance across repeated opens of the same path.
+- **`Value`** gains `display_string` (canonical string rendering of any value,
+  via `duckdb_value_to_string`) and `TIME_NS` accessors `Value::time_ns` /
+  `Value::as_time_ns` (pairing with the existing `TypeId::TimeNs`).
+- **`Catalog`** gains `type_name` (the catalog's storage type, e.g. `"duckdb"`
+  or a storage extension's name).
+- All new public types are re-exported from the `prelude` behind the
+  `duckdb-1-5` feature.
+
+### Changed
+
+- **`duckdb` / `libduckdb-sys` 1.10502.0 → 1.10503.1** (DuckDB 1.5.2 → 1.5.3) in
+  both the workspace and `examples/hello-ext` `Cargo.lock`. DuckDB 1.5.3 is a
+  bugfix release ([announcement](https://duckdb.org/2026/05/20/announcing-duckdb-153));
+  since the `>=1.4.4, <2` constraint already permitted it, the bundled fixes are
+  picked up purely by the lock-file update with no source changes required for
+  the bump itself.
+
 ## [0.12.1] - 2026-05-01
 
 ### Security

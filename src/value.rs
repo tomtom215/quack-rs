@@ -30,6 +30,10 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
+#[cfg(feature = "duckdb-1-5")]
+use libduckdb_sys::{
+    duckdb_create_time_ns, duckdb_get_time_ns, duckdb_time_ns, duckdb_value_to_string,
+};
 use libduckdb_sys::{
     duckdb_destroy_value, duckdb_free, duckdb_get_bool, duckdb_get_double, duckdb_get_float,
     duckdb_get_hugeint, duckdb_get_int16, duckdb_get_int32, duckdb_get_int64, duckdb_get_int8,
@@ -393,6 +397,59 @@ impl Value {
         } else {
             self.as_i128()
         }
+    }
+
+    /// Creates a `TIME_NS` value (time of day with nanosecond precision) from a
+    /// raw nanosecond count (`DuckDB` 1.5.0+).
+    ///
+    /// Pairs with [`as_time_ns`][Value::as_time_ns] and the
+    /// [`TypeId::TimeNs`][crate::types::TypeId::TimeNs] column type.
+    #[cfg(feature = "duckdb-1-5")]
+    #[inline]
+    #[must_use]
+    pub fn time_ns(nanos: i64) -> Self {
+        // SAFETY: duckdb_create_time_ns accepts any nanosecond count and returns
+        // an owned duckdb_value.
+        let raw = unsafe { duckdb_create_time_ns(duckdb_time_ns { nanos }) };
+        Self { raw }
+    }
+
+    /// Extracts the value as a `TIME_NS` nanosecond count (`DuckDB` 1.5.0+).
+    ///
+    /// Returns 0 if the value is not a `TIME_NS`.
+    #[cfg(feature = "duckdb-1-5")]
+    #[inline]
+    #[must_use]
+    pub fn as_time_ns(&self) -> i64 {
+        // SAFETY: self.raw is valid per constructor contract.
+        unsafe { duckdb_get_time_ns(self.raw) }.nanos
+    }
+
+    /// Returns the canonical string representation of this value, as `DuckDB`
+    /// would render it (`DuckDB` 1.5.0+).
+    ///
+    /// Returns `None` if the handle is null or the rendered text is not valid
+    /// UTF-8. This is primarily useful for diagnostics and error messages, where
+    /// it works for any value type (not just VARCHAR).
+    #[cfg(feature = "duckdb-1-5")]
+    #[must_use]
+    pub fn display_string(&self) -> Option<String> {
+        if self.raw.is_null() {
+            return None;
+        }
+        // SAFETY: self.raw is a valid duckdb_value per constructor contract.
+        let c_str: *mut c_char = unsafe { duckdb_value_to_string(self.raw) };
+        if c_str.is_null() {
+            return None;
+        }
+        // SAFETY: c_str is a valid null-terminated string allocated by DuckDB.
+        let result = unsafe { CStr::from_ptr(c_str) }
+            .to_str()
+            .ok()
+            .map(str::to_owned);
+        // SAFETY: c_str was allocated by DuckDB and must be freed with duckdb_free.
+        unsafe { duckdb_free(c_str.cast()) };
+        result
     }
 
     /// Returns `true` if the underlying handle is null.

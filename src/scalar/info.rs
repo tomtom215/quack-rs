@@ -23,6 +23,9 @@ use libduckdb_sys::{
     duckdb_function_info, duckdb_scalar_function_get_extra_info, duckdb_scalar_function_set_error,
 };
 
+#[cfg(feature = "duckdb-1-5")]
+use crate::expression::Expression;
+
 /// Converts a `&str` to `CString` without panicking.
 #[mutants::skip] // private FFI helper — tested in replacement_scan::tests
 fn str_to_cstring(s: &str) -> CString {
@@ -183,6 +186,28 @@ impl ScalarBindInfo {
     pub unsafe fn get_argument(&self, index: u64) -> duckdb_expression {
         // SAFETY: self.info is valid per constructor contract; caller guarantees index.
         unsafe { duckdb_scalar_function_bind_get_argument(self.info, index) }
+    }
+
+    /// Returns the argument at `index` as an RAII [`Expression`], or `None` if
+    /// `DuckDB` returns a null handle.
+    ///
+    /// This is the ergonomic counterpart to [`get_argument`][Self::get_argument]:
+    /// the returned [`Expression`] is destroyed automatically on drop and exposes
+    /// safe accessors for the argument's return type and constant folding.
+    ///
+    /// # Safety
+    ///
+    /// `index` must be less than [`argument_count`][Self::argument_count].
+    #[must_use]
+    pub unsafe fn argument(&self, index: u64) -> Option<Expression> {
+        // SAFETY: self.info is valid per constructor contract; caller guarantees index.
+        let raw = unsafe { duckdb_scalar_function_bind_get_argument(self.info, index) };
+        if raw.is_null() {
+            None
+        } else {
+            // SAFETY: raw is a non-null, owned duckdb_expression handle.
+            Some(unsafe { Expression::from_raw(raw) })
+        }
     }
 
     /// Retrieves the extra-info pointer previously set via
