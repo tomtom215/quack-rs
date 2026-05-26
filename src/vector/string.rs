@@ -102,9 +102,11 @@ impl<'a> DuckStringView<'a> {
     ///
     /// # Platform assumption
     ///
-    /// The pointer-format branch reads bytes 8–15 as a `usize` pointer, which
-    /// assumes a 64-bit platform (8-byte pointers). `DuckDB` itself only supports
-    /// 64-bit platforms, so this is a safe assumption.
+    /// The pointer-format branch reads bytes 8–15 as a `u64` and truncates to
+    /// `usize`. On 64-bit targets this is a lossless round-trip; on 32-bit
+    /// (DuckDB-WASM via `wasm32-unknown-emscripten`) the C union still reserves
+    /// 8 bytes for the pointer slot but only the lower 4 carry the address —
+    /// the upper 4 are padding/zero. `u64 as usize` returns those lower bytes.
     ///
     /// # Safety (internal)
     ///
@@ -116,11 +118,13 @@ impl<'a> DuckStringView<'a> {
             // Inline case: data starts at byte 4, length bytes follow
             Some(&self.bytes[4..4 + self.length])
         } else {
-            // Pointer case: bytes 8–15 contain the pointer (little-endian usize)
+            // Pointer case: bytes 8–15 hold the heap pointer in an 8-byte slot.
             // SAFETY: For pointer-format strings, bytes 8..16 hold a valid pointer
             // to heap memory allocated by DuckDB and valid for the vector's lifetime.
             let ptr_bytes: [u8; 8] = self.bytes[8..16].try_into().ok()?;
-            let ptr_val = usize::from_le_bytes(ptr_bytes) as *const u8;
+            // Read as u64 so this works regardless of `usize` width; truncating
+            // to `usize` is a no-op on 64-bit and yields the low 4 bytes on wasm32.
+            let ptr_val = u64::from_le_bytes(ptr_bytes) as usize as *const u8;
             if ptr_val.is_null() {
                 return None;
             }
