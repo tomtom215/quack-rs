@@ -148,19 +148,32 @@ For SQL-level assertions — verifying that a SQL macro produces the correct out
 or that a CREATE TABLE + INSERT + SELECT pipeline works — enable the `bundled-test`
 Cargo feature. This provides `InMemoryDb`, which wraps the `duckdb` crate's bundled
 DuckDB and automatically initialises the `loadable-extension` dispatch table before
-opening a connection (see [Pitfall P9](reference/pitfalls.md#p9)):
+opening a connection (see [Pitfall P9](reference/pitfalls.md#p9)).
+
+Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 
 ```toml
-# In your extension's Cargo.toml
+# Zero-config but slow: compile libduckdb from C++ source (~5-10 min cold).
 [dev-dependencies]
 quack-rs = { version = "0.13", features = ["bundled-test"] }
 ```
 
-> **Build time**: enabling `bundled-test` compiles a full copy of DuckDB from
-> source (the `duckdb` Rust crate with `features = ["bundled"]`) and a small
-> C++ shim via the `cc` build dependency. Expect a 2–5 minute incremental build
-> the first time, depending on your machine. This only affects the test build —
-> it has no impact on your extension's release binary.
+```toml
+# Fast: link against a pre-built libduckdb. Set DUCKDB_DOWNLOAD_LIB=1 at build
+# time and libduckdb-sys downloads the upstream release zip (~40 MB, cached
+# under target/); or set DUCKDB_LIB_DIR=/path/to/libduckdb if you already have
+# one extracted (requires libduckdb-sys >= 1.10503 for header auto-discovery).
+[dev-dependencies]
+quack-rs = { version = "0.13", features = ["bundled-test-prebuilt"] }
+```
+
+Both keep `duckdb` out of a plain `cargo test` and out of your published
+crate's dependency tree — it is pulled in only when one of these features is on.
+
+If your tests need to `LOAD` your own locally-built `.duckdb_extension`
+artifact, use `InMemoryDb::open_unsigned` instead of `open()` — the
+`allow_unsigned_extensions` config option is startup-only and can't be set
+via `SET` after the connection has opened.
 
 ```rust,no_run
 # #[cfg(feature = "bundled-test")]

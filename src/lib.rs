@@ -120,9 +120,11 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
-// DuckDB's C API and duckdb_string_t layout assume 64-bit pointers.
-#[cfg(not(target_pointer_width = "64"))]
-compile_error!("quack-rs requires a 64-bit target (DuckDB does not support 32-bit platforms).");
+// quack-rs supports 64-bit targets and `wasm32-unknown-emscripten` (the
+// DuckDB-WASM target). The `duckdb_string_t` layout reserves 8 bytes for the
+// heap pointer regardless of pointer width — see `vector::string` for details.
+#[cfg(not(any(target_pointer_width = "64", target_arch = "wasm32")))]
+compile_error!("quack-rs supports 64-bit targets and wasm32-unknown-emscripten.");
 
 pub mod aggregate;
 pub mod callback;

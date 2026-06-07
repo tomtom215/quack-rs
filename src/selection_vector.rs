@@ -114,7 +114,7 @@ impl Drop for SelectionVector {
     }
 }
 
-#[cfg(all(test, feature = "bundled-test"))]
+#[cfg(all(test, feature = "_duckdb-testing"))]
 mod tests {
     use super::*;
 

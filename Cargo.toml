@@ -1,6 +1,6 @@
 [package]
 name = "quack-rs"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 rust-version = "1.87.0"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
@@ -35,6 +35,59 @@ name = "quack_rs"
 crate-type = ["rlib"]
 
 [features]
+
+## Enables the `testing::InMemoryDb` helper — a real in-memory DuckDB database
+## for SQL-level integration tests — by **compiling DuckDB from C++ source**
+## (the `duckdb` crate's `bundled` feature). No env vars required; cold builds
+## take ~5-10 min. This is the safe, reproducible default for SQL-level tests.
+##
+## Prefer `bundled-test-prebuilt` to link a pre-built libduckdb instead (faster,
+## no C++ compile). The two are mutually exclusive in intent; if both are
+## enabled, the source (`bundled`) build wins.
+##
+## Enabling this feature also initialises the `loadable-extension` dispatch
+## table from the linked DuckDB symbols, so `InMemoryDb::open()` works in
+## `cargo test` even though no DuckDB host process loads the extension.
+##
+## # Important: architectural limitation
+##
+## Even with this feature, quack-rs's own wrappers (`VectorReader`, `VectorWriter`,
+## `Connection::register_*`) still route through the `loadable-extension` dispatch
+## table and cannot be called in `cargo test`. Use `InMemoryDb` for SQL-level
+## assertions (e.g. verifying SQL macro output) and `MockVectorWriter` /
+## `MockVectorReader` for callback logic tests.
+##
+## # Usage in your extension
+##
+## ```toml
+## [dev-dependencies]
+## quack-rs = { version = "0.14", features = ["bundled-test"] }
+## ```
+bundled-test = ["_duckdb-testing", "duckdb/bundled"]
+
+## Same capability as `bundled-test`, but links a **pre-built libduckdb** rather
+## than compiling DuckDB from C++ source — much faster, at the cost of supplying
+## the library yourself via exactly one of:
+##   - `DUCKDB_DOWNLOAD_LIB=1` — `libduckdb-sys` downloads the upstream DuckDB
+##     release zip (~40 MB, cached under `target/`). Recommended.
+##   - `DUCKDB_LIB_DIR=/path/to/libduckdb` — link a libduckdb tree you already
+##     have (also set `DUCKDB_INCLUDE_DIR` if `duckdb.hpp` isn't beside the lib).
+##
+## Requires `libduckdb-sys >= 1.10503` (which publishes the header directory via
+## `DEP_DUCKDB_INCLUDE`); older versions need `DUCKDB_INCLUDE_DIR` set explicitly.
+##
+## ```toml
+## [dev-dependencies]
+## quack-rs = { version = "0.14", features = ["bundled-test-prebuilt"] }
+## ```
+bundled-test-prebuilt = ["_duckdb-testing"]
+
+## Internal implementation detail — **do not enable directly.** Activates the
+## optional `duckdb` dependency and gates the `InMemoryDb` helper and its tests.
+## Enabled transitively by `bundled-test` (source build) and
+## `bundled-test-prebuilt` (pre-built libduckdb); those two differ only in
+## whether `duckdb/bundled` is also turned on.
+_duckdb-testing = ["dep:duckdb"]
 ## Enables wrappers for DuckDB 1.5.0 C API additions (e.g. scalar function local
 ## states, config option registration). Requires `libduckdb-sys >= 1.5.0` to be
 ## resolved by Cargo. Has no effect when compiled against libduckdb-sys 1.4.x.
@@ -76,45 +129,22 @@ duckdb-1-5 = []
 ##   type-enum values behind a single, verifiable version requirement.
 duckdb-1-5-3 = ["duckdb-1-5"]
 
-## Links a bundled copy of DuckDB for integration testing.
-##
-## When this feature is enabled, the `testing::InMemoryDb` helper becomes available.
-## It opens a real in-memory DuckDB database using the `duckdb` Rust crate.
-##
-## Enabling this feature also initialises the `loadable-extension` dispatch table
-## (the function-pointer table that normally gets populated at extension-load time)
-## from the bundled DuckDB symbols, so that `InMemoryDb::open()` works correctly
-## even in `cargo test` where no DuckDB host process loads the extension.
-##
-## # Important: architectural limitation
-##
-## Even with this feature, quack-rs's own wrappers (`VectorReader`, `VectorWriter`,
-## `Connection::register_*`) still route through the `loadable-extension` dispatch
-## table and cannot be called in `cargo test`. Use `InMemoryDb` for SQL-level
-## assertions (e.g. verifying SQL macro output) and `MockVectorWriter` /
-## `MockVectorReader` for callback logic tests.
-##
-## # Usage in your extension
-##
-## ```toml
-## [dev-dependencies]
-## quack-rs = { version = "0.13", features = ["bundled-test"] }
-## ```
-bundled-test = ["dep:duckdb"]
-
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
-duckdb = { version = ">=1.4.4, <2", features = ["bundled"], optional = true }
+duckdb = { version = ">=1.4.4, <2", optional = true }
 mutants = "0.0.4"
 
 [build-dependencies]
-# Used only when the `bundled-test` feature is active: compiles the thin C++
-# shim that calls DuckDB's internal CreateAPIv1() to initialise the
-# loadable-extension dispatch table from bundled DuckDB symbols.
+# Used only when `bundled-test` / `bundled-test-prebuilt` is active: compiles the
+# thin C++ shim that calls DuckDB's internal CreateAPIv1() to initialise the
+# loadable-extension dispatch table from the linked DuckDB symbols.
 cc = "1"
 
 [dev-dependencies]
-duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }
+# `duckdb` is intentionally NOT a dev-dependency: it is an optional regular
+# dependency activated only by `bundled-test` / `bundled-test-prebuilt`, so that
+# a plain `cargo test` (and every downstream consumer's lockfile) stays free of
+# the DuckDB + arrow tree.
 criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
 # tempfile is version-pinned for reproducible dev builds. It was originally held

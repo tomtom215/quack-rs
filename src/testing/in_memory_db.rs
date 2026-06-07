@@ -31,16 +31,29 @@
 //!
 //! # Enabling this feature
 //!
+//! Compile DuckDB from source (zero-config, ~5-10 min cold):
+//!
 //! ```toml
 //! # In your extension's Cargo.toml:
 //! [dev-dependencies]
 //! quack-rs = { version = "0.13", features = ["bundled-test"] }
 //! ```
 //!
+//! …or link a pre-built libduckdb for a much faster build:
+//!
+//! ```toml
+//! [dev-dependencies]
+//! quack-rs = { version = "0.13", features = ["bundled-test-prebuilt"] }
+//! ```
+//!
+//! With `bundled-test-prebuilt`, build with `DUCKDB_DOWNLOAD_LIB=1` (let
+//! libduckdb-sys download the prebuilt zip) or set `DUCKDB_LIB_DIR=...` to point
+//! at a libduckdb tree you already have extracted locally.
+//!
 //! # Example
 //!
 //! ```rust,no_run
-//! # #[cfg(feature = "bundled-test")]
+//! # #[cfg(feature = "_duckdb-testing")]
 //! # {
 //! use quack_rs::testing::InMemoryDb;
 //!
@@ -56,10 +69,12 @@
 
 // ── Dispatch-table initialisation ────────────────────────────────────────────
 //
-// When `bundled-test` is active, Cargo's feature-unification merges the
-// `loadable-extension` feature (required by the library to build as a DuckDB
-// extension) and the `bundled-full` feature (pulled in by `duckdb` with
-// `features = ["bundled"]`) into a single `libduckdb-sys` build.
+// When `bundled-test` / `bundled-test-prebuilt` is active, Cargo's
+// feature-unification merges the `loadable-extension` feature (required by the
+// library to build as a DuckDB extension) and the `duckdb`-provided
+// `libduckdb-sys` build (compiled from source for `bundled-test`, or linked
+// against a pre-built library for `bundled-test-prebuilt`) into a single
+// `libduckdb-sys` build.
 //
 // In `loadable-extension` mode every DuckDB C API call is routed through an
 // atomic function-pointer dispatch table that is normally populated by DuckDB
@@ -176,6 +191,42 @@ impl InMemoryDb {
         })
     }
 
+    /// Opens a new in-memory `DuckDB` database with `allow_unsigned_extensions`
+    /// enabled, so unsigned `.duckdb_extension` artifacts can be `LOAD`ed for
+    /// integration testing.
+    ///
+    /// `allow_unsigned_extensions` is a startup-only config option; it cannot
+    /// be toggled via `SET` after the database has opened. Use this constructor
+    /// when the test needs to `LOAD '/path/to/<your>.duckdb_extension'` against
+    /// an artifact you built locally (and therefore haven't signed).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config can't be constructed or if `DuckDB` fails
+    /// to initialize an in-memory database.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # #[cfg(feature = "_duckdb-testing")]
+    /// # {
+    /// use quack_rs::testing::InMemoryDb;
+    ///
+    /// let db = InMemoryDb::open_unsigned().unwrap();
+    /// // Loosen metadata checks too, since locally-built artifacts may have
+    /// // platform / DuckDB-version fields that don't match the host process.
+    /// db.execute_batch("SET allow_extensions_metadata_mismatch=true").unwrap();
+    /// db.execute_batch("LOAD '/path/to/my_ext.duckdb_extension'").unwrap();
+    /// # }
+    /// ```
+    pub fn open_unsigned() -> Result<Self, duckdb::Error> {
+        init_dispatch_table_once();
+        let config = duckdb::Config::default().allow_unsigned_extensions()?;
+        Ok(Self {
+            conn: duckdb::Connection::open_in_memory_with_flags(config)?,
+        })
+    }
+
     /// Executes one or more SQL statements separated by semicolons.
     ///
     /// Useful for `CREATE TABLE`, `INSERT`, `CREATE MACRO`, etc.
@@ -209,7 +260,7 @@ impl InMemoryDb {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # #[cfg(feature = "bundled-test")]
+    /// # #[cfg(feature = "_duckdb-testing")]
     /// # {
     /// use quack_rs::testing::InMemoryDb;
     ///
@@ -251,6 +302,24 @@ mod tests {
             .unwrap();
         let total: i64 = db.query_one("SELECT SUM(v) FROM t").unwrap();
         assert_eq!(total, 60);
+    }
+
+    #[test]
+    fn in_memory_db_open_unsigned_enables_allow_unsigned_extensions() {
+        let db = InMemoryDb::open_unsigned().expect("should open in-memory db");
+        let v: bool = db
+            .query_one("SELECT current_setting('allow_unsigned_extensions')")
+            .expect("should read config");
+        assert!(v);
+    }
+
+    #[test]
+    fn in_memory_db_open_does_not_enable_allow_unsigned_extensions() {
+        let db = InMemoryDb::open().expect("should open in-memory db");
+        let v: bool = db
+            .query_one("SELECT current_setting('allow_unsigned_extensions')")
+            .expect("should read config");
+        assert!(!v);
     }
 
     #[test]

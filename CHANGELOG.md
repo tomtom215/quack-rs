@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-07
+
+### Added
+
+- **`wasm32-unknown-emscripten` support** (the DuckDB-WASM target). The crate no
+  longer hard-rejects non-64-bit targets with a top-level `compile_error!`, and
+  the `duckdb_string_t` pointer slot is read as a `u64` then narrowed to `usize`
+  — lossless on 64-bit, and on wasm32 it yields the low 4 bytes of the 8-byte
+  slot (the upper 4 are zero padding in DuckDB's 16-byte layout). The full public
+  API, including the `duckdb-1-5-3` surface, `cargo check`s for
+  `wasm32-unknown-emscripten`; CI now guards this. (Thanks @killzoner.)
+- **`bundled-test-prebuilt` feature** — links a *pre-built* libduckdb instead of
+  compiling DuckDB from C++ source, for a much faster test build. Supply the
+  library via `DUCKDB_DOWNLOAD_LIB=1` (`libduckdb-sys` downloads the upstream
+  release zip) or `DUCKDB_LIB_DIR=...` (a libduckdb tree you already have).
+  `bundled-test` continues to compile DuckDB from source. (Thanks @killzoner.)
+- `InMemoryDb::open_unsigned()` opens an in-memory database with
+  `allow_unsigned_extensions=true`, allowing downstream extension crates to
+  `LOAD` their own locally-built (unsigned) `.duckdb_extension` artifact for
+  integration testing. (Thanks @killzoner.)
+
+### Changed
+
+- `duckdb` is now a purely optional dependency, activated only by `bundled-test`
+  / `bundled-test-prebuilt`. It is no longer a dev-dependency, and there is no
+  default `bundled` feature. As a result, a plain `cargo test` — and every
+  downstream consumer's `Cargo.lock` — no longer pulls the DuckDB + arrow tree,
+  and the default test build no longer compiles DuckDB.
+
+### Security
+
+- **`tar` 0.4.45 → 0.4.46** in both the root and example lockfiles, resolving
+  **GHSA-3pv8-6f4r-ffg2** ("PAX header desynchronization", Moderate). `tar` is a
+  `libduckdb-sys` build-dependency, so it appears in both `Cargo.lock` files and
+  raised one Dependabot alert each — the two moderate alerts reported on `main`.
+  This advisory is published in the GitHub Advisory Database (GHSA) but not the
+  RustSec database, so `cargo deny` did not flag it; the new OSV scan below closes
+  that gap.
+- Bumped `cc` 1.2.62 → 1.2.63 (which moves `shlex` 1.3.0 → 2.0.1) and refreshed
+  the `codecov/codecov-action` pin to v6.0.1.
+
+### CI / tooling
+
+- Added an **OSV / GHSA advisory scan** to CI (`osv-scanner`, pinned to v2.3.8 via
+  a checksum-verified binary) covering both `Cargo.lock` files. `cargo deny`
+  consults only the RustSec database; OSV.dev aggregates GHSA **and** RustSec, so
+  GHSA-only advisories (such as the `tar` one above) now fail CI alongside the
+  existing cargo-deny gate.
+
 ## [0.13.0] - 2026-05-24
 
 ### Added
@@ -1054,7 +1103,8 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/tomtom215/quack-rs/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/tomtom215/quack-rs/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/tomtom215/quack-rs/compare/v0.11.0...v0.12.0
