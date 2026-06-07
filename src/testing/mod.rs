@@ -158,12 +158,12 @@ pub mod harness;
 pub mod mock_registrar;
 pub mod mock_vector;
 
-#[cfg(feature = "bundled-test")]
+#[cfg(feature = "_duckdb-testing")]
 pub mod in_memory_db;
 
 pub use harness::AggregateTestHarness;
 pub use mock_registrar::{CastRecord, MockRegistrar};
 pub use mock_vector::{MockDuckValue, MockVectorReader, MockVectorWriter};
 
-#[cfg(feature = "bundled-test")]
+#[cfg(feature = "_duckdb-testing")]
 pub use in_memory_db::InMemoryDb;

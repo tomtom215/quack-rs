@@ -3,23 +3,23 @@
 
 //! Build script for quack-rs.
 //!
-//! When the `bundled-test` feature is active this compiles a tiny C++ shim
-//! (`src/testing/bundled_api_init.cpp`) that exposes `DuckDB`'s internal
-//! `CreateAPIv1()` function as a C-linkage symbol.  The Rust side calls this
-//! at test startup to populate the `loadable-extension` dispatch table from
-//! the linked `DuckDB` symbols, enabling `InMemoryDb` to work in `cargo test`.
+//! When the `bundled-test` (or `bundled-test-prebuilt`) feature is active this
+//! compiles a tiny C++ shim (`src/testing/bundled_api_init.cpp`) that exposes
+//! `DuckDB`'s internal `CreateAPIv1()` function as a C-linkage symbol.  The Rust
+//! side calls this at test startup to populate the `loadable-extension` dispatch
+//! table from the linked `DuckDB` symbols, enabling `InMemoryDb` to work in
+//! `cargo test`.
 //!
-//! Two `bundled-test` modes are supported:
+//! Two modes are supported:
 //!
-//! 1. **`bundled-test + bundled` (default)**: `libduckdb-sys` extracts and
-//!    compiles `DuckDB` from C++ source.  Headers come from the extraction,
-//!    linking is handled by `libduckdb-sys` itself.
-//! 2. **`bundled-test` without `bundled`**: `libduckdb-sys` runs its
-//!    `build_linked` path, which can either download a pre-built libduckdb
-//!    (`DUCKDB_DOWNLOAD_LIB=1`, recommended) or use a user-supplied tree
-//!    (`DUCKDB_LIB_DIR`).  In `loadable-extension` mode `libduckdb-sys`
-//!    suppresses its `cargo:rustc-link-lib` emission, so quack-rs emits it
-//!    here.
+//! 1. **`bundled-test` (source)**: `libduckdb-sys` extracts and compiles
+//!    `DuckDB` from C++ source.  Headers come from the extraction, linking is
+//!    handled by `libduckdb-sys` itself.
+//! 2. **`bundled-test-prebuilt`**: `libduckdb-sys` runs its `build_linked` path,
+//!    which can either download a pre-built libduckdb (`DUCKDB_DOWNLOAD_LIB=1`,
+//!    recommended) or use a user-supplied tree (`DUCKDB_LIB_DIR`).  In
+//!    `loadable-extension` mode `libduckdb-sys` suppresses its
+//!    `cargo:rustc-link-lib` emission, so quack-rs emits it here.
 //!
 //! Header resolution prefers `DEP_DUCKDB_INCLUDE` (emitted via `cargo:include=`
 //! by `libduckdb-sys` >= 1.10503) and falls back to mode-specific probes for
@@ -37,17 +37,22 @@ fn main() {
         println!("cargo:rustc-link-lib=rstrtmgr");
     }
 
-    // Only needed when bundled-test is enabled.
-    if env::var("CARGO_FEATURE_BUNDLED_TEST").is_err() {
+    // Only needed when DuckDB testing support is enabled (either feature).
+    let source_build = env::var("CARGO_FEATURE_BUNDLED_TEST").is_ok();
+    let prebuilt_feature = env::var("CARGO_FEATURE_BUNDLED_TEST_PREBUILT").is_ok();
+    if !source_build && !prebuilt_feature {
         return;
     }
-    let bundled = env::var("CARGO_FEATURE_BUNDLED").is_ok();
+    // Prebuilt mode applies only when the prebuilt feature is on and the source
+    // (`bundled`) build is not — if both are enabled, `duckdb/bundled` wins and
+    // libduckdb-sys links the compiled-from-source library itself.
+    let prebuilt = prebuilt_feature && !source_build;
 
-    if !bundled {
+    if prebuilt {
         emit_prebuilt_link_lib();
     }
 
-    let duckdb_include = resolve_duckdb_include(bundled);
+    let duckdb_include = resolve_duckdb_include(!prebuilt);
 
     cc::Build::new()
         .cpp(true)
@@ -68,8 +73,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/testing/bundled_api_init.cpp");
 }
 
-/// In `bundled-test` without `bundled` mode, `libduckdb-sys` resolves the
-/// library location (downloaded or `DUCKDB_LIB_DIR`) and emits
+/// In `bundled-test-prebuilt` mode, `libduckdb-sys` resolves the library
+/// location (downloaded or `DUCKDB_LIB_DIR`) and emits
 /// `cargo:rustc-link-search=...`, but its `loadable-extension` feature
 /// intentionally skips `cargo:rustc-link-lib=...` (the loaded extension's
 /// host process is normally responsible for providing libduckdb).  In
@@ -86,9 +91,9 @@ fn emit_prebuilt_link_lib() {
 /// 1. `DEP_DUCKDB_INCLUDE` — emitted by `libduckdb-sys >= 1.10503`.  Works in
 ///    both bundled and `build_linked` (download / `DUCKDB_LIB_DIR`) paths.
 /// 2. Mode-specific fallbacks for older `libduckdb-sys`:
-///    - **bundled**: scan the Cargo build directory for the extracted source
-///      tree (the historical path used by quack-rs <= 0.12).
-///    - **!bundled**: `DUCKDB_INCLUDE_DIR`, then `DUCKDB_LIB_DIR` if it has
+///    - **source build (`bundled`)**: scan the Cargo build directory for the
+///      extracted source tree (the historical path used by quack-rs <= 0.12).
+///    - **prebuilt**: `DUCKDB_INCLUDE_DIR`, then `DUCKDB_LIB_DIR` if it has
 ///      `duckdb.hpp` alongside the library.  `DUCKDB_DOWNLOAD_LIB` is not
 ///      probeable on pre-1.10503 (the download dir isn't exposed), so users
 ///      on that mode must upgrade `libduckdb-sys` or set the dirs explicitly.

@@ -35,26 +35,15 @@ name = "quack_rs"
 crate-type = ["rlib"]
 
 [features]
-default = ["bundled"]
 
-## Compiles a bundled copy of DuckDB from C++ source via the `duckdb` crate's
-## `bundled` feature. Required for the default `bundled-test` path. Disable to
-## link against a pre-built libduckdb (see `bundled-test` docs for the env vars).
-bundled = ["duckdb?/bundled"]
-## Enables the `testing::InMemoryDb` helper which opens a real in-memory
-## DuckDB database for integration testing.
+## Enables the `testing::InMemoryDb` helper — a real in-memory DuckDB database
+## for SQL-level integration tests — by **compiling DuckDB from C++ source**
+## (the `duckdb` crate's `bundled` feature). No env vars required; cold builds
+## take ~5-10 min. This is the safe, reproducible default for SQL-level tests.
 ##
-## Two modes:
-## 1. With `bundled` (default): libduckdb is compiled from source by the
-##    `duckdb` crate. No env vars required; cold builds take ~5-10 min.
-## 2. Without `bundled` (`default-features = false, features = ["bundled-test"]`):
-##    quack-rs links against a pre-built libduckdb. Set one of:
-##    - `DUCKDB_DOWNLOAD_LIB=1` — libduckdb-sys downloads the prebuilt zip
-##      from the upstream DuckDB release (~30 MB, cached under `target/`).
-##      Recommended.
-##    - `DUCKDB_LIB_DIR=/path/to/libduckdb` — link against a libduckdb tree
-##      you already have (also set `DUCKDB_INCLUDE_DIR` if `duckdb.hpp` isn't
-##      sitting alongside the library).
+## Prefer `bundled-test-prebuilt` to link a pre-built libduckdb instead (faster,
+## no C++ compile). The two are mutually exclusive in intent; if both are
+## enabled, the source (`bundled`) build wins.
 ##
 ## Enabling this feature also initialises the `loadable-extension` dispatch
 ## table from the linked DuckDB symbols, so `InMemoryDb::open()` works in
@@ -72,9 +61,33 @@ bundled = ["duckdb?/bundled"]
 ##
 ## ```toml
 ## [dev-dependencies]
-## quack-rs = { version = "0.11", features = ["bundled-test"] }
+## quack-rs = { version = "0.13", features = ["bundled-test"] }
 ## ```
-bundled-test = ["dep:duckdb"]
+bundled-test = ["_duckdb-testing", "duckdb/bundled"]
+
+## Same capability as `bundled-test`, but links a **pre-built libduckdb** rather
+## than compiling DuckDB from C++ source — much faster, at the cost of supplying
+## the library yourself via exactly one of:
+##   - `DUCKDB_DOWNLOAD_LIB=1` — `libduckdb-sys` downloads the upstream DuckDB
+##     release zip (~40 MB, cached under `target/`). Recommended.
+##   - `DUCKDB_LIB_DIR=/path/to/libduckdb` — link a libduckdb tree you already
+##     have (also set `DUCKDB_INCLUDE_DIR` if `duckdb.hpp` isn't beside the lib).
+##
+## Requires `libduckdb-sys >= 1.10503` (which publishes the header directory via
+## `DEP_DUCKDB_INCLUDE`); older versions need `DUCKDB_INCLUDE_DIR` set explicitly.
+##
+## ```toml
+## [dev-dependencies]
+## quack-rs = { version = "0.13", features = ["bundled-test-prebuilt"] }
+## ```
+bundled-test-prebuilt = ["_duckdb-testing"]
+
+## Internal implementation detail — **do not enable directly.** Activates the
+## optional `duckdb` dependency and gates the `InMemoryDb` helper and its tests.
+## Enabled transitively by `bundled-test` (source build) and
+## `bundled-test-prebuilt` (pre-built libduckdb); those two differ only in
+## whether `duckdb/bundled` is also turned on.
+_duckdb-testing = ["dep:duckdb"]
 ## Enables wrappers for DuckDB 1.5.0 C API additions (e.g. scalar function local
 ## states, config option registration). Requires `libduckdb-sys >= 1.5.0` to be
 ## resolved by Cargo. Has no effect when compiled against libduckdb-sys 1.4.x.
@@ -122,13 +135,16 @@ duckdb = { version = ">=1.4.4, <2", optional = true }
 mutants = "0.0.4"
 
 [build-dependencies]
-# Used only when the `bundled-test` feature is active: compiles the thin C++
-# shim that calls DuckDB's internal CreateAPIv1() to initialise the
-# loadable-extension dispatch table from bundled DuckDB symbols.
+# Used only when `bundled-test` / `bundled-test-prebuilt` is active: compiles the
+# thin C++ shim that calls DuckDB's internal CreateAPIv1() to initialise the
+# loadable-extension dispatch table from the linked DuckDB symbols.
 cc = "1"
 
 [dev-dependencies]
-duckdb = { version = ">=1.4.4, <2" }
+# `duckdb` is intentionally NOT a dev-dependency: it is an optional regular
+# dependency activated only by `bundled-test` / `bundled-test-prebuilt`, so that
+# a plain `cargo test` (and every downstream consumer's lockfile) stays free of
+# the DuckDB + arrow tree.
 criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
 # tempfile is version-pinned for reproducible dev builds. It was originally held
@@ -162,9 +178,6 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 return_self_not_must_use = "allow"
-# Transitive duplicates from arrow/ahash/ring trees — not under our control,
-# and cargo will pick a single version per crate at link time anyway.
-multiple_crate_versions = "allow"
 
 [package.metadata.docs.rs]
 # Render the full API on docs.rs — including the `duckdb-1-5` / `duckdb-1-5-3`

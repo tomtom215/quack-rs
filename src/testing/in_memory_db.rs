@@ -31,27 +31,29 @@
 //!
 //! # Enabling this feature
 //!
+//! Compile DuckDB from source (zero-config, ~5-10 min cold):
+//!
 //! ```toml
 //! # In your extension's Cargo.toml:
 //! [dev-dependencies]
 //! quack-rs = { version = "0.13", features = ["bundled-test"] }
 //! ```
 //!
-//! To avoid the bundled libduckdb compile, opt out of `bundled` and let
-//! libduckdb-sys download the prebuilt zip instead:
+//! …or link a pre-built libduckdb for a much faster build:
 //!
 //! ```toml
 //! [dev-dependencies]
-//! quack-rs = { version = "0.13", default-features = false, features = ["bundled-test"] }
+//! quack-rs = { version = "0.13", features = ["bundled-test-prebuilt"] }
 //! ```
 //!
-//! Then build with `DUCKDB_DOWNLOAD_LIB=1` (or set `DUCKDB_LIB_DIR=...` if
-//! you have a libduckdb tree extracted locally).
+//! With `bundled-test-prebuilt`, build with `DUCKDB_DOWNLOAD_LIB=1` (let
+//! libduckdb-sys download the prebuilt zip) or set `DUCKDB_LIB_DIR=...` to point
+//! at a libduckdb tree you already have extracted locally.
 //!
 //! # Example
 //!
 //! ```rust,no_run
-//! # #[cfg(feature = "bundled-test")]
+//! # #[cfg(feature = "_duckdb-testing")]
 //! # {
 //! use quack_rs::testing::InMemoryDb;
 //!
@@ -67,10 +69,12 @@
 
 // ── Dispatch-table initialisation ────────────────────────────────────────────
 //
-// When `bundled-test` is active, Cargo's feature-unification merges the
-// `loadable-extension` feature (required by the library to build as a DuckDB
-// extension) and the `bundled-full` feature (pulled in by `duckdb` with
-// `features = ["bundled"]`) into a single `libduckdb-sys` build.
+// When `bundled-test` / `bundled-test-prebuilt` is active, Cargo's
+// feature-unification merges the `loadable-extension` feature (required by the
+// library to build as a DuckDB extension) and the `duckdb`-provided
+// `libduckdb-sys` build (compiled from source for `bundled-test`, or linked
+// against a pre-built library for `bundled-test-prebuilt`) into a single
+// `libduckdb-sys` build.
 //
 // In `loadable-extension` mode every DuckDB C API call is routed through an
 // atomic function-pointer dispatch table that is normally populated by DuckDB
@@ -204,7 +208,7 @@ impl InMemoryDb {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # #[cfg(feature = "bundled-test")]
+    /// # #[cfg(feature = "_duckdb-testing")]
     /// # {
     /// use quack_rs::testing::InMemoryDb;
     ///
@@ -256,7 +260,7 @@ impl InMemoryDb {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # #[cfg(feature = "bundled-test")]
+    /// # #[cfg(feature = "_duckdb-testing")]
     /// # {
     /// use quack_rs::testing::InMemoryDb;
     ///
