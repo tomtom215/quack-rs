@@ -123,7 +123,10 @@ impl<'a> DuckStringView<'a> {
             // to heap memory allocated by DuckDB and valid for the vector's lifetime.
             let ptr_bytes: [u8; 8] = self.bytes[8..16].try_into().ok()?;
             // Read as u64 so this works regardless of `usize` width; truncating
-            // to `usize` is a no-op on 64-bit and yields the low 4 bytes on wasm32.
+            // to `usize` is a no-op on 64-bit and yields the low 4 bytes on wasm32
+            // (where the upper 4 bytes of the 8-byte slot are zero padding), so the
+            // truncation is intentional and lossless on every supported target.
+            #[allow(clippy::cast_possible_truncation)]
             let ptr_val = u64::from_le_bytes(ptr_bytes) as usize as *const u8;
             if ptr_val.is_null() {
                 return None;
@@ -237,7 +240,11 @@ mod tests {
         // Write prefix (first 4 bytes of the string)
         bytes[4..8].copy_from_slice(&long_str.as_bytes()[..4]);
         // Write pointer at bytes 8..16
-        let ptr_val = ptr as usize;
+        // Widen through `u64` so the 8-byte slot is filled on every target:
+        // on wasm32 `usize` is 4 bytes, so `usize::to_le_bytes()` would yield
+        // only 4 bytes and panic on this 8-byte copy (and would not match
+        // DuckDB's 16-byte layout that `as_bytes_unsafe` reads back as a `u64`).
+        let ptr_val = ptr as usize as u64;
         bytes[8..16].copy_from_slice(&ptr_val.to_le_bytes());
 
         let view = DuckStringView::from_bytes(&bytes);
@@ -275,7 +282,11 @@ mod tests {
         let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&u32::try_from(len).unwrap_or(u32::MAX).to_le_bytes());
         bytes[4..8].copy_from_slice(&long_str.as_bytes()[..4]);
-        let ptr_val = ptr as usize;
+        // Widen through `u64` so the 8-byte slot is filled on every target:
+        // on wasm32 `usize` is 4 bytes, so `usize::to_le_bytes()` would yield
+        // only 4 bytes and panic on this 8-byte copy (and would not match
+        // DuckDB's 16-byte layout that `as_bytes_unsafe` reads back as a `u64`).
+        let ptr_val = ptr as usize as u64;
         bytes[8..16].copy_from_slice(&ptr_val.to_le_bytes());
 
         // SAFETY: bytes is a valid pointer-format duckdb_string_t at idx 0.
