@@ -3,9 +3,10 @@
 #
 # Continuous integration — enforces all quality gates.
 #
-# Jobs: check, test (default + bundled + duckdb-1-5), clippy, clippy-beta,
-#       fmt, doc, msrv, bench-compile, example-check, scaffold-compile,
-#       symbol-check, extension-load, publish-dry-run, security, nightly.
+# Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
+#       clippy, clippy-beta, fmt, doc, msrv, bench-compile, example-check,
+#       scaffold-compile, symbol-check, extension-load, publish-dry-run,
+#       security, nightly.
 
 name: CI
 
@@ -64,6 +65,35 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo test --all-targets --features bundled-test
 
+  # Exercises the `bundled-test-prebuilt` path: link a pre-built libduckdb
+  # instead of compiling DuckDB from C++ source. Combined with duckdb-1-5-3 this
+  # is also the only job that runs the DuckDB 1.5.x FFI wrapper tests (appender,
+  # selection_vector, instance_cache, ...) against a real DuckDB runtime.
+  # Linux only — the pre-built release archive is published per-platform.
+  test-bundled-prebuilt:
+    name: Test bundled-test-prebuilt (prebuilt libduckdb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Download pre-built libduckdb
+        # Keep the version in sync with the `duckdb` / `libduckdb-sys` dependency
+        # (1.10503.x == DuckDB v1.5.3). The release zip ships libduckdb.so and
+        # duckdb.hpp; the C++ shim is compiled against the latter.
+        run: |
+          curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.3/libduckdb-linux-amd64.zip -o "${{ runner.temp }}/libduckdb.zip"
+          mkdir -p "${{ runner.temp }}/libduckdb"
+          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+      - name: Test against pre-built libduckdb
+        env:
+          # DUCKDB_LIB_DIR resolves headers + link search; LD_LIBRARY_PATH lets the
+          # test binary find libduckdb.so at run time (the link-time rpath emitted
+          # by libduckdb-sys does not propagate to this downstream test binary).
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-3
+
   test-duckdb-1-5:
     name: Test duckdb-1-5 / duckdb-1-5-3 features
     runs-on: ubuntu-latest
@@ -77,6 +107,22 @@ jobs:
       - run: cargo check --all-targets --features duckdb-1-5-3
       - run: cargo test --all-targets --features duckdb-1-5-3
       - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
+
+  wasm:
+    name: WASM (wasm32-unknown-emscripten)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          targets: wasm32-unknown-emscripten
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # DuckDB-WASM target. quack-rs's own lib must compile for wasm32; in
+      # loadable-extension mode libduckdb-sys is headers-only, so `cargo check`
+      # needs no emscripten toolchain. `--all-targets` is intentionally avoided —
+      # it would pull the bundled-DuckDB test path, which requires em++.
+      - run: cargo check --lib --target wasm32-unknown-emscripten
+      - run: cargo check --lib --features duckdb-1-5-3 --target wasm32-unknown-emscripten
 
   clippy:
     name: Clippy
