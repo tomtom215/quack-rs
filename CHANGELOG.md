@@ -9,16 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `bundled-test` can now link against a pre-built libduckdb instead of
-  compiling DuckDB from C++ source. Opt in with
-  `default-features = false, features = ["bundled-test"]` plus either
-  `DUCKDB_DOWNLOAD_LIB=1` (libduckdb-sys downloads the upstream release
-  zip) or `DUCKDB_LIB_DIR=...` (use a libduckdb tree you already have).
-  Default behaviour is unchanged.
+- **`wasm32-unknown-emscripten` support** (the DuckDB-WASM target). The crate no
+  longer hard-rejects non-64-bit targets with a top-level `compile_error!`, and
+  the `duckdb_string_t` pointer slot is read as a `u64` then narrowed to `usize`
+  — lossless on 64-bit, and on wasm32 it yields the low 4 bytes of the 8-byte
+  slot (the upper 4 are zero padding in DuckDB's 16-byte layout). The full public
+  API, including the `duckdb-1-5-3` surface, `cargo check`s for
+  `wasm32-unknown-emscripten`; CI now guards this. (Thanks @killzoner.)
+- **`bundled-test-prebuilt` feature** — links a *pre-built* libduckdb instead of
+  compiling DuckDB from C++ source, for a much faster test build. Supply the
+  library via `DUCKDB_DOWNLOAD_LIB=1` (`libduckdb-sys` downloads the upstream
+  release zip) or `DUCKDB_LIB_DIR=...` (a libduckdb tree you already have).
+  `bundled-test` continues to compile DuckDB from source. (Thanks @killzoner.)
 - `InMemoryDb::open_unsigned()` opens an in-memory database with
-  `allow_unsigned_extensions=true`, allowing downstream extension crates
-  to `LOAD` their own locally-built (unsigned) `.duckdb_extension`
-  artifact for integration testing.
+  `allow_unsigned_extensions=true`, allowing downstream extension crates to
+  `LOAD` their own locally-built (unsigned) `.duckdb_extension` artifact for
+  integration testing. (Thanks @killzoner.)
+
+### Changed
+
+- `duckdb` is now a purely optional dependency, activated only by `bundled-test`
+  / `bundled-test-prebuilt`. It is no longer a dev-dependency, and there is no
+  default `bundled` feature. As a result, a plain `cargo test` — and every
+  downstream consumer's `Cargo.lock` — no longer pulls the DuckDB + arrow tree,
+  and the default test build no longer compiles DuckDB.
+
+### Security / maintenance
+
+- Bumped `cc` 1.2.62 → 1.2.63 (which moves `shlex` 1.3.0 → 2.0.1) and `tar`
+  0.4.45 → 0.4.46 across both lockfiles; refreshed the `codecov/codecov-action`
+  pin to v6.0.1.
 
 ## [0.13.0] - 2026-05-24
 
