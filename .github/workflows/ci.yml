@@ -6,7 +6,7 @@
 # Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
 #       clippy, clippy-beta, fmt, doc, msrv, bench-compile, example-check,
 #       scaffold-compile, symbol-check, extension-load, publish-dry-run,
-#       security, nightly.
+#       security, osv-scan, nightly.
 
 name: CI
 
@@ -309,6 +309,27 @@ jobs:
         run: cargo install cargo-deny --locked --version "0.19.0"
       - name: Run cargo-deny check
         run: cargo deny check
+
+  # OSV / GHSA advisory scan. The cargo-deny job above consults only the RustSec
+  # advisory database; OSV.dev aggregates GHSA *and* RustSec, so GHSA-only
+  # advisories that RustSec has not mirrored (e.g. GHSA-3pv8-6f4r-ffg2 in `tar`)
+  # are caught here. Scans both lockfiles — `tar` reaches the example via the
+  # `libduckdb-sys` build-dependency. The binary is version- and checksum-pinned.
+  osv-scan:
+    name: Security (OSV / GHSA)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install osv-scanner (pinned, checksum-verified)
+        run: |
+          VER=2.3.8
+          SHA=bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc
+          curl -fsSL -o osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
+          echo "${SHA}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+      - name: Scan lockfiles (root + example) against OSV
+        run: ./osv-scanner --lockfile=Cargo.lock --lockfile=examples/hello-ext/Cargo.lock
 
   nightly:
     name: Nightly (informational)
