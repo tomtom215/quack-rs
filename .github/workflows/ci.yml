@@ -28,6 +28,12 @@ env:
   RUST_BACKTRACE: 1
   RUSTFLAGS: "-D warnings"
   RUSTDOCFLAGS: "-D warnings"
+  # Harden against transient crates.io/CDN download flakes — notably
+  # "[16] Error in the HTTP2 framing layer" when fetching the duckdb+arrow tree.
+  # Retry network ops and force HTTP/1.1 (disabling HTTP/2 multiplexing sidesteps
+  # the HTTP/2 framing errors). Child cargo invocations inherit these too.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
   check:
