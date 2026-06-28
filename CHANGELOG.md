@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-06-28
+
+### Changed
+
+- **DuckDB 1.5.4 / 1.4.5 compatibility refresh.** Bumped the resolved
+  `libduckdb-sys` and `duckdb` bindings `1.10503.1 → 1.10504.0` (DuckDB v1.5.4,
+  "Variegata"), so `bundled-test` / `bundled-test-prebuilt` consumers link DuckDB
+  1.5.4 and pick up its upstream bugfixes and security hardening. The dependency
+  range `>=1.4.4, <2` was already satisfied; only `Cargo.lock` moved.
+- This is a **maintenance / documentation release with no functional code
+  change**. DuckDB v1.5.4 (Variegata) and v1.4.5 LTS (Andium), both released
+  2026-06-17, are bugfix/security-patch releases: the **C Extension API version
+  is unchanged at `v1.2.0`** (verified directly from `duckdb_extension.h` at the
+  `v1.5.3` and `v1.5.4` tags) and the `DUCKDB_TYPE` column-type enum is identical
+  between them (max `DUCKDB_TYPE_VARIANT = 41`, already wrapped behind
+  `duckdb-1-5-3`). No new wrappers, `TypeId` variants, or FFI bindings are
+  required. Verified by `cargo check`/`cargo test --features duckdb-1-5-3`
+  (133 tests) against the 1.10504.0 bindings.
+
+### Docs
+
+- Extended the DuckDB compatibility statements in `src/lib.rs`
+  (`DUCKDB_API_VERSION` doc, design-principles note) and `README.md` from
+  "through v1.5.3" to "through v1.4.5 / v1.5.4".
+- Added `docs/duckdb-v1.5.4-evaluation.md` — a point-in-time compatibility
+  evaluation for DuckDB v1.5.4 / v1.4.5 (matching the existing v1.5.1 evaluation
+  record), documenting the primary-source verification that no C-API change
+  occurred.
+
 ## [0.14.0] - 2026-06-07
 
 ### Added
@@ -1103,7 +1132,8 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/tomtom215/quack-rs/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/tomtom215/quack-rs/compare/v0.12.0...v0.12.1

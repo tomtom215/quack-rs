@@ -10,6 +10,63 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-06-28
+
+### Changed
+
+- **DuckDB 1.5.4 / 1.4.5 compatibility refresh.** Bumped the resolved
+  `libduckdb-sys` and `duckdb` bindings `1.10503.1 → 1.10504.0` (DuckDB v1.5.4,
+  "Variegata"), so `bundled-test` / `bundled-test-prebuilt` consumers link DuckDB
+  1.5.4 and pick up its upstream bugfixes and security hardening. The dependency
+  range `>=1.4.4, <2` was already satisfied; only `Cargo.lock` moved.
+- This is a **maintenance / documentation release with no functional code
+  change**. DuckDB v1.5.4 (Variegata) and v1.4.5 LTS (Andium), both released
+  2026-06-17, are bugfix/security-patch releases: the **C Extension API version
+  is unchanged at `v1.2.0`** and the `DUCKDB_TYPE` column-type enum is identical
+  between the `v1.5.3` and `v1.5.4` tags (max `DUCKDB_TYPE_VARIANT = 41`, already
+  wrapped behind `duckdb-1-5-3`). No new wrappers, `TypeId` variants, or FFI
+  bindings are required.
+
+### Docs
+
+- Extended the DuckDB compatibility statements in `src/lib.rs` and `README.md`
+  from "through v1.5.3" to "through v1.4.5 / v1.5.4".
+- Added `docs/duckdb-v1.5.4-evaluation.md` — a point-in-time compatibility
+  evaluation for DuckDB v1.5.4 / v1.4.5.
+
+## [0.14.0] — 2026-06-07
+
+### Added
+
+- **`wasm32-unknown-emscripten` support** (the DuckDB-WASM target). The crate no
+  longer hard-rejects non-64-bit targets, and the `duckdb_string_t` pointer slot
+  is read pointer-width-portably. The full public API `cargo check`s for
+  `wasm32-unknown-emscripten`; CI guards this. (Thanks @killzoner.)
+- **`bundled-test-prebuilt` feature** — links a *pre-built* libduckdb instead of
+  compiling DuckDB from C++ source, for a much faster test build. Supply the
+  library via `DUCKDB_DOWNLOAD_LIB=1` or `DUCKDB_LIB_DIR=...`. (Thanks @killzoner.)
+- `InMemoryDb::open_unsigned()` opens an in-memory database with
+  `allow_unsigned_extensions=true` for loading locally-built unsigned extension
+  artifacts in integration tests. (Thanks @killzoner.)
+
+### Changed
+
+- `duckdb` is now a purely optional dependency, activated only by `bundled-test`
+  / `bundled-test-prebuilt`. A plain `cargo test` — and every downstream
+  consumer's `Cargo.lock` — no longer pulls the DuckDB + arrow tree.
+
+### Security
+
+- **`tar` 0.4.45 → 0.4.46** in both lockfiles, resolving **GHSA-3pv8-6f4r-ffg2**
+  ("PAX header desynchronization", Moderate).
+- Bumped `cc` 1.2.62 → 1.2.63 (moving `shlex` 1.3.0 → 2.0.1) and refreshed the
+  `codecov/codecov-action` pin to v6.0.1.
+
+### CI / tooling
+
+- Added an **OSV / GHSA advisory scan** to CI (`osv-scanner`) covering both
+  `Cargo.lock` files, closing the GHSA-only gap left by `cargo deny` (RustSec-only).
+
 ## [0.13.0] — 2026-05-24
 
 ### Added
@@ -679,7 +736,10 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 
 ---
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/tomtom215/quack-rs/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/tomtom215/quack-rs/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/tomtom215/quack-rs/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/tomtom215/quack-rs/compare/v0.10.0...v0.11.0

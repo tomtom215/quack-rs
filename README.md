@@ -125,11 +125,13 @@ quack-rs = "0.13"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
-> **DuckDB compatibility**: `quack-rs` supports DuckDB **1.4.x and 1.5.x**.
-> Both releases expose the same C API version (`v1.2.0`), confirmed by E2E tests
-> against DuckDB 1.4.4 and DuckDB 1.5.0. The upper bound `<2` prevents silent
-> adoption of a future major release that may change the C API. When the C API
-> version changes, `quack-rs` will need to be updated and re-released.
+> **DuckDB compatibility**: `quack-rs` supports DuckDB **1.4.x and 1.5.x**
+> (verified through v1.4.5 LTS and v1.5.4). Every release in this range exposes
+> the same C API version (`v1.2.0`), confirmed by E2E tests against DuckDB 1.4.4
+> and DuckDB 1.5.0 and by compiling the full API surface against the v1.5.4
+> bindings. The upper bound `<2` prevents silent adoption of a future major
+> release that may change the C API. When the C API version changes, `quack-rs`
+> will need to be updated and re-released.
 
 ### 2. Write your extension
 

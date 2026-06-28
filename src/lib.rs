@@ -98,8 +98,8 @@
 //!    or improved safety. When in doubt, prefer simplicity.
 //! 2. **No panics across FFI**: `unwrap()` is forbidden in FFI callbacks and entry points.
 //! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2` to support `DuckDB` 1.4.x
-//!    and 1.5.x (through v1.5.3) while preventing silent adoption of breaking changes in
-//!    future major releases.
+//!    and 1.5.x (through v1.4.5 and v1.5.4) while preventing silent adoption of breaking
+//!    changes in future major releases.
 //! 4. **Testable business logic**: state structs have zero FFI dependencies.
 //!
 //! ## Pitfalls
@@ -178,10 +178,10 @@ pub mod table_description;
 /// The `DuckDB` C API version string required by [`duckdb_rs_extension_api_init`][libduckdb_sys::duckdb_rs_extension_api_init].
 ///
 /// This constant corresponds to every `DuckDB` release from v1.4.x through
-/// v1.5.3: the C extension API version has remained `v1.2.0` across all of them
-/// (it did **not** change in the v1.5.1, v1.5.2, or v1.5.3 patch releases). If
-/// you are targeting a different `DuckDB` release, consult the `DuckDB` changelog
-/// for the C API version.
+/// v1.5.4: the C extension API version has remained `v1.2.0` across all of them
+/// (it did **not** change in the v1.5.1, v1.5.2, v1.5.3, or v1.5.4 patch releases,
+/// nor in the v1.4.5 LTS patch). If you are targeting a different `DuckDB` release,
+/// consult the `DuckDB` changelog for the C API version.
 ///
 /// # Pitfall P2: C API version ≠ `DuckDB` release version
 ///
