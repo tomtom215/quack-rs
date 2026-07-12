@@ -100,6 +100,18 @@ unsafe { writer.write_varchar(row, my_str) };  // &str
 `write_varchar` copies the string bytes into DuckDB's managed storage. The
 `&str` reference is no longer needed after the call returns.
 
+### Reading BLOB values
+
+`BLOB` uses the same inline/pointer layout as `VARCHAR`, but may contain any
+bytes. Use `read_blob` so the data is not interpreted as UTF-8:
+
+```rust
+let bytes: &[u8] = unsafe { reader.read_blob(row) };
+```
+
+Like `read_str`, the returned slice borrows from the DuckDB vector and must not
+outlive the callback.
+
 ---
 
 ## Complete NULL-safe VARCHAR pattern
