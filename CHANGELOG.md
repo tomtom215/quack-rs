@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Value::as_blob()` for copying arbitrary binary data from a `duckdb_value`.
+
+### Fixed
+
+- `VectorReader::read_blob()` now preserves non-UTF-8 bytes instead of returning
+  an empty slice.
+
 ## [0.14.0] - 2026-06-07
 
 ### Added

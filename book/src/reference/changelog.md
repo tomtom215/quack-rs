@@ -10,6 +10,15 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Value::as_blob()` for copying arbitrary binary data from a `duckdb_value`.
+
+### Fixed
+
+- `VectorReader::read_blob()` now preserves non-UTF-8 bytes instead of returning
+  an empty slice.
+
 ## [0.13.0] — 2026-05-24
 
 ### Added

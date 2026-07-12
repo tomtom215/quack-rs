@@ -27,6 +27,8 @@
 //! }
 //! ```
 
+mod blob;
+
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -60,6 +62,7 @@ use crate::error::ExtensionError;
 ///
 /// Use typed accessors to extract the underlying data:
 /// - [`as_str`][Value::as_str] — VARCHAR → `String`
+/// - [`as_blob`][Value::as_blob] — BLOB → `Vec<u8>`
 /// - [`as_i32`][Value::as_i32] — INTEGER → `i32`
 /// - [`as_i64`][Value::as_i64] — BIGINT → `i64`
 /// - [`as_f32`][Value::as_f32] — FLOAT → `f32`
