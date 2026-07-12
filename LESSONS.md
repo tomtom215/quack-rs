@@ -240,9 +240,11 @@ Additionally, use `duckdb_get_function` to verify registration in development.
 
 ## P7: `duckdb_string_t` format is undocumented in Rust bindings
 
-**Status**: Handled by `VectorReader::read_str` and `read_duck_string`.
+**Status**: Handled by `VectorReader::read_str`, `VectorReader::read_blob`,
+`read_duck_string`, and `read_duck_blob`.
 
-**Symptom**: VARCHAR reading produces garbage, empty strings, or crashes.
+**Symptom**: VARCHAR reading produces garbage, empty strings, or crashes; BLOB
+reading silently drops bytes that are not valid UTF-8.
 
 **Root cause**: DuckDB stores strings in a 16-byte struct with two formats:
 - **Inline** (≤ 12 bytes): `[ len: u32 | data: [u8; 12] ]`
@@ -250,7 +252,9 @@ Additionally, use `duckdb_get_function` to verify registration in development.
 
 This is not documented in `libduckdb-sys`.
 
-**Fix**: Use `VectorReader::read_str` or `read_duck_string` which handle both formats.
+**Fix**: Use `VectorReader::read_str` or `read_duck_string` for UTF-8 text. Use
+`VectorReader::read_blob` or `read_duck_blob` for arbitrary binary data. All four
+handle both storage formats.
 
 ---
 

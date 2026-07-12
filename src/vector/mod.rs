@@ -28,7 +28,7 @@ pub mod validity;
 pub mod writer;
 
 pub use reader::VectorReader;
-pub use string::{read_duck_string, DuckStringView};
+pub use string::{read_duck_blob, read_duck_string, DuckStringView};
 pub use struct_reader::StructReader;
 pub use struct_writer::StructWriter;
 pub use validity::ValidityBitmap;
