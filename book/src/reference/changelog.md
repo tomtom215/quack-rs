@@ -10,14 +10,94 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-16
+
 ### Added
 
 - `Value::as_blob()` for copying arbitrary binary data from a `duckdb_value`.
+  (Thanks @adonm.)
 
 ### Fixed
 
 - `VectorReader::read_blob()` now preserves non-UTF-8 bytes instead of returning
-  an empty slice.
+  an empty slice. (Thanks @adonm.)
+
+### Changed
+
+- Dev/CI DuckDB bumped to **1.5.4** — `libduckdb-sys` / `duckdb` 1.10503.1 →
+  1.10504.0 in the root lockfile, the `hello-ext` example lockfile, and the
+  `bundled-test-prebuilt` CI download (`v1.5.3` → `v1.5.4`). 1.5.4 is a bugfix
+  release in the 1.5.x line; its C extension API version is unchanged (`v1.2.0`,
+  verified from `duckdb_extension.h`), so `DUCKDB_API_VERSION` is unchanged and
+  the public `libduckdb-sys` dependency range (`>=1.4.4, <2`) is untouched —
+  downstream consumers are unaffected.
+
+### Security
+
+- **`crossbeam-epoch` 0.9.18 → 0.9.20** (root lockfile), resolving
+  **RUSTSEC-2026-0204** (invalid pointer dereference in the `fmt::Pointer`
+  impl). Reaches the tree only as a dev-dependency via `criterion → rayon →
+  crossbeam-deque`.
+- **`quinn-proto` 0.11.14 → 0.11.15** (root and example lockfiles), resolving
+  **RUSTSEC-2026-0185** (CVSS 7.5). Reaches the lockfiles via
+  `libduckdb-sys → reqwest → quinn` (feature-union only; the loadable-extension
+  build never links it).
+
+### CI / tooling
+
+- Refreshed SHA-pinned GitHub Actions via Dependabot: `actions/checkout`
+  v6.0.2 → v7.0.0, `codecov/codecov-action` v6.0.1 → v7.0.0, `actions/cache`
+  v5.0.5 → v6.1.0, and `actions/attest-build-provenance` v4.1.0 → v4.1.1. Also
+  bumped the `cc` build-dependency 1.2.63 → 1.2.64.
+
+## [0.14.0] — 2026-06-07
+
+### Added
+
+- **`wasm32-unknown-emscripten` support** (the DuckDB-WASM target). The crate no
+  longer hard-rejects non-64-bit targets with a top-level `compile_error!`, and
+  the `duckdb_string_t` pointer slot is read as a `u64` then narrowed to `usize`
+  — lossless on 64-bit, and on wasm32 it yields the low 4 bytes of the 8-byte
+  slot (the upper 4 are zero padding in DuckDB's 16-byte layout). The full public
+  API, including the `duckdb-1-5-3` surface, `cargo check`s for
+  `wasm32-unknown-emscripten`; CI now guards this. (Thanks @killzoner.)
+- **`bundled-test-prebuilt` feature** — links a *pre-built* libduckdb instead of
+  compiling DuckDB from C++ source, for a much faster test build. Supply the
+  library via `DUCKDB_DOWNLOAD_LIB=1` (`libduckdb-sys` downloads the upstream
+  release zip) or `DUCKDB_LIB_DIR=...` (a libduckdb tree you already have).
+  `bundled-test` continues to compile DuckDB from source. (Thanks @killzoner.)
+- `InMemoryDb::open_unsigned()` opens an in-memory database with
+  `allow_unsigned_extensions=true`, allowing downstream extension crates to
+  `LOAD` their own locally-built (unsigned) `.duckdb_extension` artifact for
+  integration testing. (Thanks @killzoner.)
+
+### Changed
+
+- `duckdb` is now a purely optional dependency, activated only by `bundled-test`
+  / `bundled-test-prebuilt`. It is no longer a dev-dependency, and there is no
+  default `bundled` feature. As a result, a plain `cargo test` — and every
+  downstream consumer's `Cargo.lock` — no longer pulls the DuckDB + arrow tree,
+  and the default test build no longer compiles DuckDB.
+
+### Security
+
+- **`tar` 0.4.45 → 0.4.46** in both the root and example lockfiles, resolving
+  **GHSA-3pv8-6f4r-ffg2** ("PAX header desynchronization", Moderate). `tar` is a
+  `libduckdb-sys` build-dependency, so it appears in both `Cargo.lock` files and
+  raised one Dependabot alert each — the two moderate alerts reported on `main`.
+  This advisory is published in the GitHub Advisory Database (GHSA) but not the
+  RustSec database, so `cargo deny` did not flag it; the new OSV scan below closes
+  that gap.
+- Bumped `cc` 1.2.62 → 1.2.63 (which moves `shlex` 1.3.0 → 2.0.1) and refreshed
+  the `codecov/codecov-action` pin to v6.0.1.
+
+### CI / tooling
+
+- Added an **OSV / GHSA advisory scan** to CI (`osv-scanner`, pinned to v2.3.8 via
+  a checksum-verified binary) covering both `Cargo.lock` files. `cargo deny`
+  consults only the RustSec database; OSV.dev aggregates GHSA **and** RustSec, so
+  GHSA-only advisories (such as the `tar` one above) now fail CI alongside the
+  existing cargo-deny gate.
 
 ## [0.13.0] — 2026-05-24
 
@@ -688,7 +768,10 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 
 ---
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/tomtom215/quack-rs/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/tomtom215/quack-rs/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/tomtom215/quack-rs/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/tomtom215/quack-rs/compare/v0.10.0...v0.11.0

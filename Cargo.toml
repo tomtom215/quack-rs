@@ -1,6 +1,6 @@
 [package]
 name = "quack-rs"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 rust-version = "1.87.0"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
@@ -61,7 +61,7 @@ crate-type = ["rlib"]
 ##
 ## ```toml
 ## [dev-dependencies]
-## quack-rs = { version = "0.14", features = ["bundled-test"] }
+## quack-rs = { version = "0.15", features = ["bundled-test"] }
 ## ```
 bundled-test = ["_duckdb-testing", "duckdb/bundled"]
 
@@ -78,7 +78,7 @@ bundled-test = ["_duckdb-testing", "duckdb/bundled"]
 ##
 ## ```toml
 ## [dev-dependencies]
-## quack-rs = { version = "0.14", features = ["bundled-test-prebuilt"] }
+## quack-rs = { version = "0.15", features = ["bundled-test-prebuilt"] }
 ## ```
 bundled-test-prebuilt = ["_duckdb-testing"]
 
