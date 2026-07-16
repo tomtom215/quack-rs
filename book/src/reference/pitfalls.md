@@ -271,15 +271,18 @@ often ignored. When it returns `DuckDBError`, the function set is not registered
 
 ## P7: `duckdb_string_t` format is undocumented
 
-**Status**: Handled by `VectorReader::read_str` and `DuckStringView`.
+**Status**: Handled by `VectorReader::read_str`, `VectorReader::read_blob`, and
+`DuckStringView`.
 
-**Symptom**: VARCHAR reading produces garbage, empty strings, or crashes.
+**Symptom**: VARCHAR reading produces garbage, empty strings, or crashes; BLOB
+reading silently drops bytes that are not valid UTF-8.
 
 **Root cause**: DuckDB stores strings in a 16-byte struct with two formats
 (inline ≤ 12 bytes, pointer > 12 bytes) that are not documented in
 `libduckdb-sys`.
 
-**Fix**: Use `VectorReader::read_str(row)`. See
+**Fix**: Use `VectorReader::read_str(row)` for UTF-8 text and
+`VectorReader::read_blob(row)` for arbitrary binary data. See
 [NULL Handling & Strings](../data/nulls-and-strings.md).
 
 ---

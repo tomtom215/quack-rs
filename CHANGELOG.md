@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-16
+
+### Added
+
+- `Value::as_blob()` for copying arbitrary binary data from a `duckdb_value`.
+  (Thanks @adonm.)
+
+### Fixed
+
+- `VectorReader::read_blob()` now preserves non-UTF-8 bytes instead of returning
+  an empty slice. (Thanks @adonm.)
+
+### Changed
+
+- Dev/CI DuckDB bumped to **1.5.4** — `libduckdb-sys` / `duckdb` 1.10503.1 →
+  1.10504.0 in the root lockfile, the `hello-ext` example lockfile, and the
+  `bundled-test-prebuilt` CI download (`v1.5.3` → `v1.5.4`). 1.5.4 is a bugfix
+  release in the 1.5.x line; its C extension API version is unchanged (`v1.2.0`,
+  verified from `duckdb_extension.h`), so `DUCKDB_API_VERSION` is unchanged and
+  the public `libduckdb-sys` dependency range (`>=1.4.4, <2`) is untouched —
+  downstream consumers are unaffected.
+
+### Security
+
+- **`crossbeam-epoch` 0.9.18 → 0.9.20** (root lockfile), resolving
+  **RUSTSEC-2026-0204** (invalid pointer dereference in the `fmt::Pointer`
+  impl). Reaches the tree only as a dev-dependency via `criterion → rayon →
+  crossbeam-deque`.
+- **`quinn-proto` 0.11.14 → 0.11.15** (root and example lockfiles), resolving
+  **RUSTSEC-2026-0185** (CVSS 7.5). Reaches the lockfiles via
+  `libduckdb-sys → reqwest → quinn` (feature-union only; the loadable-extension
+  build never links it).
+
+### CI / tooling
+
+- Refreshed SHA-pinned GitHub Actions via Dependabot: `actions/checkout`
+  v6.0.2 → v7.0.0, `codecov/codecov-action` v6.0.1 → v7.0.0, `actions/cache`
+  v5.0.5 → v6.1.0, and `actions/attest-build-provenance` v4.1.0 → v4.1.1. Also
+  bumped the `cc` build-dependency 1.2.63 → 1.2.64.
+
 ## [0.14.0] - 2026-06-07
 
 ### Added
@@ -1103,7 +1143,8 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tomtom215/quack-rs/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/tomtom215/quack-rs/compare/v0.12.0...v0.12.1

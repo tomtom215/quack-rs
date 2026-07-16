@@ -3,7 +3,7 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! `DuckDB` `VARCHAR` (`duckdb_string_t`) reading utilities.
+//! `DuckDB` `VARCHAR` and `BLOB` (`duckdb_string_t`) reading utilities.
 //!
 //! # Pitfall P7: Undocumented `duckdb_string_t` format
 //!
@@ -184,6 +184,28 @@ pub unsafe fn read_duck_string<'a>(data: *const u8, idx: usize) -> &'a str {
     DuckStringView::from_bytes(raw_bytes).as_str().unwrap_or("")
 }
 
+/// Reads a `DuckDB` `BLOB` value at the given row index.
+///
+/// Returns the raw bytes without UTF-8 validation, or an empty slice if a
+/// pointer-format value contains a null pointer. `BLOB` and `VARCHAR` share the
+/// same `duckdb_string_t` layout (inline for ≤ 12 bytes, pointer otherwise).
+///
+/// # Safety
+///
+/// - `data` must point at a `DuckDB` BLOB (or VARCHAR) vector's data buffer.
+/// - `idx` must be within bounds of the vector.
+/// - For pointer-format blobs, the heap data must be valid for the lifetime of
+///   the returned slice.
+pub unsafe fn read_duck_blob<'a>(data: *const u8, idx: usize) -> &'a [u8] {
+    // SAFETY: each duckdb_string_t is exactly DUCK_STRING_SIZE bytes.
+    let str_ptr = unsafe { data.add(idx * DUCK_STRING_SIZE) };
+    let raw_bytes: &'a [u8; DUCK_STRING_SIZE] =
+        unsafe { &*str_ptr.cast::<[u8; DUCK_STRING_SIZE]>() };
+    DuckStringView::from_bytes(raw_bytes)
+        .as_bytes_unsafe()
+        .unwrap_or(&[])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +251,33 @@ mod tests {
     }
 
     #[test]
+    fn read_duck_blob_preserves_non_utf8_inline_bytes() {
+        let payload = [0x80u8, 0xF0, 0x01, 0x42];
+        let mut bytes = [0u8; 16];
+        let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+        bytes[..4].copy_from_slice(&len.to_le_bytes());
+        bytes[4..4 + payload.len()].copy_from_slice(&payload);
+
+        assert_eq!(unsafe { read_duck_blob(bytes.as_ptr(), 0) }, &payload);
+        assert_eq!(unsafe { read_duck_string(bytes.as_ptr(), 0) }, "");
+    }
+
+    #[test]
+    fn read_duck_blob_preserves_non_utf8_pointer_bytes() {
+        let payload = [
+            0x80u8, 0xF0, 0x01, 0x42, 0xFF, 0x00, 0xFE, 0x7F, 0xAA, 0x55, 0xC0, 0xAF, 0x90,
+        ];
+        let mut bytes = [0u8; 16];
+        let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+        bytes[..4].copy_from_slice(&len.to_le_bytes());
+        bytes[4..8].copy_from_slice(&payload[..4]);
+        let ptr = payload.as_ptr() as usize as u64;
+        bytes[8..16].copy_from_slice(&ptr.to_le_bytes());
+
+        assert_eq!(unsafe { read_duck_blob(bytes.as_ptr(), 0) }, &payload);
+    }
+
+    #[test]
     fn pointer_format_string() {
         let long_str = "this is a longer string that exceeds 12 bytes";
         let len = long_str.len();
@@ -262,6 +311,7 @@ mod tests {
         let view = DuckStringView::from_bytes(&bytes);
         // Null pointer for long string should return None
         assert!(view.as_str().is_none());
+        assert!(unsafe { read_duck_blob(bytes.as_ptr(), 0) }.is_empty());
     }
 
     #[test]

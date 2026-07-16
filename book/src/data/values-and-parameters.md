@@ -43,6 +43,7 @@ unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
 | Method | DuckDB type | Rust type |
 |--------|-------------|-----------|
 | `as_str()` | VARCHAR | `Result<String, ExtensionError>` |
+| `as_blob()` | BLOB | `Result<Vec<u8>, ExtensionError>` |
 | `as_i8()` | TINYINT | `i8` |
 | `as_i16()` | SMALLINT | `i16` |
 | `as_i32()` | INTEGER | `i32` |
@@ -57,7 +58,14 @@ unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
 | `as_bool()` | BOOLEAN | `bool` |
 
 DuckDB will attempt to cast the value to the requested type. If the cast fails,
-numeric methods return `0` / `0.0` / `false`; `as_str()` returns an error.
+numeric methods return `0` / `0.0` / `false`; `as_str()` and `as_blob()` return
+an error if extraction fails.
+
+`as_blob()` copies the bytes into an owned `Vec<u8>` without UTF-8 validation:
+
+```rust
+let bytes = unsafe { bind_info.get_parameter_value(0) }.as_blob()?;
+```
 
 ### Null-safe convenience variants
 

@@ -300,6 +300,8 @@ impl VectorReader {
     /// VARCHAR (inline for ≤12 bytes, pointer for larger values). The returned
     /// slice borrows from the vector's data buffer.
     ///
+    /// The bytes are returned without UTF-8 validation.
+    ///
     /// # Safety
     ///
     /// - `idx` must be less than `self.row_count()`.
@@ -307,7 +309,7 @@ impl VectorReader {
     /// - The pointed-to memory must be valid for the lifetime of the returned slice.
     pub unsafe fn read_blob(&self, idx: usize) -> &[u8] {
         // SAFETY: BLOB uses the same duckdb_string_t layout as VARCHAR.
-        unsafe { crate::vector::string::read_duck_string(self.data, idx).as_bytes() }
+        unsafe { crate::vector::string::read_duck_blob(self.data, idx) }
     }
 
     /// Reads a `UUID` value at row `idx` as an `i128`.
