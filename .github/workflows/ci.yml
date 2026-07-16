@@ -85,10 +85,10 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Download pre-built libduckdb
         # Keep the version in sync with the `duckdb` / `libduckdb-sys` dependency
-        # (1.10503.x == DuckDB v1.5.3). The release zip ships libduckdb.so and
+        # (1.10504.x == DuckDB v1.5.4). The release zip ships libduckdb.so and
         # duckdb.hpp; the C++ shim is compiled against the latter.
         run: |
-          curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.3/libduckdb-linux-amd64.zip -o "${{ runner.temp }}/libduckdb.zip"
+          curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.4/libduckdb-linux-amd64.zip -o "${{ runner.temp }}/libduckdb.zip"
           mkdir -p "${{ runner.temp }}/libduckdb"
           unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
       - name: Test against pre-built libduckdb
