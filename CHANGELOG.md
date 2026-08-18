@@ -13,29 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `DuckStringView::from_bytes` is deprecated and no longer follows an embedded
 > pointer, and `init_extension` now runs the ABI check by default. Documentation
 > examples and `#[deprecated(since = ...)]` already name `0.16`. The `UUID`
-> accessors also change both type and meaning — see **Fixed (silent data
-> corruption)** — but the signature change makes every affected call site a
-> compile error rather than a silent behaviour change.
-
-### Changed (MSRV)
-
-- **MSRV lowered 1.87.0 → 1.86.0.** DuckDB's reusable
-  `_extension_distribution.yml` — the workflow the community-extensions
-  repository builds every extension with — pins
-  `dtolnay/rust-toolchain@… # 1.86.0` for the WebAssembly job. quack-rs required
-  1.87.0, so Cargo refused, and **no quack-rs extension could be built for
-  `wasm_mvp` / `wasm_eh` / `wasm_threads`** by the official pipeline — despite
-  the crate advertising `wasm32-unknown-emscripten` support since 0.14.0.
-
-  The entire 1.87 requirement was five `const fn` accessors calling `Vec::len`
-  (stabilised as const in 1.87). None can be reached in a const context —
-  `MockVectorWriter`, `StructReader` and `StructWriter` are all built at runtime
-  — so dropping `const` costs nothing. 1.86.0 is now the floor for the library,
-  its dev-dependencies (`criterion` needs 1.86) and the `hello-ext` example, all
-  verified.
-
-  New `scripts/check-msrv-vs-duckdb-ci.py` and a CI job re-derive DuckDB's pinned
-  toolchains from that workflow and fail if the MSRV creeps back above them.
+> accessors also change both type and meaning — see **Fixed → Silent data
+> corruption** — but the signature change makes every affected call site a
+> compile error rather than a silent behaviour change. `ReleaseProfileCheck`
+> renames `panic_abort` to `panic_unwind`, for the same reason.
 
 ### Security
 
@@ -82,8 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
 
-### Security
-
 - **`CopyGlobalInitInfo::get_file_path` corrupted the heap.** It called
   `duckdb_free` on the pointer from
   `duckdb_copy_function_global_init_get_file_path`, which returns
@@ -100,34 +79,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns `strdup(...)`, so it *is* owned. Recorded as `LESSONS.md` P11 with
   the full table.
 
-### Added (live tests for every previously untested C API path)
+#### Generated CI
 
-- **Copy functions and replacement scans had no live tests at all.** Between
-  them they had 19 unit tests, none of which registered anything against a
-  running `DuckDB` — which is how a heap-corrupting free survived in a shipped
-  API. Both now have end-to-end coverage:
+- **The generated CI workflow left one action unpinned.** Three of its four
+  actions were SHA-pinned; `dtolnay/rust-toolchain@stable` was not, justified by
+  a comment claiming its SHA "changes with each Rust release". That is not how
+  the action works — it reads the toolchain from `rust-toolchain.toml` or its
+  `toolchain:` input at run time, so pinning the action's SHA does not pin the
+  Rust version. quack-rs's own CI SHA-pins the same action and gets current
+  stable. A branch is a moving target its owner can repoint, and a workflow step
+  runs arbitrary code in the user's CI. All four are now pinned to the same SHAs
+  quack-rs itself uses, and a test asserts every `uses:` in the generated
+  workflow carries a 40-character hex ref.
 
-  - A `COPY ... TO 'f' (FORMAT my_format)` over 5000 rows, threading bind data
-    and global state through all four lifecycle phases, asserting the sink saw
-    every row and that both destructors ran exactly once (a leak or a double
-    free is invisible without counting).
-  - A replacement scan rewriting `SELECT * FROM '10.myfmt'` into a table
-    function call, plus the decline path — an identifier the callback ignores
-    must still reach `DuckDB`'s own error handling — and a panicking scan
-    surfacing as a SQL error.
+### Fixed
 
-- **Six more modules had unit tests but no live registration**: scalar
-  bind/init/local state, `Expression::fold`, catalog lookup, config options,
-  selection vectors and the instance cache. All now run against a real `DuckDB`,
-  which turned up two more documentation defects (below) and confirmed the rest.
-
-- **`copy_bind_callback!`, `copy_global_init_callback!`, `copy_sink_callback!`
-  and `copy_finalize_callback!`.** Every other callback kind had a panic-safe
-  macro; the four copy-function phases did not, so a panic in one of them had
-  nothing to catch it. Each routes the message through that phase's own
-  `duckdb_copy_function_*_set_error`.
-
-### Fixed (the release-profile validator required the setting that breaks panic safety)
+#### The release-profile validator required the setting that breaks panic safety
 
 - **`validate_release_profile` required `panic = "abort"`, which makes every one
   of quack-rs's panic guards inert.** quack-rs wraps every `extern "C"` entry
@@ -161,7 +128,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency's profile so it changed nothing downstream, but it contradicted the
   crate's own advice; it now says `"unwind"`.
 
-### Fixed (a validator made legal function names unregisterable)
+#### A validator made legal function names unregisterable
 
 - **`validate_function_name` rejected mixed-case names, and it gates
   `try_new`** — so `ScalarFunctionBuilder::try_new("myFunc")` returned `Err` and
@@ -188,7 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry in `duckdb_extensions()`, asserting that everything identifier-shaped is
   accepted and every operator is not. That is how the defect was found.
 
-### Fixed (a documented convention that was not being followed)
+#### A documented convention that was not being followed
 
 - **"Every `unsafe` block inside this crate has a `// SAFETY:` comment" was not
   true.** `clippy::undocumented_unsafe_blocks` reports 180 blocks in the library.
@@ -205,20 +172,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotated as if they were uses of the enclosing handle; those now say which
   allocation they own and why, cross-referencing `LESSONS.md` P11.
 
-### Security (generated CI)
-
-- **The generated CI workflow left one action unpinned.** Three of its four
-  actions were SHA-pinned; `dtolnay/rust-toolchain@stable` was not, justified by
-  a comment claiming its SHA "changes with each Rust release". That is not how
-  the action works — it reads the toolchain from `rust-toolchain.toml` or its
-  `toolchain:` input at run time, so pinning the action's SHA does not pin the
-  Rust version. quack-rs's own CI SHA-pins the same action and gets current
-  stable. A branch is a moving target its owner can repoint, and a workflow step
-  runs arbitrary code in the user's CI. All four are now pinned to the same SHAs
-  quack-rs itself uses, and a test asserts every `uses:` in the generated
-  workflow carries a 40-character hex ref.
-
-### Fixed (the scaffold generated a `description.yml` that would be rejected)
+#### The scaffold generated a `description.yml` that would be rejected
 
 - **`repo.ref` was generated as `main`.** `DuckDB`'s community-extension
   documentation is explicit: "Provide the hash of the latest commit on the
@@ -243,7 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documentation site. The scaffold now emits `hello_world` and
   `extended_description` stubs.
 
-### Fixed (two more documented behaviours that were not the real ones)
+#### Two more documented behaviours that were not the real ones
 
 - **`ClientContext::catalog` documented an empty name as "the default
   catalog"; `DuckDB` rejects it outright.**
@@ -270,7 +224,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the source lines, recorded as `LESSONS.md` P12, and the abort-free
   alternative given: `SELECT count(*) FROM duckdb_settings() WHERE name = ?`.
 
-### Fixed (documentation claimed a bridge that cannot exist)
+#### Documentation claimed a bridge that cannot exist
 
 - **The `secrets` module described itself as bridging into `DuckDB`'s secrets
   system. There is no such bridge, and there cannot be.** The extension C API
@@ -296,7 +250,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SecretEntry` owns, not a `String` the caller still holds or one a `String`
   abandoned when it grew.
 
-### Fixed (the `description.yml` validator rejected 84% of real extensions)
+#### The `description.yml` validator rejected 84% of real extensions
 
 - **`parse_description_yml` rejected 36 of the 43 published community
   extensions it was tested against.** Its entire purpose is to tell an author
@@ -358,7 +312,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   indentation; making it section-aware exposed them. Rewritten as real
   multi-line literals.
 
-### Fixed (validators were giving wrong answers)
+#### Validators were giving wrong answers
 
 - **The DuckDB platform list was stale in both directions.**
   `validate::platform` rejected `linux_amd64_musl` and `linux_arm64_musl` —
@@ -392,7 +346,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extension.licence`; real `description.yml` files — and quack-rs's own parser
   — use `license`.
 
-### Fixed (silent data corruption)
+#### Silent data corruption
 
 - **The `UUID` accessors disagreed about which 128 bits they meant, and the
   documentation said they agreed.** A `UUID` column is physically a `HUGEINT`,
@@ -421,7 +375,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two. Pinned by a live test that asserts the raw storage and the textual bits
   really do differ, so the conversion cannot quietly become a no-op.
 
-### Fixed
+#### Wrong results and unloadable builds
 
 - **`ChunkWriter` no longer hardcodes a 2048-row capacity.** `DuckDB` can be
   built with a different `STANDARD_VECTOR_SIZE`, which is exactly why the C API
@@ -467,7 +421,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An `api_version` containing an interior NUL is also rejected up front instead
   of panicking inside `libduckdb-sys`.
 
+#### Behaviour documented after verification
+
+- `Value::display_string` renders a SQL **literal**, not display text:
+  `Value::varchar("hello")` gives `'hello'` and `Value::date(0)` gives
+  `'1970-01-01'::DATE`. Now documented with a table, since silently getting
+  quotes and a cast suffix in a diagnostic is surprising.
+- `Value::as_str` truncates at an interior NUL, because `duckdb_get_varchar`
+  returns a NUL-terminated `char *`. `DuckDB` stores the full bytes; only this
+  read path is limited. Documented on both `as_str` and `Value::varchar`, and
+  pinned by a test.
+
+#### Documentation
+
+- **The crate documented an "architectural limitation" that does not exist.**
+  `Cargo.toml`, `testing::in_memory_db` and the book all stated that
+  `VectorReader`, `VectorWriter` and `Connection::register_*` "cannot be called
+  in `cargo test`" because they route through the dispatch table. Opening an
+  `InMemoryDb` populates that table for the whole process, after which the entire
+  C API — registration included — works. The new `tests/ffi_roundtrip.rs`
+  registers real scalar functions and round-trips every vector type through SQL:
+  every integer width at its extremes, `HUGEINT`/`UHUGEINT` at theirs, floats and
+  NaN, strings across the 12-byte inline/pointer boundary and multi-byte UTF-8,
+  blobs containing NUL and non-UTF-8 bytes, all temporal types cross-checked
+  against `DuckDB`'s own rendering, `UUID`, `INTERVAL`'s three fields, `DECIMAL`
+  at all four physical widths, NULL in and out, multi-chunk scans, and a
+  panicking callback surfacing as a SQL error.
+
+- Documentation examples pinned `quack-rs = "0.13"`.
+
+[`abi::check`]: https://docs.rs/quack-rs/latest/quack_rs/abi/fn.check.html
+[`AbiPolicy`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
+[`AbiPolicy::Strict`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
+
 ### Added
+
+#### Live tests for every previously untested C API path
+
+- **Copy functions and replacement scans had no live tests at all.** Between
+  them they had 19 unit tests, none of which registered anything against a
+  running `DuckDB` — which is how a heap-corrupting free survived in a shipped
+  API. Both now have end-to-end coverage:
+
+  - A `COPY ... TO 'f' (FORMAT my_format)` over 5000 rows, threading bind data
+    and global state through all four lifecycle phases, asserting the sink saw
+    every row and that both destructors ran exactly once (a leak or a double
+    free is invisible without counting).
+  - A replacement scan rewriting `SELECT * FROM '10.myfmt'` into a table
+    function call, plus the decline path — an identifier the callback ignores
+    must still reach `DuckDB`'s own error handling — and a panicking scan
+    surfacing as a SQL error.
+
+- **Six more modules had unit tests but no live registration**: scalar
+  bind/init/local state, `Expression::fold`, catalog lookup, config options,
+  selection vectors and the instance cache. All now run against a real `DuckDB`,
+  which turned up two more documentation defects (below) and confirmed the rest.
+
+- **`copy_bind_callback!`, `copy_global_init_callback!`, `copy_sink_callback!`
+  and `copy_finalize_callback!`.** Every other callback kind had a panic-safe
+  macro; the four copy-function phases did not, so a panic in one of them had
+  nothing to catch it. Each routes the message through that phase's own
+  `duckdb_copy_function_*_set_error`.
 
 - `TypeId::try_from_duckdb_type` — returns `Option<TypeId>` instead of panicking
   on a type value this build does not know. Extensions routinely meet these: a
@@ -483,28 +497,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/scaffold_to_dir.rs` — writes a scaffolded project to disk, used by
   the new `scaffold-e2e` CI job.
 
-### Changed
-
-- **Breaking:** `ScaffoldConfig` gains `target_duckdb_version` and
-  `use_unstable_c_api`. `ScaffoldConfig` now implements `Default`, so existing
-  struct literals can add `..ScaffoldConfig::default()`. `generate_scaffold`
-  rejects combinations that produce an unloadable binary — a `C_STRUCT` build
-  claiming a `DuckDB` release as its `-dv`, or a `C_STRUCT_UNSTABLE` build
-  claiming the C API version.
-
-### CI / tooling
-
-- New `abi-table` job: `scripts/check-abi-table.py` verifies `src/abi.rs`'s
-  layout table against every upstream `DuckDB` release header.
-- New `abi-guard` job: builds an extension against `DuckDB` 1.5.0's header
-  layout, stamps it `C_STRUCT`, and asserts the load is refused with a layout
-  diagnostic — a regression test for the corruption described above.
-- New `scaffold-e2e` job (see above).
-- `extension-load` now stamps a real metadata footer and asserts query *results*
-  rather than grepping the log for the word "error"; loading a bare `.so`
-  bypassed `DuckDB`'s metadata validation entirely.
-
-### Added (panic safety)
+#### Panic safety
 
 - **A panic-safe wrapper macro for every callback kind.** Only `scalar_callback!`
   and `table_scan_callback!` existed, so the other six kinds — table bind, table
@@ -534,7 +527,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always will: `DuckDB` exposes no `duckdb_bind_get_bind_data`. Being safe and
   returning `Option`, it silently sent `if let Some(..)` down the wrong branch.
 
-### Added (capabilities)
+#### Capabilities
 
 - **`ListBuilder` for `LIST` and `MAP` output vectors.**
   `duckdb_list_vector_reserve` takes a *total* capacity and reallocates the child
@@ -685,38 +678,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [C-DEBUG]: https://rust-lang.github.io/api-guidelines/debugging.html
 
-### Fixed (behaviour documented after verification)
+### Changed
 
-- `Value::display_string` renders a SQL **literal**, not display text:
-  `Value::varchar("hello")` gives `'hello'` and `Value::date(0)` gives
-  `'1970-01-01'::DATE`. Now documented with a table, since silently getting
-  quotes and a cast suffix in a diagnostic is surprising.
-- `Value::as_str` truncates at an interior NUL, because `duckdb_get_varchar`
-  returns a NUL-terminated `char *`. `DuckDB` stores the full bytes; only this
-  read path is limited. Documented on both `as_str` and `Value::varchar`, and
-  pinned by a test.
+#### MSRV
 
-### Fixed (documentation)
+- **MSRV lowered 1.87.0 → 1.86.0.** DuckDB's reusable
+  `_extension_distribution.yml` — the workflow the community-extensions
+  repository builds every extension with — pins
+  `dtolnay/rust-toolchain@… # 1.86.0` for the WebAssembly job. quack-rs required
+  1.87.0, so Cargo refused, and **no quack-rs extension could be built for
+  `wasm_mvp` / `wasm_eh` / `wasm_threads`** by the official pipeline — despite
+  the crate advertising `wasm32-unknown-emscripten` support since 0.14.0.
 
-- **The crate documented an "architectural limitation" that does not exist.**
-  `Cargo.toml`, `testing::in_memory_db` and the book all stated that
-  `VectorReader`, `VectorWriter` and `Connection::register_*` "cannot be called
-  in `cargo test`" because they route through the dispatch table. Opening an
-  `InMemoryDb` populates that table for the whole process, after which the entire
-  C API — registration included — works. The new `tests/ffi_roundtrip.rs`
-  registers real scalar functions and round-trips every vector type through SQL:
-  every integer width at its extremes, `HUGEINT`/`UHUGEINT` at theirs, floats and
-  NaN, strings across the 12-byte inline/pointer boundary and multi-byte UTF-8,
-  blobs containing NUL and non-UTF-8 bytes, all temporal types cross-checked
-  against `DuckDB`'s own rendering, `UUID`, `INTERVAL`'s three fields, `DECIMAL`
-  at all four physical widths, NULL in and out, multi-chunk scans, and a
-  panicking callback surfacing as a SQL error.
+  The entire 1.87 requirement was five `const fn` accessors calling `Vec::len`
+  (stabilised as const in 1.87). None can be reached in a const context —
+  `MockVectorWriter`, `StructReader` and `StructWriter` are all built at runtime
+  — so dropping `const` costs nothing. 1.86.0 is now the floor for the library,
+  its dev-dependencies (`criterion` needs 1.86) and the `hello-ext` example, all
+  verified.
 
-- Documentation examples pinned `quack-rs = "0.13"`.
+  New `scripts/check-msrv-vs-duckdb-ci.py` and a CI job re-derive DuckDB's pinned
+  toolchains from that workflow and fail if the MSRV creeps back above them.
 
-[`abi::check`]: https://docs.rs/quack-rs/latest/quack_rs/abi/fn.check.html
-[`AbiPolicy`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
-[`AbiPolicy::Strict`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
+- **Breaking:** `ScaffoldConfig` gains `target_duckdb_version` and
+  `use_unstable_c_api`. `ScaffoldConfig` now implements `Default`, so existing
+  struct literals can add `..ScaffoldConfig::default()`. `generate_scaffold`
+  rejects combinations that produce an unloadable binary — a `C_STRUCT` build
+  claiming a `DuckDB` release as its `-dv`, or a `C_STRUCT_UNSTABLE` build
+  claiming the C API version.
+
+### CI / tooling
+
+- New `abi-table` job: `scripts/check-abi-table.py` verifies `src/abi.rs`'s
+  layout table against every upstream `DuckDB` release header.
+- New `abi-guard` job: builds an extension against `DuckDB` 1.5.0's header
+  layout, stamps it `C_STRUCT`, and asserts the load is refused with a layout
+  diagnostic — a regression test for the corruption described above.
+- New `scaffold-e2e` job (see above).
+- `extension-load` now stamps a real metadata footer and asserts query *results*
+  rather than grepping the log for the word "error"; loading a bare `.so`
+  bypassed `DuckDB`'s metadata validation entirely.
 
 ## [0.15.0] - 2026-07-16
 
