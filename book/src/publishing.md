@@ -79,7 +79,19 @@ extension:
 
 repo:
   github: yourorg/duckdb-my-extension
-  ref: main
+  # Must be a commit hash, not a branch: the community repository builds
+  # exactly this revision and signs the result, so a moving reference would
+  # make the build unreproducible. DuckDB's docs: "Provide the hash of the
+  # latest commit on the branch targeting stable as `ref`".
+  ref: 0a11ddc058beb2d480ccbfa83e16a68400c5d076
+  # ref_next: <hash>   # optional: a revision compatible with DuckDB main,
+  #                    # used while a new DuckDB release is being prepared.
+
+docs:
+  hello_world: |
+    SELECT my_extension_version();
+  extended_description: |
+    A longer description, rendered on the community-extensions site.
 ```
 
 Use `quack_rs::validate` to pre-validate fields before submission:

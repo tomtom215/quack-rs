@@ -82,6 +82,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
 
+### Fixed (the scaffold generated a `description.yml` that would be rejected)
+
+- **`repo.ref` was generated as `main`.** `DuckDB`'s community-extension
+  documentation is explicit: "Provide the hash of the latest commit on the
+  branch targeting stable as `ref`". The repository builds exactly that revision
+  and signs the result, so a branch makes the build unreproducible. Of the 43
+  published extensions sampled, 41 pin a full 40-character hash and two pin a
+  tag; **none** uses a branch.
+
+  `ScaffoldConfig` gains `git_ref`, defaulting to `REF_PLACEHOLDER`
+  (`"REPLACE_WITH_COMMIT_HASH"`) — deliberately not a valid revision, so it
+  cannot be submitted by accident the way `main` silently could. The generated
+  file carries a comment saying why, and a commented-out `ref_next`.
+
+- **`DescriptionYml` silently dropped `repo.ref_next`.** It is a documented
+  field: while a new `DuckDB` release is being prepared, the community
+  repository tests an extension against both the latest stable release and
+  `main`, and `ref_next` names the revision compatible with `main`. Now parsed
+  into `git_ref_next`, empty when absent.
+
+- **The generated `description.yml` had no `docs:` section.** All 43 published
+  extensions have one — it is what renders on the community-extensions
+  documentation site. The scaffold now emits `hello_world` and
+  `extended_description` stubs.
+
 ### Fixed (documentation claimed a bridge that cannot exist)
 
 - **The `secrets` module described itself as bridging into `DuckDB`'s secrets

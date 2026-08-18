@@ -144,7 +144,10 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         }
 
         let keys: &[&str] = if section == Section::Repo {
-            &["github", "ref"]
+            // `ref_next` first: `parse_kv` matches on the `"key:"` prefix, and
+            // trying `"ref:"` against `ref_next: abc` correctly fails, but
+            // ordering it first keeps that from being a subtlety to re-derive.
+            &["github", "ref_next", "ref"]
         } else {
             &Fields::EXTENSION_KEYS
         };
@@ -176,6 +179,7 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         excluded_platforms,
         github,
         git_ref,
+        git_ref_next,
     } = fields;
 
     // --- Validate all fields ---
@@ -269,6 +273,7 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         maintainers,
         github,
         git_ref,
+        git_ref_next,
     })
 }
 
@@ -286,6 +291,7 @@ struct Fields {
     excluded_platforms: String,
     github: String,
     git_ref: String,
+    git_ref_next: String,
 }
 
 impl Fields {
@@ -316,6 +322,7 @@ impl Fields {
             "excluded_platforms" => self.excluded_platforms = value,
             "github" => self.github = value,
             "ref" => self.git_ref = value,
+            "ref_next" => self.git_ref_next = value,
             _ => {}
         }
     }

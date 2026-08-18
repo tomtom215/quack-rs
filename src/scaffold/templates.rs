@@ -199,7 +199,29 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
     let _ = writeln!(yml);
     let _ = writeln!(yml, "repo:");
     let _ = writeln!(yml, "  github: {}", config.github_repo);
-    let _ = writeln!(yml, "  ref: main");
+    // DuckDB's documentation: "Provide the hash of the latest commit on the
+    // branch targeting stable as `ref`". The community repository builds
+    // exactly this revision and signs the result, so a branch name would make
+    // the build unreproducible.
+    let _ = writeln!(yml, "  # Must be a commit hash, not a branch.");
+    let _ = writeln!(yml, "  ref: {}", config.git_ref);
+    let _ = writeln!(
+        yml,
+        "  # ref_next: <hash>   # optional: a revision compatible with DuckDB main,"
+    );
+    let _ = writeln!(
+        yml,
+        "  #                    # used while a new DuckDB release is being prepared."
+    );
+
+    // Every one of the 43 published extensions sampled has a `docs:` section;
+    // it is what renders on the community-extensions documentation site.
+    let _ = writeln!(yml);
+    let _ = writeln!(yml, "docs:");
+    let _ = writeln!(yml, "  hello_world: |");
+    let _ = writeln!(yml, "    SELECT {}_version();", config.name);
+    let _ = writeln!(yml, "  extended_description: |");
+    let _ = writeln!(yml, "    {}", config.description);
 
     yml
 }

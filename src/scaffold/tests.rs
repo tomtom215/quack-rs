@@ -501,3 +501,33 @@ fn ci_workflow_builds_before_testing_and_uses_real_actions() {
     assert!(!ci.contains("duckdb/duckdb-build"));
     assert!(ci.contains("submodules: recursive"));
 }
+
+/// The generated `description.yml` must not pin a branch: `DuckDB`'s
+/// documentation says `ref` is "the hash of the latest commit", and 41 of 43
+/// published extensions pin a full hash (the other two pin a tag; none uses a
+/// branch).
+#[test]
+fn generated_description_does_not_pin_a_branch() {
+    let files = generate_scaffold(&valid_config()).expect("scaffold");
+    let yml = &files
+        .iter()
+        .find(|f| f.path == "description.yml")
+        .expect("description.yml")
+        .content;
+    assert!(
+        !yml.contains("ref: main"),
+        "a branch ref makes the community build unreproducible:\n{yml}"
+    );
+    assert!(yml.contains(&format!("ref: {}", crate::scaffold::REF_PLACEHOLDER)));
+    assert!(yml.contains("Must be a commit hash"));
+    // Every published extension has a docs: section; it is what renders on the
+    // community-extensions documentation site.
+    assert!(yml.contains("docs:"), "{yml}");
+    assert!(yml.contains("hello_world:"), "{yml}");
+
+    // And the whole thing must still parse.
+    let desc = crate::validate::description_yml::parse_description_yml(yml)
+        .expect("the scaffold must generate a parseable description.yml");
+    assert_eq!(desc.git_ref, crate::scaffold::REF_PLACEHOLDER);
+    assert!(desc.git_ref_next.is_empty());
+}

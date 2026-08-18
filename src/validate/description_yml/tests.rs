@@ -674,3 +674,38 @@ fn a_block_scalar_at_end_of_file_is_captured() {
     let desc = parse_description_yml(yml).expect("parse");
     assert_eq!(desc.description, "trailing block");
 }
+
+/// `ref_next` is a documented field — `DuckDB`'s development docs describe using
+/// it while a new release is being prepared — and was silently dropped.
+#[test]
+fn ref_next_is_parsed_and_does_not_shadow_ref() {
+    let yml = "extension:\n\
+               \x20\x20name: probe\n\
+               \x20\x20description: d\n\
+               \x20\x20version: 1.0.0\n\
+               \x20\x20language: Rust\n\
+               \x20\x20build: cargo\n\
+               \x20\x20license: MIT\n\
+               \x20\x20maintainers:\n\
+               \x20\x20\x20\x20- Jane\n\
+               repo:\n\
+               \x20\x20github: j/r\n\
+               \x20\x20ref: e5ed59b6ccf915c65e17eb6286b9a64f3ab09f59\n\
+               \x20\x20ref_next: c8941c92ec103f7825eb88207c04512f8a714b23\n";
+    let desc = parse_description_yml(yml).expect("parse");
+    assert_eq!(desc.git_ref, "e5ed59b6ccf915c65e17eb6286b9a64f3ab09f59");
+    assert_eq!(
+        desc.git_ref_next,
+        "c8941c92ec103f7825eb88207c04512f8a714b23"
+    );
+
+    // Absent is empty, not an error — it is optional.
+    let without = yml
+        .lines()
+        .filter(|l| !l.contains("ref_next"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let desc = parse_description_yml(&without).expect("parse");
+    assert_eq!(desc.git_ref, "e5ed59b6ccf915c65e17eb6286b9a64f3ab09f59");
+    assert!(desc.git_ref_next.is_empty());
+}

@@ -95,7 +95,28 @@ pub struct ScaffoldConfig {
     ///
     /// Defaults to `false`.
     pub use_unstable_c_api: bool,
+    /// Value written as `repo.ref` in the generated `description.yml`.
+    ///
+    /// **Must be a commit hash**, not a branch. `DuckDB`'s community-extension
+    /// documentation is explicit — "Provide the hash of the latest commit on
+    /// the branch targeting stable as `ref`" — because the repository builds
+    /// exactly this revision and signs the result, so a moving reference would
+    /// make the build unreproducible. Of 43 published extensions sampled, 41
+    /// pin a full 40-character hash and the remaining two pin a tag; none uses
+    /// a branch.
+    ///
+    /// Defaults to [`REF_PLACEHOLDER`], which is deliberately not a valid
+    /// revision so it cannot be submitted by accident.
+    pub git_ref: String,
 }
+
+/// Placeholder written as `repo.ref` when [`ScaffoldConfig::git_ref`] is left
+/// at its default.
+///
+/// Deliberately not a valid git revision: `ref` must be pinned before the
+/// `description.yml` is submitted, and a scaffold that emitted `main` would
+/// look correct while producing an unreproducible build.
+pub const REF_PLACEHOLDER: &str = "REPLACE_WITH_COMMIT_HASH";
 
 impl Default for ScaffoldConfig {
     fn default() -> Self {
@@ -109,6 +130,7 @@ impl Default for ScaffoldConfig {
             excluded_platforms: Vec::new(),
             target_duckdb_version: String::from(crate::DUCKDB_API_VERSION),
             use_unstable_c_api: false,
+            git_ref: String::from(REF_PLACEHOLDER),
         }
     }
 }

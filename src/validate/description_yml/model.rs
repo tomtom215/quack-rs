@@ -38,4 +38,12 @@ pub struct DescriptionYml {
     pub github: String,
     /// Git ref (branch name, tag, or full commit SHA).
     pub git_ref: String,
+    /// `repo.ref_next` — a revision compatible with `DuckDB`'s `main` branch,
+    /// empty when absent.
+    ///
+    /// Optional, and documented by `DuckDB` for the window while a new release
+    /// is being prepared: the community repository tests an extension against
+    /// both the latest stable release and `main`, and once the release hash is
+    /// set `ref_next` is swapped in for `ref`.
+    pub git_ref_next: String,
 }
