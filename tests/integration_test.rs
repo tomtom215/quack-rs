@@ -547,10 +547,21 @@ fn scaffold_generated_code_compiles() {
     let tmp = tmp.path().to_path_buf();
     fs::create_dir_all(tmp.join("src")).unwrap();
 
-    // The scaffold Cargo.toml references `quack-rs = "0.13"` from crates.io.
-    // Replace it with a path dependency pointing to this workspace root so
-    // `cargo check` uses the local (possibly-modified) crate.
+    // The scaffold's Cargo.toml depends on quack-rs from crates.io, at whatever
+    // version this crate currently is. Repoint it at this working copy so
+    // `cargo check` tests the code in front of us — and so a version bump does
+    // not fail this test in the window before that version is published.
+    //
+    // This was previously a `.replace()` of the literal `version = "0.13"`,
+    // which stopped matching the moment the crate moved past 0.13. It then
+    // silently did nothing, and the test spent several releases checking the
+    // last *published* quack-rs instead of the working copy. The assertion
+    // below makes that failure mode impossible.
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path_dep = format!(
+        "quack-rs = {{ path = \"{}\" }}",
+        workspace_root.display().to_string().replace('\\', "/")
+    );
 
     for f in &files {
         let dest = tmp.join(&f.path);
@@ -559,13 +570,23 @@ fn scaffold_generated_code_compiles() {
         }
 
         if f.path == "Cargo.toml" {
-            // Rewrite quack-rs dep to use local path
-            let patched = f.content.replace(
-                r#"quack-rs = { version = "0.13" }"#,
-                &format!(
-                    "quack-rs = {{ path = \"{}\" }}",
-                    workspace_root.display().to_string().replace('\\', "/")
-                ),
+            let patched: String = f
+                .content
+                .lines()
+                .map(|line| {
+                    if line.trim_start().starts_with("quack-rs = {") {
+                        path_dep.as_str()
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                patched.contains(&path_dep),
+                "the quack-rs dependency line was not rewritten to a path dep; \
+                 this test would have checked the published crate instead of \
+                 this working copy"
             );
             fs::write(&dest, patched).unwrap();
         } else {
