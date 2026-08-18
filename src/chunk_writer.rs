@@ -145,6 +145,7 @@ impl ChunkWriter {
     #[inline]
     #[must_use]
     pub fn column_count(&self) -> usize {
+        // SAFETY: `self.raw` is a valid data chunk for this wrapper's lifetime.
         usize::try_from(unsafe { libduckdb_sys::duckdb_data_chunk_get_column_count(self.raw) })
             .unwrap_or(0)
     }

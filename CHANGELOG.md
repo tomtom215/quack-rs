@@ -188,6 +188,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry in `duckdb_extensions()`, asserting that everything identifier-shaped is
   accepted and every operator is not. That is how the defect was found.
 
+### Fixed (a documented convention that was not being followed)
+
+- **"Every `unsafe` block inside this crate has a `// SAFETY:` comment" was not
+  true.** `clippy::undocumented_unsafe_blocks` reports 180 blocks in the library.
+  Most are inside an `unsafe fn` and merely forward that function's own
+  documented contract — `unsafe_op_in_unsafe_fn` is denied crate-wide, so those
+  blocks are required syntax rather than new assertions — but around forty were
+  in **safe** functions, where the crate rather than the caller is asserting the
+  invariant, and those had nothing.
+
+  The claim is replaced with the convention actually worth following, and that
+  convention is now met: every `unsafe` block in a safe function carries a
+  `// SAFETY:` comment. Auditing them also turned up three comments that
+  described the wrong thing — two `duckdb_free` calls and a `duckdb_destroy_value`
+  annotated as if they were uses of the enclosing handle; those now say which
+  allocation they own and why, cross-referencing `LESSONS.md` P11.
+
 ### Security (generated CI)
 
 - **The generated CI workflow left one action unpinned.** Three of its four

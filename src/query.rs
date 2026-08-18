@@ -469,6 +469,8 @@ impl PreparedStatement {
     /// Returns [`ExtensionError`] carrying `DuckDB`'s message if execution
     /// fails.
     pub fn execute(&self) -> Result<QueryResult, ExtensionError> {
+        // SAFETY: `duckdb_result` is a plain C struct with no invalid bit patterns;
+        // DuckDB overwrites it entirely before it is read.
         let mut result: duckdb_result = unsafe { std::mem::zeroed() };
         // SAFETY: `self.statement` is valid for this value's lifetime.
         let state = unsafe { duckdb_execute_prepared(self.statement, &raw mut result) };

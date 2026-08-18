@@ -220,6 +220,9 @@ impl LogicalType {
     /// Panics if `duckdb_create_decimal_type` returns null.
     #[must_use]
     pub fn decimal(width: u8, scale: u8) -> Self {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_decimal_type(width, scale) };
         assert!(!inner.is_null(), "duckdb_create_decimal_type returned null");
         Self { inner }
@@ -245,6 +248,9 @@ impl LogicalType {
     #[must_use]
     pub fn array(element_type: TypeId, size: u64) -> Self {
         let element_lt = Self::new(element_type);
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner =
             unsafe { duckdb_create_array_type(element_lt.as_raw(), size as libduckdb_sys::idx_t) };
         assert!(!inner.is_null(), "duckdb_create_array_type returned null");
@@ -260,6 +266,9 @@ impl LogicalType {
     /// Panics if `duckdb_create_array_type` returns null.
     #[must_use]
     pub fn array_from_logical(element: &Self, size: u64) -> Self {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner =
             unsafe { duckdb_create_array_type(element.as_raw(), size as libduckdb_sys::idx_t) };
         assert!(!inner.is_null(), "duckdb_create_array_type returned null");
@@ -301,6 +310,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_union_type(
                 type_ptrs.as_mut_ptr(),
@@ -334,6 +346,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_union_type(
                 type_ptrs.as_mut_ptr(),
@@ -371,6 +386,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_enum_type(
                 name_ptrs.as_mut_ptr(),
@@ -391,6 +409,9 @@ impl LogicalType {
     /// Panics if `duckdb_create_list_type` returns null.
     #[must_use]
     pub fn list_from_logical(element: &Self) -> Self {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_list_type(element.as_raw()) };
         assert!(!inner.is_null(), "duckdb_create_list_type returned null");
         Self { inner }
@@ -406,6 +427,9 @@ impl LogicalType {
     /// Panics if `duckdb_create_map_type` returns null.
     #[must_use]
     pub fn map_from_logical(key: &Self, value: &Self) -> Self {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_map_type(key.as_raw(), value.as_raw()) };
         assert!(!inner.is_null(), "duckdb_create_map_type returned null");
         Self { inner }
@@ -448,6 +472,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_struct_type(
                 type_ptrs.as_mut_ptr(),
@@ -462,6 +489,9 @@ impl LogicalType {
     /// Fallible version of [`LogicalType::new`]. Returns an error instead of
     /// panicking if the `DuckDB` C API returns a null pointer.
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_logical_type(type_id.to_duckdb_type()) };
         if inner.is_null() {
             return Err(LogicalTypeError {
@@ -475,6 +505,9 @@ impl LogicalType {
     /// panicking if the `DuckDB` C API returns a null pointer.
     pub fn try_list(element_type: TypeId) -> Result<Self, LogicalTypeError> {
         let element_lt = Self::try_new(element_type)?;
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_list_type(element_lt.as_raw()) };
         if inner.is_null() {
             return Err(LogicalTypeError {
@@ -489,6 +522,9 @@ impl LogicalType {
     pub fn try_map(key_type: TypeId, value_type: TypeId) -> Result<Self, LogicalTypeError> {
         let key_lt = Self::try_new(key_type)?;
         let val_lt = Self::try_new(value_type)?;
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_map_type(key_lt.as_raw(), val_lt.as_raw()) };
         if inner.is_null() {
             return Err(LogicalTypeError {
@@ -522,6 +558,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_struct_type(
                 type_ptrs.as_mut_ptr(),
@@ -557,6 +596,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_struct_type(
                 type_ptrs.as_mut_ptr(),
@@ -603,6 +645,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_union_type(
                 type_ptrs.as_mut_ptr(),
@@ -635,6 +680,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_enum_type(
                 name_ptrs.as_mut_ptr(),

@@ -127,6 +127,8 @@ impl Expression {
         if err.has_error() {
             // SAFETY: out_value may have been left null/invalid; destroy any value.
             if !out_value.is_null() {
+                // SAFETY: `out_value` is the handle DuckDB just wrote, and taking ownership
+                // here is what frees it.
                 drop(unsafe { Value::from_raw(out_value) });
             }
             return Err(err);

@@ -147,6 +147,9 @@ use quack_rs::prelude::*;
 fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {{
     // Example: register a scalar SQL macro (no unsafe callbacks needed).
     // Replace this with your own aggregate, scalar, or table functions.
+    //
+    // SAFETY: `con` is the connection quack-rs opened for this entry point and
+    // is valid for the duration of this function.
     unsafe {{
         SqlMacro::scalar(
             "{name}_hello",

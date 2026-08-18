@@ -715,6 +715,8 @@ impl Value {
     pub fn boolean(value: bool) -> Self {
         // SAFETY: duckdb_create_bool accepts any bool and returns an owned value.
         Self {
+            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
+            // the returned handle is owned by this `Value`.
             raw: unsafe { libduckdb_sys::duckdb_create_bool(value) },
         }
     }
@@ -725,6 +727,8 @@ impl Value {
     pub fn bigint(value: i64) -> Self {
         // SAFETY: duckdb_create_int64 accepts any i64 and returns an owned value.
         Self {
+            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
+            // the returned handle is owned by this `Value`.
             raw: unsafe { libduckdb_sys::duckdb_create_int64(value) },
         }
     }
@@ -735,6 +739,8 @@ impl Value {
     pub fn double(value: f64) -> Self {
         // SAFETY: duckdb_create_double accepts any f64 and returns an owned value.
         Self {
+            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
+            // the returned handle is owned by this `Value`.
             raw: unsafe { libduckdb_sys::duckdb_create_double(value) },
         }
     }
@@ -745,6 +751,8 @@ impl Value {
     pub fn date(days: i32) -> Self {
         // SAFETY: duckdb_create_date accepts any day count.
         Self {
+            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
+            // the returned handle is owned by this `Value`.
             raw: unsafe { libduckdb_sys::duckdb_create_date(libduckdb_sys::duckdb_date { days }) },
         }
     }
@@ -755,6 +763,8 @@ impl Value {
     pub fn timestamp(micros: i64) -> Self {
         // SAFETY: duckdb_create_timestamp accepts any microsecond count.
         Self {
+            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
+            // the returned handle is owned by this `Value`.
             raw: unsafe {
                 libduckdb_sys::duckdb_create_timestamp(libduckdb_sys::duckdb_timestamp { micros })
             },
@@ -796,6 +806,8 @@ impl Value {
         };
         // SAFETY: duckdb_create_uuid accepts any 128-bit pattern.
         Self {
+            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
+            // the returned handle is owned by this `Value`.
             raw: unsafe { libduckdb_sys::duckdb_create_uuid(raw) },
         }
     }
@@ -807,6 +819,8 @@ impl Value {
         // SAFETY: duckdb_create_null_value takes no arguments and returns an
         // owned SQLNULL value.
         Self {
+            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
+            // the returned handle is owned by this `Value`.
             raw: unsafe { libduckdb_sys::duckdb_create_null_value() },
         }
     }

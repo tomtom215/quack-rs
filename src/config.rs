@@ -140,6 +140,8 @@ impl DbConfig {
         let name = unsafe { CStr::from_ptr(name_ptr) }
             .to_string_lossy()
             .into_owned();
+        // SAFETY: DuckDB returned this pointer for an in-range flag index, and it
+        // points at a NUL-terminated string DuckDB owns.
         let desc = unsafe { CStr::from_ptr(desc_ptr) }
             .to_string_lossy()
             .into_owned();

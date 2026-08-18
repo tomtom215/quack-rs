@@ -151,14 +151,16 @@ impl ClientContext {
                 .ok()
                 .map(String::from)
         };
-        // SAFETY: c_str was allocated by `DuckDB` and must be freed.
         if !c_str.is_null() {
+            // SAFETY: `duckdb_get_varchar` returns a `char *` DuckDB allocated
+            // (`duckdb_malloc` + `memcpy`), so this owns it and must free it.
             unsafe {
                 libduckdb_sys::duckdb_free(c_str.cast::<core::ffi::c_void>());
             }
         }
-        // SAFETY: val must be destroyed.
         let mut val_mut = val;
+        // SAFETY: `val` came from `duckdb_client_context_get_config_option`,
+        // which returns an owned `duckdb_value`; it is not used afterwards.
         unsafe {
             duckdb_destroy_value(&raw mut val_mut);
         }

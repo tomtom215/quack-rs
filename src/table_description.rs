@@ -197,7 +197,10 @@ impl TableDescription {
             .to_str()
             .ok()
             .map(String::from);
-        // Free the string allocated by `DuckDB`.
+        // SAFETY: `duckdb_table_description_get_column_name` returns a `char *`
+        // DuckDB allocated (`malloc` + `memcpy`), so this owns it and must free
+        // it. Contrast `duckdb_table_description_error`, which returns a
+        // borrowed `const char *` and must not be freed — see LESSONS.md P11.
         unsafe {
             libduckdb_sys::duckdb_free(ptr.cast::<core::ffi::c_void>());
         }

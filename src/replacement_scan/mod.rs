@@ -139,8 +139,10 @@ impl ReplacementScanInfo {
         unsafe {
             duckdb_replacement_scan_add_parameter(self.info, duckdb_val);
         }
-        // SAFETY: duckdb_val was just created; must be destroyed after passing.
         let mut val = duckdb_val;
+        // SAFETY: `val` is the value created above; DuckDB copied it when the
+        // parameter was added, so destroying it here is correct and it is not
+        // used afterwards.
         unsafe {
             duckdb_destroy_value(&raw mut val);
         }
@@ -173,10 +175,15 @@ impl ReplacementScanInfo {
     pub fn add_i64_parameter(&self, value: i64) -> &Self {
         // SAFETY: duckdb_create_int64 always returns a valid value.
         let duckdb_val = unsafe { libduckdb_sys::duckdb_create_int64(value) };
+        // SAFETY: `self.info` is the handle DuckDB passed to the callback, and
+        // `duckdb_val` was just created.
         unsafe {
             duckdb_replacement_scan_add_parameter(self.info, duckdb_val);
         }
         let mut val = duckdb_val;
+        // SAFETY: `val` is that same value; DuckDB copied it when the parameter
+        // was added, so destroying it here is correct and it is not used
+        // afterwards.
         unsafe {
             duckdb_destroy_value(&raw mut val);
         }
@@ -190,10 +197,15 @@ impl ReplacementScanInfo {
     pub fn add_bool_parameter(&self, value: bool) -> &Self {
         // SAFETY: duckdb_create_bool always returns a valid value.
         let duckdb_val = unsafe { libduckdb_sys::duckdb_create_bool(value) };
+        // SAFETY: `self.info` is the handle DuckDB passed to the callback, and
+        // `duckdb_val` was just created.
         unsafe {
             duckdb_replacement_scan_add_parameter(self.info, duckdb_val);
         }
         let mut val = duckdb_val;
+        // SAFETY: `val` is that same value; DuckDB copied it when the parameter
+        // was added, so destroying it here is correct and it is not used
+        // afterwards.
         unsafe {
             duckdb_destroy_value(&raw mut val);
         }

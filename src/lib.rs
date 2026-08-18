@@ -92,8 +92,22 @@
 //! All `unsafe` code within this SDK is sound and documented. Extension authors
 //! must write `unsafe extern "C"` callback functions (required by `DuckDB`'s C API),
 //! but the SDK's helpers minimize the surface area of unsafe code within those
-//! callbacks. Every `unsafe` block inside this crate has a `// SAFETY:` comment
-//! explaining the invariants being upheld.
+//! callbacks.
+//!
+//! The documentation convention is:
+//!
+//! - Every `unsafe fn` states what the caller must guarantee under `# Safety`.
+//! - Every `unsafe` block **inside a safe function** carries a `// SAFETY:`
+//!   comment, because there the crate — not the caller — is asserting the
+//!   invariant.
+//! - Inside an `unsafe fn`, blocks that simply forward the function's own
+//!   documented contract are not re-annotated. `unsafe_op_in_unsafe_fn` is
+//!   denied crate-wide, so those blocks are required syntax rather than new
+//!   assertions.
+//!
+//! Enabling `clippy::undocumented_unsafe_blocks` reports the third category as
+//! well; that is a stricter convention than the one above, not a soundness
+//! finding.
 //!
 //! ## Design Principles
 //!
