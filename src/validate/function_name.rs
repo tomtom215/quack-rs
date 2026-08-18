@@ -5,9 +5,21 @@
 
 //! SQL function name validation for `DuckDB` extensions.
 //!
-//! Function names registered with `DuckDB` should follow safe naming conventions
-//! to avoid registration failures or unexpected behavior. This validator enforces
-//! conservative rules that are compatible with `DuckDB`'s internal function catalog.
+//! A function name that needs quoting in SQL, or that cannot survive the trip
+//! through a C string, will fail at registration or produce a function nobody
+//! can call. This validator rejects those, and nothing else.
+//!
+//! # What it deliberately does not do
+//!
+//! It does not impose a naming *style*. `DuckDB` identifiers are
+//! case-insensitive and `DuckDB` itself ships mixed-case functions
+//! (`formatReadableSize`, `formatReadableDecimalSize`), so `myFunc` registers
+//! fine and is callable as `myfunc`, `MYFUNC` or `myFunc` — verified against
+//! `DuckDB` 1.5.5. `snake_case` is the overwhelming convention in `DuckDB`'s own
+//! catalog and is worth following, but it is a convention, not a rule, and this
+//! validator gates [`ScalarFunctionBuilder::try_new`][crate::scalar::ScalarFunctionBuilder::try_new]
+//! — so enforcing it here would make a legitimate function name
+//! *unregisterable*.
 
 use crate::error::ExtensionError;
 
@@ -23,13 +35,15 @@ const MAX_FUNCTION_NAME_LEN: usize = 256;
 ///
 /// - Must not be empty
 /// - Must not exceed 256 characters
-/// - Must start with a lowercase ASCII letter or underscore
-/// - Must contain only lowercase ASCII letters, digits, or underscores
+/// - Must start with an ASCII letter or underscore
+/// - Must contain only ASCII letters, digits, or underscores
 /// - Must not contain interior null bytes
 ///
-/// These rules are intentionally conservative. `DuckDB` may accept a wider range
-/// of names, but restricting to this set avoids catalog issues and makes function
-/// names unambiguous in SQL queries.
+/// Every one of these is something that would actually break: a name needing
+/// quotes in SQL, a name starting with a digit that the parser reads as a
+/// number, or a name a C string truncates. Casing is **not** checked — see the
+/// [module docs][crate::validate::function_name] for why enforcing `snake_case`
+/// here would make a name `DuckDB` accepts unregisterable.
 ///
 /// # Errors
 ///
@@ -43,10 +57,13 @@ const MAX_FUNCTION_NAME_LEN: usize = 256;
 /// assert!(validate_function_name("word_count").is_ok());
 /// assert!(validate_function_name("my_func_v2").is_ok());
 /// assert!(validate_function_name("_internal").is_ok());
+/// // DuckDB ships `formatReadableSize`; mixed case is legal.
+/// assert!(validate_function_name("formatReadableSize").is_ok());
+///
 /// assert!(validate_function_name("").is_err());        // empty
-/// assert!(validate_function_name("MyFunc").is_err());   // uppercase
-/// assert!(validate_function_name("my-func").is_err());  // hyphen
-/// assert!(validate_function_name("1func").is_err());    // starts with digit
+/// assert!(validate_function_name("my-func").is_err());  // needs quoting in SQL
+/// assert!(validate_function_name("1func").is_err());    // parsed as a number
+/// assert!(validate_function_name("my func").is_err());  // needs quoting in SQL
 /// ```
 pub fn validate_function_name(name: &str) -> Result<(), ExtensionError> {
     if name.is_empty() {
@@ -68,18 +85,19 @@ pub fn validate_function_name(name: &str) -> Result<(), ExtensionError> {
     }
 
     let first = name.as_bytes()[0];
-    if !first.is_ascii_lowercase() && first != b'_' {
+    if !first.is_ascii_alphabetic() && first != b'_' {
         return Err(ExtensionError::new(format!(
-            "function name must start with a lowercase letter or underscore, got '{}'",
+            "function name must start with a letter or underscore, got '{}'",
             name.chars().next().unwrap_or('?')
         )));
     }
 
     for (i, ch) in name.chars().enumerate() {
-        if !matches!(ch, 'a'..='z' | '0'..='9' | '_') {
+        if !ch.is_ascii_alphanumeric() && ch != '_' {
             return Err(ExtensionError::new(format!(
                 "function name contains invalid character '{ch}' at position {i}; \
-                 only lowercase letters, digits, and underscores are allowed"
+                 only letters, digits, and underscores are allowed (a name needing \
+                 quotes in SQL is not worth the trouble it causes callers)"
             )));
         }
     }
@@ -112,21 +130,34 @@ mod tests {
     }
 
     #[test]
+    fn mixed_case_is_accepted_because_duckdb_accepts_it() {
+        // DuckDB ships these two, and registering a camelCase name through the
+        // C API succeeds — verified against DuckDB 1.5.5 in
+        // tests/ffi_roundtrip.rs. Since this validator gates
+        // `ScalarFunctionBuilder::try_new`, rejecting them made a name DuckDB
+        // accepts impossible to register at all.
+        assert!(validate_function_name("formatReadableSize").is_ok());
+        assert!(validate_function_name("formatReadableDecimalSize").is_ok());
+        assert!(validate_function_name("MyFunc").is_ok());
+        assert!(validate_function_name("_Internal2").is_ok());
+    }
+
+    #[test]
+    fn names_needing_quotes_are_still_rejected() {
+        for name in [
+            "my-func", "my func", "my.func", "my\"func", "my'func", "1func", "+",
+        ] {
+            assert!(
+                validate_function_name(name).is_err(),
+                "{name} should be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn empty_rejected() {
         let err = validate_function_name("").unwrap_err();
         assert!(err.as_str().contains("empty"));
-    }
-
-    #[test]
-    fn uppercase_rejected() {
-        let err = validate_function_name("MyFunc").unwrap_err();
-        assert!(err.as_str().contains("lowercase letter or underscore"));
-    }
-
-    #[test]
-    fn uppercase_mid_rejected() {
-        let err = validate_function_name("myFunc").unwrap_err();
-        assert!(err.as_str().contains("invalid character"));
     }
 
     #[test]
@@ -138,7 +169,7 @@ mod tests {
     #[test]
     fn starts_with_digit_rejected() {
         let err = validate_function_name("1func").unwrap_err();
-        assert!(err.as_str().contains("lowercase letter or underscore"));
+        assert!(err.as_str().contains("letter or underscore"));
     }
 
     #[test]

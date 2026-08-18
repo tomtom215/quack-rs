@@ -505,7 +505,10 @@ mod tests {
     #[test]
     fn try_new_invalid_name() {
         assert!(TableFunctionBuilder::try_new("").is_err());
-        assert!(TableFunctionBuilder::try_new("MyFunc").is_err());
+        assert!(TableFunctionBuilder::try_new("my-func").is_err());
+        assert!(TableFunctionBuilder::try_new("1func").is_err());
+        // Mixed case is legal: DuckDB ships `formatReadableSize`.
+        assert!(TableFunctionBuilder::try_new("MyFunc").is_ok());
     }
 
     #[test]

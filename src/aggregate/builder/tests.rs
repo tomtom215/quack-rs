@@ -115,8 +115,12 @@ fn try_new_empty_rejected() {
 }
 
 #[test]
-fn try_new_uppercase_rejected() {
-    assert!(AggregateFunctionBuilder::try_new("MyFunc").is_err());
+fn try_new_accepts_mixed_case_and_rejects_names_needing_quotes() {
+    // DuckDB ships mixed-case functions and accepts registering one, so
+    // rejecting them here made a legal name unregisterable.
+    assert!(AggregateFunctionBuilder::try_new("MyFunc").is_ok());
+    assert!(AggregateFunctionBuilder::try_new("my-func").is_err());
+    assert!(AggregateFunctionBuilder::try_new("1func").is_err());
 }
 
 #[test]

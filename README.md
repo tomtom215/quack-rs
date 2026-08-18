@@ -461,7 +461,7 @@ validate_rust_extension(&desc)?;
 | Field | Rule |
 |-------|------|
 | `extension.name` | `^[a-z][a-z0-9_-]*$`, max 64 chars |
-| `extension.version` | Semver or 7–40 char lowercase hex git hash |
+| `extension.version` | Any of `[A-Za-z0-9._+-]`, up to 64 chars — DuckDB specifies no format, and 11 of 43 published extensions use a date-based build id |
 | `extension.license` | Recognized SPDX identifier |
 | `extension.excluded_platforms` | Semicolon-separated list of known DuckDB platforms |
 | `extension.maintainers` | At least one maintainer required |
@@ -514,7 +514,8 @@ assert!(validate_extension_name("MyExt").is_err());       // uppercase rejected
 assert!(validate_extension_name("my ext").is_err());      // spaces rejected
 assert!(validate_extension_name("").is_err());             // empty rejected
 
-// Function/SQL identifier names: lowercase alphanumeric and underscores only
+// Function/SQL identifier names: letters, digits and underscores (mixed case is
+// fine — DuckDB itself ships `formatReadableSize`)
 assert!(validate_function_name("word_count").is_ok());
 assert!(validate_function_name("word-count").is_err());    // hyphens not allowed in SQL
 assert!(validate_function_name("WordCount").is_err());     // uppercase rejected

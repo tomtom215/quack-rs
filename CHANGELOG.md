@@ -82,6 +82,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
 
+### Fixed (a validator made legal function names unregisterable)
+
+- **`validate_function_name` rejected mixed-case names, and it gates
+  `try_new`** — so `ScalarFunctionBuilder::try_new("myFunc")` returned `Err` and
+  the function could not be registered through quack-rs at all. `DuckDB` itself
+  ships `formatReadableSize` and `formatReadableDecimalSize`, and registering a
+  camelCase name through the C API succeeds: verified against `DuckDB` 1.5.5,
+  where the function is then callable as `formatReadableThing`,
+  `formatreadablething` **and** `FORMATREADABLETHING`, because `DuckDB`
+  identifiers are case-insensitive.
+
+  The rule was justified as avoiding "catalog issues"; that test disproves it.
+  Letters of either case are now accepted. Everything that would genuinely break
+  is still rejected — a name needing quotes in SQL (`my-func`, `my func`,
+  `my.func`), one starting with a digit, one over 256 characters, one with an
+  interior NUL. `snake_case` remains the right convention and is documented as
+  one, rather than enforced as a rule that blocks a legal name.
+
+  The same relaxation applies to `AggregateFunctionBuilder`,
+  `TableFunctionBuilder` and `SqlMacro` parameter names, which share the
+  validator.
+
+  A regression test now runs `validate_function_name` over **every** function in
+  `duckdb_functions()` (746 of them) and `validate_extension_name` over every
+  entry in `duckdb_extensions()`, asserting that everything identifier-shaped is
+  accepted and every operator is not. That is how the defect was found.
+
 ### Fixed (the scaffold generated a `description.yml` that would be rejected)
 
 - **`repo.ref` was generated as `main`.** `DuckDB`'s community-extension

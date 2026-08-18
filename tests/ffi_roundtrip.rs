@@ -1996,3 +1996,101 @@ fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
         .expect("the http secret");
     assert!(http.scope.is_empty(), "unexpected scope: {:?}", http.scope);
 }
+
+// ---------------------------------------------------------------------------
+// Name validation, checked against what DuckDB actually accepts
+// ---------------------------------------------------------------------------
+
+/// `validate_function_name` gates `try_new`, so anything it rejects is a
+/// function nobody can register through quack-rs. It must therefore reject only
+/// names `DuckDB` genuinely cannot take.
+#[test]
+fn the_name_validator_accepts_every_name_duckdb_does() {
+    use quack_rs::validate::{validate_extension_name, validate_function_name};
+
+    let fx = Fixture::open();
+
+    // Every extension name this DuckDB knows.
+    let mut result = fx.query("SELECT DISTINCT extension_name FROM duckdb_extensions()");
+    let mut extensions = 0;
+    while let Some(chunk) = result.next_chunk() {
+        for row in 0..chunk.size() {
+            // SAFETY: VARCHAR column.
+            let name = unsafe { chunk.reader(0).read_str(row) }.to_owned();
+            extensions += 1;
+            assert!(
+                validate_extension_name(&name).is_ok(),
+                "DuckDB ships extension {name:?} but quack-rs rejects the name"
+            );
+        }
+    }
+    assert!(
+        extensions > 10,
+        "expected a real extension list, got {extensions}"
+    );
+
+    // Every function DuckDB ships, minus the operators — nobody registers `+`
+    // or `||` through a builder, and rejecting them is the point.
+    let mut result = fx.query("SELECT DISTINCT function_name FROM duckdb_functions()");
+    let (mut checked, mut operators) = (0, 0);
+    while let Some(chunk) = result.next_chunk() {
+        for row in 0..chunk.size() {
+            // SAFETY: VARCHAR column.
+            let name = unsafe { chunk.reader(0).read_str(row) }.to_owned();
+            let identifier_like = name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !identifier_like {
+                operators += 1;
+                assert!(
+                    validate_function_name(&name).is_err(),
+                    "{name:?} needs quoting in SQL and should be rejected"
+                );
+                continue;
+            }
+            checked += 1;
+            assert!(
+                validate_function_name(&name).is_ok(),
+                "DuckDB ships function {name:?} but quack-rs rejects the name"
+            );
+        }
+    }
+    assert!(
+        checked > 500,
+        "expected DuckDB's full function list, got {checked}"
+    );
+    assert!(operators > 10, "expected operator names in the list");
+}
+
+/// The specific case that exposed it: `DuckDB` ships `formatReadableSize`, so a
+/// camelCase name must register and be callable — under any casing, because
+/// `DuckDB` identifiers are case-insensitive.
+#[test]
+fn a_mixed_case_function_registers_and_is_callable() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("formatReadableThing")
+            .expect("DuckDB ships mixed-case functions; quack-rs must allow them")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .function(echo_i64)
+            .register(fx.con())
+            .expect("register");
+    }
+
+    for sql in [
+        "SELECT formatReadableThing(7)",
+        "SELECT formatreadablething(7)",
+        "SELECT FORMATREADABLETHING(7)",
+    ] {
+        assert_eq!(
+            fx.scalar(sql, |r, i| unsafe { r.read_i64(i) }),
+            Some(7),
+            "{sql}"
+        );
+    }
+}
