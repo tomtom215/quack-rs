@@ -828,3 +828,340 @@ fn a_panicking_callback_becomes_a_sql_error() {
         Some(7)
     );
 }
+
+// ─── Table functions ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_typed_table_function_streams_rows() {
+    use quack_rs::table::TableFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    struct State {
+        remaining: i64,
+    }
+
+    let builder = TableFunctionBuilder::new("count_down")
+        .param(TypeId::BigInt)
+        .with_state::<State, _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            // SAFETY: parameter 0 was declared above.
+            let n = unsafe { bind.get_parameter_value(0) }.as_i64_or(0);
+            Ok(State { remaining: n })
+        })
+        .scan(|state, chunk| {
+            // Emit one row per call so the scan loop runs many times.
+            if state.remaining <= 0 {
+                unsafe { chunk.set_size(0) };
+                return Ok(());
+            }
+            let mut writer = unsafe { chunk.writer(0) };
+            unsafe { writer.write_i64(0, state.remaining) };
+            state.remaining -= 1;
+            unsafe { chunk.set_size(1) };
+            Ok(())
+        })
+        .build()
+        .expect("build typed table function");
+
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register count_down");
+
+    assert_eq!(
+        fx.scalar("SELECT sum(n) FROM count_down(100)", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(5050)
+    );
+    assert_eq!(
+        fx.scalar("SELECT count(*) FROM count_down(0)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(0),
+        "an empty scan must terminate rather than loop"
+    );
+}
+
+#[test]
+fn a_panicking_table_function_reports_the_panic_message() {
+    use quack_rs::table::TableFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    let builder = TableFunctionBuilder::new("boom_scan")
+        .param(TypeId::BigInt)
+        .with_state::<(), _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            Ok(())
+        })
+        .scan(|(), _chunk| {
+            panic!("scan closure exploded");
+        })
+        .build()
+        .expect("build");
+
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register boom_scan");
+
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT * FROM boom_scan(1)") }
+        .expect_err("the panic must surface as an error");
+    // The payload text must survive: "closure panicked" alone does not tell the
+    // user which assertion failed.
+    assert!(
+        err.as_str().contains("scan closure exploded"),
+        "panic payload should reach the user: {err}"
+    );
+}
+
+#[test]
+fn a_table_function_bind_error_is_reported() {
+    use quack_rs::error::ExtensionError;
+    use quack_rs::table::TableFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    let builder = TableFunctionBuilder::new("bind_fails")
+        .param(TypeId::BigInt)
+        .with_state::<(), _>(|_bind| Err(ExtensionError::new("n must be positive")))
+        .scan(|(), chunk| {
+            unsafe { chunk.set_size(0) };
+            Ok(())
+        })
+        .build()
+        .expect("build");
+
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register bind_fails");
+
+    // SAFETY: `con` is open.
+    let err =
+        unsafe { query(fx.con(), "SELECT * FROM bind_fails(-1)") }.expect_err("bind must fail");
+    assert!(err.as_str().contains("n must be positive"), "{err}");
+}
+
+// ─── Aggregate functions ─────────────────────────────────────────────────────
+
+#[test]
+fn an_aggregate_function_computes_across_chunks() {
+    use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
+    use quack_rs::aggregate::{AggregateFunctionBuilder, AggregateState, FfiState};
+
+    let fx = Fixture::open();
+
+    #[derive(Default)]
+    struct SumState {
+        total: i64,
+        seen: u64,
+    }
+    impl AggregateState for SumState {}
+
+    unsafe extern "C" fn update(
+        _info: duckdb_function_info,
+        input: libduckdb_sys::duckdb_data_chunk,
+        states: *mut duckdb_aggregate_state,
+    ) {
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        let reader = unsafe { chunk.reader(0) };
+        for row in 0..chunk.size() {
+            let Some(state) = (unsafe { FfiState::<SumState>::with_state_mut(*states.add(row)) })
+            else {
+                continue;
+            };
+            if unsafe { reader.is_valid(row) } {
+                state.total += unsafe { reader.read_i64(row) };
+                state.seen += 1;
+            }
+        }
+    }
+
+    unsafe extern "C" fn combine(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        target: *mut duckdb_aggregate_state,
+        count: idx_t,
+    ) {
+        for i in 0..count as usize {
+            let src_total_and_seen = unsafe { FfiState::<SumState>::with_state(*source.add(i)) }
+                .map(|s| (s.total, s.seen));
+            let Some((total, seen)) = src_total_and_seen else {
+                continue;
+            };
+            if let Some(tgt) = unsafe { FfiState::<SumState>::with_state_mut(*target.add(i)) } {
+                // Pitfall L1: every field must be propagated, not just the sum.
+                tgt.total += total;
+                tgt.seen += seen;
+            }
+        }
+    }
+
+    unsafe extern "C" fn finalize(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        result: libduckdb_sys::duckdb_vector,
+        count: idx_t,
+        offset: idx_t,
+    ) {
+        let mut writer = unsafe { VectorWriter::from_vector(result) };
+        for i in 0..count as usize {
+            let row = offset as usize + i;
+            match unsafe { FfiState::<SumState>::with_state(*source.add(i)) } {
+                Some(state) if state.seen > 0 => unsafe { writer.write_i64(row, state.total) },
+                _ => unsafe { writer.set_null(row) },
+            }
+        }
+    }
+
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        AggregateFunctionBuilder::new("my_sum")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(FfiState::<SumState>::size_callback)
+            .init(FfiState::<SumState>::init_callback)
+            .update(update)
+            .combine(combine)
+            .finalize(finalize)
+            .destructor(FfiState::<SumState>::destroy_callback)
+            .register(fx.con())
+            .expect("register my_sum");
+    }
+
+    // More rows than one vector holds, so DuckDB uses several chunks — and,
+    // with enough data, several threads and therefore `combine`.
+    let rows = quack_rs::vector::vector_size() * 8;
+    let expected: i64 = (0..rows as i64).sum();
+    assert_eq!(
+        fx.scalar(
+            &format!("SELECT my_sum(i) FROM range({rows}) t(i)"),
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(expected)
+    );
+
+    // An empty group must produce NULL, not 0.
+    assert_eq!(
+        fx.scalar(
+            "SELECT my_sum(i) FROM (SELECT NULL::BIGINT AS i) t",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        None
+    );
+
+    // GROUP BY exercises many independent states.
+    let mut result = fx.query(
+        "SELECT g, my_sum(i) FROM (SELECT i % 4 AS g, i FROM range(1000) t(i)) GROUP BY g ORDER BY g",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    assert_eq!(chunk.size(), 4);
+    for row in 0..4usize {
+        // SAFETY: both columns are BIGINT and `row` is in bounds.
+        let (g, sum) = unsafe { (chunk.reader(0).read_i64(row), chunk.reader(1).read_i64(row)) };
+        let want: i64 = (0..1000i64).filter(|i| i % 4 == g).sum();
+        assert_eq!(sum, want, "group {g}");
+    }
+}
+
+// ─── Panic guards for the remaining callback kinds ───────────────────────────
+
+/// An aggregate whose `update` panics, wired through `aggregate_update_callback!`.
+mod panicking_aggregate {
+    use super::{DataChunk, VectorWriter};
+    use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
+    use quack_rs::aggregate::{AggregateState, FfiState};
+
+    #[derive(Default)]
+    pub struct Empty;
+    impl AggregateState for Empty {}
+
+    quack_rs::aggregate_update_callback!(update, |_info, input, _states| {
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        assert!(chunk.size() == usize::MAX, "update deliberately exploded");
+    });
+
+    quack_rs::aggregate_combine_callback!(combine, |_info, _source, _target, _count| {});
+
+    quack_rs::aggregate_finalize_callback!(finalize, |_info, _source, result, count, offset| {
+        let mut writer = unsafe { VectorWriter::from_vector(result) };
+        for i in 0..count as usize {
+            unsafe { writer.set_null(offset as usize + i) };
+        }
+    });
+
+    pub fn state_size() -> unsafe extern "C" fn(duckdb_function_info) -> idx_t {
+        FfiState::<Empty>::size_callback
+    }
+
+    pub fn state_init() -> unsafe extern "C" fn(duckdb_function_info, duckdb_aggregate_state) {
+        FfiState::<Empty>::init_callback
+    }
+
+    pub fn destroy() -> unsafe extern "C" fn(*mut duckdb_aggregate_state, idx_t) {
+        FfiState::<Empty>::destroy_callback
+    }
+}
+
+#[test]
+fn a_panicking_aggregate_update_becomes_a_sql_error() {
+    use quack_rs::aggregate::AggregateFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        AggregateFunctionBuilder::new("boom_agg")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(panicking_aggregate::state_size())
+            .init(panicking_aggregate::state_init())
+            .update(panicking_aggregate::update)
+            .combine(panicking_aggregate::combine)
+            .finalize(panicking_aggregate::finalize)
+            .destructor(panicking_aggregate::destroy())
+            .register(fx.con())
+            .expect("register boom_agg");
+    }
+
+    // Without `aggregate_update_callback!` this panic would unwind out of a
+    // DuckDB worker thread and abort the process.
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT boom_agg(i) FROM range(10) t(i)") }
+        .expect_err("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("deliberately exploded"),
+        "panic payload should reach the user: {err}"
+    );
+
+    // The connection survives.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+quack_rs::cast_callback!(panicking_cast, |_info, _count, _input, _output| {
+    panic!("cast deliberately exploded");
+});
+
+#[test]
+fn a_panicking_cast_becomes_a_sql_error() {
+    use quack_rs::cast::CastFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)
+            .function(panicking_cast)
+            .register(fx.con())
+            .expect("register cast");
+    }
+
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT CAST('7' AS INTEGER)") }
+        .expect_err("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("cast deliberately exploded"),
+        "panic payload should reach the user: {err}"
+    );
+}

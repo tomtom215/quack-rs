@@ -405,7 +405,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 |----|------|---------|-------------------|
 | **L1** | COMBINE config propagation | Aggregate returns wrong results under parallelism | Testable with `AggregateTestHarness` |
 | **L2** | Double-free in destroy | Heap corruption / SIGABRT | `FfiState<T>::destroy_callback` nulls pointer after free |
-| **L3** | Panic across FFI | Process abort / UB | `init_extension` propagates `Result` and runs the registration closure under `catch_unwind`; `scalar_callback!` / `table_scan_callback!` do the same for callbacks. Requires `panic = "unwind"`, which the scaffold generates |
+| **L3** | Panic across FFI | Process abort / UB | `init_extension` propagates `Result` and runs the registration closure under `catch_unwind`; a wrapper macro does the same for every callback kind — scalar, table bind/init/scan, aggregate update/combine/finalize/destroy, cast and replacement scan — routing the panic message to that kind's `set_error`. Requires `panic = "unwind"`, which the scaffold generates |
 | **L4** | Missing `ensure_validity_writable` | Segfault / silent NULL corruption | `VectorWriter::set_null` calls it automatically |
 | **L5** | Boolean undefined behavior | Non-deterministic bool semantics | `VectorReader::read_bool` reads `u8 != 0` |
 | **L6** | Function set name on each member | Silent registration failure | `AggregateFunctionSetBuilder` and `ScalarFunctionSetBuilder` set name on every member |

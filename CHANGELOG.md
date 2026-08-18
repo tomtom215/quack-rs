@@ -142,6 +142,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than grepping the log for the word "error"; loading a bare `.so`
   bypassed `DuckDB`'s metadata validation entirely.
 
+### Added (panic safety)
+
+- **A panic-safe wrapper macro for every callback kind.** Only `scalar_callback!`
+  and `table_scan_callback!` existed, so the other six kinds — table bind, table
+  init, aggregate update/combine/finalize/destroy, cast, and replacement scan —
+  were unguarded, and a panic in any of them aborted the `DuckDB` process. The
+  aggregate ones are the worst case: they run on worker threads, so the abort
+  comes from a thread the user never sees. New macros: `table_bind_callback!`,
+  `table_init_callback!`, `aggregate_update_callback!`,
+  `aggregate_combine_callback!`, `aggregate_finalize_callback!`,
+  `aggregate_destroy_callback!`, `cast_callback!`, `replacement_scan_callback!`.
+  Each routes the panic message to that callback kind's own `set_error`;
+  `cast_callback!` also returns `false` so `TRY_CAST` yields NULL. The aggregate
+  destructor has no error channel in the C API, so its panic is caught and
+  dropped — leaking beats aborting during query teardown. Verified end-to-end:
+  a panicking aggregate `update` and a panicking cast both surface as SQL errors
+  and leave the connection usable.
+
+- The two existing macros now share `callback::panic_message` and
+  `callback::message_to_c_string` with the new ones. The latter replaces an
+  interior NUL rather than dropping the diagnostic, which the old
+  `if let Ok(c_msg) = CString::new(msg)` silently did.
+
+- `TypedTableFunctionBuilder` reported every panic as the same fixed string.
+  It now includes the payload, so the user learns *which* assertion failed.
+
+- **Deprecated `FfiBindData::get_from_bind`**, which always returned `None` and
+  always will: `DuckDB` exposes no `duckdb_bind_get_bind_data`. Being safe and
+  returning `Option`, it silently sent `if let Some(..)` down the wrong branch.
+
 ### Added (capabilities)
 
 - **`query` module — running SQL from inside an extension.** The C API has

@@ -45,7 +45,7 @@
 //! | Module | Purpose |
 //! |--------|---------|
 //! | [`abi`] | `DuckDB` C extension API layout verification (stable vs unstable region) |
-//! | [`callback`] | Safe `extern "C"` callback wrapper macros (`scalar_callback!`, `table_scan_callback!`) |
+//! | [`callback`] | Panic-safe `extern "C"` callback wrapper macros for every callback kind |
 //! | [`chunk_writer`] | Auto-sizing chunk writer for table scan callbacks (auto `set_size` on drop) |
 //! | [`data_chunk`] | Ergonomic wrapper for `DuckDB` data chunks |
 //! | [`entry_point`](mod@entry_point) | Helper for the correct `{name}_init_c_api` C entry point |
