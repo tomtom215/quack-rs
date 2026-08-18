@@ -799,7 +799,10 @@ mod live_tests {
             chunks += 1;
             for row in 0..chunk.size() {
                 // SAFETY: `range()` yields BIGINT, and `row` is in bounds.
-                assert_eq!(unsafe { chunk.reader(0).read_i64(row) }, seen as i64);
+                assert_eq!(
+                    unsafe { chunk.reader(0).read_i64(row) },
+                    i64::try_from(seen).expect("row counter fits in i64")
+                );
                 seen += 1;
             }
         }

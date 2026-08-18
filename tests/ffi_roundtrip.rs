@@ -1,6 +1,24 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Tom F. <https://github.com/tomtom215/>
 
+// These tests are deliberately exhaustive: each one walks every width, every
+// boundary value, or every callback kind, which makes them long and full of
+// deliberate casts at type edges. `src/` is held to the full pedantic bar (CI
+// lints it with `-D warnings`); this file opts out of the style lints that
+// fight that shape, and nothing else.
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::items_after_statements,
+    clippy::redundant_closure_for_method_calls,
+    clippy::format_collect,
+    clippy::manual_assert,
+    clippy::err_expect,
+    clippy::case_sensitive_file_extension_comparisons
+)]
+
 //! End-to-end FFI round-trips against a real `DuckDB`.
 //!
 //! Every test here registers a genuine `DuckDB` function built with quack-rs,
@@ -69,13 +87,13 @@ impl Fixture {
         }
     }
 
-    fn con(&self) -> duckdb_connection {
+    const fn con(&self) -> duckdb_connection {
         self.con
     }
 
     /// The database handle — replacement scans register against this, not a
     /// connection.
-    fn db(&self) -> libduckdb_sys::duckdb_database {
+    const fn db(&self) -> libduckdb_sys::duckdb_database {
         self.db
     }
 
@@ -2759,10 +2777,10 @@ fn the_instance_cache_shares_one_database() {
     let c_path = std::ffi::CString::new(path.to_str().expect("utf-8")).expect("no interior NUL");
 
     let cache = InstanceCache::new();
-    // SAFETY: the cache is valid and the path is a NUL-terminated string.
-    let first = unsafe { cache.get_or_create(&c_path, None) }.expect("open");
-    // SAFETY: as above.
-    let second = unsafe { cache.get_or_create(&c_path, None) }.expect("reopen");
+    // `get_or_create` is safe — it takes a `&CStr` and an `Option<&DbConfig>`,
+    // so there is no raw pointer for the caller to get wrong.
+    let first = cache.get_or_create(&c_path, None).expect("open");
+    let second = cache.get_or_create(&c_path, None).expect("reopen");
 
     // Written through one handle, visible through the other — that is what
     // "same instance" means, and comparing raw pointers would not prove it.

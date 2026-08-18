@@ -41,7 +41,7 @@
 //!
 //! # Enabling this feature
 //!
-//! Compile DuckDB from source (zero-config, ~5-10 min cold):
+//! Compile `DuckDB` from source (zero-config, ~5-10 min cold):
 //!
 //! ```toml
 //! # In your extension's Cargo.toml:

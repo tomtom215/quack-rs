@@ -23,6 +23,12 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# CI sets these globally, which promotes every warning to an error. Without
+# them a plain `cargo check` here passes on code CI rejects -- an unnecessary
+# `unsafe` block in a test is a warning locally and a build failure there.
+export RUSTFLAGS="${RUSTFLAGS:--D warnings}"
+export RUSTDOCFLAGS="${RUSTDOCFLAGS:--D warnings}"
+
 run_tests=0
 [[ "${1:-}" == "--tests" ]] && run_tests=1
 
@@ -43,6 +49,10 @@ run 'cargo fmt --all -- --check'
 run 'cargo clippy --all-targets -- -D warnings'
 run 'cargo clippy --all-targets --features duckdb-1-5 -- -D warnings'
 run 'cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings'
+# `bundled-test` compiles the live-DuckDB tests and the `testing` module,
+# which no other combination lints.
+run 'cargo clippy --all-targets --features bundled-test -- -D warnings'
+run 'cargo clippy --all-targets --features bundled-test,duckdb-1-5-3 -- -D warnings'
 
 echo '── compile checks, every feature combination CI builds ──────────────────'
 run 'cargo check --all-targets'
@@ -50,6 +60,9 @@ run 'cargo check --all-targets --features duckdb-1-5'
 run 'cargo check --all-targets --features duckdb-1-5-3'
 run 'cargo check --all-targets --features bundled-test'
 run 'cargo check --all-targets --features bundled-test,duckdb-1-5-3'
+# `bundled-test-prebuilt` needs a libduckdb on the system, so only its
+# compile surface is checkable here; it shares quack-rs's sources with
+# `bundled-test`, so the check above covers the same code.
 
 echo '── 32-bit target (const-eval and pointer-width differences) ─────────────'
 if rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-emscripten; then
@@ -61,7 +74,7 @@ else
 fi
 
 echo '── docs ─────────────────────────────────────────────────────────────────'
-run 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features duckdb-1-5-3'
+run 'cargo doc --no-deps --features duckdb-1-5-3'
 
 if (( run_tests )); then
     echo '── test suites ──────────────────────────────────────────────────────────'
