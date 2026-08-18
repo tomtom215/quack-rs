@@ -63,7 +63,7 @@ let d: i32 = unsafe { reader.read_date(row) };      // days since epoch
 let ts: i64 = unsafe { reader.read_timestamp(row) }; // microseconds since epoch
 let t: i64 = unsafe { reader.read_time(row) };       // microseconds since midnight
 let blob: &[u8] = unsafe { reader.read_blob(row) };  // binary data
-let uuid: i128 = unsafe { reader.read_uuid(row) };   // UUID as i128
+let uuid: u128 = unsafe { reader.read_uuid(row) };   // UUID's textual 128 bits
 ```
 
 ---
@@ -103,8 +103,27 @@ unsafe { writer.write_date(row, days_since_epoch) };
 unsafe { writer.write_timestamp(row, micros_since_epoch) };
 unsafe { writer.write_time(row, micros_since_midnight) };
 unsafe { writer.write_blob(row, &bytes) };
-unsafe { writer.write_uuid(row, uuid_i128) };
+unsafe { writer.write_uuid(row, uuid_bits) };        // UUID's textual 128 bits
 ```
+
+### `UUID` is not stored as you'd expect
+
+A `UUID` column is physically a `HUGEINT`, but the 128 bits in the vector are
+**not** the bits you see in the text form: `DuckDB` flips the top bit so that
+comparing the signed integers orders UUIDs the same way comparing their strings
+does.
+
+```text
+SELECT '11111111-2222-3333-4444-555555555555'::UUID
+  read_i128 (raw storage) : 0x91111111222233334444555555555555
+  read_uuid (textual bits): 0x11111111222233334444555555555555
+```
+
+`read_uuid` / `write_uuid` apply the flip for you and speak in **textual bits**
+(`u128`) — the same convention as `Value::uuid` / `Value::as_uuid` and every
+Rust `Uuid` type. Reach for `read_i128` / `write_i128` only when you want the raw
+storage, and use `quack_rs::vector::{uuid_from_storage, uuid_to_storage}` to
+convert.
 
 ### Writing NULL
 

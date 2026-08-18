@@ -341,6 +341,6 @@ SELECT value * value AS sq FROM generate_series_ext(4);
 
 ## See also
 
-- [`table`](../../src/table/mod.rs) module documentation
+- [`table`](https://docs.rs/quack-rs/latest/quack_rs/table/index.html) module documentation
 - [`replacement_scan`](replacement-scan.md) — for file-path-triggered table scans
-- [`hello-ext` README](../../examples/hello-ext/README.md)
+- [`hello-ext` README](https://github.com/tomtom215/quack-rs/blob/main/examples/hello-ext/README.md)

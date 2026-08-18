@@ -6,3 +6,4 @@ mutants.out.old/
 .DS_Store
 *.swp
 *.swo
+__pycache__/

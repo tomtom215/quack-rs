@@ -3,11 +3,22 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! Table description metadata (`DuckDB` 1.5.0+).
+//! Table description metadata.
 //!
-//! Allows querying table structure (column count, names, and types) at runtime
-//! from within an extension. Useful for replacement scans, table functions,
-//! and copy functions that need to inspect existing tables.
+//! Allows querying a table's structure — column names, whether a column has a
+//! `DEFAULT`, and (with `duckdb-1-5`) the column count and types — at runtime
+//! from within an extension. Useful for replacement scans, table functions, and
+//! copy functions that need to inspect existing tables before deciding what to
+//! do.
+//!
+//! # Feature flags
+//!
+//! Creating and naming columns needs no feature flag: `duckdb_table_description_*`
+//! has been in the frozen stable prefix of the extension API (slots 292–297)
+//! since v1.2.0. Two accessors are `DuckDB` 1.5.0 additions living in the
+//! unstable region and are gated on `duckdb-1-5`:
+//! [`column_count`][TableDescription::column_count] and
+//! [`column_type`][TableDescription::column_type].
 //!
 //! # Example
 //!
@@ -16,19 +27,24 @@
 //!
 //! // From within a function callback with a valid connection:
 //! // let desc = unsafe { TableDescription::create(con, "main", "my_table")? };
-//! // let col_count = desc.column_count();
+//! // let first = desc.column_name(0);
 //! ```
 
 use std::ffi::{CStr, CString};
 
 use libduckdb_sys::{
-    duckdb_connection, duckdb_table_description, duckdb_table_description_create,
+    duckdb_column_has_default, duckdb_connection, duckdb_table_description,
+    duckdb_table_description_create, duckdb_table_description_create_ext,
     duckdb_table_description_destroy, duckdb_table_description_error,
-    duckdb_table_description_get_column_count, duckdb_table_description_get_column_name,
-    duckdb_table_description_get_column_type, idx_t,
+    duckdb_table_description_get_column_name, idx_t, DuckDBSuccess,
+};
+#[cfg(feature = "duckdb-1-5")]
+use libduckdb_sys::{
+    duckdb_table_description_get_column_count, duckdb_table_description_get_column_type,
 };
 
 use crate::error::ExtensionError;
+#[cfg(feature = "duckdb-1-5")]
 use crate::types::LogicalType;
 
 /// RAII wrapper for a `duckdb_table_description`.
@@ -64,39 +80,102 @@ impl TableDescription {
             duckdb_table_description_create(con, c_schema.as_ptr(), c_table.as_ptr(), &raw mut desc)
         };
 
-        if rc != libduckdb_sys::DuckDBSuccess || desc.is_null() {
-            // Try to get the error message.
-            if !desc.is_null() {
-                // SAFETY: desc is non-null and was produced by
-                // duckdb_table_description_create above.
-                let err_ptr = unsafe { duckdb_table_description_error(desc) };
-                if !err_ptr.is_null() {
-                    // SAFETY: err_ptr is a valid null-terminated string owned by
-                    // the table description; it stays valid until we destroy it.
-                    let msg = unsafe { CStr::from_ptr(err_ptr) }
-                        .to_str()
-                        .unwrap_or("unknown error");
-                    let err = ExtensionError::new(format!(
-                        "failed to describe table '{schema}.{table}': {msg}"
-                    ));
-                    // SAFETY: desc is a non-null handle we own and have not yet
-                    // returned; destroying it also frees the error string.
-                    unsafe { duckdb_table_description_destroy(&raw mut desc) };
-                    return Err(err);
-                }
-                // SAFETY: desc is a non-null handle we own; destroy it before
-                // returning so it does not leak.
-                unsafe { duckdb_table_description_destroy(&raw mut desc) };
-            }
-            return Err(ExtensionError::new(format!(
-                "failed to describe table '{schema}.{table}'"
-            )));
-        }
+        // SAFETY: `desc` is whatever DuckDB wrote; the helper takes ownership
+        // from here, including destroying it on the error path.
+        unsafe { Self::from_create_result(rc, desc, schema, table) }
+    }
 
-        Ok(Self { desc })
+    /// Turns a `duckdb_table_description_create*` outcome into a `Result`.
+    ///
+    /// `duckdb.h` requires `duckdb_table_description_destroy` to be called on
+    /// the result "even if the function returns `DuckDBError`", so the failure
+    /// path must destroy the handle rather than simply dropping it — and it
+    /// must read the error message first, because destroying frees it.
+    ///
+    /// # Safety
+    ///
+    /// `desc` must be the out-parameter of a `duckdb_table_description_create*`
+    /// call that returned `rc`, and must not be used by the caller afterwards.
+    unsafe fn from_create_result(
+        rc: libduckdb_sys::duckdb_state,
+        mut desc: duckdb_table_description,
+        schema: &str,
+        table: &str,
+    ) -> Result<Self, ExtensionError> {
+        if rc == DuckDBSuccess && !desc.is_null() {
+            return Ok(Self { desc });
+        }
+        let mut message = format!("failed to describe table '{schema}.{table}'");
+        if !desc.is_null() {
+            // SAFETY: desc is non-null and was produced by a create call.
+            let err_ptr = unsafe { duckdb_table_description_error(desc) };
+            if !err_ptr.is_null() {
+                // SAFETY: err_ptr is a NUL-terminated string owned by the
+                // description; it stays valid until the destroy below.
+                let detail = unsafe { CStr::from_ptr(err_ptr) }
+                    .to_str()
+                    .unwrap_or("unknown error");
+                message.push_str(": ");
+                message.push_str(detail);
+            }
+            // SAFETY: desc is a non-null handle we own and have not returned.
+            unsafe { duckdb_table_description_destroy(&raw mut desc) };
+        }
+        Err(ExtensionError::new(message))
+    }
+
+    /// Creates a table description, fully qualified by optional `catalog` and
+    /// `schema`.
+    ///
+    /// `None` means "the default", matching `duckdb_table_description_create_ext`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError` if any name contains an interior NUL byte, or
+    /// if the table does not exist or cannot be described.
+    ///
+    /// # Safety
+    ///
+    /// `con` must be a valid, open `duckdb_connection`.
+    pub unsafe fn with_catalog(
+        con: duckdb_connection,
+        catalog: Option<&str>,
+        schema: Option<&str>,
+        table: &str,
+    ) -> Result<Self, ExtensionError> {
+        fn to_c(label: &str, value: Option<&str>) -> Result<Option<CString>, ExtensionError> {
+            value
+                .map(|v| {
+                    CString::new(v)
+                        .map_err(|_| ExtensionError::new(format!("{label} contains null byte")))
+                })
+                .transpose()
+        }
+        let c_catalog = to_c("catalog name", catalog)?;
+        let c_schema = to_c("schema name", schema)?;
+        let c_table = CString::new(table)
+            .map_err(|_| ExtensionError::new("table name contains null byte"))?;
+        let ptr = |c: &Option<CString>| c.as_ref().map_or(core::ptr::null(), |v| v.as_ptr());
+
+        let mut desc: duckdb_table_description = core::ptr::null_mut();
+        // SAFETY: con is valid per caller's contract; each pointer is either
+        // null (meaning "default") or a NUL-terminated string alive for the call.
+        let rc = unsafe {
+            duckdb_table_description_create_ext(
+                con,
+                ptr(&c_catalog),
+                ptr(&c_schema),
+                c_table.as_ptr(),
+                &raw mut desc,
+            )
+        };
+        // SAFETY: `desc` is whatever DuckDB wrote; the helper takes it from here,
+        // including destroying it on the error path as duckdb.h requires.
+        unsafe { Self::from_create_result(rc, desc, schema.unwrap_or("<default>"), table) }
     }
 
     /// Returns the number of columns in the table.
+    #[cfg(feature = "duckdb-1-5")]
     #[must_use]
     pub fn column_count(&self) -> idx_t {
         // SAFETY: self.desc is valid.
@@ -129,6 +208,7 @@ impl TableDescription {
     ///
     /// Returns `None` if the index is out of bounds. The returned [`LogicalType`]
     /// is RAII-managed and will be destroyed automatically on drop.
+    #[cfg(feature = "duckdb-1-5")]
     #[must_use]
     pub fn column_type(&self, index: idx_t) -> Option<LogicalType> {
         // SAFETY: self.desc is valid.
@@ -138,6 +218,25 @@ impl TableDescription {
         } else {
             // SAFETY: lt is a freshly created handle from duckdb_table_description_get_column_type.
             Some(unsafe { LogicalType::from_raw(lt) })
+        }
+    }
+
+    /// Returns whether the column at `index` has a `DEFAULT` value.
+    ///
+    /// Returns `None` if the index is out of bounds. This is what makes
+    /// [`Appender::append_default`][crate::appender::Appender::append_default]
+    /// safe to reach for: appending a default to a column that has none is an
+    /// error, and this is the only way to find out first.
+    #[must_use]
+    pub fn column_has_default(&self, index: idx_t) -> Option<bool> {
+        let mut out = false;
+        // SAFETY: self.desc is valid; DuckDB bounds-checks `index` and reports
+        // failure through the return state rather than writing `out`.
+        let state = unsafe { duckdb_column_has_default(self.desc, index, &raw mut out) };
+        if state == DuckDBSuccess {
+            Some(out)
+        } else {
+            None
         }
     }
 

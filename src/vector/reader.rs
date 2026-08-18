@@ -441,17 +441,24 @@ impl VectorReader {
 
     /// Reads a `UUID` value at row `idx` as an `i128`.
     ///
-    /// `DuckDB` stores UUID as a HUGEINT (128-bit integer). This is a semantic
-    /// alias for [`read_i128`][Self::read_i128].
+    /// Reads the UUID's **textual** 128 bits — the value the column renders,
+    /// and what every Rust `Uuid` type holds.
+    ///
+    /// A `UUID` column is physically a `HUGEINT`, but `DuckDB` stores it with
+    /// the top bit flipped so that signed integer ordering matches UUID string
+    /// ordering, so the raw storage of
+    /// `'11111111-2222-3333-4444-555555555555'` is `0x9111...`, not `0x1111...`.
+    /// This undoes that. Use [`read_i128`][Self::read_i128] for the raw storage,
+    /// and [`uuid_from_storage`][crate::vector::uuid_from_storage] to convert.
     ///
     /// # Safety
     ///
     /// - `idx` must be less than `self.row_count()`.
     /// - The column must contain `UUID` data.
     #[inline]
-    pub const unsafe fn read_uuid(&self, idx: usize) -> i128 {
-        // SAFETY: UUID is stored as HUGEINT (i128).
-        unsafe { self.read_i128(idx) }
+    pub const unsafe fn read_uuid(&self, idx: usize) -> u128 {
+        // SAFETY: UUID is stored as HUGEINT; undo DuckDB's top-bit flip.
+        unsafe { crate::vector::uuid::uuid_from_storage(self.read_i128(idx)) }
     }
 
     /// Reads a `DATE` value at row `idx` as days since the Unix epoch.

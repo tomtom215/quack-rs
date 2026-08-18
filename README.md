@@ -325,7 +325,8 @@ append_metadata target/release/libmy_extension.so \
 | [`scaffold`] | Project generator | `generate_scaffold`, `ScaffoldConfig` |
 | [`testing`] | Mock vectors, aggregate harness, and registrar | `AggregateTestHarness<S>`, `MockVectorWriter`, `MockVectorReader`, `MockRegistrar` |
 | [`prelude`] | Common re-exports | `use quack_rs::prelude::*` |
-| [`appender`]¹ | Bulk row appender | `Appender` |
+| [`appender`] | Bulk row appender — row at a time or a chunk at a time | `Appender`, `AppendError` |
+| [`table_description`] | Table metadata (column names, `DEFAULT`s; count and types need ¹) | `TableDescription` |
 | [`catalog`]¹ | Catalog entry lookup | `CatalogEntry`, `Catalog`, `CatalogEntryType` |
 | [`client_context`]¹ | Client context access (catalog, config, connection ID) | `ClientContext` |
 | [`config_option`]¹ | Extension-defined configuration options | `ConfigOptionBuilder`, `ConfigOptionScope` |
@@ -335,7 +336,6 @@ append_metadata target/release/libmy_extension.so \
 | [`file_system`]¹ | DuckDB virtual file system access | `FileSystem`, `FileHandle`, `FileOpenOptions`, `FileFlag` |
 | [`instance_cache`]¹ | Shared database instance cache | `InstanceCache` |
 | [`selection_vector`]¹ | Zero-copy row-index selection vectors | `SelectionVector` |
-| [`table_description`]¹ | Table metadata (column count, names, types) | `TableDescription` |
 
 > ¹ Requires the `duckdb-1-5` feature flag (DuckDB 1.5.0+).
 
@@ -628,7 +628,8 @@ flowchart TB
         CFG["**config_option**¹<br/>ConfigOptionBuilder"]
         CAT["**catalog**¹<br/>CatalogEntry · Catalog"]
         CTX["**client_context**¹<br/>ClientContext"]
-        TDS["**table_description**¹<br/>TableDescription"]
+        TDS["**table_description**<br/>TableDescription"]
+        APP["**appender**<br/>Appender"]
     end
 
     SYS["**libduckdb-sys** >=1.4.4, &lt;2<br/>DuckDB C Extension API<br/>headers only · no linked library"]:::ffi

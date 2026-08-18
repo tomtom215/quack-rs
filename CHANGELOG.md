@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > `ChunkWriter::new` and `DataChunk::into_chunk_writer` are no longer `const fn`,
 > `DuckStringView::from_bytes` is deprecated and no longer follows an embedded
 > pointer, and `init_extension` now runs the ABI check by default. Documentation
-> examples and `#[deprecated(since = ...)]` already name `0.16`.
+> examples and `#[deprecated(since = ...)]` already name `0.16`. The `UUID`
+> accessors also change both type and meaning — see **Fixed (silent data
+> corruption)** — but the signature change makes every affected call site a
+> compile error rather than a silent behaviour change.
 
 ### Changed (MSRV)
 
@@ -78,6 +81,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honours pointer format — what callbacks want) and `inline_from_bytes` (safe,
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
+
+### Fixed (silent data corruption)
+
+- **The `UUID` accessors disagreed about which 128 bits they meant, and the
+  documentation said they agreed.** A `UUID` column is physically a `HUGEINT`,
+  but `DuckDB` stores it with the **top bit flipped** so that signed integer
+  ordering matches UUID string ordering (`BaseUUID::FromUHugeint` in
+  `src/common/types/uuid.cpp` subtracts 2^63 from the upper half). So:
+
+  | Accessor | Returned | For `'11111111-…'::UUID` |
+  |----------|----------|---------------------------|
+  | `VectorReader::read_uuid` (old) | raw storage | `0x9111…` |
+  | `Value::as_uuid` | textual bits | `0x1111…` |
+
+  Both were documented as "matching" the other. Handing one to the other — the
+  obvious thing to do when a table function reads a `UUID` and builds a `Value`
+  from it — silently changed the UUID's first hex digit.
+
+  `read_uuid` / `write_uuid` (on `VectorReader`, `VectorWriter`, `StructReader`,
+  `StructWriter` and both mocks) now apply the flip and take/return `u128`
+  **textual bits**, the same convention as `Value::uuid` / `Value::as_uuid` and
+  every Rust `Uuid` type. `Value::uuid` / `as_uuid` move from `i128` to `u128`
+  for the same reason. The type change is deliberate: it turns a silent
+  behaviour change into a compile error at every affected call site.
+
+  `read_i128` / `write_i128` still read and write the raw storage, and the new
+  `vector::uuid_from_storage` / `vector::uuid_to_storage` convert between the
+  two. Pinned by a live test that asserts the raw storage and the textual bits
+  really do differ, so the conversion cannot quietly become a no-op.
 
 ### Fixed
 
@@ -260,6 +292,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching what `table` already did.
 
 - The prelude re-exports `AbiPolicy`, the `datetime` types and the `query` types.
+
+- **The appender is no longer behind `duckdb-1-5`, and gained the row-at-a-time
+  API it never had.** `duckdb_appender_*` occupies slots 281–291 and 330–356 —
+  the *frozen stable prefix*, unchanged since v1.2.0 — yet the whole module was
+  gated on `duckdb-1-5`, whose wrappers live in the unstable region. Using the
+  appender therefore forced an extension onto the version-pinned unstable ABI,
+  for functionality that has been portable for four minor releases. Only three
+  methods actually need 1.5 and stay gated: `error_data`, `clear` and
+  `append_default_to_chunk`.
+
+  The 24 row-at-a-time functions were wrapped for the first time:
+  `append_bool` / `_i8` / `_i16` / `_i32` / `_i64` / `_i128` / `_u8` / `_u16` /
+  `_u32` / `_u64` / `_u128` / `_f32` / `_f64` / `_str` / `_bytes` / `_date` /
+  `_time` / `_timestamp` / `_interval` / `_value` / `_null` / `_default`,
+  `end_row`, `column_count`, `column_type`, `add_column`, `clear_columns`, and a
+  `row(|row| …)` helper that calls `end_row` for you. Previously the only way to
+  insert a row was to build a whole `DataChunk`.
+
+  Three details that are easy to get wrong and are handled here: `append_str`
+  uses `duckdb_append_varchar_length`, so interior NUL bytes survive; that
+  function narrows its length to `uint32_t` with an unchecked cast in `DuckDB`'s
+  release builds, so longer strings are refused rather than truncated; and
+  `duckdb_append_value` dereferences its argument with no null check, so a null
+  `Value` handle is refused. Covered by live tests that append every scalar type
+  at its extremes, 5000 rows across several vectors, a short row, a constraint
+  violation surfacing at `close`, and a `DEFAULT`-filled column subset.
+
+  New `appender::AppendError` is `ErrorData` with `duckdb-1-5` and
+  `ExtensionError` without, so enabling the feature upgrades the error type in
+  place without changing any method's shape — existing `duckdb-1-5` code is
+  unaffected.
+
+- **`table_description` is no longer behind `duckdb-1-5` either.** Slots 292–297
+  are stable; only `column_count` and `column_type` are 1.5 additions and stay
+  gated. Adds `TableDescription::with_catalog` (`duckdb_table_description_create_ext`,
+  for tables in another catalog) and `column_has_default`
+  (`duckdb_column_has_default`) — the latter being the only way to know whether
+  `Appender::append_default` will succeed.
 
 - **`FileHandle` gained the looping I/O helpers, and `size`/`tell` became
   fallible.** `duckdb_file_handle_read` and `duckdb_file_handle_write` return

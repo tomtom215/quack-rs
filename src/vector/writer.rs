@@ -362,17 +362,24 @@ impl VectorWriter {
 
     /// Writes a `UUID` value at row `idx`.
     ///
-    /// `DuckDB` stores UUID as a HUGEINT (128-bit integer). This is a semantic
-    /// alias for [`write_i128`][Self::write_i128].
+    /// Writes `bits` — the UUID's **textual** 128 bits, as every Rust `Uuid`
+    /// type holds them — at row `idx`.
+    ///
+    /// A `UUID` column is physically a `HUGEINT`, but `DuckDB` stores it with
+    /// the top bit flipped so that signed integer ordering matches UUID string
+    /// ordering. This applies that flip, so the value you pass is the value the
+    /// column renders. Use [`write_i128`][Self::write_i128] to write the raw
+    /// storage instead, and [`uuid_to_storage`][crate::vector::uuid_to_storage]
+    /// to convert between the two.
     ///
     /// # Safety
     ///
     /// - `idx` must be within the vector's capacity.
     /// - The vector must have `UUID` type.
     #[inline]
-    pub const unsafe fn write_uuid(&mut self, idx: usize, value: i128) {
-        // SAFETY: UUID is stored as HUGEINT (i128).
-        unsafe { self.write_i128(idx, value) };
+    pub const unsafe fn write_uuid(&mut self, idx: usize, bits: u128) {
+        // SAFETY: UUID is stored as HUGEINT, with DuckDB's top-bit flip applied.
+        unsafe { self.write_i128(idx, crate::vector::uuid::uuid_to_storage(bits)) };
     }
 
     /// Writes a VARCHAR string value at row `idx`.

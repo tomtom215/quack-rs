@@ -75,7 +75,8 @@
 //! | [`testing`] | Test harness for aggregate state logic |
 //! | [`query`] | Running SQL from an extension (`QueryResult`, `PreparedStatement`, `OwnedConnection`) |
 //! | [`prelude`] | Convenience re-exports of the most commonly used items |
-//! | `appender` | Bulk row appender (`duckdb-1-5` feature) |
+//! | [`appender`] | Bulk row appender (`Appender`) |
+//! | [`table_description`] | Table metadata (column names, `DEFAULT`s) |
 //! | `catalog` | Catalog entry lookup (`duckdb-1-5` feature) |
 //! | `client_context` | Client context access (`duckdb-1-5` feature) |
 //! | `config_option` | Extension-defined configuration options (`duckdb-1-5` feature) |
@@ -85,7 +86,6 @@
 //! | `file_system` | `DuckDB` virtual file system access (`duckdb-1-5` feature) |
 //! | `instance_cache` | Shared database instance cache (`duckdb-1-5` feature) |
 //! | `selection_vector` | Zero-copy row-index selection vectors (`duckdb-1-5` feature) |
-//! | `table_description` | Table metadata queries (`duckdb-1-5` feature) |
 //!
 //! ## Safety
 //!
@@ -159,7 +159,6 @@ pub mod vector;
 pub mod warning;
 
 // DuckDB 1.5.0+ modules — gated behind the `duckdb-1-5` feature flag.
-#[cfg(feature = "duckdb-1-5")]
 pub mod appender;
 #[cfg(feature = "duckdb-1-5")]
 pub mod catalog;
@@ -179,7 +178,6 @@ pub mod file_system;
 pub mod instance_cache;
 #[cfg(feature = "duckdb-1-5")]
 pub mod selection_vector;
-#[cfg(feature = "duckdb-1-5")]
 pub mod table_description;
 
 /// The `DuckDB` C API version string required by [`duckdb_rs_extension_api_init`][libduckdb_sys::duckdb_rs_extension_api_init].

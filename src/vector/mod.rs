@@ -28,6 +28,7 @@ pub mod reader;
 pub mod string;
 pub mod struct_reader;
 pub mod struct_writer;
+pub mod uuid;
 pub mod validity;
 pub mod writer;
 
@@ -36,6 +37,7 @@ pub use reader::VectorReader;
 pub use string::{read_duck_blob, read_duck_string, DuckStringView};
 pub use struct_reader::StructReader;
 pub use struct_writer::StructWriter;
+pub use uuid::{uuid_from_storage, uuid_to_storage};
 pub use validity::ValidityBitmap;
 pub use writer::VectorWriter;
 

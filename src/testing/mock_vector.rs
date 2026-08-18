@@ -286,11 +286,14 @@ impl MockVectorWriter {
         self.write_i64(idx, micros_since_midnight);
     }
 
-    /// Writes a `UUID` value (as i128) at row `idx`.
+    /// Writes a `UUID`'s textual 128 bits at row `idx`.
     ///
-    /// Semantic alias for [`write_i128`][Self::write_i128].
-    pub fn write_uuid(&mut self, idx: usize, value: i128) {
-        self.write_i128(idx, value);
+    /// Applies `DuckDB`'s top-bit flip exactly as
+    /// [`VectorWriter::write_uuid`][crate::vector::VectorWriter::write_uuid]
+    /// does, so a callback tested against this mock behaves the same against a
+    /// real vector. [`write_i128`][Self::write_i128] writes the raw storage.
+    pub fn write_uuid(&mut self, idx: usize, bits: u128) {
+        self.write_i128(idx, crate::vector::uuid_to_storage(bits));
     }
 
     // ── Typed getters ───────────────────────────────────────────────────────
@@ -430,12 +433,15 @@ impl MockVectorWriter {
         }
     }
 
-    /// Returns the `UUID` value (as i128) at row `idx`, or `None` if NULL or wrong type.
+    /// Returns the `UUID`'s textual 128 bits at row `idx`, or `None` if NULL or
+    /// wrong type.
     ///
-    /// Semantic alias for [`try_get_i128`][Self::try_get_i128].
+    /// Undoes `DuckDB`'s top-bit flip exactly as
+    /// [`VectorReader::read_uuid`][crate::vector::VectorReader::read_uuid] does.
+    /// [`try_get_i128`][Self::try_get_i128] returns the raw storage.
     #[must_use]
-    pub fn try_get_uuid(&self, idx: usize) -> Option<i128> {
-        self.try_get_i128(idx)
+    pub fn try_get_uuid(&self, idx: usize) -> Option<u128> {
+        self.try_get_i128(idx).map(crate::vector::uuid_from_storage)
     }
 }
 
@@ -759,12 +765,15 @@ impl MockVectorReader {
         }
     }
 
-    /// Returns the `UUID` value (as i128) at row `idx`, or `None` if NULL or wrong type.
+    /// Returns the `UUID`'s textual 128 bits at row `idx`, or `None` if NULL or
+    /// wrong type.
     ///
-    /// Semantic alias for [`try_get_i128`][Self::try_get_i128].
+    /// Undoes `DuckDB`'s top-bit flip exactly as
+    /// [`VectorReader::read_uuid`][crate::vector::VectorReader::read_uuid] does.
+    /// [`try_get_i128`][Self::try_get_i128] returns the raw storage.
     #[must_use]
-    pub fn try_get_uuid(&self, idx: usize) -> Option<i128> {
-        self.try_get_i128(idx)
+    pub fn try_get_uuid(&self, idx: usize) -> Option<u128> {
+        self.try_get_i128(idx).map(crate::vector::uuid_from_storage)
     }
 }
 
@@ -1135,7 +1144,7 @@ mod tests {
     #[test]
     fn writer_uuid_round_trip() {
         let mut w = MockVectorWriter::new(1);
-        let uuid_val: i128 = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+        let uuid_val: u128 = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
         w.write_uuid(0, uuid_val);
         assert_eq!(w.try_get_uuid(0), Some(uuid_val));
     }
@@ -1171,8 +1180,17 @@ mod tests {
 
     #[test]
     fn reader_uuid_round_trip() {
-        let uuid_val: i128 = 0x0ead_beef_cafe_babe_1234_5678_9abc_def0;
-        let r = MockVectorReader::from_i128s([Some(uuid_val)]);
-        assert_eq!(r.try_get_uuid(0), Some(uuid_val));
+        let bits: u128 = 0x0ead_beef_cafe_babe_1234_5678_9abc_def0;
+        let storage = crate::vector::uuid_to_storage(bits);
+        let r = MockVectorReader::from_i128s([Some(storage)]);
+        // The UUID accessor undoes DuckDB's top-bit flip; the raw i128
+        // accessor does not. A mock that conflated the two would let a
+        // callback pass its tests and still write the wrong UUID.
+        assert_eq!(r.try_get_uuid(0), Some(bits));
+        assert_eq!(r.try_get_i128(0), Some(storage));
+        #[allow(clippy::cast_sign_loss)]
+        {
+            assert_ne!(storage as u128, bits);
+        }
     }
 }

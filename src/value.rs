@@ -569,22 +569,18 @@ impl Value {
         }
     }
 
-    /// Extracts a `UUID` as an `i128`, matching
-    /// [`VectorReader::read_uuid`][crate::vector::VectorReader::read_uuid].
+    /// Extracts a `UUID` as its **textual** 128 bits, matching
+    /// [`VectorReader::read_uuid`][crate::vector::VectorReader::read_uuid]
+    /// and [`uuid`][Self::uuid].
     ///
-    /// `duckdb_get_uuid` returns a `duckdb_uhugeint`, so the halves are
-    /// assembled as a `u128` and reinterpreted — assembling them directly as
-    /// `i128` would overflow whenever the high bit of the upper half is set.
+    /// `DuckDB` undoes its internal top-bit flip itself here, so this is the
+    /// value the UUID renders as — not the raw `HUGEINT` a `UUID` vector holds.
     #[inline]
     #[must_use]
-    pub fn as_uuid(&self) -> i128 {
+    pub fn as_uuid(&self) -> u128 {
         // SAFETY: self.raw is valid per constructor contract.
         let raw = unsafe { libduckdb_sys::duckdb_get_uuid(self.raw) };
-        let bits = (u128::from(raw.upper) << 64) | u128::from(raw.lower);
-        #[allow(clippy::cast_possible_wrap)]
-        {
-            bits as i128
-        }
+        (u128::from(raw.upper) << 64) | u128::from(raw.lower)
     }
 
     /// Extracts a `DECIMAL` as its width, scale and unscaled value.
@@ -783,18 +779,20 @@ impl Value {
         Self { raw }
     }
 
-    /// Creates a `UUID` value from its 128 bits, matching
-    /// [`VectorWriter::write_uuid`][crate::vector::VectorWriter::write_uuid].
+    /// Creates a `UUID` value from its **textual** 128 bits, matching
+    /// [`VectorWriter::write_uuid`][crate::vector::VectorWriter::write_uuid]
+    /// and [`as_uuid`][Self::as_uuid].
+    ///
+    /// `DuckDB` applies its internal top-bit flip itself here, so these are the
+    /// bits the value renders as — not the raw `HUGEINT` a `UUID` vector holds.
     #[inline]
     #[must_use]
-    pub fn uuid(bits: i128) -> Self {
-        #[allow(clippy::cast_sign_loss)]
-        let unsigned = bits as u128;
+    pub fn uuid(bits: u128) -> Self {
         let raw = libduckdb_sys::duckdb_uhugeint {
             #[allow(clippy::cast_possible_truncation)]
-            lower: unsigned as u64,
+            lower: bits as u64,
             #[allow(clippy::cast_possible_truncation)]
-            upper: (unsigned >> 64) as u64,
+            upper: (bits >> 64) as u64,
         };
         // SAFETY: duckdb_create_uuid accepts any 128-bit pattern.
         Self {
@@ -1067,8 +1065,12 @@ mod live_tests {
         // `duckdb_get_uuid` returns an *unsigned* hugeint. Assembling its halves
         // directly as i128 overflows once the upper half's high bit is set —
         // which is true for half of all UUIDs, and panics in a debug build.
-        for bits in [0_i128, 1, -1, i128::MIN, i128::MAX] {
-            assert_eq!(Value::uuid(bits).as_uuid(), bits, "round trip for {bits}");
+        for bits in [0_u128, 1, u128::MAX, 1 << 127, (1 << 127) - 1] {
+            assert_eq!(
+                Value::uuid(bits).as_uuid(),
+                bits,
+                "round trip for {bits:#034x}"
+            );
         }
     }
 

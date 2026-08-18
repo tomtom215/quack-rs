@@ -1459,7 +1459,9 @@ fn debug_impls_decode_live_duckdb_state() {
     let decimal = LogicalType::decimal(18, 3);
     let rendered = format!("{decimal:?}");
     assert!(
-        rendered.contains("Decimal") && rendered.contains("width: 18") && rendered.contains("scale: 3"),
+        rendered.contains("Decimal")
+            && rendered.contains("width: 18")
+            && rendered.contains("scale: 3"),
         "{rendered}"
     );
 
@@ -1488,6 +1490,7 @@ fn debug_impls_decode_live_duckdb_state() {
     assert_eq!(Value::date(0).type_id(), Some(TypeId::Date));
     assert_eq!(Value::timestamp(0).type_id(), Some(TypeId::Timestamp));
     assert_eq!(Value::uuid(0).type_id(), Some(TypeId::Uuid));
+    #[cfg(feature = "duckdb-1-5")]
     assert_eq!(Value::null_value().type_id(), Some(TypeId::SqlNull));
 
     // A builder's Debug answers "did I wire the callback up?", which is the
@@ -1523,4 +1526,406 @@ fn debug_of_a_null_value_does_not_dereference() {
     let null_value = unsafe { Value::from_raw(std::ptr::null_mut()) };
     assert_eq!(format!("{null_value:?}"), "Value(<null handle>)");
     assert_eq!(null_value.type_id(), None);
+}
+
+// ---------------------------------------------------------------------------
+// Appender (stable prefix — no feature flag)
+// ---------------------------------------------------------------------------
+
+/// Round-trips every row-at-a-time `append_*` through a real table.
+///
+/// These slots (330–356) have been in the frozen stable prefix since v1.2.0 and
+/// were entirely unwrapped; the physical encodings they use — `HUGEINT`'s
+/// lower/upper split, `VARCHAR`'s explicit length, `INTERVAL`'s three fields —
+/// are exactly the kind that a mock cannot check.
+#[test]
+fn the_appender_writes_every_scalar_type() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    fx.query(
+        "CREATE TABLE every_type (
+             b BOOLEAN, i8 TINYINT, i16 SMALLINT, i32 INTEGER, i64 BIGINT, i128 HUGEINT,
+             u8 UTINYINT, u16 USMALLINT, u32 UINTEGER, u64 UBIGINT, u128 UHUGEINT,
+             f32 FLOAT, f64 DOUBLE, s VARCHAR, bl BLOB,
+             d DATE, t TIME, ts TIMESTAMP, iv INTERVAL, n INTEGER
+         )",
+    );
+
+    // SAFETY: `con` is open for the fixture's lifetime and the table exists.
+    let appender =
+        unsafe { Appender::new(fx.con(), None, c"every_type") }.expect("create appender");
+    assert_eq!(appender.column_count(), 20);
+
+    appender
+        .row(|row| {
+            row.append_bool(true)?;
+            row.append_i8(i8::MIN)?;
+            row.append_i16(i16::MIN)?;
+            row.append_i32(i32::MIN)?;
+            row.append_i64(i64::MIN)?;
+            row.append_i128(i128::MIN)?;
+            row.append_u8(u8::MAX)?;
+            row.append_u16(u16::MAX)?;
+            row.append_u32(u32::MAX)?;
+            row.append_u64(u64::MAX)?;
+            row.append_u128(u128::MAX)?;
+            row.append_f32(-1.5)?;
+            row.append_f64(2.25)?;
+            row.append_str("hé\u{1F600}llo")?;
+            row.append_bytes(&[0x00, 0xff, 0x41])?;
+            row.append_date(-1)?;
+            row.append_time(3_600_000_001)?;
+            row.append_timestamp(-1)?;
+            row.append_interval(quack_rs::interval::DuckInterval {
+                months: 13,
+                days: -2,
+                micros: 5,
+            })?;
+            row.append_null()
+        })
+        .expect("append row");
+    appender.close().expect("close appender");
+
+    let mut result = fx.query(
+        "SELECT b, i8, i16, i32, i64, i128::VARCHAR, u8, u16, u32, u64, u128::VARCHAR,
+                f32, f64, s, bl::VARCHAR, d::VARCHAR, t::VARCHAR, ts::VARCHAR, iv::VARCHAR,
+                n IS NULL
+         FROM every_type",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    assert_eq!(chunk.size(), 1);
+    // SAFETY: every column below matches the declared type, and row 0 exists.
+    unsafe {
+        assert!(chunk.reader(0).read_bool(0));
+        assert_eq!(chunk.reader(1).read_i8(0), i8::MIN);
+        assert_eq!(chunk.reader(2).read_i16(0), i16::MIN);
+        assert_eq!(chunk.reader(3).read_i32(0), i32::MIN);
+        assert_eq!(chunk.reader(4).read_i64(0), i64::MIN);
+        assert_eq!(chunk.reader(5).read_str(0), i128::MIN.to_string());
+        assert_eq!(chunk.reader(6).read_u8(0), u8::MAX);
+        assert_eq!(chunk.reader(7).read_u16(0), u16::MAX);
+        assert_eq!(chunk.reader(8).read_u32(0), u32::MAX);
+        assert_eq!(chunk.reader(9).read_u64(0), u64::MAX);
+        assert_eq!(chunk.reader(10).read_str(0), u128::MAX.to_string());
+        assert!((chunk.reader(11).read_f32(0) - -1.5).abs() < f32::EPSILON);
+        assert!((chunk.reader(12).read_f64(0) - 2.25).abs() < f64::EPSILON);
+        assert_eq!(chunk.reader(13).read_str(0), "hé\u{1F600}llo");
+        assert_eq!(chunk.reader(14).read_str(0), "\\x00\\xFFA");
+        assert_eq!(chunk.reader(15).read_str(0), "1969-12-31");
+        assert_eq!(chunk.reader(16).read_str(0), "01:00:00.000001");
+        assert_eq!(chunk.reader(17).read_str(0), "1969-12-31 23:59:59.999999");
+        assert_eq!(
+            chunk.reader(18).read_str(0),
+            "1 year 1 month -2 days 00:00:00.000005"
+        );
+        assert!(
+            chunk.reader(19).read_bool(0),
+            "the NULL column must be NULL"
+        );
+    }
+}
+
+/// A `VARCHAR` with an interior NUL survives, because `append_str` uses
+/// `duckdb_append_varchar_length` rather than the NUL-terminated variant.
+#[test]
+fn appended_varchars_keep_interior_nuls() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE nul_text (s VARCHAR)");
+
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"nul_text") }.expect("create");
+    appender
+        .row(|row| row.append_str("before\0after"))
+        .expect("append");
+    appender.close().expect("close");
+
+    let mut result = fx.query("SELECT length(s), s FROM nul_text");
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: BIGINT then VARCHAR, row 0 exists.
+    unsafe {
+        assert_eq!(
+            chunk.reader(0).read_i64(0),
+            12,
+            "a NUL-terminated append would have stored 6 characters"
+        );
+        assert_eq!(chunk.reader(1).read_str(0), "before\0after");
+    }
+}
+
+/// Bulk appends across many chunks, plus the failure modes: a short row, a
+/// constraint violation surfacing at flush rather than at append, and the fact
+/// that a create against a missing table reports which table.
+#[test]
+fn the_appender_reports_its_failure_modes() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE bulk (id INTEGER PRIMARY KEY, label VARCHAR)");
+
+    // 5000 rows spans several vectors, so this exercises the appender's own
+    // internal chunk flushing rather than a single buffered chunk.
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"bulk") }.expect("create");
+    for i in 0..5000i32 {
+        appender
+            .row(|row| {
+                row.append_i32(i)?;
+                row.append_str(&format!("row-{i}"))
+            })
+            .expect("append");
+    }
+    appender.close().expect("close");
+
+    let mut result = fx.query("SELECT count(*), min(id), max(id) FROM bulk");
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: three BIGINT/INTEGER columns, row 0 exists.
+    unsafe {
+        assert_eq!(chunk.reader(0).read_i64(0), 5000);
+        assert_eq!(chunk.reader(1).read_i32(0), 0);
+        assert_eq!(chunk.reader(2).read_i32(0), 4999);
+    }
+
+    // A row with fewer values than columns is rejected by end_row.
+    // SAFETY: as above.
+    let appender = unsafe { Appender::new(fx.con(), None, c"bulk") }.expect("create");
+    appender.append_i32(99_999).expect("first column");
+    let err = appender.end_row().expect_err("short row must fail");
+    assert!(
+        format!("{err}").to_lowercase().contains("column"),
+        "unhelpful error: {err}"
+    );
+    drop(appender);
+
+    // A primary-key collision is buffered, so it surfaces at close, not append.
+    // SAFETY: as above.
+    let appender = unsafe { Appender::new(fx.con(), None, c"bulk") }.expect("create");
+    appender
+        .row(|row| {
+            row.append_i32(0)?;
+            row.append_str("duplicate")
+        })
+        .expect("the append itself succeeds — the row is only buffered");
+    let err = appender
+        .close()
+        .expect_err("close must report the violation");
+    assert!(
+        format!("{err}").to_lowercase().contains("constraint")
+            || format!("{err}").to_lowercase().contains("duplicate"),
+        "unexpected error: {err}"
+    );
+
+    // Creating against a missing table names the table.
+    // SAFETY: `con` is open; the table deliberately does not exist.
+    let err = unsafe { Appender::new(fx.con(), None, c"no_such_table") }
+        .err()
+        .expect("create must fail");
+    assert!(
+        format!("{err}").contains("no_such_table"),
+        "unexpected error: {err}"
+    );
+}
+
+/// `error_message` reads `duckdb_appender_error` — the *stable-prefix* error
+/// channel (slot 285), and the one `AppendError` resolves to when `duckdb-1-5`
+/// is off.
+///
+/// The 1.5 build never exercises that path, so without this the stable error
+/// channel would only ever be tested by CI's feature-off job.
+#[test]
+fn the_stable_error_channel_reports_appender_failures() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE two_cols (a INTEGER, b INTEGER)");
+
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"two_cols") }.expect("create");
+    assert_eq!(
+        appender.error_message(),
+        None,
+        "a healthy appender must report no error"
+    );
+
+    appender.append_i32(1).expect("first column");
+    assert!(appender.end_row().is_err(), "a short row must fail");
+
+    let message = appender
+        .error_message()
+        .expect("the stable channel must carry the message");
+    assert!(
+        message.to_lowercase().contains("column"),
+        "unhelpful message: {message}"
+    );
+}
+
+/// `add_column` narrows the active column list, and the omitted columns take
+/// their `DEFAULT`.
+#[test]
+fn the_appender_can_target_a_subset_of_columns() {
+    use quack_rs::appender::Appender;
+    use quack_rs::table_description::TableDescription;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE partial (id INTEGER, note VARCHAR DEFAULT 'unset')");
+
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"partial") }.expect("create");
+    assert_eq!(appender.column_count(), 2);
+    appender.add_column(c"id").expect("restrict to id");
+    assert_eq!(appender.column_count(), 1);
+    appender.row(|row| row.append_i32(7)).expect("append");
+    appender.close().expect("close");
+
+    let mut result = fx.query("SELECT id, note FROM partial");
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: INTEGER then VARCHAR, row 0 exists.
+    unsafe {
+        assert_eq!(chunk.reader(0).read_i32(0), 7);
+        assert_eq!(chunk.reader(1).read_str(0), "unset");
+    }
+
+    // TableDescription is the way to know a DEFAULT exists before relying on it.
+    // SAFETY: `con` is open and the table exists.
+    let desc = unsafe { TableDescription::create(fx.con(), "main", "partial") }.expect("describe");
+    assert_eq!(desc.column_name(0).as_deref(), Some("id"));
+    assert_eq!(desc.column_name(1).as_deref(), Some("note"));
+    assert_eq!(desc.column_name(99), None);
+    assert_eq!(desc.column_has_default(0), Some(false));
+    assert_eq!(desc.column_has_default(1), Some(true));
+    assert_eq!(desc.column_has_default(99), None);
+
+    // SAFETY: `con` is open; the default catalog and schema are addressed by name.
+    let qualified =
+        unsafe { TableDescription::with_catalog(fx.con(), None, Some("main"), "partial") }
+            .expect("describe via create_ext");
+    assert_eq!(qualified.column_name(0).as_deref(), Some("id"));
+}
+
+/// `append_value` is the escape hatch for types with no dedicated `append_*`,
+/// and must refuse a null handle rather than letting `DuckDB` dereference it.
+#[test]
+fn append_value_covers_types_without_a_dedicated_method() {
+    use quack_rs::appender::Appender;
+    use quack_rs::value::Value;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE valued (u UUID, d DATE)");
+
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"valued") }.expect("create");
+    appender
+        .row(|row| {
+            row.append_value(&Value::uuid(u128::MAX))?;
+            row.append_value(&Value::date(19_000))
+        })
+        .expect("append");
+    appender.close().expect("close");
+
+    let mut result = fx.query("SELECT u::VARCHAR, d::VARCHAR FROM valued");
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: two VARCHAR columns, row 0 exists.
+    unsafe {
+        assert_eq!(
+            chunk.reader(0).read_str(0),
+            "ffffffff-ffff-ffff-ffff-ffffffffffff"
+        );
+        assert_eq!(chunk.reader(1).read_str(0), "2022-01-08");
+    }
+
+    // duckdb_append_value dereferences its argument with no null check, so a
+    // null handle must never reach it.
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"valued") }.expect("create");
+    // SAFETY: a null handle is the case under test.
+    let null_value = unsafe { Value::from_raw(std::ptr::null_mut()) };
+    let err = appender
+        .append_value(&null_value)
+        .expect_err("a null value handle must be refused");
+    assert!(format!("{err}").contains("null"), "unexpected error: {err}");
+}
+
+/// The `UUID` accessors must all speak the same 128 bits.
+///
+/// A `UUID` column is physically a `HUGEINT`, but `DuckDB` stores it with the
+/// top bit flipped so signed integer ordering matches string ordering
+/// (`BaseUUID::FromUHugeint` subtracts 2^63 from the upper half). Before this
+/// was fixed, `VectorReader::read_uuid` returned the raw storage while
+/// `Value::as_uuid` returned the textual bits, and the docs on both claimed
+/// they matched — so handing one to the other silently changed the UUID's first
+/// hex digit.
+#[test]
+fn every_uuid_accessor_agrees_on_which_128_bits_it_means() {
+    use quack_rs::value::Value;
+    use quack_rs::vector::{uuid_from_storage, uuid_to_storage};
+
+    let fx = Fixture::open();
+    let text = "11111111-2222-3333-4444-555555555555";
+    let bits: u128 = 0x1111_1111_2222_3333_4444_5555_5555_5555;
+
+    // Reading a real UUID column yields the textual bits.
+    let mut result = fx.query(&format!("SELECT '{text}'::UUID"));
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: the column is UUID and row 0 exists.
+    let (read_bits, raw_storage) = unsafe {
+        let reader = chunk.reader(0);
+        (reader.read_uuid(0), reader.read_i128(0))
+    };
+    assert_eq!(read_bits, bits, "read_uuid must return the textual bits");
+
+    // ...and the raw storage really is different, so this is not a no-op.
+    assert_ne!(raw_storage as u128, bits, "DuckDB's flip must be real");
+    assert_eq!(uuid_from_storage(raw_storage), bits);
+    assert_eq!(uuid_to_storage(bits), raw_storage);
+
+    // `Value` agrees with the vector accessors.
+    let value = Value::uuid(bits);
+    assert_eq!(value.as_uuid(), bits);
+    #[cfg(feature = "duckdb-1-5")]
+    assert_eq!(
+        value.display_string().as_deref(),
+        Some(format!("'{text}'::UUID").as_str())
+    );
+
+    // And the full loop: write through a vector, render through SQL.
+    register_echo(
+        fx.con(),
+        "echo_uuid2",
+        TypeId::Uuid,
+        TypeId::Uuid,
+        echo_uuid,
+    );
+    assert_eq!(
+        fx.scalar(
+            &format!("SELECT echo_uuid2('{text}'::UUID)::VARCHAR"),
+            |r, i| { unsafe { r.read_str(i).to_owned() } }
+        )
+        .as_deref(),
+        Some(text)
+    );
+
+    // The extremes, where a sign-flip bug is most visible.
+    for (bits, rendered) in [
+        (0u128, "00000000-0000-0000-0000-000000000000"),
+        (u128::MAX, "ffffffff-ffff-ffff-ffff-ffffffffffff"),
+        (1u128 << 127, "80000000-0000-0000-0000-000000000000"),
+    ] {
+        assert_eq!(Value::uuid(bits).as_uuid(), bits);
+        assert_eq!(uuid_from_storage(uuid_to_storage(bits)), bits);
+        // `display_string` is a 1.5 addition; without it, ask SQL directly.
+        assert_eq!(
+            fx.scalar(
+                &format!("SELECT '{rendered}'::UUID::VARCHAR"),
+                |r, i| unsafe { r.read_str(i).to_owned() }
+            )
+            .as_deref(),
+            Some(rendered),
+            "{bits:#034x}"
+        );
+    }
+    // The nil UUID must sit at the bottom of DuckDB's signed ordering — that is
+    // the entire reason the flip exists.
+    assert_eq!(uuid_to_storage(0), i128::MIN);
 }
