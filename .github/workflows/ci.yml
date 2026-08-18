@@ -276,7 +276,16 @@ jobs:
       # new DuckDB release changes the layout, which is exactly when the runtime
       # guard would start refusing loads it should accept.
       - name: Verify src/abi.rs matches upstream
-        run: python3 scripts/check-abi-table.py
+        # These guards fetch from upstream. Exit 2 is their documented
+        # "could not check" code -- a DuckDB release header was unreachable -- and must not
+        # be read as drift. Only exit 1 means the checked-in data is wrong.
+        run: |
+          python3 scripts/check-abi-table.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
 
   platform-table:
     name: Platform list (vs upstream distribution matrix)
@@ -289,7 +298,16 @@ jobs:
       # one that no longer exists. This re-derives the list from the file the
       # community-extensions build actually reads.
       - name: Verify src/validate/platform.rs matches upstream
-        run: python3 scripts/check-platform-table.py
+        # These guards fetch from upstream. Exit 2 is their documented
+        # "could not check" code -- the distribution matrix was unreachable -- and must not
+        # be read as drift. Only exit 1 means the checked-in data is wrong.
+        run: |
+          python3 scripts/check-platform-table.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
 
   spdx-list:
     name: SPDX shortlist (vs official registry)
@@ -301,7 +319,16 @@ jobs:
       # (GPL-3.0 -> GPL-3.0-only / -or-later), which would have quack-rs
       # recommending a stale name.
       - name: Verify src/validate/spdx.rs matches the SPDX registry
-        run: python3 scripts/check-spdx-list.py
+        # These guards fetch from upstream. Exit 2 is their documented
+        # "could not check" code -- the SPDX registry was unreachable -- and must not
+        # be read as drift. Only exit 1 means the checked-in data is wrong.
+        run: |
+          python3 scripts/check-spdx-list.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
 
   msrv-vs-duckdb-ci:
     name: MSRV vs DuckDB's extension CI
@@ -314,7 +341,16 @@ jobs:
       # extension unbuildable for those platforms, with no signal here. This
       # gives that signal.
       - name: Check MSRV against extension-ci-tools' pinned toolchains
-        run: python3 scripts/check-msrv-vs-duckdb-ci.py
+        # These guards fetch from upstream. Exit 2 is their documented
+        # "could not check" code -- the pinned-toolchain config was unreachable -- and must not
+        # be read as drift. Only exit 1 means the checked-in data is wrong.
+        run: |
+          python3 scripts/check-msrv-vs-duckdb-ci.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
 
   extension-load:
     name: Extension load test (DuckDB)
@@ -338,12 +374,16 @@ jobs:
           # answer -- and these jobs pull `releases/latest`, so the version
           # changes underneath them.
           ./duckdb --version
-          # Prove `-c` runs SQL before anything depends on it. The previous
-          # form, `-no-stdin < file.sql`, produced no output and still exited
-          # 0, so every assertion downstream failed as "wrong answer" when the
-          # SQL had simply never run.
-          test "$(./duckdb -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
-            echo "::error::DuckDB CLI smoke test failed -- `-c` did not execute SQL"
+          # Prove the exact invocation the probes use works, before anything
+          # depends on it. Two things bit us here: `-no-stdin < file.sql`
+          # produced no output and still exited 0, so assertions downstream
+          # failed as "wrong answer" when the SQL had never run; and
+          # `SET allow_unsigned_extensions=true` is rejected once the database
+          # is running ("Cannot change allow_unsigned_extensions setting while
+          # database is running"), so it has to be the `-unsigned` startup flag
+          # rather than a statement.
+          test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
             exit 1
           }
       - name: Stamp the extension metadata footer
@@ -365,11 +405,10 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/probe.sql <<'SQL'
-          SET allow_unsigned_extensions=true;
           LOAD '/tmp/ext/hello_ext.duckdb_extension';
           SELECT double_it(21) AS a, first_word('hello world') AS b;
           SQL
-          ./duckdb -csv -noheader -c "$(cat /tmp/probe.sql)" | tee /tmp/load.log
+          ./duckdb -unsigned -csv -noheader -c "$(cat /tmp/probe.sql)" | tee /tmp/load.log
 
           # Assert on the actual result, not on the absence of the word "error":
           # a load failure and a wrong answer must both fail this job.
@@ -399,12 +438,16 @@ jobs:
           # answer -- and these jobs pull `releases/latest`, so the version
           # changes underneath them.
           ./duckdb --version
-          # Prove `-c` runs SQL before anything depends on it. The previous
-          # form, `-no-stdin < file.sql`, produced no output and still exited
-          # 0, so every assertion downstream failed as "wrong answer" when the
-          # SQL had simply never run.
-          test "$(./duckdb -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
-            echo "::error::DuckDB CLI smoke test failed -- `-c` did not execute SQL"
+          # Prove the exact invocation the probes use works, before anything
+          # depends on it. Two things bit us here: `-no-stdin < file.sql`
+          # produced no output and still exited 0, so assertions downstream
+          # failed as "wrong answer" when the SQL had never run; and
+          # `SET allow_unsigned_extensions=true` is rejected once the database
+          # is running ("Cannot change allow_unsigned_extensions setting while
+          # database is running"), so it has to be the `-unsigned` startup flag
+          # rather than a statement.
+          test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
             exit 1
           }
       - name: Generate, build, stamp and load a scaffolded extension
@@ -432,11 +475,10 @@ jobs:
             --abi-type C_STRUCT --extension-version v0.1.0 \
             --duckdb-version v1.2.0 --platform linux_amd64
           cat > /tmp/scaffold_probe.sql <<'SQL'
-          SET allow_unsigned_extensions=true;
           LOAD '/tmp/scaffolded/my_analytics.duckdb_extension';
           SELECT my_analytics_hello('world');
           SQL
-          ./duckdb -csv -noheader -c "$(cat /tmp/scaffold_probe.sql)" | tee /tmp/scaffold.log
+          ./duckdb -unsigned -csv -noheader -c "$(cat /tmp/scaffold_probe.sql)" | tee /tmp/scaffold.log
           grep -q 'Hello from my_analytics! world' /tmp/scaffold.log || {
             echo "::error::scaffolded extension did not answer correctly"
             echo "DuckDB $(./duckdb --version) actually produced:"
@@ -470,12 +512,16 @@ jobs:
           # answer -- and these jobs pull `releases/latest`, so the version
           # changes underneath them.
           ./duckdb --version
-          # Prove `-c` runs SQL before anything depends on it. The previous
-          # form, `-no-stdin < file.sql`, produced no output and still exited
-          # 0, so every assertion downstream failed as "wrong answer" when the
-          # SQL had simply never run.
-          test "$(./duckdb -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
-            echo "::error::DuckDB CLI smoke test failed -- `-c` did not execute SQL"
+          # Prove the exact invocation the probes use works, before anything
+          # depends on it. Two things bit us here: `-no-stdin < file.sql`
+          # produced no output and still exited 0, so assertions downstream
+          # failed as "wrong answer" when the SQL had never run; and
+          # `SET allow_unsigned_extensions=true` is rejected once the database
+          # is running ("Cannot change allow_unsigned_extensions setting while
+          # database is running"), so it has to be the `-unsigned` startup flag
+          # rather than a statement.
+          test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
             exit 1
           }
       # Regression test for the most dangerous failure mode this crate guards
@@ -541,11 +587,10 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/abi_probe.sql <<'SQL'
-          SET allow_unsigned_extensions=true;
           LOAD '/tmp/abi_demo/abi_demo.duckdb_extension';
           SQL
           # DuckDB exits non-zero on the failed LOAD, which is the expected outcome.
-          ./duckdb -c "$(cat /tmp/abi_probe.sql)" > /tmp/abi.log 2>&1 || true
+          ./duckdb -unsigned -c "$(cat /tmp/abi_probe.sql)" > /tmp/abi.log 2>&1 || true
           echo "--- DuckDB $(./duckdb --version) said: ---"
           cat /tmp/abi.log
           echo "--- end ---"
@@ -558,7 +603,7 @@ jobs:
           }
           # And the extension must not have loaded: a refusal that still
           # registers its functions would be worse than no guard at all.
-          ./duckdb -csv -noheader -c "SET allow_unsigned_extensions=true; LOAD '/tmp/abi_demo/abi_demo.duckdb_extension'; SELECT abi_demo_ok(1);" \
+          ./duckdb -unsigned -csv -noheader -c "LOAD '/tmp/abi_demo/abi_demo.duckdb_extension'; SELECT abi_demo_ok(1);" \
             > /tmp/abi_fn.log 2>&1 || true
           if grep -q '^2$' /tmp/abi_fn.log; then
             echo "::error::the refused extension still registered abi_demo_ok"

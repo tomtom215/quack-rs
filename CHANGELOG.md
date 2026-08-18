@@ -91,6 +91,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/check-matrix.sh` now runs the combinations CI runs — including
   `bundled-test` alone and the `wasm32` legs — in one command.
 
+#### CI guards
+
+- **`scripts/check-abi-table.py` treated an unreachable release header as
+  proof the release did not exist.** Its `fetch` swallowed every exception —
+  404, timeout, DNS, 5xx alike — and returned `None`, which the caller printed
+  as "not published (skipped)" and dropped from the derivation. One transient
+  failure on `v1.4.4` therefore narrowed the derived range from `v1.4.0–v1.4.4`
+  to `v1.4.0–v1.4.3` and failed CI reporting `src/abi.rs` as stale. Following
+  that advice would have **shrunk the layout table and made the runtime guard
+  refuse `DuckDB` versions it should accept** — the exact failure the table
+  exists to prevent.
+
+  A definite 404 is now distinguished from every other failure, transient
+  errors are retried, and a tag that could not be downloaded suspends the
+  staleness comparison (exit 2, "could not check") instead of failing it. The
+  other three guards each fetch a single file, so an empty fetch already meant
+  no data rather than partial data.
+
+- **All four guard jobs treated exit 2 as a failure.** The scripts document it
+  as "upstream unreachable, could not check", but the workflow ran them bare,
+  so any non-zero failed the job — making every guard a network-flake away from
+  a red build. They now surface exit 2 as a warning and fail only on exit 1.
+
 #### Generated CI
 
 - **The generated CI workflow left one action unpinned.** Three of its four

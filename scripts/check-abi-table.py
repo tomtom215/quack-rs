@@ -13,6 +13,18 @@ This script re-derives that table straight from `src/include/duckdb_extension.h`
 at each release tag and fails if `src/abi.rs` has drifted or a new release is
 missing.
 
+A fetch that fails is **not** evidence that a release does not exist. Treating
+it as one silently narrows the derived table and then reports `src/abi.rs` as
+stale -- advice that, if followed, would shrink the layout table and make the
+runtime guard refuse DuckDB versions it should accept. So a tag that cannot be
+downloaded suspends the staleness comparison (exit 2) rather than failing it.
+
+Exit codes:
+    0  src/abi.rs matches upstream
+    1  it has genuinely drifted, or a header is inconsistent
+    2  at least one release header could not be fetched, so the comparison
+       would be unsound -- treat as "could not check", not as a failure
+
 Usage:
     python3 scripts/check-abi-table.py              # verify
     python3 scripts/check-abi-table.py --print      # print the Rust table
@@ -25,6 +37,8 @@ import argparse
 import hashlib
 import re
 import sys
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -44,13 +58,29 @@ DEFAULT_TAGS = [
 FN_PTR = re.compile(r"\(\s*\*\s*(duckdb_\w+)\s*\)")
 
 
-def fetch(tag: str) -> str | None:
-    """Download `duckdb_extension.h` for a release tag, or None if absent."""
-    try:
-        with urllib.request.urlopen(HEADER_URL.format(tag=tag), timeout=60) as resp:
-            return resp.read().decode("utf-8")
-    except Exception:  # noqa: BLE001 - a missing tag is an ordinary outcome here
-        return None
+def fetch(tag: str, *, attempts: int = 3) -> tuple[str, str | None]:
+    """Download `duckdb_extension.h` for a release tag.
+
+    Returns `("ok", header)`, `("missing", None)` for a definite 404, or
+    `("error", reason)` for anything else. The distinction matters: a 404 for a
+    version that does not exist yet is routine, while a timeout or a 5xx says
+    nothing about whether the release exists, and must not be allowed to shrink
+    the derived table.
+    """
+    last = "unknown error"
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(HEADER_URL.format(tag=tag), timeout=60) as resp:
+                return "ok", resp.read().decode("utf-8")
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                return "missing", None
+            last = f"HTTP {err.code}"
+        except Exception as err:  # noqa: BLE001 - network, DNS, TLS, timeouts
+            last = f"{type(err).__name__}: {err}"
+        if attempt + 1 < attempts:
+            time.sleep(2 * (attempt + 1))
+    return "error", last
 
 
 def struct_fields(header: str, *, unstable: bool) -> list[str]:
@@ -146,11 +176,16 @@ def main() -> int:
     stable_counts: set[int] = set()
     layout_by_slots: dict[int, str] = {}
     problems: list[str] = []
+    unfetchable: list[str] = []
 
     for tag in tags:
-        header = fetch(tag)
-        if header is None:
+        status, header = fetch(tag)
+        if status == "missing":
             print(f"  {tag}: not published (skipped)")
+            continue
+        if status == "error":
+            print(f"  {tag}: COULD NOT FETCH ({header})")
+            unfetchable.append(tag)
             continue
         full = struct_fields(header, unstable=True)
         stable = struct_fields(header, unstable=False)
@@ -171,7 +206,8 @@ def main() -> int:
         print(f"  {tag}: {len(full)} slots ({len(stable)} stable) layout={digest}")
 
     if not rows:
-        return sys.exit("no release headers could be downloaded")
+        print("::warning::no release headers could be downloaded")
+        return 2
 
     derived = collapse(rows)
 
@@ -190,6 +226,20 @@ def main() -> int:
         )
 
     if table != derived:
+        if unfetchable:
+            # The derivation is missing releases, so it cannot be compared: a
+            # gap makes the derived ranges narrower than reality, and "fixing"
+            # src/abi.rs to match would weaken the runtime guard.
+            print()
+            print(
+                "::warning::could not verify KNOWN_LAYOUTS -- "
+                f"{len(unfetchable)} release header(s) failed to download: "
+                f"{', '.join(unfetchable)}"
+            )
+            print(f"  in src/abi.rs: {table}")
+            print(f"  derived from what downloaded: {derived}")
+            print("  Not treating this as drift. Re-run when upstream is reachable.")
+            return 2
         problems.append(
             "KNOWN_LAYOUTS in src/abi.rs is out of date.\n"
             f"  in src/abi.rs: {table}\n"
