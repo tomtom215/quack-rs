@@ -531,3 +531,41 @@ fn generated_description_does_not_pin_a_branch() {
     assert_eq!(desc.git_ref, crate::scaffold::REF_PLACEHOLDER);
     assert!(desc.git_ref_next.is_empty());
 }
+
+/// Every action in the generated CI workflow must be SHA-pinned.
+///
+/// A tag or branch is a moving target the action's owner can repoint at any
+/// time, and a workflow step runs arbitrary code in the user's CI. The scaffold
+/// previously left `dtolnay/rust-toolchain@stable` floating, justified by a
+/// comment claiming its SHA "changes with each Rust release" — it does not, and
+/// quack-rs's own CI SHA-pins the same action while still getting current
+/// stable, because the action reads the toolchain at run time.
+#[test]
+fn the_generated_workflow_sha_pins_every_action() {
+    let files = generate_scaffold(&valid_config()).expect("scaffold");
+    let workflow = &files
+        .iter()
+        .find(|f| f.path == ".github/workflows/extension-ci.yml")
+        .expect("the CI workflow")
+        .content;
+
+    let mut checked = 0;
+    for line in workflow.lines() {
+        let Some((_, action)) = line.split_once("uses:") else {
+            continue;
+        };
+        let action = action.trim().split('#').next().unwrap_or("").trim();
+        if action.is_empty() {
+            continue;
+        }
+        checked += 1;
+        let Some((_, git_ref)) = action.rsplit_once('@') else {
+            panic!("action without a ref: {action}");
+        };
+        assert!(
+            git_ref.len() == 40 && git_ref.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{action} is not SHA-pinned"
+        );
+    }
+    assert!(checked >= 4, "expected several actions, found {checked}");
+}

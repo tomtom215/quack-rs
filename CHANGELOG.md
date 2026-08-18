@@ -188,6 +188,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry in `duckdb_extensions()`, asserting that everything identifier-shaped is
   accepted and every operator is not. That is how the defect was found.
 
+### Security (generated CI)
+
+- **The generated CI workflow left one action unpinned.** Three of its four
+  actions were SHA-pinned; `dtolnay/rust-toolchain@stable` was not, justified by
+  a comment claiming its SHA "changes with each Rust release". That is not how
+  the action works — it reads the toolchain from `rust-toolchain.toml` or its
+  `toolchain:` input at run time, so pinning the action's SHA does not pin the
+  Rust version. quack-rs's own CI SHA-pins the same action and gets current
+  stable. A branch is a moving target its owner can repoint, and a workflow step
+  runs arbitrary code in the user's CI. All four are now pinned to the same SHAs
+  quack-rs itself uses, and a test asserts every `uses:` in the generated
+  workflow carries a 40-character hex ref.
+
 ### Fixed (the scaffold generated a `description.yml` that would be rejected)
 
 - **`repo.ref` was generated as `main`.** `DuckDB`'s community-extension

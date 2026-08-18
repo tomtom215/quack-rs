@@ -365,17 +365,21 @@ jobs:
     env:
       DUCKDB_PLATFORM: ${{{{ matrix.platform }}}}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # Every action is SHA-pinned. A tag or branch is a moving target that the
+      # action's owner can repoint at any time, and a workflow step runs
+      # arbitrary code in your CI.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           submodules: recursive
 
-      # dtolnay/rust-toolchain is intentionally ref-pinned (not SHA-pinned)
-      # because its SHA changes with each Rust release.
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinning this action's SHA does not pin your Rust version: the action
+      # reads the toolchain from rust-toolchain.toml or its `toolchain:` input
+      # at run time. You still get current stable.
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
