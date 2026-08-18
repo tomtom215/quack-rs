@@ -278,6 +278,31 @@ jobs:
       - name: Verify src/abi.rs matches upstream
         run: python3 scripts/check-abi-table.py
 
+  platform-table:
+    name: Platform list (vs upstream distribution matrix)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # validate::platform only earns its keep if its list is current. DuckDB
+      # retired linux_amd64_gcc4 and added the musl targets without quack-rs
+      # noticing, so the validator was rejecting real platforms and accepting
+      # one that no longer exists. This re-derives the list from the file the
+      # community-extensions build actually reads.
+      - name: Verify src/validate/platform.rs matches upstream
+        run: python3 scripts/check-platform-table.py
+
+  spdx-list:
+    name: SPDX shortlist (vs official registry)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # A typo in COMMON_SPDX_LICENSES would make quack-rs reject a license
+      # nobody could satisfy, and SPDX deprecates identifiers over time
+      # (GPL-3.0 -> GPL-3.0-only / -or-later), which would have quack-rs
+      # recommending a stale name.
+      - name: Verify src/validate/spdx.rs matches the SPDX registry
+        run: python3 scripts/check-spdx-list.py
+
   msrv-vs-duckdb-ci:
     name: MSRV vs DuckDB's extension CI
     runs-on: ubuntu-latest

@@ -64,7 +64,10 @@ pub mod spdx;
 
 pub use extension_name::validate_extension_name;
 pub use function_name::validate_function_name;
-pub use platform::{validate_excluded_platforms, validate_platform, DUCKDB_PLATFORMS};
+pub use platform::{
+    is_opt_in_platform, validate_excluded_platforms, validate_platform, DUCKDB_OPT_IN_PLATFORMS,
+    DUCKDB_PLATFORMS,
+};
 pub use release_profile::{validate_release_profile, ReleaseProfileCheck};
 pub use semver::{validate_extension_version, validate_semver};
 pub use spdx::validate_spdx_license;

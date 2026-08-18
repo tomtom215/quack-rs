@@ -510,15 +510,23 @@ assert!(validate_function_name("WordCount").is_err());     // uppercase rejected
 
 ### Platform targets
 
-DuckDB community extensions must build for all 11 standard platforms or declare
-explicit exclusions:
+DuckDB community extensions must build for every standard platform or declare
+explicit exclusions. The list below mirrors `config/distribution_matrix.json` in
+[`duckdb/extension-ci-tools`](https://github.com/duckdb/extension-ci-tools/blob/main/config/distribution_matrix.json),
+and a CI job (`scripts/check-platform-table.py`) fails when it drifts:
 
 ```
-linux_amd64         linux_amd64_gcc4    linux_arm64
+linux_amd64         linux_arm64
+linux_amd64_musl†   linux_arm64_musl†
 osx_amd64           osx_arm64
-windows_amd64       windows_amd64_mingw windows_arm64
+windows_amd64       windows_amd64_mingw windows_arm64†
 wasm_mvp            wasm_eh             wasm_threads
 ```
+
+> † opt-in: not built unless an extension asks for it, so excluding it is a
+> no-op. `is_opt_in_platform` reports which these are.
+>
+> `linux_amd64_gcc4` is gone — DuckDB retired the legacy CXX ABI target.
 
 ```rust
 use quack_rs::validate::{validate_platform, validate_excluded_platforms_str, DUCKDB_PLATFORMS};

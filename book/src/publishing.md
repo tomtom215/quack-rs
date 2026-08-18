@@ -150,19 +150,35 @@ match classify_extension_version("0.1.0")? {
 
 Community extensions are built for:
 
-| Platform | Description |
-|----------|-------------|
-| `linux_amd64` | Linux x86_64 |
-| `linux_amd64_gcc4` | Linux x86_64 (GCC 4 ABI) |
-| `linux_arm64` | Linux AArch64 |
-| `osx_amd64` | macOS x86_64 |
-| `osx_arm64` | macOS Apple Silicon |
-| `windows_amd64` | Windows x86_64 |
-| `windows_amd64_mingw` | Windows x86_64 (MinGW) |
-| `windows_arm64` | Windows AArch64 |
-| `wasm_mvp` | WebAssembly (MVP) |
-| `wasm_eh` | WebAssembly (exception handling) |
-| `wasm_threads` | WebAssembly (threads) |
+| Platform | Description | Opt-in? |
+|----------|-------------|---------|
+| `linux_amd64` | Linux x86_64 (glibc) | |
+| `linux_amd64_musl` | Linux x86_64 (musl) | yes |
+| `linux_arm64` | Linux AArch64 (glibc) | |
+| `linux_arm64_musl` | Linux AArch64 (musl) | yes |
+| `osx_amd64` | macOS x86_64 | |
+| `osx_arm64` | macOS Apple Silicon | |
+| `windows_amd64` | Windows x86_64 | |
+| `windows_amd64_mingw` | Windows x86_64 (MinGW) | |
+| `windows_arm64` | Windows AArch64 | yes |
+| `wasm_mvp` | WebAssembly (MVP) | |
+| `wasm_eh` | WebAssembly (exception handling) | |
+| `wasm_threads` | WebAssembly (threads) | |
+
+An **opt-in** platform is not built unless an extension asks for it, so listing
+one in `excluded_platforms` has no effect. `validate::platform::is_opt_in_platform`
+reports which these are.
+
+`linux_amd64_gcc4` used to appear in this table and no longer exists: DuckDB
+retired the legacy CXX ABI target, and `DuckDBPlatform()` now raises a compile
+error rather than emitting a `_gcc4` suffix. `validate_platform` rejects it with
+that explanation.
+
+This table is derived from `config/distribution_matrix.json` in
+[`duckdb/extension-ci-tools`][ci-tools], and `scripts/check-platform-table.py`
+fails CI when quack-rs's copy drifts from it.
+
+[ci-tools]: https://github.com/duckdb/extension-ci-tools/blob/main/config/distribution_matrix.json
 
 If your extension cannot be built for a platform (e.g., it uses a
 platform-specific system library), add it to `excluded_platforms`:

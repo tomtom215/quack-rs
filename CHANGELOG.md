@@ -82,6 +82,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
 
+### Fixed (validators were giving wrong answers)
+
+- **The DuckDB platform list was stale in both directions.**
+  `validate::platform` rejected `linux_amd64_musl` and `linux_arm64_musl` —
+  real, currently-built targets — so an extension that legitimately cannot
+  support musl could not declare it. And it accepted `linux_amd64_gcc4`, which
+  `DuckDB` retired: `DuckDBPlatform()` in `duckdb/common/platform.hpp` now
+  raises a compile error for the legacy CXX ABI rather than emitting a `_gcc4`
+  suffix, and it is absent from the distribution matrix. Excluding it was a
+  silent no-op.
+
+  The list is now derived from `config/distribution_matrix.json` in
+  `duckdb/extension-ci-tools` — the file the community-extensions build actually
+  reads — and `scripts/check-platform-table.py` plus a CI job fail when the two
+  diverge. Adds `DUCKDB_OPT_IN_PLATFORMS` and `is_opt_in_platform`, because
+  three of the twelve (`linux_amd64_musl`, `linux_arm64_musl`, `windows_arm64`)
+  are only built on request, so excluding one of those is also a no-op.
+  `linux_amd64_gcc4` gets a targeted error saying what happened to it, rather
+  than "not a recognized DuckDB build target".
+
+- **`validate_spdx_license` claimed valid licenses did not exist.**
+  `COMMON_SPDX_LICENSES` is a 42-entry shortlist of a 733-entry registry, but
+  the rejection message read "is not a recognized SPDX identifier" — false for
+  `CC0-1.0`, `Python-2.0`, `BSD-4-Clause` and roughly 690 others. It now says
+  the identifier is not on quack-rs's shortlist and points at the registry.
+
+  Every entry was checked against `spdx/license-list-data`: all 42 are real and
+  none are deprecated. `scripts/check-spdx-list.py` and a CI job keep it that
+  way, and flag any newly-added identifier that is not OSI-approved (`SSPL-1.0`
+  is listed and deliberately is not). The list is now sorted, with a test
+  keeping it so. Also fixes the module doc, which called the field
+  `extension.licence`; real `description.yml` files — and quack-rs's own parser
+  — use `license`.
+
 ### Fixed (silent data corruption)
 
 - **The `UUID` accessors disagreed about which 128 bits they meant, and the
