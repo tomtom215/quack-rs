@@ -378,6 +378,127 @@ release and therefore stay in sync.
 
 ---
 
+## P10: The C API struct has a stable prefix and an unstable tail {#p10}
+
+**Status**: Detected at load time by [`quack_rs::abi`](https://docs.rs/quack-rs/latest/quack_rs/abi/index.html)
+(default `AbiPolicy::Strict`).
+
+**Symptom**: An extension loads without complaint and then corrupts memory —
+`double free or corruption`, a segfault, or silently wrong results — on a
+`DuckDB` release other than the one it was built against. Nothing in the build
+or the load warns you.
+
+**Root cause**: `DuckDB` hands a loadable extension a pointer to a
+`duckdb_ext_api_v1` struct of function pointers, and the extension calls through
+it at compiled-in offsets. The struct has two regions:
+
+| Region | Slots | Guarantee |
+|--------|-------|-----------|
+| Stable | 0–356 | Frozen since v1.2.0 — identical names and order in every release through v1.5.5 |
+| Unstable | 357+ | `DuckDB` **inserts** entries in the middle, shifting every later slot |
+
+`duckdb_appender_clear` landed at slot 410 in v1.5.0 and
+`duckdb_geometry_type_get_crs` in the middle of v1.5.3's tail; each insertion
+moves everything after it. An extension compiled against one layout and loaded
+by another calls the wrong function through the right offset.
+
+**Your action**: nothing, if you use `init_extension` — it verifies the layout
+and refuses a mismatch. Two knobs matter:
+
+- `QUACK_RS_TARGET_DUCKDB_VERSION` at build time stamps the release you built
+  against, so a `DuckDB` newer than quack-rs's table is still accepted when your
+  build genuinely targeted it. The community-extension CI rebuilds per release,
+  so this is the normal path.
+- `AbiPolicy::Warn` or `Trust` if you would rather load anyway. `Trust` is the
+  old behaviour, and the failure mode above is the reason it is no longer the
+  default.
+
+If your extension enables no `duckdb-1-5*` feature it only calls into the stable
+prefix, and `StableOnly` accepts every release from v1.2.0 on.
+
+---
+
+## P11: `const char *` returns are borrowed — freeing one corrupts the heap {#p11}
+
+**Status**: Fixed in quack-rs; documented here because extension authors calling
+the C API directly hit the same trap.
+
+**Symptom**: `corrupted size vs. prev_size in fastbins`, `free(): invalid
+pointer`, or a `SIGABRT` at an unrelated later allocation. Nothing points at the
+call that caused it.
+
+**Root cause**: The C API returns strings two ways, and only one transfers
+ownership.
+
+| Return type | Typical implementation | Caller must |
+|-------------|------------------------|-------------|
+| `char *` | `strdup(...)` or `duckdb_malloc` + `memcpy` | `duckdb_free` it |
+| `const char *` | `some_std_string.c_str()` | **not** free it |
+
+`duckdb_copy_function_global_init_get_file_path` is the second kind: it returns
+`info_ref.file_path.c_str()`, the interior pointer of a C++ `std::string`
+`DuckDB` still owns and destroys itself. Calling `duckdb_free` on it hands the
+allocator a pointer it never issued.
+
+**The trap in the rule**: the signature alone is not enough.
+`duckdb_parameter_name` is declared `const char *` and yet returns
+`strdup(identifier.c_str())` — it *is* owned, and *not* freeing it leaks. The
+only reliable check is reading the implementation in `DuckDB`'s
+`src/main/capi/`.
+
+**Your action**: before calling `duckdb_free` on anything the C API returned,
+read the implementation. `const char *` is a strong hint that it is borrowed,
+but `duckdb_parameter_name` proves it is only a hint. Every `duckdb_free` site
+in quack-rs was audited this way — see `LESSONS.md` P11 for the full table.
+
+**How it was found**: by writing the first live test for copy functions. The
+module had 16 unit tests and none of them registered a copy function against a
+real `DuckDB`, so the corruption had never had a chance to happen. Unit tests
+over an FFI wrapper test the wrapper's arithmetic, not its contract with the
+library.
+
+---
+
+## P12: `duckdb_client_context_get_config_option` aborts on a missing setting {#p12}
+
+**Status**: A `DuckDB` defect, not a quack-rs one. Documented on
+`ClientContext::config_option`, with an abort-free alternative.
+
+**Symptom**: `Assertion 'scope != SettingScope::INVALID' failed` and a
+`SIGABRT` when asking for a configuration option that does not exist — but only
+against a `DuckDB` built with debug assertions. Release builds return `NULL`
+exactly as documented, so this never reproduces for end users and always
+reproduces in a test suite that links a debug `DuckDB`.
+
+**Root cause** (`DuckDB` 1.5.5):
+
+```cpp
+// src/main/capi/config_options-c.cpp
+switch (ctx.TryGetCurrentSetting(option_name, result).GetScope()) {
+  ...
+  default:                                    // <- INVALID is handled here
+    res_scope = DUCKDB_CONFIG_OPTION_SCOPE_INVALID;
+
+// src/include/duckdb/main/setting_info.hpp
+SettingScope GetScope() {
+    D_ASSERT(scope != SettingScope::INVALID); // <- but never reached in debug
+    return scope;
+}
+```
+
+The `default:` arm shows the not-found case is *meant* to be tolerated; the code
+just calls `GetScope()` before checking `operator bool()`.
+
+**Your action**: use `ClientContext::config_option` for settings you registered
+or know exist. To ask *whether* a setting exists, use SQL — it has no assertion
+on this path:
+
+```sql
+SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
+```
+
+---
+
 ## Summary
 
 | Pitfall | SDK status | Your action |
@@ -398,3 +519,6 @@ release and therefore stay in sync.
 | P7: VARCHAR format undocumented | Prevented | Use `VectorReader::read_str` |
 | P8: INTERVAL layout undocumented | Prevented | Use `DuckInterval` |
 | P9: dispatch table uninitialised | Fixed | `InMemoryDb::open()` initialises it via C++ shim |
+| P10: unstable ABI tail shifts | Prevented | Use `init_extension`; set `QUACK_RS_TARGET_DUCKDB_VERSION` when building |
+| P11: freeing a borrowed `const char *` | Fixed | Read the C++ impl before `duckdb_free`; prefer quack-rs wrappers |
+| P12: config-option probe aborts (debug) | Documented | Ask `duckdb_settings()` in SQL instead |

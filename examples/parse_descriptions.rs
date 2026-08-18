@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community
+// and encouraging more Rust development!
+
 //! Dev tool: run `parse_description_yml` over a directory of real
 //! `description.yml` files and report what it makes of each.
 //!
