@@ -455,17 +455,20 @@ fn sql_macro_table_to_sql() {
 
 #[test]
 fn sql_macro_invalid_name_rejected() {
-    assert!(SqlMacro::scalar("MyMacro", &[], "1").is_err());
     assert!(SqlMacro::scalar("my-macro", &[], "1").is_err());
     assert!(SqlMacro::scalar("", &[], "1").is_err());
     assert!(SqlMacro::scalar("1func", &[], "1").is_err());
+    assert!(SqlMacro::scalar("my macro", &[], "1").is_err());
+    // Mixed case is legal — DuckDB ships `formatReadableSize`.
+    assert!(SqlMacro::scalar("MyMacro", &[], "1").is_ok());
 }
 
 #[test]
 fn sql_macro_invalid_param_rejected() {
-    assert!(SqlMacro::scalar("f", &["BadParam"], "1").is_err());
     assert!(SqlMacro::scalar("f", &["a-b"], "1").is_err());
     assert!(SqlMacro::scalar("f", &[""], "1").is_err());
+    assert!(SqlMacro::scalar("f", &["a b"], "1").is_err());
+    assert!(SqlMacro::scalar("f", &["MixedCase"], "1").is_ok());
 }
 
 #[test]
@@ -504,8 +507,8 @@ fn sql_macro_clone_produces_equal_sql() {
 
 #[test]
 fn sql_macro_error_mentions_bad_param_name() {
-    let err = SqlMacro::scalar("f", &["Bad"], "1").unwrap_err();
-    assert!(err.as_str().contains("Bad"));
+    let err = SqlMacro::scalar("f", &["bad param"], "1").unwrap_err();
+    assert!(err.as_str().contains("bad param"));
 }
 
 // ---------------------------------------------------------------------------

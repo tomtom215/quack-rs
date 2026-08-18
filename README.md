@@ -595,27 +595,41 @@ configured correctly:
 
 ```toml
 [profile.release]
-panic = "abort"     # REQUIRED: panics across FFI are undefined behavior
+panic = "unwind"    # REQUIRED: see below
 lto = true          # Recommended: reduces binary size
 codegen-units = 1   # Recommended: better optimization quality
 opt-level = 3       # Recommended: maximum performance
 strip = true        # Recommended: smaller binary
 ```
 
+**`unwind`, not `abort`.** quack-rs wraps every `extern "C"` entry point in
+`catch_unwind`, turning a panic in your code into a DuckDB error. `catch_unwind`
+cannot catch anything under `panic = "abort"` — the runtime aborts before
+unwinding starts, so a panic kills the user's whole DuckDB session:
+
+```text
+$ rustc -O panic_probe.rs        && ./panic_probe   # caught,  exit=0
+$ rustc -O -C panic=abort ...    && ./panic_probe   # Aborted, exit=134
+```
+
+The older `abort` advice came from panics escaping an `extern "C"` boundary once
+being undefined behavior. They no longer are — Rust defines that as an abort —
+and quack-rs catches them before the boundary anyway.
+
 ```rust
 use quack_rs::validate::validate_release_profile;
 
 // Validate from parsed Cargo.toml values
-let check = validate_release_profile("abort", "true", "3", "1").unwrap();
+let check = validate_release_profile("unwind", "true", "3", "1").unwrap();
 assert!(check.is_fully_optimized());
-assert!(check.panic_abort);       // REQUIRED
+assert!(check.panic_unwind);      // REQUIRED
 assert!(check.lto_enabled);       // recommended
 assert!(check.opt_level_3);       // recommended
 assert!(check.codegen_units_1);   // recommended
 
-// Missing panic=abort is rejected with a descriptive error
-let err = validate_release_profile("unwind", "true", "3", "1").unwrap_err();
-assert!(err.as_str().contains("panic"));
+// panic = "abort" is rejected: it makes quack-rs's panic handling inert
+let err = validate_release_profile("abort", "true", "3", "1").unwrap_err();
+assert!(err.as_str().contains("catch_unwind"));
 ```
 
 ---

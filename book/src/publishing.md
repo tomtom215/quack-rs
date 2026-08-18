@@ -255,9 +255,18 @@ correctly configured:
 use quack_rs::validate::validate_release_profile;
 
 // Pass all four release profile settings from your Cargo.toml
-validate_release_profile("abort", "true", "3", "1")?;   // Ok
-validate_release_profile("unwind", "true", "3", "1")?;   // Err — panics across FFI are UB
+validate_release_profile("unwind", "true", "3", "1")?;  // Ok
+validate_release_profile("abort", "true", "3", "1")?;   // Err — see below
 ```
+
+`panic` must be `"unwind"`. quack-rs wraps every `extern "C"` entry point in
+`catch_unwind` so a panic in your code becomes a DuckDB error rather than a
+crash, and `catch_unwind` cannot catch anything under `panic = "abort"`: the
+runtime aborts before unwinding starts, killing the user's DuckDB session.
+
+The older advice to set `abort` came from panics escaping an `extern "C"`
+boundary once being undefined behavior. They no longer are — Rust defines that
+as an abort — and quack-rs catches them before the boundary anyway.
 
 ---
 

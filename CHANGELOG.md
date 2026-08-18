@@ -82,6 +82,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
 
+### Fixed (the release-profile validator required the setting that breaks panic safety)
+
+- **`validate_release_profile` required `panic = "abort"`, which makes every one
+  of quack-rs's panic guards inert.** quack-rs wraps every `extern "C"` entry
+  point — the extension entry point and every scalar/table/aggregate/cast/copy
+  callback macro — in `catch_unwind`, so a panic in an extension's code becomes
+  a `DuckDB` error instead of a crash. `catch_unwind` catches nothing under
+  `panic = "abort"`: the runtime aborts before unwinding starts. Demonstrated
+  directly rather than assumed —
+
+  ```text
+  rustc -O            panic_probe.rs  →  caught, process survived,  exit 0
+  rustc -O -C panic=abort  …          →  Aborted,                   exit 134
+  ```
+
+  — so the validator was telling extension authors to configure the one setting
+  that turns a recoverable SQL error into a `SIGABRT` that kills the user's
+  whole `DuckDB` session.
+
+  The crate already disagreed with itself: the scaffold has generated
+  `panic = "unwind"` since the panic-safety work in this release, with a comment
+  explaining why. `validate_release_profile` now requires `"unwind"` and rejects
+  `"abort"` with that explanation; `ReleaseProfileCheck::panic_abort` is renamed
+  `panic_unwind`. A new test asserts the scaffold and the validator agree, so
+  they cannot drift apart again.
+
+  The original justification — "panics across FFI boundaries are undefined
+  behavior" — is also out of date: Rust defines an unwind escaping `extern "C"`
+  as an abort, and quack-rs catches panics before the boundary regardless.
+
+  quack-rs's own `[profile.release]` also said `panic = "abort"`. Cargo ignores a
+  dependency's profile so it changed nothing downstream, but it contradicted the
+  crate's own advice; it now says `"unwind"`.
+
 ### Fixed (a validator made legal function names unregisterable)
 
 - **`validate_function_name` rejected mixed-case names, and it gates

@@ -243,8 +243,9 @@ impl TypeId {
     /// `DuckDB` callbacks.** An extension routinely sees type values it was not
     /// built for — a column of a type added in a newer `DuckDB`, or a 1.5.x type
     /// reaching an extension compiled without `duckdb-1-5`. Returning `None`
-    /// lets the callback raise a `DuckDB` error; panicking there aborts the
-    /// process under the `panic = "abort"` profile extensions usually ship.
+    /// lets the callback raise a `DuckDB` error, which a panic cannot: quack-rs
+    /// turns a caught panic into an error message, but only when the extension
+    /// ships `panic = "unwind"` — under `panic = "abort"` the process dies.
     ///
     /// # Example
     ///
@@ -376,9 +377,10 @@ impl TypeId {
     /// the `duckdb-1-5` feature is disabled, or a future/unknown type value.
     ///
     /// Inside a `DuckDB` callback use
-    /// [`try_from_duckdb_type`][Self::try_from_duckdb_type] instead: a panic
-    /// there cannot be reported to `DuckDB` and aborts the process under
-    /// `panic = "abort"`.
+    /// [`try_from_duckdb_type`][Self::try_from_duckdb_type] instead: returning
+    /// `None` lets you raise a proper `DuckDB` error, whereas a panic is at best
+    /// caught and reported by quack-rs, and under `panic = "abort"` kills the
+    /// process outright.
     #[must_use]
     pub const fn from_duckdb_type(raw: DUCKDB_TYPE) -> Self {
         match Self::try_from_duckdb_type(raw) {
