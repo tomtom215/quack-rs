@@ -329,9 +329,23 @@ jobs:
         run: cargo build --release --bin append_metadata
       - name: Install DuckDB CLI
         run: |
+          set -euo pipefail
           curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
           unzip -o duckdb.zip
           chmod +x duckdb
+          # Record which DuckDB this job is actually testing against. Without
+          # it, a failure three steps later is indistinguishable from a wrong
+          # answer -- and these jobs pull `releases/latest`, so the version
+          # changes underneath them.
+          ./duckdb --version
+          # Prove `-c` runs SQL before anything depends on it. The previous
+          # form, `-no-stdin < file.sql`, produced no output and still exited
+          # 0, so every assertion downstream failed as "wrong answer" when the
+          # SQL had simply never run.
+          test "$(./duckdb -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-c` did not execute SQL"
+            exit 1
+          }
       - name: Stamp the extension metadata footer
         # Loading a bare .so skips DuckDB's metadata validation entirely, so the
         # footer this crate writes would never be exercised. Go through the real
@@ -355,12 +369,14 @@ jobs:
           LOAD '/tmp/ext/hello_ext.duckdb_extension';
           SELECT double_it(21) AS a, first_word('hello world') AS b;
           SQL
-          ./duckdb -no-stdin -csv -noheader < /tmp/probe.sql | tee /tmp/load.log
+          ./duckdb -csv -noheader -c "$(cat /tmp/probe.sql)" | tee /tmp/load.log
 
           # Assert on the actual result, not on the absence of the word "error":
           # a load failure and a wrong answer must both fail this job.
           grep -qx '42,hello' /tmp/load.log || {
             echo "::error::expected '42,hello' from the loaded extension"
+            echo "DuckDB $(./duckdb --version) actually produced:"
+            cat /tmp/load.log
             exit 1
           }
           echo "Extension loaded and produced correct results"
@@ -374,9 +390,23 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Install DuckDB CLI
         run: |
+          set -euo pipefail
           curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
           unzip -o duckdb.zip
           chmod +x duckdb
+          # Record which DuckDB this job is actually testing against. Without
+          # it, a failure three steps later is indistinguishable from a wrong
+          # answer -- and these jobs pull `releases/latest`, so the version
+          # changes underneath them.
+          ./duckdb --version
+          # Prove `-c` runs SQL before anything depends on it. The previous
+          # form, `-no-stdin < file.sql`, produced no output and still exited
+          # 0, so every assertion downstream failed as "wrong answer" when the
+          # SQL had simply never run.
+          test "$(./duckdb -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-c` did not execute SQL"
+            exit 1
+          }
       - name: Generate, build, stamp and load a scaffolded extension
         # `scaffold-compile` only checks that the generated sources compile. This
         # job takes the generated project all the way to a .duckdb_extension that
@@ -406,9 +436,11 @@ jobs:
           LOAD '/tmp/scaffolded/my_analytics.duckdb_extension';
           SELECT my_analytics_hello('world');
           SQL
-          ./duckdb -no-stdin -csv -noheader < /tmp/scaffold_probe.sql | tee /tmp/scaffold.log
+          ./duckdb -csv -noheader -c "$(cat /tmp/scaffold_probe.sql)" | tee /tmp/scaffold.log
           grep -q 'Hello from my_analytics! world' /tmp/scaffold.log || {
             echo "::error::scaffolded extension did not answer correctly"
+            echo "DuckDB $(./duckdb --version) actually produced:"
+            cat /tmp/scaffold.log
             exit 1
           }
       - name: Generated project passes its own lint gate
@@ -429,15 +461,39 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Install DuckDB CLI
         run: |
+          set -euo pipefail
           curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
           unzip -o duckdb.zip
           chmod +x duckdb
+          # Record which DuckDB this job is actually testing against. Without
+          # it, a failure three steps later is indistinguishable from a wrong
+          # answer -- and these jobs pull `releases/latest`, so the version
+          # changes underneath them.
+          ./duckdb --version
+          # Prove `-c` runs SQL before anything depends on it. The previous
+          # form, `-no-stdin < file.sql`, produced no output and still exited
+          # 0, so every assertion downstream failed as "wrong answer" when the
+          # SQL had simply never run.
+          test "$(./duckdb -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-c` did not execute SQL"
+            exit 1
+          }
       # Regression test for the most dangerous failure mode this crate guards
       # against: an extension that touches the unstable region of
       # duckdb_ext_api_v1, compiled against one DuckDB's headers and loaded into
       # another. Without the guard this corrupts the heap; with it, LOAD fails
       # with a diagnostic. See src/abi.rs.
-      - name: Build a demo pinned to DuckDB 1.5.0's header layout
+      - name: Build a demo whose declared DuckDB version contradicts its bindings
+        # The refusal must not depend on `releases/latest` differing from the
+        # pin: when the runner's DuckDB happens to match, the guard correctly
+        # stays silent and this job used to fail claiming the guard was broken.
+        #
+        # QUACK_RS_TARGET_DUCKDB_VERSION=v1.2.0 (408 slots) against
+        # libduckdb-sys =1.10500.0 (DuckDB 1.5.0, 545 slots) is a contradiction
+        # the guard can settle without consulting the engine at all, so this
+        # fires on every runner.
+        env:
+          QUACK_RS_TARGET_DUCKDB_VERSION: v1.2.0
         run: |
           set -euo pipefail
           cargo build --release --bin append_metadata
@@ -489,12 +545,26 @@ jobs:
           LOAD '/tmp/abi_demo/abi_demo.duckdb_extension';
           SQL
           # DuckDB exits non-zero on the failed LOAD, which is the expected outcome.
-          ./duckdb -no-stdin < /tmp/abi_probe.sql > /tmp/abi.log 2>&1 || true
+          ./duckdb -c "$(cat /tmp/abi_probe.sql)" > /tmp/abi.log 2>&1 || true
+          echo "--- DuckDB $(./duckdb --version) said: ---"
           cat /tmp/abi.log
-          grep -q "C extension API layout mismatch" /tmp/abi.log || {
-            echo "::error::the ABI guard did not refuse a cross-version unstable build"
+          echo "--- end ---"
+          # This is the DeclaredVersionMismatch arm of AbiCheck::error_message,
+          # pinned by `declared_version_mismatch_matches_the_ci_regression_test`
+          # in src/abi.rs so the job and the code cannot drift apart.
+          grep -q "QUACK_RS_TARGET_DUCKDB_VERSION says this extension was built against DuckDB" /tmp/abi.log || {
+            echo "::error::the ABI guard did not refuse a build whose declared DuckDB version contradicts its bindings"
             exit 1
           }
+          # And the extension must not have loaded: a refusal that still
+          # registers its functions would be worse than no guard at all.
+          ./duckdb -csv -noheader -c "SET allow_unsigned_extensions=true; LOAD '/tmp/abi_demo/abi_demo.duckdb_extension'; SELECT abi_demo_ok(1);" \
+            > /tmp/abi_fn.log 2>&1 || true
+          if grep -q '^2$' /tmp/abi_fn.log; then
+            echo "::error::the refused extension still registered abi_demo_ok"
+            cat /tmp/abi_fn.log
+            exit 1
+          fi
 
   publish-dry-run:
     name: Publish dry-run

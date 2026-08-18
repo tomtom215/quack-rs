@@ -859,4 +859,30 @@ mod live_tests {
         );
         assert!(result.error_message().is_none());
     }
+    /// The scenario the `abi-guard` CI job builds: `QUACK_RS_TARGET_DUCKDB_VERSION`
+    /// declares v1.2.0 (408 slots) while `libduckdb-sys` is pinned to
+    /// =1.10500.0, i.e. DuckDB 1.5.0's 545-slot layout.
+    ///
+    /// The job asserts on this exact message, and it must fire without
+    /// consulting the engine — the runner pulls `releases/latest`, so anything
+    /// that depends on the engine version differing from the pin is a coin
+    /// flip. Passing `None` for the engine version proves that.
+    #[test]
+    fn declared_version_mismatch_matches_the_ci_regression_test() {
+        for engine in [None, Some("v1.5.0"), Some("v1.5.5"), Some("v9.9.9")] {
+            let check = decide(545, engine, Some("v1.2.0"));
+            assert!(
+                matches!(check, AbiCheck::DeclaredVersionMismatch { .. }),
+                "engine {engine:?} gave {check:?}"
+            );
+            assert!(!check.is_compatible());
+            let msg = check.error_message().expect("a refusal carries a message");
+            assert!(
+                msg.contains(
+                    "QUACK_RS_TARGET_DUCKDB_VERSION says this extension was built against DuckDB"
+                ),
+                "the CI job greps for this exact prefix: {msg}"
+            );
+        }
+    }
 }
