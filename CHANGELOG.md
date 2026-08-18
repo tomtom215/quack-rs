@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **New `abi` module: `duckdb_ext_api_v1` layout verification.** `DuckDB` hands a
+  loadable extension a struct of function pointers. Its first 357 slots — the
+  "stable prefix" — have been byte-for-byte identical in every release from
+  v1.2.0 through v1.5.5, but everything past that is the *unstable* region, and
+  `DuckDB` inserts new entries **in the middle** of it between releases
+  (`duckdb_appender_clear` at slot 410 in v1.5.0, `duckdb_geometry_type_get_crs`
+  at slot 493 in v1.5.2). Every quack-rs wrapper behind the `duckdb-1-5` /
+  `duckdb-1-5-3` features — 105 C API functions covering scalar bind/init, copy
+  functions, catalog access, `ErrorData`, `FileSystem`, `Expression`,
+  `SelectionVector`, config options, table descriptions and the client context —
+  lives in that region.
+
+  `DuckDB` does not catch this: an extension stamped `C_STRUCT` + `v1.2.0` (the
+  default) is accepted by *any* `DuckDB` whose C API version is at least v1.2.0
+  and then handed the whole struct, unstable region included. Loading such a
+  build into a `DuckDB` with a different layout silently dispatches to the wrong
+  function pointers. Verified end-to-end: an extension built against `DuckDB`
+  1.5.0's headers, stamped `C_STRUCT`/`v1.2.0`, loaded into `DuckDB` 1.5.5 aborts
+  the process with `double free or corruption`.
+
+  [`abi::check`] compares the slot count of the compiled-in layout against the
+  layout the running engine uses (resolved from `duckdb_library_version()`, which
+  sits at stable slot 7 and is therefore always dispatched correctly).
+  `init_extension` / `init_extension_v2` and the `entry_point!` /
+  `entry_point_v2!` macros now run that check under the new
+  [`AbiPolicy::Strict`] default whenever `duckdb-1-5` is enabled, turning the
+  memory corruption above into a `LOAD` error that names the mismatch and the
+  remedy. `AbiPolicy::Warn` and `AbiPolicy::Trust` opt out; `Trust` is the right
+  choice for binaries stamped `C_STRUCT_UNSTABLE`, where `DuckDB` already pins
+  the release. Extensions that stay on the stable prefix are unaffected and keep
+  their forward compatibility.
+
+  `scripts/check-abi-table.py` re-derives the layout table from every upstream
+  release header and runs in CI, so the table cannot drift as `DuckDB` releases.
+
+- **`DuckStringView::from_bytes` was unsound.** It was safe to call yet
+  dereferenced the heap pointer embedded in bytes 8–15 of a pointer-format
+  `duckdb_string_t`, so safe code holding attacker-influenced bytes could read
+  arbitrary memory. Replaced by two honest constructors: `from_raw` (`unsafe`,
+  honours pointer format — what callbacks want) and `inline_from_bytes` (safe,
+  returns `None` for pointer-format values). `from_bytes` is deprecated and no
+  longer dereferences.
+
+### Fixed
+
+- **`ChunkWriter` no longer hardcodes a 2048-row capacity.** `DuckDB` can be
+  built with a different `STANDARD_VECTOR_SIZE`, which is exactly why the C API
+  exposes `duckdb_vector_size()`; assuming 2048 against a smaller build overruns
+  the output vectors. `ChunkWriter::new` now reads the running engine's value.
+  `ChunkWriter::new` and `DataChunk::into_chunk_writer` are consequently no
+  longer `const fn`.
+
+- **The scaffold produced an extension `DuckDB` refuses to load.** The generated
+  `Makefile` set `DUCKDB_PLATFORM_VERSION`, which `extension-ci-tools` does not
+  read, alongside `USE_UNSTABLE_C_API=1`. `TARGET_DUCKDB_VERSION` therefore fell
+  back to its `v0.0.1` default and the binary was stamped
+  `C_STRUCT_UNSTABLE`/`v0.0.1`, which `DuckDB` rejects with *"The file was built
+  specifically for DuckDB version 'v0.0.1'"*. The generated `Makefile` now sets
+  `EXTENSION_NAME` (not `EXT_NAME`, which `base.Makefile` ignores),
+  `TARGET_DUCKDB_VERSION` and `USE_UNSTABLE_C_API` from the new
+  `ScaffoldConfig` fields, and defines the `all`/`configure`/`debug`/`release`/
+  `test`/`clean` targets its own README and CI invoke.
+
+- **The scaffold generated `panic = "abort"`**, which makes the `catch_unwind` in
+  `scalar_callback!`, `table_scan_callback!` and the extension entry point inert
+  — so any panic in extension code killed the whole `DuckDB` process instead of
+  surfacing as a SQL error. Now generates `panic = "unwind"`.
+
+- **The scaffold pinned `quack-rs = "0.13"`** regardless of the generating
+  crate's version. It now tracks the current major.minor.
+
+- **A freshly scaffolded project failed its own generated CI.** `cargo clippy
+  --all-targets -- -D warnings` (which the generated workflow runs) rejected the
+  generated `src/lib.rs` for `clippy::redundant_closure` and `src/wasm_lib.rs`
+  for `special_module_name`. Both are fixed; a new `scaffold-e2e` CI job builds
+  the generated project, stamps its metadata footer, loads it into a real
+  `DuckDB`, asserts the query result, and runs the generated lint gate.
+
+- **The generated CI referenced a nonexistent action** (`duckdb/duckdb-build@v1`)
+  and ran `make test` without `make configure` / `make release`, so it could not
+  have passed. Replaced with a workflow that configures, builds and tests through
+  `extension-ci-tools`.
+
+- **The extension entry point ran user registration code without
+  `catch_unwind`.** A panic in a registration closure unwound to the
+  `extern "C"` entry point, aborting the process; it now becomes a `LOAD` error.
+  An `api_version` containing an interior NUL is also rejected up front instead
+  of panicking inside `libduckdb-sys`.
+
+### Added
+
+- `TypeId::try_from_duckdb_type` — returns `Option<TypeId>` instead of panicking
+  on a type value this build does not know. Extensions routinely meet these: a
+  column of a type added in a newer `DuckDB`, or a 1.5.x type reaching a build
+  without `duckdb-1-5`. `from_duckdb_type` still panics and now documents that
+  callbacks should not use it.
+- Fallible `LogicalType` constructors that previously panicked on an interior NUL
+  in a caller-supplied name: `try_struct_type_from_logical`, `try_union_type`,
+  `try_union_type_from_logical`, `try_enum_type`, `try_set_alias`.
+- `entry_point!` / `entry_point_v2!` accept an optional [`AbiPolicy`] as their
+  second argument; `init_extension_with_policy` /
+  `init_extension_v2_with_policy` are the function-level equivalents.
+- `examples/scaffold_to_dir.rs` — writes a scaffolded project to disk, used by
+  the new `scaffold-e2e` CI job.
+
+### Changed
+
+- **Breaking:** `ScaffoldConfig` gains `target_duckdb_version` and
+  `use_unstable_c_api`. `ScaffoldConfig` now implements `Default`, so existing
+  struct literals can add `..ScaffoldConfig::default()`. `generate_scaffold`
+  rejects combinations that produce an unloadable binary — a `C_STRUCT` build
+  claiming a `DuckDB` release as its `-dv`, or a `C_STRUCT_UNSTABLE` build
+  claiming the C API version.
+
+### CI / tooling
+
+- New `abi-table` job: `scripts/check-abi-table.py` verifies `src/abi.rs`'s
+  layout table against every upstream `DuckDB` release header.
+- New `abi-guard` job: builds an extension against `DuckDB` 1.5.0's header
+  layout, stamps it `C_STRUCT`, and asserts the load is refused with a layout
+  diagnostic — a regression test for the corruption described above.
+- New `scaffold-e2e` job (see above).
+- `extension-load` now stamps a real metadata footer and asserts query *results*
+  rather than grepping the log for the word "error"; loading a bare `.so`
+  bypassed `DuckDB`'s metadata validation entirely.
+
+[`abi::check`]: https://docs.rs/quack-rs/latest/quack_rs/abi/fn.check.html
+[`AbiPolicy`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
+[`AbiPolicy::Strict`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
+
 ## [0.15.0] - 2026-07-16
 
 ### Added

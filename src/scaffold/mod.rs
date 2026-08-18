@@ -35,6 +35,7 @@
 //!     maintainer: "Jane Doe".to_string(),
 //!     github_repo: "janedoe/duckdb-my-analytics".to_string(),
 //!     excluded_platforms: vec![],
+//!     ..ScaffoldConfig::default()
 //! };
 //!
 //! let files = generate_scaffold(&config).unwrap();
@@ -69,6 +70,47 @@ pub struct ScaffoldConfig {
     pub github_repo: String,
     /// Platforms to exclude from CI builds (e.g., `["wasm_mvp", "wasm_eh"]`).
     pub excluded_platforms: Vec<String>,
+    /// Value written as `TARGET_DUCKDB_VERSION` in the generated `Makefile`.
+    ///
+    /// `extension-ci-tools` passes this to `append_extension_metadata.py -dv`,
+    /// and its meaning depends on [`use_unstable_c_api`][Self::use_unstable_c_api]:
+    ///
+    /// - `false` → the **C extension API** version, i.e.
+    ///   [`DUCKDB_API_VERSION`][crate::DUCKDB_API_VERSION] (`"v1.2.0"`). The
+    ///   extension is stamped `C_STRUCT` and loads into any `DuckDB` whose C API
+    ///   version is at least this.
+    /// - `true` → an exact **`DuckDB` release**, e.g. `"v1.5.5"`. The extension
+    ///   is stamped `C_STRUCT_UNSTABLE` and `DuckDB` refuses to load it into any
+    ///   other release.
+    ///
+    /// Defaults to [`DUCKDB_API_VERSION`][crate::DUCKDB_API_VERSION].
+    pub target_duckdb_version: String,
+    /// Whether the generated `Makefile` sets `USE_UNSTABLE_C_API=1`.
+    ///
+    /// Set this when the extension enables quack-rs's `duckdb-1-5` /
+    /// `duckdb-1-5-3` features. Those wrap C API functions that live past the
+    /// stable prefix of `duckdb_ext_api_v1`, where `DuckDB` inserts new entries
+    /// between releases — so the binary must be pinned to one release. See
+    /// [`crate::abi`].
+    ///
+    /// Defaults to `false`.
+    pub use_unstable_c_api: bool,
+}
+
+impl Default for ScaffoldConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            version: String::from("0.1.0"),
+            license: String::from("MIT"),
+            maintainer: String::new(),
+            github_repo: String::new(),
+            excluded_platforms: Vec::new(),
+            target_duckdb_version: String::from(crate::DUCKDB_API_VERSION),
+            use_unstable_c_api: false,
+        }
+    }
 }
 
 /// A generated file with its relative path and content.
@@ -78,6 +120,56 @@ pub struct GeneratedFile {
     pub path: String,
     /// File content as a string.
     pub content: String,
+}
+
+/// Checks that `target_duckdb_version` is a `vX.Y.Z` string and is consistent
+/// with `use_unstable_c_api`.
+///
+/// The two settings are coupled: `extension-ci-tools` feeds
+/// `TARGET_DUCKDB_VERSION` to `append_extension_metadata.py -dv`, where it means
+/// the C API version for a `C_STRUCT` build and an exact `DuckDB` release for a
+/// `C_STRUCT_UNSTABLE` one. Getting this wrong yields a binary `DuckDB` silently
+/// refuses to load ("built specifically for `DuckDB` version …").
+fn validate_target_duckdb_version(config: &ScaffoldConfig) -> Result<(), ExtensionError> {
+    let version = config.target_duckdb_version.as_str();
+
+    let numeric = version.strip_prefix('v').ok_or_else(|| {
+        ExtensionError::new(format!(
+            "target_duckdb_version must start with 'v' (e.g. \"v1.5.5\"), got {version:?}"
+        ))
+    })?;
+    let parts: Vec<&str> = numeric.split('.').collect();
+    let well_formed = parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    if !well_formed {
+        return Err(ExtensionError::new(format!(
+            "target_duckdb_version must be 'vMAJOR.MINOR.PATCH' (e.g. \"v1.5.5\"), got {version:?}"
+        )));
+    }
+
+    if !config.use_unstable_c_api && version != crate::DUCKDB_API_VERSION {
+        return Err(ExtensionError::new(format!(
+            "with use_unstable_c_api = false the extension is stamped C_STRUCT, so \
+             target_duckdb_version is the C extension API version and must be {:?}; got \
+             {version:?}. Set use_unstable_c_api = true to pin the binary to DuckDB \
+             {version} instead.",
+            crate::DUCKDB_API_VERSION
+        )));
+    }
+
+    if config.use_unstable_c_api && version == crate::DUCKDB_API_VERSION {
+        return Err(ExtensionError::new(format!(
+            "with use_unstable_c_api = true the extension is stamped C_STRUCT_UNSTABLE and \
+             DuckDB requires target_duckdb_version to be the exact DuckDB release it will be \
+             loaded into (e.g. \"v1.5.5\"); {:?} is the C extension API version, not a \
+             DuckDB release to pin to.",
+            crate::DUCKDB_API_VERSION
+        )));
+    }
+
+    Ok(())
 }
 
 /// Generates the complete set of project files for a new `DuckDB` Rust extension.
@@ -96,6 +188,8 @@ pub fn generate_scaffold(config: &ScaffoldConfig) -> Result<Vec<GeneratedFile>, 
     for platform in &config.excluded_platforms {
         crate::validate::validate_platform(platform)?;
     }
+
+    validate_target_duckdb_version(config)?;
 
     let files = vec![
         GeneratedFile {

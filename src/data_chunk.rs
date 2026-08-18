@@ -178,7 +178,7 @@ impl DataChunk {
     ///
     /// This chunk must be a valid, writable output chunk from a table function
     /// scan callback.
-    pub const unsafe fn into_chunk_writer(self) -> ChunkWriter {
+    pub unsafe fn into_chunk_writer(self) -> ChunkWriter {
         // SAFETY: self.raw is valid per constructor's contract.
         unsafe { ChunkWriter::new(self.raw) }
     }

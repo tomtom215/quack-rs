@@ -28,7 +28,7 @@
 //!     b[4..9].copy_from_slice(b"hello");
 //!     b
 //! };
-//! let view = DuckStringView::from_bytes(&bytes);
+//! let view = DuckStringView::inline_from_bytes(&bytes).expect("inline value");
 //! assert_eq!(view.as_str(), Some("hello"));
 //! assert_eq!(view.len(), 5);
 //! ```
@@ -43,25 +43,111 @@ pub const DUCK_STRING_INLINE_MAX_LEN: usize = 12;
 ///
 /// This type borrows from the raw vector data — it does not allocate.
 ///
-/// # Safety
+/// # Constructing a view
 ///
-/// The `data` slice from which this view is created must outlive the view.
-/// For pointer-format strings, the pointed-to heap data must also be valid.
+/// A `duckdb_string_t` longer than [`DUCK_STRING_INLINE_MAX_LEN`] stores a raw
+/// heap pointer in bytes 8–15. Reading such a value means dereferencing a
+/// pointer taken from the input bytes, which can only be justified by the
+/// caller — so it lives behind [`from_raw`][Self::from_raw], an `unsafe fn`.
+///
+/// [`inline_from_bytes`][Self::inline_from_bytes] is the safe constructor: it
+/// accepts any 16 bytes and refuses (returns `None`) whenever the value is in
+/// pointer format, so a view built through it can never dereference anything.
 #[derive(Debug, Clone, Copy)]
 pub struct DuckStringView<'a> {
     bytes: &'a [u8],
     length: usize,
+    /// `true` when the caller has vouched for the pointer in bytes 8–15 by going
+    /// through the `unsafe` constructor. Views built safely keep this `false`
+    /// and never dereference.
+    pointer_is_trusted: bool,
 }
 
 impl<'a> DuckStringView<'a> {
+    /// Creates a `DuckStringView` from a genuine `duckdb_string_t`.
+    ///
+    /// This is the constructor to use inside `DuckDB` callbacks, where the 16
+    /// bytes really did come from a `DuckDB` vector.
+    ///
+    /// # Safety
+    ///
+    /// If the length field (bytes 0–3) exceeds [`DUCK_STRING_INLINE_MAX_LEN`],
+    /// bytes 8–15 must hold a valid pointer to at least `length` readable bytes
+    /// that stay live for `'a`.
+    #[must_use]
+    pub const unsafe fn from_raw(raw: &'a [u8; DUCK_STRING_SIZE]) -> Self {
+        let length = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        Self {
+            bytes: raw,
+            length,
+            pointer_is_trusted: true,
+        }
+    }
+
+    /// Creates a `DuckStringView` from 16 bytes that may come from anywhere.
+    ///
+    /// Returns `None` if the value is in pointer format (length >
+    /// [`DUCK_STRING_INLINE_MAX_LEN`]), because honouring the embedded pointer
+    /// would mean dereferencing an address chosen by the input.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use quack_rs::vector::string::DuckStringView;
+    ///
+    /// let mut inline = [0u8; 16];
+    /// inline[0] = 5;
+    /// inline[4..9].copy_from_slice(b"hello");
+    /// assert_eq!(
+    ///     DuckStringView::inline_from_bytes(&inline).and_then(|v| v.as_str()),
+    ///     Some("hello")
+    /// );
+    ///
+    /// // A pointer-format value is refused rather than dereferenced.
+    /// let mut pointer_format = [0u8; 16];
+    /// pointer_format[..4].copy_from_slice(&64u32.to_le_bytes());
+    /// pointer_format[8..16].copy_from_slice(&0xdead_beef_u64.to_le_bytes());
+    /// assert!(DuckStringView::inline_from_bytes(&pointer_format).is_none());
+    /// ```
+    #[must_use]
+    pub const fn inline_from_bytes(raw: &'a [u8; DUCK_STRING_SIZE]) -> Option<Self> {
+        let length = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        if length > DUCK_STRING_INLINE_MAX_LEN {
+            return None;
+        }
+        Some(Self {
+            bytes: raw,
+            length,
+            pointer_is_trusted: false,
+        })
+    }
+
     /// Creates a `DuckStringView` from the raw 16-byte representation.
     ///
-    /// The input is a fixed-size `[u8; 16]` reference, so the size is
-    /// enforced at compile time.
+    /// # Deprecated
+    ///
+    /// This constructor is safe but cannot honour pointer-format values: doing
+    /// so would dereference an address supplied by its (safe) caller. It now
+    /// behaves exactly like [`inline_from_bytes`][Self::inline_from_bytes]
+    /// except that it cannot report the refusal, so a pointer-format value
+    /// yields a view whose accessors return `None`.
+    ///
+    /// Use [`from_raw`][Self::from_raw] for real `duckdb_string_t` values, or
+    /// [`inline_from_bytes`][Self::inline_from_bytes] when the input is
+    /// untrusted and you want the refusal to be visible.
     #[must_use]
+    #[deprecated(
+        since = "0.16.0",
+        note = "use `DuckStringView::from_raw` (unsafe, honours pointer format) or \
+                `DuckStringView::inline_from_bytes` (safe, refuses pointer format)"
+    )]
     pub const fn from_bytes(raw: &'a [u8; DUCK_STRING_SIZE]) -> Self {
         let length = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
-        Self { bytes: raw, length }
+        Self {
+            bytes: raw,
+            length,
+            pointer_is_trusted: false,
+        }
     }
 
     /// Returns the length of the string in bytes.
@@ -83,11 +169,14 @@ impl<'a> DuckStringView<'a> {
     /// The returned `&'a str` has the same lifetime as the underlying data slice —
     /// not the lifetime of `self`. This allows the result to outlive the `DuckStringView`.
     ///
-    /// # Safety
+    /// Returns `None` when the bytes are not valid UTF-8, when a pointer-format
+    /// value carries a null pointer, or when this view was built through a safe
+    /// constructor and the value is in pointer format (see
+    /// [`inline_from_bytes`][Self::inline_from_bytes]).
     ///
-    /// For pointer-format strings (length > 12), the pointer stored at bytes 8–15
-    /// must be a valid pointer to at least `self.length` bytes of string data that
-    /// is live for lifetime `'a`.
+    /// The pointer-format obligation — that bytes 8–15 address `len()` live
+    /// bytes — was discharged when the view was created via
+    /// [`from_raw`][Self::from_raw].
     #[must_use]
     pub fn as_str(&self) -> Option<&'a str> {
         let slice = self.as_bytes_unsafe()?;
@@ -117,6 +206,11 @@ impl<'a> DuckStringView<'a> {
         if self.length <= DUCK_STRING_INLINE_MAX_LEN {
             // Inline case: data starts at byte 4, length bytes follow
             Some(&self.bytes[4..4 + self.length])
+        } else if !self.pointer_is_trusted {
+            // Pointer format, but this view was built through a safe
+            // constructor. Dereferencing bytes 8..16 would follow an address the
+            // safe caller supplied, so refuse instead.
+            None
         } else {
             // Pointer case: bytes 8–15 hold the heap pointer in an 8-byte slot.
             // SAFETY: For pointer-format strings, bytes 8..16 hold a valid pointer
@@ -181,7 +275,10 @@ pub unsafe fn read_duck_string<'a>(data: *const u8, idx: usize) -> &'a str {
     let raw_bytes: &'a [u8; DUCK_STRING_SIZE] =
         unsafe { &*str_ptr.cast::<[u8; DUCK_STRING_SIZE]>() };
     // DuckStringView<'a> stores &'a [u8], so as_str() returns Option<&'a str>.
-    DuckStringView::from_bytes(raw_bytes).as_str().unwrap_or("")
+    // SAFETY: the caller vouched for the vector's pointer-format payloads.
+    unsafe { DuckStringView::from_raw(raw_bytes) }
+        .as_str()
+        .unwrap_or("")
 }
 
 /// Reads a `DuckDB` `BLOB` value at the given row index.
@@ -201,7 +298,8 @@ pub unsafe fn read_duck_blob<'a>(data: *const u8, idx: usize) -> &'a [u8] {
     let str_ptr = unsafe { data.add(idx * DUCK_STRING_SIZE) };
     let raw_bytes: &'a [u8; DUCK_STRING_SIZE] =
         unsafe { &*str_ptr.cast::<[u8; DUCK_STRING_SIZE]>() };
-    DuckStringView::from_bytes(raw_bytes)
+    // SAFETY: the caller vouched for the vector's pointer-format payloads.
+    unsafe { DuckStringView::from_raw(raw_bytes) }
         .as_bytes_unsafe()
         .unwrap_or(&[])
 }
@@ -225,7 +323,7 @@ mod tests {
     #[test]
     fn empty_string_inline() {
         let bytes = make_inline_bytes("");
-        let view = DuckStringView::from_bytes(&bytes);
+        let view = DuckStringView::inline_from_bytes(&bytes).expect("inline");
         assert_eq!(view.len(), 0);
         assert!(view.is_empty());
         assert_eq!(view.as_str(), Some(""));
@@ -234,7 +332,7 @@ mod tests {
     #[test]
     fn short_string_inline() {
         let bytes = make_inline_bytes("hello");
-        let view = DuckStringView::from_bytes(&bytes);
+        let view = DuckStringView::inline_from_bytes(&bytes).expect("inline");
         assert_eq!(view.len(), 5);
         assert!(!view.is_empty());
         assert_eq!(view.as_str(), Some("hello"));
@@ -245,7 +343,7 @@ mod tests {
         let s = "abcdefghijkl"; // exactly 12 bytes
         assert_eq!(s.len(), DUCK_STRING_INLINE_MAX_LEN);
         let bytes = make_inline_bytes(s);
-        let view = DuckStringView::from_bytes(&bytes);
+        let view = DuckStringView::inline_from_bytes(&bytes).expect("inline");
         assert_eq!(view.len(), 12);
         assert_eq!(view.as_str(), Some(s));
     }
@@ -296,7 +394,8 @@ mod tests {
         let ptr_val = ptr as usize as u64;
         bytes[8..16].copy_from_slice(&ptr_val.to_le_bytes());
 
-        let view = DuckStringView::from_bytes(&bytes);
+        // SAFETY: `bytes` really does point at `long_str`, which outlives the view.
+        let view = unsafe { DuckStringView::from_raw(&bytes) };
         assert_eq!(view.len(), len);
         assert_eq!(view.as_str(), Some(long_str));
     }
@@ -308,7 +407,9 @@ mod tests {
         bytes[..4].copy_from_slice(&13u32.to_le_bytes());
         // pointer bytes 8..16 remain 0 (null pointer)
 
-        let view = DuckStringView::from_bytes(&bytes);
+        // SAFETY: the length says pointer-format, and the null pointer case is
+        // exactly what this test exercises.
+        let view = unsafe { DuckStringView::from_raw(&bytes) };
         // Null pointer for long string should return None
         assert!(view.as_str().is_none());
         assert!(unsafe { read_duck_blob(bytes.as_ptr(), 0) }.is_empty());
@@ -342,6 +443,42 @@ mod tests {
         // SAFETY: bytes is a valid pointer-format duckdb_string_t at idx 0.
         let s = unsafe { read_duck_string(bytes.as_ptr(), 0) };
         assert_eq!(s, long_str);
+    }
+
+    #[test]
+    fn safe_constructor_refuses_pointer_format_instead_of_dereferencing() {
+        // A hostile 16 bytes: length says "pointer format", and the pointer slot
+        // holds an address that must never be dereferenced.
+        let mut bytes = [0u8; DUCK_STRING_SIZE];
+        bytes[..4].copy_from_slice(&1024u32.to_le_bytes());
+        bytes[8..16].copy_from_slice(&0xdead_beef_dead_beef_u64.to_le_bytes());
+
+        assert!(DuckStringView::inline_from_bytes(&bytes).is_none());
+    }
+
+    #[test]
+    fn safe_constructor_accepts_every_inline_length() {
+        for len in 0..=DUCK_STRING_INLINE_MAX_LEN {
+            let mut bytes = [b'x'; DUCK_STRING_SIZE];
+            bytes[..4].copy_from_slice(&u32::try_from(len).expect("fits").to_le_bytes());
+            let view = DuckStringView::inline_from_bytes(&bytes)
+                .unwrap_or_else(|| panic!("length {len} must be inline"));
+            assert_eq!(view.len(), len);
+            assert_eq!(view.as_str().map(str::len), Some(len));
+        }
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_constructor_no_longer_dereferences() {
+        // The old safe `from_bytes` used to follow this pointer. It must not.
+        let mut bytes = [0u8; DUCK_STRING_SIZE];
+        bytes[..4].copy_from_slice(&64u32.to_le_bytes());
+        bytes[8..16].copy_from_slice(&0xdead_beef_dead_beef_u64.to_le_bytes());
+
+        let view = DuckStringView::from_bytes(&bytes);
+        assert_eq!(view.len(), 64);
+        assert_eq!(view.as_str(), None);
     }
 
     #[test]

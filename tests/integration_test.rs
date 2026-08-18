@@ -396,7 +396,7 @@ fn duck_string_view_inline_format() {
     bytes[0..4].copy_from_slice(&u32::try_from(s.len()).unwrap_or(u32::MAX).to_le_bytes());
     bytes[4..4 + s.len()].copy_from_slice(s);
 
-    let view = DuckStringView::from_bytes(&bytes);
+    let view = DuckStringView::inline_from_bytes(&bytes).expect("inline value");
     assert_eq!(view.len(), 5);
     assert!(!view.is_empty());
     assert_eq!(view.as_str(), Some("hello"));
@@ -407,7 +407,7 @@ fn duck_string_view_empty_string() {
     use quack_rs::vector::DuckStringView;
 
     let bytes = [0u8; 16]; // len = 0
-    let view = DuckStringView::from_bytes(&bytes);
+    let view = DuckStringView::inline_from_bytes(&bytes).expect("inline value");
     assert_eq!(view.len(), 0);
     assert!(view.is_empty());
 }
@@ -531,6 +531,7 @@ fn scaffold_generated_code_compiles() {
         maintainer: "CI".to_string(),
         github_repo: "test/test-ext".to_string(),
         excluded_platforms: vec![],
+        ..ScaffoldConfig::default()
     };
 
     let files = generate_scaffold(&config).unwrap();

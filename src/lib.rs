@@ -44,6 +44,7 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
+//! | [`abi`] | `DuckDB` C extension API layout verification (stable vs unstable region) |
 //! | [`callback`] | Safe `extern "C"` callback wrapper macros (`scalar_callback!`, `table_scan_callback!`) |
 //! | [`chunk_writer`] | Auto-sizing chunk writer for table scan callbacks (auto `set_size` on drop) |
 //! | [`data_chunk`] | Ergonomic wrapper for `DuckDB` data chunks |
@@ -126,6 +127,7 @@
 #[cfg(not(any(target_pointer_width = "64", target_arch = "wasm32")))]
 compile_error!("quack-rs supports 64-bit targets and wasm32-unknown-emscripten.");
 
+pub mod abi;
 pub mod aggregate;
 pub mod callback;
 pub mod cast;

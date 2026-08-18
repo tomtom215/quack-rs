@@ -5,7 +5,8 @@
 #
 # Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
 #       clippy, clippy-beta, fmt, doc, msrv, bench-compile, example-check,
-#       scaffold-compile, symbol-check, extension-load, publish-dry-run,
+#       scaffold-compile, scaffold-e2e, symbol-check, extension-load,
+#       abi-table, abi-guard, publish-dry-run,
 #       security, osv-scan, nightly.
 
 name: CI
@@ -265,6 +266,18 @@ jobs:
           }
           echo "Found _hello_ext_init_c_api in $DYLIB"
 
+  abi-table:
+    name: ABI layout table (vs upstream DuckDB headers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Re-derives the DuckDB release -> duckdb_ext_api_v1 slot-count table in
+      # src/abi.rs straight from each release's duckdb_extension.h. Fails when a
+      # new DuckDB release changes the layout, which is exactly when the runtime
+      # guard would start refusing loads it should accept.
+      - name: Verify src/abi.rs matches upstream
+        run: python3 scripts/check-abi-table.py
+
   extension-load:
     name: Extension load test (DuckDB)
     runs-on: ubuntu-latest
@@ -274,24 +287,176 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
+      - name: Build append_metadata
+        run: cargo build --release --bin append_metadata
       - name: Install DuckDB CLI
         run: |
           curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
           unzip -o duckdb.zip
           chmod +x duckdb
-      - name: Load extension and run query
+      - name: Stamp the extension metadata footer
+        # Loading a bare .so skips DuckDB's metadata validation entirely, so the
+        # footer this crate writes would never be exercised. Go through the real
+        # .duckdb_extension path instead.
         run: |
+          set -euo pipefail
           SO="examples/hello-ext/target/release/libhello_ext.so"
-          if [ ! -f "$SO" ]; then echo "ERROR: $SO not found"; exit 1; fi
+          test -f "$SO" || { echo "::error::$SO not found"; exit 1; }
+          mkdir -p /tmp/ext
+          ./target/release/append_metadata "$SO" /tmp/ext/hello_ext.duckdb_extension \
+            --abi-type C_STRUCT \
+            --extension-version v0.1.0 \
+            --duckdb-version v1.2.0 \
+            --platform linux_amd64 \
+            --dump
+      - name: Load extension and assert query results
+        run: |
+          set -euo pipefail
+          cat > /tmp/probe.sql <<'SQL'
+          SET allow_unsigned_extensions=true;
+          LOAD '/tmp/ext/hello_ext.duckdb_extension';
+          SELECT double_it(21) AS a, first_word('hello world') AS b;
+          SQL
+          ./duckdb -no-stdin -csv -noheader < /tmp/probe.sql | tee /tmp/load.log
 
-          echo "SET allow_unsigned_extensions=true; LOAD '${SO}';" | ./duckdb -no-stdin 2>&1 | tee /tmp/load.log
-
-          # Verify the extension loaded without errors
-          if grep -qi "error\|fatal\|panic" /tmp/load.log; then
-            echo "::error::Extension failed to load in DuckDB"
+          # Assert on the actual result, not on the absence of the word "error":
+          # a load failure and a wrong answer must both fail this job.
+          grep -qx '42,hello' /tmp/load.log || {
+            echo "::error::expected '42,hello' from the loaded extension"
             exit 1
-          fi
-          echo "Extension loaded successfully in DuckDB"
+          }
+          echo "Extension loaded and produced correct results"
+
+  scaffold-e2e:
+    name: Scaffold end-to-end (build, stamp, load, query)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install DuckDB CLI
+        run: |
+          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          unzip -o duckdb.zip
+          chmod +x duckdb
+      - name: Generate, build, stamp and load a scaffolded extension
+        # `scaffold-compile` only checks that the generated sources compile. This
+        # job takes the generated project all the way to a .duckdb_extension that
+        # a real DuckDB loads and queries — which is what "the scaffold works"
+        # actually means.
+        run: |
+          set -euo pipefail
+          cargo build --release --bin append_metadata
+          cargo run --release --example scaffold_to_dir -- /tmp/scaffolded
+          # Build against this working copy rather than the published crate.
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("/tmp/scaffolded/Cargo.toml")
+          s = p.read_text()
+          s = re.sub(r'quack-rs = \{ version = "[^"]+" \}',
+                     'quack-rs = { path = "%s" }' % pathlib.Path.cwd(), s)
+          p.write_text(s)
+          PY
+          (cd /tmp/scaffolded && cargo build --release)
+          ./target/release/append_metadata \
+            /tmp/scaffolded/target/release/libmy_analytics.so \
+            /tmp/scaffolded/my_analytics.duckdb_extension \
+            --abi-type C_STRUCT --extension-version v0.1.0 \
+            --duckdb-version v1.2.0 --platform linux_amd64
+          cat > /tmp/scaffold_probe.sql <<'SQL'
+          SET allow_unsigned_extensions=true;
+          LOAD '/tmp/scaffolded/my_analytics.duckdb_extension';
+          SELECT my_analytics_hello('world');
+          SQL
+          ./duckdb -no-stdin -csv -noheader < /tmp/scaffold_probe.sql | tee /tmp/scaffold.log
+          grep -q 'Hello from my_analytics! world' /tmp/scaffold.log || {
+            echo "::error::scaffolded extension did not answer correctly"
+            exit 1
+          }
+      - name: Generated project passes its own lint gate
+        # The generated CI runs `cargo clippy --all-targets -- -D warnings`, so
+        # the generated sources must be clean under it from the first commit.
+        run: |
+          set -euo pipefail
+          cd /tmp/scaffolded
+          cargo fmt -- --check
+          cargo clippy --all-targets -- -D warnings
+
+  abi-guard:
+    name: ABI guard rejects a cross-version unstable build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install DuckDB CLI
+        run: |
+          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          unzip -o duckdb.zip
+          chmod +x duckdb
+      # Regression test for the most dangerous failure mode this crate guards
+      # against: an extension that touches the unstable region of
+      # duckdb_ext_api_v1, compiled against one DuckDB's headers and loaded into
+      # another. Without the guard this corrupts the heap; with it, LOAD fails
+      # with a diagnostic. See src/abi.rs.
+      - name: Build a demo pinned to DuckDB 1.5.0's header layout
+        run: |
+          set -euo pipefail
+          cargo build --release --bin append_metadata
+          mkdir -p /tmp/abi_demo/src
+          cat > /tmp/abi_demo/Cargo.toml <<EOF
+          [package]
+          name = "abi_demo"
+          version = "0.1.0"
+          edition = "2021"
+
+          [lib]
+          name = "abi_demo"
+          crate-type = ["cdylib"]
+
+          [dependencies]
+          quack-rs = { path = "$(pwd)", features = ["duckdb-1-5"] }
+          libduckdb-sys = { version = "=1.10500.0", features = ["loadable-extension"] }
+
+          [profile.release]
+          opt-level = 1
+          panic = "unwind"
+          EOF
+          cat > /tmp/abi_demo/src/lib.rs <<'EOF'
+          use quack_rs::client_context::ClientContext;
+          use quack_rs::error::ExtensionError;
+          use quack_rs::prelude::*;
+
+          fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
+              // duckdb_connection_get_client_context lives past the stable prefix.
+              let ctx = unsafe { ClientContext::from_connection(con) }?;
+              let _ = ctx.connection_id();
+              unsafe { SqlMacro::scalar("abi_demo_ok", &["x"], "x + 1")?.register(con)? };
+              Ok(())
+          }
+
+          quack_rs::entry_point!(abi_demo_init_c_api, register);
+          EOF
+          (cd /tmp/abi_demo && cargo build --release)
+          ./target/release/append_metadata \
+            /tmp/abi_demo/target/release/libabi_demo.so \
+            /tmp/abi_demo/abi_demo.duckdb_extension \
+            --abi-type C_STRUCT --extension-version v0.1.0 \
+            --duckdb-version v1.2.0 --platform linux_amd64
+      - name: LOAD must be refused with a layout diagnostic
+        run: |
+          set -euo pipefail
+          cat > /tmp/abi_probe.sql <<'SQL'
+          SET allow_unsigned_extensions=true;
+          LOAD '/tmp/abi_demo/abi_demo.duckdb_extension';
+          SQL
+          # DuckDB exits non-zero on the failed LOAD, which is the expected outcome.
+          ./duckdb -no-stdin < /tmp/abi_probe.sql > /tmp/abi.log 2>&1 || true
+          cat /tmp/abi.log
+          grep -q "C extension API layout mismatch" /tmp/abi.log || {
+            echo "::error::the ABI guard did not refuse a cross-version unstable build"
+            exit 1
+          }
 
   publish-dry-run:
     name: Publish dry-run
