@@ -73,6 +73,12 @@ impl Fixture {
         self.con
     }
 
+    /// The database handle — replacement scans register against this, not a
+    /// connection.
+    fn db(&self) -> libduckdb_sys::duckdb_database {
+        self.db
+    }
+
     fn query(&self, sql: &str) -> QueryResult {
         // SAFETY: `self.con` is open for this fixture's lifetime.
         unsafe { query(self.con, sql) }.unwrap_or_else(|e| panic!("{sql}: {e}"))
@@ -2093,4 +2099,307 @@ fn a_mixed_case_function_registers_and_is_callable() {
             "{sql}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Replacement scans
+// ---------------------------------------------------------------------------
+
+quack_rs::replacement_scan_callback!(route_myfmt, |info, table_name, _data| {
+    // SAFETY: DuckDB passes a valid NUL-terminated identifier.
+    let name = unsafe { std::ffi::CStr::from_ptr(table_name) }.to_string_lossy();
+    if !name.ends_with(".myfmt") {
+        // Not ours — returning without touching `info` lets DuckDB fall
+        // through to its own handling, which is the behaviour under test.
+        return;
+    }
+    let digits: i64 = name
+        .trim_end_matches(".myfmt")
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    // SAFETY: `info` is the pointer DuckDB passed in.
+    unsafe {
+        quack_rs::replacement_scan::ReplacementScanInfo::new(info)
+            .set_function("count_up")
+            .add_i64_parameter(digits);
+    }
+});
+
+quack_rs::replacement_scan_callback!(exploding_scan, |_info, table_name, _data| {
+    // SAFETY: DuckDB passes a valid NUL-terminated identifier.
+    let name = unsafe { std::ffi::CStr::from_ptr(table_name) }.to_string_lossy();
+    if name.ends_with(".boom") {
+        panic!("replacement scan deliberately exploded");
+    }
+});
+
+/// A replacement scan rewrites `SELECT * FROM 'something'` into a table
+/// function call. Nothing in the crate exercised this path against a real
+/// `DuckDB` — the module had three unit tests, none of them registering
+/// anything.
+#[test]
+fn a_replacement_scan_redirects_an_unknown_table() {
+    use quack_rs::replacement_scan::ReplacementScanBuilder;
+    use quack_rs::table::TableFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    struct State {
+        next: i64,
+        limit: i64,
+    }
+
+    let table_fn = TableFunctionBuilder::new("count_up")
+        .param(TypeId::BigInt)
+        .with_state::<State, _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            // SAFETY: parameter 0 was declared above.
+            let limit = unsafe { bind.get_parameter_value(0) }.as_i64_or(0);
+            Ok(State { next: 1, limit })
+        })
+        .scan(|state, chunk| {
+            if state.next > state.limit {
+                // SAFETY: ending the scan.
+                unsafe { chunk.set_size(0) };
+                return Ok(());
+            }
+            // SAFETY: column 0 is BIGINT and row 0 is in range.
+            unsafe {
+                chunk.writer(0).write_i64(0, state.next);
+                chunk.set_size(1);
+            }
+            state.next += 1;
+            Ok(())
+        })
+        .build()
+        .expect("build count_up");
+
+    // SAFETY: `con` is open.
+    unsafe { table_fn.register(fx.con()) }.expect("register count_up");
+
+    // SAFETY: `db` is open; the callback has the required signature and no
+    // extra data to clean up.
+    unsafe {
+        ReplacementScanBuilder::register(fx.db(), route_myfmt, std::ptr::null_mut(), None);
+    }
+
+    // The whole point: an identifier DuckDB knows nothing about becomes a call
+    // to our table function.
+    assert_eq!(
+        fx.scalar("SELECT sum(n) FROM '10.myfmt'", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(55)
+    );
+    assert_eq!(
+        fx.scalar("SELECT count(*) FROM '0.myfmt'", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(0)
+    );
+
+    // An identifier the callback declines must fall through to DuckDB's own
+    // handling, not be swallowed.
+    let err = unsafe { quack_rs::query::query(fx.con(), "SELECT * FROM 'nope.csv'") }
+        .expect_err("DuckDB must still report its own error for a file it cannot find");
+    let message = format!("{err}");
+    assert!(
+        message.contains("nope.csv"),
+        "the error should name the file: {message}"
+    );
+}
+
+/// A panic inside a replacement scan must reach SQL as an error, not abort.
+#[test]
+fn a_panicking_replacement_scan_becomes_a_sql_error() {
+    use quack_rs::replacement_scan::ReplacementScanBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `db` is open; no extra data to clean up.
+    unsafe {
+        ReplacementScanBuilder::register(fx.db(), exploding_scan, std::ptr::null_mut(), None);
+    }
+
+    let err = unsafe { quack_rs::query::query(fx.con(), "SELECT * FROM 'x.boom'") }
+        .expect_err("the panic must surface as a SQL error");
+    let message = format!("{err}");
+    assert!(
+        message.contains("replacement scan deliberately exploded"),
+        "the panic message must reach SQL: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Copy functions (DuckDB 1.5.0+)
+// ---------------------------------------------------------------------------
+
+/// A `COPY ... TO 'file' (FORMAT my_format)` handler, exercised end to end.
+///
+/// The four-phase lifecycle — bind, global init, sink, finalize — threads two
+/// separate heap allocations through `DuckDB` (`set_bind_data` and
+/// `set_global_state`), each with its own destructor. Nothing in the crate
+/// exercised any of it against a real `DuckDB`.
+#[cfg(feature = "duckdb-1-5")]
+mod copy_fn {
+    use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Column count captured at bind time, handed to the sink as bind data.
+    pub struct BindData {
+        pub columns: u64,
+    }
+
+    /// Rows written, plus the destination path, as global state.
+    pub struct GlobalState {
+        pub path: String,
+        pub rows: u64,
+        pub checksum: i64,
+    }
+
+    /// Counts destructor calls so a leak or a double free is visible.
+    pub static BIND_DROPS: AtomicUsize = AtomicUsize::new(0);
+    pub static GLOBAL_DROPS: AtomicUsize = AtomicUsize::new(0);
+    /// What finalize saw, so the test can assert on it after the COPY.
+    pub static FINAL_ROWS: AtomicUsize = AtomicUsize::new(0);
+    pub static FINAL_CHECKSUM: AtomicUsize = AtomicUsize::new(0);
+
+    pub unsafe extern "C" fn drop_bind(ptr: *mut c_void) {
+        if !ptr.is_null() {
+            BIND_DROPS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: allocated by `Box::into_raw` in the bind callback.
+            drop(unsafe { Box::from_raw(ptr.cast::<BindData>()) });
+        }
+    }
+
+    pub unsafe extern "C" fn drop_global(ptr: *mut c_void) {
+        if !ptr.is_null() {
+            GLOBAL_DROPS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: allocated by `Box::into_raw` in the global-init callback.
+            drop(unsafe { Box::from_raw(ptr.cast::<GlobalState>()) });
+        }
+    }
+}
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::copy_bind_callback!(my_format_bind, |info| {
+    let bind = unsafe { quack_rs::copy_function::CopyBindInfo::new(info) };
+    let data = Box::new(copy_fn::BindData {
+        columns: bind.column_count(),
+    });
+    // SAFETY: the pointer is a fresh Box; `drop_bind` frees it exactly once.
+    unsafe {
+        bind.set_bind_data(
+            Box::into_raw(data).cast::<std::os::raw::c_void>(),
+            Some(copy_fn::drop_bind),
+        );
+    }
+});
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::copy_global_init_callback!(my_format_init, |info| {
+    let init = unsafe { quack_rs::copy_function::CopyGlobalInitInfo::new(info) };
+    // SAFETY: DuckDB provides the destination path for this COPY.
+    let path = unsafe { init.get_file_path() };
+    let state = Box::new(copy_fn::GlobalState {
+        path,
+        rows: 0,
+        checksum: 0,
+    });
+    // SAFETY: the pointer is a fresh Box; `drop_global` frees it exactly once.
+    unsafe {
+        init.set_global_state(
+            Box::into_raw(state).cast::<std::os::raw::c_void>(),
+            Some(copy_fn::drop_global),
+        );
+    }
+});
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::copy_sink_callback!(my_format_sink, |info, chunk| {
+    let sink = unsafe { quack_rs::copy_function::CopySinkInfo::new(info) };
+    // SAFETY: both were set by the bind and global-init callbacks above.
+    let (bind, state) = unsafe {
+        (
+            &*sink.get_bind_data().cast::<copy_fn::BindData>(),
+            &mut *sink.get_global_state().cast::<copy_fn::GlobalState>(),
+        )
+    };
+    assert_eq!(bind.columns, 1, "bind data must survive into the sink");
+
+    let chunk = unsafe { DataChunk::from_raw(chunk) };
+    let reader = unsafe { chunk.reader(0) };
+    for row in 0..chunk.size() {
+        if unsafe { reader.is_valid(row) } {
+            state.checksum += unsafe { reader.read_i64(row) };
+        }
+        state.rows += 1;
+    }
+});
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::copy_finalize_callback!(my_format_finalize, |info| {
+    use std::sync::atomic::Ordering;
+    let fin = unsafe { quack_rs::copy_function::CopyFinalizeInfo::new(info) };
+    // SAFETY: set by the global-init callback above.
+    let state = unsafe { &*fin.get_global_state().cast::<copy_fn::GlobalState>() };
+    assert!(
+        state.path.ends_with(".myfmt"),
+        "finalize must see the destination path, got {:?}",
+        state.path
+    );
+    copy_fn::FINAL_ROWS.store(state.rows as usize, Ordering::SeqCst);
+    copy_fn::FINAL_CHECKSUM.store(state.checksum as usize, Ordering::SeqCst);
+});
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_copy_function_runs_its_whole_lifecycle() {
+    use std::sync::atomic::Ordering;
+
+    use quack_rs::copy_function::CopyFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; all four callbacks have the required signatures.
+    unsafe {
+        CopyFunctionBuilder::try_new("my_format")
+            .expect("name")
+            .bind(my_format_bind)
+            .global_init(my_format_init)
+            .sink(my_format_sink)
+            .finalize(my_format_finalize)
+            .register(fx.con())
+            .expect("register my_format");
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("out.myfmt");
+    fx.query(&format!(
+        "COPY (SELECT i::BIGINT AS n FROM range(5000) t(i)) TO '{}' (FORMAT my_format)",
+        path.display()
+    ));
+
+    // 5000 rows spans several chunks, so the sink ran repeatedly.
+    assert_eq!(copy_fn::FINAL_ROWS.load(Ordering::SeqCst), 5000);
+    assert_eq!(
+        copy_fn::FINAL_CHECKSUM.load(Ordering::SeqCst),
+        (0..5000i64).sum::<i64>() as usize
+    );
+
+    // Both destructors must have run exactly once — a leak or a double free
+    // here is invisible without counting.
+    drop(fx);
+    assert_eq!(
+        copy_fn::BIND_DROPS.load(Ordering::SeqCst),
+        1,
+        "bind data destructor"
+    );
+    assert_eq!(
+        copy_fn::GLOBAL_DROPS.load(Ordering::SeqCst),
+        1,
+        "global state destructor"
+    );
 }

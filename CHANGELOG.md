@@ -82,6 +82,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
 
+### Security
+
+- **`CopyGlobalInitInfo::get_file_path` corrupted the heap.** It called
+  `duckdb_free` on the pointer from
+  `duckdb_copy_function_global_init_get_file_path`, which returns
+  `info_ref.file_path.c_str()` — the interior pointer of a C++ `std::string`
+  `DuckDB` still owns and destroys itself. Every `COPY ... TO` through a
+  quack-rs copy function handed the allocator a pointer it never issued;
+  the first live test of the path aborted with
+  `corrupted size vs. prev_size in fastbins`.
+
+  Every other `duckdb_free` call site in the crate was then audited against
+  `DuckDB`'s implementation, and all twelve are correct. The signature is not
+  sufficient to decide: `char *` returns are owned and `const char *` returns
+  are usually borrowed, but `duckdb_parameter_name` is declared `const char *`
+  and returns `strdup(...)`, so it *is* owned. Recorded as `LESSONS.md` P11 with
+  the full table.
+
+### Added (test coverage for two untested registration paths)
+
+- **Copy functions and replacement scans had no live tests at all.** Between
+  them they had 19 unit tests, none of which registered anything against a
+  running `DuckDB` — which is how a heap-corrupting free survived in a shipped
+  API. Both now have end-to-end coverage:
+
+  - A `COPY ... TO 'f' (FORMAT my_format)` over 5000 rows, threading bind data
+    and global state through all four lifecycle phases, asserting the sink saw
+    every row and that both destructors ran exactly once (a leak or a double
+    free is invisible without counting).
+  - A replacement scan rewriting `SELECT * FROM '10.myfmt'` into a table
+    function call, plus the decline path — an identifier the callback ignores
+    must still reach `DuckDB`'s own error handling — and a panicking scan
+    surfacing as a SQL error.
+
+- **`copy_bind_callback!`, `copy_global_init_callback!`, `copy_sink_callback!`
+  and `copy_finalize_callback!`.** Every other callback kind had a panic-safe
+  macro; the four copy-function phases did not, so a panic in one of them had
+  nothing to catch it. Each routes the message through that phase's own
+  `duckdb_copy_function_*_set_error`.
+
 ### Fixed (the release-profile validator required the setting that breaks panic safety)
 
 - **`validate_release_profile` required `panic = "abort"`, which makes every one

@@ -446,6 +446,62 @@ release header and runs in CI, so the table cannot silently go stale.
 
 ---
 
+## P11: `const char *` returns are borrowed — freeing one corrupts the heap
+
+**Status**: Fixed in `CopyGlobalInitInfo::get_file_path`; every other
+`duckdb_free` call site in the crate audited against DuckDB's implementation.
+
+**Symptom**: `corrupted size vs. prev_size in fastbins`, `free(): invalid
+pointer`, or a `SIGABRT` at an unrelated later allocation. Nothing points at the
+call that caused it.
+
+**Root cause**: The C API returns strings two ways, and only one of them
+transfers ownership.
+
+| Return type | Typical implementation | Caller must |
+|-------------|------------------------|-------------|
+| `char *` | `strdup(...)` or `duckdb_malloc` + `memcpy` | `duckdb_free` it |
+| `const char *` | `some_std_string.c_str()` | **not** free it |
+
+`duckdb_copy_function_global_init_get_file_path` is the second kind — it returns
+`info_ref.file_path.c_str()`, the interior pointer of a C++ `std::string` that
+DuckDB still owns and will destroy itself. quack-rs called `duckdb_free` on it,
+handing the allocator a pointer it never issued.
+
+**The trap in the rule**: the signature alone is not enough.
+`duckdb_parameter_name` is declared `const char *` and yet returns
+`strdup(identifier.c_str())` — it *is* owned, and *not* freeing it leaks. The
+only reliable check is reading the implementation in DuckDB's `src/main/capi/`.
+
+**Audit performed** (DuckDB 1.5.5, every `duckdb_free` site in quack-rs):
+
+| Function | Implementation | quack-rs |
+|----------|----------------|----------|
+| `duckdb_logical_type_get_alias` | `strdup` | frees ✓ |
+| `duckdb_enum_dictionary_value` | `strdup` | frees ✓ |
+| `duckdb_struct_type_child_name` | `strdup` | frees ✓ |
+| `duckdb_union_type_member_name` | `strdup` | frees ✓ |
+| `duckdb_get_varchar` | `duckdb_malloc` + `memcpy` | frees ✓ |
+| `duckdb_value_to_string` | `duckdb_malloc` + `memcpy` | frees ✓ |
+| `duckdb_get_blob` | `malloc` + `memcpy` | frees ✓ |
+| `duckdb_table_description_get_column_name` | `malloc` + `memcpy` | frees ✓ |
+| `duckdb_parameter_name` | `strdup` (despite `const char *`) | frees ✓ |
+| `duckdb_get_or_create_from_cache` (`out_error`) | `strdup` | frees ✓ |
+| `duckdb_table_description_error` | `wrapper->error.c_str()` | does not free ✓ |
+| `duckdb_appender_error` | `error_data.RawMessage().c_str()` | does not free ✓ |
+| `duckdb_copy_function_global_init_get_file_path` | `file_path.c_str()` | **was freeing ✗** |
+
+**How it was found**: by writing the first live test for copy functions. The
+module had 16 unit tests and not one of them registered a copy function against
+a real DuckDB, so the corruption had never had a chance to happen. Unit tests
+over an FFI wrapper test the wrapper's arithmetic, not its contract with the
+library.
+
+**Rule**: before calling `duckdb_free` on anything the C API returned, read the
+implementation. `const char *` is a strong hint that it is borrowed, but
+`duckdb_parameter_name` proves it is only a hint.
+
+
 ## Community Extension Submission
 
 ### Build System Requirements
