@@ -7,16 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> **Release note for maintainers:** this batch is a **minor** bump (0.15.0 →
-> 0.16.0) under the policy in `RELEASING.md` — `ScaffoldConfig` gains two fields,
-> `ChunkWriter::new` and `DataChunk::into_chunk_writer` are no longer `const fn`,
-> `DuckStringView::from_bytes` is deprecated and no longer follows an embedded
-> pointer, and `init_extension` now runs the ABI check by default. Documentation
-> examples and `#[deprecated(since = ...)]` already name `0.16`. The `UUID`
-> accessors also change both type and meaning — see **Fixed → Silent data
-> corruption** — but the signature change makes every affected call site a
-> compile error rather than a silent behaviour change. `ReleaseProfileCheck`
-> renames `panic_abort` to `panic_unwind`, for the same reason.
+## [0.16.0] - 2026-08-18
 
 ### Security
 
@@ -1855,7 +1846,8 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/tomtom215/quack-rs/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tomtom215/quack-rs/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...v0.13.0
