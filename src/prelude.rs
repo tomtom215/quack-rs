@@ -190,7 +190,9 @@ pub use crate::value::Value;
 
 // Vector I/O
 pub use crate::vector::complex::{ArrayVector, ListVector, MapVector, StructVector};
-pub use crate::vector::{StructReader, StructWriter, ValidityBitmap, VectorReader, VectorWriter};
+pub use crate::vector::{
+    ListBuilder, StructReader, StructWriter, ValidityBitmap, VectorReader, VectorWriter,
+};
 
 // Types
 pub use crate::types::{LogicalType, NullHandling, TypeId};

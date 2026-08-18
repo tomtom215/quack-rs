@@ -174,6 +174,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (capabilities)
 
+- **`ListBuilder` for `LIST` and `MAP` output vectors.**
+  `duckdb_list_vector_reserve` takes a *total* capacity and reallocates the child
+  vector when it grows, so a `VectorWriter` obtained beforehand is left dangling.
+  That makes the natural "reserve as you go, keep one writer" loop a
+  use-after-free. `ListBuilder` re-fetches the child writer after every reserve,
+  tracks the running offset, writes each parent `{offset, length}` entry, and
+  grows geometrically so building a list is not quadratic. `push_map_row` does
+  the same for `MAP`. It also refuses capacities above
+  `MAX_LIST_CHILD_CAPACITY` (`duckdb::DConstants::MAX_VECTOR_SIZE`), above which
+  `DuckDB` throws a C++ exception that its own C API does not catch — an
+  exception unwinding into Rust would be undefined behaviour. Covered by tests
+  building 2000 lists and 1500 maps of varying length through real SQL.
+
+- **`Value` gained the extractors and constructors it was missing.** A table
+  function declared with a `TIMESTAMP` or `LIST` parameter handed the bind
+  callback a `duckdb_value` that could only be read via `as_str()` and reparsed.
+  Adds `as_date`, `as_time`, `as_time_tz`, `as_timestamp`, `as_timestamp_tz`,
+  `as_timestamp_s/ms/ns`, `as_interval`, `as_uuid`, `as_decimal`, `as_u128`,
+  `list_len` / `list_child` / `list_items`, `struct_child`, `map_len` /
+  `map_key` / `map_value`, and the constructors `boolean`, `bigint`, `double`,
+  `date`, `timestamp`, `varchar`, `uuid`, `null_value`.
+
 - **`query` module — running SQL from inside an extension.** The C API has
   everything needed (`duckdb_query`, `duckdb_prepare`, `duckdb_bind_*`,
   `duckdb_fetch_chunk`) and it is all in the stable prefix, but each handle has a
@@ -218,6 +240,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching what `table` already did.
 
 - The prelude re-exports `AbiPolicy`, the `datetime` types and the `query` types.
+
+### Fixed (behaviour documented after verification)
+
+- `Value::display_string` renders a SQL **literal**, not display text:
+  `Value::varchar("hello")` gives `'hello'` and `Value::date(0)` gives
+  `'1970-01-01'::DATE`. Now documented with a table, since silently getting
+  quotes and a cast suffix in a diagnostic is surprising.
+- `Value::as_str` truncates at an interior NUL, because `duckdb_get_varchar`
+  returns a NUL-terminated `char *`. `DuckDB` stores the full bytes; only this
+  read path is limited. Documented on both `as_str` and `Value::varchar`, and
+  pinned by a test.
 
 ### Fixed (documentation)
 

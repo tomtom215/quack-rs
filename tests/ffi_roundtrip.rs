@@ -1165,3 +1165,149 @@ fn a_panicking_cast_becomes_a_sql_error() {
         "panic payload should reach the user: {err}"
     );
 }
+
+// ─── LIST and MAP construction ───────────────────────────────────────────────
+
+quack_rs::scalar_callback!(make_range_list, |_info, input, output| {
+    // Builds LIST<BIGINT> = [0, 1, ..., n-1] for each input n.
+    use quack_rs::vector::ListBuilder;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut builder = unsafe { ListBuilder::new(output) };
+    for row in 0..chunk.size() {
+        let n = if unsafe { reader.is_valid(row) } {
+            unsafe { reader.read_i64(row) }.max(0) as usize
+        } else {
+            0
+        };
+        unsafe {
+            builder.push_row(row, n, |writer, base| {
+                for i in 0..n {
+                    writer.write_i64(base + i, i as i64);
+                }
+            });
+        }
+    }
+    unsafe { builder.finish() };
+});
+
+#[test]
+fn list_builder_writes_correct_offsets_across_growth() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("make_range_list")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::list(TypeId::BigInt))
+            .function(make_range_list)
+            .register(fx.con())
+            .expect("register make_range_list");
+    }
+
+    // A single row.
+    assert_eq!(
+        fx.scalar("SELECT make_range_list(3)::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .as_deref(),
+        Some("[0, 1, 2]")
+    );
+
+    // Empty lists must produce a zero-length entry, not NULL.
+    assert_eq!(
+        fx.scalar("SELECT make_range_list(0)::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .as_deref(),
+        Some("[]")
+    );
+
+    // Many rows of varying length in one chunk: this is where a stale child
+    // pointer or a mis-tracked offset shows up. Each row's list must be exactly
+    // 0..len, and the flattened total must match.
+    let mut result = fx.query(
+        "SELECT count(*) AS rows,
+                sum(len(l)) AS total_elements,
+                count(*) FILTER (WHERE l = [x for x in range(len(l))]) AS correct
+         FROM (SELECT i % 37 AS n, make_range_list(i % 37) AS l FROM range(2000) t(i))",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: all three columns are integral and row 0 exists.
+    unsafe {
+        assert_eq!(chunk.reader(0).read_i64(0), 2000);
+        let expected_total: i128 = (0..2000i128).map(|i| i % 37).sum();
+        assert_eq!(chunk.reader(1).read_i128(0), expected_total);
+        assert_eq!(
+            chunk.reader(2).read_i64(0),
+            2000,
+            "every row's list must equal 0..len"
+        );
+    }
+}
+
+quack_rs::scalar_callback!(make_index_map, |_info, input, output| {
+    // Builds MAP(VARCHAR, BIGINT) = { 'k0': 0, 'k1': 1, ... } for each input n.
+    use quack_rs::vector::ListBuilder;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut builder = unsafe { ListBuilder::new(output) };
+    for row in 0..chunk.size() {
+        let n = if unsafe { reader.is_valid(row) } {
+            unsafe { reader.read_i64(row) }.max(0) as usize
+        } else {
+            0
+        };
+        unsafe {
+            builder.push_map_row(row, n, |keys, values, base| {
+                for i in 0..n {
+                    keys.write_varchar(base + i, &format!("k{i}"));
+                    values.write_i64(base + i, i as i64);
+                }
+            });
+        }
+    }
+    unsafe { builder.finish() };
+});
+
+#[test]
+fn list_builder_drives_map_vectors_too() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("make_index_map")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::map(TypeId::Varchar, TypeId::BigInt))
+            .function(make_index_map)
+            .register(fx.con())
+            .expect("register make_index_map");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT make_index_map(2)::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .as_deref(),
+        Some("{k0=0, k1=1}")
+    );
+    assert_eq!(
+        fx.scalar("SELECT make_index_map(0)::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .as_deref(),
+        Some("{}")
+    );
+
+    // Across a full chunk, with growth.
+    let mut result = fx.query(
+        "SELECT count(*) FILTER (WHERE map_extract(m, 'k3') = [3]) AS hits
+         FROM (SELECT make_index_map(i % 11) AS m FROM range(1500) t(i))",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    let expected = (0..1500i64).filter(|i| i % 11 > 3).count() as i64;
+    // SAFETY: the column is BIGINT and row 0 exists.
+    assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, expected);
+}
