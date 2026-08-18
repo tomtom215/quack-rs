@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Release note for maintainers:** this batch is a **minor** bump (0.15.0 →
+> 0.16.0) under the policy in `RELEASING.md` — `ScaffoldConfig` gains two fields,
+> `ChunkWriter::new` and `DataChunk::into_chunk_writer` are no longer `const fn`,
+> `DuckStringView::from_bytes` is deprecated and no longer follows an embedded
+> pointer, and `init_extension` now runs the ABI check by default. Documentation
+> examples and `#[deprecated(since = ...)]` already name `0.16`.
+
 ### Security
 
 - **New `abi` module: `duckdb_ext_api_v1` layout verification.** `DuckDB` hands a

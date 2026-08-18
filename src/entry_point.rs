@@ -581,13 +581,24 @@ unsafe fn enforce_abi_policy(
     let Some(message) = check.error_message() else {
         return Ok(());
     };
-    let error = ExtensionError::new(message);
     if policy == AbiPolicy::Strict {
-        return Err(error);
+        return Err(ExtensionError::new(message));
     }
-    // AbiPolicy::Warn: surface the diagnostic but let the load proceed.
-    // SAFETY: info and access are valid per this function's contract.
-    unsafe { report_error(info, access, &error) };
+    // AbiPolicy::Warn: surface the diagnostic without failing the load.
+    //
+    // This deliberately does NOT go through `access.set_error`. DuckDB's loader
+    // throws whenever an extension called `set_error`, regardless of what the
+    // init function returned:
+    //
+    //     if (load_state.has_error) {
+    //         load_state.error_data.Throw("An error was thrown during ...");
+    //     }
+    //
+    // — so reporting a *warning* that way would abort the load and make `Warn`
+    // indistinguishable from `Strict`. The C extension API has no non-fatal
+    // diagnostic channel, so stderr is the honest one.
+    let _ = (info, access);
+    eprintln!("quack-rs warning: {message}");
     Ok(())
 }
 

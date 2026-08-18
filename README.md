@@ -286,6 +286,7 @@ append_metadata target/release/libmy_extension.so \
 | Module | Purpose | Key types / functions |
 |--------|---------|----------------------|
 | [`entry_point`] | Extension initialization entry point | `init_extension`, `init_extension_v2`, `entry_point!`, `entry_point_v2!` |
+| [`abi`] | C extension API layout verification (stable vs unstable region) | `AbiPolicy`, `check`, `STABLE_API_SLOT_COUNT` |
 | [`connection`] | Version-agnostic extension registration facade | `Connection`, `Registrar` |
 | [`callback`] | Safe `extern "C"` callback wrapper macros | `scalar_callback!`, `table_scan_callback!` |
 | [`aggregate`] | Aggregate function registration | `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder`, `AggregateFunctionInfo` |
@@ -306,6 +307,8 @@ append_metadata target/release/libmy_extension.so \
 | [`vector::string`] | 16-byte DuckDB string format | `DuckStringView`, `read_duck_string` |
 | [`types`] | DuckDB type system wrappers | `TypeId`, `LogicalType`, `NullHandling` |
 | [`interval`] | INTERVAL ↔ microseconds conversion | `DuckInterval`, `interval_to_micros` |
+| [`datetime`] | DATE/TIME/TIMESTAMP calendar conversions, HUGEINT/DECIMAL helpers | `Date`, `Time`, `Timestamp`, `date_from_days`, `is_finite_date` |
+| [`query`] | Running SQL from an extension | `QueryResult`, `PreparedStatement`, `OwnedConnection`, `OwnedDataChunk` |
 | [`error`] | FFI-safe error type | `ExtensionError`, `ExtResult<T>` |
 | [`tls`] | Type-erased TLS config provider for HTTP-capable extensions | `TlsConfigProvider` |
 | [`warning`] | Structured security warning API | `ExtensionWarning`, `WarningSeverity`, `WarningCollector` |
@@ -343,6 +346,7 @@ append_metadata target/release/libmy_extension.so \
 [`vector::struct_writer`]: https://docs.rs/quack-rs/latest/quack_rs/vector/struct_writer/index.html
 [`vector::struct_reader`]: https://docs.rs/quack-rs/latest/quack_rs/vector/struct_reader/index.html
 [`entry_point`]: https://docs.rs/quack-rs/latest/quack_rs/entry_point/index.html
+[`abi`]: https://docs.rs/quack-rs/latest/quack_rs/abi/index.html
 [`connection`]: https://docs.rs/quack-rs/latest/quack_rs/connection/index.html
 [`aggregate`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/index.html
 [`aggregate::state`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/state/index.html
@@ -357,6 +361,8 @@ append_metadata target/release/libmy_extension.so \
 [`vector::string`]: https://docs.rs/quack-rs/latest/quack_rs/vector/string/index.html
 [`types`]: https://docs.rs/quack-rs/latest/quack_rs/types/index.html
 [`interval`]: https://docs.rs/quack-rs/latest/quack_rs/interval/index.html
+[`datetime`]: https://docs.rs/quack-rs/latest/quack_rs/datetime/index.html
+[`query`]: https://docs.rs/quack-rs/latest/quack_rs/query/index.html
 [`error`]: https://docs.rs/quack-rs/latest/quack_rs/error/index.html
 [`tls`]: https://docs.rs/quack-rs/latest/quack_rs/tls/index.html
 [`warning`]: https://docs.rs/quack-rs/latest/quack_rs/warning/index.html
@@ -399,7 +405,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 |----|------|---------|-------------------|
 | **L1** | COMBINE config propagation | Aggregate returns wrong results under parallelism | Testable with `AggregateTestHarness` |
 | **L2** | Double-free in destroy | Heap corruption / SIGABRT | `FfiState<T>::destroy_callback` nulls pointer after free |
-| **L3** | Panic across FFI | Process abort / UB | `init_extension` propagates `Result`; `scalar_callback!` / `table_scan_callback!` catch panics with `catch_unwind` |
+| **L3** | Panic across FFI | Process abort / UB | `init_extension` propagates `Result` and runs the registration closure under `catch_unwind`; `scalar_callback!` / `table_scan_callback!` do the same for callbacks. Requires `panic = "unwind"`, which the scaffold generates |
 | **L4** | Missing `ensure_validity_writable` | Segfault / silent NULL corruption | `VectorWriter::set_null` calls it automatically |
 | **L5** | Boolean undefined behavior | Non-deterministic bool semantics | `VectorReader::read_bool` reads `u8 != 0` |
 | **L6** | Function set name on each member | Silent registration failure | `AggregateFunctionSetBuilder` and `ScalarFunctionSetBuilder` set name on every member |
@@ -410,14 +416,15 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | ID | Name | Symptom | quack-rs Solution |
 |----|------|---------|-------------------|
 | **P1** | Library name mismatch | Extension fails to load | Documented; scaffold sets it correctly |
-| **P2** | C API version ≠ release version | Wrong `-dv` flag corrupts extension metadata | `DUCKDB_API_VERSION = "v1.2.0"` constant; `append_metadata` binary ships with the crate |
+| **P2** | C API version ≠ release version | Wrong `-dv` flag corrupts extension metadata | `DUCKDB_API_VERSION = "v1.2.0"` constant; `append_metadata` binary ships with the crate; `ScaffoldConfig` rejects `-dv`/ABI-type pairings DuckDB would refuse |
 | **P3** | Missing E2E tests | Community submission rejected | Scaffold generates SQLLogicTest skeleton |
 | **P4** | Uninitialized submodule | `make` fails with missing files | Documented; scaffold generates `.gitmodules` |
 | **P5** | SQLLogicTest format mismatch | Tests fail with exact-match errors | Documented with format reference |
 | **P6** | Registration failure not checked | Function silently not registered | Builders check and propagate return values |
 | **P7** | DuckDB 16-byte string format | Garbled or truncated strings | `DuckStringView`, `read_duck_string` |
 | **P8** | INTERVAL layout misunderstood | INTERVAL computed incorrectly | `DuckInterval` with `interval_to_micros` |
-| **P9** | `loadable-extension` dispatch table uninitialised in `cargo test` | `InMemoryDb::open()` panics with `"DuckDB API not initialized"` | `InMemoryDb::open()` calls `CreateAPIv1()` shim to populate dispatch table before opening connection |
+| **P9** | `loadable-extension` dispatch table uninitialised in `cargo test` | `InMemoryDb::open()` panics with `"DuckDB API not initialized"` | `InMemoryDb::open()` calls `CreateAPIv1()` shim to populate dispatch table before opening connection — after which the *whole* C API works in `cargo test`, including registration (`tests/ffi_roundtrip.rs`) |
+| **P10** | `duckdb_ext_api_v1` unstable region shifts between releases | Heap corruption / `double free` on a DuckDB other than the build target — with no load-time warning | `abi::check()` compares the compiled-in layout against the running engine's; `AbiPolicy::Strict` (default) turns a mismatch into a `LOAD` error. `scripts/check-abi-table.py` keeps the layout table honest |
 
 ---
 

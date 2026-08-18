@@ -108,7 +108,7 @@
 //! ## Pitfalls
 //!
 //! See [`LESSONS.md`](https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md)
-//! for all 16 known `DuckDB` Rust FFI pitfalls, including symptoms, root causes, and fixes.
+//! for all 17 known `DuckDB` Rust FFI pitfalls, including symptoms, root causes, and fixes.
 //!
 //! ## Pitfall L1: COMBINE must propagate config fields
 //!

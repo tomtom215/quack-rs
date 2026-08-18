@@ -70,6 +70,18 @@
 //! `duckdb-1-5` feature is enabled. Extensions that only use the stable region
 //! are unaffected and stay portable across every `DuckDB` release.
 //!
+//! # A caveat that is not ours to fix
+//!
+//! `libduckdb-sys` generates its `duckdb_ext_api_v1` with
+//! `DUCKDB_EXTENSION_API_VERSION_UNSTABLE` defined, so the Rust struct always
+//! has every slot regardless of which quack-rs features are on, and
+//! `duckdb_rs_extension_api_init` copies all of them out of the struct `DuckDB`
+//! provides. Loading into an *older* `DuckDB` whose struct has fewer slots
+//! therefore reads a few bytes past its end. The pointers it lands on are only
+//! ever stored, never called, unless the extension actually uses the unstable
+//! region — which is what [`check`] is for — but the read itself is an
+//! upstream detail of `libduckdb-sys`, not something this crate can prevent.
+//!
 //! # Shipping an extension that uses the unstable API
 //!
 //! Use `USE_UNSTABLE_C_API=1` with `extension-ci-tools` (or
@@ -350,12 +362,20 @@ pub enum AbiPolicy {
     /// mis-dispatch into a clear `LOAD` error naming the exact remedy.
     #[default]
     Strict,
-    /// Perform the check and, on failure, report the diagnostic through
-    /// `access.set_error` but continue loading anyway.
+    /// Perform the check and, on failure, print the diagnostic to stderr but
+    /// continue loading.
     ///
-    /// Use only when the error message needs to reach an operator but the
-    /// extension has some fallback path. Calling into the unstable region after
-    /// a failed check is still undefined behaviour.
+    /// Note the channel: this cannot use `access.set_error`, because `DuckDB`'s
+    /// loader throws whenever an extension called `set_error` — regardless of
+    /// what the entry point returned — which would make `Warn` behave exactly
+    /// like [`Strict`][Self::Strict]. The C extension API has no non-fatal
+    /// diagnostic channel, so the message goes to stderr.
+    ///
+    /// Use this when the crate is built with `duckdb-1-5` but the extension
+    /// provably calls only stable-region wrappers, and you want the mismatch
+    /// visible without failing the load. **Calling into the unstable region
+    /// after a failed check is undefined behaviour** — `Warn` does not make it
+    /// safe, it only makes it loud.
     Warn,
     /// Skip the check entirely.
     ///
