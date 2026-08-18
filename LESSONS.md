@@ -502,6 +502,46 @@ implementation. `const char *` is a strong hint that it is borrowed, but
 `duckdb_parameter_name` proves it is only a hint.
 
 
+## P12: `duckdb_client_context_get_config_option` aborts on a missing setting (debug builds)
+
+**Status**: Documented on `ClientContext::config_option`; the abort-free
+alternative is SQL. This is a `DuckDB` defect, not a quack-rs one.
+
+**Symptom**: `Assertion 'scope != SettingScope::INVALID' failed` and a
+`SIGABRT`, when asking for a configuration option that does not exist — but only
+against a `DuckDB` built with debug assertions. Release builds return `NULL`
+exactly as documented, so this never reproduces for end users and always
+reproduces in a test suite that links a debug `DuckDB`.
+
+**Root cause** (`DuckDB` 1.5.5):
+
+```cpp
+// src/main/capi/config_options-c.cpp
+switch (ctx.TryGetCurrentSetting(option_name, result).GetScope()) {
+  ...
+  default:                                    // <- INVALID is handled here
+    res_scope = DUCKDB_CONFIG_OPTION_SCOPE_INVALID;
+
+// src/include/duckdb/main/setting_info.hpp
+SettingScope GetScope() {
+    D_ASSERT(scope != SettingScope::INVALID); // <- but never reached in debug
+    return scope;
+}
+```
+
+The `default:` arm shows the not-found case is *meant* to be tolerated; the code
+just calls `GetScope()` before checking `operator bool()`.
+
+**Workaround**: ask SQL instead — it has no assertion on this path.
+
+```sql
+SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
+```
+
+**Rule**: `ClientContext::config_option` is for settings you registered or know
+exist. Do not use it as an existence probe.
+
+
 ## Community Extension Submission
 
 ### Build System Requirements

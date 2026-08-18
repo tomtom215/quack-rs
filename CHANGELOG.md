@@ -100,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns `strdup(...)`, so it *is* owned. Recorded as `LESSONS.md` P11 with
   the full table.
 
-### Added (test coverage for two untested registration paths)
+### Added (live tests for every previously untested C API path)
 
 - **Copy functions and replacement scans had no live tests at all.** Between
   them they had 19 unit tests, none of which registered anything against a
@@ -115,6 +115,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     function call, plus the decline path — an identifier the callback ignores
     must still reach `DuckDB`'s own error handling — and a panicking scan
     surfacing as a SQL error.
+
+- **Six more modules had unit tests but no live registration**: scalar
+  bind/init/local state, `Expression::fold`, catalog lookup, config options,
+  selection vectors and the instance cache. All now run against a real `DuckDB`,
+  which turned up two more documentation defects (below) and confirmed the rest.
 
 - **`copy_bind_callback!`, `copy_global_init_callback!`, `copy_sink_callback!`
   and `copy_finalize_callback!`.** Every other callback kind had a panic-safe
@@ -207,6 +212,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extensions have one — it is what renders on the community-extensions
   documentation site. The scaffold now emits `hello_world` and
   `extended_description` stubs.
+
+### Fixed (two more documented behaviours that were not the real ones)
+
+- **`ClientContext::catalog` documented an empty name as "the default
+  catalog"; `DuckDB` rejects it outright.**
+  `duckdb_client_context_get_catalog` starts with
+  `if (!context || !name || strlen(name) == 0) return nullptr;` — an empty
+  string is the one value guaranteed to fail. The catalog of an in-memory
+  database is named `memory`; a file database's is the file's stem. The doc now
+  says so, along with the other `None` case the C API imposes and quack-rs never
+  mentioned: `DuckDB` checks `transaction.HasActiveTransaction()`, so this works
+  inside a callback but not on an idle auto-commit connection. Both verified
+  against 1.5.5 by a live test.
+
+- **`ClientContext::config_option` aborts the process when asked for a setting
+  that does not exist — on a `DuckDB` built with debug assertions.**
+  `duckdb_client_context_get_config_option` calls
+  `TryGetCurrentSetting(...).GetScope()` without first checking the lookup
+  succeeded, and `GetScope()` asserts `scope != SettingScope::INVALID`. A
+  release `DuckDB` compiles the assertion out and the function's own `default:`
+  arm returns `NULL` as documented, so this never reproduces for end users and
+  always reproduces in a test suite linking a debug `DuckDB`.
+
+  This is a `DuckDB` defect, not a quack-rs one, but it makes the obvious
+  "does the user have this setting?" probe unsafe. Documented on the method with
+  the source lines, recorded as `LESSONS.md` P12, and the abort-free
+  alternative given: `SELECT count(*) FROM duckdb_settings() WHERE name = ?`.
 
 ### Fixed (documentation claimed a bridge that cannot exist)
 

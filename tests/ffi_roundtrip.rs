@@ -2403,3 +2403,410 @@ fn a_copy_function_runs_its_whole_lifecycle() {
         "global state destructor"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Scalar bind / init / local state (DuckDB 1.5.0+)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "duckdb-1-5")]
+mod scalar_state {
+    use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Constant-folded multiplier, resolved once at bind time.
+    pub struct BindData {
+        pub factor: i64,
+    }
+    /// Per-thread scratch, allocated once per execution thread.
+    pub struct LocalState {
+        pub calls: u64,
+    }
+
+    pub static BIND_DROPS: AtomicUsize = AtomicUsize::new(0);
+    pub static STATE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    pub unsafe extern "C" fn drop_bind(ptr: *mut c_void) {
+        if !ptr.is_null() {
+            BIND_DROPS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: allocated by `Box::into_raw` in the bind callback.
+            drop(unsafe { Box::from_raw(ptr.cast::<BindData>()) });
+        }
+    }
+
+    pub unsafe extern "C" fn drop_state(ptr: *mut c_void) {
+        if !ptr.is_null() {
+            STATE_DROPS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: allocated by `Box::into_raw` in the init callback.
+            drop(unsafe { Box::from_raw(ptr.cast::<LocalState>()) });
+        }
+    }
+}
+
+/// Bind callback: fold the constant second argument once, instead of reading it
+/// on every row.
+#[cfg(feature = "duckdb-1-5")]
+unsafe extern "C" fn scaled_bind(info: libduckdb_sys::duckdb_bind_info) {
+    use quack_rs::scalar::ScalarBindInfo;
+
+    // SAFETY: DuckDB passes a valid bind info.
+    let bind = unsafe { ScalarBindInfo::new(info) };
+    assert_eq!(bind.argument_count(), 2);
+    // SAFETY: argument 1 exists per the assertion above.
+    let factor = unsafe { bind.argument(1) }
+        .and_then(|expr| {
+            if !expr.is_foldable() {
+                return None;
+            }
+            // SAFETY: inside a bind callback, so the context is live.
+            let ctx = unsafe { bind.get_client_context() };
+            expr.fold(&ctx).ok().map(|v| v.as_i64())
+        })
+        .unwrap_or(1);
+
+    let data = Box::new(scalar_state::BindData { factor });
+    // SAFETY: a fresh Box; `drop_bind` frees it exactly once.
+    unsafe {
+        bind.set_bind_data(
+            Box::into_raw(data).cast::<std::os::raw::c_void>(),
+            Some(scalar_state::drop_bind),
+        );
+    }
+}
+
+/// Init callback: allocate per-thread scratch.
+#[cfg(feature = "duckdb-1-5")]
+unsafe extern "C" fn scaled_init(info: libduckdb_sys::duckdb_init_info) {
+    use quack_rs::scalar::ScalarInitInfo;
+
+    // SAFETY: DuckDB passes a valid init info.
+    let init = unsafe { ScalarInitInfo::new(info) };
+    let state = Box::new(scalar_state::LocalState { calls: 0 });
+    // SAFETY: a fresh Box; `drop_state` frees it exactly once per thread.
+    unsafe {
+        init.set_state(
+            Box::into_raw(state).cast::<std::os::raw::c_void>(),
+            Some(scalar_state::drop_state),
+        );
+    }
+}
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::scalar_callback!(scaled_exec, |info, input, output| {
+    use quack_rs::scalar::ScalarFunctionInfo;
+
+    // SAFETY: DuckDB passes a valid function info, and both were set by the
+    // bind and init callbacks above.
+    let (factor, state) = unsafe {
+        let f = ScalarFunctionInfo::new(info);
+        (
+            (*f.get_bind_data().cast::<scalar_state::BindData>()).factor,
+            &mut *f.get_state().cast::<scalar_state::LocalState>(),
+        )
+    };
+    state.calls += 1;
+
+    // SAFETY: argument 0 is BIGINT and the output vector matches.
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        // SAFETY: `row` is within the chunk.
+        unsafe { writer.write_i64(row, reader.read_i64(row).wrapping_mul(factor)) };
+    }
+});
+
+/// Scalar bind data and per-thread local state, threaded through a real query.
+///
+/// The bind callback constant-folds its second argument — the whole reason
+/// `Expression::fold` exists — and both allocations must be freed exactly once.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn scalar_bind_data_and_local_state_survive_a_real_query() {
+    use std::sync::atomic::Ordering;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("scaled")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .bind(scaled_bind)
+            .init(scaled_init)
+            .function(scaled_exec)
+            .register(fx.con())
+            .expect("register scaled");
+    }
+
+    // The second argument is a constant, so bind folds it once.
+    assert_eq!(
+        fx.scalar("SELECT scaled(21, 2)", |r, i| unsafe { r.read_i64(i) }),
+        Some(42)
+    );
+    // Across many rows, and with a folded expression rather than a literal.
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum(scaled(i, 3 * 2)) FROM range(1000) t(i)",
+            |r, i| unsafe { r.read_i128(i) }
+        ),
+        Some((0..1000i128).sum::<i128>() * 6)
+    );
+
+    drop(fx);
+    assert!(
+        scalar_state::BIND_DROPS.load(Ordering::SeqCst) >= 2,
+        "bind data must be freed once per bind, got {}",
+        scalar_state::BIND_DROPS.load(Ordering::SeqCst)
+    );
+    assert!(
+        scalar_state::STATE_DROPS.load(Ordering::SeqCst) >= 2,
+        "local state must be freed, got {}",
+        scalar_state::STATE_DROPS.load(Ordering::SeqCst)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Catalog, config options, selection vectors, instance cache
+// ---------------------------------------------------------------------------
+
+/// Catalog lookup, which the docs say must happen inside an active
+/// transaction — a claim nothing checked.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn catalog_lookup_finds_a_table_inside_a_transaction() {
+    use quack_rs::catalog::{CatalogEntry, CatalogEntryType};
+    use quack_rs::client_context::ClientContext;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE catalog_probe (id INTEGER)");
+    fx.query("CREATE VIEW catalog_probe_v AS SELECT * FROM catalog_probe");
+
+    // SAFETY: `con` is open.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+
+    // `duckdb_catalog_get_entry` requires an active transaction; a plain
+    // connection is in auto-commit, so one is started explicitly.
+    fx.query("BEGIN TRANSACTION");
+
+    // An empty name is not "the default catalog" — DuckDB returns null for it
+    // outright (`strlen(name) == 0` is an explicit early return).
+    // SAFETY: inside a transaction.
+    assert!(
+        unsafe { ctx.catalog(c"") }.is_none(),
+        "an empty catalog name is rejected, not defaulted"
+    );
+
+    // The in-memory database's catalog is named `memory`.
+    // SAFETY: inside a transaction, as the C API requires.
+    let catalog = unsafe { ctx.catalog(c"memory") }.expect("the memory catalog");
+    assert_eq!(catalog.type_name(), Some("duckdb"));
+
+    // SAFETY: catalog and context are valid and a transaction is active.
+    let table = unsafe {
+        CatalogEntry::lookup(
+            catalog.as_raw(),
+            ctx.as_raw(),
+            c"main",
+            c"catalog_probe",
+            CatalogEntryType::Table,
+        )
+    }
+    .expect("the table must be found");
+    assert_eq!(table.name(), Some("catalog_probe"));
+    assert_eq!(table.entry_type(), CatalogEntryType::Table);
+
+    // SAFETY: as above.
+    let view = unsafe {
+        CatalogEntry::lookup(
+            catalog.as_raw(),
+            ctx.as_raw(),
+            c"main",
+            c"catalog_probe_v",
+            CatalogEntryType::View,
+        )
+    }
+    .expect("the view must be found");
+    assert_eq!(view.name(), Some("catalog_probe_v"));
+    assert_eq!(view.entry_type(), CatalogEntryType::View);
+
+    // A name that does not exist is `None`, not a null handle to dereference.
+    // SAFETY: as above.
+    assert!(unsafe {
+        CatalogEntry::lookup(
+            catalog.as_raw(),
+            ctx.as_raw(),
+            c"main",
+            c"no_such_table",
+            CatalogEntryType::Table,
+        )
+    }
+    .is_none());
+
+    drop(table);
+    drop(view);
+    drop(catalog);
+    fx.query("COMMIT");
+}
+
+/// An extension-defined `SET`/`SELECT current_setting()` option.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_registered_config_option_is_settable_and_readable() {
+    use quack_rs::client_context::ClientContext;
+    use quack_rs::config_option::ConfigOptionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open.
+    unsafe {
+        ConfigOptionBuilder::try_new("quack_probe_setting")
+            .expect("name")
+            .description("A setting registered by the test")
+            .expect("description")
+            .option_type(TypeId::Varchar)
+            .default_value("fallback")
+            .expect("default")
+            .register(fx.con())
+            .expect("register the option");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT current_setting('quack_probe_setting')", |r, i| {
+            unsafe { r.read_str(i).to_owned() }
+        })
+        .as_deref(),
+        Some("fallback"),
+        "the declared default must be what DuckDB reports"
+    );
+
+    fx.query("SET quack_probe_setting = 'changed'");
+    assert_eq!(
+        fx.scalar("SELECT current_setting('quack_probe_setting')", |r, i| {
+            unsafe { r.read_str(i).to_owned() }
+        })
+        .as_deref(),
+        Some("changed")
+    );
+
+    // And the same value through the client context, which is how a callback
+    // would read it.
+    // SAFETY: `con` is open.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    assert_eq!(
+        ctx.config_option(c"quack_probe_setting").as_deref(),
+        Some("changed")
+    );
+
+    // `ctx.config_option` on a *missing* option is deliberately not exercised:
+    // DuckDB 1.5.5's `duckdb_client_context_get_config_option` calls
+    // `TryGetCurrentSetting(...).GetScope()` without first checking the lookup
+    // succeeded, and `GetScope()` asserts `scope != SettingScope::INVALID`.
+    // Against a DuckDB built with debug assertions — which this test suite uses
+    // — that aborts the process. See `ClientContext::config_option`'s docs.
+    //
+    // The abort-free way to ask whether a setting exists is SQL:
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_settings() WHERE name = 'no_such_setting_at_all'",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_settings() WHERE name = 'quack_probe_setting'",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(1),
+        "a registered option must appear in duckdb_settings()"
+    );
+}
+
+/// A selection vector's buffer must be the one `DuckDB` allocated, writable
+/// through the slice, and readable back.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_selection_vector_round_trips_its_indices() {
+    use quack_rs::selection_vector::SelectionVector;
+
+    let _fx = Fixture::open();
+
+    let mut sel = SelectionVector::new(2048);
+    assert_eq!(sel.as_slice().len(), 2048);
+
+    for (i, slot) in sel.as_mut_slice().iter_mut().enumerate() {
+        *slot = (2047 - i) as u32;
+    }
+    assert_eq!(sel.as_slice()[0], 2047);
+    assert_eq!(sel.as_slice()[2047], 0);
+
+    // A zero-length vector must not hand out a dangling non-empty slice.
+    let empty = SelectionVector::new(0);
+    assert!(empty.as_slice().is_empty());
+}
+
+/// The instance cache must hand back the *same* database for the same path.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn the_instance_cache_shares_one_database() {
+    use quack_rs::instance_cache::InstanceCache;
+
+    let _fx = Fixture::open();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cached.duckdb");
+    let c_path = std::ffi::CString::new(path.to_str().expect("utf-8")).expect("no interior NUL");
+
+    let cache = InstanceCache::new();
+    // SAFETY: the cache is valid and the path is a NUL-terminated string.
+    let first = unsafe { cache.get_or_create(&c_path, None) }.expect("open");
+    // SAFETY: as above.
+    let second = unsafe { cache.get_or_create(&c_path, None) }.expect("reopen");
+
+    // Written through one handle, visible through the other — that is what
+    // "same instance" means, and comparing raw pointers would not prove it.
+    let mut con: duckdb_connection = std::ptr::null_mut();
+    // SAFETY: `first` is an open database.
+    unsafe {
+        assert_eq!(
+            libduckdb_sys::duckdb_connect(first, &raw mut con),
+            DuckDBSuccess
+        );
+    }
+    // SAFETY: `con` is open.
+    unsafe {
+        quack_rs::query::query(
+            con,
+            "CREATE TABLE shared (n INTEGER); INSERT INTO shared VALUES (7)",
+        )
+    }
+    .expect("write through the first handle");
+
+    let mut con2: duckdb_connection = std::ptr::null_mut();
+    // SAFETY: `second` is an open database.
+    unsafe {
+        assert_eq!(
+            libduckdb_sys::duckdb_connect(second, &raw mut con2),
+            DuckDBSuccess
+        );
+    }
+    // SAFETY: `con2` is open.
+    let mut result = unsafe { quack_rs::query::query(con2, "SELECT n FROM shared") }
+        .expect("read through the second handle");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: INTEGER column, row 0.
+    assert_eq!(unsafe { chunk.reader(0).read_i32(0) }, 7);
+
+    drop(chunk);
+    drop(result);
+    // SAFETY: both connections and databases are live and closed in order.
+    unsafe {
+        libduckdb_sys::duckdb_disconnect(&raw mut con);
+        libduckdb_sys::duckdb_disconnect(&raw mut con2);
+        let mut a = first;
+        let mut b = second;
+        libduckdb_sys::duckdb_close(&raw mut a);
+        libduckdb_sys::duckdb_close(&raw mut b);
+    }
+}
