@@ -152,6 +152,21 @@ pub trait Registrar {
         &self,
         builder: CopyFunctionBuilder,
     ) -> Result<(), ExtensionError>;
+
+    /// Registers an extension-defined configuration option.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExtensionError`] if `DuckDB` rejects the option.
+    ///
+    /// # Safety
+    ///
+    /// The underlying connection must be valid.
+    #[cfg(feature = "duckdb-1-5")]
+    unsafe fn register_config_option(
+        &self,
+        builder: crate::config_option::ConfigOptionBuilder,
+    ) -> Result<(), ExtensionError>;
 }
 
 /// Wraps the `duckdb_connection` and `duckdb_database` provided to your
@@ -379,6 +394,15 @@ impl Registrar for Connection {
     unsafe fn register_copy_function(
         &self,
         builder: CopyFunctionBuilder,
+    ) -> Result<(), ExtensionError> {
+        // SAFETY: self.con is valid per Connection invariant.
+        unsafe { builder.register(self.con) }
+    }
+
+    #[cfg(feature = "duckdb-1-5")]
+    unsafe fn register_config_option(
+        &self,
+        builder: crate::config_option::ConfigOptionBuilder,
     ) -> Result<(), ExtensionError> {
         // SAFETY: self.con is valid per Connection invariant.
         unsafe { builder.register(self.con) }

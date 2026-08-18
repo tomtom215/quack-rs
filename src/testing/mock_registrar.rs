@@ -84,6 +84,8 @@ pub struct MockRegistrar {
     casts: RefCell<Vec<CastRecord>>,
     #[cfg(feature = "duckdb-1-5")]
     copy_function_names: RefCell<Vec<String>>,
+    #[cfg(feature = "duckdb-1-5")]
+    config_option_names: RefCell<Vec<String>>,
 }
 
 impl MockRegistrar {
@@ -151,6 +153,20 @@ impl MockRegistrar {
         self.copy_function_names.borrow().iter().any(|n| n == name)
     }
 
+    /// Returns the names of all config options registered so far.
+    #[cfg(feature = "duckdb-1-5")]
+    #[must_use]
+    pub fn config_option_names(&self) -> Vec<String> {
+        self.config_option_names.borrow().clone()
+    }
+
+    /// Returns `true` if a config option with the given name was registered.
+    #[cfg(feature = "duckdb-1-5")]
+    #[must_use]
+    pub fn has_config_option(&self, name: &str) -> bool {
+        self.config_option_names.borrow().iter().any(|n| n == name)
+    }
+
     /// Returns the total number of registrations across all types.
     #[must_use]
     pub fn total_registrations(&self) -> usize {
@@ -163,7 +179,7 @@ impl MockRegistrar {
             + self.casts.borrow().len();
         #[cfg(feature = "duckdb-1-5")]
         {
-            base + self.copy_function_names.borrow().len()
+            base + self.copy_function_names.borrow().len() + self.config_option_names.borrow().len()
         }
         #[cfg(not(feature = "duckdb-1-5"))]
         {
@@ -318,6 +334,17 @@ impl Registrar for MockRegistrar {
             .push(builder.name().to_owned());
         Ok(())
     }
+
+    #[cfg(feature = "duckdb-1-5")]
+    unsafe fn register_config_option(
+        &self,
+        builder: crate::config_option::ConfigOptionBuilder,
+    ) -> Result<(), ExtensionError> {
+        self.config_option_names
+            .borrow_mut()
+            .push(builder.name().to_owned());
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -437,8 +464,18 @@ mod tests {
         assert!(mock.has_copy_function("my_format"));
         assert!(!mock.has_copy_function("other_format"));
         assert_eq!(mock.copy_function_names(), vec!["my_format"]);
+
+        // Config options go through the same trait, so an extension's whole
+        // registration closure is mockable rather than only part of it.
+        let option = crate::config_option::ConfigOptionBuilder::try_new("my_option")
+            .expect("name")
+            .option_type(TypeId::Varchar);
+        // SAFETY: the mock ignores the connection entirely.
+        unsafe { mock.register_config_option(option) }.expect("register");
+        assert!(mock.has_config_option("my_option"));
+        assert_eq!(mock.config_option_names(), vec!["my_option"]);
         assert_eq!(mock.copy_function_names().len(), 1);
-        assert_eq!(mock.total_registrations(), 1);
+        assert_eq!(mock.total_registrations(), 2);
     }
 
     /// Registers one scalar **and** one copy function so that

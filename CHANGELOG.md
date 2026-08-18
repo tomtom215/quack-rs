@@ -573,6 +573,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The prelude re-exports `AbiPolicy`, the `datetime` types and the `query` types.
 
+- **`Registrar::register_config_option`** — the trait already covered scalar,
+  scalar set, aggregate, aggregate set, table, SQL macro, cast and copy
+  functions, but not config options, so an extension registering one could not
+  have its whole registration closure exercised through `MockRegistrar`. Added,
+  with `config_option_names` / `has_config_option` on the mock.
+
 - **`secrets::list_duckdb_secrets`** — reads the secret *metadata* `DuckDB` does
   expose, via `duckdb_secrets()`: name, type, provider, persistence, storage,
   scope prefixes and the redacted `secret_string`. Enough to pick a scope, warn
