@@ -1929,3 +1929,70 @@ fn every_uuid_accessor_agrees_on_which_128_bits_it_means() {
     // the entire reason the flip exists.
     assert_eq!(uuid_to_storage(0), i128::MIN);
 }
+
+// ---------------------------------------------------------------------------
+// Secrets
+// ---------------------------------------------------------------------------
+
+/// `list_duckdb_secrets` reads real secret metadata — and demonstrably cannot
+/// read the credential, which is the point the module documentation makes.
+#[test]
+fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
+    use quack_rs::secrets::list_duckdb_secrets;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open for the fixture's lifetime.
+    let empty = unsafe { list_duckdb_secrets(fx.con()) }.expect("query duckdb_secrets()");
+    assert!(empty.is_empty(), "a fresh database has no secrets");
+
+    fx.query("CREATE SECRET probe_s3 (TYPE s3, KEY_ID 'AKIAEXAMPLE', SECRET 'super-secret-value')");
+    fx.query("CREATE SECRET probe_http (TYPE http, EXTRA_HTTP_HEADERS MAP{'X':'Y'})");
+
+    // SAFETY: as above.
+    let secrets = unsafe { list_duckdb_secrets(fx.con()) }.expect("query duckdb_secrets()");
+    assert_eq!(secrets.len(), 2);
+
+    let s3 = secrets
+        .iter()
+        .find(|s| s.name == "probe_s3")
+        .expect("the s3 secret");
+    assert_eq!(s3.secret_type, "s3");
+    assert_eq!(s3.provider, "config");
+    assert!(!s3.persistent, "a session secret is not persistent");
+    // scope is a VARCHAR[]; DuckDB gives an s3 secret three default prefixes.
+    assert!(
+        s3.scope.iter().any(|p| p == "s3://"),
+        "unexpected scope: {:?}",
+        s3.scope
+    );
+    assert!(
+        s3.scope.iter().all(|p| !p.starts_with('\'')),
+        "array quoting must be stripped: {:?}",
+        s3.scope
+    );
+
+    // The whole reason this returns metadata and not a `SecretEntry`.
+    assert!(
+        s3.secret_string.contains("key_id=AKIAEXAMPLE"),
+        "{}",
+        s3.secret_string
+    );
+    assert!(
+        s3.secret_string.contains("secret=redacted"),
+        "DuckDB must redact the credential: {}",
+        s3.secret_string
+    );
+    assert!(
+        !s3.secret_string.contains("super-secret-value"),
+        "the credential leaked: {}",
+        s3.secret_string
+    );
+
+    // An empty scope round-trips as an empty vector, not as [""].
+    let http = secrets
+        .iter()
+        .find(|s| s.name == "probe_http")
+        .expect("the http secret");
+    assert!(http.scope.is_empty(), "unexpected scope: {:?}", http.scope);
+}

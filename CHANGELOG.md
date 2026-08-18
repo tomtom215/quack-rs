@@ -82,6 +82,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
 
+### Fixed (documentation claimed a bridge that cannot exist)
+
+- **The `secrets` module described itself as bridging into `DuckDB`'s secrets
+  system. There is no such bridge, and there cannot be.** The extension C API
+  has **zero** secret functions — not one `duckdb_secret_*` among the 546 slots
+  of `duckdb_ext_api_v1` in `DuckDB` 1.5.5. An extension cannot ask `DuckDB` for
+  a credential through the C API at all.
+
+  The only route is the `duckdb_secrets()` table function, and `DuckDB` redacts
+  sensitive fields there. Verified against 1.5.5:
+
+  ```text
+  CREATE SECRET s (TYPE s3, KEY_ID 'AKIAEXAMPLE', SECRET 'super-secret-value');
+  SELECT secret_string FROM duckdb_secrets();
+  -- ...;key_id=AKIAEXAMPLE;secret=redacted
+  ```
+
+  The module docs now say this plainly, and say what `SecretsManager` actually
+  is: a trait over the extension's **own** credential source, carrying the
+  redacting `Debug`, zeroize-on-drop and absent `PartialEq` that credential
+  handling needs, rather than a route to `DuckDB`'s store.
+
+  The zeroize claim is also narrowed to what is true: it covers the buffers a
+  `SecretEntry` owns, not a `String` the caller still holds or one a `String`
+  abandoned when it grew.
+
 ### Fixed (the `description.yml` validator rejected 84% of real extensions)
 
 - **`parse_description_yml` rejected 36 of the 43 published community
@@ -389,6 +415,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The prelude re-exports `AbiPolicy`, the `datetime` types and the `query` types.
 
+- **`secrets::list_duckdb_secrets`** — reads the secret *metadata* `DuckDB` does
+  expose, via `duckdb_secrets()`: name, type, provider, persistence, storage,
+  scope prefixes and the redacted `secret_string`. Enough to pick a scope, warn
+  that a required secret is missing, or choose a provider. It returns a
+  `DuckDbSecretInfo`, deliberately not a `SecretEntry`, so nothing suggests it
+  carries credentials. A live test asserts both halves: the metadata comes
+  through, and the credential provably does not.
+
 - **The appender is no longer behind `duckdb-1-5`, and gained the row-at-a-time
   API it never had.** `duckdb_appender_*` occupies slots 281–291 and 330–356 —
   the *frozen stable prefix*, unchanged since v1.2.0 — yet the whole module was
@@ -452,7 +486,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   question you have when `register` reports a missing function;
   `WarningCollector` uses `try_lock` so printing can neither block nor deadlock.
   `missing_debug_implementations` is now enabled crate-wide, and CI's
-  `-D warnings` makes it an error.
+  `-D warnings` makes it an error. `testing::InMemoryDb` was a 59th, only
+  visible once the lint ran with `bundled-test` on.
 
 [C-DEBUG]: https://rust-lang.github.io/api-guidelines/debugging.html
 

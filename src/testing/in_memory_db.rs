@@ -184,6 +184,15 @@ pub struct InMemoryDb {
     conn: duckdb::Connection,
 }
 
+impl core::fmt::Debug for InMemoryDb {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The wrapped `duckdb::Connection` has nothing worth printing, and the
+        // point of this impl is that a test fixture holding an `InMemoryDb` can
+        // still `#[derive(Debug)]`.
+        f.debug_struct("InMemoryDb").finish_non_exhaustive()
+    }
+}
+
 impl InMemoryDb {
     /// Opens a new in-memory `DuckDB` database.
     ///
