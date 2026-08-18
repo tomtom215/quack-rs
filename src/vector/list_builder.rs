@@ -77,8 +77,29 @@ use crate::vector::VectorWriter;
 /// `duckdb_list_vector_reserve` throws a C++ `OutOfRangeException` above this,
 /// and the C API wrapper does not catch it — the exception would unwind into
 /// Rust, which is undefined behaviour. [`ListBuilder`] refuses to make the call
-/// instead. Matches `duckdb::DConstants::MAX_VECTOR_SIZE`.
-pub const MAX_LIST_CHILD_CAPACITY: usize = 1 << 37;
+/// instead.
+///
+/// Typed `u64` to match `duckdb::DConstants::MAX_VECTOR_SIZE`, which is
+/// `1ULL << 37ULL` — an `idx_t`, not a pointer-sized value. It does not fit in a
+/// 32-bit `usize`, so typing it as one made the crate fail to compile for
+/// `wasm32`, which is a target `DuckDB`'s own extension CI builds.
+pub const MAX_LIST_CHILD_CAPACITY: u64 = 1 << 37;
+
+/// [`MAX_LIST_CHILD_CAPACITY`] clamped to this target's `usize`, for the
+/// capacity arithmetic.
+///
+/// On a 64-bit target this is the ceiling itself. On a 32-bit target the
+/// ceiling is larger than any allocation `usize` can describe, so `usize::MAX`
+/// is the real limit and `DuckDB`'s is unreachable.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the branch above proves the value fits"
+)]
+const MAX_CHILD_CAPACITY_USIZE: usize = if MAX_LIST_CHILD_CAPACITY > usize::MAX as u64 {
+    usize::MAX
+} else {
+    MAX_LIST_CHILD_CAPACITY as usize
+};
 
 /// Incremental builder for a `LIST` (or `MAP`) output vector.
 ///
@@ -143,14 +164,16 @@ impl ListBuilder {
         if self.overflowed {
             return false;
         }
-        if capacity > MAX_LIST_CHILD_CAPACITY {
+        // Compared in `u64` because the ceiling is an `idx_t`: on a 32-bit
+        // target it exceeds `usize::MAX`, so no `usize` can reach it.
+        if capacity as u64 > MAX_LIST_CHILD_CAPACITY {
             self.overflowed = true;
             return false;
         }
         if capacity > self.reserved {
             // Grow geometrically: each reserve that grows reallocates and copies
             // the whole child, so doing it once per row is quadratic.
-            let target = capacity.next_power_of_two().min(MAX_LIST_CHILD_CAPACITY);
+            let target = capacity.next_power_of_two().min(MAX_CHILD_CAPACITY_USIZE);
             // SAFETY: `self.vector` is valid per this function's contract, and
             // `target` is within DuckDB's limit.
             unsafe { ListVector::reserve(self.vector, target) };
@@ -246,13 +269,20 @@ impl ListBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::MAX_LIST_CHILD_CAPACITY;
+    use super::{MAX_CHILD_CAPACITY_USIZE, MAX_LIST_CHILD_CAPACITY};
 
     #[test]
     fn max_capacity_matches_duckdbs_constant() {
         // duckdb::DConstants::MAX_VECTOR_SIZE = 1ULL << 37ULL. Above this,
         // ListVector::Reserve throws a C++ exception that the C API does not
         // catch, so it must never be reached from Rust.
-        assert_eq!(MAX_LIST_CHILD_CAPACITY, 137_438_953_472);
+        assert_eq!(MAX_LIST_CHILD_CAPACITY, 137_438_953_472_u64);
+        // The ceiling is an `idx_t`, so it must not be pointer-sized: typing it
+        // `usize` made `1 << 37` a const-eval overflow on 32-bit targets and
+        // broke the wasm32 build outright.
+        assert_eq!(
+            MAX_CHILD_CAPACITY_USIZE,
+            usize::try_from(MAX_LIST_CHILD_CAPACITY).unwrap_or(usize::MAX)
+        );
     }
 }

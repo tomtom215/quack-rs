@@ -70,6 +70,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns `strdup(...)`, so it *is* owned. Recorded as `LESSONS.md` P11 with
   the full table.
 
+#### Portability and feature-combination breakage
+
+- **`MAX_LIST_CHILD_CAPACITY` was typed `usize`, making the crate fail to
+  compile for `wasm32`.** `DuckDB`'s `DConstants::MAX_VECTOR_SIZE` is
+  `1ULL << 37ULL` — an `idx_t`, not a pointer-sized value. As a `usize` const,
+  `1 << 37` is a const-eval overflow wherever pointers are 32 bits, which is
+  every `wasm32` target — and `DuckDB`'s own extension CI builds three of them.
+  Now typed `u64`, with a separate `usize`-clamped constant for the capacity
+  arithmetic; on a 32-bit target the ceiling is larger than any allocation
+  `usize` can describe, so `usize::MAX` is the real limit.
+
+- **Three unit tests called `duckdb-1-5`-gated methods without a `cfg` gate**,
+  breaking `--features bundled-test` on its own — a combination that builds the
+  live-DuckDB tests but not the 1.5 wrappers. `Value::display_string` and
+  `TableDescription::column_count` / `column_type` are the gated methods; the
+  assertions around them are now gated too.
+
+  Both defects compiled cleanly under every other feature combination.
+  `scripts/check-matrix.sh` now runs the combinations CI runs — including
+  `bundled-test` alone and the `wasm32` legs — in one command.
+
 #### Generated CI
 
 - **The generated CI workflow left one action unpinned.** Three of its four

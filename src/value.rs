@@ -1017,12 +1017,16 @@ mod live_tests {
     /// Uses `duckdb_create_*` round-tripping through SQL is not possible from
     /// the C API, so this builds the value with the constructors under test and
     /// checks it against `DuckDB`'s own rendering.
+    #[cfg(feature = "duckdb-1-5")]
     fn rendered(value: &Value) -> String {
         value
             .display_string()
             .expect("DuckDB should render every value")
     }
 
+    /// `display_string` wraps `duckdb_value_to_string`, which lives past the
+    /// stable prefix, so this assertion set needs `duckdb-1-5`.
+    #[cfg(feature = "duckdb-1-5")]
     #[test]
     fn scalar_constructors_render_as_duckdb_would() {
         let _db = InMemoryDb::open().expect("open in-memory DuckDB");
@@ -1109,6 +1113,7 @@ mod live_tests {
         let value = unsafe { Value::from_raw(std::ptr::null_mut()) };
         assert!(value.is_null());
         assert!(value.as_str().is_err());
+        #[cfg(feature = "duckdb-1-5")]
         assert!(value.display_string().is_none());
         assert!(value.struct_child(0).is_none());
     }

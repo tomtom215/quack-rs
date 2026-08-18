@@ -321,6 +321,9 @@ mod tests {
         assert!(desc.is_ok(), "describe should succeed: {:?}", desc.err());
         let desc = desc.unwrap();
 
+        // `column_count` and `column_type` are the two DuckDB 1.5 additions in
+        // this module; the names and defaults are stable-prefix.
+        #[cfg(feature = "duckdb-1-5")]
         assert_eq!(desc.column_count(), 3);
 
         assert_eq!(desc.column_name(0), Some("id".to_string()));
@@ -330,14 +333,17 @@ mod tests {
         // Out-of-bounds index should return None.
         assert_eq!(desc.column_name(99), None);
 
-        // Column types should be non-null.
-        let lt0 = desc.column_type(0);
-        assert!(lt0.is_some(), "column_type(0) should be Some");
-        // LogicalType is RAII — automatically destroyed on drop.
-        drop(lt0);
+        #[cfg(feature = "duckdb-1-5")]
+        {
+            // Column types should be non-null.
+            let lt0 = desc.column_type(0);
+            assert!(lt0.is_some(), "column_type(0) should be Some");
+            // LogicalType is RAII — automatically destroyed on drop.
+            drop(lt0);
 
-        // Out-of-bounds column type should return None.
-        assert!(desc.column_type(99).is_none());
+            // Out-of-bounds column type should return None.
+            assert!(desc.column_type(99).is_none());
+        }
 
         drop(desc);
         // SAFETY: valid handles.
