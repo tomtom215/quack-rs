@@ -2,7 +2,7 @@
 name = "quack-rs"
 version = "0.15.0"
 edition = "2021"
-rust-version = "1.87.0"
+rust-version = "1.86.0"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
 description = "Production-grade Rust SDK for building DuckDB loadable extensions"
 license = "MIT"
@@ -153,7 +153,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
 # tempfile is version-pinned for reproducible dev builds. It was originally held
 # back to avoid getrandom >=0.4 (edition2024 / Rust >=1.85) when MSRV was 1.84.1;
-# now that MSRV is 1.87.0 that constraint no longer applies, but the pin is kept
+# now that MSRV is 1.86.0 that constraint no longer applies, but the pin is kept
 # to avoid unrelated dev-dependency churn. proptest only needs `tempfile ^3`.
 tempfile = "=3.27.0"
 

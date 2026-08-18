@@ -29,6 +29,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    export_built_against_duckdb_version();
+
     // On Windows, bundled DuckDB uses the Restart Manager API (RmStartSession,
     // RmEndSession, RmRegisterResources, RmGetList) in its AdditionalLockInfo()
     // function.  libduckdb-sys's build script does not emit a link directive for
@@ -203,4 +205,31 @@ fn scan_for_duckdb_headers(build_dir: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Forwards `QUACK_RS_TARGET_DUCKDB_VERSION` into the crate as
+/// `QUACK_RS_BUILT_AGAINST_DUCKDB`, so `abi::built_against_version()` can read
+/// it with `option_env!`.
+///
+/// Doing this through the build script rather than reading the variable with
+/// `option_env!` directly is what makes it *correct*: Cargo does not track
+/// environment variables read by `option_env!` in library code, so changing the
+/// variable would not invalidate a cached build and a stale value would be baked
+/// in. `cargo:rerun-if-env-changed` fixes that.
+///
+/// The variable names the exact `DuckDB` release whose headers `libduckdb-sys`
+/// was resolved against. It is deliberately **not** read from
+/// `DUCKDB_EXTENSION_MIN_DUCKDB_VERSION`, which `extension-ci-tools` also sets:
+/// that one carries `TARGET_DUCKDB_VERSION`, which means the *C API* version
+/// (`v1.2.0`) for a `C_STRUCT` build and a `DuckDB` release only for a
+/// `C_STRUCT_UNSTABLE` one. Treating those two meanings as interchangeable would
+/// let a `C_STRUCT` build claim it was compiled against `DuckDB` v1.2.0.
+fn export_built_against_duckdb_version() {
+    println!("cargo:rerun-if-env-changed=QUACK_RS_TARGET_DUCKDB_VERSION");
+    if let Ok(version) = env::var("QUACK_RS_TARGET_DUCKDB_VERSION") {
+        let version = version.trim();
+        if !version.is_empty() {
+            println!("cargo:rustc-env=QUACK_RS_BUILT_AGAINST_DUCKDB={version}");
+        }
+    }
 }

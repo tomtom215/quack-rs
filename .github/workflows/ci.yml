@@ -6,7 +6,7 @@
 # Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
 #       clippy, clippy-beta, fmt, doc, msrv, bench-compile, example-check,
 #       scaffold-compile, scaffold-e2e, symbol-check, extension-load,
-#       abi-table, abi-guard, publish-dry-run,
+#       abi-table, abi-guard, msrv-vs-duckdb-ci, publish-dry-run,
 #       security, osv-scan, nightly.
 
 name: CI
@@ -184,13 +184,13 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
 
   msrv:
-    name: MSRV (1.87.0)
+    name: MSRV (1.86.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # 1.87.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
-          toolchain: "1.87.0"
+          toolchain: "1.86.0"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo check
 
@@ -277,6 +277,19 @@ jobs:
       # guard would start refusing loads it should accept.
       - name: Verify src/abi.rs matches upstream
         run: python3 scripts/check-abi-table.py
+
+  msrv-vs-duckdb-ci:
+    name: MSRV vs DuckDB's extension CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # DuckDB's reusable extension-distribution workflow pins an exact Rust
+      # toolchain for some platforms (the WebAssembly job in particular). Raising
+      # quack-rs's MSRV above one of those pins silently makes every downstream
+      # extension unbuildable for those platforms, with no signal here. This
+      # gives that signal.
+      - name: Check MSRV against extension-ci-tools' pinned toolchains
+        run: python3 scripts/check-msrv-vs-duckdb-ci.py
 
   extension-load:
     name: Extension load test (DuckDB)

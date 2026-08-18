@@ -171,6 +171,20 @@ pub enum AbiCheck {
         /// Slot count this extension was compiled against.
         compiled_slots: usize,
     },
+    /// `QUACK_RS_TARGET_DUCKDB_VERSION` names a `DuckDB` release whose verified
+    /// slot count does not match the bindings actually compiled in.
+    ///
+    /// The declaration is wrong, so nothing derived from it can be trusted —
+    /// most likely Cargo resolved a different `libduckdb-sys` than the build
+    /// intended.
+    DeclaredVersionMismatch {
+        /// The declared `QUACK_RS_TARGET_DUCKDB_VERSION`.
+        declared_version: String,
+        /// Slot count that release is known to use.
+        declared_slots: usize,
+        /// Slot count this extension was actually compiled against.
+        compiled_slots: usize,
+    },
 }
 
 impl AbiCheck {
@@ -211,8 +225,23 @@ impl AbiCheck {
                  {compiled_slots}-slot layout). The extension uses the unstable region of the \
                  C API (quack-rs feature `duckdb-1-5`), and DuckDB has changed that region's \
                  layout in every recent release, so loading is refused rather than risking \
-                 mis-dispatch. Rebuild against DuckDB {engine_version}, or opt out with \
-                 `AbiPolicy::Trust` if you have verified the layout yourself."
+                 mis-dispatch. Fix it in one of these ways, best first: rebuild against DuckDB \
+                 {engine_version} and set QUACK_RS_TARGET_DUCKDB_VERSION={engine_version} so \
+                 this check passes without waiting for a quack-rs release; upgrade quack-rs to \
+                 a version whose layout table lists {engine_version}; or accept the risk with \
+                 `AbiPolicy::AllowUnknownEngine`."
+            )),
+            Self::DeclaredVersionMismatch {
+                declared_version,
+                declared_slots,
+                compiled_slots,
+            } => Some(format!(
+                "QUACK_RS_TARGET_DUCKDB_VERSION says this extension was built against DuckDB \
+                 {declared_version}, whose duckdb_ext_api_v1 has {declared_slots} slots, but the \
+                 libduckdb-sys bindings compiled in have {compiled_slots}. The declaration and \
+                 the resolved dependency disagree, so neither can be trusted. Check which \
+                 libduckdb-sys version Cargo resolved (`cargo tree -p libduckdb-sys`) and make \
+                 QUACK_RS_TARGET_DUCKDB_VERSION match it."
             )),
             Self::EngineVersionUnavailable { compiled_slots } => Some(format!(
                 "DuckDB C extension API layout cannot be verified: duckdb_library_version() \
@@ -311,12 +340,47 @@ pub unsafe fn engine_version() -> Option<String> {
     cstr.to_str().ok().map(str::to_owned)
 }
 
+/// The `DuckDB` release this extension declares it was built against, if any.
+///
+/// Set `QUACK_RS_TARGET_DUCKDB_VERSION` when building — to the exact release
+/// whose headers `libduckdb-sys` resolved to, e.g. `v1.5.5`. [`check`] then
+/// short-circuits to [`AbiCheck::Compatible`] whenever it equals the running
+/// engine's version, without needing that release in [`expected_slot_count`]'s
+/// table.
+///
+/// **This is what keeps an extension working across a `DuckDB` release.** When
+/// `DuckDB` ships a new version, the community-extensions repository rebuilds
+/// every extension from its current source and publishes a per-release artifact,
+/// so users get a binary compiled against the new headers. That binary is
+/// correct — but without a declaration, [`check`] can only see an engine version
+/// this build of quack-rs has no verified layout for, and refuses it. The
+/// declaration closes that gap without waiting for a quack-rs release.
+///
+/// The value is an assertion by the build, not a proof. [`check`] cross-checks it
+/// against [`expected_slot_count`] when the declared release is a known one and
+/// reports [`AbiCheck::DeclaredVersionMismatch`] if they disagree.
+#[must_use]
+pub fn built_against_version() -> Option<&'static str> {
+    let declared = option_env!("QUACK_RS_BUILT_AGAINST_DUCKDB")?;
+    parse_version(declared).map(|_| declared)
+}
+
 /// Checks whether the running `DuckDB` uses the same `duckdb_ext_api_v1` layout
 /// this extension was compiled against.
 ///
 /// Returns [`AbiCheck::StableOnly`] immediately when the crate was built without
 /// the `duckdb-1-5` feature, since the stable prefix is frozen and no check is
 /// needed.
+///
+/// Otherwise, in order:
+///
+/// 1. If [`built_against_version`] is set and names a release whose verified slot
+///    count contradicts the compiled bindings, that is
+///    [`AbiCheck::DeclaredVersionMismatch`] — the build is misconfigured.
+/// 2. If it is set and equals the engine's version, the layouts match by
+///    construction: [`AbiCheck::Compatible`].
+/// 3. Otherwise the engine's version is looked up in the verified table and its
+///    slot count compared with the compiled one.
 ///
 /// # Safety
 ///
@@ -331,22 +395,56 @@ pub unsafe fn check() -> AbiCheck {
     }
 
     // SAFETY: forwarded from this function's own contract.
-    let Some(engine_version) = (unsafe { engine_version() }) else {
+    let engine = unsafe { engine_version() };
+    decide(compiled_slots, built_against_version(), engine.as_deref())
+}
+
+/// The decision the ABI check makes, separated from the two things it reads
+/// from the environment: the compiled slot count and the engine's version.
+///
+/// Pure, so every branch — including engine versions that do not exist yet — is
+/// unit-testable without a live `DuckDB`.
+fn decide(compiled_slots: usize, declared: Option<&str>, engine: Option<&str>) -> AbiCheck {
+    // A declaration that contradicts the compiled bindings is a build bug, and
+    // must be reported before anything is derived from it.
+    if let Some(declared_version) = declared {
+        if let Some(declared_slots) = expected_slot_count(declared_version) {
+            if declared_slots != compiled_slots {
+                return AbiCheck::DeclaredVersionMismatch {
+                    declared_version: declared_version.to_owned(),
+                    declared_slots,
+                    compiled_slots,
+                };
+            }
+        }
+    }
+
+    let Some(engine_version) = engine else {
         return AbiCheck::EngineVersionUnavailable { compiled_slots };
     };
 
-    match expected_slot_count(&engine_version) {
+    // Built against exactly this engine: the extension's struct and the engine's
+    // struct were generated from the same release's header, so they agree even
+    // if this build of quack-rs has never heard of the release.
+    if declared.is_some_and(|d| parse_version(d) == parse_version(engine_version)) {
+        return AbiCheck::Compatible {
+            engine_version: engine_version.to_owned(),
+            slots: compiled_slots,
+        };
+    }
+
+    match expected_slot_count(engine_version) {
         Some(engine_slots) if engine_slots == compiled_slots => AbiCheck::Compatible {
-            engine_version,
+            engine_version: engine_version.to_owned(),
             slots: compiled_slots,
         },
         Some(engine_slots) => AbiCheck::LayoutMismatch {
-            engine_version,
+            engine_version: engine_version.to_owned(),
             engine_slots,
             compiled_slots,
         },
         None => AbiCheck::UnknownEngineVersion {
-            engine_version,
+            engine_version: engine_version.to_owned(),
             compiled_slots,
         },
     }
@@ -377,6 +475,23 @@ pub enum AbiPolicy {
     /// after a failed check is undefined behaviour** — `Warn` does not make it
     /// safe, it only makes it loud.
     Warn,
+    /// Refuse a layout the table says is *different*, but allow a `DuckDB`
+    /// release the table has no entry for.
+    ///
+    /// This is the forward-compatibility knob. It still catches the dangerous,
+    /// verifiable case — an extension built against v1.5.0 meeting v1.5.5 — while
+    /// letting the extension load on a release newer than this build of quack-rs
+    /// knows about.
+    ///
+    /// **Prefer setting `QUACK_RS_TARGET_DUCKDB_VERSION` instead**, which turns
+    /// the same situation into a positive match rather than a suspended
+    /// judgement. Reach for this only when the build cannot set that variable.
+    ///
+    /// The risk is real and asymmetric: `DuckDB` has changed the unstable region
+    /// in every recent release, so an unknown version is *more* likely to differ
+    /// than to match. Under this policy, an extension that calls into the
+    /// unstable region on a release it was not built for is undefined behaviour.
+    AllowUnknownEngine,
     /// Skip the check entirely.
     ///
     /// Appropriate when the binary is stamped `C_STRUCT_UNSTABLE`, because
@@ -535,18 +650,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_version_message_names_the_version_and_the_opt_out() {
-        let msg = AbiCheck::UnknownEngineVersion {
-            engine_version: "v1.6.0".into(),
-            compiled_slots: 546,
-        }
-        .error_message()
-        .expect("unknown version must produce a message");
-        assert!(msg.contains("v1.6.0"));
-        assert!(msg.contains("AbiPolicy::Trust"));
-    }
-
-    #[test]
     fn unavailable_version_message_mentions_the_missing_probe() {
         let msg = AbiCheck::EngineVersionUnavailable {
             compiled_slots: 546,
@@ -554,6 +657,148 @@ mod tests {
         .error_message()
         .expect("unavailable version must produce a message");
         assert!(msg.contains("duckdb_library_version"));
+    }
+
+    // ── The decision matrix ─────────────────────────────────────────────
+    //
+    // `decide` is the whole guard. These pin every branch, including engine
+    // versions that do not exist yet — which is the case that decides whether an
+    // extension survives a DuckDB release.
+
+    #[test]
+    fn a_known_engine_with_a_matching_layout_is_compatible() {
+        assert!(matches!(
+            decide(546, None, Some("v1.5.4")),
+            AbiCheck::Compatible { slots: 546, .. }
+        ));
+    }
+
+    #[test]
+    fn a_known_engine_with_a_different_layout_is_a_mismatch() {
+        assert!(matches!(
+            decide(546, None, Some("v1.5.0")),
+            AbiCheck::LayoutMismatch {
+                engine_slots: 545,
+                compiled_slots: 546,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_unknown_engine_is_unknown_without_a_declaration() {
+        assert!(matches!(
+            decide(546, None, Some("v1.6.0")),
+            AbiCheck::UnknownEngineVersion { .. }
+        ));
+    }
+
+    #[test]
+    fn declaring_the_engine_version_makes_an_unknown_release_compatible() {
+        // The scenario that matters: DuckDB 1.6.0 ships, the community
+        // repository rebuilds the extension against 1.6.0's headers, and the
+        // build declares it. quack-rs has never heard of 1.6.0 and must still
+        // accept it — the two structs came from the same header.
+        assert!(matches!(
+            decide(560, Some("v1.6.0"), Some("v1.6.0")),
+            AbiCheck::Compatible { slots: 560, .. }
+        ));
+    }
+
+    #[test]
+    fn a_declaration_for_a_different_release_does_not_excuse_a_known_mismatch() {
+        // Declared v1.5.4 (546) matches the compiled 546, so the declaration is
+        // self-consistent — but the engine is v1.5.0, which is verifiably 545.
+        assert!(matches!(
+            decide(546, Some("v1.5.4"), Some("v1.5.0")),
+            AbiCheck::LayoutMismatch {
+                engine_slots: 545,
+                compiled_slots: 546,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_declaration_contradicting_the_bindings_is_reported_first() {
+        // Declared v1.5.5 (546 slots) but only 545 compiled in: Cargo resolved a
+        // different libduckdb-sys than the build intended. Reported even though
+        // the engine would otherwise look fine.
+        assert!(matches!(
+            decide(545, Some("v1.5.5"), Some("v1.5.0")),
+            AbiCheck::DeclaredVersionMismatch {
+                declared_slots: 546,
+                compiled_slots: 545,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_unparseable_engine_version_is_unknown_not_a_match() {
+        // A `-dev` build reports something like "v1.6.0-dev1234", which
+        // `parse_version` rejects. It must not silently equal a declaration.
+        assert!(matches!(
+            decide(546, Some("v1.6.0"), Some("v1.6.0-dev1234")),
+            AbiCheck::UnknownEngineVersion { .. }
+        ));
+    }
+
+    #[test]
+    fn a_missing_engine_version_is_never_compatible() {
+        assert!(matches!(
+            decide(546, Some("v1.5.4"), None),
+            AbiCheck::EngineVersionUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn declared_version_is_none_unless_it_parses() {
+        // Nothing is set in this crate's own build, so it must be absent rather
+        // than a bogus value that would short-circuit the check.
+        assert_eq!(built_against_version(), None);
+    }
+
+    #[test]
+    fn declared_version_mismatch_is_a_failure_with_a_diagnostic() {
+        let check = AbiCheck::DeclaredVersionMismatch {
+            declared_version: "v1.5.0".into(),
+            declared_slots: 545,
+            compiled_slots: 546,
+        };
+        assert!(!check.is_compatible());
+        let msg = check.error_message().expect("must produce a message");
+        assert!(msg.contains("QUACK_RS_TARGET_DUCKDB_VERSION"), "{msg}");
+        assert!(msg.contains("545") && msg.contains("546"), "{msg}");
+        assert!(msg.contains("libduckdb-sys"), "{msg}");
+    }
+
+    #[test]
+    fn unknown_version_message_lists_every_remedy_in_order() {
+        let msg = AbiCheck::UnknownEngineVersion {
+            engine_version: "v1.6.0".into(),
+            compiled_slots: 546,
+        }
+        .error_message()
+        .expect("unknown version must produce a message");
+        // The message is what a user sees when a new DuckDB ships, so it has to
+        // name the fix that does not require a quack-rs release first.
+        let declare = msg
+            .find("QUACK_RS_TARGET_DUCKDB_VERSION")
+            .expect("declare remedy");
+        let upgrade = msg.find("upgrade quack-rs").expect("upgrade remedy");
+        let accept = msg.find("AllowUnknownEngine").expect("opt-out remedy");
+        assert!(declare < upgrade && upgrade < accept, "{msg}");
+    }
+
+    #[test]
+    fn policies_are_ordered_from_safest_to_loosest() {
+        // Strict and AllowUnknownEngine both reject a known-different layout;
+        // only Trust skips the check outright. Pinned so a future variant does
+        // not quietly widen the default.
+        assert_eq!(AbiPolicy::default(), AbiPolicy::Strict);
+        assert_ne!(AbiPolicy::AllowUnknownEngine, AbiPolicy::Trust);
+        assert_ne!(AbiPolicy::AllowUnknownEngine, AbiPolicy::Strict);
     }
 
     #[test]

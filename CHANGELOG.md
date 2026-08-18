@@ -14,6 +14,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > pointer, and `init_extension` now runs the ABI check by default. Documentation
 > examples and `#[deprecated(since = ...)]` already name `0.16`.
 
+### Changed (MSRV)
+
+- **MSRV lowered 1.87.0 → 1.86.0.** DuckDB's reusable
+  `_extension_distribution.yml` — the workflow the community-extensions
+  repository builds every extension with — pins
+  `dtolnay/rust-toolchain@… # 1.86.0` for the WebAssembly job. quack-rs required
+  1.87.0, so Cargo refused, and **no quack-rs extension could be built for
+  `wasm_mvp` / `wasm_eh` / `wasm_threads`** by the official pipeline — despite
+  the crate advertising `wasm32-unknown-emscripten` support since 0.14.0.
+
+  The entire 1.87 requirement was five `const fn` accessors calling `Vec::len`
+  (stabilised as const in 1.87). None can be reached in a const context —
+  `MockVectorWriter`, `StructReader` and `StructWriter` are all built at runtime
+  — so dropping `const` costs nothing. 1.86.0 is now the floor for the library,
+  its dev-dependencies (`criterion` needs 1.86) and the `hello-ext` example, all
+  verified.
+
+  New `scripts/check-msrv-vs-duckdb-ci.py` and a CI job re-derive DuckDB's pinned
+  toolchains from that workflow and fail if the MSRV creeps back above them.
+
 ### Security
 
 - **New `abi` module: `duckdb_ext_api_v1` layout verification.** `DuckDB` hands a

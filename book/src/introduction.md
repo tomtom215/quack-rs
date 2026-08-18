@@ -9,7 +9,7 @@
 [![Crates.io](https://img.shields.io/crates/v/quack-rs.svg)](https://crates.io/crates/quack-rs)
 [![Documentation](https://img.shields.io/badge/docs-book-blue.svg)](https://quack-rs.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![MSRV: 1.87.0](https://img.shields.io/badge/MSRV-1.87.0-blue.svg)](https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/)
+[![MSRV: 1.86.0](https://img.shields.io/badge/MSRV-1.86.0-blue.svg)](https://blog.rust-lang.org/2025/04/03/Rust-1.86.0/)
 
 ---
 

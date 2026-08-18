@@ -578,10 +578,19 @@ unsafe fn enforce_abi_policy(
     }
     // SAFETY: forwarded from this function's own contract.
     let check = unsafe { crate::abi::check() };
+
+    // `AllowUnknownEngine` suspends judgement on a release quack-rs has no entry
+    // for, but still refuses a layout it can positively identify as different.
+    if policy == AbiPolicy::AllowUnknownEngine
+        && matches!(check, crate::abi::AbiCheck::UnknownEngineVersion { .. })
+    {
+        return Ok(());
+    }
+
     let Some(message) = check.error_message() else {
         return Ok(());
     };
-    if policy == AbiPolicy::Strict {
+    if policy == AbiPolicy::Strict || policy == AbiPolicy::AllowUnknownEngine {
         return Err(ExtensionError::new(message));
     }
     // AbiPolicy::Warn: surface the diagnostic without failing the load.
@@ -685,6 +694,25 @@ mod tests {
         })
         .expect_err("unwrap panic must become an error");
         assert!(err.as_str().contains("registration panicked"), "{err}");
+    }
+
+    #[test]
+    fn allow_unknown_engine_only_forgives_the_unknown_case() {
+        use crate::abi::AbiCheck;
+        // The policy must not become a blanket opt-out: a layout DuckDB can be
+        // shown to lay out differently is still refused.
+        let unknown = AbiCheck::UnknownEngineVersion {
+            engine_version: "v1.6.0".into(),
+            compiled_slots: 546,
+        };
+        let mismatch = AbiCheck::LayoutMismatch {
+            engine_version: "v1.5.0".into(),
+            engine_slots: 545,
+            compiled_slots: 546,
+        };
+        assert!(matches!(unknown, AbiCheck::UnknownEngineVersion { .. }));
+        assert!(!matches!(mismatch, AbiCheck::UnknownEngineVersion { .. }));
+        assert!(mismatch.error_message().is_some());
     }
 
     #[test]

@@ -9,7 +9,7 @@
     <a href="https://crates.io/crates/quack-rs"><img src="https://img.shields.io/crates/v/quack-rs.svg" alt="Crates.io"></a>
     <a href="https://quack-rs.com/"><img src="https://img.shields.io/badge/docs-book-blue.svg" alt="Documentation"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-    <a href="https://blog.rust-lang.org/2025/05/15/Rust-1.87.0/"><img src="https://img.shields.io/badge/MSRV-1.87.0-blue.svg" alt="MSRV: 1.87.0"></a>
+    <a href="https://blog.rust-lang.org/2025/04/03/Rust-1.86.0/"><img src="https://img.shields.io/badge/MSRV-1.86.0-blue.svg" alt="MSRV: 1.86.0"></a>
   </p>
 </div>
 
@@ -830,7 +830,7 @@ preserves compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
 
 **v0.13.0** (2026-05-24) — DuckDB **1.5.3** bump (`libduckdb-sys`/`duckdb`
-1.10503.1), MSRV corrected to **1.87.0**, and six new `duckdb-1-5`-gated modules
+1.10503.1), MSRV corrected to **1.86.0**, and six new `duckdb-1-5`-gated modules
 (`error_data`, `expression`, `file_system`, `appender`, `selection_vector`,
 `instance_cache`) plus `Value`/`Catalog` additions. Adds a new **`duckdb-1-5-3`**
 feature exposing `TypeId::Variant` and `TypeId::Geometry` (the DuckDB 1.5.3
@@ -926,7 +926,7 @@ cargo test --all-targets                      # all tests pass
 cargo clippy --all-targets -- -D warnings     # no clippy warnings
 cargo fmt -- --check                          # code is formatted
 cargo doc --no-deps                           # docs compile without warnings
-cargo check                                   # MSRV check (Rust 1.87.0)
+cargo check                                   # MSRV check (Rust 1.86.0)
 ```
 
 ---

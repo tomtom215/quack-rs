@@ -393,6 +393,18 @@ fn unstable_config_pins_the_duckdb_release() {
     assert!(makefile.contains("USE_UNSTABLE_C_API=1"));
     assert!(makefile.contains("TARGET_DUCKDB_VERSION=v1.5.5"));
     assert!(makefile.contains("C_STRUCT_UNSTABLE"));
+    // Declares the build target to quack-rs's ABI check, so the extension keeps
+    // loading after a DuckDB release that quack-rs's layout table predates.
+    assert!(makefile.contains("export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)"));
+}
+
+#[test]
+fn stable_abi_makefile_does_not_declare_a_build_target() {
+    // With USE_UNSTABLE_C_API=0, TARGET_DUCKDB_VERSION is the *C API* version,
+    // not a DuckDB release — declaring it would be a lie about the bindings.
+    let files = generate_scaffold(&valid_config()).unwrap();
+    let makefile = &files.iter().find(|f| f.path == "Makefile").unwrap().content;
+    assert!(!makefile.contains("QUACK_RS_TARGET_DUCKDB_VERSION"));
 }
 
 #[test]

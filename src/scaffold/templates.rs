@@ -80,6 +80,16 @@ pub(super) fn generate_makefile(config: &ScaffoldConfig) -> String {
          # stay off quack-rs's `duckdb-1-5` / `duckdb-1-5-3` features; TARGET_DUCKDB_VERSION\n\
          # is then the *C API* version (v1.2.0), not a DuckDB release. See LESSONS.md P2."
     };
+    // Tell quack-rs which DuckDB release these bindings were built against, so
+    // its ABI check can accept a release its layout table predates — which is
+    // what happens every time DuckDB ships and the community repository rebuilds
+    // this extension from unchanged source. Only meaningful when
+    // TARGET_DUCKDB_VERSION is a real release, i.e. in the unstable-ABI case.
+    let declare_line = if config.use_unstable_c_api {
+        "\n# Lets quack-rs's ABI check accept a DuckDB release newer than its layout table.\n         export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)\n"
+    } else {
+        ""
+    };
     format!(
         r"# DuckDB Rust extension Makefile.
 # Delegates to cargo for building and to extension-ci-tools for metadata.
@@ -94,7 +104,7 @@ EXT_CONFIG=$(PROJ_DIR)extension_config.cmake
 {abi_note}
 USE_UNSTABLE_C_API={unstable}
 TARGET_DUCKDB_VERSION={target_version}
-
+{declare_line}
 all: configure release
 
 # Include extension-ci-tools build rules
@@ -117,6 +127,7 @@ clean_all: clean_configure clean
         abi_note = abi_note,
         unstable = unstable,
         target_version = config.target_duckdb_version,
+        declare_line = declare_line,
     )
 }
 
