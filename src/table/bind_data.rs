@@ -171,6 +171,14 @@ impl<T: 'static> FfiBindData<T> {
     }
 }
 
+impl<T: 'static> core::fmt::Debug for FfiBindData<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FfiBindData<")?;
+        f.write_str(core::any::type_name::<T>())?;
+        f.write_str(">")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

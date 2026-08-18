@@ -42,6 +42,7 @@ use crate::vector::VectorWriter;
 ///
 /// Pre-creates a [`VectorWriter`] for every field at construction, allowing
 /// direct typed writes without repeated `duckdb_struct_vector_get_child` calls.
+#[derive(Debug)]
 pub struct StructWriter {
     fields: Vec<VectorWriter>,
 }

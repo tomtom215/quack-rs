@@ -285,3 +285,5 @@ mod tests {
         unsafe { close_raw_connection(con, db) };
     }
 }
+
+crate::debug_repr::impl_handle_debug!(TableDescription.desc);

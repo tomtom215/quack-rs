@@ -264,6 +264,15 @@ impl<T: AggregateState> FfiState<T> {
 // type that implements AggregateState (see tests::ffi_state_is_pointer_sized).
 // A const assertion is not possible here because const fn cannot use trait bounds.
 
+impl<T: AggregateState> core::fmt::Debug for FfiState<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FfiState")
+            .field("state", &core::any::type_name::<T>())
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

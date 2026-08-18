@@ -145,6 +145,8 @@ impl Drop for Expression {
     }
 }
 
+crate::debug_repr::impl_handle_debug!(Expression.raw);
+
 #[cfg(test)]
 mod tests {
     use super::*;

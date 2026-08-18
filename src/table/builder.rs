@@ -422,6 +422,24 @@ impl TableFunctionBuilder {
     }
 }
 
+impl core::fmt::Debug for TableFunctionBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use crate::debug_repr::Callback;
+        f.debug_struct("TableFunctionBuilder")
+            .field("name", &self.name)
+            .field("params", &self.params)
+            .field("logical_params", &self.logical_params.len())
+            .field("named_params", &self.named_params.len())
+            .field("bind", &Callback::of(&self.bind))
+            .field("init", &Callback::of(&self.init))
+            .field("local_init", &Callback::of(&self.local_init))
+            .field("scan", &Callback::of(&self.scan))
+            .field("projection_pushdown", &self.projection_pushdown)
+            .field("extra_info", &Callback::of(&self.extra_info))
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

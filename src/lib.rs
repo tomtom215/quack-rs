@@ -138,6 +138,7 @@ pub mod config;
 pub mod connection;
 pub mod data_chunk;
 pub mod datetime;
+mod debug_repr;
 pub mod entry_point;
 pub mod error;
 pub mod interval;

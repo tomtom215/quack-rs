@@ -67,6 +67,7 @@ impl ConfigOptionScope {
 /// After building, call [`register`][Self::register] from your entry point to
 /// register the setting with `DuckDB`.
 #[must_use]
+#[derive(Debug)]
 pub struct ConfigOptionBuilder {
     name: CString,
     description: Option<CString>,

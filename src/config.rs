@@ -177,3 +177,5 @@ impl Drop for DbConfig {
 // loaded extension or after `InMemoryDb::open()`. Direct unit tests are not
 // possible without that initialization (Pitfall P9). Verify DbConfig via E2E
 // SQLLogicTests in your extension's test suite.
+
+crate::debug_repr::impl_handle_debug!(DbConfig.config);

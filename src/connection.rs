@@ -175,6 +175,7 @@ pub trait Registrar {
 /// `Connection` provides a uniform API across `DuckDB` 1.4.x and 1.5.x.
 /// When future `DuckDB` releases add new C API surface, additional methods will
 /// be gated on the corresponding feature flag.
+#[derive(Debug)]
 pub struct Connection {
     con: duckdb_connection,
     db: duckdb_database,

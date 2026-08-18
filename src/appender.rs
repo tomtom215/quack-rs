@@ -268,3 +268,5 @@ mod tests {
         }
     }
 }
+
+crate::debug_repr::impl_handle_debug!(Appender.appender);

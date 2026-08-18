@@ -61,6 +61,7 @@ fn runtime_vector_size() -> usize {
 ///
 /// Tracks the number of rows written via [`next_row`][Self::next_row] and
 /// automatically calls `duckdb_data_chunk_set_size` on drop.
+#[derive(Debug)]
 pub struct ChunkWriter {
     raw: duckdb_data_chunk,
     row_count: usize,

@@ -225,6 +225,7 @@ impl ReplacementScanInfo {
 /// Unlike other builders in quack-rs, registration is a single static call
 /// because the replacement scan API takes a raw function pointer and optional
 /// extra data directly — there is no handle to configure step-by-step.
+#[derive(Debug)]
 pub struct ReplacementScanBuilder;
 
 impl ReplacementScanBuilder {
@@ -286,6 +287,8 @@ impl ReplacementScanBuilder {
         }
     }
 }
+
+crate::debug_repr::impl_handle_debug!(ReplacementScanInfo.info);
 
 #[cfg(test)]
 mod tests {

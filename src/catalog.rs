@@ -242,6 +242,8 @@ impl Drop for Catalog {
     }
 }
 
+crate::debug_repr::impl_handle_debug!(CatalogEntry.entry, Catalog.catalog);
+
 #[cfg(test)]
 mod tests {
     use super::*;

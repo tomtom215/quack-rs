@@ -354,3 +354,5 @@ impl FunctionInfo {
         self.info
     }
 }
+
+crate::debug_repr::impl_handle_debug!(BindInfo.info, InitInfo.info, FunctionInfo.info);

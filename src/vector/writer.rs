@@ -40,6 +40,7 @@ use libduckdb_sys::{
 /// //     }
 /// // }
 /// ```
+#[derive(Debug)]
 pub struct VectorWriter {
     vector: duckdb_vector,
     data: *mut u8,

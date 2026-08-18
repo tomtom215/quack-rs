@@ -426,6 +426,18 @@ unsafe extern "C" fn typed_scan_trampoline<S: Send + 'static>(
     }
 }
 
+impl<S: Send + 'static> core::fmt::Debug for TypedTableFunctionBuilder<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use crate::debug_repr::Callback;
+        f.debug_struct("TypedTableFunctionBuilder")
+            .field("state", &core::any::type_name::<S>())
+            .field("inner", &self.inner)
+            .field("bind", &Callback::of(&self.bind))
+            .field("scan", &Callback::of(&self.scan))
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

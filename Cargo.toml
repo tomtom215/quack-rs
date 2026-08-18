@@ -171,6 +171,11 @@ strip = true
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
+# Rust API guideline C-DEBUG. Not cosmetic: without `Debug`, `Result::unwrap`,
+# `Result::expect_err`, `assert_eq!` and `#[derive(Debug)]` on any downstream
+# struct holding one of our types all fail to compile. CI runs clippy with
+# `-D warnings`, which promotes this to an error there.
+missing_debug_implementations = "warn"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

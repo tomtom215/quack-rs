@@ -261,6 +261,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The prelude re-exports `AbiPolicy`, the `datetime` types and the `query` types.
 
+- **`FileHandle` gained the looping I/O helpers, and `size`/`tell` became
+  fallible.** `duckdb_file_handle_read` and `duckdb_file_handle_write` return
+  "the number of bytes **actually** read/written" — a single call can come up
+  short, which over `httpfs` is routine rather than theoretical. Adds
+  `read_exact`, `read_to_end` and `write_all`, which loop. `size()` and `tell()`
+  changed from `i64` to `Result<u64, ErrorData>`: the C API signals failure with
+  a *negative* return, and the previous signature made `handle.size().max(0) as
+  usize` — silently treating an error as an empty file — the obvious thing to
+  write. It was in this crate's own documentation.
+
+- **`Value::type_id()`.** `Value` had forty `as_*` accessors and no way to ask
+  what the value actually is, so reading a `VARCHAR` with `as_i64()` returned
+  garbage rather than an error. Wraps `duckdb_get_value_type` (stable prefix,
+  slot 137, unchanged since v1.2.0), returning `None` for a null handle or a
+  type id newer than this build knows.
+
+- **Every public type implements `Debug`.** 58 of them did not, which is Rust API
+  guideline [C-DEBUG] and not cosmetic: `Result::unwrap`, `Result::expect_err`,
+  `assert_eq!`, and `#[derive(Debug)]` on any downstream struct storing a
+  quack-rs type all fail to compile without it. `LogicalType` and `Value` print
+  decoded state (type id, alias, `DECIMAL` width/scale, `DuckDB`'s own rendering)
+  rather than a pointer; builders print `set`/`unset` per callback, which is the
+  question you have when `register` reports a missing function;
+  `WarningCollector` uses `try_lock` so printing can neither block nor deadlock.
+  `missing_debug_implementations` is now enabled crate-wide, and CI's
+  `-D warnings` makes it an error.
+
+[C-DEBUG]: https://rust-lang.github.io/api-guidelines/debugging.html
+
 ### Fixed (behaviour documented after verification)
 
 - `Value::display_string` renders a SQL **literal**, not display text:

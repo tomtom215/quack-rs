@@ -44,6 +44,7 @@ use libduckdb_sys::{
 ///
 /// The reader borrows from the data chunk. Do not call `duckdb_destroy_data_chunk`
 /// while a `VectorReader` that references it is live.
+#[derive(Debug)]
 pub struct VectorReader {
     data: *const u8,
     validity: *mut u64,

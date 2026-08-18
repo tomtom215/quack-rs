@@ -25,8 +25,8 @@
 //! let fs = FileSystem::from_client_context(ctx)?;
 //! let opts = FileOpenOptions::read_only();
 //! let handle = fs.open(c"data.csv", &opts).ok()?;
-//! let mut buf = vec![0u8; handle.size().max(0) as usize];
-//! let _n = handle.read(&mut buf).ok()?;
+//! let mut contents = Vec::new();
+//! handle.read_to_end(&mut contents).ok()?;
 //! # Some(())
 //! # }
 //! ```
@@ -227,6 +227,11 @@ impl Drop for FileSystem {
     }
 }
 
+/// Buffer growth step for [`FileHandle::read_to_end`] when the handle cannot
+/// report a size — 64 KiB, matching the order of magnitude of `DuckDB`'s own
+/// file-read buffers.
+const CHUNK: usize = 64 * 1024;
+
 /// RAII wrapper for an open `duckdb_file_handle`.
 ///
 /// Automatically closed and destroyed when dropped.
@@ -290,6 +295,98 @@ impl FileHandle {
         }
     }
 
+    /// Reads exactly `buf.len()` bytes, or fails.
+    ///
+    /// `duckdb_file_handle_read` returns "the number of bytes **actually**
+    /// read", so a single `read` can come up short on any file system — and
+    /// `httpfs` is exactly where that happens. This loops until the buffer is
+    /// full.
+    ///
+    /// # Errors
+    ///
+    /// Returns the structured [`ErrorData`] on read failure, or a
+    /// [`DuckDbErrorType::Io`][crate::error_data::DuckDbErrorType::Io] error if
+    /// the file ends before `buf` is filled.
+    pub fn read_exact(&self, buf: &mut [u8]) -> Result<(), ErrorData> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            let read = self.read(&mut buf[filled..])?;
+            if read == 0 {
+                return Err(ErrorData::new(
+                    crate::error_data::DuckDbErrorType::Io,
+                    &format!(
+                        "unexpected end of file: wanted {} bytes, got {filled}",
+                        buf.len()
+                    ),
+                ));
+            }
+            filled += read;
+        }
+        Ok(())
+    }
+
+    /// Appends the rest of the file to `buf`, returning how many bytes were
+    /// added.
+    ///
+    /// Reads from the current position to end of file, looping over short reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the structured [`ErrorData`] on read failure.
+    pub fn read_to_end(&self, buf: &mut Vec<u8>) -> Result<usize, ErrorData> {
+        // Start from the remaining length when the handle can report it, so the
+        // common case is a single allocation, but never rely on it: a stream may
+        // report no size at all.
+        let hint = match (self.size(), self.tell()) {
+            (Ok(size), Ok(position)) => usize::try_from(size.saturating_sub(position)).unwrap_or(0),
+            _ => 0,
+        };
+        buf.reserve(hint.max(CHUNK));
+
+        let start = buf.len();
+        loop {
+            let filled = buf.len();
+            buf.resize(filled + CHUNK, 0);
+            let read = match self.read(&mut buf[filled..]) {
+                Ok(read) => read,
+                Err(error) => {
+                    buf.truncate(filled);
+                    return Err(error);
+                }
+            };
+            buf.truncate(filled + read);
+            if read == 0 {
+                return Ok(buf.len() - start);
+            }
+        }
+    }
+
+    /// Writes all of `buf`, or fails.
+    ///
+    /// Like [`read_exact`][Self::read_exact], this exists because
+    /// `duckdb_file_handle_write` reports the number of bytes *actually*
+    /// written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the structured [`ErrorData`] on write failure, or a
+    /// [`DuckDbErrorType::Io`][crate::error_data::DuckDbErrorType::Io] error if
+    /// `DuckDB` stops accepting bytes before the buffer is drained.
+    pub fn write_all(&self, buf: &[u8]) -> Result<(), ErrorData> {
+        let mut written = 0;
+        while written < buf.len() {
+            let n = self.write(&buf[written..])?;
+            if n == 0 {
+                return Err(ErrorData::new(
+                    crate::error_data::DuckDbErrorType::Io,
+                    &format!("write stalled: wanted {} bytes, wrote {written}", buf.len()),
+                ));
+            }
+            written += n;
+        }
+        Ok(())
+    }
+
     /// Seeks to an absolute byte `position`.
     ///
     /// # Errors
@@ -303,17 +400,27 @@ impl FileHandle {
     }
 
     /// Returns the current byte offset within the file.
-    #[must_use]
-    pub fn tell(&self) -> i64 {
+    ///
+    /// # Errors
+    ///
+    /// Returns the structured [`ErrorData`] if `DuckDB` cannot report the
+    /// position. The C API signals that with a negative return value, which is
+    /// far too easy to clamp to zero by accident.
+    pub fn tell(&self) -> Result<u64, ErrorData> {
         // SAFETY: self.handle is valid.
-        unsafe { duckdb_file_handle_tell(self.handle) }
+        let position = unsafe { duckdb_file_handle_tell(self.handle) };
+        u64::try_from(position).map_err(|_| self.error_data())
     }
 
     /// Returns the total size of the file in bytes.
-    #[must_use]
-    pub fn size(&self) -> i64 {
+    ///
+    /// # Errors
+    ///
+    /// Returns the structured [`ErrorData`] if `DuckDB` cannot report the size.
+    pub fn size(&self) -> Result<u64, ErrorData> {
         // SAFETY: self.handle is valid.
-        unsafe { duckdb_file_handle_size(self.handle) }
+        let size = unsafe { duckdb_file_handle_size(self.handle) };
+        u64::try_from(size).map_err(|_| self.error_data())
     }
 
     /// Flushes buffered writes to durable storage.
@@ -366,6 +473,8 @@ impl Drop for FileHandle {
         }
     }
 }
+
+crate::debug_repr::impl_handle_debug!(FileOpenOptions.options, FileSystem.fs, FileHandle.handle);
 
 #[cfg(test)]
 mod tests {

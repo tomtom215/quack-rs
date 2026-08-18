@@ -438,6 +438,13 @@ impl CopyFinalizeInfo {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+crate::debug_repr::impl_handle_debug!(
+    CopyBindInfo.info,
+    CopyGlobalInitInfo.info,
+    CopySinkInfo.info,
+    CopyFinalizeInfo.info
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

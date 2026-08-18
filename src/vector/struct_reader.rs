@@ -34,6 +34,7 @@ use crate::vector::VectorReader;
 ///
 /// Pre-creates a [`VectorReader`] for every field at construction, allowing
 /// direct typed reads without repeated `duckdb_struct_vector_get_child` calls.
+#[derive(Debug)]
 pub struct StructReader {
     vector: duckdb_vector,
     fields: Vec<VectorReader>,

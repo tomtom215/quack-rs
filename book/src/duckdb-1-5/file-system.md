@@ -25,10 +25,8 @@ use quack_rs::file_system::{FileOpenOptions, FileSystem};
 let fs = FileSystem::from_client_context(ctx)?;
 let handle = fs.open(c"s3://bucket/data.csv", &FileOpenOptions::read_only()).ok()?;
 
-let size = handle.size().max(0) as usize;
-let mut buf = vec![0u8; size];
-let n = handle.read(&mut buf).ok()?;
-buf.truncate(n);
+let mut buf = Vec::new();
+handle.read_to_end(&mut buf).ok()?;
 Some(buf)
 # }
 ```
@@ -42,7 +40,7 @@ use quack_rs::file_system::{FileOpenOptions, FileSystem};
 # fn write_report(ctx: &ClientContext, bytes: &[u8]) -> Result<(), quack_rs::error_data::ErrorData> {
 let fs = FileSystem::from_client_context(ctx).expect("file system");
 let handle = fs.open(c"report.bin", &FileOpenOptions::write_create())?;
-handle.write(bytes)?;
+handle.write_all(bytes)?;
 handle.sync()?;
 handle.close()?;
 # Ok(())
@@ -67,14 +65,29 @@ cover the common cases; use `set_flag` for anything else.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `read(&mut buf)` | `Result<usize, ErrorData>` | Read up to `buf.len()` bytes (0 = EOF) |
-| `write(&buf)` | `Result<usize, ErrorData>` | Write up to `buf.len()` bytes |
+| `read(&mut buf)` | `Result<usize, ErrorData>` | Read **up to** `buf.len()` bytes (0 = EOF) |
+| `read_exact(&mut buf)` | `Result<(), ErrorData>` | Read exactly `buf.len()` bytes, or fail |
+| `read_to_end(&mut vec)` | `Result<usize, ErrorData>` | Append the rest of the file |
+| `write(&buf)` | `Result<usize, ErrorData>` | Write **up to** `buf.len()` bytes |
+| `write_all(&buf)` | `Result<(), ErrorData>` | Write all of `buf`, or fail |
 | `seek(position)` | `Result<(), ErrorData>` | Seek to an absolute byte offset |
-| `tell()` | `i64` | Current byte offset |
-| `size()` | `i64` | Total file size in bytes |
+| `tell()` | `Result<u64, ErrorData>` | Current byte offset |
+| `size()` | `Result<u64, ErrorData>` | Total file size in bytes |
 | `sync()` | `Result<(), ErrorData>` | Flush buffered writes to durable storage |
 | `close()` | `Result<(), ErrorData>` | Close the file |
 | `error_data()` | `ErrorData` | Structured error from the last failed operation |
+
+### Short reads and short writes are real
+
+`duckdb_file_handle_read` and `duckdb_file_handle_write` return "the number of
+bytes **actually** read/written" — not a promise that the whole buffer moved. On
+a local file the two almost always agree; over `httpfs` they routinely do not.
+Prefer `read_exact` / `read_to_end` / `write_all`, which loop for you, and reach
+for the raw `read` / `write` only when a partial transfer is what you want.
+
+`tell()` and `size()` are `Result` for the same reason: the C API reports failure
+with a *negative* return value, which is far too easy to clamp to zero and then
+silently treat as an empty file.
 
 `FileSystem` exposes `open(path, options)` and `error_data()`. Both `FileSystem`
 and `FileHandle` are RAII: they are destroyed (and the handle closed) on drop.

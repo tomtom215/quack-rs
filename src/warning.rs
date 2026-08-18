@@ -171,6 +171,23 @@ impl Default for WarningCollector {
 // Mutex<Vec<ExtensionWarning>> is Send+Sync when ExtensionWarning is Send,
 // which it is (String + &'static str + Copy types).
 
+impl core::fmt::Debug for WarningCollector {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // `try_lock`, not `lock`: printing a value must never block, and must
+        // not deadlock when the caller is already inside `emit`.
+        match self.warnings.try_lock() {
+            Ok(warnings) => f
+                .debug_struct("WarningCollector")
+                .field("warnings", &*warnings)
+                .finish(),
+            Err(_) => f
+                .debug_struct("WarningCollector")
+                .field("warnings", &"<locked>")
+                .finish(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

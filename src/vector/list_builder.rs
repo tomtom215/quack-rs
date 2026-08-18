@@ -84,6 +84,7 @@ pub const MAX_LIST_CHILD_CAPACITY: usize = 1 << 37;
 ///
 /// See the [module docs][crate::vector::list_builder] for why the manual
 /// sequence is easy to get wrong.
+#[derive(Debug)]
 pub struct ListBuilder {
     vector: duckdb_vector,
     /// Total elements written into the child so far — the offset of the next row.

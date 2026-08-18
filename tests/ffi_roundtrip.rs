@@ -1311,3 +1311,216 @@ fn list_builder_drives_map_vectors_too() {
     // SAFETY: the column is BIGINT and row 0 exists.
     assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, expected);
 }
+
+// ---------------------------------------------------------------------------
+// Virtual file system (DuckDB 1.5.0+)
+// ---------------------------------------------------------------------------
+
+/// Round-trips a file through `DuckDB`'s own VFS.
+///
+/// The point is not that a local file works — `std::fs` would do that. It is
+/// that `read`/`write` are documented to move *up to* the requested number of
+/// bytes, so the looping helpers are the only ones safe to build on, and they
+/// need to be checked against a real file system implementation rather than
+/// assumed.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn the_virtual_file_system_round_trips_a_file() {
+    use quack_rs::client_context::ClientContext;
+    use quack_rs::file_system::{FileOpenOptions, FileSystem};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open for the fixture's lifetime.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    let fs = FileSystem::from_client_context(&ctx).expect("file system");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vfs-roundtrip.bin");
+    let c_path =
+        std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("no interior NUL");
+
+    // A payload big enough that a short write is plausible, and containing a NUL
+    // so any accidental C-string handling shows up.
+    let payload: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    assert!(payload.contains(&0), "payload must exercise interior NUL");
+
+    {
+        let handle = fs
+            .open(&c_path, &FileOpenOptions::write_create())
+            .expect("open for write");
+        handle.write_all(&payload).expect("write_all");
+        handle.sync().expect("sync");
+        handle.close().expect("close");
+    }
+
+    // Whole-file read.
+    let handle = fs
+        .open(&c_path, &FileOpenOptions::read_only())
+        .expect("open for read");
+    assert_eq!(handle.size().expect("size"), payload.len() as u64);
+    assert_eq!(handle.tell().expect("tell"), 0);
+
+    let mut read_back = Vec::new();
+    let n = handle.read_to_end(&mut read_back).expect("read_to_end");
+    assert_eq!(n, payload.len());
+    assert_eq!(read_back, payload);
+    assert_eq!(handle.tell().expect("tell at EOF"), payload.len() as u64);
+
+    // `read_to_end` appends rather than replacing, and returns only what it added.
+    handle.seek(0).expect("seek to start");
+    let added = handle
+        .read_to_end(&mut read_back)
+        .expect("second read_to_end");
+    assert_eq!(added, payload.len());
+    assert_eq!(read_back.len(), payload.len() * 2);
+    assert_eq!(&read_back[payload.len()..], &payload[..]);
+
+    // `read_exact` from an arbitrary offset.
+    handle.seek(1000).expect("seek");
+    let mut window = [0u8; 4096];
+    handle.read_exact(&mut window).expect("read_exact");
+    assert_eq!(&window[..], &payload[1000..1000 + 4096]);
+
+    // `read_exact` past the end is an error, not a silent short read.
+    handle
+        .seek(payload.len() as u64 - 10)
+        .expect("seek near EOF");
+    let mut too_big = [0u8; 64];
+    let err = handle
+        .read_exact(&mut too_big)
+        .expect_err("read_exact past EOF must fail");
+    let message = err.message().unwrap_or_default();
+    assert!(
+        message.contains("unexpected end of file"),
+        "unexpected error: {message}"
+    );
+
+    // A plain `read` at EOF returns 0, which is how `read_to_end` terminates.
+    handle.seek(payload.len() as u64).expect("seek to EOF");
+    assert_eq!(handle.read(&mut window).expect("read at EOF"), 0);
+    let mut empty = Vec::new();
+    assert_eq!(
+        handle.read_to_end(&mut empty).expect("read_to_end at EOF"),
+        0
+    );
+    assert!(empty.is_empty());
+
+    // Zero-length operations are no-ops, not errors.
+    handle.read_exact(&mut []).expect("empty read_exact");
+    handle.write_all(&[]).expect("empty write_all");
+}
+
+/// Opening a file that does not exist yields structured error data, not a panic
+/// or a null handle the caller has to guess about.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn opening_a_missing_file_returns_structured_error_data() {
+    use quack_rs::client_context::ClientContext;
+    use quack_rs::file_system::{FileOpenOptions, FileSystem};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open for the fixture's lifetime.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    let fs = FileSystem::from_client_context(&ctx).expect("file system");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("definitely-not-here.bin");
+    let c_path =
+        std::ffi::CString::new(missing.to_str().expect("utf-8 path")).expect("no interior NUL");
+
+    let err = fs
+        .open(&c_path, &FileOpenOptions::read_only())
+        .expect_err("opening a missing file must fail");
+    assert!(
+        err.message().is_some_and(|m| !m.is_empty()),
+        "error data must carry a message, got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Debug impls
+// ---------------------------------------------------------------------------
+
+/// The `Debug` impls that decode `DuckDB` state must actually decode it, and
+/// must survive the edge cases they claim to: a null handle, and a type id this
+/// build does not know.
+#[test]
+fn debug_impls_decode_live_duckdb_state() {
+    use quack_rs::value::Value;
+
+    let _fx = Fixture::open();
+
+    // LogicalType renders the decoded type, not a pointer.
+    let bigint = LogicalType::new(TypeId::BigInt);
+    assert_eq!(format!("{bigint:?}"), "LogicalType { type_id: BigInt }");
+
+    // DECIMAL carries width and scale, which is the whole reason two DECIMALs
+    // can look identical and behave differently.
+    let decimal = LogicalType::decimal(18, 3);
+    let rendered = format!("{decimal:?}");
+    assert!(
+        rendered.contains("Decimal") && rendered.contains("width: 18") && rendered.contains("scale: 3"),
+        "{rendered}"
+    );
+
+    // An alias shows up when set, and is absent when not.
+    let aliased = LogicalType::new(TypeId::Integer);
+    // SAFETY: `aliased` is a valid logical type.
+    unsafe { aliased.set_alias("my_domain") };
+    assert!(
+        format!("{aliased:?}").contains("alias: \"my_domain\""),
+        "{aliased:?}"
+    );
+    assert!(!format!("{bigint:?}").contains("alias"), "{bigint:?}");
+
+    // Value renders its type, and (with duckdb-1-5) DuckDB's own rendering.
+    let value = Value::bigint(-42);
+    let rendered = format!("{value:?}");
+    assert!(rendered.contains("type: BigInt"), "{rendered}");
+    #[cfg(feature = "duckdb-1-5")]
+    assert!(rendered.contains("-42"), "{rendered}");
+
+    // `Value::type_id` is what makes the untyped `as_*` accessors checkable.
+    assert_eq!(Value::bigint(1).type_id(), Some(TypeId::BigInt));
+    assert_eq!(Value::varchar("x").type_id(), Some(TypeId::Varchar));
+    assert_eq!(Value::boolean(true).type_id(), Some(TypeId::Boolean));
+    assert_eq!(Value::double(1.5).type_id(), Some(TypeId::Double));
+    assert_eq!(Value::date(0).type_id(), Some(TypeId::Date));
+    assert_eq!(Value::timestamp(0).type_id(), Some(TypeId::Timestamp));
+    assert_eq!(Value::uuid(0).type_id(), Some(TypeId::Uuid));
+    assert_eq!(Value::null_value().type_id(), Some(TypeId::SqlNull));
+
+    // A builder's Debug answers "did I wire the callback up?", which is the
+    // question you have when `register` reports a missing function.
+    let builder = ScalarFunctionBuilder::try_new("dbg_probe")
+        .expect("name")
+        .param(TypeId::BigInt)
+        .returns(TypeId::BigInt);
+    let rendered = format!("{builder:?}");
+    assert!(rendered.contains("function: unset"), "{rendered}");
+    let builder = builder.function(echo_i64);
+    assert!(
+        format!("{builder:?}").contains("function: set"),
+        "{builder:?}"
+    );
+}
+
+/// A `Debug` impl that panics inside a panic message aborts the process, so the
+/// decoding impls must tolerate the handles they can actually be handed.
+///
+/// `LogicalType` is not covered here because it cannot be: every one of its
+/// constructors — `from_raw` included — asserts the handle is non-null, so a
+/// null `LogicalType` is unconstructible. `Value::from_raw` has no such assert,
+/// so a null `Value` is reachable and is tested.
+#[test]
+fn debug_of_a_null_value_does_not_dereference() {
+    use quack_rs::value::Value;
+
+    let _fx = Fixture::open();
+
+    // SAFETY: a null handle is exactly the case under test; `Debug` must not
+    // dereference it, and `Drop` already skips null.
+    let null_value = unsafe { Value::from_raw(std::ptr::null_mut()) };
+    assert_eq!(format!("{null_value:?}"), "Value(<null handle>)");
+    assert_eq!(null_value.type_id(), None);
+}

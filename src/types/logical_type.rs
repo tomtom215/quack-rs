@@ -980,6 +980,46 @@ impl From<TypeId> for LogicalType {
 // LogicalType is not Clone or Copy because the underlying handle is not reference-counted.
 // If you need to pass it to multiple places, use `as_raw()` to borrow the handle temporarily.
 
+impl core::fmt::Debug for LogicalType {
+    /// Prints the decoded type rather than the handle address — the type id is
+    /// the only thing anyone inspects a `LogicalType` to learn.
+    ///
+    /// This calls into `DuckDB`, so it deliberately avoids anything that could
+    /// panic while formatting: a `Debug` impl that panics inside a panic message
+    /// aborts the process. A type id from a newer `DuckDB` than this build knows
+    /// renders as its numeric value rather than panicking the way
+    /// [`get_type_id`][Self::get_type_id] would.
+    ///
+    /// The null check is belt-and-braces — every constructor, `from_raw`
+    /// included, already asserts the handle is non-null — but a formatting
+    /// impl is the last place worth being clever about a single comparison.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.inner.is_null() {
+            return f.write_str("LogicalType(<null>)");
+        }
+        // SAFETY: `self.inner` is non-null and valid for this wrapper's lifetime.
+        let raw_id = unsafe { duckdb_get_type_id(self.inner) };
+        let mut out = f.debug_struct("LogicalType");
+        match TypeId::try_from_duckdb_type(raw_id) {
+            Some(type_id) => out.field("type_id", &type_id),
+            // A type id this build of quack-rs does not know — print the number
+            // rather than panicking, which is what `TypeId::from_duckdb_type`
+            // would do.
+            None => out.field("type_id", &format_args!("<unknown {raw_id}>")),
+        };
+        // SAFETY: `self.inner` is non-null and valid.
+        if let Some(alias) = unsafe { self.get_alias() } {
+            out.field("alias", &alias);
+        }
+        if TypeId::try_from_duckdb_type(raw_id) == Some(TypeId::Decimal) {
+            // SAFETY: `self.inner` is a DECIMAL logical type.
+            let (width, scale) = unsafe { (self.decimal_width(), self.decimal_scale()) };
+            out.field("width", &width).field("scale", &scale);
+        }
+        out.finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Note: LogicalType tests that call DuckDB API (duckdb_create_logical_type)

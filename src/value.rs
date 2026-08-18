@@ -813,6 +813,50 @@ impl Value {
         }
     }
 
+    /// Returns the [`TypeId`][crate::types::TypeId] this value actually holds.
+    ///
+    /// Every `as_*` accessor *reinterprets* the value as a chosen physical
+    /// type without checking: reading a `VARCHAR` with
+    /// [`as_i64`][Self::as_i64] returns garbage rather than an error. This is
+    /// the check that makes those accessors safe to use on a value whose type
+    /// you did not choose — a named parameter, a bound constant, a config
+    /// option.
+    ///
+    /// Returns `None` for a null handle, and for a type id introduced by a
+    /// newer `DuckDB` than this build of quack-rs knows.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::types::TypeId;
+    /// use quack_rs::value::Value;
+    ///
+    /// # fn demo(value: &Value) -> Option<i64> {
+    /// match value.type_id()? {
+    ///     TypeId::BigInt => Some(value.as_i64()),
+    ///     TypeId::Integer => Some(i64::from(value.as_i32())),
+    ///     _ => None,
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn type_id(&self) -> Option<crate::types::TypeId> {
+        if self.raw.is_null() {
+            return None;
+        }
+        // SAFETY: `self.raw` is a valid duckdb_value per the constructor
+        // contract. The returned logical type is owned by the value — duckdb.h
+        // states "The type itself must not be destroyed" — so it is read
+        // directly rather than wrapped in `LogicalType`, which frees on drop.
+        let logical = unsafe { libduckdb_sys::duckdb_get_value_type(self.raw) };
+        if logical.is_null() {
+            return None;
+        }
+        // SAFETY: `logical` is non-null and valid for as long as `self` is.
+        let raw_id = unsafe { libduckdb_sys::duckdb_get_type_id(logical) };
+        crate::types::TypeId::try_from_duckdb_type(raw_id)
+    }
+
     /// Returns `true` if the underlying handle is null.
     #[inline]
     #[must_use]
@@ -848,6 +892,28 @@ impl Drop for Value {
             // SAFETY: self.raw is a valid duckdb_value that we own.
             unsafe { duckdb_destroy_value(&raw mut self.raw) };
         }
+    }
+}
+
+impl core::fmt::Debug for Value {
+    /// Prints the value's type and, where `DuckDB` can render it, its contents.
+    ///
+    /// Like [`LogicalType`][crate::types::LogicalType]'s impl this calls into
+    /// `DuckDB`, so it avoids every path that could panic while formatting.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.raw.is_null() {
+            return f.write_str("Value(<null handle>)");
+        }
+        let mut out = f.debug_struct("Value");
+        match self.type_id() {
+            Some(type_id) => out.field("type", &type_id),
+            None => out.field("type", &"<unknown>"),
+        };
+        #[cfg(feature = "duckdb-1-5")]
+        if let Some(rendered) = self.display_string() {
+            out.field("value", &rendered);
+        }
+        out.finish()
     }
 }
 
