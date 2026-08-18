@@ -15,4 +15,6 @@ mod single;
 mod tests;
 
 pub use set::{ScalarFunctionSetBuilder, ScalarOverloadBuilder};
+#[cfg(feature = "duckdb-1-5")]
+pub use single::{ScalarBindFn, ScalarInitFn};
 pub use single::{ScalarFn, ScalarFunctionBuilder};

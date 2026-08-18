@@ -49,13 +49,17 @@ crate-type = ["rlib"]
 ## table from the linked DuckDB symbols, so `InMemoryDb::open()` works in
 ## `cargo test` even though no DuckDB host process loads the extension.
 ##
-## # Important: architectural limitation
+## # What this makes testable
 ##
-## Even with this feature, quack-rs's own wrappers (`VectorReader`, `VectorWriter`,
-## `Connection::register_*`) still route through the `loadable-extension` dispatch
-## table and cannot be called in `cargo test`. Use `InMemoryDb` for SQL-level
-## assertions (e.g. verifying SQL macro output) and `MockVectorWriter` /
-## `MockVectorReader` for callback logic tests.
+## Once the dispatch table is populated, the **whole** C API works — including
+## quack-rs's own wrappers. You can register a scalar/table/aggregate function on
+## a raw connection, run SQL against it, and assert on the result, all inside
+## `cargo test`. See `tests/ffi_roundtrip.rs`, which round-trips every vector type
+## that way.
+##
+## `MockVectorWriter` / `MockVectorReader` remain useful for unit-testing callback
+## logic without a database, and are the only option when the `bundled-test`
+## features are off.
 ##
 ## # Usage in your extension
 ##

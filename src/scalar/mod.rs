@@ -44,6 +44,11 @@ pub mod builder;
 pub mod info;
 
 pub use builder::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};
+// The callback signature aliases belong at the module root alongside the
+// builders that consume them — `table` already re-exports `ScanFn` this way.
+pub use builder::ScalarFn;
+#[cfg(feature = "duckdb-1-5")]
+pub use builder::{ScalarBindFn, ScalarInitFn};
 pub use info::ScalarFunctionInfo;
 #[cfg(feature = "duckdb-1-5")]
 pub use info::{ScalarBindInfo, ScalarInitInfo};

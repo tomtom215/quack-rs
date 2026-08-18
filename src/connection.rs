@@ -211,6 +211,80 @@ impl Connection {
         self.db
     }
 
+    /// Runs `sql` on this connection and returns the materialised result.
+    ///
+    /// Only valid inside your registration closure: the entry point disconnects
+    /// this connection once the closure returns. For SQL that must run later,
+    /// open an [`OwnedConnection`][crate::query::OwnedConnection] with
+    /// [`open_connection`][Self::open_connection] and keep it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExtensionError`] carrying `DuckDB`'s own message if the
+    /// statement fails.
+    ///
+    /// # Safety
+    ///
+    /// The underlying connection must be valid for the duration of this call.
+    pub unsafe fn query(&self, sql: &str) -> Result<crate::query::QueryResult, ExtensionError> {
+        // SAFETY: self.con is valid per Connection invariant.
+        unsafe { crate::query::query(self.con, sql) }
+    }
+
+    /// Runs `sql` for its side effects, returning the number of rows changed.
+    ///
+    /// # Errors
+    ///
+    /// See [`query`][Self::query].
+    ///
+    /// # Safety
+    ///
+    /// The underlying connection must be valid for the duration of this call.
+    pub unsafe fn execute(&self, sql: &str) -> Result<u64, ExtensionError> {
+        // SAFETY: self.con is valid per Connection invariant.
+        unsafe { crate::query::execute(self.con, sql) }
+    }
+
+    /// Prepares `sql` on this connection.
+    ///
+    /// Use this rather than interpolating values into SQL text.
+    ///
+    /// # Errors
+    ///
+    /// See [`query`][Self::query].
+    ///
+    /// # Safety
+    ///
+    /// The underlying connection must be valid for the duration of this call.
+    pub unsafe fn prepare(
+        &self,
+        sql: &str,
+    ) -> Result<crate::query::PreparedStatement, ExtensionError> {
+        // SAFETY: self.con is valid per Connection invariant.
+        unsafe { crate::query::prepare(self.con, sql) }
+    }
+
+    /// Opens a second, independently owned connection to the same database.
+    ///
+    /// Unlike the borrowed registration connection, the returned
+    /// [`OwnedConnection`][crate::query::OwnedConnection] stays valid after
+    /// extension loading finishes — a `duckdb_connection` holds its own
+    /// reference to the database instance. Keep one when a callback or a
+    /// background thread needs to run SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExtensionError`] if `DuckDB` refuses to open the connection.
+    ///
+    /// # Safety
+    ///
+    /// The underlying `duckdb_database` must be valid for the duration of this
+    /// call.
+    pub unsafe fn open_connection(&self) -> Result<crate::query::OwnedConnection, ExtensionError> {
+        // SAFETY: self.db is valid per Connection invariant.
+        unsafe { crate::query::OwnedConnection::open(self.db) }
+    }
+
     /// Register a replacement scan backed by a raw function pointer and extra
     /// data.
     ///

@@ -135,6 +135,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than grepping the log for the word "error"; loading a bare `.so`
   bypassed `DuckDB`'s metadata validation entirely.
 
+### Added (capabilities)
+
+- **`query` module — running SQL from inside an extension.** The C API has
+  everything needed (`duckdb_query`, `duckdb_prepare`, `duckdb_bind_*`,
+  `duckdb_fetch_chunk`) and it is all in the stable prefix, but each handle has a
+  `destroy` that must run exactly once, including on error paths. `QueryResult`,
+  `OwnedDataChunk`, `PreparedStatement` and `OwnedConnection` are RAII wrappers
+  for those; `Connection` gains `query`, `execute`, `prepare` and
+  `open_connection`.
+
+  `OwnedConnection` covers the case the borrowed registration connection cannot:
+  a `duckdb_connection` holds its own reference to the database instance, so one
+  opened during load stays valid afterwards — for a callback or a background
+  thread. Verified by a test that closes the `duckdb_database` handle and keeps
+  querying.
+
+- **`datetime` module — calendar conversions.** `DATE`, `TIME` and `TIMESTAMP`
+  move through vectors as raw integers; turning those into year/month/day meant
+  reimplementing the proleptic Gregorian calendar and `DuckDB`'s infinity
+  sentinels. `DuckDB` already exposes the conversions in the stable API, so this
+  wraps them: `date_from_days`/`date_to_days`, `time_from_micros`/`time_to_micros`,
+  `timestamp_from_micros`/`timestamp_to_micros`, `time_tz_bits`/`time_tz_from_bits`,
+  the four `is_finite_*` predicates, and `HUGEINT`/`UHUGEINT`/`DECIMAL` ↔ `f64`.
+
+  Also exports the exact sentinel values as constants. `-infinity` is `-i32::MAX`
+  / `-i64::MAX`, **not** `i32::MIN` / `i64::MIN` — `i32::MIN` is an ordinary
+  finite date, and treating it as infinity would silently drop real rows.
+
+- **`VectorWriter` caches its validity bitmap.** `set_null` called
+  `duckdb_vector_ensure_validity_writable` + `duckdb_vector_get_validity` on
+  every row; both are now resolved once per vector (2 FFI calls instead of 4096
+  for an all-NULL 2048-row vector). Adds `set_null_range` for the batched case.
+
+- **Vector accessors for the remaining physical layouts**:
+  `write_u128`/`read_u128` (`UHUGEINT`), `write_decimal`/`read_decimal` (which
+  select `i16`/`i32`/`i64`/`i128` from the declared width the way `DuckDB` does),
+  `write_time_tz`/`read_time_tz`, and `TIMESTAMPTZ` / `TIMESTAMP_S` /
+  `TIMESTAMP_MS` / `TIMESTAMP_NS` accessors. `VectorReader::contains` bounds-checks
+  an index against the row count.
+
+- Callback signature aliases are re-exported at their module roots:
+  `scalar::ScalarFn` (plus `ScalarBindFn` / `ScalarInitFn` under `duckdb-1-5`) and
+  `aggregate::{StateSizeFn, StateInitFn, UpdateFn, CombineFn, FinalizeFn, DestroyFn}`,
+  matching what `table` already did.
+
+- The prelude re-exports `AbiPolicy`, the `datetime` types and the `query` types.
+
+### Fixed (documentation)
+
+- **The crate documented an "architectural limitation" that does not exist.**
+  `Cargo.toml`, `testing::in_memory_db` and the book all stated that
+  `VectorReader`, `VectorWriter` and `Connection::register_*` "cannot be called
+  in `cargo test`" because they route through the dispatch table. Opening an
+  `InMemoryDb` populates that table for the whole process, after which the entire
+  C API — registration included — works. The new `tests/ffi_roundtrip.rs`
+  registers real scalar functions and round-trips every vector type through SQL:
+  every integer width at its extremes, `HUGEINT`/`UHUGEINT` at theirs, floats and
+  NaN, strings across the 12-byte inline/pointer boundary and multi-byte UTF-8,
+  blobs containing NUL and non-UTF-8 bytes, all temporal types cross-checked
+  against `DuckDB`'s own rendering, `UUID`, `INTERVAL`'s three fields, `DECIMAL`
+  at all four physical widths, NULL in and out, multi-chunk scans, and a
+  panicking callback surfacing as a SQL error.
+
+- Documentation examples pinned `quack-rs = "0.13"`.
+
 [`abi::check`]: https://docs.rs/quack-rs/latest/quack_rs/abi/fn.check.html
 [`AbiPolicy`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
 [`AbiPolicy::Strict`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html

@@ -371,14 +371,13 @@ fn vector_reader_boolean_as_u8_pattern() {
 }
 
 #[test]
-fn vector_writer_size_is_two_pointers() {
+fn vector_writer_holds_vector_data_and_cached_validity() {
     use quack_rs::vector::VectorWriter;
-
-    // VectorWriter contains exactly two pointer-sized fields
-    assert_eq!(
-        std::mem::size_of::<VectorWriter>(),
-        2 * std::mem::size_of::<usize>()
-    );
+    use std::mem::size_of;
+    // vector handle + cached data pointer + cached validity pointer. The
+    // validity pointer is what turns "two FFI calls per NULL" into "two per
+    // vector"; see `VectorWriter::set_null`.
+    assert_eq!(size_of::<VectorWriter>(), 3 * size_of::<usize>());
 }
 
 // ---------------------------------------------------------------------------

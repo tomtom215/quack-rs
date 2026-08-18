@@ -61,6 +61,7 @@
 //! | [`vector::struct_reader`] | Batched [`StructReader`][vector::StructReader] for STRUCT input vectors |
 //! | [`vector::struct_writer`] | Batched [`StructWriter`][vector::StructWriter] for STRUCT output vectors |
 //! | [`types`] | `DuckDB` type system wrappers (`TypeId`, `LogicalType`) |
+//! | [`datetime`] | `DATE`/`TIME`/`TIMESTAMP` calendar conversions, `HUGEINT`/`DECIMAL` helpers |
 //! | [`interval`] | `INTERVAL` → microseconds conversion with overflow checking |
 //! | [`error`] | `ExtensionError` for FFI error propagation |
 //! | [`config`] | RAII wrapper for `DuckDB` database configuration |
@@ -72,6 +73,7 @@
 //! | [`validate::description_yml`] | Parse and validate `description.yml` metadata |
 //! | [`scaffold`] | Project generator for new extensions (no C++ glue needed) |
 //! | [`testing`] | Test harness for aggregate state logic |
+//! | [`query`] | Running SQL from an extension (`QueryResult`, `PreparedStatement`, `OwnedConnection`) |
 //! | [`prelude`] | Convenience re-exports of the most commonly used items |
 //! | `appender` | Bulk row appender (`duckdb-1-5` feature) |
 //! | `catalog` | Catalog entry lookup (`duckdb-1-5` feature) |
@@ -135,10 +137,12 @@ pub mod chunk_writer;
 pub mod config;
 pub mod connection;
 pub mod data_chunk;
+pub mod datetime;
 pub mod entry_point;
 pub mod error;
 pub mod interval;
 pub mod prelude;
+pub mod query;
 pub mod replacement_scan;
 pub mod scaffold;
 pub mod scalar;

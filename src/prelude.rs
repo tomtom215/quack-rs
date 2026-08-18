@@ -124,6 +124,9 @@
 // Entry point
 pub use crate::entry_point::{init_extension, init_extension_v2};
 
+/// C extension API layout policy for the entry point.
+pub use crate::abi::AbiPolicy;
+
 // Connection facade and Registrar trait
 pub use crate::connection::{Connection, Registrar};
 
@@ -194,6 +197,12 @@ pub use crate::types::{LogicalType, NullHandling, TypeId};
 
 // Interval
 pub use crate::interval::{interval_to_micros, DuckInterval};
+
+/// Calendar conversions for `DATE` / `TIME` / `TIMESTAMP`.
+pub use crate::datetime::{Date, Time, TimeTz, Timestamp};
+
+/// Running SQL from inside an extension.
+pub use crate::query::{OwnedConnection, OwnedDataChunk, PreparedStatement, QueryResult};
 
 // Error
 pub use crate::error::{ExtResult, ExtensionError};
