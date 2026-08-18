@@ -2,12 +2,19 @@
 # SPDX-License-Identifier: MIT
 """Check quack-rs's DuckDB platform list against upstream.
 
-`validate::platform::DUCKDB_PLATFORMS` exists so an extension author can be told
-early that a name in `description.yml`'s `excluded_platforms` is wrong. That is
-only worth anything if the list is right, and it drifts silently: `DuckDB`
-retired `linux_amd64_gcc4` and added `linux_amd64_musl` / `linux_arm64_musl`
-without quack-rs noticing, so the validator was simultaneously rejecting real
-platforms and accepting one that no longer exists.
+`validate::platform` exists so an extension author can be told early that a name
+in `description.yml`'s `excluded_platforms` is wrong. That is only worth
+anything if the list is right, and it drifts silently: `DuckDB` retired
+`linux_amd64_gcc4` and added `linux_amd64_musl` / `linux_arm64_musl` without
+quack-rs noticing, so the validator was simultaneously rejecting real platforms
+and accepting one that no longer exists.
+
+Three lists are checked:
+
+- `DUCKDB_CI_PLATFORMS` must equal the matrix's `duckdb_arch` values exactly.
+- `DUCKDB_OPT_IN_PLATFORMS` must equal the ones the matrix marks `opt_in`.
+- `DUCKDB_PLATFORM_GROUPS` must equal the matrix's top-level keys, and
+  `DUCKDB_PLATFORMS` must accept every CI platform.
 
 The authority is `config/distribution_matrix.json` in
 `duckdb/extension-ci-tools` — the file the community-extensions build reads to
@@ -61,9 +68,14 @@ def main() -> int:
     args = parser.parse_args()
 
     text = PLATFORM_RS.read_text()
-    ours = rust_list("DUCKDB_PLATFORMS", text)
+    # DUCKDB_CI_PLATFORMS is the matrix-derived list; DUCKDB_PLATFORMS is a
+    # superset that also accepts names appearing in real `excluded_platforms`
+    # fields (windows_amd64_rtools, and the matrix's group names).
+    ours = rust_list("DUCKDB_CI_PLATFORMS", text)
+    every = rust_list("DUCKDB_PLATFORMS", text)
     opt_in = rust_list("DUCKDB_OPT_IN_PLATFORMS", text)
-    if ours is None or opt_in is None:
+    groups = rust_list("DUCKDB_PLATFORM_GROUPS", text)
+    if ours is None or every is None or opt_in is None or groups is None:
         sys.exit(f"could not parse the platform lists out of {PLATFORM_RS}")
 
     url = MATRIX_URL.format(ref=args.ref)
@@ -94,15 +106,27 @@ def main() -> int:
     opt_in_missing = sorted(upstream_opt_in - set(opt_in))
     opt_in_extra = sorted(set(opt_in) - upstream_opt_in)
 
-    print(f"upstream: {len(upstream)} platforms ({len(upstream_opt_in)} opt-in)")
-    print(f"quack-rs: {len(ours)} platforms ({len(opt_in)} opt-in)")
+    # The group names come from the matrix's own top-level keys.
+    upstream_groups = sorted(matrix.keys())
+    group_missing = sorted(set(upstream_groups) - set(groups))
+    group_extra = sorted(set(groups) - set(upstream_groups))
+    # DUCKDB_PLATFORMS must accept everything the CI can build.
+    not_accepted = sorted(set(ours) - set(every))
+
+    print(f"upstream: {len(upstream)} architectures ({len(upstream_opt_in)} opt-in), "
+          f"{len(upstream_groups)} groups")
+    print(f"quack-rs: {len(ours)} CI platforms ({len(opt_in)} opt-in), "
+          f"{len(groups)} groups, {len(every)} accepted names")
 
     problems = False
     for label, names in (
-        ("upstream builds it, quack-rs rejects it", missing),
-        ("quack-rs accepts it, upstream does not build it", extra),
+        ("upstream builds it, DUCKDB_CI_PLATFORMS omits it", missing),
+        ("DUCKDB_CI_PLATFORMS lists it, upstream does not build it", extra),
         ("upstream marks it opt-in, quack-rs does not", opt_in_missing),
         ("quack-rs marks it opt-in, upstream does not", opt_in_extra),
+        ("a matrix group name is missing from DUCKDB_PLATFORM_GROUPS", group_missing),
+        ("DUCKDB_PLATFORM_GROUPS names a group upstream does not have", group_extra),
+        ("a CI platform is not accepted by validate_platform", not_accepted),
     ):
         if names:
             problems = True
@@ -110,7 +134,7 @@ def main() -> int:
 
     if problems:
         print(
-            f"\nUpdate DUCKDB_PLATFORMS / DUCKDB_OPT_IN_PLATFORMS in {PLATFORM_RS.relative_to(REPO_ROOT)} "
+            f"\nUpdate the platform lists in {PLATFORM_RS.relative_to(REPO_ROOT)} "
             f"to match {url}."
         )
         return 1
