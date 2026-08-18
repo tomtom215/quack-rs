@@ -21,9 +21,21 @@
 
 use crate::error::ExtensionError;
 
-/// Every platform the `DuckDB` community-extension CI can build.
+/// Every platform identifier [`validate_platform`] recognises.
 ///
-/// An extension must either build for all of the non-opt-in platforms or
+/// This is [`DUCKDB_CI_PLATFORMS`] — the architectures the community-extension
+/// CI builds — plus two kinds of name that appear in real, accepted
+/// `description.yml` files and are therefore not errors:
+///
+/// - **`windows_amd64_rtools`**, the R-tools Windows build (`DuckDBPlatform()`
+///   emits it under `DUCKDB_PLATFORM_RTOOLS`). It is not in the distribution
+///   matrix, but 14 of the 43 published extensions sampled exclude it.
+/// - **The group names** in [`DUCKDB_PLATFORM_GROUPS`] — `linux`, `osx`,
+///   `wasm`, `windows` — which are the top-level keys of
+///   `distribution_matrix.json` and appear in at least one published
+///   extension's exclusion list.
+///
+/// An extension must either build for all of the non-opt-in CI platforms or
 /// declare the ones it cannot in `extension.excluded_platforms`.
 ///
 /// `linux_amd64_gcc4` is **not** here. `DuckDB` retired the legacy CXX ABI
@@ -31,22 +43,52 @@ use crate::error::ExtensionError;
 /// compile error for it rather than emitting a `_gcc4` suffix, and it is absent
 /// from the distribution matrix. Excluding it is a no-op.
 pub const DUCKDB_PLATFORMS: &[&str] = &[
+    "linux",
+    "linux_amd64",
+    "linux_amd64_musl",
+    "linux_arm64",
+    "linux_arm64_musl",
+    "osx",
+    "osx_amd64",
+    "osx_arm64",
+    "wasm",
+    "wasm_eh",
+    "wasm_mvp",
+    "wasm_threads",
+    "windows",
+    "windows_amd64",
+    "windows_amd64_mingw",
+    "windows_amd64_rtools",
+    "windows_arm64",
+];
+
+/// The platforms the community-extension CI actually builds.
+///
+/// Exactly the `duckdb_arch` values in `distribution_matrix.json`, kept in sync
+/// by `scripts/check-platform-table.py`. [`DUCKDB_PLATFORMS`] is a superset:
+/// see its documentation for what else is a legal name.
+pub const DUCKDB_CI_PLATFORMS: &[&str] = &[
     "linux_amd64",
     "linux_amd64_musl",
     "linux_arm64",
     "linux_arm64_musl",
     "osx_amd64",
     "osx_arm64",
+    "wasm_eh",
+    "wasm_mvp",
+    "wasm_threads",
     "windows_amd64",
     "windows_amd64_mingw",
     "windows_arm64",
-    "wasm_mvp",
-    "wasm_eh",
-    "wasm_threads",
 ];
 
-/// The platforms that are **opt-in**: the community CI does not build them
-/// unless an extension asks for them.
+/// The group names `distribution_matrix.json` organises its architectures
+/// under, which appear in real `excluded_platforms` fields as a shorthand for
+/// "all of this group".
+pub const DUCKDB_PLATFORM_GROUPS: &[&str] = &["linux", "osx", "wasm", "windows"];
+
+/// The [`DUCKDB_CI_PLATFORMS`] that are **opt-in**: the community CI does not
+/// build them unless an extension asks for them.
 ///
 /// Listing one of these in `excluded_platforms` has no effect — it was never
 /// going to be built. [`validate_excluded_platforms`] accepts them anyway,
@@ -133,6 +175,12 @@ pub fn validate_platform(platform: &str) -> Result<(), ExtensionError> {
 pub fn validate_excluded_platforms(platforms: &[&str]) -> Result<(), ExtensionError> {
     let mut seen = std::collections::HashSet::new();
     for &platform in platforms {
+        // A trailing ';' is common in real files and yields an empty segment;
+        // it means nothing, so it is skipped rather than reported as a bogus
+        // platform named "".
+        if platform.is_empty() {
+            continue;
+        }
         validate_platform(platform)?;
         if !seen.insert(platform) {
             return Err(ExtensionError::new(format!(

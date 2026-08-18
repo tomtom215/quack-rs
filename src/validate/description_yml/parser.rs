@@ -44,21 +44,21 @@ use super::model::DescriptionYml;
 /// ```rust
 /// use quack_rs::validate::description_yml::parse_description_yml;
 ///
-/// let yml = "\
-/// extension:\n\
-///   name: my_ext\n\
-///   description: My extension.\n\
-///   version: 0.1.0\n\
-///   language: Rust\n\
-///   build: cargo\n\
-///   license: MIT\n\
-///   requires_toolchains: rust;python3\n\
-///   maintainers:\n\
-///     - Jane Doe\n\
-/// \n\
-/// repo:\n\
-///   github: janedoe/duckdb-my-ext\n\
-///   ref: main\n";
+/// let yml = "extension:
+///   name: my_ext
+///   description: My extension.
+///   version: 0.1.0
+///   language: Rust
+///   build: cargo
+///   license: MIT
+///   requires_toolchains: rust;python3
+///   maintainers:
+///     - Jane Doe
+///
+/// repo:
+///   github: janedoe/duckdb-my-ext
+///   ref: main
+/// ";
 ///
 /// let desc = parse_description_yml(yml).unwrap();
 /// assert_eq!(desc.name, "my_ext");
@@ -76,85 +76,107 @@ use super::model::DescriptionYml;
 // which reduces readability. The complexity is line-count, not cognitive.
 #[allow(clippy::too_many_lines)]
 pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionError> {
-    let mut name = String::new();
-    let mut description = String::new();
-    let mut version = String::new();
-    let mut language = String::new();
-    let mut build = String::new();
-    let mut license = String::new();
-    let mut requires_toolchains = String::new();
-    let mut excluded_platforms = String::new();
+    let mut fields = Fields::default();
     let mut maintainers: Vec<String> = Vec::new();
-    let mut github = String::new();
-    let mut git_ref = String::new();
 
+    // The document is scanned section by section rather than line by line.
+    // `docs.extended_description` is free-form prose in 42 of the 43 published
+    // extensions sampled, and a flat scan treats any `version:` or `license:`
+    // line inside that prose as a real field — silently overwriting the
+    // extension's own metadata.
+    let mut section = Section::Other;
     let mut in_maintainers = false;
+    // Set while reading the body of a `key: |` / `key: >` block scalar.
+    let mut block: Option<BlockScalar> = None;
 
     for line in content.lines() {
-        // Detect section transitions
-        if line.starts_with("extension:") {
+        let trimmed = line.trim();
+        let indent = indent_of(line);
+
+        // Inside a block scalar every line is data, however much it looks like
+        // a mapping. It ends at the first non-blank line indented no further
+        // than the key that introduced it.
+        if let Some(open) = &mut block {
+            if trimmed.is_empty() || indent > open.key_indent {
+                open.lines.push(trimmed.to_string());
+                continue;
+            }
+        }
+        // A block scalar is a perfectly good way to write a long description;
+        // discarding it would report the field as missing.
+        if let Some(finished) = block.take() {
+            let (key, value) = finished.into_pair();
+            fields.set(&key, value);
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // A key at column zero opens a new top-level section.
+        if indent == 0 {
+            section = Section::of(trimmed);
             in_maintainers = false;
             continue;
         }
-        if line.starts_with("repo:") {
-            in_maintainers = false;
+
+        if !matches!(section, Section::Extension | Section::Repo) {
             continue;
         }
 
         // Maintainer list items: "    - Jane Doe"
         if in_maintainers {
-            let trimmed = line.trim();
-            if let Some(name_val) = trimmed.strip_prefix("- ") {
-                let m = strip_inline_comment(name_val.trim()).to_string();
-                if !m.is_empty() {
-                    maintainers.push(m);
+            if let Some(item) = trimmed.strip_prefix('-') {
+                let name_val = strip_inline_comment(item.trim());
+                let name_val = unquote(name_val).unwrap_or(name_val);
+                if !name_val.is_empty() {
+                    maintainers.push(name_val.to_string());
                 }
-            } else if trimmed.starts_with('-') {
-                // bare "- " with no content
-                let m = strip_inline_comment(trimmed.trim_start_matches('-').trim()).to_string();
-                if !m.is_empty() {
-                    maintainers.push(m);
-                }
-            } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                // Non-list line: maintainers section ended
-                in_maintainers = false;
-            }
-
-            if in_maintainers {
                 continue;
             }
+            // Any non-list line ends the sequence.
+            in_maintainers = false;
         }
 
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if let Some(open) = BlockScalar::opening(trimmed, indent) {
+            block = Some(open);
             continue;
         }
 
-        if let Some(val) = parse_kv(trimmed, "name:") {
-            name = val.to_string();
-        } else if let Some(val) = parse_kv(trimmed, "description:") {
-            description = val.to_string();
-        } else if let Some(val) = parse_kv(trimmed, "version:") {
-            version = val.to_string();
-        } else if let Some(val) = parse_kv(trimmed, "language:") {
-            language = val.to_string();
-        } else if let Some(val) = parse_kv(trimmed, "build:") {
-            build = val.to_string();
-        } else if let Some(val) = parse_kv(trimmed, "license:") {
-            license = val.to_string();
-        } else if let Some(val) = parse_kv(trimmed, "requires_toolchains:") {
-            requires_toolchains = val.to_string();
-        } else if let Some(val) = parse_kv(trimmed, "excluded_platforms:") {
-            // Strip surrounding quotes if present
-            excluded_platforms = val.trim_matches('"').to_string();
-        } else if let Some(val) = parse_kv(trimmed, "github:") {
-            github = val.to_string();
-        } else if let Some(val) = parse_kv(trimmed, "ref:") {
-            git_ref = val.to_string();
-        } else if trimmed == "maintainers:" {
+        let keys: &[&str] = if section == Section::Repo {
+            &["github", "ref"]
+        } else {
+            &Fields::EXTENSION_KEYS
+        };
+        if let Some((key, value)) = keys
+            .iter()
+            .find_map(|key| parse_kv(trimmed, &format!("{key}:")).map(|v| (*key, v)))
+        {
+            fields.set(key, value.to_string());
+        } else if section == Section::Extension && trimmed == "maintainers:" {
             in_maintainers = true;
         }
     }
+
+    // A block scalar that runs to the end of the file never hits the closing
+    // branch above.
+    if let Some(finished) = block {
+        let (key, value) = finished.into_pair();
+        fields.set(&key, value);
+    }
+
+    let Fields {
+        name,
+        description,
+        version,
+        language,
+        build,
+        license,
+        requires_toolchains,
+        excluded_platforms,
+        github,
+        git_ref,
+    } = fields;
 
     // --- Validate all fields ---
 
@@ -200,11 +222,9 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     validate_spdx_license(&license)
         .map_err(|e| ExtensionError::new(format!("description.yml: extension.license: {e}")))?;
 
-    if requires_toolchains.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'extension.requires_toolchains'",
-        ));
-    }
+    // `requires_toolchains` is optional. Of 43 published community extensions
+    // sampled, only 14 set it, and the community-extensions documentation does
+    // not list it as required.
 
     if !excluded_platforms.is_empty() {
         validate_excluded_platforms_str(&excluded_platforms).map_err(|e| {
@@ -252,21 +272,162 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     })
 }
 
-/// Parses a `key: value` line. Returns the trimmed value if the key matches.
+/// The scalar fields the parser collects, so the block-scalar path and the
+/// inline path assign through one place instead of two parallel `match`es.
+#[derive(Default)]
+struct Fields {
+    name: String,
+    description: String,
+    version: String,
+    language: String,
+    build: String,
+    license: String,
+    requires_toolchains: String,
+    excluded_platforms: String,
+    github: String,
+    git_ref: String,
+}
+
+impl Fields {
+    /// Keys read from the `extension:` section, in the order they are tried.
+    const EXTENSION_KEYS: [&'static str; 8] = [
+        "name",
+        "description",
+        "version",
+        "language",
+        "build",
+        "license",
+        "requires_toolchains",
+        "excluded_platforms",
+    ];
+
+    /// Stores `value` under `key`; unknown keys are ignored, which is how
+    /// `andium`, `vcpkg_commit` and the rest of the optional metadata real
+    /// files carry are tolerated.
+    fn set(&mut self, key: &str, value: String) {
+        match key {
+            "name" => self.name = value,
+            "description" => self.description = value,
+            "version" => self.version = value,
+            "language" => self.language = value,
+            "build" => self.build = value,
+            "license" => self.license = value,
+            "requires_toolchains" => self.requires_toolchains = value,
+            "excluded_platforms" => self.excluded_platforms = value,
+            "github" => self.github = value,
+            "ref" => self.git_ref = value,
+            _ => {}
+        }
+    }
+}
+
+/// Which top-level block of the document the scanner is inside.
 ///
-/// Inline comments (e.g., `key: value # comment`) are stripped unless the value
-/// is surrounded by quotes, in which case the quoted content is returned as-is
-/// (quotes included — the caller is responsible for stripping them if needed).
+/// Only `extension:` and `repo:` carry fields worth reading; everything else —
+/// `docs:` above all — is prose that must not be mistaken for metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Extension,
+    Repo,
+    Other,
+}
+
+impl Section {
+    /// Classifies a column-zero line such as `extension:` or `docs:`.
+    fn of(line: &str) -> Self {
+        match line.split(':').next().map(str::trim) {
+            Some("extension") => Self::Extension,
+            Some("repo") => Self::Repo,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Number of leading whitespace characters on `line`.
+///
+/// YAML forbids tabs for indentation, so counting characters rather than
+/// columns is exact for any well-formed document.
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// A `key: |` / `key: >` block scalar being read.
+struct BlockScalar {
+    /// The mapping key the block belongs to, e.g. `description`.
+    key: String,
+    /// Indentation of that key, which the body must exceed.
+    key_indent: usize,
+    /// `true` for `|` (literal, newlines kept), `false` for `>` (folded).
+    literal: bool,
+    /// Body lines, already trimmed.
+    lines: Vec<String>,
+}
+
+impl BlockScalar {
+    /// Recognises a mapping key introducing a block scalar — `key: |`,
+    /// `key: >`, and the `-` / `+` / explicit-indent variants.
+    fn opening(line: &str, indent: usize) -> Option<Self> {
+        let (key, value) = line.split_once(':')?;
+        let value = value.trim();
+        let rest = value.strip_prefix(['|', '>'])?;
+        // A chomping indicator and/or an explicit indentation digit may follow;
+        // anything else means this was a plain scalar that happened to start
+        // with one of those characters.
+        if !rest.chars().all(|c| matches!(c, '-' | '+' | '0'..='9')) {
+            return None;
+        }
+        Some(Self {
+            key: key.trim().to_string(),
+            key_indent: indent,
+            literal: value.starts_with('|'),
+            lines: Vec::new(),
+        })
+    }
+
+    /// Consumes the block, returning its key and joined value.
+    ///
+    /// Literal blocks keep their line breaks; folded blocks become one line, as
+    /// YAML specifies. Both are trimmed, so a chomping indicator changes
+    /// nothing here.
+    fn into_pair(self) -> (String, String) {
+        let separator = if self.literal { "\n" } else { " " };
+        (self.key, self.lines.join(separator).trim().to_string())
+    }
+}
+
+/// Parses a `key: value` line. Returns the value if the key matches, with
+/// surrounding YAML quotes removed and any inline comment stripped.
+///
+/// Quotes are removed rather than preserved: real `description.yml` files quote
+/// `version`, `requires_toolchains`, `excluded_platforms`, `github` and `ref`
+/// freely, and no caller wants `'2025120401'` when the value is `2025120401`.
+/// Inside quotes an inline comment is not a comment, so it is left alone.
 pub(super) fn parse_kv<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     line.strip_prefix(key).map(|v| {
         let v = v.trim();
-        // If the value is quoted, return it as-is (preserve content inside quotes).
-        if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
-            return v;
+        if let Some(inner) = unquote(v) {
+            return inner;
         }
         // Strip inline comment: "value # comment" → "value"
         v.find(" #").map_or(v, |pos| v[..pos].trim_end())
     })
+}
+
+/// Returns the contents of a YAML single- or double-quoted scalar.
+///
+/// `None` when `value` is not quoted. Deliberately not `trim_matches('"')`,
+/// which would also eat unbalanced and repeated quotes — `"a"` and `""a""` and
+/// `a"` are three different things.
+pub(super) fn unquote(value: &str) -> Option<&str> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 2 {
+        return None;
+    }
+    let first = *bytes.first()?;
+    if (first == b'"' || first == b'\'') && *bytes.last()? == first {
+        return value.get(1..value.len() - 1);
+    }
+    None
 }
 
 /// Strips an inline YAML comment from a value string.

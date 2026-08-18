@@ -138,8 +138,19 @@ fn invalid_license_rejected() {
 #[test]
 fn invalid_version_rejected() {
     let mut config = valid_config();
-    config.version = "not-a-version".to_string();
+    // Whitespace and path separators are rejected; an unusual-but-harmless
+    // version like "not-a-version" or "2025120401" is not, because DuckDB's
+    // community-extension docs specify no version format and real published
+    // extensions use date-based build ids.
+    config.version = "1.0.0 beta".to_string();
     assert!(generate_scaffold(&config).is_err());
+    config.version = "../etc/passwd".to_string();
+    assert!(generate_scaffold(&config).is_err());
+    config.version = "2025120401".to_string();
+    assert!(
+        generate_scaffold(&config).is_ok(),
+        "a date-based build id is used by 11 of 43 published extensions"
+    );
 }
 
 #[test]

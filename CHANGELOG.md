@@ -82,6 +82,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for pointer-format values). `from_bytes` is deprecated and no
   longer dereferences.
 
+### Fixed (the `description.yml` validator rejected 84% of real extensions)
+
+- **`parse_description_yml` rejected 36 of the 43 published community
+  extensions it was tested against.** Its entire purpose is to tell an author
+  their submission is valid before they open a PR, and it told almost everyone
+  they were invalid. Four independent causes:
+
+  1. **`requires_toolchains` was treated as required.** It is not — only 14 of
+     the 43 set it, and the community-extensions documentation does not list it
+     as required. This alone rejected half the corpus. It is now optional;
+     `validate_rust_extension` still requires `rust` in it when present.
+
+  2. **YAML quotes were not stripped.** `parse_kv` deliberately returned quoted
+     values *with* their quotes and left stripping to each caller, and only
+     `excluded_platforms` did. 12 of 43 files write `version: '2025120401'`, so
+     the parser saw `'2025120401'` — quotes included — and every version check
+     failed on it. `parse_kv` now unquotes, with a real balanced-quote check
+     rather than `trim_matches`, which would also eat `""doubled""` and a
+     trailing `a"`.
+
+  3. **`validate_extension_version` imposed a format `DuckDB` does not.** It
+     accepted only semver or a git hash; 11 of 43 published extensions use a
+     date-based build id (`2025120401`). `DuckDB`'s community-extension
+     documentation specifies no version format at all — it says the descriptor
+     carries "the version of the extension" and points at existing extensions
+     as examples. The check is now what would actually break something: empty,
+     over 64 characters, or containing anything outside `[A-Za-z0-9._+-]`
+     (whitespace, path separators, control characters).
+     `classify_extension_version` is unchanged — `DuckDB`'s three-tier
+     stability scheme *is* documented and *is* strict, and that function is
+     where it belongs.
+
+  4. **`windows_amd64_rtools` was rejected.** It is the R-tools Windows build
+     (`DuckDBPlatform()` emits it under `DUCKDB_PLATFORM_RTOOLS`), it is not in
+     the distribution matrix, and 14 of 43 published extensions exclude it.
+     `DUCKDB_PLATFORMS` now also accepts it and the four group names
+     (`linux`, `osx`, `wasm`, `windows` — the top-level keys of
+     `distribution_matrix.json`), while the new `DUCKDB_CI_PLATFORMS` keeps
+     the matrix-derived list the guard script checks. Empty segments from a
+     trailing `;` — which five real files have — are skipped rather than
+     reported as a platform named `""`.
+
+  All 43 now parse, with every name matching its directory.
+
+- **Prose in the `docs:` section was parsed as metadata.** The scan was flat, so
+  a `version:` or `license:` line inside `docs.extended_description` — free-form
+  prose in 42 of the 43 files — silently overwrote the extension's real values.
+  Demonstrated: a `license: FAKE-LICENSE` line inside a documentation block made
+  a valid file fail validation, and the same mechanism could have made an
+  invalid one pass. The parser is now section-aware (only `extension:` and
+  `repo:` are read) and understands block scalars: `key: |` and `key: >` bodies
+  are captured as the field's value — literal blocks keeping line breaks, folded
+  blocks joined — instead of being scanned for mappings.
+
+- **Three doc examples showed indented YAML that was not indented.** A `\`
+  line-continuation in a Rust string literal eats the following line's leading
+  whitespace, so `description.yml` examples in `parse_description_yml`,
+  `validate_description_yml_str` and `validate_rust_extension` were parsing
+  fully-unindented text. They only passed because the parser ignored
+  indentation; making it section-aware exposed them. Rewritten as real
+  multi-line literals.
+
 ### Fixed (validators were giving wrong answers)
 
 - **The DuckDB platform list was stale in both directions.**
