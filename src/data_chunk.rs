@@ -38,6 +38,7 @@ use crate::vector::{StructReader, StructWriter, VectorReader, VectorWriter};
 /// This wrapper does **not** destroy the chunk on drop — `DuckDB` owns the
 /// chunk and manages its lifetime. `DataChunk` simply provides ergonomic
 /// methods for accessing vectors and metadata within callback functions.
+#[derive(Debug)]
 pub struct DataChunk {
     raw: duckdb_data_chunk,
 }
@@ -178,7 +179,7 @@ impl DataChunk {
     ///
     /// This chunk must be a valid, writable output chunk from a table function
     /// scan callback.
-    pub const unsafe fn into_chunk_writer(self) -> ChunkWriter {
+    pub unsafe fn into_chunk_writer(self) -> ChunkWriter {
         // SAFETY: self.raw is valid per constructor's contract.
         unsafe { ChunkWriter::new(self.raw) }
     }

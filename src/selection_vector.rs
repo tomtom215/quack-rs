@@ -30,6 +30,7 @@ use libduckdb_sys::{
 /// RAII wrapper for a `duckdb_selection_vector`.
 ///
 /// Owns `size` 32-bit row indices ([`sel_t`]). Automatically destroyed on drop.
+#[derive(Debug)]
 pub struct SelectionVector {
     sel: duckdb_selection_vector,
     len: usize,

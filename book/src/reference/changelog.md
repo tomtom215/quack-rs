@@ -10,6 +10,709 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-19
+
+### Security
+
+- **New `abi` module: `duckdb_ext_api_v1` layout verification.** `DuckDB` hands a
+  loadable extension a struct of function pointers. Its first 357 slots — the
+  "stable prefix" — have been byte-for-byte identical in every release from
+  v1.2.0 through v1.5.5, but everything past that is the *unstable* region, and
+  `DuckDB` inserts new entries **in the middle** of it between releases
+  (`duckdb_appender_clear` at slot 410 in v1.5.0, `duckdb_geometry_type_get_crs`
+  at slot 493 in v1.5.2). Every quack-rs wrapper behind the `duckdb-1-5` /
+  `duckdb-1-5-3` features — 105 C API functions covering scalar bind/init, copy
+  functions, catalog access, `ErrorData`, `FileSystem`, `Expression`,
+  `SelectionVector`, config options, table descriptions and the client context —
+  lives in that region.
+
+  `DuckDB` does not catch this: an extension stamped `C_STRUCT` + `v1.2.0` (the
+  default) is accepted by *any* `DuckDB` whose C API version is at least v1.2.0
+  and then handed the whole struct, unstable region included. Loading such a
+  build into a `DuckDB` with a different layout silently dispatches to the wrong
+  function pointers. Verified end-to-end: an extension built against `DuckDB`
+  1.5.0's headers, stamped `C_STRUCT`/`v1.2.0`, loaded into `DuckDB` 1.5.5 aborts
+  the process with `double free or corruption`.
+
+  [`abi::check`] compares the slot count of the compiled-in layout against the
+  layout the running engine uses (resolved from `duckdb_library_version()`, which
+  sits at stable slot 7 and is therefore always dispatched correctly).
+  `init_extension` / `init_extension_v2` and the `entry_point!` /
+  `entry_point_v2!` macros now run that check under the new
+  [`AbiPolicy::Strict`] default whenever `duckdb-1-5` is enabled, turning the
+  memory corruption above into a `LOAD` error that names the mismatch and the
+  remedy. `AbiPolicy::Warn` and `AbiPolicy::Trust` opt out; `Trust` is the right
+  choice for binaries stamped `C_STRUCT_UNSTABLE`, where `DuckDB` already pins
+  the release. Extensions that stay on the stable prefix are unaffected and keep
+  their forward compatibility.
+
+  `scripts/check-abi-table.py` re-derives the layout table from every upstream
+  release header and runs in CI, so the table cannot drift as `DuckDB` releases.
+
+- **`DuckStringView::from_bytes` was unsound.** It was safe to call yet
+  dereferenced the heap pointer embedded in bytes 8–15 of a pointer-format
+  `duckdb_string_t`, so safe code holding attacker-influenced bytes could read
+  arbitrary memory. Replaced by two honest constructors: `from_raw` (`unsafe`,
+  honours pointer format — what callbacks want) and `inline_from_bytes` (safe,
+  returns `None` for pointer-format values). `from_bytes` is deprecated and no
+  longer dereferences.
+
+- **`CopyGlobalInitInfo::get_file_path` corrupted the heap.** It called
+  `duckdb_free` on the pointer from
+  `duckdb_copy_function_global_init_get_file_path`, which returns
+  `info_ref.file_path.c_str()` — the interior pointer of a C++ `std::string`
+  `DuckDB` still owns and destroys itself. Every `COPY ... TO` through a
+  quack-rs copy function handed the allocator a pointer it never issued;
+  the first live test of the path aborted with
+  `corrupted size vs. prev_size in fastbins`.
+
+  Every other `duckdb_free` call site in the crate was then audited against
+  `DuckDB`'s implementation, and all twelve are correct. The signature is not
+  sufficient to decide: `char *` returns are owned and `const char *` returns
+  are usually borrowed, but `duckdb_parameter_name` is declared `const char *`
+  and returns `strdup(...)`, so it *is* owned. Recorded as `LESSONS.md` P11 with
+  the full table.
+
+#### Generated CI
+
+- **The generated CI workflow left one action unpinned.** Three of its four
+  actions were SHA-pinned; `dtolnay/rust-toolchain@stable` was not, justified by
+  a comment claiming its SHA "changes with each Rust release". That is not how
+  the action works — it reads the toolchain from `rust-toolchain.toml` or its
+  `toolchain:` input at run time, so pinning the action's SHA does not pin the
+  Rust version. quack-rs's own CI SHA-pins the same action and gets current
+  stable. A branch is a moving target its owner can repoint, and a workflow step
+  runs arbitrary code in the user's CI. All four are now pinned to the same SHAs
+  quack-rs itself uses, and a test asserts every `uses:` in the generated
+  workflow carries a 40-character hex ref.
+
+### Fixed
+
+#### The release-profile validator required the setting that breaks panic safety
+
+- **`validate_release_profile` required `panic = "abort"`, which makes every one
+  of quack-rs's panic guards inert.** quack-rs wraps every `extern "C"` entry
+  point — the extension entry point and every scalar/table/aggregate/cast/copy
+  callback macro — in `catch_unwind`, so a panic in an extension's code becomes
+  a `DuckDB` error instead of a crash. `catch_unwind` catches nothing under
+  `panic = "abort"`: the runtime aborts before unwinding starts. Demonstrated
+  directly rather than assumed —
+
+  ```text
+  rustc -O            panic_probe.rs  →  caught, process survived,  exit 0
+  rustc -O -C panic=abort  …          →  Aborted,                   exit 134
+  ```
+
+  — so the validator was telling extension authors to configure the one setting
+  that turns a recoverable SQL error into a `SIGABRT` that kills the user's
+  whole `DuckDB` session.
+
+  The crate already disagreed with itself: the scaffold has generated
+  `panic = "unwind"` since the panic-safety work in this release, with a comment
+  explaining why. `validate_release_profile` now requires `"unwind"` and rejects
+  `"abort"` with that explanation; `ReleaseProfileCheck::panic_abort` is renamed
+  `panic_unwind`. A new test asserts the scaffold and the validator agree, so
+  they cannot drift apart again.
+
+  The original justification — "panics across FFI boundaries are undefined
+  behavior" — is also out of date: Rust defines an unwind escaping `extern "C"`
+  as an abort, and quack-rs catches panics before the boundary regardless.
+
+  quack-rs's own `[profile.release]` also said `panic = "abort"`. Cargo ignores a
+  dependency's profile so it changed nothing downstream, but it contradicted the
+  crate's own advice; it now says `"unwind"`.
+
+#### A validator made legal function names unregisterable
+
+- **`validate_function_name` rejected mixed-case names, and it gates
+  `try_new`** — so `ScalarFunctionBuilder::try_new("myFunc")` returned `Err` and
+  the function could not be registered through quack-rs at all. `DuckDB` itself
+  ships `formatReadableSize` and `formatReadableDecimalSize`, and registering a
+  camelCase name through the C API succeeds: verified against `DuckDB` 1.5.5,
+  where the function is then callable as `formatReadableThing`,
+  `formatreadablething` **and** `FORMATREADABLETHING`, because `DuckDB`
+  identifiers are case-insensitive.
+
+  The rule was justified as avoiding "catalog issues"; that test disproves it.
+  Letters of either case are now accepted. Everything that would genuinely break
+  is still rejected — a name needing quotes in SQL (`my-func`, `my func`,
+  `my.func`), one starting with a digit, one over 256 characters, one with an
+  interior NUL. `snake_case` remains the right convention and is documented as
+  one, rather than enforced as a rule that blocks a legal name.
+
+  The same relaxation applies to `AggregateFunctionBuilder`,
+  `TableFunctionBuilder` and `SqlMacro` parameter names, which share the
+  validator.
+
+  A regression test now runs `validate_function_name` over **every** function in
+  `duckdb_functions()` (746 of them) and `validate_extension_name` over every
+  entry in `duckdb_extensions()`, asserting that everything identifier-shaped is
+  accepted and every operator is not. That is how the defect was found.
+
+#### A documented convention that was not being followed
+
+- **"Every `unsafe` block inside this crate has a `// SAFETY:` comment" was not
+  true.** `clippy::undocumented_unsafe_blocks` reports 180 blocks in the library.
+  Most are inside an `unsafe fn` and merely forward that function's own
+  documented contract — `unsafe_op_in_unsafe_fn` is denied crate-wide, so those
+  blocks are required syntax rather than new assertions — but around forty were
+  in **safe** functions, where the crate rather than the caller is asserting the
+  invariant, and those had nothing.
+
+  The claim is replaced with the convention actually worth following, and that
+  convention is now met: every `unsafe` block in a safe function carries a
+  `// SAFETY:` comment. Auditing them also turned up three comments that
+  described the wrong thing — two `duckdb_free` calls and a `duckdb_destroy_value`
+  annotated as if they were uses of the enclosing handle; those now say which
+  allocation they own and why, cross-referencing `LESSONS.md` P11.
+
+#### The scaffold generated a `description.yml` that would be rejected
+
+- **`repo.ref` was generated as `main`.** `DuckDB`'s community-extension
+  documentation is explicit: "Provide the hash of the latest commit on the
+  branch targeting stable as `ref`". The repository builds exactly that revision
+  and signs the result, so a branch makes the build unreproducible. Of the 43
+  published extensions sampled, 41 pin a full 40-character hash and two pin a
+  tag; **none** uses a branch.
+
+  `ScaffoldConfig` gains `git_ref`, defaulting to `REF_PLACEHOLDER`
+  (`"REPLACE_WITH_COMMIT_HASH"`) — deliberately not a valid revision, so it
+  cannot be submitted by accident the way `main` silently could. The generated
+  file carries a comment saying why, and a commented-out `ref_next`.
+
+- **`DescriptionYml` silently dropped `repo.ref_next`.** It is a documented
+  field: while a new `DuckDB` release is being prepared, the community
+  repository tests an extension against both the latest stable release and
+  `main`, and `ref_next` names the revision compatible with `main`. Now parsed
+  into `git_ref_next`, empty when absent.
+
+- **The generated `description.yml` had no `docs:` section.** All 43 published
+  extensions have one — it is what renders on the community-extensions
+  documentation site. The scaffold now emits `hello_world` and
+  `extended_description` stubs.
+
+#### Two more documented behaviours that were not the real ones
+
+- **`ClientContext::catalog` documented an empty name as "the default
+  catalog"; `DuckDB` rejects it outright.**
+  `duckdb_client_context_get_catalog` starts with
+  `if (!context || !name || strlen(name) == 0) return nullptr;` — an empty
+  string is the one value guaranteed to fail. The catalog of an in-memory
+  database is named `memory`; a file database's is the file's stem. The doc now
+  says so, along with the other `None` case the C API imposes and quack-rs never
+  mentioned: `DuckDB` checks `transaction.HasActiveTransaction()`, so this works
+  inside a callback but not on an idle auto-commit connection. Both verified
+  against 1.5.5 by a live test.
+
+- **`ClientContext::config_option` aborts the process when asked for a setting
+  that does not exist — on a `DuckDB` built with debug assertions.**
+  `duckdb_client_context_get_config_option` calls
+  `TryGetCurrentSetting(...).GetScope()` without first checking the lookup
+  succeeded, and `GetScope()` asserts `scope != SettingScope::INVALID`. A
+  release `DuckDB` compiles the assertion out and the function's own `default:`
+  arm returns `NULL` as documented, so this never reproduces for end users and
+  always reproduces in a test suite linking a debug `DuckDB`.
+
+  This is a `DuckDB` defect, not a quack-rs one, but it makes the obvious
+  "does the user have this setting?" probe unsafe. Documented on the method with
+  the source lines, recorded as `LESSONS.md` P12, and the abort-free
+  alternative given: `SELECT count(*) FROM duckdb_settings() WHERE name = ?`.
+
+#### Documentation claimed a bridge that cannot exist
+
+- **The `secrets` module described itself as bridging into `DuckDB`'s secrets
+  system. There is no such bridge, and there cannot be.** The extension C API
+  has **zero** secret functions — not one `duckdb_secret_*` among the 546 slots
+  of `duckdb_ext_api_v1` in `DuckDB` 1.5.5. An extension cannot ask `DuckDB` for
+  a credential through the C API at all.
+
+  The only route is the `duckdb_secrets()` table function, and `DuckDB` redacts
+  sensitive fields there. Verified against 1.5.5:
+
+  ```text
+  CREATE SECRET s (TYPE s3, KEY_ID 'AKIAEXAMPLE', SECRET 'super-secret-value');
+  SELECT secret_string FROM duckdb_secrets();
+  -- ...;key_id=AKIAEXAMPLE;secret=redacted
+  ```
+
+  The module docs now say this plainly, and say what `SecretsManager` actually
+  is: a trait over the extension's **own** credential source, carrying the
+  redacting `Debug`, zeroize-on-drop and absent `PartialEq` that credential
+  handling needs, rather than a route to `DuckDB`'s store.
+
+  The zeroize claim is also narrowed to what is true: it covers the buffers a
+  `SecretEntry` owns, not a `String` the caller still holds or one a `String`
+  abandoned when it grew.
+
+#### The `description.yml` validator rejected 84% of real extensions
+
+- **`parse_description_yml` rejected 36 of the 43 published community
+  extensions it was tested against.** Its entire purpose is to tell an author
+  their submission is valid before they open a PR, and it told almost everyone
+  they were invalid. Four independent causes:
+
+  1. **`requires_toolchains` was treated as required.** It is not — only 14 of
+     the 43 set it, and the community-extensions documentation does not list it
+     as required. This alone rejected half the corpus. It is now optional;
+     `validate_rust_extension` still requires `rust` in it when present.
+
+  2. **YAML quotes were not stripped.** `parse_kv` deliberately returned quoted
+     values *with* their quotes and left stripping to each caller, and only
+     `excluded_platforms` did. 12 of 43 files write `version: '2025120401'`, so
+     the parser saw `'2025120401'` — quotes included — and every version check
+     failed on it. `parse_kv` now unquotes, with a real balanced-quote check
+     rather than `trim_matches`, which would also eat `""doubled""` and a
+     trailing `a"`.
+
+  3. **`validate_extension_version` imposed a format `DuckDB` does not.** It
+     accepted only semver or a git hash; 11 of 43 published extensions use a
+     date-based build id (`2025120401`). `DuckDB`'s community-extension
+     documentation specifies no version format at all — it says the descriptor
+     carries "the version of the extension" and points at existing extensions
+     as examples. The check is now what would actually break something: empty,
+     over 64 characters, or containing anything outside `[A-Za-z0-9._+-]`
+     (whitespace, path separators, control characters).
+     `classify_extension_version` is unchanged — `DuckDB`'s three-tier
+     stability scheme *is* documented and *is* strict, and that function is
+     where it belongs.
+
+  4. **`windows_amd64_rtools` was rejected.** It is the R-tools Windows build
+     (`DuckDBPlatform()` emits it under `DUCKDB_PLATFORM_RTOOLS`), it is not in
+     the distribution matrix, and 14 of 43 published extensions exclude it.
+     `DUCKDB_PLATFORMS` now also accepts it and the four group names
+     (`linux`, `osx`, `wasm`, `windows` — the top-level keys of
+     `distribution_matrix.json`), while the new `DUCKDB_CI_PLATFORMS` keeps
+     the matrix-derived list the guard script checks. Empty segments from a
+     trailing `;` — which five real files have — are skipped rather than
+     reported as a platform named `""`.
+
+  All 43 now parse, with every name matching its directory.
+
+- **Prose in the `docs:` section was parsed as metadata.** The scan was flat, so
+  a `version:` or `license:` line inside `docs.extended_description` — free-form
+  prose in 42 of the 43 files — silently overwrote the extension's real values.
+  Demonstrated: a `license: FAKE-LICENSE` line inside a documentation block made
+  a valid file fail validation, and the same mechanism could have made an
+  invalid one pass. The parser is now section-aware (only `extension:` and
+  `repo:` are read) and understands block scalars: `key: |` and `key: >` bodies
+  are captured as the field's value — literal blocks keeping line breaks, folded
+  blocks joined — instead of being scanned for mappings.
+
+- **Three doc examples showed indented YAML that was not indented.** A `\`
+  line-continuation in a Rust string literal eats the following line's leading
+  whitespace, so `description.yml` examples in `parse_description_yml`,
+  `validate_description_yml_str` and `validate_rust_extension` were parsing
+  fully-unindented text. They only passed because the parser ignored
+  indentation; making it section-aware exposed them. Rewritten as real
+  multi-line literals.
+
+#### Validators were giving wrong answers
+
+- **The DuckDB platform list was stale in both directions.**
+  `validate::platform` rejected `linux_amd64_musl` and `linux_arm64_musl` —
+  real, currently-built targets — so an extension that legitimately cannot
+  support musl could not declare it. And it accepted `linux_amd64_gcc4`, which
+  `DuckDB` retired: `DuckDBPlatform()` in `duckdb/common/platform.hpp` now
+  raises a compile error for the legacy CXX ABI rather than emitting a `_gcc4`
+  suffix, and it is absent from the distribution matrix. Excluding it was a
+  silent no-op.
+
+  The list is now derived from `config/distribution_matrix.json` in
+  `duckdb/extension-ci-tools` — the file the community-extensions build actually
+  reads — and `scripts/check-platform-table.py` plus a CI job fail when the two
+  diverge. Adds `DUCKDB_OPT_IN_PLATFORMS` and `is_opt_in_platform`, because
+  three of the twelve (`linux_amd64_musl`, `linux_arm64_musl`, `windows_arm64`)
+  are only built on request, so excluding one of those is also a no-op.
+  `linux_amd64_gcc4` gets a targeted error saying what happened to it, rather
+  than "not a recognized DuckDB build target".
+
+- **`validate_spdx_license` claimed valid licenses did not exist.**
+  `COMMON_SPDX_LICENSES` is a 42-entry shortlist of a 733-entry registry, but
+  the rejection message read "is not a recognized SPDX identifier" — false for
+  `CC0-1.0`, `Python-2.0`, `BSD-4-Clause` and roughly 690 others. It now says
+  the identifier is not on quack-rs's shortlist and points at the registry.
+
+  Every entry was checked against `spdx/license-list-data`: all 42 are real and
+  none are deprecated. `scripts/check-spdx-list.py` and a CI job keep it that
+  way, and flag any newly-added identifier that is not OSI-approved (`SSPL-1.0`
+  is listed and deliberately is not). The list is now sorted, with a test
+  keeping it so. Also fixes the module doc, which called the field
+  `extension.licence`; real `description.yml` files — and quack-rs's own parser
+  — use `license`.
+
+#### Silent data corruption
+
+- **The `UUID` accessors disagreed about which 128 bits they meant, and the
+  documentation said they agreed.** A `UUID` column is physically a `HUGEINT`,
+  but `DuckDB` stores it with the **top bit flipped** so that signed integer
+  ordering matches UUID string ordering (`BaseUUID::FromUHugeint` in
+  `src/common/types/uuid.cpp` subtracts 2^63 from the upper half). So:
+
+  | Accessor | Returned | For `'11111111-…'::UUID` |
+  |----------|----------|---------------------------|
+  | `VectorReader::read_uuid` (old) | raw storage | `0x9111…` |
+  | `Value::as_uuid` | textual bits | `0x1111…` |
+
+  Both were documented as "matching" the other. Handing one to the other — the
+  obvious thing to do when a table function reads a `UUID` and builds a `Value`
+  from it — silently changed the UUID's first hex digit.
+
+  `read_uuid` / `write_uuid` (on `VectorReader`, `VectorWriter`, `StructReader`,
+  `StructWriter` and both mocks) now apply the flip and take/return `u128`
+  **textual bits**, the same convention as `Value::uuid` / `Value::as_uuid` and
+  every Rust `Uuid` type. `Value::uuid` / `as_uuid` move from `i128` to `u128`
+  for the same reason. The type change is deliberate: it turns a silent
+  behaviour change into a compile error at every affected call site.
+
+  `read_i128` / `write_i128` still read and write the raw storage, and the new
+  `vector::uuid_from_storage` / `vector::uuid_to_storage` convert between the
+  two. Pinned by a live test that asserts the raw storage and the textual bits
+  really do differ, so the conversion cannot quietly become a no-op.
+
+#### Wrong results and unloadable builds
+
+- **`ChunkWriter` no longer hardcodes a 2048-row capacity.** `DuckDB` can be
+  built with a different `STANDARD_VECTOR_SIZE`, which is exactly why the C API
+  exposes `duckdb_vector_size()`; assuming 2048 against a smaller build overruns
+  the output vectors. `ChunkWriter::new` now reads the running engine's value.
+  `ChunkWriter::new` and `DataChunk::into_chunk_writer` are consequently no
+  longer `const fn`.
+
+- **The scaffold produced an extension `DuckDB` refuses to load.** The generated
+  `Makefile` set `DUCKDB_PLATFORM_VERSION`, which `extension-ci-tools` does not
+  read, alongside `USE_UNSTABLE_C_API=1`. `TARGET_DUCKDB_VERSION` therefore fell
+  back to its `v0.0.1` default and the binary was stamped
+  `C_STRUCT_UNSTABLE`/`v0.0.1`, which `DuckDB` rejects with *"The file was built
+  specifically for DuckDB version 'v0.0.1'"*. The generated `Makefile` now sets
+  `EXTENSION_NAME` (not `EXT_NAME`, which `base.Makefile` ignores),
+  `TARGET_DUCKDB_VERSION` and `USE_UNSTABLE_C_API` from the new
+  `ScaffoldConfig` fields, and defines the `all`/`configure`/`debug`/`release`/
+  `test`/`clean` targets its own README and CI invoke.
+
+- **The scaffold generated `panic = "abort"`**, which makes the `catch_unwind` in
+  `scalar_callback!`, `table_scan_callback!` and the extension entry point inert
+  — so any panic in extension code killed the whole `DuckDB` process instead of
+  surfacing as a SQL error. Now generates `panic = "unwind"`.
+
+- **The scaffold pinned `quack-rs = "0.13"`** regardless of the generating
+  crate's version. It now tracks the current major.minor.
+
+- **A freshly scaffolded project failed its own generated CI.** `cargo clippy
+  --all-targets -- -D warnings` (which the generated workflow runs) rejected the
+  generated `src/lib.rs` for `clippy::redundant_closure` and `src/wasm_lib.rs`
+  for `special_module_name`. Both are fixed; a new `scaffold-e2e` CI job builds
+  the generated project, stamps its metadata footer, loads it into a real
+  `DuckDB`, asserts the query result, and runs the generated lint gate.
+
+- **The generated CI referenced a nonexistent action** (`duckdb/duckdb-build@v1`)
+  and ran `make test` without `make configure` / `make release`, so it could not
+  have passed. Replaced with a workflow that configures, builds and tests through
+  `extension-ci-tools`.
+
+- **The extension entry point ran user registration code without
+  `catch_unwind`.** A panic in a registration closure unwound to the
+  `extern "C"` entry point, aborting the process; it now becomes a `LOAD` error.
+  An `api_version` containing an interior NUL is also rejected up front instead
+  of panicking inside `libduckdb-sys`.
+
+#### Behaviour documented after verification
+
+- `Value::display_string` renders a SQL **literal**, not display text:
+  `Value::varchar("hello")` gives `'hello'` and `Value::date(0)` gives
+  `'1970-01-01'::DATE`. Now documented with a table, since silently getting
+  quotes and a cast suffix in a diagnostic is surprising.
+- `Value::as_str` truncates at an interior NUL, because `duckdb_get_varchar`
+  returns a NUL-terminated `char *`. `DuckDB` stores the full bytes; only this
+  read path is limited. Documented on both `as_str` and `Value::varchar`, and
+  pinned by a test.
+
+#### Documentation
+
+- **The crate documented an "architectural limitation" that does not exist.**
+  `Cargo.toml`, `testing::in_memory_db` and the book all stated that
+  `VectorReader`, `VectorWriter` and `Connection::register_*` "cannot be called
+  in `cargo test`" because they route through the dispatch table. Opening an
+  `InMemoryDb` populates that table for the whole process, after which the entire
+  C API — registration included — works. The new `tests/ffi_roundtrip.rs`
+  registers real scalar functions and round-trips every vector type through SQL:
+  every integer width at its extremes, `HUGEINT`/`UHUGEINT` at theirs, floats and
+  NaN, strings across the 12-byte inline/pointer boundary and multi-byte UTF-8,
+  blobs containing NUL and non-UTF-8 bytes, all temporal types cross-checked
+  against `DuckDB`'s own rendering, `UUID`, `INTERVAL`'s three fields, `DECIMAL`
+  at all four physical widths, NULL in and out, multi-chunk scans, and a
+  panicking callback surfacing as a SQL error.
+
+- Documentation examples pinned `quack-rs = "0.13"`.
+
+[`abi::check`]: https://docs.rs/quack-rs/latest/quack_rs/abi/fn.check.html
+[`AbiPolicy`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
+[`AbiPolicy::Strict`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
+
+### Added
+
+#### Live tests for every previously untested C API path
+
+- **Copy functions and replacement scans had no live tests at all.** Between
+  them they had 19 unit tests, none of which registered anything against a
+  running `DuckDB` — which is how a heap-corrupting free survived in a shipped
+  API. Both now have end-to-end coverage:
+
+  - A `COPY ... TO 'f' (FORMAT my_format)` over 5000 rows, threading bind data
+    and global state through all four lifecycle phases, asserting the sink saw
+    every row and that both destructors ran exactly once (a leak or a double
+    free is invisible without counting).
+  - A replacement scan rewriting `SELECT * FROM '10.myfmt'` into a table
+    function call, plus the decline path — an identifier the callback ignores
+    must still reach `DuckDB`'s own error handling — and a panicking scan
+    surfacing as a SQL error.
+
+- **Six more modules had unit tests but no live registration**: scalar
+  bind/init/local state, `Expression::fold`, catalog lookup, config options,
+  selection vectors and the instance cache. All now run against a real `DuckDB`,
+  which turned up two more documentation defects (below) and confirmed the rest.
+
+- **`copy_bind_callback!`, `copy_global_init_callback!`, `copy_sink_callback!`
+  and `copy_finalize_callback!`.** Every other callback kind had a panic-safe
+  macro; the four copy-function phases did not, so a panic in one of them had
+  nothing to catch it. Each routes the message through that phase's own
+  `duckdb_copy_function_*_set_error`.
+
+- `TypeId::try_from_duckdb_type` — returns `Option<TypeId>` instead of panicking
+  on a type value this build does not know. Extensions routinely meet these: a
+  column of a type added in a newer `DuckDB`, or a 1.5.x type reaching a build
+  without `duckdb-1-5`. `from_duckdb_type` still panics and now documents that
+  callbacks should not use it.
+- Fallible `LogicalType` constructors that previously panicked on an interior NUL
+  in a caller-supplied name: `try_struct_type_from_logical`, `try_union_type`,
+  `try_union_type_from_logical`, `try_enum_type`, `try_set_alias`.
+- `entry_point!` / `entry_point_v2!` accept an optional [`AbiPolicy`] as their
+  second argument; `init_extension_with_policy` /
+  `init_extension_v2_with_policy` are the function-level equivalents.
+- `examples/scaffold_to_dir.rs` — writes a scaffolded project to disk, used by
+  the new `scaffold-e2e` CI job.
+
+#### Panic safety
+
+- **A panic-safe wrapper macro for every callback kind.** Only `scalar_callback!`
+  and `table_scan_callback!` existed, so the other six kinds — table bind, table
+  init, aggregate update/combine/finalize/destroy, cast, and replacement scan —
+  were unguarded, and a panic in any of them aborted the `DuckDB` process. The
+  aggregate ones are the worst case: they run on worker threads, so the abort
+  comes from a thread the user never sees. New macros: `table_bind_callback!`,
+  `table_init_callback!`, `aggregate_update_callback!`,
+  `aggregate_combine_callback!`, `aggregate_finalize_callback!`,
+  `aggregate_destroy_callback!`, `cast_callback!`, `replacement_scan_callback!`.
+  Each routes the panic message to that callback kind's own `set_error`;
+  `cast_callback!` also returns `false` so `TRY_CAST` yields NULL. The aggregate
+  destructor has no error channel in the C API, so its panic is caught and
+  dropped — leaking beats aborting during query teardown. Verified end-to-end:
+  a panicking aggregate `update` and a panicking cast both surface as SQL errors
+  and leave the connection usable.
+
+- The two existing macros now share `callback::panic_message` and
+  `callback::message_to_c_string` with the new ones. The latter replaces an
+  interior NUL rather than dropping the diagnostic, which the old
+  `if let Ok(c_msg) = CString::new(msg)` silently did.
+
+- `TypedTableFunctionBuilder` reported every panic as the same fixed string.
+  It now includes the payload, so the user learns *which* assertion failed.
+
+- **Deprecated `FfiBindData::get_from_bind`**, which always returned `None` and
+  always will: `DuckDB` exposes no `duckdb_bind_get_bind_data`. Being safe and
+  returning `Option`, it silently sent `if let Some(..)` down the wrong branch.
+
+#### Capabilities
+
+- **`ListBuilder` for `LIST` and `MAP` output vectors.**
+  `duckdb_list_vector_reserve` takes a *total* capacity and reallocates the child
+  vector when it grows, so a `VectorWriter` obtained beforehand is left dangling.
+  That makes the natural "reserve as you go, keep one writer" loop a
+  use-after-free. `ListBuilder` re-fetches the child writer after every reserve,
+  tracks the running offset, writes each parent `{offset, length}` entry, and
+  grows geometrically so building a list is not quadratic. `push_map_row` does
+  the same for `MAP`. It also refuses capacities above
+  `MAX_LIST_CHILD_CAPACITY` (`duckdb::DConstants::MAX_VECTOR_SIZE`), above which
+  `DuckDB` throws a C++ exception that its own C API does not catch — an
+  exception unwinding into Rust would be undefined behaviour. Covered by tests
+  building 2000 lists and 1500 maps of varying length through real SQL.
+
+- **`Value` gained the extractors and constructors it was missing.** A table
+  function declared with a `TIMESTAMP` or `LIST` parameter handed the bind
+  callback a `duckdb_value` that could only be read via `as_str()` and reparsed.
+  Adds `as_date`, `as_time`, `as_time_tz`, `as_timestamp`, `as_timestamp_tz`,
+  `as_timestamp_s/ms/ns`, `as_interval`, `as_uuid`, `as_decimal`, `as_u128`,
+  `list_len` / `list_child` / `list_items`, `struct_child`, `map_len` /
+  `map_key` / `map_value`, and the constructors `boolean`, `bigint`, `double`,
+  `date`, `timestamp`, `varchar`, `uuid`, `null_value`.
+
+- **`query` module — running SQL from inside an extension.** The C API has
+  everything needed (`duckdb_query`, `duckdb_prepare`, `duckdb_bind_*`,
+  `duckdb_fetch_chunk`) and it is all in the stable prefix, but each handle has a
+  `destroy` that must run exactly once, including on error paths. `QueryResult`,
+  `OwnedDataChunk`, `PreparedStatement` and `OwnedConnection` are RAII wrappers
+  for those; `Connection` gains `query`, `execute`, `prepare` and
+  `open_connection`.
+
+  `OwnedConnection` covers the case the borrowed registration connection cannot:
+  a `duckdb_connection` holds its own reference to the database instance, so one
+  opened during load stays valid afterwards — for a callback or a background
+  thread. Verified by a test that closes the `duckdb_database` handle and keeps
+  querying.
+
+- **`datetime` module — calendar conversions.** `DATE`, `TIME` and `TIMESTAMP`
+  move through vectors as raw integers; turning those into year/month/day meant
+  reimplementing the proleptic Gregorian calendar and `DuckDB`'s infinity
+  sentinels. `DuckDB` already exposes the conversions in the stable API, so this
+  wraps them: `date_from_days`/`date_to_days`, `time_from_micros`/`time_to_micros`,
+  `timestamp_from_micros`/`timestamp_to_micros`, `time_tz_bits`/`time_tz_from_bits`,
+  the four `is_finite_*` predicates, and `HUGEINT`/`UHUGEINT`/`DECIMAL` ↔ `f64`.
+
+  Also exports the exact sentinel values as constants. `-infinity` is `-i32::MAX`
+  / `-i64::MAX`, **not** `i32::MIN` / `i64::MIN` — `i32::MIN` is an ordinary
+  finite date, and treating it as infinity would silently drop real rows.
+
+- **`VectorWriter` caches its validity bitmap.** `set_null` called
+  `duckdb_vector_ensure_validity_writable` + `duckdb_vector_get_validity` on
+  every row; both are now resolved once per vector (2 FFI calls instead of 4096
+  for an all-NULL 2048-row vector). Adds `set_null_range` for the batched case.
+
+- **Vector accessors for the remaining physical layouts**:
+  `write_u128`/`read_u128` (`UHUGEINT`), `write_decimal`/`read_decimal` (which
+  select `i16`/`i32`/`i64`/`i128` from the declared width the way `DuckDB` does),
+  `write_time_tz`/`read_time_tz`, and `TIMESTAMPTZ` / `TIMESTAMP_S` /
+  `TIMESTAMP_MS` / `TIMESTAMP_NS` accessors. `VectorReader::contains` bounds-checks
+  an index against the row count.
+
+- Callback signature aliases are re-exported at their module roots:
+  `scalar::ScalarFn` (plus `ScalarBindFn` / `ScalarInitFn` under `duckdb-1-5`) and
+  `aggregate::{StateSizeFn, StateInitFn, UpdateFn, CombineFn, FinalizeFn, DestroyFn}`,
+  matching what `table` already did.
+
+- The prelude re-exports `AbiPolicy`, the `datetime` types and the `query` types.
+
+- **`Registrar::register_config_option`** — the trait already covered scalar,
+  scalar set, aggregate, aggregate set, table, SQL macro, cast and copy
+  functions, but not config options, so an extension registering one could not
+  have its whole registration closure exercised through `MockRegistrar`. Added,
+  with `config_option_names` / `has_config_option` on the mock.
+
+- **`secrets::list_duckdb_secrets`** — reads the secret *metadata* `DuckDB` does
+  expose, via `duckdb_secrets()`: name, type, provider, persistence, storage,
+  scope prefixes and the redacted `secret_string`. Enough to pick a scope, warn
+  that a required secret is missing, or choose a provider. It returns a
+  `DuckDbSecretInfo`, deliberately not a `SecretEntry`, so nothing suggests it
+  carries credentials. A live test asserts both halves: the metadata comes
+  through, and the credential provably does not.
+
+- **The appender is no longer behind `duckdb-1-5`, and gained the row-at-a-time
+  API it never had.** `duckdb_appender_*` occupies slots 281–291 and 330–356 —
+  the *frozen stable prefix*, unchanged since v1.2.0 — yet the whole module was
+  gated on `duckdb-1-5`, whose wrappers live in the unstable region. Using the
+  appender therefore forced an extension onto the version-pinned unstable ABI,
+  for functionality that has been portable for four minor releases. Only three
+  methods actually need 1.5 and stay gated: `error_data`, `clear` and
+  `append_default_to_chunk`.
+
+  The 24 row-at-a-time functions were wrapped for the first time:
+  `append_bool` / `_i8` / `_i16` / `_i32` / `_i64` / `_i128` / `_u8` / `_u16` /
+  `_u32` / `_u64` / `_u128` / `_f32` / `_f64` / `_str` / `_bytes` / `_date` /
+  `_time` / `_timestamp` / `_interval` / `_value` / `_null` / `_default`,
+  `end_row`, `column_count`, `column_type`, `add_column`, `clear_columns`, and a
+  `row(|row| …)` helper that calls `end_row` for you. Previously the only way to
+  insert a row was to build a whole `DataChunk`.
+
+  Three details that are easy to get wrong and are handled here: `append_str`
+  uses `duckdb_append_varchar_length`, so interior NUL bytes survive; that
+  function narrows its length to `uint32_t` with an unchecked cast in `DuckDB`'s
+  release builds, so longer strings are refused rather than truncated; and
+  `duckdb_append_value` dereferences its argument with no null check, so a null
+  `Value` handle is refused. Covered by live tests that append every scalar type
+  at its extremes, 5000 rows across several vectors, a short row, a constraint
+  violation surfacing at `close`, and a `DEFAULT`-filled column subset.
+
+  New `appender::AppendError` is `ErrorData` with `duckdb-1-5` and
+  `ExtensionError` without, so enabling the feature upgrades the error type in
+  place without changing any method's shape — existing `duckdb-1-5` code is
+  unaffected.
+
+- **`table_description` is no longer behind `duckdb-1-5` either.** Slots 292–297
+  are stable; only `column_count` and `column_type` are 1.5 additions and stay
+  gated. Adds `TableDescription::with_catalog` (`duckdb_table_description_create_ext`,
+  for tables in another catalog) and `column_has_default`
+  (`duckdb_column_has_default`) — the latter being the only way to know whether
+  `Appender::append_default` will succeed.
+
+- **`FileHandle` gained the looping I/O helpers, and `size`/`tell` became
+  fallible.** `duckdb_file_handle_read` and `duckdb_file_handle_write` return
+  "the number of bytes **actually** read/written" — a single call can come up
+  short, which over `httpfs` is routine rather than theoretical. Adds
+  `read_exact`, `read_to_end` and `write_all`, which loop. `size()` and `tell()`
+  changed from `i64` to `Result<u64, ErrorData>`: the C API signals failure with
+  a *negative* return, and the previous signature made `handle.size().max(0) as
+  usize` — silently treating an error as an empty file — the obvious thing to
+  write. It was in this crate's own documentation.
+
+- **`Value::type_id()`.** `Value` had forty `as_*` accessors and no way to ask
+  what the value actually is, so reading a `VARCHAR` with `as_i64()` returned
+  garbage rather than an error. Wraps `duckdb_get_value_type` (stable prefix,
+  slot 137, unchanged since v1.2.0), returning `None` for a null handle or a
+  type id newer than this build knows.
+
+- **Every public type implements `Debug`.** 58 of them did not, which is Rust API
+  guideline [C-DEBUG] and not cosmetic: `Result::unwrap`, `Result::expect_err`,
+  `assert_eq!`, and `#[derive(Debug)]` on any downstream struct storing a
+  quack-rs type all fail to compile without it. `LogicalType` and `Value` print
+  decoded state (type id, alias, `DECIMAL` width/scale, `DuckDB`'s own rendering)
+  rather than a pointer; builders print `set`/`unset` per callback, which is the
+  question you have when `register` reports a missing function;
+  `WarningCollector` uses `try_lock` so printing can neither block nor deadlock.
+  `missing_debug_implementations` is now enabled crate-wide, and CI's
+  `-D warnings` makes it an error. `testing::InMemoryDb` was a 59th, only
+  visible once the lint ran with `bundled-test` on.
+
+[C-DEBUG]: https://rust-lang.github.io/api-guidelines/debugging.html
+
+### Changed
+
+#### MSRV
+
+- **MSRV lowered 1.87.0 → 1.86.0.** DuckDB's reusable
+  `_extension_distribution.yml` — the workflow the community-extensions
+  repository builds every extension with — pins
+  `dtolnay/rust-toolchain@… # 1.86.0` for the WebAssembly job. quack-rs required
+  1.87.0, so Cargo refused, and **no quack-rs extension could be built for
+  `wasm_mvp` / `wasm_eh` / `wasm_threads`** by the official pipeline — despite
+  the crate advertising `wasm32-unknown-emscripten` support since 0.14.0.
+
+  The entire 1.87 requirement was five `const fn` accessors calling `Vec::len`
+  (stabilised as const in 1.87). None can be reached in a const context —
+  `MockVectorWriter`, `StructReader` and `StructWriter` are all built at runtime
+  — so dropping `const` costs nothing. 1.86.0 is now the floor for the library,
+  its dev-dependencies (`criterion` needs 1.86) and the `hello-ext` example, all
+  verified.
+
+  New `scripts/check-msrv-vs-duckdb-ci.py` and a CI job re-derive DuckDB's pinned
+  toolchains from that workflow and fail if the MSRV creeps back above them.
+
+- **Breaking:** `ScaffoldConfig` gains `target_duckdb_version` and
+  `use_unstable_c_api`. `ScaffoldConfig` now implements `Default`, so existing
+  struct literals can add `..ScaffoldConfig::default()`. `generate_scaffold`
+  rejects combinations that produce an unloadable binary — a `C_STRUCT` build
+  claiming a `DuckDB` release as its `-dv`, or a `C_STRUCT_UNSTABLE` build
+  claiming the C API version.
+
+### CI / tooling
+
+- New `abi-table` job: `scripts/check-abi-table.py` verifies `src/abi.rs`'s
+  layout table against every upstream `DuckDB` release header.
+- New `abi-guard` job: builds an extension against `DuckDB` 1.5.0's header
+  layout, stamps it `C_STRUCT`, and asserts the load is refused with a layout
+  diagnostic — a regression test for the corruption described above.
+- New `scaffold-e2e` job (see above).
+- `extension-load` now stamps a real metadata footer and asserts query *results*
+  rather than grepping the log for the word "error"; loading a bare `.so`
+  bypassed `DuckDB`'s metadata validation entirely.
+
 ## [0.15.0] — 2026-07-16
 
 ### Added

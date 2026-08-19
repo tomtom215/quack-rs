@@ -91,7 +91,7 @@ compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
 
 ```toml
 [dependencies]
-quack-rs = { version = "0.13", features = ["duckdb-1-5-3"] }
+quack-rs = { version = "0.16", features = ["duckdb-1-5-3"] }
 ```
 
 Neither type yet has dedicated `VectorReader`/`VectorWriter` helpers; access

@@ -3,22 +3,35 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! Safe callback wrapper macros for `DuckDB` extension callbacks.
+//! Panic-safe callback wrapper macros for `DuckDB` extension callbacks.
 //!
-//! Every `DuckDB` callback is `unsafe extern "C" fn`. If a Rust panic unwinds
-//! across the FFI boundary, it is **undefined behaviour**. These macros wrap
-//! user-provided closures with `std::panic::catch_unwind`, converting panics
-//! into error reporting via `duckdb_scalar_function_set_error` or by setting
-//! the output chunk size to 0.
+//! Every `DuckDB` callback is an `unsafe extern "C" fn`, and a Rust panic that
+//! reaches that boundary aborts the process — taking the user's `DuckDB` session,
+//! and any application embedding it, with it. These macros wrap the body in
+//! [`std::panic::catch_unwind`] and route the panic message to whichever
+//! `set_error` `DuckDB` provides for that callback kind, so a bug in extension
+//! code becomes an ordinary SQL error.
 //!
 //! # Macros
 //!
-//! - `scalar_callback!` — wraps a scalar function callback
-//! - `table_scan_callback!` — wraps a table function scan callback
+//! | Macro | Wraps | Reports through |
+//! |-------|-------|-----------------|
+//! | `scalar_callback!` | scalar function execution | `duckdb_scalar_function_set_error` |
+//! | `table_bind_callback!` | table function bind | `duckdb_bind_set_error` |
+//! | `table_init_callback!` | table function init / local init | `duckdb_init_set_error` |
+//! | `table_scan_callback!` | table function scan | `duckdb_function_set_error`, then chunk size 0 |
+//! | `aggregate_update_callback!` | aggregate update | `duckdb_aggregate_function_set_error` |
+//! | `aggregate_combine_callback!` | aggregate combine | `duckdb_aggregate_function_set_error` |
+//! | `aggregate_finalize_callback!` | aggregate finalize | `duckdb_aggregate_function_set_error` |
+//! | `aggregate_destroy_callback!` | aggregate state destructor | *(no error channel — panic is swallowed)* |
+//! | `cast_callback!` | cast function | `duckdb_cast_function_set_error`, returns `false` |
+//! | `replacement_scan_callback!` | replacement scan | `duckdb_replacement_scan_set_error` |
 //!
-//! # Estimated impact
+//! # `panic = "abort"`
 //!
-//! Eliminates ~60 `unsafe extern "C" fn` declarations across typical extensions.
+//! `catch_unwind` cannot catch anything when the crate is built with
+//! `panic = "abort"`, which silently disables everything in this module. Keep
+//! extension crates on `panic = "unwind"` — the quack-rs scaffold generates that.
 //!
 //! # Example: Scalar callback
 //!
@@ -98,19 +111,11 @@ macro_rules! scalar_callback {
         ) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                // Extract a message from the panic payload.
-                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = panic.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "scalar callback panicked".to_string()
-                };
-                // Report the error to DuckDB.
-                if let Ok(c_msg) = ::std::ffi::CString::new(msg) {
-                    unsafe {
-                        ::libduckdb_sys::duckdb_scalar_function_set_error($info, c_msg.as_ptr());
-                    }
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in; `c_msg` outlives the call.
+                unsafe {
+                    ::libduckdb_sys::duckdb_scalar_function_set_error($info, c_msg.as_ptr());
                 }
             }
         }
@@ -162,26 +167,542 @@ macro_rules! table_scan_callback {
         ) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                // Extract a message from the panic payload.
-                let msg = if let Some(s) = panic.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = panic.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "table scan callback panicked".to_string()
-                };
-                // Report the error to DuckDB so users see a meaningful message.
-                if let Ok(c_msg) = ::std::ffi::CString::new(msg) {
-                    unsafe {
-                        ::libduckdb_sys::duckdb_function_set_error($info, c_msg.as_ptr());
-                    }
-                }
-                // Signal end-of-stream by setting size to 0.
-                // SAFETY: output is a valid data chunk provided by DuckDB.
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` and `output` are the pointers DuckDB passed in.
                 unsafe {
+                    ::libduckdb_sys::duckdb_function_set_error($info, c_msg.as_ptr());
+                    // Signal end-of-stream so the scan terminates.
                     ::libduckdb_sys::duckdb_data_chunk_set_size($output, 0);
                 }
             }
         }
     };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` table function **bind** callback.
+///
+/// Emits `unsafe extern "C" fn $name(info: duckdb_bind_info)`. A panic is
+/// reported through `duckdb_bind_set_error`, which fails the query during
+/// planning rather than aborting the process.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::table_bind_callback!(my_bind, |info| {
+///     let bind = unsafe { quack_rs::table::BindInfo::new(info) };
+///     bind.add_result_column("n", quack_rs::types::TypeId::BigInt);
+/// });
+/// ```
+#[macro_export]
+macro_rules! table_bind_callback {
+    ($name:ident, |$info:ident| $body:block) => {
+        /// Table function bind callback (generated by `table_bind_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. `info` is provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_bind_info) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let Err(panic) = result {
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_bind_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` table function **init** callback.
+///
+/// Emits `unsafe extern "C" fn $name(info: duckdb_init_info)`. Use it for both
+/// the global `init` and the per-thread `local_init` callback — they share a
+/// signature. A panic is reported through `duckdb_init_set_error`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::table_init_callback!(my_init, |info| {
+///     let init = unsafe { quack_rs::table::InitInfo::new(info) };
+///     init.set_max_threads(1);
+/// });
+/// ```
+#[macro_export]
+macro_rules! table_init_callback {
+    ($name:ident, |$info:ident| $body:block) => {
+        /// Table function init callback (generated by `table_init_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. `info` is provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_init_info) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let Err(panic) = result {
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_init_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` aggregate **update** callback.
+///
+/// Emits
+/// `unsafe extern "C" fn $name(info: duckdb_function_info, input: duckdb_data_chunk, states: *mut duckdb_aggregate_state)`.
+/// A panic is reported through `duckdb_aggregate_function_set_error`.
+///
+/// Aggregate callbacks run on `DuckDB`'s worker threads, so an unguarded panic
+/// here aborts the process from a thread the user never sees.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::aggregate_update_callback!(my_update, |info, input, states| {
+///     let _ = (input, states);
+/// });
+/// ```
+#[macro_export]
+macro_rules! aggregate_update_callback {
+    ($name:ident, |$info:ident, $input:ident, $states:ident| $body:block) => {
+        /// Aggregate update callback (generated by `aggregate_update_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name(
+            $info: ::libduckdb_sys::duckdb_function_info,
+            $input: ::libduckdb_sys::duckdb_data_chunk,
+            $states: *mut ::libduckdb_sys::duckdb_aggregate_state,
+        ) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let Err(panic) = result {
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_aggregate_function_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` aggregate **combine** callback.
+///
+/// Emits
+/// `unsafe extern "C" fn $name(info: duckdb_function_info, source: *mut duckdb_aggregate_state, target: *mut duckdb_aggregate_state, count: idx_t)`.
+///
+/// # Pitfall L1
+///
+/// `target` states are freshly zero-initialised, so the body must propagate
+/// **every** field of the state, not only the accumulated data. See
+/// [`CombineFn`][crate::aggregate::callbacks::CombineFn].
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::aggregate_combine_callback!(my_combine, |info, source, target, count| {
+///     let _ = (source, target, count);
+/// });
+/// ```
+#[macro_export]
+macro_rules! aggregate_combine_callback {
+    ($name:ident, |$info:ident, $source:ident, $target:ident, $count:ident| $body:block) => {
+        /// Aggregate combine callback (generated by `aggregate_combine_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name(
+            $info: ::libduckdb_sys::duckdb_function_info,
+            $source: *mut ::libduckdb_sys::duckdb_aggregate_state,
+            $target: *mut ::libduckdb_sys::duckdb_aggregate_state,
+            $count: ::libduckdb_sys::idx_t,
+        ) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let Err(panic) = result {
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_aggregate_function_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` aggregate **finalize** callback.
+///
+/// Emits
+/// `unsafe extern "C" fn $name(info: duckdb_function_info, source: *mut duckdb_aggregate_state, result: duckdb_vector, count: idx_t, offset: idx_t)`.
+///
+/// Results are written starting at `offset` in the output vector, not at 0.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::aggregate_finalize_callback!(my_finalize, |info, source, result, count, offset| {
+///     let _ = (source, result, count, offset);
+/// });
+/// ```
+#[macro_export]
+macro_rules! aggregate_finalize_callback {
+    ($name:ident, |$info:ident, $source:ident, $result:ident, $count:ident, $offset:ident| $body:block) => {
+        /// Aggregate finalize callback (generated by `aggregate_finalize_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name(
+            $info: ::libduckdb_sys::duckdb_function_info,
+            $source: *mut ::libduckdb_sys::duckdb_aggregate_state,
+            $result: ::libduckdb_sys::duckdb_vector,
+            $count: ::libduckdb_sys::idx_t,
+            $offset: ::libduckdb_sys::idx_t,
+        ) {
+            let outcome = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let Err(panic) = outcome {
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_aggregate_function_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` aggregate **state destructor**.
+///
+/// Emits `unsafe extern "C" fn $name(states: *mut duckdb_aggregate_state, count: idx_t)`.
+///
+/// This callback receives no `info`, so `DuckDB` offers no way to report an
+/// error from it. A panic is therefore caught and **swallowed**: that leaks
+/// whatever the destructor had not yet freed, which is strictly better than
+/// aborting the database process during query teardown.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::aggregate_destroy_callback!(my_destroy, |states, count| {
+///     let _ = (states, count);
+/// });
+/// ```
+#[macro_export]
+macro_rules! aggregate_destroy_callback {
+    ($name:ident, |$states:ident, $count:ident| $body:block) => {
+        /// Aggregate state destructor (generated by `aggregate_destroy_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name(
+            $states: *mut ::libduckdb_sys::duckdb_aggregate_state,
+            $count: ::libduckdb_sys::idx_t,
+        ) {
+            // DuckDB provides no error channel for the destructor, so the panic
+            // is dropped rather than reported. Leaking beats aborting.
+            let _ = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` **cast** callback.
+///
+/// Emits
+/// `unsafe extern "C" fn $name(info: duckdb_function_info, count: idx_t, input: duckdb_vector, output: duckdb_vector) -> bool`.
+/// The body must evaluate to `bool` — `true` when every row converted.
+///
+/// A panic is reported through `duckdb_cast_function_set_error` and the
+/// generated function returns `false`, which `DuckDB` treats as a failed cast
+/// (and `TRY_CAST` turns into NULL).
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::cast_callback!(my_cast, |info, count, input, output| {
+///     let _ = (count, input, output);
+///     true
+/// });
+/// ```
+#[macro_export]
+macro_rules! cast_callback {
+    ($name:ident, |$info:ident, $count:ident, $input:ident, $output:ident| $body:block) => {
+        /// Cast function callback (generated by `cast_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name(
+            $info: ::libduckdb_sys::duckdb_function_info,
+            $count: ::libduckdb_sys::idx_t,
+            $input: ::libduckdb_sys::duckdb_vector,
+            $output: ::libduckdb_sys::duckdb_vector,
+        ) -> bool {
+            let outcome: ::std::result::Result<bool, _> =
+                ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            match outcome {
+                ::std::result::Result::Ok(ok) => ok,
+                ::std::result::Result::Err(panic) => {
+                    let c_msg = $crate::callback::message_to_c_string(
+                        &$crate::callback::panic_message(&panic),
+                    );
+                    // SAFETY: `info` is the pointer DuckDB passed in.
+                    unsafe {
+                        ::libduckdb_sys::duckdb_cast_function_set_error($info, c_msg.as_ptr());
+                    }
+                    false
+                }
+            }
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` **replacement scan** callback.
+///
+/// Emits
+/// `unsafe extern "C" fn $name(info: duckdb_replacement_scan_info, table_name: *const c_char, data: *mut c_void)`.
+/// A panic is reported through `duckdb_replacement_scan_set_error`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::replacement_scan_callback!(my_scan, |info, table_name, data| {
+///     let _ = (info, table_name, data);
+/// });
+/// ```
+#[macro_export]
+macro_rules! replacement_scan_callback {
+    ($name:ident, |$info:ident, $table_name:ident, $data:ident| $body:block) => {
+        /// Replacement scan callback (generated by `replacement_scan_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name(
+            $info: ::libduckdb_sys::duckdb_replacement_scan_info,
+            $table_name: *const ::std::os::raw::c_char,
+            $data: *mut ::std::os::raw::c_void,
+        ) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let Err(panic) = result {
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_replacement_scan_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Wraps a `COPY ... TO` **bind** callback so a panic becomes a `DuckDB` error.
+///
+/// Requires the `duckdb-1-5` feature: `duckdb_copy_function_bind_set_error`
+/// lives past the stable prefix of `duckdb_ext_api_v1`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "duckdb-1-5")]
+/// quack_rs::copy_bind_callback!(my_bind, |info| {
+///     let _ = info;
+/// });
+/// ```
+#[cfg(feature = "duckdb-1-5")]
+#[macro_export]
+macro_rules! copy_bind_callback {
+    ($name:ident, |$info:ident| $body:block) => {
+        $crate::__copy_callback_impl!(
+            $name,
+            $info,
+            duckdb_copy_function_bind_info,
+            duckdb_copy_function_bind_set_error,
+            $body
+        );
+    };
+}
+
+/// Wraps a `COPY ... TO` **global init** callback so a panic becomes a
+/// `DuckDB` error.
+///
+/// Requires the `duckdb-1-5` feature.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "duckdb-1-5")]
+/// quack_rs::copy_global_init_callback!(my_init, |info| {
+///     let _ = info;
+/// });
+/// ```
+#[cfg(feature = "duckdb-1-5")]
+#[macro_export]
+macro_rules! copy_global_init_callback {
+    ($name:ident, |$info:ident| $body:block) => {
+        $crate::__copy_callback_impl!(
+            $name,
+            $info,
+            duckdb_copy_function_global_init_info,
+            duckdb_copy_function_global_init_set_error,
+            $body
+        );
+    };
+}
+
+/// Wraps a `COPY ... TO` **finalize** callback so a panic becomes a `DuckDB`
+/// error.
+///
+/// Requires the `duckdb-1-5` feature.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "duckdb-1-5")]
+/// quack_rs::copy_finalize_callback!(my_finalize, |info| {
+///     let _ = info;
+/// });
+/// ```
+#[cfg(feature = "duckdb-1-5")]
+#[macro_export]
+macro_rules! copy_finalize_callback {
+    ($name:ident, |$info:ident| $body:block) => {
+        $crate::__copy_callback_impl!(
+            $name,
+            $info,
+            duckdb_copy_function_finalize_info,
+            duckdb_copy_function_finalize_set_error,
+            $body
+        );
+    };
+}
+
+/// Shared body of the single-argument copy-function callback macros.
+///
+/// Not part of the public API: it exists because bind, global init and finalize
+/// differ only in their info type and their `set_error` function.
+#[cfg(feature = "duckdb-1-5")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __copy_callback_impl {
+    ($name:ident, $info:ident, $info_ty:ident, $set_error:ident, $body:block) => {
+        /// Copy function callback (generated by a `copy_*_callback!` macro).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name($info: ::libduckdb_sys::$info_ty) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let ::std::result::Result::Err(panic) = result {
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::$set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Wraps a `COPY ... TO` **sink** callback so a panic becomes a `DuckDB` error.
+///
+/// The sink takes a data chunk as well as its info handle, so it has its own
+/// macro rather than sharing the single-argument implementation.
+///
+/// Requires the `duckdb-1-5` feature.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # #[cfg(feature = "duckdb-1-5")]
+/// quack_rs::copy_sink_callback!(my_sink, |info, chunk| {
+///     let _ = (info, chunk);
+/// });
+/// ```
+#[cfg(feature = "duckdb-1-5")]
+#[macro_export]
+macro_rules! copy_sink_callback {
+    ($name:ident, |$info:ident, $chunk:ident| $body:block) => {
+        /// Copy function sink callback (generated by `copy_sink_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name(
+            $info: ::libduckdb_sys::duckdb_copy_function_sink_info,
+            $chunk: ::libduckdb_sys::duckdb_data_chunk,
+        ) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let ::std::result::Result::Err(panic) = result {
+                let c_msg =
+                    $crate::callback::message_to_c_string(&$crate::callback::panic_message(&panic));
+                // SAFETY: `info` is the pointer DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_copy_function_sink_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Extracts a human-readable message from a `catch_unwind` payload.
+///
+/// Used by every macro in this module. Public because the generated callbacks
+/// expand at the call site and need to reach it.
+///
+/// # Example
+///
+/// ```rust
+/// let payload = std::panic::catch_unwind(|| panic!("boom")).unwrap_err();
+/// assert_eq!(quack_rs::callback::panic_message(&payload), "boom");
+/// ```
+#[must_use]
+pub fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload.downcast_ref::<&str>().map_or_else(
+        || {
+            payload
+                .downcast_ref::<String>()
+                .map_or_else(|| String::from("<non-string panic payload>"), Clone::clone)
+        },
+        |s| (*s).to_string(),
+    )
+}
+
+/// Converts a panic message into a `CString`, replacing any interior NUL.
+///
+/// `CString::new` rejects interior NULs, and a panic message is arbitrary user
+/// text — dropping the diagnostic because it happened to contain a NUL would be
+/// the wrong trade.
+///
+/// # Example
+///
+/// ```rust
+/// let c = quack_rs::callback::message_to_c_string("a\0b");
+/// assert_eq!(c.to_str().unwrap(), "a?b");
+/// ```
+#[must_use]
+pub fn message_to_c_string(message: &str) -> std::ffi::CString {
+    std::ffi::CString::new(message.replace('\0', "?"))
+        .unwrap_or_else(|_| std::ffi::CString::default())
 }

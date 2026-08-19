@@ -455,3 +455,24 @@ impl ScalarFunctionBuilder {
         }
     }
 }
+
+impl core::fmt::Debug for ScalarFunctionBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use crate::debug_repr::Callback;
+        let mut s = f.debug_struct("ScalarFunctionBuilder");
+        s.field("name", &self.name)
+            .field("params", &self.params)
+            .field("logical_params", &self.logical_params.len())
+            .field("return_type", &self.return_type)
+            .field("return_logical", &self.return_logical)
+            .field("function", &Callback::of(&self.function))
+            .field("null_handling", &self.null_handling)
+            .field("extra_info", &Callback::of(&self.extra_info));
+        #[cfg(feature = "duckdb-1-5")]
+        s.field("varargs", &self.varargs)
+            .field("volatile", &self.volatile)
+            .field("bind", &Callback::of(&self.bind))
+            .field("init", &Callback::of(&self.init));
+        s.finish()
+    }
+}

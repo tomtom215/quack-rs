@@ -74,9 +74,17 @@ impl ClientContext {
 
     /// Retrieves a database catalog by name.
     ///
-    /// Pass an empty string to get the default catalog. This function can only
-    /// be called from within an active transaction (e.g. during a registered
-    /// function callback).
+    /// Returns `None` when there is no such catalog — and in two cases that are
+    /// easy to mistake for one:
+    ///
+    /// - **`name` is empty.** `duckdb_client_context_get_catalog` rejects that
+    ///   outright (`strlen(name) == 0` is an explicit early return); it is not
+    ///   a way to ask for "the default". The catalog of an in-memory database
+    ///   is named `memory`; a file database's is the file's stem.
+    /// - **No transaction is active.** `DuckDB` checks
+    ///   `transaction.HasActiveTransaction()` and returns null otherwise, so
+    ///   this works inside a function callback but not on an idle
+    ///   auto-commit connection.
     ///
     /// # Safety
     ///
@@ -95,6 +103,34 @@ impl ClientContext {
     /// Retrieves a configuration option value by name.
     ///
     /// Returns the value as a string, or `None` if the option does not exist.
+    ///
+    /// # Do not use this to probe for a setting that may not exist
+    ///
+    /// `DuckDB` 1.5.5's `duckdb_client_context_get_config_option` reads the
+    /// lookup's scope before checking the lookup succeeded:
+    ///
+    /// ```text
+    /// // src/main/capi/config_options-c.cpp
+    /// switch (ctx.TryGetCurrentSetting(option_name, result).GetScope()) {
+    ///
+    /// // src/include/duckdb/main/setting_info.hpp
+    /// SettingScope GetScope() {
+    ///     D_ASSERT(scope != SettingScope::INVALID);
+    /// ```
+    ///
+    /// A missing setting yields `SettingScope::INVALID`, so `GetScope()` trips
+    /// that assertion. In a release `DuckDB` — what users run — `D_ASSERT`
+    /// compiles out, the function's own `default:` branch handles `INVALID`,
+    /// and this returns `None` as documented. Against a `DuckDB` built **with
+    /// debug assertions**, the process aborts. Verified against 1.5.5.
+    ///
+    /// So this is safe for a setting you registered or know exists, and unsafe
+    /// as an existence check. To ask whether a setting exists, use SQL, which
+    /// has no such path:
+    ///
+    /// ```sql
+    /// SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
+    /// ```
     pub fn config_option(&self, name: &CStr) -> Option<String> {
         let mut scope: duckdb_config_option_scope = 0;
         // SAFETY: self.ctx is valid.
@@ -115,14 +151,16 @@ impl ClientContext {
                 .ok()
                 .map(String::from)
         };
-        // SAFETY: c_str was allocated by `DuckDB` and must be freed.
         if !c_str.is_null() {
+            // SAFETY: `duckdb_get_varchar` returns a `char *` DuckDB allocated
+            // (`duckdb_malloc` + `memcpy`), so this owns it and must free it.
             unsafe {
                 libduckdb_sys::duckdb_free(c_str.cast::<core::ffi::c_void>());
             }
         }
-        // SAFETY: val must be destroyed.
         let mut val_mut = val;
+        // SAFETY: `val` came from `duckdb_client_context_get_config_option`,
+        // which returns an owned `duckdb_value`; it is not used afterwards.
         unsafe {
             duckdb_destroy_value(&raw mut val_mut);
         }
@@ -262,3 +300,5 @@ mod tests {
         unsafe { close_raw_connection(con, db) };
     }
 }
+
+crate::debug_repr::impl_handle_debug!(ClientContext.ctx);

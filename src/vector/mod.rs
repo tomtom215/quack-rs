@@ -18,25 +18,33 @@
 //!   never as `bool`, preventing undefined behaviour.
 //! - **P7**: `duckdb_string_t` format — [`string`] handles both the inline (≤12 bytes)
 //!   and pointer (>12 bytes) cases.
+//! - **Stale child pointers** — [`ListBuilder`] re-fetches the child writer after
+//!   every `reserve`, which reallocates the child vector. See
+//!   [`list_builder`][mod@list_builder].
 
 pub mod complex;
+pub mod list_builder;
 pub mod reader;
 pub mod string;
 pub mod struct_reader;
 pub mod struct_writer;
+pub mod uuid;
 pub mod validity;
 pub mod writer;
 
+pub use list_builder::{ListBuilder, MAX_LIST_CHILD_CAPACITY};
 pub use reader::VectorReader;
 pub use string::{read_duck_blob, read_duck_string, DuckStringView};
 pub use struct_reader::StructReader;
 pub use struct_writer::StructWriter;
+pub use uuid::{uuid_from_storage, uuid_to_storage};
 pub use validity::ValidityBitmap;
 pub use writer::VectorWriter;
 
 /// Returns the default vector size used by `DuckDB` (typically 2048).
 #[mutants::skip]
 pub fn vector_size() -> u64 {
+    // SAFETY: this call takes no arguments and reads a compile-time constant.
     unsafe { libduckdb_sys::duckdb_vector_size() as u64 }
 }
 

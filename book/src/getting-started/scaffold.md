@@ -69,11 +69,14 @@ fn main() {
 |-------|------|-------------|
 | `name` | `String` | Extension name — must match `[lib] name` in Cargo.toml and `description.yml` |
 | `description` | `String` | One-line description for `description.yml` |
-| `version` | `String` | Semver or git hash — validated by `validate_extension_version` |
+| `version` | `String` | The extension's version — validated by `validate_extension_version` |
 | `license` | `String` | SPDX license identifier (e.g., `"MIT"`, `"Apache-2.0"`) |
 | `maintainer` | `String` | Your name or org, listed in `description.yml` |
 | `github_repo` | `String` | `"owner/repo"` format |
 | `excluded_platforms` | `Vec<String>` | Platforms to skip (e.g., `["wasm_mvp", "wasm_eh"]`) |
+| `git_ref` | `String` | `repo.ref` — **a commit hash**, not a branch. Defaults to `REF_PLACEHOLDER` so it cannot be submitted unset |
+| `target_duckdb_version` | `String` | Written as `TARGET_DUCKDB_VERSION` in the Makefile |
+| `use_unstable_c_api` | `bool` | Set when the extension enables `duckdb-1-5` / `duckdb-1-5-3` |
 
 ---
 

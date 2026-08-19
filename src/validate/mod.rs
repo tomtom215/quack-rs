@@ -13,10 +13,12 @@
 //! # What is validated
 //!
 //! - **Extension name**: Must be lowercase alphanumeric with hyphens/underscores only
-//! - **Function name**: Must be lowercase alphanumeric with underscores only (SQL-safe)
-//! - **Semantic versioning**: Extension version must be valid semver or git hash
+//! - **Function name**: Letters, digits and underscores — anything needing quotes in SQL is rejected
+//! - **Semantic versioning**: `validate_semver` for strict semver; extension
+//!   versions are checked far more loosely, because `DuckDB` specifies no format
 //! - **SPDX license**: Must be a recognized SPDX license identifier
-//! - **Platform targets**: Exclusions must name valid `DuckDB` build targets
+//! - **Platform targets**: Exclusions must name real `DuckDB` build targets,
+//!   kept in sync with `extension-ci-tools`' distribution matrix by CI
 //! - **Platform exclusion list**: Semicolon-separated string from `description.yml`
 //! - **Cargo.toml**: Release profile settings for loadable extensions
 //!
@@ -33,7 +35,9 @@
 //! assert!(validate_extension_name("MyExt").is_err()); // uppercase not allowed
 //!
 //! assert!(validate_function_name("word_count").is_ok());
-//! assert!(validate_function_name("word-count").is_err()); // hyphens not allowed in SQL identifiers
+//! // Mixed case is fine — DuckDB ships `formatReadableSize`.
+//! assert!(validate_function_name("wordCount").is_ok());
+//! assert!(validate_function_name("word-count").is_err()); // would need quoting in SQL
 //!
 //! assert!(validate_semver("1.0.0").is_ok());
 //! assert!(validate_semver("not-a-version").is_err());
@@ -64,7 +68,10 @@ pub mod spdx;
 
 pub use extension_name::validate_extension_name;
 pub use function_name::validate_function_name;
-pub use platform::{validate_excluded_platforms, validate_platform, DUCKDB_PLATFORMS};
+pub use platform::{
+    is_opt_in_platform, validate_excluded_platforms, validate_platform, DUCKDB_CI_PLATFORMS,
+    DUCKDB_OPT_IN_PLATFORMS, DUCKDB_PLATFORMS, DUCKDB_PLATFORM_GROUPS,
+};
 pub use release_profile::{validate_release_profile, ReleaseProfileCheck};
 pub use semver::{validate_extension_version, validate_semver};
 pub use spdx::validate_spdx_license;

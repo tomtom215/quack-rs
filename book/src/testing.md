@@ -155,7 +155,7 @@ Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 ```toml
 # Zero-config but slow: compile libduckdb from C++ source (~5-10 min cold).
 [dev-dependencies]
-quack-rs = { version = "0.13", features = ["bundled-test"] }
+quack-rs = { version = "0.16", features = ["bundled-test"] }
 ```
 
 ```toml
@@ -164,7 +164,7 @@ quack-rs = { version = "0.13", features = ["bundled-test"] }
 # under target/); or set DUCKDB_LIB_DIR=/path/to/libduckdb if you already have
 # one extracted (requires libduckdb-sys >= 1.10503 for header auto-discovery).
 [dev-dependencies]
-quack-rs = { version = "0.13", features = ["bundled-test-prebuilt"] }
+quack-rs = { version = "0.16", features = ["bundled-test-prebuilt"] }
 ```
 
 Both keep `duckdb` out of a plain `cargo test` and out of your published
@@ -197,9 +197,67 @@ fn test_clamp_macro_sql() {
 }
 ```
 
-> **Note**: `InMemoryDb` cannot test your FFI callbacks (`VectorReader`,
-> `VectorWriter`) because those still route through the `loadable-extension`
-> dispatch. Use `InMemoryDb` for SQL logic and mocks for callback logic.
+### Testing your FFI callbacks for real
+
+Opening an `InMemoryDb` also populates the `loadable-extension` dispatch table —
+for the whole process, not just that handle. After that the entire C API works,
+so you can register a real function and call it from SQL inside `cargo test`:
+
+```rust,ignore
+use libduckdb_sys::{duckdb_connection, DuckDBSuccess};
+use quack_rs::data_chunk::DataChunk;
+use quack_rs::query::query;
+use quack_rs::scalar::ScalarFunctionBuilder;
+use quack_rs::testing::InMemoryDb;
+use quack_rs::types::TypeId;
+use quack_rs::vector::VectorWriter;
+
+quack_rs::scalar_callback!(triple_it, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, reader.read_i64(row) * 3) };
+    }
+});
+
+#[test]
+fn triple_it_works() {
+    // 1. Initialise the dispatch table.
+    let _dispatch = InMemoryDb::open().unwrap();
+
+    // 2. Open a raw connection.
+    let mut db = std::ptr::null_mut();
+    let mut con: duckdb_connection = std::ptr::null_mut();
+    unsafe {
+        assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), DuckDBSuccess);
+        assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), DuckDBSuccess);
+    }
+
+    // 3. Register with the usual builder.
+    unsafe {
+        ScalarFunctionBuilder::try_new("triple_it").unwrap()
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .function(triple_it)
+            .register(con)
+            .unwrap();
+    }
+
+    // 4. Run SQL and assert on the answer.
+    let mut result = unsafe { query(con, "SELECT triple_it(14)") }.unwrap();
+    let chunk = result.next_chunk().unwrap();
+    assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 42);
+}
+```
+
+This is the highest-value coverage available for an extension: it exercises the
+builder, `DuckDB`'s planner, your `extern "C"` callback, and the vector
+accessors' pointer arithmetic in one go. `tests/ffi_roundtrip.rs` in the quack-rs
+repository does this for every vector type.
+
+The mocks are still the right tool for unit-testing callback *logic* without a
+database, and are the only option when the `bundled-test` features are off.
 
 ---
 
@@ -524,7 +582,7 @@ harness properties.
 
 ```toml
 [dev-dependencies]
-quack-rs = { version = "0.13", features = [] }
+quack-rs = { version = "0.16", features = [] }
 proptest = "1"
 ```
 

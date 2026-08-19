@@ -470,3 +470,31 @@ impl OverloadBuilder {
         self
     }
 }
+
+impl core::fmt::Debug for AggregateFunctionSetBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AggregateFunctionSetBuilder")
+            .field("name", &self.name)
+            .field("return_type", &self.return_type)
+            .field("return_logical", &self.return_logical)
+            .field("overloads", &self.overloads.len())
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for OverloadBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use crate::debug_repr::Callback;
+        f.debug_struct("OverloadBuilder")
+            .field("params", &self.params)
+            .field("logical_params", &self.logical_params.len())
+            .field("state_size", &Callback::of(&self.state_size))
+            .field("init", &Callback::of(&self.init))
+            .field("update", &Callback::of(&self.update))
+            .field("combine", &Callback::of(&self.combine))
+            .field("finalize", &Callback::of(&self.finalize))
+            .field("destructor", &Callback::of(&self.destructor))
+            .field("null_handling", &self.null_handling)
+            .finish()
+    }
+}

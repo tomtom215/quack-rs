@@ -187,7 +187,12 @@ impl CopyGlobalInitInfo {
         unsafe { duckdb_copy_function_global_init_get_extra_info(self.info) }
     }
 
-    /// Returns the file path for the copy operation.
+    /// Returns the destination path for the copy operation.
+    ///
+    /// The returned `String` is a copy. `DuckDB` keeps ownership of its own
+    /// buffer — `duckdb_copy_function_global_init_get_file_path` returns
+    /// `info_ref.file_path.c_str()`, the interior pointer of a live C++
+    /// `std::string`, so it must **not** be freed. Doing so corrupts the heap.
     ///
     /// # Safety
     ///
@@ -196,22 +201,18 @@ impl CopyGlobalInitInfo {
     pub unsafe fn get_file_path(&self) -> String {
         // SAFETY: self.info is valid per constructor contract.
         let c_str = unsafe { duckdb_copy_function_global_init_get_file_path(self.info) };
-        let result = if c_str.is_null() {
-            String::new()
-        } else {
-            // SAFETY: c_str is a valid null-terminated string from DuckDB.
-            unsafe { CStr::from_ptr(c_str) }
-                .to_str()
-                .unwrap_or("")
-                .to_owned()
-        };
-        // SAFETY: c_str was allocated by DuckDB and must be freed.
-        if !c_str.is_null() {
-            unsafe {
-                libduckdb_sys::duckdb_free(c_str as *mut c_void);
-            }
+        if c_str.is_null() {
+            return String::new();
         }
-        result
+        // SAFETY: c_str is a valid NUL-terminated string that DuckDB owns and
+        // keeps alive for the duration of this callback. It is copied here and
+        // deliberately not freed: unlike the `char *` returns elsewhere in the
+        // C API (which `strdup` or `duckdb_malloc`), this one is `const char *`
+        // and borrowed.
+        unsafe { CStr::from_ptr(c_str) }
+            .to_str()
+            .unwrap_or("")
+            .to_owned()
     }
 
     /// Sets the global state pointer and its destructor.
@@ -437,6 +438,13 @@ impl CopyFinalizeInfo {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+crate::debug_repr::impl_handle_debug!(
+    CopyBindInfo.info,
+    CopyGlobalInitInfo.info,
+    CopySinkInfo.info,
+    CopyFinalizeInfo.info
+);
 
 #[cfg(test)]
 mod tests {

@@ -388,6 +388,11 @@ impl ScalarInitInfo {
     }
 }
 
+crate::debug_repr::impl_handle_debug!(ScalarFunctionInfo.info);
+
+#[cfg(feature = "duckdb-1-5")]
+crate::debug_repr::impl_handle_debug!(ScalarBindInfo.info, ScalarInitInfo.info);
+
 #[cfg(test)]
 mod tests {
     use super::*;

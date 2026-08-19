@@ -35,13 +35,33 @@ use libduckdb_sys::{duckdb_data_chunk, duckdb_data_chunk_set_size, idx_t};
 
 use crate::vector::{StructWriter, VectorWriter};
 
-/// The default maximum number of rows per chunk in `DuckDB`.
-const STANDARD_VECTOR_SIZE: usize = 2048;
+/// `DuckDB`'s compile-time default vector size.
+///
+/// This is only a fallback for the (unreachable in practice) case where
+/// `duckdb_vector_size()` reports `0`. **Never hardcode this value** — `DuckDB`
+/// can be built with `-DSTANDARD_VECTOR_SIZE=<n>` and its `duckdb.h` documents
+/// `duckdb_vector_size()` as the authoritative "amount of tuples that will fit
+/// into a data chunk". Writing past the real capacity is a heap overflow.
+pub const DEFAULT_STANDARD_VECTOR_SIZE: usize = 2048;
+
+/// Queries the running `DuckDB` for its actual vector size.
+///
+/// Falls back to [`DEFAULT_STANDARD_VECTOR_SIZE`] only if the engine reports a
+/// nonsensical `0`.
+fn runtime_vector_size() -> usize {
+    let size = usize::try_from(crate::vector::vector_size()).unwrap_or(0);
+    if size == 0 {
+        DEFAULT_STANDARD_VECTOR_SIZE
+    } else {
+        size
+    }
+}
 
 /// A row-tracking writer for a `DuckDB` output data chunk.
 ///
 /// Tracks the number of rows written via [`next_row`][Self::next_row] and
 /// automatically calls `duckdb_data_chunk_set_size` on drop.
+#[derive(Debug)]
 pub struct ChunkWriter {
     raw: duckdb_data_chunk,
     row_count: usize,
@@ -51,19 +71,23 @@ pub struct ChunkWriter {
 impl ChunkWriter {
     /// Creates a new `ChunkWriter` for the given output data chunk.
     ///
-    /// The capacity defaults to 2048 (the standard `DuckDB` vector size).
+    /// The capacity is read from `duckdb_vector_size()`, so it tracks the
+    /// running engine even when `DuckDB` was built with a non-default
+    /// `STANDARD_VECTOR_SIZE`. Do not assume 2048.
     ///
     /// # Safety
     ///
-    /// `chunk` must be a valid, writable `duckdb_data_chunk` obtained from a
-    /// `DuckDB` table function scan callback.
+    /// - `chunk` must be a valid, writable `duckdb_data_chunk` obtained from a
+    ///   `DuckDB` table function scan callback.
+    /// - The `DuckDB` C API dispatch table must be initialised (it always is
+    ///   inside a callback).
     #[inline]
     #[must_use]
-    pub const unsafe fn new(chunk: duckdb_data_chunk) -> Self {
+    pub unsafe fn new(chunk: duckdb_data_chunk) -> Self {
         Self {
             raw: chunk,
             row_count: 0,
-            capacity: STANDARD_VECTOR_SIZE,
+            capacity: runtime_vector_size(),
         }
     }
 
@@ -121,6 +145,7 @@ impl ChunkWriter {
     #[inline]
     #[must_use]
     pub fn column_count(&self) -> usize {
+        // SAFETY: `self.raw` is a valid data chunk for this wrapper's lifetime.
         usize::try_from(unsafe { libduckdb_sys::duckdb_data_chunk_get_column_count(self.raw) })
             .unwrap_or(0)
     }
@@ -222,6 +247,14 @@ mod tests {
         assert_eq!(cw.row_count(), 3);
         // Forget to avoid calling Drop with a null pointer in FFI.
         std::mem::forget(cw);
+    }
+
+    #[test]
+    fn default_vector_size_constant_matches_duckdb_default() {
+        // DuckDB's `DEFAULT_STANDARD_VECTOR_SIZE` in
+        // `duckdb/common/vector_size.hpp`. This is a fallback only — `new()`
+        // asks the engine.
+        assert_eq!(super::DEFAULT_STANDARD_VECTOR_SIZE, 2048);
     }
 
     #[test]

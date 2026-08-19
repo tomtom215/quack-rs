@@ -79,3 +79,5 @@ impl AggregateFunctionInfo {
         self.info
     }
 }
+
+crate::debug_repr::impl_handle_debug!(AggregateFunctionInfo.info);

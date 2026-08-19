@@ -371,14 +371,13 @@ fn vector_reader_boolean_as_u8_pattern() {
 }
 
 #[test]
-fn vector_writer_size_is_two_pointers() {
+fn vector_writer_holds_vector_data_and_cached_validity() {
     use quack_rs::vector::VectorWriter;
-
-    // VectorWriter contains exactly two pointer-sized fields
-    assert_eq!(
-        std::mem::size_of::<VectorWriter>(),
-        2 * std::mem::size_of::<usize>()
-    );
+    use std::mem::size_of;
+    // vector handle + cached data pointer + cached validity pointer. The
+    // validity pointer is what turns "two FFI calls per NULL" into "two per
+    // vector"; see `VectorWriter::set_null`.
+    assert_eq!(size_of::<VectorWriter>(), 3 * size_of::<usize>());
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +395,7 @@ fn duck_string_view_inline_format() {
     bytes[0..4].copy_from_slice(&u32::try_from(s.len()).unwrap_or(u32::MAX).to_le_bytes());
     bytes[4..4 + s.len()].copy_from_slice(s);
 
-    let view = DuckStringView::from_bytes(&bytes);
+    let view = DuckStringView::inline_from_bytes(&bytes).expect("inline value");
     assert_eq!(view.len(), 5);
     assert!(!view.is_empty());
     assert_eq!(view.as_str(), Some("hello"));
@@ -407,7 +406,7 @@ fn duck_string_view_empty_string() {
     use quack_rs::vector::DuckStringView;
 
     let bytes = [0u8; 16]; // len = 0
-    let view = DuckStringView::from_bytes(&bytes);
+    let view = DuckStringView::inline_from_bytes(&bytes).expect("inline value");
     assert_eq!(view.len(), 0);
     assert!(view.is_empty());
 }
@@ -456,17 +455,20 @@ fn sql_macro_table_to_sql() {
 
 #[test]
 fn sql_macro_invalid_name_rejected() {
-    assert!(SqlMacro::scalar("MyMacro", &[], "1").is_err());
     assert!(SqlMacro::scalar("my-macro", &[], "1").is_err());
     assert!(SqlMacro::scalar("", &[], "1").is_err());
     assert!(SqlMacro::scalar("1func", &[], "1").is_err());
+    assert!(SqlMacro::scalar("my macro", &[], "1").is_err());
+    // Mixed case is legal — DuckDB ships `formatReadableSize`.
+    assert!(SqlMacro::scalar("MyMacro", &[], "1").is_ok());
 }
 
 #[test]
 fn sql_macro_invalid_param_rejected() {
-    assert!(SqlMacro::scalar("f", &["BadParam"], "1").is_err());
     assert!(SqlMacro::scalar("f", &["a-b"], "1").is_err());
     assert!(SqlMacro::scalar("f", &[""], "1").is_err());
+    assert!(SqlMacro::scalar("f", &["a b"], "1").is_err());
+    assert!(SqlMacro::scalar("f", &["MixedCase"], "1").is_ok());
 }
 
 #[test]
@@ -505,8 +507,8 @@ fn sql_macro_clone_produces_equal_sql() {
 
 #[test]
 fn sql_macro_error_mentions_bad_param_name() {
-    let err = SqlMacro::scalar("f", &["Bad"], "1").unwrap_err();
-    assert!(err.as_str().contains("Bad"));
+    let err = SqlMacro::scalar("f", &["bad param"], "1").unwrap_err();
+    assert!(err.as_str().contains("bad param"));
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +533,7 @@ fn scaffold_generated_code_compiles() {
         maintainer: "CI".to_string(),
         github_repo: "test/test-ext".to_string(),
         excluded_platforms: vec![],
+        ..ScaffoldConfig::default()
     };
 
     let files = generate_scaffold(&config).unwrap();
@@ -544,10 +547,21 @@ fn scaffold_generated_code_compiles() {
     let tmp = tmp.path().to_path_buf();
     fs::create_dir_all(tmp.join("src")).unwrap();
 
-    // The scaffold Cargo.toml references `quack-rs = "0.13"` from crates.io.
-    // Replace it with a path dependency pointing to this workspace root so
-    // `cargo check` uses the local (possibly-modified) crate.
+    // The scaffold's Cargo.toml depends on quack-rs from crates.io, at whatever
+    // version this crate currently is. Repoint it at this working copy so
+    // `cargo check` tests the code in front of us — and so a version bump does
+    // not fail this test in the window before that version is published.
+    //
+    // This was previously a `.replace()` of the literal `version = "0.13"`,
+    // which stopped matching the moment the crate moved past 0.13. It then
+    // silently did nothing, and the test spent several releases checking the
+    // last *published* quack-rs instead of the working copy. The assertion
+    // below makes that failure mode impossible.
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path_dep = format!(
+        "quack-rs = {{ path = \"{}\" }}",
+        workspace_root.display().to_string().replace('\\', "/")
+    );
 
     for f in &files {
         let dest = tmp.join(&f.path);
@@ -556,13 +570,23 @@ fn scaffold_generated_code_compiles() {
         }
 
         if f.path == "Cargo.toml" {
-            // Rewrite quack-rs dep to use local path
-            let patched = f.content.replace(
-                r#"quack-rs = { version = "0.13" }"#,
-                &format!(
-                    "quack-rs = {{ path = \"{}\" }}",
-                    workspace_root.display().to_string().replace('\\', "/")
-                ),
+            let patched: String = f
+                .content
+                .lines()
+                .map(|line| {
+                    if line.trim_start().starts_with("quack-rs = {") {
+                        path_dep.as_str()
+                    } else {
+                        line
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                patched.contains(&path_dep),
+                "the quack-rs dependency line was not rewritten to a path dep; \
+                 this test would have checked the published crate instead of \
+                 this working copy"
             );
             fs::write(&dest, patched).unwrap();
         } else {

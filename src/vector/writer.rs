@@ -40,9 +40,18 @@ use libduckdb_sys::{
 /// //     }
 /// // }
 /// ```
+#[derive(Debug)]
 pub struct VectorWriter {
     vector: duckdb_vector,
     data: *mut u8,
+    /// Lazily-resolved validity bitmap.
+    ///
+    /// `duckdb_vector_ensure_validity_writable` allocates the mask on first use
+    /// and is a no-op afterwards, and the resulting pointer is stable for the
+    /// vector's lifetime. Caching it turns "two FFI calls per NULL" into "two
+    /// FFI calls per vector", which matters when a column is mostly NULL: a full
+    /// 2048-row vector went from 4096 calls to 2.
+    validity: *mut u64,
 }
 
 impl VectorWriter {
@@ -55,7 +64,11 @@ impl VectorWriter {
     pub unsafe fn new(vector: duckdb_vector) -> Self {
         // SAFETY: Caller guarantees vector is valid.
         let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
-        Self { vector, data }
+        Self {
+            vector,
+            data,
+            validity: core::ptr::null_mut(),
+        }
     }
 
     /// Creates a `VectorWriter` directly from a raw `duckdb_vector` handle.
@@ -72,7 +85,11 @@ impl VectorWriter {
     pub unsafe fn from_vector(vector: duckdb_vector) -> Self {
         // SAFETY: caller guarantees vector is valid.
         let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
-        Self { vector, data }
+        Self {
+            vector,
+            data,
+            validity: core::ptr::null_mut(),
+        }
     }
 
     /// Writes an `i8` (TINYINT) value at row `idx`.
@@ -345,17 +362,24 @@ impl VectorWriter {
 
     /// Writes a `UUID` value at row `idx`.
     ///
-    /// `DuckDB` stores UUID as a HUGEINT (128-bit integer). This is a semantic
-    /// alias for [`write_i128`][Self::write_i128].
+    /// Writes `bits` — the UUID's **textual** 128 bits, as every Rust `Uuid`
+    /// type holds them — at row `idx`.
+    ///
+    /// A `UUID` column is physically a `HUGEINT`, but `DuckDB` stores it with
+    /// the top bit flipped so that signed integer ordering matches UUID string
+    /// ordering. This applies that flip, so the value you pass is the value the
+    /// column renders. Use [`write_i128`][Self::write_i128] to write the raw
+    /// storage instead, and [`uuid_to_storage`][crate::vector::uuid_to_storage]
+    /// to convert between the two.
     ///
     /// # Safety
     ///
     /// - `idx` must be within the vector's capacity.
     /// - The vector must have `UUID` type.
     #[inline]
-    pub const unsafe fn write_uuid(&mut self, idx: usize, value: i128) {
-        // SAFETY: UUID is stored as HUGEINT (i128).
-        unsafe { self.write_i128(idx, value) };
+    pub const unsafe fn write_uuid(&mut self, idx: usize, bits: u128) {
+        // SAFETY: UUID is stored as HUGEINT, with DuckDB's top-bit flip applied.
+        unsafe { self.write_i128(idx, crate::vector::uuid::uuid_to_storage(bits)) };
     }
 
     /// Writes a VARCHAR string value at row `idx`.
@@ -373,6 +397,128 @@ impl VectorWriter {
         unsafe { self.write_varchar(idx, value) };
     }
 
+    /// Writes a `u128` (UHUGEINT) value at row `idx`.
+    ///
+    /// `DuckDB` stores UHUGEINT as `{ lower: u64, upper: u64 }` in little-endian
+    /// layout, totalling 16 bytes per value.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `UHUGEINT` type.
+    #[inline]
+    pub const unsafe fn write_u128(&mut self, idx: usize, value: u128) {
+        // SAFETY: UHUGEINT = { lower: u64, upper: u64 } = 16 bytes.
+        let base = unsafe { self.data.add(idx * 16) };
+        #[allow(clippy::cast_possible_truncation)]
+        let lower = value as u64;
+        #[allow(clippy::cast_possible_truncation)]
+        let upper = (value >> 64) as u64;
+        unsafe {
+            core::ptr::write_unaligned(base.cast::<u64>(), lower);
+            core::ptr::write_unaligned(base.add(8).cast::<u64>(), upper);
+        }
+    }
+
+    /// Writes a `TIMESTAMP WITH TIME ZONE` value at row `idx`, as microseconds
+    /// since the Unix epoch in UTC.
+    ///
+    /// `TIMESTAMPTZ` shares `TIMESTAMP`'s 8-byte `i64` storage; only the logical
+    /// type differs.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `TIMESTAMPTZ` type.
+    #[inline]
+    pub const unsafe fn write_timestamp_tz(&mut self, idx: usize, micros_since_epoch: i64) {
+        // SAFETY: TIMESTAMPTZ is stored as i64 microseconds.
+        unsafe { self.write_i64(idx, micros_since_epoch) };
+    }
+
+    /// Writes a `TIMESTAMP_S` value at row `idx`, as seconds since the epoch.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `TIMESTAMP_S` type.
+    #[inline]
+    pub const unsafe fn write_timestamp_s(&mut self, idx: usize, seconds_since_epoch: i64) {
+        // SAFETY: TIMESTAMP_S is stored as i64 seconds.
+        unsafe { self.write_i64(idx, seconds_since_epoch) };
+    }
+
+    /// Writes a `TIMESTAMP_MS` value at row `idx`, as milliseconds since the
+    /// epoch.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `TIMESTAMP_MS` type.
+    #[inline]
+    pub const unsafe fn write_timestamp_ms(&mut self, idx: usize, millis_since_epoch: i64) {
+        // SAFETY: TIMESTAMP_MS is stored as i64 milliseconds.
+        unsafe { self.write_i64(idx, millis_since_epoch) };
+    }
+
+    /// Writes a `TIMESTAMP_NS` value at row `idx`, as nanoseconds since the
+    /// epoch.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `TIMESTAMP_NS` type.
+    #[inline]
+    pub const unsafe fn write_timestamp_ns(&mut self, idx: usize, nanos_since_epoch: i64) {
+        // SAFETY: TIMESTAMP_NS is stored as i64 nanoseconds.
+        unsafe { self.write_i64(idx, nanos_since_epoch) };
+    }
+
+    /// Writes a `TIME WITH TIME ZONE` value at row `idx`.
+    ///
+    /// `bits` is `DuckDB`'s packed representation; build one with
+    /// [`datetime::time_tz_bits`][crate::datetime::time_tz_bits] rather than
+    /// assembling it by hand.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `TIMETZ` type.
+    #[inline]
+    pub const unsafe fn write_time_tz(&mut self, idx: usize, bits: u64) {
+        // SAFETY: TIMETZ is stored as a 64-bit packed value.
+        unsafe { self.write_u64(idx, bits) };
+    }
+
+    /// Writes a `DECIMAL` value at row `idx` from its unscaled representation.
+    ///
+    /// `DuckDB` stores a `DECIMAL` in the narrowest integer that fits its
+    /// declared width — `i16` up to 4 digits, `i32` up to 9, `i64` up to 18, and
+    /// `i128` beyond — so the width must match the column's type. Get it from
+    /// [`LogicalType::decimal_width`][crate::types::LogicalType::decimal_width].
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `DECIMAL` type with exactly this `width`.
+    #[inline]
+    pub const unsafe fn write_decimal(&mut self, idx: usize, width: u8, unscaled: i128) {
+        // SAFETY: the caller guarantees `width` matches the column's declared
+        // width, which fixes the physical storage type.
+        unsafe {
+            #[allow(clippy::cast_possible_truncation)]
+            if width <= 4 {
+                self.write_i16(idx, unscaled as i16);
+            } else if width <= 9 {
+                self.write_i32(idx, unscaled as i32);
+            } else if width <= 18 {
+                self.write_i64(idx, unscaled as i64);
+            } else {
+                self.write_i128(idx, unscaled);
+            }
+        }
+    }
+
     /// Marks row `idx` as NULL in the output vector.
     ///
     /// # Pitfall L4: `ensure_validity_writable`
@@ -386,16 +532,53 @@ impl VectorWriter {
     /// - `idx` must be within the vector's capacity.
     pub unsafe fn set_null(&mut self, idx: usize) {
         // SAFETY: self.vector is valid per constructor's contract.
-        // PITFALL L4: must call ensure_validity_writable before get_validity for NULL output.
-        unsafe {
-            duckdb_vector_ensure_validity_writable(self.vector);
-        }
-        // SAFETY: ensure_validity_writable allocates the bitmap; it is now safe to read.
-        let validity = unsafe { duckdb_vector_get_validity(self.vector) };
+        let validity = unsafe { self.writable_validity() };
         // SAFETY: validity is now initialized and idx is in bounds per caller's contract.
         unsafe {
             duckdb_validity_set_row_invalid(validity, idx as idx_t);
         }
+    }
+
+    /// Marks every row in `range` as NULL.
+    ///
+    /// Equivalent to calling [`set_null`][Self::set_null] for each index, but
+    /// resolves the validity bitmap once.
+    ///
+    /// # Safety
+    ///
+    /// Every index in `range` must be within the vector's capacity.
+    pub unsafe fn set_null_range(&mut self, range: core::ops::Range<usize>) {
+        if range.is_empty() {
+            return;
+        }
+        // SAFETY: self.vector is valid per constructor's contract.
+        let validity = unsafe { self.writable_validity() };
+        for idx in range {
+            // SAFETY: idx is in bounds per caller's contract.
+            unsafe { duckdb_validity_set_row_invalid(validity, idx as idx_t) };
+        }
+    }
+
+    /// Resolves (once) and returns the writable validity bitmap pointer.
+    ///
+    /// # Pitfall L4: `ensure_validity_writable`
+    ///
+    /// `duckdb_vector_get_validity` returns an unusable pointer until
+    /// `duckdb_vector_ensure_validity_writable` has allocated the mask. This
+    /// does both, then caches the result — `EnsureWritable` is a no-op after the
+    /// first call and the pointer is stable for the vector's lifetime.
+    ///
+    /// # Safety
+    ///
+    /// `self.vector` must still be a valid, flat, writable vector.
+    unsafe fn writable_validity(&mut self) -> *mut u64 {
+        if self.validity.is_null() {
+            // SAFETY: self.vector is valid per constructor's contract.
+            unsafe { duckdb_vector_ensure_validity_writable(self.vector) };
+            // SAFETY: the mask was just allocated, so the pointer is usable.
+            self.validity = unsafe { duckdb_vector_get_validity(self.vector) };
+        }
+        self.validity
     }
 
     /// Marks row `idx` as valid (non-NULL) in the output vector.
@@ -411,10 +594,7 @@ impl VectorWriter {
     /// - `idx` must be within the vector's capacity.
     pub unsafe fn set_valid(&mut self, idx: usize) {
         // SAFETY: self.vector is valid per constructor's contract.
-        unsafe {
-            duckdb_vector_ensure_validity_writable(self.vector);
-        }
-        let validity = unsafe { duckdb_vector_get_validity(self.vector) };
+        let validity = unsafe { self.writable_validity() };
         // SAFETY: validity is now initialized and idx is in bounds per caller's contract.
         unsafe {
             duckdb_validity_set_row_valid(validity, idx as idx_t);
@@ -439,7 +619,7 @@ mod tests {
     fn size_of_vector_writer() {
         use super::VectorWriter;
         use std::mem::size_of;
-        // VectorWriter contains a pointer + a pointer = 2 * pointer size
-        assert_eq!(size_of::<VectorWriter>(), 2 * size_of::<usize>());
+        // vector + data + cached validity pointer
+        assert_eq!(size_of::<VectorWriter>(), 3 * size_of::<usize>());
     }
 }

@@ -44,6 +44,7 @@ use libduckdb_sys::{
 ///
 /// The reader borrows from the data chunk. Do not call `duckdb_destroy_data_chunk`
 /// while a `VectorReader` that references it is live.
+#[derive(Debug)]
 pub struct VectorReader {
     data: *const u8,
     validity: *mut u64,
@@ -273,6 +274,132 @@ impl VectorReader {
         result
     }
 
+    /// Reads a `u128` (UHUGEINT) value at row `idx`.
+    ///
+    /// `DuckDB` stores UHUGEINT as `{ lower: u64, upper: u64 }` in little-endian
+    /// layout, totalling 16 bytes per value.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `UHUGEINT` data.
+    #[inline]
+    pub const unsafe fn read_u128(&self, idx: usize) -> u128 {
+        // SAFETY: UHUGEINT = { lower: u64, upper: u64 } = 16 bytes.
+        let base = unsafe { self.data.add(idx * 16) };
+        let lower = unsafe { core::ptr::read_unaligned(base.cast::<u64>()) };
+        let upper = unsafe { core::ptr::read_unaligned(base.add(8).cast::<u64>()) };
+        ((upper as u128) << 64) | (lower as u128)
+    }
+
+    /// Reads a `TIMESTAMP WITH TIME ZONE` value at row `idx`, as microseconds
+    /// since the Unix epoch in UTC.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `TIMESTAMPTZ` data.
+    #[inline]
+    pub const unsafe fn read_timestamp_tz(&self, idx: usize) -> i64 {
+        // SAFETY: TIMESTAMPTZ shares TIMESTAMP's i64 storage.
+        unsafe { self.read_i64(idx) }
+    }
+
+    /// Reads a `TIMESTAMP_S` value at row `idx`, as seconds since the epoch.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `TIMESTAMP_S` data.
+    #[inline]
+    pub const unsafe fn read_timestamp_s(&self, idx: usize) -> i64 {
+        // SAFETY: TIMESTAMP_S is stored as i64 seconds.
+        unsafe { self.read_i64(idx) }
+    }
+
+    /// Reads a `TIMESTAMP_MS` value at row `idx`, as milliseconds since the
+    /// epoch.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `TIMESTAMP_MS` data.
+    #[inline]
+    pub const unsafe fn read_timestamp_ms(&self, idx: usize) -> i64 {
+        // SAFETY: TIMESTAMP_MS is stored as i64 milliseconds.
+        unsafe { self.read_i64(idx) }
+    }
+
+    /// Reads a `TIMESTAMP_NS` value at row `idx`, as nanoseconds since the
+    /// epoch.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `TIMESTAMP_NS` data.
+    #[inline]
+    pub const unsafe fn read_timestamp_ns(&self, idx: usize) -> i64 {
+        // SAFETY: TIMESTAMP_NS is stored as i64 nanoseconds.
+        unsafe { self.read_i64(idx) }
+    }
+
+    /// Reads a `TIME WITH TIME ZONE` value at row `idx` as `DuckDB`'s packed
+    /// 64-bit representation.
+    ///
+    /// Decode it with
+    /// [`datetime::time_tz_from_bits`][crate::datetime::time_tz_from_bits].
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `TIMETZ` data.
+    #[inline]
+    pub const unsafe fn read_time_tz(&self, idx: usize) -> u64 {
+        // SAFETY: TIMETZ is stored as a 64-bit packed value.
+        unsafe { self.read_u64(idx) }
+    }
+
+    /// Reads a `DECIMAL` value at row `idx` as its unscaled integer.
+    ///
+    /// `DuckDB` stores a `DECIMAL` in the narrowest integer that fits its
+    /// declared width — `i16` up to 4 digits, `i32` up to 9, `i64` up to 18, and
+    /// `i128` up to 38 — so `width` must be the column's declared width. Get it
+    /// from [`LogicalType::decimal_width`][crate::types::LogicalType::decimal_width].
+    ///
+    /// The represented number is `result / 10^scale`.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `DECIMAL` data with exactly this `width`.
+    #[inline]
+    pub const unsafe fn read_decimal(&self, idx: usize, width: u8) -> i128 {
+        // SAFETY: the caller guarantees `width` matches the column's declared
+        // width, which fixes the physical storage type.
+        unsafe {
+            if width <= 4 {
+                self.read_i16(idx) as i128
+            } else if width <= 9 {
+                self.read_i32(idx) as i128
+            } else if width <= 18 {
+                self.read_i64(idx) as i128
+            } else {
+                self.read_i128(idx)
+            }
+        }
+    }
+
+    /// Returns `true` if `idx` addresses a row of this vector.
+    ///
+    /// Every `read_*` method requires `idx < row_count()`; this is the check to
+    /// pair with them when the index comes from somewhere other than a
+    /// `0..row_count()` loop.
+    #[must_use]
+    #[inline]
+    pub const fn contains(&self, idx: usize) -> bool {
+        idx < self.row_count
+    }
+
     /// Reads a VARCHAR value at row `idx`.
     ///
     /// Returns an empty string if the data is not valid UTF-8 or if the internal
@@ -314,17 +441,24 @@ impl VectorReader {
 
     /// Reads a `UUID` value at row `idx` as an `i128`.
     ///
-    /// `DuckDB` stores UUID as a HUGEINT (128-bit integer). This is a semantic
-    /// alias for [`read_i128`][Self::read_i128].
+    /// Reads the UUID's **textual** 128 bits — the value the column renders,
+    /// and what every Rust `Uuid` type holds.
+    ///
+    /// A `UUID` column is physically a `HUGEINT`, but `DuckDB` stores it with
+    /// the top bit flipped so that signed integer ordering matches UUID string
+    /// ordering, so the raw storage of
+    /// `'11111111-2222-3333-4444-555555555555'` is `0x9111...`, not `0x1111...`.
+    /// This undoes that. Use [`read_i128`][Self::read_i128] for the raw storage,
+    /// and [`uuid_from_storage`][crate::vector::uuid_from_storage] to convert.
     ///
     /// # Safety
     ///
     /// - `idx` must be less than `self.row_count()`.
     /// - The column must contain `UUID` data.
     #[inline]
-    pub const unsafe fn read_uuid(&self, idx: usize) -> i128 {
-        // SAFETY: UUID is stored as HUGEINT (i128).
-        unsafe { self.read_i128(idx) }
+    pub const unsafe fn read_uuid(&self, idx: usize) -> u128 {
+        // SAFETY: UUID is stored as HUGEINT; undo DuckDB's top-bit flip.
+        unsafe { crate::vector::uuid::uuid_from_storage(self.read_i128(idx)) }
     }
 
     /// Reads a `DATE` value at row `idx` as days since the Unix epoch.
@@ -420,6 +554,82 @@ mod tests {
             row_count: 0,
         };
         assert_eq!(reader.row_count(), 0);
+    }
+
+    #[test]
+    fn contains_bounds_checks_against_row_count() {
+        let reader = VectorReader {
+            data: std::ptr::null(),
+            validity: std::ptr::null_mut(),
+            row_count: 3,
+        };
+        assert!(reader.contains(0));
+        assert!(reader.contains(2));
+        assert!(!reader.contains(3));
+        assert!(!reader.contains(usize::MAX));
+    }
+
+    #[test]
+    fn decimal_width_thresholds_match_duckdb_storage() {
+        // DuckDB picks the physical type from the declared width:
+        // <=4 -> INT16, <=9 -> INT32, <=18 -> INT64, <=38 -> INT128
+        // (duckdb/common/types/decimal.hpp). Reading with the wrong width reads
+        // the wrong number of bytes, so pin the boundaries.
+        let mut buf = [0u8; 16];
+        buf[..2].copy_from_slice(&(-1234_i16).to_le_bytes());
+        let reader = VectorReader {
+            data: buf.as_ptr(),
+            validity: std::ptr::null_mut(),
+            row_count: 1,
+        };
+        // SAFETY: `buf` holds one INT16 at index 0.
+        assert_eq!(unsafe { reader.read_decimal(0, 4) }, -1234);
+
+        let mut buf = [0u8; 16];
+        buf[..4].copy_from_slice(&(-123_456_789_i32).to_le_bytes());
+        let reader = VectorReader {
+            data: buf.as_ptr(),
+            validity: std::ptr::null_mut(),
+            row_count: 1,
+        };
+        // SAFETY: `buf` holds one INT32 at index 0.
+        assert_eq!(unsafe { reader.read_decimal(0, 9) }, -123_456_789);
+
+        let mut buf = [0u8; 16];
+        buf[..8].copy_from_slice(&(-1_234_567_890_123_456_789_i64).to_le_bytes());
+        let reader = VectorReader {
+            data: buf.as_ptr(),
+            validity: std::ptr::null_mut(),
+            row_count: 1,
+        };
+        // SAFETY: `buf` holds one INT64 at index 0.
+        assert_eq!(
+            unsafe { reader.read_decimal(0, 18) },
+            -1_234_567_890_123_456_789
+        );
+
+        let value: i128 = -170_141_183_460_469_231_731_687_303_715_884_105_727;
+        let buf = value.to_le_bytes();
+        let reader = VectorReader {
+            data: buf.as_ptr(),
+            validity: std::ptr::null_mut(),
+            row_count: 1,
+        };
+        // SAFETY: `buf` holds one INT128 at index 0.
+        assert_eq!(unsafe { reader.read_decimal(0, 38) }, value);
+    }
+
+    #[test]
+    fn u128_reads_little_endian_halves() {
+        let value: u128 = (0xdead_beef_u128 << 64) | 0x1234_5678;
+        let buf = value.to_le_bytes();
+        let reader = VectorReader {
+            data: buf.as_ptr(),
+            validity: std::ptr::null_mut(),
+            row_count: 1,
+        };
+        // SAFETY: `buf` holds one UHUGEINT at index 0.
+        assert_eq!(unsafe { reader.read_u128(0) }, value);
     }
 
     #[test]

@@ -1,0 +1,31 @@
+# Suppressions for the `Security (OSV / GHSA)` CI job.
+#
+# Entries here must be justified by *reachability*, not by inconvenience, and
+# the osv-scan job re-proves each justification before the scan runs, so a
+# suppression cannot outlive the reason it was granted.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0235"
+reason = """
+rkyv 0.7.46 is never compiled, on any feature combination or target.
+
+quack-rs -> duckdb (optional dependency, enabled by `bundled-test`) -> \
+rust_decimal 1.40.0 -> rkyv (optional feature of rust_decimal, not enabled). \
+rust_decimal itself IS built under `bundled-test`; rkyv is not, because \
+nothing turns that feature on. Under `cargo tree --all-features --target all \
+-e normal,build` the tree contains exactly one rust_decimal node and zero \
+rkyv nodes, and `cargo tree -i rkyv --target all` finds no active reverse \
+edge. Cargo still records rkyv in Cargo.lock, because the lockfile pins \
+optional dependencies whether or not their feature is on, and osv-scanner \
+reads the lockfile rather than the build graph -- so it reports a crate that \
+no build of this project links. The graph-aware `Security (cargo-deny)` job \
+passes on this same lockfile.
+
+It also cannot be fixed from here: rust_decimal 1.40 constrains rkyv to ^0.7, \
+so `cargo update -p rkyv` resolves nothing, and the fixed version is 0.8.17.
+
+Remove this entry once rust_decimal releases a version pinning rkyv ^0.8. The \
+"suppressed advisory is still unreachable" step in the osv-scan job fails the \
+build if an rkyv node ever appears in the tree, which is what keeps this \
+suppression honest.
+"""

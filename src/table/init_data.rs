@@ -182,6 +182,22 @@ impl<T: 'static> FfiLocalInitData<T> {
     }
 }
 
+impl<T: 'static> core::fmt::Debug for FfiInitData<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FfiInitData<")?;
+        f.write_str(core::any::type_name::<T>())?;
+        f.write_str(">")
+    }
+}
+
+impl<T: 'static> core::fmt::Debug for FfiLocalInitData<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FfiLocalInitData<")?;
+        f.write_str(core::any::type_name::<T>())?;
+        f.write_str(">")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

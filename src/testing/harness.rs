@@ -221,6 +221,14 @@ impl<S: AggregateState> Default for AggregateTestHarness<S> {
     }
 }
 
+impl<S: AggregateState> core::fmt::Debug for AggregateTestHarness<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AggregateTestHarness")
+            .field("state", &core::any::type_name::<S>())
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

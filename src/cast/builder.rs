@@ -381,6 +381,23 @@ impl CastFunctionBuilder {
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
+crate::debug_repr::impl_handle_debug!(CastFunctionInfo.info);
+
+impl core::fmt::Debug for CastFunctionBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use crate::debug_repr::Callback;
+        f.debug_struct("CastFunctionBuilder")
+            .field("source", &self.source)
+            .field("source_logical", &self.source_logical)
+            .field("target", &self.target)
+            .field("target_logical", &self.target_logical)
+            .field("function", &Callback::of(&self.function))
+            .field("implicit_cost", &self.implicit_cost)
+            .field("extra_info", &Callback::of(&self.extra_info))
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,7 +19,7 @@ utilities for publishing community extensions.
 
 Building a DuckDB extension in Rust requires solving a set of undocumented
 FFI problems that every developer discovers independently. quack-rs encodes
-solutions to all 16 known pitfalls so you don't have to rediscover them.
+solutions to all 17 known pitfalls so you don't have to rediscover them.
 See the [Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?
@@ -32,8 +32,8 @@ version and the C API protocol version.
 
 ### What is the minimum supported Rust version (MSRV)?
 
-Rust **1.87.0** or later. This is enforced in `Cargo.toml` with
-`rust-version = "1.87.0"`.
+Rust **1.86.0** or later. This is enforced in `Cargo.toml` with
+`rust-version = "1.86.0"`.
 
 ### Is quack-rs production-ready?
 

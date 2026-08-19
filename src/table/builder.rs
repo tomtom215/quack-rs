@@ -422,6 +422,24 @@ impl TableFunctionBuilder {
     }
 }
 
+impl core::fmt::Debug for TableFunctionBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use crate::debug_repr::Callback;
+        f.debug_struct("TableFunctionBuilder")
+            .field("name", &self.name)
+            .field("params", &self.params)
+            .field("logical_params", &self.logical_params.len())
+            .field("named_params", &self.named_params.len())
+            .field("bind", &Callback::of(&self.bind))
+            .field("init", &Callback::of(&self.init))
+            .field("local_init", &Callback::of(&self.local_init))
+            .field("scan", &Callback::of(&self.scan))
+            .field("projection_pushdown", &self.projection_pushdown)
+            .field("extra_info", &Callback::of(&self.extra_info))
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,7 +505,10 @@ mod tests {
     #[test]
     fn try_new_invalid_name() {
         assert!(TableFunctionBuilder::try_new("").is_err());
-        assert!(TableFunctionBuilder::try_new("MyFunc").is_err());
+        assert!(TableFunctionBuilder::try_new("my-func").is_err());
+        assert!(TableFunctionBuilder::try_new("1func").is_err());
+        // Mixed case is legal: DuckDB ships `formatReadableSize`.
+        assert!(TableFunctionBuilder::try_new("MyFunc").is_ok());
     }
 
     #[test]

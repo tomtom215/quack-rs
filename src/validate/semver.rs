@@ -197,15 +197,34 @@ pub fn classify_extension_version(
     )))
 }
 
-/// Validates an extension version string in any of `DuckDB`'s recognized formats.
+/// Maximum length of an extension version string.
 ///
-/// Accepts both semver versions (`1.0.0`, `0.1.0-alpha`) and unstable git
-/// hashes (`690bfc5`). Use [`classify_extension_version`] if you also need
-/// the stability level.
+/// Not a `DuckDB` rule — a sanity bound, comfortably above the 40-character git
+/// hash that is the longest form anyone actually uses.
+const MAX_VERSION_LEN: usize = 64;
+
+/// Validates an extension version string for a community-extension
+/// `description.yml`.
+///
+/// **This is deliberately permissive.** `DuckDB`'s community-extension
+/// documentation specifies no version format — it says only that the descriptor
+/// carries "the version of the extension" and points at existing extensions as
+/// examples. Of 43 published extensions sampled, 11 use a date-based build id
+/// (`2025120401`) that is neither semver nor a git hash. Rejecting those would
+/// mean this validator tells most real extensions they are invalid.
+///
+/// So this checks only what would actually break: an empty version, one longer
+/// than 64 characters, or one containing anything outside
+/// `[A-Za-z0-9._+-]` — whitespace, path separators and control characters, all
+/// of which would corrupt the metadata the version ends up in.
+///
+/// Use [`classify_extension_version`] when you want `DuckDB`'s three-tier
+/// stability scheme, which *is* documented and *is* strict.
 ///
 /// # Errors
 ///
-/// Returns `ExtensionError` if the version is not valid.
+/// Returns `ExtensionError` if the version is empty, too long, or contains a
+/// character outside the allowed set.
 ///
 /// # Example
 ///
@@ -215,11 +234,32 @@ pub fn classify_extension_version(
 /// assert!(validate_extension_version("1.0.0").is_ok());
 /// assert!(validate_extension_version("0.1.0").is_ok());
 /// assert!(validate_extension_version("690bfc5").is_ok());
+/// // Used by 11 of 43 published community extensions.
+/// assert!(validate_extension_version("2025120401").is_ok());
+///
 /// assert!(validate_extension_version("").is_err());
-/// assert!(validate_extension_version("not-valid").is_err());
+/// assert!(validate_extension_version("1.0.0 beta").is_err()); // whitespace
+/// assert!(validate_extension_version("../etc/passwd").is_err()); // path separator
 /// ```
 pub fn validate_extension_version(version: &str) -> Result<(), ExtensionError> {
-    classify_extension_version(version)?;
+    if version.is_empty() {
+        return Err(ExtensionError::new("extension version must not be empty"));
+    }
+    if version.len() > MAX_VERSION_LEN {
+        return Err(ExtensionError::new(format!(
+            "extension version is {} characters; the maximum is {MAX_VERSION_LEN}",
+            version.len()
+        )));
+    }
+    if let Some(bad) = version
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-')))
+    {
+        return Err(ExtensionError::new(format!(
+            "extension version '{version}' contains {bad:?}; only ASCII letters, \
+             digits, '.', '_', '+' and '-' are allowed"
+        )));
+    }
     Ok(())
 }
 
@@ -437,7 +477,43 @@ mod tests {
     #[test]
     fn validate_extension_version_invalid() {
         assert!(validate_extension_version("").is_err());
-        assert!(validate_extension_version("xyz").is_err());
+        assert!(
+            validate_extension_version("1.0.0 beta").is_err(),
+            "whitespace"
+        );
+        assert!(
+            validate_extension_version("../etc/passwd").is_err(),
+            "path separator"
+        );
+        assert!(
+            validate_extension_version("v1.0.0\n").is_err(),
+            "control character"
+        );
+        assert!(
+            validate_extension_version(&"a".repeat(65)).is_err(),
+            "too long"
+        );
+    }
+
+    #[test]
+    fn validate_extension_version_accepts_what_duckdb_accepts() {
+        // DuckDB's community-extension docs specify no version format. These
+        // are all in use by published extensions, and rejecting them would make
+        // the validator wrong about most of the ecosystem.
+        for version in [
+            "1.0.0",
+            "0.1.0",
+            "690bfc5",
+            "2025120401", // 11 of 43 sampled extensions
+            "0.1.0-alpha+build.1",
+            "v2.6.1",
+            &"a".repeat(64),
+        ] {
+            assert!(
+                validate_extension_version(version).is_ok(),
+                "{version} should be accepted"
+            );
+        }
     }
 
     #[test]

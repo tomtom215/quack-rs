@@ -5,7 +5,8 @@
 #
 # Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
 #       clippy, clippy-beta, fmt, doc, msrv, bench-compile, example-check,
-#       scaffold-compile, symbol-check, extension-load, publish-dry-run,
+#       scaffold-compile, scaffold-e2e, symbol-check, extension-load,
+#       abi-table, abi-guard, msrv-vs-duckdb-ci, publish-dry-run,
 #       security, osv-scan, nightly.
 
 name: CI
@@ -183,13 +184,13 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
 
   msrv:
-    name: MSRV (1.87.0)
+    name: MSRV (1.86.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # 1.87.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
-          toolchain: "1.87.0"
+          toolchain: "1.86.0"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo check
 
@@ -265,6 +266,92 @@ jobs:
           }
           echo "Found _hello_ext_init_c_api in $DYLIB"
 
+  abi-table:
+    name: ABI layout table (vs upstream DuckDB headers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Re-derives the DuckDB release -> duckdb_ext_api_v1 slot-count table in
+      # src/abi.rs straight from each release's duckdb_extension.h. Fails when a
+      # new DuckDB release changes the layout, which is exactly when the runtime
+      # guard would start refusing loads it should accept.
+      - name: Verify src/abi.rs matches upstream
+        # These guards fetch from upstream. Exit 2 is their documented
+        # "could not check" code -- a DuckDB release header was unreachable -- and must not
+        # be read as drift. Only exit 1 means the checked-in data is wrong.
+        run: |
+          python3 scripts/check-abi-table.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
+
+  platform-table:
+    name: Platform list (vs upstream distribution matrix)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # validate::platform only earns its keep if its list is current. DuckDB
+      # retired linux_amd64_gcc4 and added the musl targets without quack-rs
+      # noticing, so the validator was rejecting real platforms and accepting
+      # one that no longer exists. This re-derives the list from the file the
+      # community-extensions build actually reads.
+      - name: Verify src/validate/platform.rs matches upstream
+        # These guards fetch from upstream. Exit 2 is their documented
+        # "could not check" code -- the distribution matrix was unreachable -- and must not
+        # be read as drift. Only exit 1 means the checked-in data is wrong.
+        run: |
+          python3 scripts/check-platform-table.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
+
+  spdx-list:
+    name: SPDX shortlist (vs official registry)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # A typo in COMMON_SPDX_LICENSES would make quack-rs reject a license
+      # nobody could satisfy, and SPDX deprecates identifiers over time
+      # (GPL-3.0 -> GPL-3.0-only / -or-later), which would have quack-rs
+      # recommending a stale name.
+      - name: Verify src/validate/spdx.rs matches the SPDX registry
+        # These guards fetch from upstream. Exit 2 is their documented
+        # "could not check" code -- the SPDX registry was unreachable -- and must not
+        # be read as drift. Only exit 1 means the checked-in data is wrong.
+        run: |
+          python3 scripts/check-spdx-list.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
+
+  msrv-vs-duckdb-ci:
+    name: MSRV vs DuckDB's extension CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # DuckDB's reusable extension-distribution workflow pins an exact Rust
+      # toolchain for some platforms (the WebAssembly job in particular). Raising
+      # quack-rs's MSRV above one of those pins silently makes every downstream
+      # extension unbuildable for those platforms, with no signal here. This
+      # gives that signal.
+      - name: Check MSRV against extension-ci-tools' pinned toolchains
+        # These guards fetch from upstream. Exit 2 is their documented
+        # "could not check" code -- the pinned-toolchain config was unreachable -- and must not
+        # be read as drift. Only exit 1 means the checked-in data is wrong.
+        run: |
+          python3 scripts/check-msrv-vs-duckdb-ci.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
+
   extension-load:
     name: Extension load test (DuckDB)
     runs-on: ubuntu-latest
@@ -274,24 +361,255 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
+      - name: Build append_metadata
+        run: cargo build --release --bin append_metadata
       - name: Install DuckDB CLI
         run: |
+          set -euo pipefail
           curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
           unzip -o duckdb.zip
           chmod +x duckdb
-      - name: Load extension and run query
+          # Record which DuckDB this job is actually testing against. Without
+          # it, a failure three steps later is indistinguishable from a wrong
+          # answer -- and these jobs pull `releases/latest`, so the version
+          # changes underneath them.
+          ./duckdb --version
+          # Prove the exact invocation the probes use works, before anything
+          # depends on it. Two things bit us here: `-no-stdin < file.sql`
+          # produced no output and still exited 0, so assertions downstream
+          # failed as "wrong answer" when the SQL had never run; and
+          # `SET allow_unsigned_extensions=true` is rejected once the database
+          # is running ("Cannot change allow_unsigned_extensions setting while
+          # database is running"), so it has to be the `-unsigned` startup flag
+          # rather than a statement.
+          test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
+            exit 1
+          }
+      - name: Stamp the extension metadata footer
+        # Loading a bare .so skips DuckDB's metadata validation entirely, so the
+        # footer this crate writes would never be exercised. Go through the real
+        # .duckdb_extension path instead.
         run: |
+          set -euo pipefail
           SO="examples/hello-ext/target/release/libhello_ext.so"
-          if [ ! -f "$SO" ]; then echo "ERROR: $SO not found"; exit 1; fi
+          test -f "$SO" || { echo "::error::$SO not found"; exit 1; }
+          mkdir -p /tmp/ext
+          ./target/release/append_metadata "$SO" /tmp/ext/hello_ext.duckdb_extension \
+            --abi-type C_STRUCT \
+            --extension-version v0.1.0 \
+            --duckdb-version v1.2.0 \
+            --platform linux_amd64 \
+            --dump
+      - name: Load extension and assert query results
+        run: |
+          set -euo pipefail
+          cat > /tmp/probe.sql <<'SQL'
+          LOAD '/tmp/ext/hello_ext.duckdb_extension';
+          SELECT double_it(21) AS a, first_word('hello world') AS b;
+          SQL
+          ./duckdb -unsigned -csv -noheader -c "$(cat /tmp/probe.sql)" | tee /tmp/load.log
 
-          echo "SET allow_unsigned_extensions=true; LOAD '${SO}';" | ./duckdb -no-stdin 2>&1 | tee /tmp/load.log
+          # Assert on the actual result, not on the absence of the word "error":
+          # a load failure and a wrong answer must both fail this job.
+          grep -qx '42,hello' /tmp/load.log || {
+            echo "::error::expected '42,hello' from the loaded extension"
+            echo "DuckDB $(./duckdb --version) actually produced:"
+            cat /tmp/load.log
+            exit 1
+          }
+          echo "Extension loaded and produced correct results"
 
-          # Verify the extension loaded without errors
-          if grep -qi "error\|fatal\|panic" /tmp/load.log; then
-            echo "::error::Extension failed to load in DuckDB"
+  scaffold-e2e:
+    name: Scaffold end-to-end (build, stamp, load, query)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install DuckDB CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          unzip -o duckdb.zip
+          chmod +x duckdb
+          # Record which DuckDB this job is actually testing against. Without
+          # it, a failure three steps later is indistinguishable from a wrong
+          # answer -- and these jobs pull `releases/latest`, so the version
+          # changes underneath them.
+          ./duckdb --version
+          # Prove the exact invocation the probes use works, before anything
+          # depends on it. Two things bit us here: `-no-stdin < file.sql`
+          # produced no output and still exited 0, so assertions downstream
+          # failed as "wrong answer" when the SQL had never run; and
+          # `SET allow_unsigned_extensions=true` is rejected once the database
+          # is running ("Cannot change allow_unsigned_extensions setting while
+          # database is running"), so it has to be the `-unsigned` startup flag
+          # rather than a statement.
+          test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
+            exit 1
+          }
+      - name: Generate, build, stamp and load a scaffolded extension
+        # `scaffold-compile` only checks that the generated sources compile. This
+        # job takes the generated project all the way to a .duckdb_extension that
+        # a real DuckDB loads and queries — which is what "the scaffold works"
+        # actually means.
+        run: |
+          set -euo pipefail
+          cargo build --release --bin append_metadata
+          cargo run --release --example scaffold_to_dir -- /tmp/scaffolded
+          # Build against this working copy rather than the published crate.
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("/tmp/scaffolded/Cargo.toml")
+          s = p.read_text()
+          s = re.sub(r'quack-rs = \{ version = "[^"]+" \}',
+                     'quack-rs = { path = "%s" }' % pathlib.Path.cwd(), s)
+          p.write_text(s)
+          PY
+          (cd /tmp/scaffolded && cargo build --release)
+          ./target/release/append_metadata \
+            /tmp/scaffolded/target/release/libmy_analytics.so \
+            /tmp/scaffolded/my_analytics.duckdb_extension \
+            --abi-type C_STRUCT --extension-version v0.1.0 \
+            --duckdb-version v1.2.0 --platform linux_amd64
+          cat > /tmp/scaffold_probe.sql <<'SQL'
+          LOAD '/tmp/scaffolded/my_analytics.duckdb_extension';
+          SELECT my_analytics_hello('world');
+          SQL
+          ./duckdb -unsigned -csv -noheader -c "$(cat /tmp/scaffold_probe.sql)" | tee /tmp/scaffold.log
+          grep -q 'Hello from my_analytics! world' /tmp/scaffold.log || {
+            echo "::error::scaffolded extension did not answer correctly"
+            echo "DuckDB $(./duckdb --version) actually produced:"
+            cat /tmp/scaffold.log
+            exit 1
+          }
+      - name: Generated project passes its own lint gate
+        # The generated CI runs `cargo clippy --all-targets -- -D warnings`, so
+        # the generated sources must be clean under it from the first commit.
+        run: |
+          set -euo pipefail
+          cd /tmp/scaffolded
+          cargo fmt -- --check
+          cargo clippy --all-targets -- -D warnings
+
+  abi-guard:
+    name: ABI guard rejects a cross-version unstable build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install DuckDB CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          unzip -o duckdb.zip
+          chmod +x duckdb
+          # Record which DuckDB this job is actually testing against. Without
+          # it, a failure three steps later is indistinguishable from a wrong
+          # answer -- and these jobs pull `releases/latest`, so the version
+          # changes underneath them.
+          ./duckdb --version
+          # Prove the exact invocation the probes use works, before anything
+          # depends on it. Two things bit us here: `-no-stdin < file.sql`
+          # produced no output and still exited 0, so assertions downstream
+          # failed as "wrong answer" when the SQL had never run; and
+          # `SET allow_unsigned_extensions=true` is rejected once the database
+          # is running ("Cannot change allow_unsigned_extensions setting while
+          # database is running"), so it has to be the `-unsigned` startup flag
+          # rather than a statement.
+          test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
+            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
+            exit 1
+          }
+      # Regression test for the most dangerous failure mode this crate guards
+      # against: an extension that touches the unstable region of
+      # duckdb_ext_api_v1, compiled against one DuckDB's headers and loaded into
+      # another. Without the guard this corrupts the heap; with it, LOAD fails
+      # with a diagnostic. See src/abi.rs.
+      - name: Build a demo whose declared DuckDB version contradicts its bindings
+        # The refusal must not depend on `releases/latest` differing from the
+        # pin: when the runner's DuckDB happens to match, the guard correctly
+        # stays silent and this job used to fail claiming the guard was broken.
+        #
+        # QUACK_RS_TARGET_DUCKDB_VERSION=v1.2.0 (408 slots) against
+        # libduckdb-sys =1.10500.0 (DuckDB 1.5.0, 545 slots) is a contradiction
+        # the guard can settle without consulting the engine at all, so this
+        # fires on every runner.
+        env:
+          QUACK_RS_TARGET_DUCKDB_VERSION: v1.2.0
+        run: |
+          set -euo pipefail
+          cargo build --release --bin append_metadata
+          mkdir -p /tmp/abi_demo/src
+          cat > /tmp/abi_demo/Cargo.toml <<EOF
+          [package]
+          name = "abi_demo"
+          version = "0.1.0"
+          edition = "2021"
+
+          [lib]
+          name = "abi_demo"
+          crate-type = ["cdylib"]
+
+          [dependencies]
+          quack-rs = { path = "$(pwd)", features = ["duckdb-1-5"] }
+          libduckdb-sys = { version = "=1.10500.0", features = ["loadable-extension"] }
+
+          [profile.release]
+          opt-level = 1
+          panic = "unwind"
+          EOF
+          cat > /tmp/abi_demo/src/lib.rs <<'EOF'
+          use quack_rs::client_context::ClientContext;
+          use quack_rs::error::ExtensionError;
+          use quack_rs::prelude::*;
+
+          fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
+              // duckdb_connection_get_client_context lives past the stable prefix.
+              let ctx = unsafe { ClientContext::from_connection(con) }?;
+              let _ = ctx.connection_id();
+              unsafe { SqlMacro::scalar("abi_demo_ok", &["x"], "x + 1")?.register(con)? };
+              Ok(())
+          }
+
+          quack_rs::entry_point!(abi_demo_init_c_api, register);
+          EOF
+          (cd /tmp/abi_demo && cargo build --release)
+          ./target/release/append_metadata \
+            /tmp/abi_demo/target/release/libabi_demo.so \
+            /tmp/abi_demo/abi_demo.duckdb_extension \
+            --abi-type C_STRUCT --extension-version v0.1.0 \
+            --duckdb-version v1.2.0 --platform linux_amd64
+      - name: LOAD must be refused with a layout diagnostic
+        run: |
+          set -euo pipefail
+          cat > /tmp/abi_probe.sql <<'SQL'
+          LOAD '/tmp/abi_demo/abi_demo.duckdb_extension';
+          SQL
+          # DuckDB exits non-zero on the failed LOAD, which is the expected outcome.
+          ./duckdb -unsigned -c "$(cat /tmp/abi_probe.sql)" > /tmp/abi.log 2>&1 || true
+          echo "--- DuckDB $(./duckdb --version) said: ---"
+          cat /tmp/abi.log
+          echo "--- end ---"
+          # This is the DeclaredVersionMismatch arm of AbiCheck::error_message,
+          # pinned by `declared_version_mismatch_matches_the_ci_regression_test`
+          # in src/abi.rs so the job and the code cannot drift apart.
+          grep -q "QUACK_RS_TARGET_DUCKDB_VERSION says this extension was built against DuckDB" /tmp/abi.log || {
+            echo "::error::the ABI guard did not refuse a build whose declared DuckDB version contradicts its bindings"
+            exit 1
+          }
+          # And the extension must not have loaded: a refusal that still
+          # registers its functions would be worse than no guard at all.
+          ./duckdb -unsigned -csv -noheader -c "LOAD '/tmp/abi_demo/abi_demo.duckdb_extension'; SELECT abi_demo_ok(1);" \
+            > /tmp/abi_fn.log 2>&1 || true
+          if grep -q '^2$' /tmp/abi_fn.log; then
+            echo "::error::the refused extension still registered abi_demo_ok"
+            cat /tmp/abi_fn.log
             exit 1
           fi
-          echo "Extension loaded successfully in DuckDB"
 
   publish-dry-run:
     name: Publish dry-run
@@ -326,6 +644,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
       - name: Install osv-scanner (pinned, checksum-verified)
         run: |
           VER=2.3.8
@@ -334,8 +655,50 @@ jobs:
             "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
           echo "${SHA}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
+      # osv-scanner.toml suppresses RUSTSEC-2026-0235 on the grounds that rkyv
+      # is never compiled. Re-prove that here rather than trusting a comment:
+      # if a feature change ever pulls rkyv into the build, this fails and the
+      # suppression has to go.
+      #
+      # Two things this gets right on purpose:
+      #
+      # 1. stdout only. Cargo writes the tree to stdout and progress to stderr,
+      #    and it DOWNLOADS every lockfile entry -- including ones it will
+      #    never compile. Folding stderr in with 2>&1 makes the line
+      #    "Downloaded rkyv v0.7.46" look exactly like a tree node, which
+      #    failed this job on a cold runner while passing locally against a
+      #    warm cache. Keep stderr separate, for diagnostics only.
+      #
+      # 2. The forward tree, not `cargo tree -i`. The inverse form exits 0 with
+      #    "nothing to print" for a package that is in the lockfile but has no
+      #    active edge, so it cannot tell "not built" from "built" by exit code.
+      - name: Confirm the suppressed advisory is still unreachable
+        run: |
+          err=$(mktemp)
+          if ! tree=$(cargo tree --all-features --target all -e normal,build 2>"$err"); then
+            echo "::error::cargo tree failed, so rkyv reachability is unverified"
+            cat "$err"
+            exit 1
+          fi
+          # Anchor: rust_decimal (rkyv's only possible parent here) must be in
+          # the tree, else it is not covering the relevant subgraph and finding
+          # no rkyv would prove nothing.
+          if ! grep -qE 'rust_decimal v[0-9]' <<<"$tree"; then
+            echo "::error::rust_decimal absent from the tree; rkyv reachability is unverified"
+            cat "$err"
+            exit 1
+          fi
+          if grep -qE '(^|[^a-z_-])rkyv v[0-9]' <<<"$tree"; then
+            echo "::error::rkyv is now in the build graph. Remove the RUSTSEC-2026-0235"
+            echo "::error::entry from osv-scanner.toml and address the advisory for real."
+            grep -nE '(^|[^a-z_-])rkyv v[0-9]' <<<"$tree"
+            exit 1
+          fi
+          echo "rkyv absent from the build graph; suppression still justified"
       - name: Scan lockfiles (root + example) against OSV
-        run: ./osv-scanner --lockfile=Cargo.lock --lockfile=examples/hello-ext/Cargo.lock
+        run: |
+          ./osv-scanner --config=osv-scanner.toml \
+            --lockfile=Cargo.lock --lockfile=examples/hello-ext/Cargo.lock
 
   nightly:
     name: Nightly (informational)

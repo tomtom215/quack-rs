@@ -374,8 +374,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn invalid_macro_name_uppercase_rejected() {
-        assert!(SqlMacro::scalar("MyMacro", &[], "1").is_err());
+    fn mixed_case_macro_name_accepted() {
+        // DuckDB identifiers are case-insensitive and DuckDB ships mixed-case
+        // functions, so rejecting these made a legal name unusable.
+        assert!(SqlMacro::scalar("MyMacro", &[], "1").is_ok());
+        assert!(SqlMacro::scalar("my-macro", &[], "1").is_err());
     }
 
     #[test]
@@ -389,9 +392,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_param_uppercase_rejected() {
-        let err = SqlMacro::scalar("f", &["BadParam"], "1").unwrap_err();
-        assert!(err.as_str().contains("BadParam"));
+    fn mixed_case_param_accepted_but_quoting_chars_are_not() {
+        assert!(SqlMacro::scalar("f", &["GoodParam"], "1").is_ok());
+        let err = SqlMacro::scalar("f", &["bad param"], "1").unwrap_err();
+        assert!(err.as_str().contains("bad param"));
     }
 
     #[test]

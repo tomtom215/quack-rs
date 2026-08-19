@@ -64,6 +64,7 @@ use crate::vector::{VectorReader, VectorWriter};
 // ─── STRUCT ──────────────────────────────────────────────────────────────────
 
 /// Operations on STRUCT vectors (accessing child field vectors).
+#[derive(Debug)]
 pub struct StructVector;
 
 impl StructVector {
@@ -126,6 +127,7 @@ impl StructVector {
 /// 2. Write element values into the child via [`get_child`][ListVector::get_child] + [`VectorWriter`].
 /// 3. [`set_size`][ListVector::set_size] — tell `DuckDB` how many elements were written.
 /// 4. [`set_entry`][ListVector::set_entry] — write the offset/length for each parent row.
+#[derive(Debug)]
 pub struct ListVector;
 
 impl ListVector {
@@ -259,6 +261,7 @@ impl ListVector {
 /// // let keys_vec = unsafe { MapVector::keys(map_vector) };
 /// // let vals_vec = unsafe { MapVector::values(map_vector) };
 /// ```
+#[derive(Debug)]
 pub struct MapVector;
 
 impl MapVector {
@@ -404,6 +407,7 @@ impl MapVector {
 // ─── ARRAY ──────────────────────────────────────────────────────────────────
 
 /// Helpers for working with `ARRAY` vectors (fixed-size arrays).
+#[derive(Debug)]
 pub struct ArrayVector;
 
 impl ArrayVector {

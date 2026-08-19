@@ -22,7 +22,7 @@
 //!   language: Rust
 //!   build: cargo
 //!   license: MIT
-//!   requires_toolchains: rust;python3
+//!   requires_toolchains: rust;python3                        # optional
 //!   excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads"   # optional
 //!   maintainers:
 //!     - Jane Doe
@@ -42,7 +42,7 @@
 //! | `extension.language` | Yes | Must be `"Rust"` for Rust extensions |
 //! | `extension.build` | Yes | Must be `"cargo"` for Rust extensions |
 //! | `extension.license` | Yes | Must pass [`validate_spdx_license`] |
-//! | `extension.requires_toolchains` | Yes | Semi-colon list including `"rust"` |
+//! | `extension.requires_toolchains` | No | Semi-colon list; [`validate_rust_extension`] additionally requires `"rust"` |
 //! | `extension.excluded_platforms` | No | Must pass [`validate_excluded_platforms_str`] |
 //! | `extension.maintainers` | Yes | At least one maintainer |
 //! | `repo.github` | Yes | Non-empty `owner/repo` format |
@@ -78,6 +78,7 @@
 //! assert!(validate_description_yml_str(yml).is_ok());
 //! ```
 //!
+//! [`validate_rust_extension`]: crate::validate::description_yml::validate_rust_extension
 //! [`validate_extension_name`]: crate::validate::validate_extension_name
 //! [`validate_extension_version`]: crate::validate::validate_extension_version
 //! [`validate_spdx_license`]: crate::validate::validate_spdx_license

@@ -181,6 +181,19 @@ impl CopyFunctionBuilder {
     }
 }
 
+impl core::fmt::Debug for CopyFunctionBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use crate::debug_repr::Callback;
+        f.debug_struct("CopyFunctionBuilder")
+            .field("name", &self.name)
+            .field("bind", &Callback::of(&self.bind))
+            .field("global_init", &Callback::of(&self.global_init))
+            .field("sink", &Callback::of(&self.sink))
+            .field("finalize", &Callback::of(&self.finalize))
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

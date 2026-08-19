@@ -231,123 +231,161 @@ impl TypeId {
         }
     }
 
-    /// Converts a raw `DUCKDB_TYPE` constant back into a [`TypeId`].
+    /// Converts a raw `DUCKDB_TYPE` constant into a [`TypeId`], or `None` if the
+    /// value is not one this build knows about.
     ///
     /// Recognizes every variant available in the active feature set, including
     /// the `duckdb-1-5` type-enum values (`TIME_NS`, `ANY`, `BIGNUM`/`VARINT`,
     /// `SQLNULL`, `INTEGER_LITERAL`, `STRING_LITERAL`) and the `duckdb-1-5-3`
     /// values (`GEOMETRY`, `VARIANT`) when those features are enabled.
     ///
-    /// # Panics
+    /// **Prefer this over [`from_duckdb_type`][Self::from_duckdb_type] inside
+    /// `DuckDB` callbacks.** An extension routinely sees type values it was not
+    /// built for — a column of a type added in a newer `DuckDB`, or a 1.5.x type
+    /// reaching an extension compiled without `duckdb-1-5`. Returning `None`
+    /// lets the callback raise a `DuckDB` error, which a panic cannot: quack-rs
+    /// turns a caught panic into an error message, but only when the extension
+    /// ships `panic = "unwind"` — under `panic = "abort"` the process dies.
     ///
-    /// Panics if `raw` does not correspond to any `TypeId` variant available in
-    /// the current feature configuration — for example, a 1.5.x type value when
-    /// the `duckdb-1-5` feature is disabled, or a future/unknown type value.
+    /// # Example
+    ///
+    /// ```rust
+    /// use quack_rs::types::TypeId;
+    /// use libduckdb_sys::DUCKDB_TYPE_DUCKDB_TYPE_BIGINT;
+    ///
+    /// assert_eq!(
+    ///     TypeId::try_from_duckdb_type(DUCKDB_TYPE_DUCKDB_TYPE_BIGINT),
+    ///     Some(TypeId::BigInt)
+    /// );
+    /// // A value from a future DuckDB is reported, not fatal.
+    /// assert_eq!(TypeId::try_from_duckdb_type(9999), None);
+    /// ```
     #[must_use]
-    pub const fn from_duckdb_type(raw: DUCKDB_TYPE) -> Self {
+    pub const fn try_from_duckdb_type(raw: DUCKDB_TYPE) -> Option<Self> {
         // Using if-else chain because match on non-primitive constants is not
         // allowed in const context.
         if raw == DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN {
-            Self::Boolean
+            Some(Self::Boolean)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_TINYINT {
-            Self::TinyInt
+            Some(Self::TinyInt)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_SMALLINT {
-            Self::SmallInt
+            Some(Self::SmallInt)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_INTEGER {
-            Self::Integer
+            Some(Self::Integer)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_BIGINT {
-            Self::BigInt
+            Some(Self::BigInt)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_UTINYINT {
-            Self::UTinyInt
+            Some(Self::UTinyInt)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_USMALLINT {
-            Self::USmallInt
+            Some(Self::USmallInt)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_UINTEGER {
-            Self::UInteger
+            Some(Self::UInteger)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_UBIGINT {
-            Self::UBigInt
+            Some(Self::UBigInt)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_HUGEINT {
-            Self::HugeInt
+            Some(Self::HugeInt)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_FLOAT {
-            Self::Float
+            Some(Self::Float)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_DOUBLE {
-            Self::Double
+            Some(Self::Double)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP {
-            Self::Timestamp
+            Some(Self::Timestamp)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ {
-            Self::TimestampTz
+            Some(Self::TimestampTz)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_DATE {
-            Self::Date
+            Some(Self::Date)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIME {
-            Self::Time
+            Some(Self::Time)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_INTERVAL {
-            Self::Interval
+            Some(Self::Interval)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR {
-            Self::Varchar
+            Some(Self::Varchar)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_BLOB {
-            Self::Blob
+            Some(Self::Blob)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL {
-            Self::Decimal
+            Some(Self::Decimal)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_S {
-            Self::TimestampS
+            Some(Self::TimestampS)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_MS {
-            Self::TimestampMs
+            Some(Self::TimestampMs)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_NS {
-            Self::TimestampNs
+            Some(Self::TimestampNs)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_ENUM {
-            Self::Enum
+            Some(Self::Enum)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_LIST {
-            Self::List
+            Some(Self::List)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_STRUCT {
-            Self::Struct
+            Some(Self::Struct)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_MAP {
-            Self::Map
+            Some(Self::Map)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_UUID {
-            Self::Uuid
+            Some(Self::Uuid)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_UNION {
-            Self::Union
+            Some(Self::Union)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_BIT {
-            Self::Bit
+            Some(Self::Bit)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIME_TZ {
-            Self::TimeTz
+            Some(Self::TimeTz)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_UHUGEINT {
-            Self::UHugeInt
+            Some(Self::UHugeInt)
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_ARRAY {
-            Self::Array
+            Some(Self::Array)
         } else {
             // DuckDB 1.5.0+ type-enum values (feature-gated). Kept in a nested
             // block because `#[cfg]` cannot be attached to an `else if` arm.
             #[cfg(feature = "duckdb-1-5")]
             {
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS {
-                    return Self::TimeNs;
+                    return Some(Self::TimeNs);
                 }
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_ANY {
-                    return Self::Any;
+                    return Some(Self::Any);
                 }
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_BIGNUM {
-                    return Self::Varint;
+                    return Some(Self::Varint);
                 }
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL {
-                    return Self::SqlNull;
+                    return Some(Self::SqlNull);
                 }
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_INTEGER_LITERAL {
-                    return Self::IntegerLiteral;
+                    return Some(Self::IntegerLiteral);
                 }
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_STRING_LITERAL {
-                    return Self::StringLiteral;
+                    return Some(Self::StringLiteral);
                 }
             }
             // DuckDB 1.5.3+ type-enum values (feature-gated).
             #[cfg(feature = "duckdb-1-5-3")]
             {
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY {
-                    return Self::Geometry;
+                    return Some(Self::Geometry);
                 }
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_VARIANT {
-                    return Self::Variant;
+                    return Some(Self::Variant);
                 }
             }
-            panic!("unknown DUCKDB_TYPE value")
+            None
+        }
+    }
+
+    /// Converts a raw `DUCKDB_TYPE` constant back into a [`TypeId`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `raw` does not correspond to any `TypeId` variant available in
+    /// the current feature configuration — for example, a 1.5.x type value when
+    /// the `duckdb-1-5` feature is disabled, or a future/unknown type value.
+    ///
+    /// Inside a `DuckDB` callback use
+    /// [`try_from_duckdb_type`][Self::try_from_duckdb_type] instead: returning
+    /// `None` lets you raise a proper `DuckDB` error, whereas a panic is at best
+    /// caught and reported by quack-rs, and under `panic = "abort"` kills the
+    /// process outright.
+    #[must_use]
+    pub const fn from_duckdb_type(raw: DUCKDB_TYPE) -> Self {
+        match Self::try_from_duckdb_type(raw) {
+            Some(id) => id,
+            None => panic!("unknown DUCKDB_TYPE value"),
         }
     }
 
@@ -629,9 +667,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn from_duckdb_type_roundtrip() {
-        let variants = [
+    /// Every `TypeId` variant available in the active feature set.
+    fn all_type_ids() -> Vec<TypeId> {
+        vec![
             TypeId::Boolean,
             TypeId::TinyInt,
             TypeId::SmallInt,
@@ -683,7 +721,37 @@ mod tests {
             TypeId::Geometry,
             #[cfg(feature = "duckdb-1-5-3")]
             TypeId::Variant,
-        ];
+        ]
+    }
+
+    #[test]
+    fn try_from_duckdb_type_reports_unknown_values() {
+        // Values DuckDB has never used, and values a future DuckDB might.
+        for raw in [9999u32, 200, 100, u32::MAX] {
+            assert_eq!(
+                TypeId::try_from_duckdb_type(raw),
+                None,
+                "raw {raw} must not resolve to a TypeId"
+            );
+        }
+    }
+
+    #[test]
+    fn try_from_duckdb_type_agrees_with_to_duckdb_type() {
+        for id in all_type_ids() {
+            assert_eq!(TypeId::try_from_duckdb_type(id.to_duckdb_type()), Some(id));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown DUCKDB_TYPE value")]
+    fn from_duckdb_type_still_panics_on_unknown() {
+        let _ = TypeId::from_duckdb_type(9999);
+    }
+
+    #[test]
+    fn from_duckdb_type_roundtrip() {
+        let variants = all_type_ids();
         for &tid in &variants {
             let raw = tid.to_duckdb_type();
             let back = TypeId::from_duckdb_type(raw);

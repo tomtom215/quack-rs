@@ -118,7 +118,39 @@ unsafe { elem_writer.write_varchar(2, "c") };
 unsafe { ListVector::set_size(list_vec, 3) };
 ```
 
-### LIST
+### LIST — recommended: `ListBuilder`
+
+`ListBuilder` tracks the running offset, writes each parent row's
+`{offset, length}` entry, and — importantly — re-fetches the child writer after
+every reserve:
+
+```rust
+use quack_rs::vector::ListBuilder;
+
+let mut builder = unsafe { ListBuilder::new(list_vec) };
+for (row, elements) in rows.iter().enumerate() {
+    unsafe {
+        builder.push_row(row, elements.len(), |writer, base| {
+            for (i, &val) in elements.iter().enumerate() {
+                writer.write_i64(base + i, val);
+            }
+        });
+    }
+}
+unsafe { builder.finish() };
+```
+
+> **Why the re-fetch matters.** `duckdb_list_vector_reserve` takes a *total*
+> capacity, and when it grows it reallocates the child vector's data buffer. A
+> `VectorWriter` obtained before that call is left holding a dangling pointer.
+> The manual pattern below is safe only because it reserves exactly once, before
+> any writer exists — which requires knowing the total element count up front.
+> `ListBuilder` has no such requirement.
+
+`push_map_row` does the same for `MAP`, handing the closure a writer for the key
+child and one for the value child.
+
+### LIST — manual
 
 ```rust
 use quack_rs::vector::{VectorWriter, complex::ListVector};
@@ -138,10 +170,11 @@ for (row, elements) in rows.iter().enumerate() {
 unsafe { ListVector::set_size(list_vec, total_elements) };
 ```
 
-### MAP
+### MAP — manual
 
 The MAP write workflow is identical to LIST, but keys and values are written into
-the two struct child vectors:
+the two struct child vectors. Prefer `ListBuilder::push_map_row` unless you know
+the total pair count before writing:
 
 ```rust
 use quack_rs::vector::{VectorWriter, complex::MapVector};

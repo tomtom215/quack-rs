@@ -9,7 +9,7 @@ machine-readable **category** ([`DuckDbErrorType`]), so your extension can branc
 on the *kind* of failure (for example, distinguishing `Io` from `OutOfMemory`).
 
 It is the common currency of the other 1.5 modules: [`Expression::fold`](expression.md),
-the [virtual file system](file-system.md), and the [appender](appender.md) all
+the [virtual file system](file-system.md), and the [appender](../data/appender.md) all
 report failures as an `ErrorData`.
 
 ## Inspecting an error
@@ -105,7 +105,7 @@ a fallible 1.5 API, it owns the handle — just let it drop, or call
 
 - [Bound Expressions](expression.md) — `Expression::fold` returns `ErrorData`
 - [Virtual File System](file-system.md) — file operations return `ErrorData`
-- [Bulk Appender](appender.md) — `Appender::error_data` returns `ErrorData`
+- [Bulk Appender](../data/appender.md) — `Appender::error_data` returns `ErrorData`
 - [Error Handling](../concepts/errors.md) — the SDK's primary [`ExtensionError`] type
 
 [`DuckDbErrorType`]: https://docs.rs/quack-rs/latest/quack_rs/error_data/enum.DuckDbErrorType.html

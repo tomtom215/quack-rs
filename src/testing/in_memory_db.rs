@@ -18,32 +18,42 @@
 //! - Any test that needs a live `DuckDB` connection but doesn't need to go
 //!   through quack-rs's FFI wrappers.
 //!
-//! # What `InMemoryDb` is NOT for
+//! # Testing the FFI wrappers
 //!
-//! `InMemoryDb` cannot be used to test quack-rs's FFI callback wrappers
-//! (`VectorReader`, `VectorWriter`, `BindInfo`, etc.) because those wrappers
-//! route through the `loadable-extension` dispatch table, which is uninitialized
-//! in `cargo test`. For callback logic, use [`MockVectorReader`] and
-//! [`MockVectorWriter`] instead.
+//! Opening an `InMemoryDb` also populates the `loadable-extension` dispatch
+//! table, and it stays populated for the rest of the process. After that, every
+//! C API call works — so quack-rs's own wrappers (`VectorReader`,
+//! `VectorWriter`, `BindInfo`, `Connection::register_*`) can be exercised
+//! against a real `DuckDB` inside `cargo test`:
+//!
+//! 1. `InMemoryDb::open()` to initialise the dispatch table.
+//! 2. `duckdb_open` / `duckdb_connect` for a raw connection.
+//! 3. Register your function with the usual builder.
+//! 4. Run SQL through [`query`][crate::query::query] and assert on the result.
+//!
+//! `tests/ffi_roundtrip.rs` in this repository does exactly that for every
+//! vector type. [`MockVectorReader`] / [`MockVectorWriter`] remain the right
+//! tool for unit-testing callback logic without a database, and are the only
+//! option when the `bundled-test` features are off.
 //!
 //! [`MockVectorReader`]: crate::testing::MockVectorReader
 //! [`MockVectorWriter`]: crate::testing::MockVectorWriter
 //!
 //! # Enabling this feature
 //!
-//! Compile DuckDB from source (zero-config, ~5-10 min cold):
+//! Compile `DuckDB` from source (zero-config, ~5-10 min cold):
 //!
 //! ```toml
 //! # In your extension's Cargo.toml:
 //! [dev-dependencies]
-//! quack-rs = { version = "0.13", features = ["bundled-test"] }
+//! quack-rs = { version = "0.16", features = ["bundled-test"] }
 //! ```
 //!
 //! …or link a pre-built libduckdb for a much faster build:
 //!
 //! ```toml
 //! [dev-dependencies]
-//! quack-rs = { version = "0.13", features = ["bundled-test-prebuilt"] }
+//! quack-rs = { version = "0.16", features = ["bundled-test-prebuilt"] }
 //! ```
 //!
 //! With `bundled-test-prebuilt`, build with `DUCKDB_DOWNLOAD_LIB=1` (let
@@ -172,6 +182,15 @@ fn init_dispatch_table_once() {
 /// See the [module documentation][self] for usage examples and limitations.
 pub struct InMemoryDb {
     conn: duckdb::Connection,
+}
+
+impl core::fmt::Debug for InMemoryDb {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The wrapped `duckdb::Connection` has nothing worth printing, and the
+        // point of this impl is that a test fixture holding an `InMemoryDb` can
+        // still `#[derive(Debug)]`.
+        f.debug_struct("InMemoryDb").finish_non_exhaustive()
+    }
 }
 
 impl InMemoryDb {

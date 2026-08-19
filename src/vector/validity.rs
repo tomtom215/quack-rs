@@ -31,6 +31,7 @@ use libduckdb_sys::{
 /// The underlying `duckdb_vector` must remain valid for the lifetime `'v` of
 /// this wrapper. Do not call `duckdb_destroy_data_chunk` while a `ValidityBitmap`
 /// that references the vector is live.
+#[derive(Debug)]
 pub struct ValidityBitmap<'v> {
     validity: *mut u64,
     _phantom: std::marker::PhantomData<&'v mut duckdb_vector>,

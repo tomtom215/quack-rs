@@ -264,14 +264,24 @@ impl<S: Send + 'static> TypedTableFunctionBuilder<S> {
 }
 
 /// Extracts a human-readable message from a `catch_unwind` panic payload.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> &'static str {
-    if payload.downcast_ref::<&'static str>().is_some()
-        || payload.downcast_ref::<String>().is_some()
-    {
-        "quack-rs: typed table function closure panicked"
-    } else {
-        "quack-rs: typed table function closure panicked (unknown payload)"
-    }
+///
+/// The payload text is included: `DuckDB`'s `set_error` takes an ordinary
+/// `&str`, so there is no reason to discard the one piece of information that
+/// tells the user *which* assertion or `unwrap` failed.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload.downcast_ref::<&'static str>().map_or_else(
+        || {
+            payload.downcast_ref::<String>().map_or_else(
+                || {
+                    String::from(
+                        "quack-rs: typed table function closure panicked (unknown payload)",
+                    )
+                },
+                |s| format!("quack-rs: typed table function closure panicked: {s}"),
+            )
+        },
+        |s| format!("quack-rs: typed table function closure panicked: {s}"),
+    )
 }
 
 /// Bind trampoline monomorphised per state type `S`.
@@ -309,7 +319,7 @@ unsafe extern "C" fn typed_bind_trampoline<S: Send + 'static>(info: duckdb_bind_
     if let Err(payload) = outcome {
         // SAFETY: `info` is valid.
         let bind_info = unsafe { BindInfo::new(info) };
-        bind_info.set_error(panic_message(&*payload));
+        bind_info.set_error(&panic_message(&*payload));
     }
 }
 
@@ -361,7 +371,7 @@ unsafe extern "C" fn typed_init_trampoline<S: Send + 'static>(info: duckdb_init_
     if let Err(payload) = outcome {
         // SAFETY: `info` is valid.
         let init_info = unsafe { InitInfo::new(info) };
-        init_info.set_error(panic_message(&*payload));
+        init_info.set_error(&panic_message(&*payload));
     }
 }
 
@@ -410,9 +420,21 @@ unsafe extern "C" fn typed_scan_trampoline<S: Send + 'static>(
     if let Err(payload) = outcome {
         // SAFETY: `info` is valid.
         let fninfo = unsafe { FunctionInfo::new(info) };
-        fninfo.set_error(panic_message(&*payload));
+        fninfo.set_error(&panic_message(&*payload));
         // SAFETY: `output` is valid.
         unsafe { duckdb_data_chunk_set_size(output, 0) };
+    }
+}
+
+impl<S: Send + 'static> core::fmt::Debug for TypedTableFunctionBuilder<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use crate::debug_repr::Callback;
+        f.debug_struct("TypedTableFunctionBuilder")
+            .field("state", &core::any::type_name::<S>())
+            .field("inner", &self.inner)
+            .field("bind", &Callback::of(&self.bind))
+            .field("scan", &Callback::of(&self.scan))
+            .finish()
     }
 }
 

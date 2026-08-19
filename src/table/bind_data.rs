@@ -79,15 +79,27 @@ impl<T: 'static> FfiBindData<T> {
         }
     }
 
-    /// Retrieves a shared reference to the bind data from a bind callback.
+    /// Always returns `None`.
     ///
-    /// Returns `None` if no bind data was set or the pointer is null.
+    /// # Deprecated
     ///
-    /// # Safety
+    /// This method cannot work and never could. `DuckDB`'s C API has no
+    /// `duckdb_bind_get_bind_data`: the bind info exposes
+    /// `duckdb_bind_get_extra_info`, `duckdb_bind_get_parameter`,
+    /// `duckdb_bind_get_named_parameter` and the `set_*` calls, and nothing that
+    /// reads back what `duckdb_bind_set_bind_data` stored. Bind data is
+    /// write-only during bind and readable from `init` and `scan` onwards.
     ///
-    /// - `info` must be a valid `duckdb_bind_info`.
-    /// - No mutable reference to the same data must exist.
-    /// - The returned reference is valid for the duration of the bind callback.
+    /// Because it is safe and returns `Option`, a caller writing the natural
+    /// `if let Some(cfg) = get_from_bind(info)` silently takes the wrong branch
+    /// forever. Keep the value in a local instead, and use
+    /// [`get_from_init`][Self::get_from_init] /
+    /// [`get_from_function`][Self::get_from_function] in the later phases.
+    #[deprecated(
+        since = "0.16.0",
+        note = "always returns None — DuckDB has no duckdb_bind_get_bind_data. Keep the value \
+                in a local during bind; use get_from_init / get_from_function afterwards."
+    )]
     pub const fn get_from_bind<'a>(info: duckdb_bind_info) -> Option<&'a T> {
         // Note: duckdb_bind_get_extra_info retrieves the extra_info set on the *function*,
         // not the bind_data. There is no "get bind data from bind info" in the C API —
@@ -159,6 +171,14 @@ impl<T: 'static> FfiBindData<T> {
     }
 }
 
+impl<T: 'static> core::fmt::Debug for FfiBindData<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FfiBindData<")?;
+        f.write_str(core::any::type_name::<T>())?;
+        f.write_str(">")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,10 +204,10 @@ mod tests {
     }
 
     #[test]
-    fn get_from_bind_returns_none() {
-        // get_from_bind is intentionally unimplemented (returns None by design)
-        // Test that calling it with null doesn't panic.
-        let result = FfiBindData::<Config>::get_from_bind(std::ptr::null_mut());
-        assert!(result.is_none());
+    #[allow(deprecated)]
+    fn get_from_bind_always_returns_none() {
+        // Pinned so the deprecation note stays truthful: DuckDB exposes no
+        // duckdb_bind_get_bind_data, so there is nothing this could return.
+        assert!(FfiBindData::<Config>::get_from_bind(std::ptr::null_mut()).is_none());
     }
 }

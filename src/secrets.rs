@@ -3,15 +3,42 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! Secrets manager bridge for extensions.
+//! Credential handling for extensions.
 //!
-//! Extensions that access external services (HTTP APIs, databases, cloud storage)
-//! commonly need credentials. `DuckDB` provides a native secrets API via
-//! `CREATE SECRET`, and this module defines the Rust-side traits and types that
-//! extensions implement to bridge into that system.
+//! Extensions that access external services (HTTP APIs, databases, cloud
+//! storage) commonly need credentials.
 //!
-//! [`SecretsManager`] is the trait that extensions implement to provide secret
-//! lookup. [`SecretEntry`] is the returned secret value.
+//! # What `DuckDB` does and does not give you
+//!
+//! `DuckDB` has a native secrets system (`CREATE SECRET`), but **the extension
+//! C API exposes none of it** — there is not one `duckdb_secret_*` function
+//! among the 546 slots of `duckdb_ext_api_v1` in `DuckDB` 1.5.5. An extension
+//! cannot ask `DuckDB` for a credential through the C API at all.
+//!
+//! What it *can* do is query the `duckdb_secrets()` table function, and
+//! [`list_duckdb_secrets`] does exactly that. But that only gets you metadata:
+//! `DuckDB` **redacts** sensitive fields there. Verified against `DuckDB` 1.5.5:
+//!
+//! ```text
+//! CREATE SECRET s (TYPE s3, KEY_ID 'AKIAEXAMPLE', SECRET 'super-secret-value');
+//! SELECT secret_string FROM duckdb_secrets();
+//! -- ...;key_id=AKIAEXAMPLE;secret=redacted
+//! ```
+//!
+//! So an extension that needs the credential itself must obtain it some other
+//! way — an environment variable, a config option, a file, its own key store.
+//!
+//! # What this module is for
+//!
+//! [`SecretsManager`] is the trait an extension implements over **its own**
+//! credential source, and [`SecretEntry`] is what that source returns. It is
+//! not a bridge to `DuckDB`'s secrets, because no such bridge is available; it
+//! exists so the credential handling an extension has to write anyway comes
+//! with redacting `Debug`, zeroize-on-drop and no `PartialEq` already in place.
+//!
+//! [`list_duckdb_secrets`] complements it by reporting which secrets the user
+//! *has* configured, which is enough to pick a scope, warn about a missing
+//! secret, or decide which provider to use.
 //!
 //! # Security considerations
 //!
@@ -20,9 +47,12 @@
 //! - **`Debug` redacts field values** — only field keys are shown, values are
 //!   replaced with `"[REDACTED]"`. Use [`get_field`][SecretEntry::get_field] to
 //!   access actual values in code.
-//! - **`Drop` zeroizes sensitive data** — all field values are overwritten with
-//!   zeros using [`std::ptr::write_volatile`] before deallocation, preventing
-//!   secrets from lingering in freed memory.
+//! - **`Drop` zeroizes sensitive data** — every field key and value, plus
+//!   `provider` and `scope`, is overwritten with zeros using
+//!   [`std::ptr::write_volatile`] before deallocation, so secrets do not linger
+//!   in freed memory. This covers the buffers a [`SecretEntry`] owns; it cannot
+//!   cover a `String` the caller passed in and still holds, nor a buffer a
+//!   `String` abandoned when it grew.
 //! - **No `PartialEq`** — prevents accidental non-constant-time comparisons of
 //!   secret material. Compare individual fields explicitly if needed.
 //! - **`Clone` is explicit** — cloning is supported but documented so that
@@ -60,6 +90,131 @@
 
 use std::collections::HashMap;
 use std::fmt;
+
+use libduckdb_sys::duckdb_connection;
+
+use crate::error::ExtensionError;
+
+/// Metadata about one secret the user has configured in `DuckDB`.
+///
+/// Deliberately **not** a [`SecretEntry`]: it carries no credential material,
+/// because `DuckDB` does not hand any out. `secret_string` is `DuckDB`'s own
+/// rendering with sensitive fields replaced by `redacted`.
+///
+/// Returned by [`list_duckdb_secrets`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DuckDbSecretInfo {
+    /// The secret's name, as given to `CREATE SECRET`.
+    pub name: String,
+    /// The secret type — `s3`, `http`, `azure`, and so on.
+    pub secret_type: String,
+    /// The provider that supplied it (`config`, `credential_chain`, …).
+    pub provider: String,
+    /// Whether the secret is persisted rather than session-scoped.
+    pub persistent: bool,
+    /// Where a persistent secret is stored.
+    pub storage: String,
+    /// The URI prefixes the secret applies to, e.g. `s3://bucket/`.
+    pub scope: Vec<String>,
+    /// `DuckDB`'s own rendering of the secret, **with sensitive fields
+    /// redacted**. Useful for diagnostics; useless as a credential source.
+    pub secret_string: String,
+}
+
+/// Lists the secrets configured in the `DuckDB` instance behind `connection`.
+///
+/// This queries the `duckdb_secrets()` table function, which is the only route
+/// an extension has: the extension C API has no secret functions at all.
+///
+/// # This cannot return credentials
+///
+/// `DuckDB` redacts sensitive fields. A secret created as
+/// `(TYPE s3, KEY_ID 'AKIA…', SECRET 'super-secret-value')` comes back as
+/// `…;key_id=AKIA…;secret=redacted`. Use this to discover *which* secrets exist
+/// and what they cover — to choose a scope, or to tell the user which one is
+/// missing — not to authenticate with them.
+///
+/// # Errors
+///
+/// Returns [`ExtensionError`] if the query fails.
+///
+/// # Safety
+///
+/// `connection` must be a valid, open `duckdb_connection`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use quack_rs::secrets::list_duckdb_secrets;
+/// # use libduckdb_sys::duckdb_connection;
+/// # unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
+/// // SAFETY: `con` is a valid, open connection.
+/// let secrets = unsafe { list_duckdb_secrets(con) }?;
+/// if !secrets.iter().any(|s| s.secret_type == "s3") {
+///     eprintln!("no S3 secret configured; run CREATE SECRET (TYPE s3, ...)");
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub unsafe fn list_duckdb_secrets(
+    connection: duckdb_connection,
+) -> Result<Vec<DuckDbSecretInfo>, ExtensionError> {
+    // `scope` is VARCHAR[]; cast it to a string here rather than walking a LIST
+    // vector, then split. `list_aggregate(..., 'string_agg')` would need a
+    // separator that cannot appear in a URI prefix, so the array literal syntax
+    // is parsed instead — DuckDB renders it as ['a', 'b'].
+    const SQL: &str = "SELECT name, type, provider, persistent, storage,                        scope::VARCHAR, secret_string FROM duckdb_secrets()";
+
+    // SAFETY: `connection` is valid per this function's contract.
+    let mut result = unsafe { crate::query::query(connection, SQL) }?;
+
+    let mut secrets = Vec::new();
+    while let Some(chunk) = result.next_chunk() {
+        for row in 0..chunk.size() {
+            // SAFETY: the column types are fixed by the SELECT above, and `row`
+            // is within the chunk.
+            unsafe {
+                secrets.push(DuckDbSecretInfo {
+                    name: chunk.reader(0).read_str(row).to_owned(),
+                    secret_type: chunk.reader(1).read_str(row).to_owned(),
+                    provider: chunk.reader(2).read_str(row).to_owned(),
+                    persistent: chunk.reader(3).read_bool(row),
+                    storage: chunk.reader(4).read_str(row).to_owned(),
+                    scope: parse_scope_array(chunk.reader(5).read_str(row)),
+                    secret_string: chunk.reader(6).read_str(row).to_owned(),
+                });
+            }
+        }
+    }
+    Ok(secrets)
+}
+
+/// Parses `DuckDB`'s rendering of a `VARCHAR[]`, e.g. `['s3://', 's3n://']`.
+///
+/// Returns an empty vector for `[]`, and treats anything that is not a bracketed
+/// list as a single element rather than losing it.
+fn parse_scope_array(rendered: &str) -> Vec<String> {
+    let Some(inner) = rendered.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+        return if rendered.is_empty() {
+            Vec::new()
+        } else {
+            vec![rendered.to_owned()]
+        };
+    };
+    if inner.trim().is_empty() {
+        return Vec::new();
+    }
+    inner
+        .split(", ")
+        .map(|item| {
+            item.strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+                .unwrap_or(item)
+                .to_owned()
+        })
+        .collect()
+}
 
 /// A single secret entry retrieved from the secrets manager.
 ///
@@ -532,25 +687,38 @@ mod tests {
         assert!(!display.contains("secret3"));
     }
 
-    #[test]
-    fn zeroize_string_with_special_characters() {
-        let mut s = String::from("p@$$w0rd!#%^&*()_+-=[]{}|;':\",./<>?");
-        let ptr = s.as_ptr();
+    /// Reads back the bytes `zeroize_string` wrote.
+    ///
+    /// The pointer is taken from a `&mut` borrow *and* the read goes through
+    /// the same borrow's provenance: deriving it from `&s` first and reading
+    /// after the `&mut` call would be undefined behaviour under Stacked
+    /// Borrows, even though it happens to work today.
+    fn zeroize_and_read_back(text: &str) -> Vec<u8> {
+        let mut s = String::from(text);
         let len = s.len();
+        let ptr = s.as_mut_ptr();
         zeroize_string(&mut s);
         assert!(s.is_empty());
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert!(s.capacity() >= len, "the buffer must not have been freed");
+        // SAFETY: `clear()` sets the length to zero but does not deallocate, so
+        // `ptr` still points at `s`'s live buffer of at least `len` bytes, and
+        // `s` outlives this read.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        drop(s);
+        bytes
+    }
+
+    #[test]
+    fn zeroize_string_with_special_characters() {
+        let bytes = zeroize_and_read_back("p@$$w0rd!#%^&*()_+-=[]{}|;':\",./<>?");
+        assert!(!bytes.is_empty());
         assert!(bytes.iter().all(|&b| b == 0));
     }
 
     #[test]
     fn zeroize_string_with_unicode() {
-        let mut s = String::from("pässwörd🔑秘密");
-        let ptr = s.as_ptr();
-        let len = s.len();
-        zeroize_string(&mut s);
-        assert!(s.is_empty());
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        let bytes = zeroize_and_read_back("pässwörd🔑秘密");
+        assert!(bytes.len() > "pässwörd🔑秘密".chars().count(), "multi-byte");
         assert!(bytes.iter().all(|&b| b == 0));
     }
 

@@ -20,15 +20,40 @@ Before you can cut a release, ensure the following are in place:
 
 ## Semantic versioning policy
 
-| Change type | Version bump | Examples |
-|-------------|-------------|---------|
-| Bug fixes, doc corrections, internal refactors | **PATCH** (0.2.x → 0.2.1) | Fix wrong method name, correct safety comment |
-| New public API, new module, new feature — backward compatible | **MINOR** (0.2.x → 0.3.0) | New `VectorReader` method, new `TypeId` variant |
-| Removed or changed public API, trait incompatibility | **MAJOR** (0.x.y → 1.0.0) | Remove `AggregateFunctionBuilder::callback`, rename module |
+quack-rs is pre-1.0, and Cargo treats the **leftmost non-zero component as the
+major version**. For a `0.MINOR.PATCH` crate that means `0.16.1` is a compatible
+update to `0.16.0`, while `0.17.0` is a new major line: a dependant written as
+`quack-rs = "0.16"` picks up `0.16.1` automatically and never moves to `0.17`.
+So the *minor* position — not the major — is where a breaking change goes.
+
+| Change type | Version bump | Real examples |
+|-------------|-------------|---------------|
+| No public API change: bug fixes, dependency and security bumps, doc corrections, internal refactors | **PATCH** (0.16.0 → 0.16.1) | 0.12.1 (advisory bumps + clippy fixes), 0.7.1, 0.5.1 |
+| New public API — backward compatible | **MINOR** (0.16.x → 0.17.0) | 0.13.0 (six new modules), 0.15.0 (`Value::as_blob`) |
+| Removed or changed public API, trait incompatibility | **MINOR** (0.16.x → 0.17.0) | 0.16.0 (`read_uuid` `i128` → `u128`), 0.8.0 |
+| Declaring the public API stable | **MAJOR** (0.x.y → 1.0.0) | Not yet used |
+
+Breaking and additive changes share the minor position while the crate is
+pre-1.0; that is Cargo's rule, not a shortcut. Mark breaking entries in
+`CHANGELOG.md` with a bold **Breaking:** prefix so they are greppable, since the
+version number alone no longer distinguishes them from additive ones.
+
+**1.0.0 is a deliberate commitment, not an automatic consequence of a breaking
+change.** Cutting it says the public API is stable and that future breakage will
+require 2.0.0. Do not let a single incompatible change trigger it.
+
+After 1.0.0 the ordinary semver rules apply: PATCH for fixes, MINOR for additive
+API, MAJOR for breaking changes.
 
 API compatibility is defined by all `pub` items in all modules, plus the
 `quack_rs::prelude::*` glob export. Internal items (marked `pub(crate)`) are
 not part of the public API.
+
+The MSRV has not yet been raised on consumers, so there is no precedent to
+follow: 0.13.0 *corrected* a `rust-version` that was already understated, and
+0.16.0 *lowered* it. When a genuine raise does happen, treat it as breaking — it
+can stop a dependant from building, which is what "breaking" means here — and so
+give it a minor bump and a **Breaking:** entry.
 
 Pre-release versions use the suffix convention `vX.Y.Z-alpha.N`,
 `vX.Y.Z-beta.N`, or `vX.Y.Z-rc.N`.
@@ -68,7 +93,7 @@ CI / test (Windows)     ✅
 CI / clippy             ✅
 CI / fmt                ✅
 CI / doc                ✅
-CI / MSRV (1.87.0)      ✅
+CI / MSRV (1.86.0)      ✅
 CI / security           ✅
 ```
 

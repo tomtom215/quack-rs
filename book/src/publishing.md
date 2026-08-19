@@ -79,7 +79,19 @@ extension:
 
 repo:
   github: yourorg/duckdb-my-extension
-  ref: main
+  # Must be a commit hash, not a branch: the community repository builds
+  # exactly this revision and signs the result, so a moving reference would
+  # make the build unreproducible. DuckDB's docs: "Provide the hash of the
+  # latest commit on the branch targeting stable as `ref`".
+  ref: 0a11ddc058beb2d480ccbfa83e16a68400c5d076
+  # ref_next: <hash>   # optional: a revision compatible with DuckDB main,
+  #                    # used while a new DuckDB release is being prepared.
+
+docs:
+  hello_world: |
+    SELECT my_extension_version();
+  extended_description: |
+    A longer description, rendered on the community-extensions site.
 ```
 
 Use `quack_rs::validate` to pre-validate fields before submission:
@@ -150,19 +162,35 @@ match classify_extension_version("0.1.0")? {
 
 Community extensions are built for:
 
-| Platform | Description |
-|----------|-------------|
-| `linux_amd64` | Linux x86_64 |
-| `linux_amd64_gcc4` | Linux x86_64 (GCC 4 ABI) |
-| `linux_arm64` | Linux AArch64 |
-| `osx_amd64` | macOS x86_64 |
-| `osx_arm64` | macOS Apple Silicon |
-| `windows_amd64` | Windows x86_64 |
-| `windows_amd64_mingw` | Windows x86_64 (MinGW) |
-| `windows_arm64` | Windows AArch64 |
-| `wasm_mvp` | WebAssembly (MVP) |
-| `wasm_eh` | WebAssembly (exception handling) |
-| `wasm_threads` | WebAssembly (threads) |
+| Platform | Description | Opt-in? |
+|----------|-------------|---------|
+| `linux_amd64` | Linux x86_64 (glibc) | |
+| `linux_amd64_musl` | Linux x86_64 (musl) | yes |
+| `linux_arm64` | Linux AArch64 (glibc) | |
+| `linux_arm64_musl` | Linux AArch64 (musl) | yes |
+| `osx_amd64` | macOS x86_64 | |
+| `osx_arm64` | macOS Apple Silicon | |
+| `windows_amd64` | Windows x86_64 | |
+| `windows_amd64_mingw` | Windows x86_64 (MinGW) | |
+| `windows_arm64` | Windows AArch64 | yes |
+| `wasm_mvp` | WebAssembly (MVP) | |
+| `wasm_eh` | WebAssembly (exception handling) | |
+| `wasm_threads` | WebAssembly (threads) | |
+
+An **opt-in** platform is not built unless an extension asks for it, so listing
+one in `excluded_platforms` has no effect. `validate::platform::is_opt_in_platform`
+reports which these are.
+
+`linux_amd64_gcc4` used to appear in this table and no longer exists: DuckDB
+retired the legacy CXX ABI target, and `DuckDBPlatform()` now raises a compile
+error rather than emitting a `_gcc4` suffix. `validate_platform` rejects it with
+that explanation.
+
+This table is derived from `config/distribution_matrix.json` in
+[`duckdb/extension-ci-tools`][ci-tools], and `scripts/check-platform-table.py`
+fails CI when quack-rs's copy drifts from it.
+
+[ci-tools]: https://github.com/duckdb/extension-ci-tools/blob/main/config/distribution_matrix.json
 
 If your extension cannot be built for a platform (e.g., it uses a
 platform-specific system library), add it to `excluded_platforms`:
@@ -227,9 +255,18 @@ correctly configured:
 use quack_rs::validate::validate_release_profile;
 
 // Pass all four release profile settings from your Cargo.toml
-validate_release_profile("abort", "true", "3", "1")?;   // Ok
-validate_release_profile("unwind", "true", "3", "1")?;   // Err — panics across FFI are UB
+validate_release_profile("unwind", "true", "3", "1")?;  // Ok
+validate_release_profile("abort", "true", "3", "1")?;   // Err — see below
 ```
+
+`panic` must be `"unwind"`. quack-rs wraps every `extern "C"` entry point in
+`catch_unwind` so a panic in your code becomes a DuckDB error rather than a
+crash, and `catch_unwind` cannot catch anything under `panic = "abort"`: the
+runtime aborts before unwinding starts, killing the user's DuckDB session.
+
+The older advice to set `abort` came from panics escaping an `extern "C"`
+boundary once being undefined behavior. They no longer are — Rust defines that
+as an abort — and quack-rs catches them before the boundary anyway.
 
 ---
 

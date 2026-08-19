@@ -34,6 +34,7 @@ use crate::vector::VectorReader;
 ///
 /// Pre-creates a [`VectorReader`] for every field at construction, allowing
 /// direct typed reads without repeated `duckdb_struct_vector_get_child` calls.
+#[derive(Debug)]
 pub struct StructReader {
     vector: duckdb_vector,
     fields: Vec<VectorReader>,
@@ -61,7 +62,7 @@ impl StructReader {
     #[mutants::skip]
     #[must_use]
     #[inline]
-    pub const fn field_count(&self) -> usize {
+    pub fn field_count(&self) -> usize {
         self.fields.len()
     }
 
@@ -298,13 +299,16 @@ impl StructReader {
         unsafe { self.fields[field_idx].read_blob(row) }
     }
 
-    /// Reads a `UUID` value (as i128) from field `field_idx` at row `row`.
+    /// Reads a `UUID`'s textual 128 bits from field `field_idx` at row `row`.
+    ///
+    /// See [`VectorReader::read_uuid`][crate::vector::VectorReader::read_uuid]
+    /// for why this is not the raw `HUGEINT` storage.
     ///
     /// # Safety
     ///
     /// See [`read_bool`][Self::read_bool].
     #[inline]
-    pub unsafe fn read_uuid(&self, row: usize, field_idx: usize) -> i128 {
+    pub unsafe fn read_uuid(&self, row: usize, field_idx: usize) -> u128 {
         unsafe { self.fields[field_idx].read_uuid(row) }
     }
 }

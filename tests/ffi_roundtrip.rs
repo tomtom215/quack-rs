@@ -1,0 +1,2830 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+
+// These tests are deliberately exhaustive: each one walks every width, every
+// boundary value, or every callback kind, which makes them long and full of
+// deliberate casts at type edges. `src/` is held to the full pedantic bar (CI
+// lints it with `-D warnings`); this file opts out of the style lints that
+// fight that shape, and nothing else.
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::items_after_statements,
+    clippy::redundant_closure_for_method_calls,
+    clippy::format_collect,
+    clippy::manual_assert,
+    clippy::err_expect,
+    clippy::case_sensitive_file_extension_comparisons
+)]
+
+//! End-to-end FFI round-trips against a real `DuckDB`.
+//!
+//! Every test here registers a genuine `DuckDB` function built with quack-rs,
+//! runs SQL against it, and checks the answer — so it exercises the whole path:
+//! builder → `duckdb_register_*` → `DuckDB`'s planner and executor → the
+//! `extern "C"` callback → [`VectorReader`] / [`VectorWriter`] → back out through
+//! a `duckdb_result`.
+//!
+//! This is the coverage that matters most for this crate: the vector accessors
+//! do raw pointer arithmetic against layouts that only `DuckDB` defines, so a
+//! wrong offset or a wrong physical type is invisible to a mock and obvious
+//! here.
+//!
+//! # Why this works in `cargo test`
+//!
+//! In `loadable-extension` mode every C API call goes through a function-pointer
+//! dispatch table that `DuckDB` normally fills at extension-load time.
+//! [`InMemoryDb::open`] populates it from the linked `DuckDB` via
+//! `CreateAPIv1()`, so once it has been called the full C API — including
+//! function registration and vector access — behaves exactly as it does inside a
+//! loaded extension.
+//!
+//! Requires `--features bundled-test` (or `bundled-test-prebuilt`).
+
+#![cfg(feature = "_duckdb-testing")]
+
+use libduckdb_sys::{duckdb_connection, DuckDBSuccess};
+use quack_rs::data_chunk::DataChunk;
+use quack_rs::datetime;
+use quack_rs::query::{query, QueryResult};
+use quack_rs::scalar::{ScalarFn, ScalarFunctionBuilder};
+use quack_rs::testing::InMemoryDb;
+use quack_rs::types::{LogicalType, NullHandling, TypeId};
+use quack_rs::vector::{VectorReader, VectorWriter};
+
+/// A live database plus a connection, torn down in the right order on drop.
+struct Fixture {
+    db: libduckdb_sys::duckdb_database,
+    con: duckdb_connection,
+    _dispatch: InMemoryDb,
+}
+
+impl Fixture {
+    fn open() -> Self {
+        // Populates the loadable-extension dispatch table from the linked DuckDB.
+        let dispatch = InMemoryDb::open().expect("initialise the DuckDB C API dispatch table");
+        let mut db: libduckdb_sys::duckdb_database = std::ptr::null_mut();
+        let mut con: duckdb_connection = std::ptr::null_mut();
+        // SAFETY: standard open/connect against a fresh in-memory database.
+        unsafe {
+            assert_eq!(
+                libduckdb_sys::duckdb_open(std::ptr::null(), &raw mut db),
+                DuckDBSuccess,
+                "duckdb_open"
+            );
+            assert_eq!(
+                libduckdb_sys::duckdb_connect(db, &raw mut con),
+                DuckDBSuccess,
+                "duckdb_connect"
+            );
+        }
+        Self {
+            db,
+            con,
+            _dispatch: dispatch,
+        }
+    }
+
+    const fn con(&self) -> duckdb_connection {
+        self.con
+    }
+
+    /// The database handle — replacement scans register against this, not a
+    /// connection.
+    const fn db(&self) -> libduckdb_sys::duckdb_database {
+        self.db
+    }
+
+    fn query(&self, sql: &str) -> QueryResult {
+        // SAFETY: `self.con` is open for this fixture's lifetime.
+        unsafe { query(self.con, sql) }.unwrap_or_else(|e| panic!("{sql}: {e}"))
+    }
+
+    /// Runs `sql` and returns the single value in row 0, column 0, read by
+    /// `read`. `None` when that value is SQL NULL.
+    fn scalar<T>(&self, sql: &str, read: impl Fn(&VectorReader, usize) -> T) -> Option<T> {
+        let mut result = self.query(sql);
+        let chunk = result.next_chunk().expect("at least one chunk");
+        assert_eq!(chunk.size(), 1, "{sql} must return exactly one row");
+        // SAFETY: the chunk has one row and at least one column.
+        let reader = unsafe { chunk.reader(0) };
+        // SAFETY: row 0 exists.
+        if !unsafe { reader.is_valid(0) } {
+            return None;
+        }
+        Some(read(&reader, 0))
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // SAFETY: both handles were created in `open` and are released once.
+        unsafe {
+            libduckdb_sys::duckdb_disconnect(&raw mut self.con);
+            libduckdb_sys::duckdb_close(&raw mut self.db);
+        }
+    }
+}
+
+// ─── Scalar functions: one per physical layout ───────────────────────────────
+
+/// Declares a scalar function that reads one value and writes one value,
+/// registering it under `$sql_name`.
+macro_rules! echo_fn {
+    ($fn_name:ident, $read:ident, $write:ident) => {
+        quack_rs::scalar_callback!($fn_name, |_info, input, output| {
+            let chunk = unsafe { DataChunk::from_raw(input) };
+            let reader = unsafe { chunk.reader(0) };
+            let mut writer = unsafe { VectorWriter::from_vector(output) };
+            for row in 0..chunk.size() {
+                if unsafe { reader.is_valid(row) } {
+                    let value = unsafe { reader.$read(row) };
+                    unsafe { writer.$write(row, value) };
+                } else {
+                    unsafe { writer.set_null(row) };
+                }
+            }
+        });
+    };
+}
+
+echo_fn!(echo_i8, read_i8, write_i8);
+echo_fn!(echo_i16, read_i16, write_i16);
+echo_fn!(echo_i32, read_i32, write_i32);
+echo_fn!(echo_i64, read_i64, write_i64);
+echo_fn!(echo_u8, read_u8, write_u8);
+echo_fn!(echo_u16, read_u16, write_u16);
+echo_fn!(echo_u32, read_u32, write_u32);
+echo_fn!(echo_u64, read_u64, write_u64);
+echo_fn!(echo_i128, read_i128, write_i128);
+echo_fn!(echo_u128, read_u128, write_u128);
+echo_fn!(echo_f32, read_f32, write_f32);
+echo_fn!(echo_f64, read_f64, write_f64);
+echo_fn!(echo_bool, read_bool, write_bool);
+echo_fn!(echo_str, read_str, write_varchar);
+echo_fn!(echo_blob, read_blob, write_blob);
+echo_fn!(echo_date, read_date, write_date);
+echo_fn!(echo_time, read_time, write_time);
+echo_fn!(echo_timestamp, read_timestamp, write_timestamp);
+echo_fn!(echo_timestamp_tz, read_timestamp_tz, write_timestamp_tz);
+echo_fn!(echo_timestamp_s, read_timestamp_s, write_timestamp_s);
+echo_fn!(echo_timestamp_ms, read_timestamp_ms, write_timestamp_ms);
+echo_fn!(echo_timestamp_ns, read_timestamp_ns, write_timestamp_ns);
+echo_fn!(echo_time_tz, read_time_tz, write_time_tz);
+echo_fn!(echo_uuid, read_uuid, write_uuid);
+echo_fn!(echo_interval, read_interval, write_interval);
+
+/// Registers `name(param) -> ret` backed by `callback`.
+fn register_echo(
+    con: duckdb_connection,
+    name: &str,
+    param: TypeId,
+    ret: TypeId,
+    callback: ScalarFn,
+) {
+    // SAFETY: `con` is open, and the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new(name)
+            .expect("valid function name")
+            .param(param)
+            .returns(ret)
+            .function(callback)
+            .register(con)
+            .unwrap_or_else(|e| panic!("register {name}: {e}"));
+    }
+}
+
+#[test]
+fn every_integer_width_round_trips_through_real_vectors() {
+    let fx = Fixture::open();
+
+    register_echo(
+        fx.con(),
+        "echo_i8",
+        TypeId::TinyInt,
+        TypeId::TinyInt,
+        echo_i8,
+    );
+    register_echo(
+        fx.con(),
+        "echo_i16",
+        TypeId::SmallInt,
+        TypeId::SmallInt,
+        echo_i16,
+    );
+    register_echo(
+        fx.con(),
+        "echo_i32",
+        TypeId::Integer,
+        TypeId::Integer,
+        echo_i32,
+    );
+    register_echo(
+        fx.con(),
+        "echo_i64",
+        TypeId::BigInt,
+        TypeId::BigInt,
+        echo_i64,
+    );
+    register_echo(
+        fx.con(),
+        "echo_u8",
+        TypeId::UTinyInt,
+        TypeId::UTinyInt,
+        echo_u8,
+    );
+    register_echo(
+        fx.con(),
+        "echo_u16",
+        TypeId::USmallInt,
+        TypeId::USmallInt,
+        echo_u16,
+    );
+    register_echo(
+        fx.con(),
+        "echo_u32",
+        TypeId::UInteger,
+        TypeId::UInteger,
+        echo_u32,
+    );
+    register_echo(
+        fx.con(),
+        "echo_u64",
+        TypeId::UBigInt,
+        TypeId::UBigInt,
+        echo_u64,
+    );
+
+    // Extremes catch sign-extension and width mistakes that mid-range values hide.
+    assert_eq!(
+        fx.scalar("SELECT echo_i8((-128)::TINYINT)", |r, i| unsafe {
+            r.read_i8(i)
+        }),
+        Some(i8::MIN)
+    );
+    assert_eq!(
+        fx.scalar("SELECT echo_i8(127::TINYINT)", |r, i| unsafe {
+            r.read_i8(i)
+        }),
+        Some(i8::MAX)
+    );
+    assert_eq!(
+        fx.scalar("SELECT echo_i16((-32768)::SMALLINT)", |r, i| unsafe {
+            r.read_i16(i)
+        }),
+        Some(i16::MIN)
+    );
+    assert_eq!(
+        fx.scalar("SELECT echo_i32((-2147483648)::INTEGER)", |r, i| unsafe {
+            r.read_i32(i)
+        }),
+        Some(i32::MIN)
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT echo_i64((-9223372036854775808)::BIGINT)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(i64::MIN)
+    );
+    assert_eq!(
+        fx.scalar("SELECT echo_u8(255::UTINYINT)", |r, i| unsafe {
+            r.read_u8(i)
+        }),
+        Some(u8::MAX)
+    );
+    assert_eq!(
+        fx.scalar("SELECT echo_u16(65535::USMALLINT)", |r, i| unsafe {
+            r.read_u16(i)
+        }),
+        Some(u16::MAX)
+    );
+    assert_eq!(
+        fx.scalar("SELECT echo_u32(4294967295::UINTEGER)", |r, i| unsafe {
+            r.read_u32(i)
+        }),
+        Some(u32::MAX)
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT echo_u64(18446744073709551615::UBIGINT)",
+            |r, i| unsafe { r.read_u64(i) }
+        ),
+        Some(u64::MAX)
+    );
+}
+
+#[test]
+fn wide_integers_round_trip_at_their_extremes() {
+    let fx = Fixture::open();
+    register_echo(
+        fx.con(),
+        "echo_i128",
+        TypeId::HugeInt,
+        TypeId::HugeInt,
+        echo_i128,
+    );
+    register_echo(
+        fx.con(),
+        "echo_u128",
+        TypeId::UHugeInt,
+        TypeId::UHugeInt,
+        echo_u128,
+    );
+
+    // HUGEINT is stored as { lower: u64, upper: i64 }; UHUGEINT as two u64s.
+    // Getting the halves or their signedness wrong shows up at the extremes.
+    let hugeint_max = "170141183460469231731687303715884105727";
+    let hugeint_min = "-170141183460469231731687303715884105728";
+    let uhugeint_max = "340282366920938463463374607431768211455";
+
+    assert_eq!(
+        fx.scalar(
+            &format!("SELECT echo_i128({hugeint_max}::HUGEINT)"),
+            |r, i| unsafe { r.read_i128(i) }
+        ),
+        Some(i128::MAX)
+    );
+    assert_eq!(
+        fx.scalar(
+            // Parenthesised: `-N::HUGEINT` parses as `-(N::HUGEINT)`, and the
+            // positive magnitude of i128::MIN does not fit in HUGEINT.
+            &format!("SELECT echo_i128(({hugeint_min})::HUGEINT)"),
+            |r, i| unsafe { r.read_i128(i) }
+        ),
+        Some(i128::MIN)
+    );
+    assert_eq!(
+        fx.scalar("SELECT echo_i128((-1)::HUGEINT)", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(-1)
+    );
+    assert_eq!(
+        fx.scalar(
+            &format!("SELECT echo_u128({uhugeint_max}::UHUGEINT)"),
+            |r, i| unsafe { r.read_u128(i) }
+        ),
+        Some(u128::MAX)
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT echo_u128(18446744073709551616::UHUGEINT)",
+            |r, i| unsafe { r.read_u128(i) }
+        ),
+        Some(1_u128 << 64)
+    );
+}
+
+#[test]
+fn floats_and_booleans_round_trip() {
+    let fx = Fixture::open();
+    register_echo(fx.con(), "echo_f32", TypeId::Float, TypeId::Float, echo_f32);
+    register_echo(
+        fx.con(),
+        "echo_f64",
+        TypeId::Double,
+        TypeId::Double,
+        echo_f64,
+    );
+    register_echo(
+        fx.con(),
+        "echo_bool",
+        TypeId::Boolean,
+        TypeId::Boolean,
+        echo_bool,
+    );
+
+    let f32_value = fx
+        .scalar("SELECT echo_f32(1.5::FLOAT)", |r, i| unsafe {
+            r.read_f32(i)
+        })
+        .expect("not null");
+    assert!((f32_value - 1.5).abs() < f32::EPSILON);
+
+    let f64_value = fx
+        .scalar("SELECT echo_f64(1e308::DOUBLE)", |r, i| unsafe {
+            r.read_f64(i)
+        })
+        .expect("not null");
+    assert!((f64_value - 1e308).abs() / 1e308 < 1e-12);
+
+    assert!(fx
+        .scalar("SELECT echo_f64('nan'::DOUBLE)", |r, i| unsafe {
+            r.read_f64(i)
+        })
+        .expect("not null")
+        .is_nan());
+
+    assert_eq!(
+        fx.scalar("SELECT echo_bool(true)", |r, i| unsafe { r.read_bool(i) }),
+        Some(true)
+    );
+    assert_eq!(
+        fx.scalar("SELECT echo_bool(false)", |r, i| unsafe { r.read_bool(i) }),
+        Some(false)
+    );
+}
+
+#[test]
+fn strings_round_trip_across_the_inline_boundary() {
+    let fx = Fixture::open();
+    register_echo(
+        fx.con(),
+        "echo_str",
+        TypeId::Varchar,
+        TypeId::Varchar,
+        echo_str,
+    );
+
+    // `duckdb_string_t` stores <= 12 bytes inline and longer values behind a
+    // pointer. Both sides of that boundary must work, and multi-byte UTF-8 must
+    // survive intact.
+    for value in [
+        "",
+        "a",
+        "abcdefghijkl",  // exactly 12 bytes: the last inline length
+        "abcdefghijklm", // 13 bytes: the first pointer-format length
+        "the quick brown fox jumps over the lazy dog",
+        "héllo wörld ☃", // multi-byte
+        "🦆🦆🦆🦆",      // 16 bytes of emoji
+    ] {
+        let escaped = value.replace('\'', "''");
+        let got = fx.scalar(&format!("SELECT echo_str('{escaped}')"), |r, i| unsafe {
+            r.read_str(i).to_owned()
+        });
+        assert_eq!(got.as_deref(), Some(value), "round trip for {value:?}");
+    }
+}
+
+#[test]
+fn blobs_preserve_arbitrary_bytes() {
+    let fx = Fixture::open();
+    register_echo(fx.con(), "echo_blob", TypeId::Blob, TypeId::Blob, echo_blob);
+
+    // Bytes that are not valid UTF-8, including an embedded NUL, across both the
+    // inline and pointer representations.
+    let short = fx.scalar(r"SELECT echo_blob('\x00\xFF\x80'::BLOB)", |r, i| unsafe {
+        r.read_blob(i).to_vec()
+    });
+    assert_eq!(short.as_deref(), Some(&[0x00, 0xFF, 0x80][..]));
+
+    let long_hex: String = (0..40).map(|b: u8| format!(r"\x{b:02X}")).collect();
+    let long = fx.scalar(
+        &format!("SELECT echo_blob('{long_hex}'::BLOB)"),
+        |r, i| unsafe { r.read_blob(i).to_vec() },
+    );
+    assert_eq!(long.as_deref(), Some(&(0..40).collect::<Vec<u8>>()[..]));
+}
+
+#[test]
+fn temporal_types_round_trip_and_agree_with_duckdb() {
+    let fx = Fixture::open();
+    register_echo(fx.con(), "echo_date", TypeId::Date, TypeId::Date, echo_date);
+    register_echo(fx.con(), "echo_time", TypeId::Time, TypeId::Time, echo_time);
+    register_echo(
+        fx.con(),
+        "echo_ts",
+        TypeId::Timestamp,
+        TypeId::Timestamp,
+        echo_timestamp,
+    );
+    register_echo(
+        fx.con(),
+        "echo_tstz",
+        TypeId::TimestampTz,
+        TypeId::TimestampTz,
+        echo_timestamp_tz,
+    );
+    register_echo(
+        fx.con(),
+        "echo_ts_s",
+        TypeId::TimestampS,
+        TypeId::TimestampS,
+        echo_timestamp_s,
+    );
+    register_echo(
+        fx.con(),
+        "echo_ts_ms",
+        TypeId::TimestampMs,
+        TypeId::TimestampMs,
+        echo_timestamp_ms,
+    );
+    register_echo(
+        fx.con(),
+        "echo_ts_ns",
+        TypeId::TimestampNs,
+        TypeId::TimestampNs,
+        echo_timestamp_ns,
+    );
+    register_echo(
+        fx.con(),
+        "echo_timetz",
+        TypeId::TimeTz,
+        TypeId::TimeTz,
+        echo_time_tz,
+    );
+
+    // The value must survive the round trip *and* mean the same thing to DuckDB.
+    assert_eq!(
+        fx.scalar(
+            "SELECT echo_date(DATE '2026-08-18')::VARCHAR",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some("2026-08-18")
+    );
+
+    // DATE is days since the epoch; cross-check the raw integer too.
+    let days = fx
+        .scalar("SELECT echo_date(DATE '2026-08-18')", |r, i| unsafe {
+            r.read_date(i)
+        })
+        .expect("not null");
+    // SAFETY: the dispatch table is live for this fixture.
+    let decoded = unsafe { datetime::date_from_days(days) };
+    assert_eq!((decoded.year, decoded.month, decoded.day), (2026, 8, 18));
+
+    assert_eq!(
+        fx.scalar(
+            "SELECT echo_time(TIME '23:59:59.999999')::VARCHAR",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some("23:59:59.999999")
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT echo_ts(TIMESTAMP '2026-08-18 12:34:56.789')::VARCHAR",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some("2026-08-18 12:34:56.789")
+    );
+
+    // The sub-second variants each store a different unit in the same i64.
+    assert_eq!(
+        fx.scalar(
+            "SELECT echo_ts_s(TIMESTAMP_S '2026-08-18 12:00:00')",
+            |r, i| unsafe { r.read_timestamp_s(i) }
+        ),
+        fx.scalar(
+            "SELECT epoch(TIMESTAMP '2026-08-18 12:00:00')::BIGINT",
+            |r, i| unsafe { r.read_i64(i) }
+        )
+    );
+    let millis = fx
+        .scalar(
+            "SELECT echo_ts_ms(TIMESTAMP_MS '2026-08-18 12:00:00.123')",
+            |r, i| unsafe { r.read_timestamp_ms(i) },
+        )
+        .expect("not null");
+    assert_eq!(millis % 1_000, 123);
+    let nanos = fx
+        .scalar(
+            "SELECT echo_ts_ns(TIMESTAMP_NS '2026-08-18 12:00:00.123456789')",
+            |r, i| unsafe { r.read_timestamp_ns(i) },
+        )
+        .expect("not null");
+    assert_eq!(nanos % 1_000_000_000, 123_456_789);
+
+    // TIMETZ is a packed 64-bit value, not a plain integer.
+    let bits = fx
+        .scalar("SELECT echo_timetz(TIMETZ '12:00:00+02')", |r, i| unsafe {
+            r.read_time_tz(i)
+        })
+        .expect("not null");
+    // SAFETY: the dispatch table is live for this fixture.
+    let decoded = unsafe { datetime::time_tz_from_bits(bits) };
+    assert_eq!(decoded.time.hour, 12);
+    assert_eq!(decoded.offset_seconds, 2 * 3_600);
+}
+
+#[test]
+fn uuid_and_interval_round_trip() {
+    let fx = Fixture::open();
+    register_echo(fx.con(), "echo_uuid", TypeId::Uuid, TypeId::Uuid, echo_uuid);
+    register_echo(
+        fx.con(),
+        "echo_iv",
+        TypeId::Interval,
+        TypeId::Interval,
+        echo_interval,
+    );
+
+    assert_eq!(
+        fx.scalar(
+            "SELECT echo_uuid('11111111-2222-3333-4444-555555555555'::UUID)::VARCHAR",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some("11111111-2222-3333-4444-555555555555")
+    );
+
+    // INTERVAL is { months: i32, days: i32, micros: i64 } — three fields at
+    // three offsets, so a single scalar comparison would not catch a mix-up.
+    let interval = fx
+        .scalar(
+            "SELECT echo_iv(INTERVAL '14 months 3 days 250 microseconds')",
+            |r, i| unsafe { r.read_interval(i) },
+        )
+        .expect("not null");
+    assert_eq!(interval.months, 14);
+    assert_eq!(interval.days, 3);
+    assert_eq!(interval.micros, 250);
+}
+
+// ─── NULL handling ───────────────────────────────────────────────────────────
+
+quack_rs::scalar_callback!(nullable_double, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        // With SpecialNullHandling the callback sees NULL inputs itself.
+        if unsafe { reader.is_valid(row) } {
+            unsafe { writer.write_i64(row, reader.read_i64(row) * 2) };
+        } else {
+            unsafe { writer.set_null(row) };
+        }
+    }
+});
+
+// Writes NULL into every row, exercising the batched path.
+quack_rs::scalar_callback!(all_null, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    unsafe { writer.set_null_range(0..chunk.size()) };
+});
+
+#[test]
+fn null_inputs_and_outputs_are_handled() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        ScalarFunctionBuilder::try_new("nullable_double")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::SpecialNullHandling)
+            .function(nullable_double)
+            .register(fx.con())
+            .expect("register nullable_double");
+        ScalarFunctionBuilder::try_new("all_null")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::SpecialNullHandling)
+            .function(all_null)
+            .register(fx.con())
+            .expect("register all_null");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT nullable_double(21::BIGINT)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(42)
+    );
+    // With SpecialNullHandling the callback runs on the NULL and must emit NULL.
+    assert_eq!(
+        fx.scalar("SELECT nullable_double(NULL::BIGINT)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        None
+    );
+
+    // `set_null_range` over a whole vector, checked through SQL rather than by
+    // reading the bitmap back.
+    let mut result =
+        fx.query("SELECT count(*) AS total, count(all_null(i)) AS non_null FROM range(5000) t(i)");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: both columns are BIGINT and row 0 exists.
+    unsafe {
+        assert_eq!(chunk.reader(0).read_i64(0), 5000);
+        assert_eq!(chunk.reader(1).read_i64(0), 0, "every row must be NULL");
+    }
+}
+
+// ─── Vector sizes and chunking ───────────────────────────────────────────────
+
+quack_rs::scalar_callback!(row_index_sum, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        // Reading and writing at the very last index of a full vector is where
+        // an off-by-one in the offset arithmetic shows up.
+        unsafe { writer.write_i64(row, reader.read_i64(row) + 1) };
+    }
+});
+
+#[test]
+fn full_multi_chunk_scans_touch_every_row() {
+    let fx = Fixture::open();
+    register_echo(
+        fx.con(),
+        "row_index_sum",
+        TypeId::BigInt,
+        TypeId::BigInt,
+        row_index_sum,
+    );
+
+    // Deliberately more rows than one vector holds, and not a multiple of it, so
+    // the last chunk is partial.
+    let rows = quack_rs::vector::vector_size() * 5 + 13;
+    let sql = format!("SELECT sum(row_index_sum(i)) FROM range({rows}) t(i)");
+    let expected = (0..rows as i64).map(|i| i + 1).sum::<i64>();
+    assert_eq!(
+        fx.scalar(&sql, |r, i| unsafe { r.read_i128(i) }),
+        Some(i128::from(expected)),
+        "sum over {rows} rows"
+    );
+}
+
+// ─── DECIMAL: physical width selection ───────────────────────────────────────
+
+/// Echoes a DECIMAL by reading and writing its unscaled integer.
+///
+/// The declared width is baked into each registration so the callback knows the
+/// physical storage type.
+macro_rules! decimal_echo {
+    ($fn_name:ident, $width:expr) => {
+        quack_rs::scalar_callback!($fn_name, |_info, input, output| {
+            let chunk = unsafe { DataChunk::from_raw(input) };
+            let reader = unsafe { chunk.reader(0) };
+            let mut writer = unsafe { VectorWriter::from_vector(output) };
+            for row in 0..chunk.size() {
+                if unsafe { reader.is_valid(row) } {
+                    let unscaled = unsafe { reader.read_decimal(row, $width) };
+                    unsafe { writer.write_decimal(row, $width, unscaled) };
+                } else {
+                    unsafe { writer.set_null(row) };
+                }
+            }
+        });
+    };
+}
+
+decimal_echo!(echo_decimal_4, 4);
+decimal_echo!(echo_decimal_9, 9);
+decimal_echo!(echo_decimal_18, 18);
+decimal_echo!(echo_decimal_38, 38);
+
+#[test]
+fn decimals_round_trip_at_every_physical_width() {
+    let fx = Fixture::open();
+
+    // DuckDB stores DECIMAL in the narrowest integer that fits the width:
+    // <=4 -> i16, <=9 -> i32, <=18 -> i64, <=38 -> i128. Each boundary gets its
+    // own registration so a wrong threshold reads the wrong number of bytes.
+    for (name, width, scale, callback) in [
+        ("dec4", 4_u8, 2_u8, echo_decimal_4 as ScalarFn),
+        ("dec9", 9, 4, echo_decimal_9),
+        ("dec18", 18, 6, echo_decimal_18),
+        ("dec38", 38, 10, echo_decimal_38),
+    ] {
+        let decimal_type = LogicalType::decimal(width, scale);
+        // SAFETY: `con` is open; the callback matches the declared signature.
+        unsafe {
+            ScalarFunctionBuilder::try_new(name)
+                .expect("name")
+                .param_logical(LogicalType::decimal(width, scale))
+                .returns_logical(decimal_type)
+                .function(callback)
+                .register(fx.con())
+                .unwrap_or_else(|e| panic!("register {name}: {e}"));
+        }
+    }
+
+    for (name, literal, width, scale) in [
+        ("dec4", "99.99", 4, 2),
+        ("dec4", "-99.99", 4, 2),
+        ("dec9", "99999.9999", 9, 4),
+        ("dec18", "123456789012.345678", 18, 6),
+        ("dec38", "1234567890123456789012345678.9012345678", 38, 10),
+    ] {
+        let sql = format!("SELECT {name}({literal}::DECIMAL({width},{scale}))::VARCHAR");
+        assert_eq!(
+            fx.scalar(&sql, |r, i| unsafe { r.read_str(i).to_owned() })
+                .as_deref(),
+            Some(literal),
+            "{sql}"
+        );
+    }
+}
+
+// ─── Panic safety ────────────────────────────────────────────────────────────
+
+quack_rs::scalar_callback!(always_panics, |_info, _input, _output| {
+    panic!("deliberate panic from a scalar callback");
+});
+
+#[test]
+fn a_panicking_callback_becomes_a_sql_error() {
+    // `scalar_callback!` wraps the body in `catch_unwind` and reports the panic
+    // through `duckdb_scalar_function_set_error`. Without that the unwind would
+    // reach the `extern "C"` boundary and abort the process — taking the whole
+    // database with it. This test is therefore also a canary for anyone who
+    // builds the test profile with `panic = "abort"`.
+    let fx = Fixture::open();
+    register_echo(
+        fx.con(),
+        "always_panics",
+        TypeId::BigInt,
+        TypeId::BigInt,
+        always_panics,
+    );
+
+    // SAFETY: `fx.con` is open.
+    let result = unsafe { query(fx.con(), "SELECT always_panics(1::BIGINT)") };
+    let err = result.err().expect("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("deliberate panic"),
+        "the panic message should reach the user: {err}"
+    );
+
+    // The connection must remain usable afterwards.
+    assert_eq!(
+        fx.scalar("SELECT 7::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(7)
+    );
+}
+
+// ─── Table functions ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_typed_table_function_streams_rows() {
+    use quack_rs::table::TableFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    struct State {
+        remaining: i64,
+    }
+
+    let builder = TableFunctionBuilder::new("count_down")
+        .param(TypeId::BigInt)
+        .with_state::<State, _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            // SAFETY: parameter 0 was declared above.
+            let n = unsafe { bind.get_parameter_value(0) }.as_i64_or(0);
+            Ok(State { remaining: n })
+        })
+        .scan(|state, chunk| {
+            // Emit one row per call so the scan loop runs many times.
+            if state.remaining <= 0 {
+                unsafe { chunk.set_size(0) };
+                return Ok(());
+            }
+            let mut writer = unsafe { chunk.writer(0) };
+            unsafe { writer.write_i64(0, state.remaining) };
+            state.remaining -= 1;
+            unsafe { chunk.set_size(1) };
+            Ok(())
+        })
+        .build()
+        .expect("build typed table function");
+
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register count_down");
+
+    assert_eq!(
+        fx.scalar("SELECT sum(n) FROM count_down(100)", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(5050)
+    );
+    assert_eq!(
+        fx.scalar("SELECT count(*) FROM count_down(0)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(0),
+        "an empty scan must terminate rather than loop"
+    );
+}
+
+#[test]
+fn a_panicking_table_function_reports_the_panic_message() {
+    use quack_rs::table::TableFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    let builder = TableFunctionBuilder::new("boom_scan")
+        .param(TypeId::BigInt)
+        .with_state::<(), _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            Ok(())
+        })
+        .scan(|(), _chunk| {
+            panic!("scan closure exploded");
+        })
+        .build()
+        .expect("build");
+
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register boom_scan");
+
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT * FROM boom_scan(1)") }
+        .expect_err("the panic must surface as an error");
+    // The payload text must survive: "closure panicked" alone does not tell the
+    // user which assertion failed.
+    assert!(
+        err.as_str().contains("scan closure exploded"),
+        "panic payload should reach the user: {err}"
+    );
+}
+
+#[test]
+fn a_table_function_bind_error_is_reported() {
+    use quack_rs::error::ExtensionError;
+    use quack_rs::table::TableFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    let builder = TableFunctionBuilder::new("bind_fails")
+        .param(TypeId::BigInt)
+        .with_state::<(), _>(|_bind| Err(ExtensionError::new("n must be positive")))
+        .scan(|(), chunk| {
+            unsafe { chunk.set_size(0) };
+            Ok(())
+        })
+        .build()
+        .expect("build");
+
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register bind_fails");
+
+    // SAFETY: `con` is open.
+    let err =
+        unsafe { query(fx.con(), "SELECT * FROM bind_fails(-1)") }.expect_err("bind must fail");
+    assert!(err.as_str().contains("n must be positive"), "{err}");
+}
+
+// ─── Aggregate functions ─────────────────────────────────────────────────────
+
+#[test]
+fn an_aggregate_function_computes_across_chunks() {
+    use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
+    use quack_rs::aggregate::{AggregateFunctionBuilder, AggregateState, FfiState};
+
+    let fx = Fixture::open();
+
+    #[derive(Default)]
+    struct SumState {
+        total: i64,
+        seen: u64,
+    }
+    impl AggregateState for SumState {}
+
+    unsafe extern "C" fn update(
+        _info: duckdb_function_info,
+        input: libduckdb_sys::duckdb_data_chunk,
+        states: *mut duckdb_aggregate_state,
+    ) {
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        let reader = unsafe { chunk.reader(0) };
+        for row in 0..chunk.size() {
+            let Some(state) = (unsafe { FfiState::<SumState>::with_state_mut(*states.add(row)) })
+            else {
+                continue;
+            };
+            if unsafe { reader.is_valid(row) } {
+                state.total += unsafe { reader.read_i64(row) };
+                state.seen += 1;
+            }
+        }
+    }
+
+    unsafe extern "C" fn combine(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        target: *mut duckdb_aggregate_state,
+        count: idx_t,
+    ) {
+        for i in 0..count as usize {
+            let src_total_and_seen = unsafe { FfiState::<SumState>::with_state(*source.add(i)) }
+                .map(|s| (s.total, s.seen));
+            let Some((total, seen)) = src_total_and_seen else {
+                continue;
+            };
+            if let Some(tgt) = unsafe { FfiState::<SumState>::with_state_mut(*target.add(i)) } {
+                // Pitfall L1: every field must be propagated, not just the sum.
+                tgt.total += total;
+                tgt.seen += seen;
+            }
+        }
+    }
+
+    unsafe extern "C" fn finalize(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        result: libduckdb_sys::duckdb_vector,
+        count: idx_t,
+        offset: idx_t,
+    ) {
+        let mut writer = unsafe { VectorWriter::from_vector(result) };
+        for i in 0..count as usize {
+            let row = offset as usize + i;
+            match unsafe { FfiState::<SumState>::with_state(*source.add(i)) } {
+                Some(state) if state.seen > 0 => unsafe { writer.write_i64(row, state.total) },
+                _ => unsafe { writer.set_null(row) },
+            }
+        }
+    }
+
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        AggregateFunctionBuilder::new("my_sum")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(FfiState::<SumState>::size_callback)
+            .init(FfiState::<SumState>::init_callback)
+            .update(update)
+            .combine(combine)
+            .finalize(finalize)
+            .destructor(FfiState::<SumState>::destroy_callback)
+            .register(fx.con())
+            .expect("register my_sum");
+    }
+
+    // More rows than one vector holds, so DuckDB uses several chunks — and,
+    // with enough data, several threads and therefore `combine`.
+    let rows = quack_rs::vector::vector_size() * 8;
+    let expected: i64 = (0..rows as i64).sum();
+    assert_eq!(
+        fx.scalar(
+            &format!("SELECT my_sum(i) FROM range({rows}) t(i)"),
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(expected)
+    );
+
+    // An empty group must produce NULL, not 0.
+    assert_eq!(
+        fx.scalar(
+            "SELECT my_sum(i) FROM (SELECT NULL::BIGINT AS i) t",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        None
+    );
+
+    // GROUP BY exercises many independent states.
+    let mut result = fx.query(
+        "SELECT g, my_sum(i) FROM (SELECT i % 4 AS g, i FROM range(1000) t(i)) GROUP BY g ORDER BY g",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    assert_eq!(chunk.size(), 4);
+    for row in 0..4usize {
+        // SAFETY: both columns are BIGINT and `row` is in bounds.
+        let (g, sum) = unsafe { (chunk.reader(0).read_i64(row), chunk.reader(1).read_i64(row)) };
+        let want: i64 = (0..1000i64).filter(|i| i % 4 == g).sum();
+        assert_eq!(sum, want, "group {g}");
+    }
+}
+
+// ─── Panic guards for the remaining callback kinds ───────────────────────────
+
+/// An aggregate whose `update` panics, wired through `aggregate_update_callback!`.
+mod panicking_aggregate {
+    use super::{DataChunk, VectorWriter};
+    use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
+    use quack_rs::aggregate::{AggregateState, FfiState};
+
+    #[derive(Default)]
+    pub struct Empty;
+    impl AggregateState for Empty {}
+
+    quack_rs::aggregate_update_callback!(update, |_info, input, _states| {
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        assert!(chunk.size() == usize::MAX, "update deliberately exploded");
+    });
+
+    quack_rs::aggregate_combine_callback!(combine, |_info, _source, _target, _count| {});
+
+    quack_rs::aggregate_finalize_callback!(finalize, |_info, _source, result, count, offset| {
+        let mut writer = unsafe { VectorWriter::from_vector(result) };
+        for i in 0..count as usize {
+            unsafe { writer.set_null(offset as usize + i) };
+        }
+    });
+
+    pub fn state_size() -> unsafe extern "C" fn(duckdb_function_info) -> idx_t {
+        FfiState::<Empty>::size_callback
+    }
+
+    pub fn state_init() -> unsafe extern "C" fn(duckdb_function_info, duckdb_aggregate_state) {
+        FfiState::<Empty>::init_callback
+    }
+
+    pub fn destroy() -> unsafe extern "C" fn(*mut duckdb_aggregate_state, idx_t) {
+        FfiState::<Empty>::destroy_callback
+    }
+}
+
+#[test]
+fn a_panicking_aggregate_update_becomes_a_sql_error() {
+    use quack_rs::aggregate::AggregateFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        AggregateFunctionBuilder::new("boom_agg")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(panicking_aggregate::state_size())
+            .init(panicking_aggregate::state_init())
+            .update(panicking_aggregate::update)
+            .combine(panicking_aggregate::combine)
+            .finalize(panicking_aggregate::finalize)
+            .destructor(panicking_aggregate::destroy())
+            .register(fx.con())
+            .expect("register boom_agg");
+    }
+
+    // Without `aggregate_update_callback!` this panic would unwind out of a
+    // DuckDB worker thread and abort the process.
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT boom_agg(i) FROM range(10) t(i)") }
+        .expect_err("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("deliberately exploded"),
+        "panic payload should reach the user: {err}"
+    );
+
+    // The connection survives.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+quack_rs::cast_callback!(panicking_cast, |_info, _count, _input, _output| {
+    panic!("cast deliberately exploded");
+});
+
+#[test]
+fn a_panicking_cast_becomes_a_sql_error() {
+    use quack_rs::cast::CastFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)
+            .function(panicking_cast)
+            .register(fx.con())
+            .expect("register cast");
+    }
+
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT CAST('7' AS INTEGER)") }
+        .expect_err("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("cast deliberately exploded"),
+        "panic payload should reach the user: {err}"
+    );
+}
+
+// ─── LIST and MAP construction ───────────────────────────────────────────────
+
+quack_rs::scalar_callback!(make_range_list, |_info, input, output| {
+    // Builds LIST<BIGINT> = [0, 1, ..., n-1] for each input n.
+    use quack_rs::vector::ListBuilder;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut builder = unsafe { ListBuilder::new(output) };
+    for row in 0..chunk.size() {
+        let n = if unsafe { reader.is_valid(row) } {
+            unsafe { reader.read_i64(row) }.max(0) as usize
+        } else {
+            0
+        };
+        unsafe {
+            builder.push_row(row, n, |writer, base| {
+                for i in 0..n {
+                    writer.write_i64(base + i, i as i64);
+                }
+            });
+        }
+    }
+    unsafe { builder.finish() };
+});
+
+#[test]
+fn list_builder_writes_correct_offsets_across_growth() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("make_range_list")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::list(TypeId::BigInt))
+            .function(make_range_list)
+            .register(fx.con())
+            .expect("register make_range_list");
+    }
+
+    // A single row.
+    assert_eq!(
+        fx.scalar("SELECT make_range_list(3)::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .as_deref(),
+        Some("[0, 1, 2]")
+    );
+
+    // Empty lists must produce a zero-length entry, not NULL.
+    assert_eq!(
+        fx.scalar("SELECT make_range_list(0)::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .as_deref(),
+        Some("[]")
+    );
+
+    // Many rows of varying length in one chunk: this is where a stale child
+    // pointer or a mis-tracked offset shows up. Each row's list must be exactly
+    // 0..len, and the flattened total must match.
+    let mut result = fx.query(
+        "SELECT count(*) AS rows,
+                sum(len(l)) AS total_elements,
+                count(*) FILTER (WHERE l = [x for x in range(len(l))]) AS correct
+         FROM (SELECT i % 37 AS n, make_range_list(i % 37) AS l FROM range(2000) t(i))",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: all three columns are integral and row 0 exists.
+    unsafe {
+        assert_eq!(chunk.reader(0).read_i64(0), 2000);
+        let expected_total: i128 = (0..2000i128).map(|i| i % 37).sum();
+        assert_eq!(chunk.reader(1).read_i128(0), expected_total);
+        assert_eq!(
+            chunk.reader(2).read_i64(0),
+            2000,
+            "every row's list must equal 0..len"
+        );
+    }
+}
+
+quack_rs::scalar_callback!(make_index_map, |_info, input, output| {
+    // Builds MAP(VARCHAR, BIGINT) = { 'k0': 0, 'k1': 1, ... } for each input n.
+    use quack_rs::vector::ListBuilder;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut builder = unsafe { ListBuilder::new(output) };
+    for row in 0..chunk.size() {
+        let n = if unsafe { reader.is_valid(row) } {
+            unsafe { reader.read_i64(row) }.max(0) as usize
+        } else {
+            0
+        };
+        unsafe {
+            builder.push_map_row(row, n, |keys, values, base| {
+                for i in 0..n {
+                    keys.write_varchar(base + i, &format!("k{i}"));
+                    values.write_i64(base + i, i as i64);
+                }
+            });
+        }
+    }
+    unsafe { builder.finish() };
+});
+
+#[test]
+fn list_builder_drives_map_vectors_too() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("make_index_map")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::map(TypeId::Varchar, TypeId::BigInt))
+            .function(make_index_map)
+            .register(fx.con())
+            .expect("register make_index_map");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT make_index_map(2)::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .as_deref(),
+        Some("{k0=0, k1=1}")
+    );
+    assert_eq!(
+        fx.scalar("SELECT make_index_map(0)::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .as_deref(),
+        Some("{}")
+    );
+
+    // Across a full chunk, with growth.
+    let mut result = fx.query(
+        "SELECT count(*) FILTER (WHERE map_extract(m, 'k3') = [3]) AS hits
+         FROM (SELECT make_index_map(i % 11) AS m FROM range(1500) t(i))",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    let expected = (0..1500i64).filter(|i| i % 11 > 3).count() as i64;
+    // SAFETY: the column is BIGINT and row 0 exists.
+    assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, expected);
+}
+
+// ---------------------------------------------------------------------------
+// Virtual file system (DuckDB 1.5.0+)
+// ---------------------------------------------------------------------------
+
+/// Round-trips a file through `DuckDB`'s own VFS.
+///
+/// The point is not that a local file works — `std::fs` would do that. It is
+/// that `read`/`write` are documented to move *up to* the requested number of
+/// bytes, so the looping helpers are the only ones safe to build on, and they
+/// need to be checked against a real file system implementation rather than
+/// assumed.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn the_virtual_file_system_round_trips_a_file() {
+    use quack_rs::client_context::ClientContext;
+    use quack_rs::file_system::{FileOpenOptions, FileSystem};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open for the fixture's lifetime.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    let fs = FileSystem::from_client_context(&ctx).expect("file system");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vfs-roundtrip.bin");
+    let c_path =
+        std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("no interior NUL");
+
+    // A payload big enough that a short write is plausible, and containing a NUL
+    // so any accidental C-string handling shows up.
+    let payload: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    assert!(payload.contains(&0), "payload must exercise interior NUL");
+
+    {
+        let handle = fs
+            .open(&c_path, &FileOpenOptions::write_create())
+            .expect("open for write");
+        handle.write_all(&payload).expect("write_all");
+        handle.sync().expect("sync");
+        handle.close().expect("close");
+    }
+
+    // Whole-file read.
+    let handle = fs
+        .open(&c_path, &FileOpenOptions::read_only())
+        .expect("open for read");
+    assert_eq!(handle.size().expect("size"), payload.len() as u64);
+    assert_eq!(handle.tell().expect("tell"), 0);
+
+    let mut read_back = Vec::new();
+    let n = handle.read_to_end(&mut read_back).expect("read_to_end");
+    assert_eq!(n, payload.len());
+    assert_eq!(read_back, payload);
+    assert_eq!(handle.tell().expect("tell at EOF"), payload.len() as u64);
+
+    // `read_to_end` appends rather than replacing, and returns only what it added.
+    handle.seek(0).expect("seek to start");
+    let added = handle
+        .read_to_end(&mut read_back)
+        .expect("second read_to_end");
+    assert_eq!(added, payload.len());
+    assert_eq!(read_back.len(), payload.len() * 2);
+    assert_eq!(&read_back[payload.len()..], &payload[..]);
+
+    // `read_exact` from an arbitrary offset.
+    handle.seek(1000).expect("seek");
+    let mut window = [0u8; 4096];
+    handle.read_exact(&mut window).expect("read_exact");
+    assert_eq!(&window[..], &payload[1000..1000 + 4096]);
+
+    // `read_exact` past the end is an error, not a silent short read.
+    handle
+        .seek(payload.len() as u64 - 10)
+        .expect("seek near EOF");
+    let mut too_big = [0u8; 64];
+    let err = handle
+        .read_exact(&mut too_big)
+        .expect_err("read_exact past EOF must fail");
+    let message = err.message().unwrap_or_default();
+    assert!(
+        message.contains("unexpected end of file"),
+        "unexpected error: {message}"
+    );
+
+    // A plain `read` at EOF returns 0, which is how `read_to_end` terminates.
+    handle.seek(payload.len() as u64).expect("seek to EOF");
+    assert_eq!(handle.read(&mut window).expect("read at EOF"), 0);
+    let mut empty = Vec::new();
+    assert_eq!(
+        handle.read_to_end(&mut empty).expect("read_to_end at EOF"),
+        0
+    );
+    assert!(empty.is_empty());
+
+    // Zero-length operations are no-ops, not errors.
+    handle.read_exact(&mut []).expect("empty read_exact");
+    handle.write_all(&[]).expect("empty write_all");
+}
+
+/// Opening a file that does not exist yields structured error data, not a panic
+/// or a null handle the caller has to guess about.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn opening_a_missing_file_returns_structured_error_data() {
+    use quack_rs::client_context::ClientContext;
+    use quack_rs::file_system::{FileOpenOptions, FileSystem};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open for the fixture's lifetime.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    let fs = FileSystem::from_client_context(&ctx).expect("file system");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("definitely-not-here.bin");
+    let c_path =
+        std::ffi::CString::new(missing.to_str().expect("utf-8 path")).expect("no interior NUL");
+
+    let err = fs
+        .open(&c_path, &FileOpenOptions::read_only())
+        .expect_err("opening a missing file must fail");
+    assert!(
+        err.message().is_some_and(|m| !m.is_empty()),
+        "error data must carry a message, got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Debug impls
+// ---------------------------------------------------------------------------
+
+/// The `Debug` impls that decode `DuckDB` state must actually decode it, and
+/// must survive the edge cases they claim to: a null handle, and a type id this
+/// build does not know.
+#[test]
+fn debug_impls_decode_live_duckdb_state() {
+    use quack_rs::value::Value;
+
+    let _fx = Fixture::open();
+
+    // LogicalType renders the decoded type, not a pointer.
+    let bigint = LogicalType::new(TypeId::BigInt);
+    assert_eq!(format!("{bigint:?}"), "LogicalType { type_id: BigInt }");
+
+    // DECIMAL carries width and scale, which is the whole reason two DECIMALs
+    // can look identical and behave differently.
+    let decimal = LogicalType::decimal(18, 3);
+    let rendered = format!("{decimal:?}");
+    assert!(
+        rendered.contains("Decimal")
+            && rendered.contains("width: 18")
+            && rendered.contains("scale: 3"),
+        "{rendered}"
+    );
+
+    // An alias shows up when set, and is absent when not.
+    let aliased = LogicalType::new(TypeId::Integer);
+    // SAFETY: `aliased` is a valid logical type.
+    unsafe { aliased.set_alias("my_domain") };
+    assert!(
+        format!("{aliased:?}").contains("alias: \"my_domain\""),
+        "{aliased:?}"
+    );
+    assert!(!format!("{bigint:?}").contains("alias"), "{bigint:?}");
+
+    // Value renders its type, and (with duckdb-1-5) DuckDB's own rendering.
+    let value = Value::bigint(-42);
+    let rendered = format!("{value:?}");
+    assert!(rendered.contains("type: BigInt"), "{rendered}");
+    #[cfg(feature = "duckdb-1-5")]
+    assert!(rendered.contains("-42"), "{rendered}");
+
+    // `Value::type_id` is what makes the untyped `as_*` accessors checkable.
+    assert_eq!(Value::bigint(1).type_id(), Some(TypeId::BigInt));
+    assert_eq!(Value::varchar("x").type_id(), Some(TypeId::Varchar));
+    assert_eq!(Value::boolean(true).type_id(), Some(TypeId::Boolean));
+    assert_eq!(Value::double(1.5).type_id(), Some(TypeId::Double));
+    assert_eq!(Value::date(0).type_id(), Some(TypeId::Date));
+    assert_eq!(Value::timestamp(0).type_id(), Some(TypeId::Timestamp));
+    assert_eq!(Value::uuid(0).type_id(), Some(TypeId::Uuid));
+    #[cfg(feature = "duckdb-1-5")]
+    assert_eq!(Value::null_value().type_id(), Some(TypeId::SqlNull));
+
+    // A builder's Debug answers "did I wire the callback up?", which is the
+    // question you have when `register` reports a missing function.
+    let builder = ScalarFunctionBuilder::try_new("dbg_probe")
+        .expect("name")
+        .param(TypeId::BigInt)
+        .returns(TypeId::BigInt);
+    let rendered = format!("{builder:?}");
+    assert!(rendered.contains("function: unset"), "{rendered}");
+    let builder = builder.function(echo_i64);
+    assert!(
+        format!("{builder:?}").contains("function: set"),
+        "{builder:?}"
+    );
+}
+
+/// A `Debug` impl that panics inside a panic message aborts the process, so the
+/// decoding impls must tolerate the handles they can actually be handed.
+///
+/// `LogicalType` is not covered here because it cannot be: every one of its
+/// constructors — `from_raw` included — asserts the handle is non-null, so a
+/// null `LogicalType` is unconstructible. `Value::from_raw` has no such assert,
+/// so a null `Value` is reachable and is tested.
+#[test]
+fn debug_of_a_null_value_does_not_dereference() {
+    use quack_rs::value::Value;
+
+    let _fx = Fixture::open();
+
+    // SAFETY: a null handle is exactly the case under test; `Debug` must not
+    // dereference it, and `Drop` already skips null.
+    let null_value = unsafe { Value::from_raw(std::ptr::null_mut()) };
+    assert_eq!(format!("{null_value:?}"), "Value(<null handle>)");
+    assert_eq!(null_value.type_id(), None);
+}
+
+// ---------------------------------------------------------------------------
+// Appender (stable prefix — no feature flag)
+// ---------------------------------------------------------------------------
+
+/// Round-trips every row-at-a-time `append_*` through a real table.
+///
+/// These slots (330–356) have been in the frozen stable prefix since v1.2.0 and
+/// were entirely unwrapped; the physical encodings they use — `HUGEINT`'s
+/// lower/upper split, `VARCHAR`'s explicit length, `INTERVAL`'s three fields —
+/// are exactly the kind that a mock cannot check.
+#[test]
+fn the_appender_writes_every_scalar_type() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    fx.query(
+        "CREATE TABLE every_type (
+             b BOOLEAN, i8 TINYINT, i16 SMALLINT, i32 INTEGER, i64 BIGINT, i128 HUGEINT,
+             u8 UTINYINT, u16 USMALLINT, u32 UINTEGER, u64 UBIGINT, u128 UHUGEINT,
+             f32 FLOAT, f64 DOUBLE, s VARCHAR, bl BLOB,
+             d DATE, t TIME, ts TIMESTAMP, iv INTERVAL, n INTEGER
+         )",
+    );
+
+    // SAFETY: `con` is open for the fixture's lifetime and the table exists.
+    let appender =
+        unsafe { Appender::new(fx.con(), None, c"every_type") }.expect("create appender");
+    assert_eq!(appender.column_count(), 20);
+
+    appender
+        .row(|row| {
+            row.append_bool(true)?;
+            row.append_i8(i8::MIN)?;
+            row.append_i16(i16::MIN)?;
+            row.append_i32(i32::MIN)?;
+            row.append_i64(i64::MIN)?;
+            row.append_i128(i128::MIN)?;
+            row.append_u8(u8::MAX)?;
+            row.append_u16(u16::MAX)?;
+            row.append_u32(u32::MAX)?;
+            row.append_u64(u64::MAX)?;
+            row.append_u128(u128::MAX)?;
+            row.append_f32(-1.5)?;
+            row.append_f64(2.25)?;
+            row.append_str("hé\u{1F600}llo")?;
+            row.append_bytes(&[0x00, 0xff, 0x41])?;
+            row.append_date(-1)?;
+            row.append_time(3_600_000_001)?;
+            row.append_timestamp(-1)?;
+            row.append_interval(quack_rs::interval::DuckInterval {
+                months: 13,
+                days: -2,
+                micros: 5,
+            })?;
+            row.append_null()
+        })
+        .expect("append row");
+    appender.close().expect("close appender");
+
+    let mut result = fx.query(
+        "SELECT b, i8, i16, i32, i64, i128::VARCHAR, u8, u16, u32, u64, u128::VARCHAR,
+                f32, f64, s, bl::VARCHAR, d::VARCHAR, t::VARCHAR, ts::VARCHAR, iv::VARCHAR,
+                n IS NULL
+         FROM every_type",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    assert_eq!(chunk.size(), 1);
+    // SAFETY: every column below matches the declared type, and row 0 exists.
+    unsafe {
+        assert!(chunk.reader(0).read_bool(0));
+        assert_eq!(chunk.reader(1).read_i8(0), i8::MIN);
+        assert_eq!(chunk.reader(2).read_i16(0), i16::MIN);
+        assert_eq!(chunk.reader(3).read_i32(0), i32::MIN);
+        assert_eq!(chunk.reader(4).read_i64(0), i64::MIN);
+        assert_eq!(chunk.reader(5).read_str(0), i128::MIN.to_string());
+        assert_eq!(chunk.reader(6).read_u8(0), u8::MAX);
+        assert_eq!(chunk.reader(7).read_u16(0), u16::MAX);
+        assert_eq!(chunk.reader(8).read_u32(0), u32::MAX);
+        assert_eq!(chunk.reader(9).read_u64(0), u64::MAX);
+        assert_eq!(chunk.reader(10).read_str(0), u128::MAX.to_string());
+        assert!((chunk.reader(11).read_f32(0) - -1.5).abs() < f32::EPSILON);
+        assert!((chunk.reader(12).read_f64(0) - 2.25).abs() < f64::EPSILON);
+        assert_eq!(chunk.reader(13).read_str(0), "hé\u{1F600}llo");
+        assert_eq!(chunk.reader(14).read_str(0), "\\x00\\xFFA");
+        assert_eq!(chunk.reader(15).read_str(0), "1969-12-31");
+        assert_eq!(chunk.reader(16).read_str(0), "01:00:00.000001");
+        assert_eq!(chunk.reader(17).read_str(0), "1969-12-31 23:59:59.999999");
+        assert_eq!(
+            chunk.reader(18).read_str(0),
+            "1 year 1 month -2 days 00:00:00.000005"
+        );
+        assert!(
+            chunk.reader(19).read_bool(0),
+            "the NULL column must be NULL"
+        );
+    }
+}
+
+/// A `VARCHAR` with an interior NUL survives, because `append_str` uses
+/// `duckdb_append_varchar_length` rather than the NUL-terminated variant.
+#[test]
+fn appended_varchars_keep_interior_nuls() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE nul_text (s VARCHAR)");
+
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"nul_text") }.expect("create");
+    appender
+        .row(|row| row.append_str("before\0after"))
+        .expect("append");
+    appender.close().expect("close");
+
+    let mut result = fx.query("SELECT length(s), s FROM nul_text");
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: BIGINT then VARCHAR, row 0 exists.
+    unsafe {
+        assert_eq!(
+            chunk.reader(0).read_i64(0),
+            12,
+            "a NUL-terminated append would have stored 6 characters"
+        );
+        assert_eq!(chunk.reader(1).read_str(0), "before\0after");
+    }
+}
+
+/// Bulk appends across many chunks, plus the failure modes: a short row, a
+/// constraint violation surfacing at flush rather than at append, and the fact
+/// that a create against a missing table reports which table.
+#[test]
+fn the_appender_reports_its_failure_modes() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE bulk (id INTEGER PRIMARY KEY, label VARCHAR)");
+
+    // 5000 rows spans several vectors, so this exercises the appender's own
+    // internal chunk flushing rather than a single buffered chunk.
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"bulk") }.expect("create");
+    for i in 0..5000i32 {
+        appender
+            .row(|row| {
+                row.append_i32(i)?;
+                row.append_str(&format!("row-{i}"))
+            })
+            .expect("append");
+    }
+    appender.close().expect("close");
+
+    let mut result = fx.query("SELECT count(*), min(id), max(id) FROM bulk");
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: three BIGINT/INTEGER columns, row 0 exists.
+    unsafe {
+        assert_eq!(chunk.reader(0).read_i64(0), 5000);
+        assert_eq!(chunk.reader(1).read_i32(0), 0);
+        assert_eq!(chunk.reader(2).read_i32(0), 4999);
+    }
+
+    // A row with fewer values than columns is rejected by end_row.
+    // SAFETY: as above.
+    let appender = unsafe { Appender::new(fx.con(), None, c"bulk") }.expect("create");
+    appender.append_i32(99_999).expect("first column");
+    let err = appender.end_row().expect_err("short row must fail");
+    assert!(
+        format!("{err}").to_lowercase().contains("column"),
+        "unhelpful error: {err}"
+    );
+    drop(appender);
+
+    // A primary-key collision is buffered, so it surfaces at close, not append.
+    // SAFETY: as above.
+    let appender = unsafe { Appender::new(fx.con(), None, c"bulk") }.expect("create");
+    appender
+        .row(|row| {
+            row.append_i32(0)?;
+            row.append_str("duplicate")
+        })
+        .expect("the append itself succeeds — the row is only buffered");
+    let err = appender
+        .close()
+        .expect_err("close must report the violation");
+    assert!(
+        format!("{err}").to_lowercase().contains("constraint")
+            || format!("{err}").to_lowercase().contains("duplicate"),
+        "unexpected error: {err}"
+    );
+
+    // Creating against a missing table names the table.
+    // SAFETY: `con` is open; the table deliberately does not exist.
+    let err = unsafe { Appender::new(fx.con(), None, c"no_such_table") }
+        .err()
+        .expect("create must fail");
+    assert!(
+        format!("{err}").contains("no_such_table"),
+        "unexpected error: {err}"
+    );
+}
+
+/// `error_message` reads `duckdb_appender_error` — the *stable-prefix* error
+/// channel (slot 285), and the one `AppendError` resolves to when `duckdb-1-5`
+/// is off.
+///
+/// The 1.5 build never exercises that path, so without this the stable error
+/// channel would only ever be tested by CI's feature-off job.
+#[test]
+fn the_stable_error_channel_reports_appender_failures() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE two_cols (a INTEGER, b INTEGER)");
+
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"two_cols") }.expect("create");
+    assert_eq!(
+        appender.error_message(),
+        None,
+        "a healthy appender must report no error"
+    );
+
+    appender.append_i32(1).expect("first column");
+    assert!(appender.end_row().is_err(), "a short row must fail");
+
+    let message = appender
+        .error_message()
+        .expect("the stable channel must carry the message");
+    assert!(
+        message.to_lowercase().contains("column"),
+        "unhelpful message: {message}"
+    );
+}
+
+/// `add_column` narrows the active column list, and the omitted columns take
+/// their `DEFAULT`.
+#[test]
+fn the_appender_can_target_a_subset_of_columns() {
+    use quack_rs::appender::Appender;
+    use quack_rs::table_description::TableDescription;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE partial (id INTEGER, note VARCHAR DEFAULT 'unset')");
+
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"partial") }.expect("create");
+    assert_eq!(appender.column_count(), 2);
+    appender.add_column(c"id").expect("restrict to id");
+    assert_eq!(appender.column_count(), 1);
+    appender.row(|row| row.append_i32(7)).expect("append");
+    appender.close().expect("close");
+
+    let mut result = fx.query("SELECT id, note FROM partial");
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: INTEGER then VARCHAR, row 0 exists.
+    unsafe {
+        assert_eq!(chunk.reader(0).read_i32(0), 7);
+        assert_eq!(chunk.reader(1).read_str(0), "unset");
+    }
+
+    // TableDescription is the way to know a DEFAULT exists before relying on it.
+    // SAFETY: `con` is open and the table exists.
+    let desc = unsafe { TableDescription::create(fx.con(), "main", "partial") }.expect("describe");
+    assert_eq!(desc.column_name(0).as_deref(), Some("id"));
+    assert_eq!(desc.column_name(1).as_deref(), Some("note"));
+    assert_eq!(desc.column_name(99), None);
+    assert_eq!(desc.column_has_default(0), Some(false));
+    assert_eq!(desc.column_has_default(1), Some(true));
+    assert_eq!(desc.column_has_default(99), None);
+
+    // SAFETY: `con` is open; the default catalog and schema are addressed by name.
+    let qualified =
+        unsafe { TableDescription::with_catalog(fx.con(), None, Some("main"), "partial") }
+            .expect("describe via create_ext");
+    assert_eq!(qualified.column_name(0).as_deref(), Some("id"));
+}
+
+/// `append_value` is the escape hatch for types with no dedicated `append_*`,
+/// and must refuse a null handle rather than letting `DuckDB` dereference it.
+#[test]
+fn append_value_covers_types_without_a_dedicated_method() {
+    use quack_rs::appender::Appender;
+    use quack_rs::value::Value;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE valued (u UUID, d DATE)");
+
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"valued") }.expect("create");
+    appender
+        .row(|row| {
+            row.append_value(&Value::uuid(u128::MAX))?;
+            row.append_value(&Value::date(19_000))
+        })
+        .expect("append");
+    appender.close().expect("close");
+
+    let mut result = fx.query("SELECT u::VARCHAR, d::VARCHAR FROM valued");
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: two VARCHAR columns, row 0 exists.
+    unsafe {
+        assert_eq!(
+            chunk.reader(0).read_str(0),
+            "ffffffff-ffff-ffff-ffff-ffffffffffff"
+        );
+        assert_eq!(chunk.reader(1).read_str(0), "2022-01-08");
+    }
+
+    // duckdb_append_value dereferences its argument with no null check, so a
+    // null handle must never reach it.
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"valued") }.expect("create");
+    // SAFETY: a null handle is the case under test.
+    let null_value = unsafe { Value::from_raw(std::ptr::null_mut()) };
+    let err = appender
+        .append_value(&null_value)
+        .expect_err("a null value handle must be refused");
+    assert!(format!("{err}").contains("null"), "unexpected error: {err}");
+}
+
+/// The `UUID` accessors must all speak the same 128 bits.
+///
+/// A `UUID` column is physically a `HUGEINT`, but `DuckDB` stores it with the
+/// top bit flipped so signed integer ordering matches string ordering
+/// (`BaseUUID::FromUHugeint` subtracts 2^63 from the upper half). Before this
+/// was fixed, `VectorReader::read_uuid` returned the raw storage while
+/// `Value::as_uuid` returned the textual bits, and the docs on both claimed
+/// they matched — so handing one to the other silently changed the UUID's first
+/// hex digit.
+#[test]
+fn every_uuid_accessor_agrees_on_which_128_bits_it_means() {
+    use quack_rs::value::Value;
+    use quack_rs::vector::{uuid_from_storage, uuid_to_storage};
+
+    let fx = Fixture::open();
+    let text = "11111111-2222-3333-4444-555555555555";
+    let bits: u128 = 0x1111_1111_2222_3333_4444_5555_5555_5555;
+
+    // Reading a real UUID column yields the textual bits.
+    let mut result = fx.query(&format!("SELECT '{text}'::UUID"));
+    let chunk = result.next_chunk().expect("chunk");
+    // SAFETY: the column is UUID and row 0 exists.
+    let (read_bits, raw_storage) = unsafe {
+        let reader = chunk.reader(0);
+        (reader.read_uuid(0), reader.read_i128(0))
+    };
+    assert_eq!(read_bits, bits, "read_uuid must return the textual bits");
+
+    // ...and the raw storage really is different, so this is not a no-op.
+    assert_ne!(raw_storage as u128, bits, "DuckDB's flip must be real");
+    assert_eq!(uuid_from_storage(raw_storage), bits);
+    assert_eq!(uuid_to_storage(bits), raw_storage);
+
+    // `Value` agrees with the vector accessors.
+    let value = Value::uuid(bits);
+    assert_eq!(value.as_uuid(), bits);
+    #[cfg(feature = "duckdb-1-5")]
+    assert_eq!(
+        value.display_string().as_deref(),
+        Some(format!("'{text}'::UUID").as_str())
+    );
+
+    // And the full loop: write through a vector, render through SQL.
+    register_echo(
+        fx.con(),
+        "echo_uuid2",
+        TypeId::Uuid,
+        TypeId::Uuid,
+        echo_uuid,
+    );
+    assert_eq!(
+        fx.scalar(
+            &format!("SELECT echo_uuid2('{text}'::UUID)::VARCHAR"),
+            |r, i| { unsafe { r.read_str(i).to_owned() } }
+        )
+        .as_deref(),
+        Some(text)
+    );
+
+    // The extremes, where a sign-flip bug is most visible.
+    for (bits, rendered) in [
+        (0u128, "00000000-0000-0000-0000-000000000000"),
+        (u128::MAX, "ffffffff-ffff-ffff-ffff-ffffffffffff"),
+        (1u128 << 127, "80000000-0000-0000-0000-000000000000"),
+    ] {
+        assert_eq!(Value::uuid(bits).as_uuid(), bits);
+        assert_eq!(uuid_from_storage(uuid_to_storage(bits)), bits);
+        // `display_string` is a 1.5 addition; without it, ask SQL directly.
+        assert_eq!(
+            fx.scalar(
+                &format!("SELECT '{rendered}'::UUID::VARCHAR"),
+                |r, i| unsafe { r.read_str(i).to_owned() }
+            )
+            .as_deref(),
+            Some(rendered),
+            "{bits:#034x}"
+        );
+    }
+    // The nil UUID must sit at the bottom of DuckDB's signed ordering — that is
+    // the entire reason the flip exists.
+    assert_eq!(uuid_to_storage(0), i128::MIN);
+}
+
+// ---------------------------------------------------------------------------
+// Secrets
+// ---------------------------------------------------------------------------
+
+/// `list_duckdb_secrets` reads real secret metadata — and demonstrably cannot
+/// read the credential, which is the point the module documentation makes.
+#[test]
+fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
+    use quack_rs::secrets::list_duckdb_secrets;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open for the fixture's lifetime.
+    let empty = unsafe { list_duckdb_secrets(fx.con()) }.expect("query duckdb_secrets()");
+    assert!(empty.is_empty(), "a fresh database has no secrets");
+
+    fx.query("CREATE SECRET probe_s3 (TYPE s3, KEY_ID 'AKIAEXAMPLE', SECRET 'super-secret-value')");
+    fx.query("CREATE SECRET probe_http (TYPE http, EXTRA_HTTP_HEADERS MAP{'X':'Y'})");
+
+    // SAFETY: as above.
+    let secrets = unsafe { list_duckdb_secrets(fx.con()) }.expect("query duckdb_secrets()");
+    assert_eq!(secrets.len(), 2);
+
+    let s3 = secrets
+        .iter()
+        .find(|s| s.name == "probe_s3")
+        .expect("the s3 secret");
+    assert_eq!(s3.secret_type, "s3");
+    assert_eq!(s3.provider, "config");
+    assert!(!s3.persistent, "a session secret is not persistent");
+    // scope is a VARCHAR[]; DuckDB gives an s3 secret three default prefixes.
+    assert!(
+        s3.scope.iter().any(|p| p == "s3://"),
+        "unexpected scope: {:?}",
+        s3.scope
+    );
+    assert!(
+        s3.scope.iter().all(|p| !p.starts_with('\'')),
+        "array quoting must be stripped: {:?}",
+        s3.scope
+    );
+
+    // The whole reason this returns metadata and not a `SecretEntry`.
+    assert!(
+        s3.secret_string.contains("key_id=AKIAEXAMPLE"),
+        "{}",
+        s3.secret_string
+    );
+    assert!(
+        s3.secret_string.contains("secret=redacted"),
+        "DuckDB must redact the credential: {}",
+        s3.secret_string
+    );
+    assert!(
+        !s3.secret_string.contains("super-secret-value"),
+        "the credential leaked: {}",
+        s3.secret_string
+    );
+
+    // An empty scope round-trips as an empty vector, not as [""].
+    let http = secrets
+        .iter()
+        .find(|s| s.name == "probe_http")
+        .expect("the http secret");
+    assert!(http.scope.is_empty(), "unexpected scope: {:?}", http.scope);
+}
+
+// ---------------------------------------------------------------------------
+// Name validation, checked against what DuckDB actually accepts
+// ---------------------------------------------------------------------------
+
+/// `validate_function_name` gates `try_new`, so anything it rejects is a
+/// function nobody can register through quack-rs. It must therefore reject only
+/// names `DuckDB` genuinely cannot take.
+#[test]
+fn the_name_validator_accepts_every_name_duckdb_does() {
+    use quack_rs::validate::{validate_extension_name, validate_function_name};
+
+    let fx = Fixture::open();
+
+    // Every extension name this DuckDB knows.
+    let mut result = fx.query("SELECT DISTINCT extension_name FROM duckdb_extensions()");
+    let mut extensions = 0;
+    while let Some(chunk) = result.next_chunk() {
+        for row in 0..chunk.size() {
+            // SAFETY: VARCHAR column.
+            let name = unsafe { chunk.reader(0).read_str(row) }.to_owned();
+            extensions += 1;
+            assert!(
+                validate_extension_name(&name).is_ok(),
+                "DuckDB ships extension {name:?} but quack-rs rejects the name"
+            );
+        }
+    }
+    assert!(
+        extensions > 10,
+        "expected a real extension list, got {extensions}"
+    );
+
+    // Every function DuckDB ships, minus the operators — nobody registers `+`
+    // or `||` through a builder, and rejecting them is the point.
+    let mut result = fx.query("SELECT DISTINCT function_name FROM duckdb_functions()");
+    let (mut checked, mut operators) = (0, 0);
+    while let Some(chunk) = result.next_chunk() {
+        for row in 0..chunk.size() {
+            // SAFETY: VARCHAR column.
+            let name = unsafe { chunk.reader(0).read_str(row) }.to_owned();
+            let identifier_like = name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !identifier_like {
+                operators += 1;
+                assert!(
+                    validate_function_name(&name).is_err(),
+                    "{name:?} needs quoting in SQL and should be rejected"
+                );
+                continue;
+            }
+            checked += 1;
+            assert!(
+                validate_function_name(&name).is_ok(),
+                "DuckDB ships function {name:?} but quack-rs rejects the name"
+            );
+        }
+    }
+    assert!(
+        checked > 500,
+        "expected DuckDB's full function list, got {checked}"
+    );
+    assert!(operators > 10, "expected operator names in the list");
+}
+
+/// The specific case that exposed it: `DuckDB` ships `formatReadableSize`, so a
+/// camelCase name must register and be callable — under any casing, because
+/// `DuckDB` identifiers are case-insensitive.
+#[test]
+fn a_mixed_case_function_registers_and_is_callable() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("formatReadableThing")
+            .expect("DuckDB ships mixed-case functions; quack-rs must allow them")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .function(echo_i64)
+            .register(fx.con())
+            .expect("register");
+    }
+
+    for sql in [
+        "SELECT formatReadableThing(7)",
+        "SELECT formatreadablething(7)",
+        "SELECT FORMATREADABLETHING(7)",
+    ] {
+        assert_eq!(
+            fx.scalar(sql, |r, i| unsafe { r.read_i64(i) }),
+            Some(7),
+            "{sql}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Replacement scans
+// ---------------------------------------------------------------------------
+
+quack_rs::replacement_scan_callback!(route_myfmt, |info, table_name, _data| {
+    // SAFETY: DuckDB passes a valid NUL-terminated identifier.
+    let name = unsafe { std::ffi::CStr::from_ptr(table_name) }.to_string_lossy();
+    if !name.ends_with(".myfmt") {
+        // Not ours — returning without touching `info` lets DuckDB fall
+        // through to its own handling, which is the behaviour under test.
+        return;
+    }
+    let digits: i64 = name
+        .trim_end_matches(".myfmt")
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    // SAFETY: `info` is the pointer DuckDB passed in.
+    unsafe {
+        quack_rs::replacement_scan::ReplacementScanInfo::new(info)
+            .set_function("count_up")
+            .add_i64_parameter(digits);
+    }
+});
+
+quack_rs::replacement_scan_callback!(exploding_scan, |_info, table_name, _data| {
+    // SAFETY: DuckDB passes a valid NUL-terminated identifier.
+    let name = unsafe { std::ffi::CStr::from_ptr(table_name) }.to_string_lossy();
+    if name.ends_with(".boom") {
+        panic!("replacement scan deliberately exploded");
+    }
+});
+
+/// A replacement scan rewrites `SELECT * FROM 'something'` into a table
+/// function call. Nothing in the crate exercised this path against a real
+/// `DuckDB` — the module had three unit tests, none of them registering
+/// anything.
+#[test]
+fn a_replacement_scan_redirects_an_unknown_table() {
+    use quack_rs::replacement_scan::ReplacementScanBuilder;
+    use quack_rs::table::TableFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    struct State {
+        next: i64,
+        limit: i64,
+    }
+
+    let table_fn = TableFunctionBuilder::new("count_up")
+        .param(TypeId::BigInt)
+        .with_state::<State, _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            // SAFETY: parameter 0 was declared above.
+            let limit = unsafe { bind.get_parameter_value(0) }.as_i64_or(0);
+            Ok(State { next: 1, limit })
+        })
+        .scan(|state, chunk| {
+            if state.next > state.limit {
+                // SAFETY: ending the scan.
+                unsafe { chunk.set_size(0) };
+                return Ok(());
+            }
+            // SAFETY: column 0 is BIGINT and row 0 is in range.
+            unsafe {
+                chunk.writer(0).write_i64(0, state.next);
+                chunk.set_size(1);
+            }
+            state.next += 1;
+            Ok(())
+        })
+        .build()
+        .expect("build count_up");
+
+    // SAFETY: `con` is open.
+    unsafe { table_fn.register(fx.con()) }.expect("register count_up");
+
+    // SAFETY: `db` is open; the callback has the required signature and no
+    // extra data to clean up.
+    unsafe {
+        ReplacementScanBuilder::register(fx.db(), route_myfmt, std::ptr::null_mut(), None);
+    }
+
+    // The whole point: an identifier DuckDB knows nothing about becomes a call
+    // to our table function.
+    assert_eq!(
+        fx.scalar("SELECT sum(n) FROM '10.myfmt'", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(55)
+    );
+    assert_eq!(
+        fx.scalar("SELECT count(*) FROM '0.myfmt'", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(0)
+    );
+
+    // An identifier the callback declines must fall through to DuckDB's own
+    // handling, not be swallowed.
+    let err = unsafe { quack_rs::query::query(fx.con(), "SELECT * FROM 'nope.csv'") }
+        .expect_err("DuckDB must still report its own error for a file it cannot find");
+    let message = format!("{err}");
+    assert!(
+        message.contains("nope.csv"),
+        "the error should name the file: {message}"
+    );
+}
+
+/// A panic inside a replacement scan must reach SQL as an error, not abort.
+#[test]
+fn a_panicking_replacement_scan_becomes_a_sql_error() {
+    use quack_rs::replacement_scan::ReplacementScanBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `db` is open; no extra data to clean up.
+    unsafe {
+        ReplacementScanBuilder::register(fx.db(), exploding_scan, std::ptr::null_mut(), None);
+    }
+
+    let err = unsafe { quack_rs::query::query(fx.con(), "SELECT * FROM 'x.boom'") }
+        .expect_err("the panic must surface as a SQL error");
+    let message = format!("{err}");
+    assert!(
+        message.contains("replacement scan deliberately exploded"),
+        "the panic message must reach SQL: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Copy functions (DuckDB 1.5.0+)
+// ---------------------------------------------------------------------------
+
+/// A `COPY ... TO 'file' (FORMAT my_format)` handler, exercised end to end.
+///
+/// The four-phase lifecycle — bind, global init, sink, finalize — threads two
+/// separate heap allocations through `DuckDB` (`set_bind_data` and
+/// `set_global_state`), each with its own destructor. Nothing in the crate
+/// exercised any of it against a real `DuckDB`.
+#[cfg(feature = "duckdb-1-5")]
+mod copy_fn {
+    use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Column count captured at bind time, handed to the sink as bind data.
+    pub struct BindData {
+        pub columns: u64,
+    }
+
+    /// Rows written, plus the destination path, as global state.
+    pub struct GlobalState {
+        pub path: String,
+        pub rows: u64,
+        pub checksum: i64,
+    }
+
+    /// Counts destructor calls so a leak or a double free is visible.
+    pub static BIND_DROPS: AtomicUsize = AtomicUsize::new(0);
+    pub static GLOBAL_DROPS: AtomicUsize = AtomicUsize::new(0);
+    /// What finalize saw, so the test can assert on it after the COPY.
+    pub static FINAL_ROWS: AtomicUsize = AtomicUsize::new(0);
+    pub static FINAL_CHECKSUM: AtomicUsize = AtomicUsize::new(0);
+
+    pub unsafe extern "C" fn drop_bind(ptr: *mut c_void) {
+        if !ptr.is_null() {
+            BIND_DROPS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: allocated by `Box::into_raw` in the bind callback.
+            drop(unsafe { Box::from_raw(ptr.cast::<BindData>()) });
+        }
+    }
+
+    pub unsafe extern "C" fn drop_global(ptr: *mut c_void) {
+        if !ptr.is_null() {
+            GLOBAL_DROPS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: allocated by `Box::into_raw` in the global-init callback.
+            drop(unsafe { Box::from_raw(ptr.cast::<GlobalState>()) });
+        }
+    }
+}
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::copy_bind_callback!(my_format_bind, |info| {
+    let bind = unsafe { quack_rs::copy_function::CopyBindInfo::new(info) };
+    let data = Box::new(copy_fn::BindData {
+        columns: bind.column_count(),
+    });
+    // SAFETY: the pointer is a fresh Box; `drop_bind` frees it exactly once.
+    unsafe {
+        bind.set_bind_data(
+            Box::into_raw(data).cast::<std::os::raw::c_void>(),
+            Some(copy_fn::drop_bind),
+        );
+    }
+});
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::copy_global_init_callback!(my_format_init, |info| {
+    let init = unsafe { quack_rs::copy_function::CopyGlobalInitInfo::new(info) };
+    // SAFETY: DuckDB provides the destination path for this COPY.
+    let path = unsafe { init.get_file_path() };
+    let state = Box::new(copy_fn::GlobalState {
+        path,
+        rows: 0,
+        checksum: 0,
+    });
+    // SAFETY: the pointer is a fresh Box; `drop_global` frees it exactly once.
+    unsafe {
+        init.set_global_state(
+            Box::into_raw(state).cast::<std::os::raw::c_void>(),
+            Some(copy_fn::drop_global),
+        );
+    }
+});
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::copy_sink_callback!(my_format_sink, |info, chunk| {
+    let sink = unsafe { quack_rs::copy_function::CopySinkInfo::new(info) };
+    // SAFETY: both were set by the bind and global-init callbacks above.
+    let (bind, state) = unsafe {
+        (
+            &*sink.get_bind_data().cast::<copy_fn::BindData>(),
+            &mut *sink.get_global_state().cast::<copy_fn::GlobalState>(),
+        )
+    };
+    assert_eq!(bind.columns, 1, "bind data must survive into the sink");
+
+    let chunk = unsafe { DataChunk::from_raw(chunk) };
+    let reader = unsafe { chunk.reader(0) };
+    for row in 0..chunk.size() {
+        if unsafe { reader.is_valid(row) } {
+            state.checksum += unsafe { reader.read_i64(row) };
+        }
+        state.rows += 1;
+    }
+});
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::copy_finalize_callback!(my_format_finalize, |info| {
+    use std::sync::atomic::Ordering;
+    let fin = unsafe { quack_rs::copy_function::CopyFinalizeInfo::new(info) };
+    // SAFETY: set by the global-init callback above.
+    let state = unsafe { &*fin.get_global_state().cast::<copy_fn::GlobalState>() };
+    assert!(
+        state.path.ends_with(".myfmt"),
+        "finalize must see the destination path, got {:?}",
+        state.path
+    );
+    copy_fn::FINAL_ROWS.store(state.rows as usize, Ordering::SeqCst);
+    copy_fn::FINAL_CHECKSUM.store(state.checksum as usize, Ordering::SeqCst);
+});
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_copy_function_runs_its_whole_lifecycle() {
+    use std::sync::atomic::Ordering;
+
+    use quack_rs::copy_function::CopyFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; all four callbacks have the required signatures.
+    unsafe {
+        CopyFunctionBuilder::try_new("my_format")
+            .expect("name")
+            .bind(my_format_bind)
+            .global_init(my_format_init)
+            .sink(my_format_sink)
+            .finalize(my_format_finalize)
+            .register(fx.con())
+            .expect("register my_format");
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("out.myfmt");
+    fx.query(&format!(
+        "COPY (SELECT i::BIGINT AS n FROM range(5000) t(i)) TO '{}' (FORMAT my_format)",
+        path.display()
+    ));
+
+    // 5000 rows spans several chunks, so the sink ran repeatedly.
+    assert_eq!(copy_fn::FINAL_ROWS.load(Ordering::SeqCst), 5000);
+    assert_eq!(
+        copy_fn::FINAL_CHECKSUM.load(Ordering::SeqCst),
+        (0..5000i64).sum::<i64>() as usize
+    );
+
+    // Both destructors must have run exactly once — a leak or a double free
+    // here is invisible without counting.
+    drop(fx);
+    assert_eq!(
+        copy_fn::BIND_DROPS.load(Ordering::SeqCst),
+        1,
+        "bind data destructor"
+    );
+    assert_eq!(
+        copy_fn::GLOBAL_DROPS.load(Ordering::SeqCst),
+        1,
+        "global state destructor"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scalar bind / init / local state (DuckDB 1.5.0+)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "duckdb-1-5")]
+mod scalar_state {
+    use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Constant-folded multiplier, resolved once at bind time.
+    pub struct BindData {
+        pub factor: i64,
+    }
+    /// Per-thread scratch, allocated once per execution thread.
+    pub struct LocalState {
+        pub calls: u64,
+    }
+
+    pub static BIND_DROPS: AtomicUsize = AtomicUsize::new(0);
+    pub static STATE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    pub unsafe extern "C" fn drop_bind(ptr: *mut c_void) {
+        if !ptr.is_null() {
+            BIND_DROPS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: allocated by `Box::into_raw` in the bind callback.
+            drop(unsafe { Box::from_raw(ptr.cast::<BindData>()) });
+        }
+    }
+
+    pub unsafe extern "C" fn drop_state(ptr: *mut c_void) {
+        if !ptr.is_null() {
+            STATE_DROPS.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: allocated by `Box::into_raw` in the init callback.
+            drop(unsafe { Box::from_raw(ptr.cast::<LocalState>()) });
+        }
+    }
+}
+
+/// Bind callback: fold the constant second argument once, instead of reading it
+/// on every row.
+#[cfg(feature = "duckdb-1-5")]
+unsafe extern "C" fn scaled_bind(info: libduckdb_sys::duckdb_bind_info) {
+    use quack_rs::scalar::ScalarBindInfo;
+
+    // SAFETY: DuckDB passes a valid bind info.
+    let bind = unsafe { ScalarBindInfo::new(info) };
+    assert_eq!(bind.argument_count(), 2);
+    // SAFETY: argument 1 exists per the assertion above.
+    let factor = unsafe { bind.argument(1) }
+        .and_then(|expr| {
+            if !expr.is_foldable() {
+                return None;
+            }
+            // SAFETY: inside a bind callback, so the context is live.
+            let ctx = unsafe { bind.get_client_context() };
+            expr.fold(&ctx).ok().map(|v| v.as_i64())
+        })
+        .unwrap_or(1);
+
+    let data = Box::new(scalar_state::BindData { factor });
+    // SAFETY: a fresh Box; `drop_bind` frees it exactly once.
+    unsafe {
+        bind.set_bind_data(
+            Box::into_raw(data).cast::<std::os::raw::c_void>(),
+            Some(scalar_state::drop_bind),
+        );
+    }
+}
+
+/// Init callback: allocate per-thread scratch.
+#[cfg(feature = "duckdb-1-5")]
+unsafe extern "C" fn scaled_init(info: libduckdb_sys::duckdb_init_info) {
+    use quack_rs::scalar::ScalarInitInfo;
+
+    // SAFETY: DuckDB passes a valid init info.
+    let init = unsafe { ScalarInitInfo::new(info) };
+    let state = Box::new(scalar_state::LocalState { calls: 0 });
+    // SAFETY: a fresh Box; `drop_state` frees it exactly once per thread.
+    unsafe {
+        init.set_state(
+            Box::into_raw(state).cast::<std::os::raw::c_void>(),
+            Some(scalar_state::drop_state),
+        );
+    }
+}
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::scalar_callback!(scaled_exec, |info, input, output| {
+    use quack_rs::scalar::ScalarFunctionInfo;
+
+    // SAFETY: DuckDB passes a valid function info, and both were set by the
+    // bind and init callbacks above.
+    let (factor, state) = unsafe {
+        let f = ScalarFunctionInfo::new(info);
+        (
+            (*f.get_bind_data().cast::<scalar_state::BindData>()).factor,
+            &mut *f.get_state().cast::<scalar_state::LocalState>(),
+        )
+    };
+    state.calls += 1;
+
+    // SAFETY: argument 0 is BIGINT and the output vector matches.
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        // SAFETY: `row` is within the chunk.
+        unsafe { writer.write_i64(row, reader.read_i64(row).wrapping_mul(factor)) };
+    }
+});
+
+/// Scalar bind data and per-thread local state, threaded through a real query.
+///
+/// The bind callback constant-folds its second argument — the whole reason
+/// `Expression::fold` exists — and both allocations must be freed exactly once.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn scalar_bind_data_and_local_state_survive_a_real_query() {
+    use std::sync::atomic::Ordering;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("scaled")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .bind(scaled_bind)
+            .init(scaled_init)
+            .function(scaled_exec)
+            .register(fx.con())
+            .expect("register scaled");
+    }
+
+    // The second argument is a constant, so bind folds it once.
+    assert_eq!(
+        fx.scalar("SELECT scaled(21, 2)", |r, i| unsafe { r.read_i64(i) }),
+        Some(42)
+    );
+    // Across many rows, and with a folded expression rather than a literal.
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum(scaled(i, 3 * 2)) FROM range(1000) t(i)",
+            |r, i| unsafe { r.read_i128(i) }
+        ),
+        Some((0..1000i128).sum::<i128>() * 6)
+    );
+
+    drop(fx);
+    assert!(
+        scalar_state::BIND_DROPS.load(Ordering::SeqCst) >= 2,
+        "bind data must be freed once per bind, got {}",
+        scalar_state::BIND_DROPS.load(Ordering::SeqCst)
+    );
+    assert!(
+        scalar_state::STATE_DROPS.load(Ordering::SeqCst) >= 2,
+        "local state must be freed, got {}",
+        scalar_state::STATE_DROPS.load(Ordering::SeqCst)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Catalog, config options, selection vectors, instance cache
+// ---------------------------------------------------------------------------
+
+/// Catalog lookup, which the docs say must happen inside an active
+/// transaction — a claim nothing checked.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn catalog_lookup_finds_a_table_inside_a_transaction() {
+    use quack_rs::catalog::{CatalogEntry, CatalogEntryType};
+    use quack_rs::client_context::ClientContext;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE catalog_probe (id INTEGER)");
+    fx.query("CREATE VIEW catalog_probe_v AS SELECT * FROM catalog_probe");
+
+    // SAFETY: `con` is open.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+
+    // `duckdb_catalog_get_entry` requires an active transaction; a plain
+    // connection is in auto-commit, so one is started explicitly.
+    fx.query("BEGIN TRANSACTION");
+
+    // An empty name is not "the default catalog" — DuckDB returns null for it
+    // outright (`strlen(name) == 0` is an explicit early return).
+    // SAFETY: inside a transaction.
+    assert!(
+        unsafe { ctx.catalog(c"") }.is_none(),
+        "an empty catalog name is rejected, not defaulted"
+    );
+
+    // The in-memory database's catalog is named `memory`.
+    // SAFETY: inside a transaction, as the C API requires.
+    let catalog = unsafe { ctx.catalog(c"memory") }.expect("the memory catalog");
+    assert_eq!(catalog.type_name(), Some("duckdb"));
+
+    // SAFETY: catalog and context are valid and a transaction is active.
+    let table = unsafe {
+        CatalogEntry::lookup(
+            catalog.as_raw(),
+            ctx.as_raw(),
+            c"main",
+            c"catalog_probe",
+            CatalogEntryType::Table,
+        )
+    }
+    .expect("the table must be found");
+    assert_eq!(table.name(), Some("catalog_probe"));
+    assert_eq!(table.entry_type(), CatalogEntryType::Table);
+
+    // SAFETY: as above.
+    let view = unsafe {
+        CatalogEntry::lookup(
+            catalog.as_raw(),
+            ctx.as_raw(),
+            c"main",
+            c"catalog_probe_v",
+            CatalogEntryType::View,
+        )
+    }
+    .expect("the view must be found");
+    assert_eq!(view.name(), Some("catalog_probe_v"));
+    assert_eq!(view.entry_type(), CatalogEntryType::View);
+
+    // A name that does not exist is `None`, not a null handle to dereference.
+    // SAFETY: as above.
+    assert!(unsafe {
+        CatalogEntry::lookup(
+            catalog.as_raw(),
+            ctx.as_raw(),
+            c"main",
+            c"no_such_table",
+            CatalogEntryType::Table,
+        )
+    }
+    .is_none());
+
+    drop(table);
+    drop(view);
+    drop(catalog);
+    fx.query("COMMIT");
+}
+
+/// An extension-defined `SET`/`SELECT current_setting()` option.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_registered_config_option_is_settable_and_readable() {
+    use quack_rs::client_context::ClientContext;
+    use quack_rs::config_option::ConfigOptionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open.
+    unsafe {
+        ConfigOptionBuilder::try_new("quack_probe_setting")
+            .expect("name")
+            .description("A setting registered by the test")
+            .expect("description")
+            .option_type(TypeId::Varchar)
+            .default_value("fallback")
+            .expect("default")
+            .register(fx.con())
+            .expect("register the option");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT current_setting('quack_probe_setting')", |r, i| {
+            unsafe { r.read_str(i).to_owned() }
+        })
+        .as_deref(),
+        Some("fallback"),
+        "the declared default must be what DuckDB reports"
+    );
+
+    fx.query("SET quack_probe_setting = 'changed'");
+    assert_eq!(
+        fx.scalar("SELECT current_setting('quack_probe_setting')", |r, i| {
+            unsafe { r.read_str(i).to_owned() }
+        })
+        .as_deref(),
+        Some("changed")
+    );
+
+    // And the same value through the client context, which is how a callback
+    // would read it.
+    // SAFETY: `con` is open.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    assert_eq!(
+        ctx.config_option(c"quack_probe_setting").as_deref(),
+        Some("changed")
+    );
+
+    // `ctx.config_option` on a *missing* option is deliberately not exercised:
+    // DuckDB 1.5.5's `duckdb_client_context_get_config_option` calls
+    // `TryGetCurrentSetting(...).GetScope()` without first checking the lookup
+    // succeeded, and `GetScope()` asserts `scope != SettingScope::INVALID`.
+    // Against a DuckDB built with debug assertions — which this test suite uses
+    // — that aborts the process. See `ClientContext::config_option`'s docs.
+    //
+    // The abort-free way to ask whether a setting exists is SQL:
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_settings() WHERE name = 'no_such_setting_at_all'",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_settings() WHERE name = 'quack_probe_setting'",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(1),
+        "a registered option must appear in duckdb_settings()"
+    );
+}
+
+/// A selection vector's buffer must be the one `DuckDB` allocated, writable
+/// through the slice, and readable back.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_selection_vector_round_trips_its_indices() {
+    use quack_rs::selection_vector::SelectionVector;
+
+    let _fx = Fixture::open();
+
+    let mut sel = SelectionVector::new(2048);
+    assert_eq!(sel.as_slice().len(), 2048);
+
+    for (i, slot) in sel.as_mut_slice().iter_mut().enumerate() {
+        *slot = (2047 - i) as u32;
+    }
+    assert_eq!(sel.as_slice()[0], 2047);
+    assert_eq!(sel.as_slice()[2047], 0);
+
+    // A zero-length vector must not hand out a dangling non-empty slice.
+    let empty = SelectionVector::new(0);
+    assert!(empty.as_slice().is_empty());
+}
+
+/// The instance cache must hand back the *same* database for the same path.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn the_instance_cache_shares_one_database() {
+    use quack_rs::instance_cache::InstanceCache;
+
+    let _fx = Fixture::open();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cached.duckdb");
+    let c_path = std::ffi::CString::new(path.to_str().expect("utf-8")).expect("no interior NUL");
+
+    let cache = InstanceCache::new();
+    // `get_or_create` is safe — it takes a `&CStr` and an `Option<&DbConfig>`,
+    // so there is no raw pointer for the caller to get wrong.
+    let first = cache.get_or_create(&c_path, None).expect("open");
+    let second = cache.get_or_create(&c_path, None).expect("reopen");
+
+    // Written through one handle, visible through the other — that is what
+    // "same instance" means, and comparing raw pointers would not prove it.
+    let mut con: duckdb_connection = std::ptr::null_mut();
+    // SAFETY: `first` is an open database.
+    unsafe {
+        assert_eq!(
+            libduckdb_sys::duckdb_connect(first, &raw mut con),
+            DuckDBSuccess
+        );
+    }
+    // SAFETY: `con` is open.
+    unsafe {
+        quack_rs::query::query(
+            con,
+            "CREATE TABLE shared (n INTEGER); INSERT INTO shared VALUES (7)",
+        )
+    }
+    .expect("write through the first handle");
+
+    let mut con2: duckdb_connection = std::ptr::null_mut();
+    // SAFETY: `second` is an open database.
+    unsafe {
+        assert_eq!(
+            libduckdb_sys::duckdb_connect(second, &raw mut con2),
+            DuckDBSuccess
+        );
+    }
+    // SAFETY: `con2` is open.
+    let mut result = unsafe { quack_rs::query::query(con2, "SELECT n FROM shared") }
+        .expect("read through the second handle");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: INTEGER column, row 0.
+    assert_eq!(unsafe { chunk.reader(0).read_i32(0) }, 7);
+
+    drop(chunk);
+    drop(result);
+    // SAFETY: both connections and databases are live and closed in order.
+    unsafe {
+        libduckdb_sys::duckdb_disconnect(&raw mut con);
+        libduckdb_sys::duckdb_disconnect(&raw mut con2);
+        let mut a = first;
+        let mut b = second;
+        libduckdb_sys::duckdb_close(&raw mut a);
+        libduckdb_sys::duckdb_close(&raw mut b);
+    }
+}

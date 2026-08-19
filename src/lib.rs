@@ -44,7 +44,8 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`callback`] | Safe `extern "C"` callback wrapper macros (`scalar_callback!`, `table_scan_callback!`) |
+//! | [`abi`] | `DuckDB` C extension API layout verification (stable vs unstable region) |
+//! | [`callback`] | Panic-safe `extern "C"` callback wrapper macros for every callback kind |
 //! | [`chunk_writer`] | Auto-sizing chunk writer for table scan callbacks (auto `set_size` on drop) |
 //! | [`data_chunk`] | Ergonomic wrapper for `DuckDB` data chunks |
 //! | [`entry_point`](mod@entry_point) | Helper for the correct `{name}_init_c_api` C entry point |
@@ -60,6 +61,7 @@
 //! | [`vector::struct_reader`] | Batched [`StructReader`][vector::StructReader] for STRUCT input vectors |
 //! | [`vector::struct_writer`] | Batched [`StructWriter`][vector::StructWriter] for STRUCT output vectors |
 //! | [`types`] | `DuckDB` type system wrappers (`TypeId`, `LogicalType`) |
+//! | [`datetime`] | `DATE`/`TIME`/`TIMESTAMP` calendar conversions, `HUGEINT`/`DECIMAL` helpers |
 //! | [`interval`] | `INTERVAL` → microseconds conversion with overflow checking |
 //! | [`error`] | `ExtensionError` for FFI error propagation |
 //! | [`config`] | RAII wrapper for `DuckDB` database configuration |
@@ -71,8 +73,10 @@
 //! | [`validate::description_yml`] | Parse and validate `description.yml` metadata |
 //! | [`scaffold`] | Project generator for new extensions (no C++ glue needed) |
 //! | [`testing`] | Test harness for aggregate state logic |
+//! | [`query`] | Running SQL from an extension (`QueryResult`, `PreparedStatement`, `OwnedConnection`) |
 //! | [`prelude`] | Convenience re-exports of the most commonly used items |
-//! | `appender` | Bulk row appender (`duckdb-1-5` feature) |
+//! | [`appender`] | Bulk row appender (`Appender`) |
+//! | [`table_description`] | Table metadata (column names, `DEFAULT`s) |
 //! | `catalog` | Catalog entry lookup (`duckdb-1-5` feature) |
 //! | `client_context` | Client context access (`duckdb-1-5` feature) |
 //! | `config_option` | Extension-defined configuration options (`duckdb-1-5` feature) |
@@ -82,15 +86,28 @@
 //! | `file_system` | `DuckDB` virtual file system access (`duckdb-1-5` feature) |
 //! | `instance_cache` | Shared database instance cache (`duckdb-1-5` feature) |
 //! | `selection_vector` | Zero-copy row-index selection vectors (`duckdb-1-5` feature) |
-//! | `table_description` | Table metadata queries (`duckdb-1-5` feature) |
 //!
 //! ## Safety
 //!
 //! All `unsafe` code within this SDK is sound and documented. Extension authors
 //! must write `unsafe extern "C"` callback functions (required by `DuckDB`'s C API),
 //! but the SDK's helpers minimize the surface area of unsafe code within those
-//! callbacks. Every `unsafe` block inside this crate has a `// SAFETY:` comment
-//! explaining the invariants being upheld.
+//! callbacks.
+//!
+//! The documentation convention is:
+//!
+//! - Every `unsafe fn` states what the caller must guarantee under `# Safety`.
+//! - Every `unsafe` block **inside a safe function** carries a `// SAFETY:`
+//!   comment, because there the crate — not the caller — is asserting the
+//!   invariant.
+//! - Inside an `unsafe fn`, blocks that simply forward the function's own
+//!   documented contract are not re-annotated. `unsafe_op_in_unsafe_fn` is
+//!   denied crate-wide, so those blocks are required syntax rather than new
+//!   assertions.
+//!
+//! Enabling `clippy::undocumented_unsafe_blocks` reports the third category as
+//! well; that is a stricter convention than the one above, not a soundness
+//! finding.
 //!
 //! ## Design Principles
 //!
@@ -105,7 +122,7 @@
 //! ## Pitfalls
 //!
 //! See [`LESSONS.md`](https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md)
-//! for all 16 known `DuckDB` Rust FFI pitfalls, including symptoms, root causes, and fixes.
+//! for all 17 known `DuckDB` Rust FFI pitfalls, including symptoms, root causes, and fixes.
 //!
 //! ## Pitfall L1: COMBINE must propagate config fields
 //!
@@ -126,6 +143,7 @@
 #[cfg(not(any(target_pointer_width = "64", target_arch = "wasm32")))]
 compile_error!("quack-rs supports 64-bit targets and wasm32-unknown-emscripten.");
 
+pub mod abi;
 pub mod aggregate;
 pub mod callback;
 pub mod cast;
@@ -133,10 +151,13 @@ pub mod chunk_writer;
 pub mod config;
 pub mod connection;
 pub mod data_chunk;
+pub mod datetime;
+mod debug_repr;
 pub mod entry_point;
 pub mod error;
 pub mod interval;
 pub mod prelude;
+pub mod query;
 pub mod replacement_scan;
 pub mod scaffold;
 pub mod scalar;
@@ -152,7 +173,6 @@ pub mod vector;
 pub mod warning;
 
 // DuckDB 1.5.0+ modules — gated behind the `duckdb-1-5` feature flag.
-#[cfg(feature = "duckdb-1-5")]
 pub mod appender;
 #[cfg(feature = "duckdb-1-5")]
 pub mod catalog;
@@ -172,7 +192,6 @@ pub mod file_system;
 pub mod instance_cache;
 #[cfg(feature = "duckdb-1-5")]
 pub mod selection_vector;
-#[cfg(feature = "duckdb-1-5")]
 pub mod table_description;
 
 /// The `DuckDB` C API version string required by [`duckdb_rs_extension_api_init`][libduckdb_sys::duckdb_rs_extension_api_init].

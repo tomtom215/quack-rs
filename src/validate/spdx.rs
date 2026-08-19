@@ -6,7 +6,7 @@
 //! SPDX license identifier validation for `DuckDB` community extensions.
 //!
 //! Extensions must declare a recognized open-source license. This module
-//! validates that the `extension.licence` field contains a commonly used
+//! validates that the `extension.license` field contains a commonly used
 //! SPDX identifier.
 //!
 //! # Reference
@@ -15,12 +15,25 @@
 
 use crate::error::ExtensionError;
 
-/// Commonly used SPDX license identifiers accepted by the `DuckDB` community
-/// extension repository.
+/// Commonly used SPDX license identifiers.
 ///
-/// This list covers the most common open-source licenses. Extensions using
-/// a license not in this list should check the full SPDX registry at
-/// <https://spdx.org/licenses/>.
+/// This is a **curated shortlist, not the SPDX registry** — the registry has
+/// over 700 entries, and a license absent from this list is very often still
+/// perfectly valid. [`validate_spdx_license`] says so rather than claiming the
+/// identifier does not exist.
+///
+/// Every entry is checked against the official registry by
+/// `scripts/check-spdx-list.py`, which fails CI on a typo or on an identifier
+/// SPDX has deprecated.
+///
+/// Sorted, and kept sorted, so additions are easy to review.
+///
+/// # A note on `SSPL-1.0`
+///
+/// It is a real SPDX identifier and is listed here, but it is **not
+/// OSI-approved** — it is source-available rather than open source. If your
+/// extension is bound by a policy that requires an OSI-approved license, this
+/// list is not the thing that will tell you.
 pub const COMMON_SPDX_LICENSES: &[&str] = &[
     "0BSD",
     "AAL",
@@ -29,16 +42,16 @@ pub const COMMON_SPDX_LICENSES: &[&str] = &[
     "AGPL-3.0-or-later",
     "Apache-2.0",
     "Artistic-2.0",
-    "BlueOak-1.0.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
+    "BlueOak-1.0.0",
     "CAL-1.0",
     "CAL-1.0-Combined-Work-Exception",
+    "CECILL-2.1",
     "CERN-OHL-P-2.0",
     "CERN-OHL-S-2.0",
     "CERN-OHL-W-2.0",
-    "CECILL-2.1",
     "ECL-2.0",
     "EFL-2.0",
     "EPL-2.0",
@@ -94,9 +107,13 @@ pub fn validate_spdx_license(license: &str) -> Result<(), ExtensionError> {
     if COMMON_SPDX_LICENSES.contains(&license) {
         Ok(())
     } else {
+        // Deliberately not "is not a recognized SPDX identifier": this list is
+        // a shortlist of ~40 out of 700+, so saying that would be wrong for
+        // most valid identifiers.
         Err(ExtensionError::new(format!(
-            "license '{license}' is not a recognized SPDX identifier; \
-             see https://spdx.org/licenses/ for the full list"
+            "license '{license}' is not in quack-rs's list of common SPDX identifiers. \
+             It may still be valid — check https://spdx.org/licenses/. \
+             Common choices: MIT, Apache-2.0, BSD-3-Clause, GPL-3.0-or-later, MPL-2.0"
         )))
     }
 }
@@ -140,7 +157,33 @@ mod tests {
     #[test]
     fn unknown_license_rejected() {
         let err = validate_spdx_license("FAKE-LICENSE").unwrap_err();
-        assert!(err.as_str().contains("not a recognized SPDX"));
+        assert!(err.as_str().contains("not in quack-rs's list"));
+    }
+
+    #[test]
+    fn rejection_does_not_claim_the_identifier_is_invalid() {
+        // `CC0-1.0` is a real SPDX identifier that this shortlist omits. The
+        // message must send the reader to the registry, not tell them their
+        // perfectly valid license does not exist.
+        let err = validate_spdx_license("CC0-1.0").unwrap_err();
+        assert!(
+            err.as_str().contains("may still be valid"),
+            "misleading message: {err}"
+        );
+        assert!(err.as_str().contains("spdx.org/licenses"));
+    }
+
+    #[test]
+    fn list_is_sorted_and_unique() {
+        let mut sorted = COMMON_SPDX_LICENSES.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted.as_slice(),
+            COMMON_SPDX_LICENSES,
+            "keep the list sorted so additions are reviewable"
+        );
+        sorted.dedup();
+        assert_eq!(sorted.len(), COMMON_SPDX_LICENSES.len());
     }
 
     #[test]

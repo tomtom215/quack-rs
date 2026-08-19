@@ -22,21 +22,21 @@ use super::parser::parse_description_yml;
 /// ```rust
 /// use quack_rs::validate::description_yml::validate_description_yml_str;
 ///
-/// let valid_yml = "\
-/// extension:\n\
-///   name: my_ext\n\
-///   description: My extension.\n\
-///   version: 0.1.0\n\
-///   language: Rust\n\
-///   build: cargo\n\
-///   license: MIT\n\
-///   requires_toolchains: rust;python3\n\
-///   maintainers:\n\
-///     - Jane Doe\n\
-/// \n\
-/// repo:\n\
-///   github: janedoe/duckdb-my-ext\n\
-///   ref: main\n";
+/// let valid_yml = "extension:
+///   name: my_ext
+///   description: My extension.
+///   version: 0.1.0
+///   language: Rust
+///   build: cargo
+///   license: MIT
+///   requires_toolchains: rust;python3
+///   maintainers:
+///     - Jane Doe
+///
+/// repo:
+///   github: janedoe/duckdb-my-ext
+///   ref: main
+/// ";
 ///
 /// assert!(validate_description_yml_str(valid_yml).is_ok());
 ///
@@ -66,21 +66,21 @@ pub fn validate_description_yml_str(content: &str) -> Result<(), ExtensionError>
 /// ```rust
 /// use quack_rs::validate::description_yml::{parse_description_yml, validate_rust_extension};
 ///
-/// let yml = "\
-/// extension:\n\
-///   name: my_ext\n\
-///   description: My extension.\n\
-///   version: 0.1.0\n\
-///   language: Rust\n\
-///   build: cargo\n\
-///   license: MIT\n\
-///   requires_toolchains: rust;python3\n\
-///   maintainers:\n\
-///     - Jane Doe\n\
-/// \n\
-/// repo:\n\
-///   github: janedoe/duckdb-my-ext\n\
-///   ref: main\n";
+/// let yml = "extension:
+///   name: my_ext
+///   description: My extension.
+///   version: 0.1.0
+///   language: Rust
+///   build: cargo
+///   license: MIT
+///   requires_toolchains: rust;python3
+///   maintainers:
+///     - Jane Doe
+///
+/// repo:
+///   github: janedoe/duckdb-my-ext
+///   ref: main
+/// ";
 ///
 /// let desc = parse_description_yml(yml).unwrap();
 /// assert!(validate_rust_extension(&desc).is_ok());

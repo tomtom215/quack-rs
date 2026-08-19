@@ -220,6 +220,9 @@ impl LogicalType {
     /// Panics if `duckdb_create_decimal_type` returns null.
     #[must_use]
     pub fn decimal(width: u8, scale: u8) -> Self {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_decimal_type(width, scale) };
         assert!(!inner.is_null(), "duckdb_create_decimal_type returned null");
         Self { inner }
@@ -245,6 +248,9 @@ impl LogicalType {
     #[must_use]
     pub fn array(element_type: TypeId, size: u64) -> Self {
         let element_lt = Self::new(element_type);
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner =
             unsafe { duckdb_create_array_type(element_lt.as_raw(), size as libduckdb_sys::idx_t) };
         assert!(!inner.is_null(), "duckdb_create_array_type returned null");
@@ -260,6 +266,9 @@ impl LogicalType {
     /// Panics if `duckdb_create_array_type` returns null.
     #[must_use]
     pub fn array_from_logical(element: &Self, size: u64) -> Self {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner =
             unsafe { duckdb_create_array_type(element.as_raw(), size as libduckdb_sys::idx_t) };
         assert!(!inner.is_null(), "duckdb_create_array_type returned null");
@@ -301,6 +310,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_union_type(
                 type_ptrs.as_mut_ptr(),
@@ -334,6 +346,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_union_type(
                 type_ptrs.as_mut_ptr(),
@@ -371,6 +386,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_enum_type(
                 name_ptrs.as_mut_ptr(),
@@ -391,6 +409,9 @@ impl LogicalType {
     /// Panics if `duckdb_create_list_type` returns null.
     #[must_use]
     pub fn list_from_logical(element: &Self) -> Self {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_list_type(element.as_raw()) };
         assert!(!inner.is_null(), "duckdb_create_list_type returned null");
         Self { inner }
@@ -406,6 +427,9 @@ impl LogicalType {
     /// Panics if `duckdb_create_map_type` returns null.
     #[must_use]
     pub fn map_from_logical(key: &Self, value: &Self) -> Self {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_map_type(key.as_raw(), value.as_raw()) };
         assert!(!inner.is_null(), "duckdb_create_map_type returned null");
         Self { inner }
@@ -448,6 +472,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_struct_type(
                 type_ptrs.as_mut_ptr(),
@@ -462,6 +489,9 @@ impl LogicalType {
     /// Fallible version of [`LogicalType::new`]. Returns an error instead of
     /// panicking if the `DuckDB` C API returns a null pointer.
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_logical_type(type_id.to_duckdb_type()) };
         if inner.is_null() {
             return Err(LogicalTypeError {
@@ -475,6 +505,9 @@ impl LogicalType {
     /// panicking if the `DuckDB` C API returns a null pointer.
     pub fn try_list(element_type: TypeId) -> Result<Self, LogicalTypeError> {
         let element_lt = Self::try_new(element_type)?;
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_list_type(element_lt.as_raw()) };
         if inner.is_null() {
             return Err(LogicalTypeError {
@@ -489,6 +522,9 @@ impl LogicalType {
     pub fn try_map(key_type: TypeId, value_type: TypeId) -> Result<Self, LogicalTypeError> {
         let key_lt = Self::try_new(key_type)?;
         let val_lt = Self::try_new(value_type)?;
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe { duckdb_create_map_type(key_lt.as_raw(), val_lt.as_raw()) };
         if inner.is_null() {
             return Err(LogicalTypeError {
@@ -522,6 +558,9 @@ impl LogicalType {
         let mut name_ptrs: Vec<*const std::os::raw::c_char> =
             c_names.iter().map(|s| s.as_ptr()).collect();
 
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
         let inner = unsafe {
             duckdb_create_struct_type(
                 type_ptrs.as_mut_ptr(),
@@ -535,6 +574,142 @@ impl LogicalType {
             });
         }
         Ok(Self { inner })
+    }
+
+    /// Fallible version of [`LogicalType::struct_type_from_logical`]. Returns an
+    /// error instead of panicking if a field name contains an interior null byte
+    /// or if the `DuckDB` C API returns a null pointer.
+    pub fn try_struct_type_from_logical(fields: &[(&str, Self)]) -> Result<Self, LogicalTypeError> {
+        use std::ffi::CString;
+
+        let c_names: Vec<CString> = fields
+            .iter()
+            .map(|&(n, _)| {
+                CString::new(n).map_err(|_| LogicalTypeError {
+                    api_func: "CString::new (field name contains null byte)",
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let mut type_ptrs: Vec<duckdb_logical_type> =
+            fields.iter().map(|(_, t)| t.as_raw()).collect();
+        let mut name_ptrs: Vec<*const std::os::raw::c_char> =
+            c_names.iter().map(|s| s.as_ptr()).collect();
+
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
+        let inner = unsafe {
+            duckdb_create_struct_type(
+                type_ptrs.as_mut_ptr(),
+                name_ptrs.as_mut_ptr(),
+                fields.len() as libduckdb_sys::idx_t,
+            )
+        };
+        if inner.is_null() {
+            return Err(LogicalTypeError {
+                api_func: "duckdb_create_struct_type",
+            });
+        }
+        Ok(Self { inner })
+    }
+
+    /// Fallible version of [`LogicalType::union_type`]. Returns an error instead
+    /// of panicking if a member name contains an interior null byte or if the
+    /// `DuckDB` C API returns a null pointer.
+    pub fn try_union_type(members: &[(&str, TypeId)]) -> Result<Self, LogicalTypeError> {
+        let resolved: Vec<(&str, Self)> = members
+            .iter()
+            .map(|&(n, t)| Self::try_new(t).map(|lt| (n, lt)))
+            .collect::<Result<_, _>>()?;
+        Self::try_union_type_from_logical(&resolved)
+    }
+
+    /// Fallible version of [`LogicalType::union_type_from_logical`]. Returns an
+    /// error instead of panicking if a member name contains an interior null
+    /// byte or if the `DuckDB` C API returns a null pointer.
+    pub fn try_union_type_from_logical(members: &[(&str, Self)]) -> Result<Self, LogicalTypeError> {
+        use std::ffi::CString;
+
+        let c_names: Vec<CString> = members
+            .iter()
+            .map(|&(n, _)| {
+                CString::new(n).map_err(|_| LogicalTypeError {
+                    api_func: "CString::new (union member name contains null byte)",
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let mut type_ptrs: Vec<duckdb_logical_type> =
+            members.iter().map(|(_, t)| t.as_raw()).collect();
+        let mut name_ptrs: Vec<*const std::os::raw::c_char> =
+            c_names.iter().map(|s| s.as_ptr()).collect();
+
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
+        let inner = unsafe {
+            duckdb_create_union_type(
+                type_ptrs.as_mut_ptr(),
+                name_ptrs.as_mut_ptr(),
+                members.len() as libduckdb_sys::idx_t,
+            )
+        };
+        if inner.is_null() {
+            return Err(LogicalTypeError {
+                api_func: "duckdb_create_union_type",
+            });
+        }
+        Ok(Self { inner })
+    }
+
+    /// Fallible version of [`LogicalType::enum_type`]. Returns an error instead
+    /// of panicking if a member name contains an interior null byte or if the
+    /// `DuckDB` C API returns a null pointer.
+    pub fn try_enum_type(members: &[&str]) -> Result<Self, LogicalTypeError> {
+        use std::ffi::CString;
+
+        let c_names: Vec<CString> = members
+            .iter()
+            .map(|n| {
+                CString::new(*n).map_err(|_| LogicalTypeError {
+                    api_func: "CString::new (enum member name contains null byte)",
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let mut name_ptrs: Vec<*const std::os::raw::c_char> =
+            c_names.iter().map(|s| s.as_ptr()).collect();
+
+        // SAFETY: every argument is a plain value or a logical-type handle borrowed
+        // for the duration of the call. DuckDB returns a newly allocated handle,
+        // which the caller checks for null.
+        let inner = unsafe {
+            duckdb_create_enum_type(
+                name_ptrs.as_mut_ptr(),
+                members.len() as libduckdb_sys::idx_t,
+            )
+        };
+        if inner.is_null() {
+            return Err(LogicalTypeError {
+                api_func: "duckdb_create_enum_type",
+            });
+        }
+        Ok(Self { inner })
+    }
+
+    /// Fallible version of [`LogicalType::set_alias`]. Returns an error instead
+    /// of panicking if `alias` contains an interior null byte.
+    ///
+    /// # Safety
+    ///
+    /// `self` must wrap a valid `duckdb_logical_type`.
+    pub unsafe fn try_set_alias(&self, alias: &str) -> Result<(), LogicalTypeError> {
+        let c_alias = std::ffi::CString::new(alias).map_err(|_| LogicalTypeError {
+            api_func: "CString::new (alias contains null byte)",
+        })?;
+        // SAFETY: self.inner is valid per the caller's contract; c_alias outlives the call.
+        unsafe { duckdb_logical_type_set_alias(self.inner, c_alias.as_ptr()) };
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -853,6 +1028,46 @@ impl From<TypeId> for LogicalType {
 // LogicalType is not Clone or Copy because the underlying handle is not reference-counted.
 // If you need to pass it to multiple places, use `as_raw()` to borrow the handle temporarily.
 
+impl core::fmt::Debug for LogicalType {
+    /// Prints the decoded type rather than the handle address — the type id is
+    /// the only thing anyone inspects a `LogicalType` to learn.
+    ///
+    /// This calls into `DuckDB`, so it deliberately avoids anything that could
+    /// panic while formatting: a `Debug` impl that panics inside a panic message
+    /// aborts the process. A type id from a newer `DuckDB` than this build knows
+    /// renders as its numeric value rather than panicking the way
+    /// [`get_type_id`][Self::get_type_id] would.
+    ///
+    /// The null check is belt-and-braces — every constructor, `from_raw`
+    /// included, already asserts the handle is non-null — but a formatting
+    /// impl is the last place worth being clever about a single comparison.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.inner.is_null() {
+            return f.write_str("LogicalType(<null>)");
+        }
+        // SAFETY: `self.inner` is non-null and valid for this wrapper's lifetime.
+        let raw_id = unsafe { duckdb_get_type_id(self.inner) };
+        let mut out = f.debug_struct("LogicalType");
+        match TypeId::try_from_duckdb_type(raw_id) {
+            Some(type_id) => out.field("type_id", &type_id),
+            // A type id this build of quack-rs does not know — print the number
+            // rather than panicking, which is what `TypeId::from_duckdb_type`
+            // would do.
+            None => out.field("type_id", &format_args!("<unknown {raw_id}>")),
+        };
+        // SAFETY: `self.inner` is non-null and valid.
+        if let Some(alias) = unsafe { self.get_alias() } {
+            out.field("alias", &alias);
+        }
+        if TypeId::try_from_duckdb_type(raw_id) == Some(TypeId::Decimal) {
+            // SAFETY: `self.inner` is a DECIMAL logical type.
+            let (width, scale) = unsafe { (self.decimal_width(), self.decimal_scale()) };
+            out.field("width", &width).field("scale", &scale);
+        }
+        out.finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Note: LogicalType tests that call DuckDB API (duckdb_create_logical_type)
@@ -876,5 +1091,75 @@ mod tests {
             std::mem::size_of::<LogicalType>(),
             std::mem::size_of::<*mut ()>()
         );
+    }
+}
+
+/// Constructor tests that need a live `DuckDB` C API dispatch table.
+#[cfg(all(test, feature = "_duckdb-testing"))]
+mod live_tests {
+    use super::{LogicalType, TypeId};
+
+    #[test]
+    fn try_constructors_reject_interior_null_bytes() {
+        let _db = crate::testing::InMemoryDb::open().expect("open in-memory DuckDB");
+        // Every fallible constructor that takes user-supplied names must report
+        // an interior NUL instead of panicking: these run inside DuckDB bind
+        // callbacks, where a panic cannot be surfaced to the user and aborts the
+        // process under `panic = "abort"`.
+        assert!(LogicalType::try_struct_type(&[("a\0b", TypeId::BigInt)]).is_err());
+        assert!(LogicalType::try_union_type(&[("a\0b", TypeId::BigInt)]).is_err());
+        assert!(LogicalType::try_enum_type(&["ok", "a\0b"]).is_err());
+        let lt = LogicalType::try_new(TypeId::BigInt).expect("BIGINT");
+        // SAFETY: `lt` wraps a valid logical type.
+        assert!(unsafe { lt.try_set_alias("a\0b") }.is_err());
+    }
+
+    #[test]
+    fn try_constructor_errors_name_the_failing_step() {
+        let _db = crate::testing::InMemoryDb::open().expect("open in-memory DuckDB");
+        let Err(err) = LogicalType::try_enum_type(&["a\0b"]) else {
+            panic!("try_enum_type must reject an interior NUL");
+        };
+        assert!(err.to_string().contains("null byte"), "{err}");
+    }
+
+    #[test]
+    fn try_constructors_build_valid_types() {
+        let _db = crate::testing::InMemoryDb::open().expect("open in-memory DuckDB");
+        let s = LogicalType::try_struct_type(&[("x", TypeId::BigInt), ("y", TypeId::Varchar)])
+            .expect("struct");
+        // SAFETY: `s` wraps a valid logical type.
+        unsafe {
+            assert_eq!(s.get_type_id(), TypeId::Struct);
+            assert_eq!(s.struct_child_count(), 2);
+            assert_eq!(s.struct_child_name(0), "x");
+        }
+
+        let u = LogicalType::try_union_type(&[("a", TypeId::BigInt), ("b", TypeId::Double)])
+            .expect("union");
+        // SAFETY: `u` wraps a valid logical type.
+        unsafe {
+            assert_eq!(u.get_type_id(), TypeId::Union);
+            assert_eq!(u.union_member_count(), 2);
+        }
+
+        let e = LogicalType::try_enum_type(&["red", "green", "blue"]).expect("enum");
+        // SAFETY: `e` wraps a valid logical type.
+        unsafe {
+            assert_eq!(e.get_type_id(), TypeId::Enum);
+            assert_eq!(e.enum_dictionary_size(), 3);
+            assert_eq!(e.enum_dictionary_value(1), "green");
+        }
+
+        let nested = LogicalType::try_struct_type_from_logical(&[(
+            "inner",
+            LogicalType::try_list(TypeId::Integer).expect("list"),
+        )])
+        .expect("nested struct");
+        // SAFETY: `nested` wraps a valid logical type.
+        unsafe {
+            assert_eq!(nested.get_type_id(), TypeId::Struct);
+            assert_eq!(nested.struct_child_type(0).get_type_id(), TypeId::List);
+        }
     }
 }

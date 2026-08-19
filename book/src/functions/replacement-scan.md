@@ -95,5 +95,5 @@ bare-path queries to the table function.
 
 ## See also
 
-- [`replacement_scan`](../../src/replacement_scan/) module documentation
+- [`replacement_scan`](https://docs.rs/quack-rs/latest/quack_rs/replacement_scan/index.html) module documentation
 - [Table Functions](table-functions.md)

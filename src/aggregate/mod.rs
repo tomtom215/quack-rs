@@ -60,5 +60,8 @@ pub mod info;
 pub mod state;
 
 pub use builder::{AggregateFunctionBuilder, AggregateFunctionSetBuilder};
+// Callback signature aliases, re-exported at the module root for symmetry with
+// `scalar` and `table`.
+pub use callbacks::{CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn};
 pub use info::AggregateFunctionInfo;
 pub use state::{AggregateState, FfiState};

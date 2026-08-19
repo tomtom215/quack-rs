@@ -140,6 +140,8 @@ impl DbConfig {
         let name = unsafe { CStr::from_ptr(name_ptr) }
             .to_string_lossy()
             .into_owned();
+        // SAFETY: DuckDB returned this pointer for an in-range flag index, and it
+        // points at a NUL-terminated string DuckDB owns.
         let desc = unsafe { CStr::from_ptr(desc_ptr) }
             .to_string_lossy()
             .into_owned();
@@ -177,3 +179,5 @@ impl Drop for DbConfig {
 // loaded extension or after `InMemoryDb::open()`. Direct unit tests are not
 // possible without that initialization (Pitfall P9). Verify DbConfig via E2E
 // SQLLogicTests in your extension's test suite.
+
+crate::debug_repr::impl_handle_debug!(DbConfig.config);

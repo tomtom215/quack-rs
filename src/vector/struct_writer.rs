@@ -42,6 +42,7 @@ use crate::vector::VectorWriter;
 ///
 /// Pre-creates a [`VectorWriter`] for every field at construction, allowing
 /// direct typed writes without repeated `duckdb_struct_vector_get_child` calls.
+#[derive(Debug)]
 pub struct StructWriter {
     fields: Vec<VectorWriter>,
 }
@@ -69,7 +70,7 @@ impl StructWriter {
     #[mutants::skip]
     #[must_use]
     #[inline]
-    pub const fn field_count(&self) -> usize {
+    pub fn field_count(&self) -> usize {
         self.fields.len()
     }
 
@@ -320,13 +321,16 @@ impl StructWriter {
         unsafe { self.fields[field_idx].write_blob(row, value) };
     }
 
-    /// Writes a `UUID` value (as i128) to field `field_idx` at row `row`.
+    /// Writes a `UUID`'s textual 128 bits to field `field_idx` at row `row`.
+    ///
+    /// See [`VectorWriter::write_uuid`][crate::vector::VectorWriter::write_uuid]
+    /// for why this is not the raw `HUGEINT` storage.
     ///
     /// # Safety
     ///
     /// See [`write_i8`][Self::write_i8].
     #[inline]
-    pub unsafe fn write_uuid(&mut self, row: usize, field_idx: usize, value: i128) {
+    pub unsafe fn write_uuid(&mut self, row: usize, field_idx: usize, value: u128) {
         unsafe { self.fields[field_idx].write_uuid(row, value) };
     }
 

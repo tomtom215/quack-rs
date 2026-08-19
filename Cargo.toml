@@ -1,8 +1,8 @@
 [package]
 name = "quack-rs"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
-rust-version = "1.87.0"
+rust-version = "1.86.0"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
 description = "Production-grade Rust SDK for building DuckDB loadable extensions"
 license = "MIT"
@@ -21,6 +21,7 @@ exclude = [
     "book.toml",
     "assets/",
     "deny.toml",
+    "osv-scanner.toml",
     "AUDIT.md",
     "RELEASING.md",
     "LESSONS.md",
@@ -49,19 +50,23 @@ crate-type = ["rlib"]
 ## table from the linked DuckDB symbols, so `InMemoryDb::open()` works in
 ## `cargo test` even though no DuckDB host process loads the extension.
 ##
-## # Important: architectural limitation
+## # What this makes testable
 ##
-## Even with this feature, quack-rs's own wrappers (`VectorReader`, `VectorWriter`,
-## `Connection::register_*`) still route through the `loadable-extension` dispatch
-## table and cannot be called in `cargo test`. Use `InMemoryDb` for SQL-level
-## assertions (e.g. verifying SQL macro output) and `MockVectorWriter` /
-## `MockVectorReader` for callback logic tests.
+## Once the dispatch table is populated, the **whole** C API works — including
+## quack-rs's own wrappers. You can register a scalar/table/aggregate function on
+## a raw connection, run SQL against it, and assert on the result, all inside
+## `cargo test`. See `tests/ffi_roundtrip.rs`, which round-trips every vector type
+## that way.
+##
+## `MockVectorWriter` / `MockVectorReader` remain useful for unit-testing callback
+## logic without a database, and are the only option when the `bundled-test`
+## features are off.
 ##
 ## # Usage in your extension
 ##
 ## ```toml
 ## [dev-dependencies]
-## quack-rs = { version = "0.15", features = ["bundled-test"] }
+## quack-rs = { version = "0.16", features = ["bundled-test"] }
 ## ```
 bundled-test = ["_duckdb-testing", "duckdb/bundled"]
 
@@ -78,7 +83,7 @@ bundled-test = ["_duckdb-testing", "duckdb/bundled"]
 ##
 ## ```toml
 ## [dev-dependencies]
-## quack-rs = { version = "0.15", features = ["bundled-test-prebuilt"] }
+## quack-rs = { version = "0.16", features = ["bundled-test-prebuilt"] }
 ## ```
 bundled-test-prebuilt = ["_duckdb-testing"]
 
@@ -102,11 +107,12 @@ _duckdb-testing = ["dep:duckdb"]
 ## - Copy function support (custom `COPY TO` handlers)
 ## - Catalog entry lookup (incl. `Catalog::type_name`)
 ## - Client context access (file system, config, catalog)
-## - Table description metadata (column count, names, types)
+## - Table description column count and types (`TableDescription` itself needs no feature)
 ## - Structured error data + UTF-8 validation (`ErrorData`, `DuckDbErrorType`, `check_valid_utf8`)
 ## - Bound expression inspection / constant folding (`Expression`, `ScalarBindInfo::argument`)
 ## - Virtual file system access (`FileSystem`, `FileHandle`, `FileOpenOptions`)
-## - Bulk row appender (`Appender`)
+## - Appender `error_data` / `clear` / `append_default_to_chunk` (the appender
+##   itself needs no feature, and reports richer errors with this one on)
 ## - Zero-copy selection vectors (`SelectionVector`)
 ## - Database instance cache (`InstanceCache`)
 ## - `Value::display_string` and `TIME_NS` accessors (`Value::time_ns` / `as_time_ns`)
@@ -149,7 +155,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
 # tempfile is version-pinned for reproducible dev builds. It was originally held
 # back to avoid getrandom >=0.4 (edition2024 / Rust >=1.85) when MSRV was 1.84.1;
-# now that MSRV is 1.87.0 that constraint no longer applies, but the pin is kept
+# now that MSRV is 1.86.0 that constraint no longer applies, but the pin is kept
 # to avoid unrelated dev-dependency churn. proptest only needs `tempfile ^3`.
 tempfile = "=3.27.0"
 
@@ -161,12 +167,22 @@ harness = false
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
+# `unwind`, matching what quack-rs tells extensions to use and what the scaffold
+# generates. quack-rs catches panics at every FFI boundary with `catch_unwind`,
+# which cannot catch anything under `panic = "abort"`. This crate is an rlib, so
+# Cargo ignores the setting downstream either way — but it should not contradict
+# the crate's own guidance.
+panic = "unwind"
 strip = true
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
+# Rust API guideline C-DEBUG. Not cosmetic: without `Debug`, `Result::unwrap`,
+# `Result::expect_err`, `assert_eq!` and `#[derive(Debug)]` on any downstream
+# struct holding one of our types all fail to compile. CI runs clippy with
+# `-D warnings`, which promotes this to an error there.
+missing_debug_implementations = "warn"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

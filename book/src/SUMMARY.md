@@ -17,6 +17,7 @@
 - [The Entry Point](concepts/entry-point.md)
 - [Error Handling](concepts/errors.md)
 - [Type System](concepts/types.md)
+- [ABI Compatibility](concepts/abi.md)
 
 # Writing Functions
 
@@ -38,12 +39,15 @@
 - [Complex Types (STRUCT, LIST, MAP)](data/complex-types.md)
 - [NULL Handling & Strings](data/nulls-and-strings.md)
 - [INTERVAL Type](data/intervals.md)
+- [Dates, Times and Timestamps](data/dates-and-times.md)
+- [Running SQL from an Extension](data/running-sql.md)
+- [Bulk Appender](data/appender.md)
+- [Table Metadata](data/table-description.md)
 
 # DuckDB 1.5+ APIs
 
 - [Structured Errors](duckdb-1-5/error-data.md)
 - [Bound Expressions](duckdb-1-5/expression.md)
-- [Bulk Appender](duckdb-1-5/appender.md)
 - [Virtual File System](duckdb-1-5/file-system.md)
 - [Selection Vectors](duckdb-1-5/selection-vector.md)
 - [Instance Cache](duckdb-1-5/instance-cache.md)

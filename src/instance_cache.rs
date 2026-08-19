@@ -147,3 +147,5 @@ mod tests {
         unsafe { libduckdb_sys::duckdb_close(&raw mut db) };
     }
 }
+
+crate::debug_repr::impl_handle_debug!(InstanceCache.cache);
