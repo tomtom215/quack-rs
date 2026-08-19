@@ -622,7 +622,8 @@ Validate with `quack_rs::validate::validate_platform` and `validate_excluded_pla
 Community extensions are NOT vetted for security by the DuckDB team. The community extensions
 repository is a distribution mechanism, not a security guarantee. As an extension author:
 
-- Never panic across FFI boundaries (`quack-rs` enforces `panic = "abort"`)
+- Never panic across FFI boundaries; `quack-rs` guards every one with `catch_unwind`,
+  which requires `panic = "unwind"` (`abort` makes the guards inert)
 - Validate all user inputs at system boundaries
 - Do not include secrets, credentials, or API keys in your extension binary
 - Follow the OWASP top 10 where applicable (SQL injection via dynamic SQL, etc.)

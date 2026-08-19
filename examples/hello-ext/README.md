@@ -253,8 +253,9 @@ SELECT value FROM gen_series_v2(3);                                  -- 0, 1, 2
 - [ ] Replace placeholder functions with your logic
 - [ ] Add `repository`, `homepage`, `documentation` to `Cargo.toml`
 - [ ] Add a `description.yml` (see `quack_rs::validate::parse_description_yml`)
-- [ ] Verify your `[profile.release]` has `panic = "abort"`, `lto = true`
-      (use `quack_rs::validate::validate_release_profile`)
+- [ ] Verify your `[profile.release]` has `panic = "unwind"`, `lto = true`
+      (use `quack_rs::validate::validate_release_profile`; `abort` is rejected
+      because it makes quack-rs's `catch_unwind` guards inert)
 - [ ] Add integration tests using `duckdb = { features = ["bundled"] }`
 
 ## Code tour

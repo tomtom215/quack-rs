@@ -73,7 +73,8 @@ unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: i
 
 ## L3: No panic across FFI boundaries
 
-**Status**: Made impossible by `init_extension` and `panic = "abort"`.
+**Status**: Contained by `init_extension` and the `catch_unwind` guards, which
+require `panic = "unwind"`.
 
 **Symptom**: Extension causes DuckDB to crash or behave unpredictably.
 
@@ -94,9 +95,10 @@ if let Some(st) = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) } {
 let st = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) }.unwrap(); // UB if None
 ```
 
-The scaffold-generated `Cargo.toml` sets `panic = "abort"` in the release
-profile, which terminates the process instead of unwinding — still bad, but not
-undefined behavior.
+The scaffold-generated `Cargo.toml` sets `panic = "unwind"` in the release
+profile. quack-rs wraps every `extern "C"` entry point in `catch_unwind`, so a
+panic surfaces as a DuckDB error; `panic = "abort"` would defeat that, because
+the runtime aborts before unwinding starts.
 
 ---
 

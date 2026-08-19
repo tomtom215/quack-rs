@@ -16,7 +16,12 @@ quack_rs = { path = "../..", package = "quack-rs" }
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]
-panic = "abort"
+# Must be "unwind": quack-rs wraps every `extern "C"` boundary in
+# `catch_unwind`, and `catch_unwind` cannot catch anything under
+# `panic = "abort"` -- the runtime aborts before unwinding starts, which
+# silently disables the crate's panic safety. `validate_release_profile`
+# rejects "abort" for this reason, and the scaffold generates "unwind".
+panic = "unwind"
 lto = true
 codegen-units = 1
 opt-level = 3

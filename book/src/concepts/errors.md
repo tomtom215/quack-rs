@@ -96,9 +96,10 @@ The cardinal rule of DuckDB extension development:
 
 > **Never `unwrap()`, `expect()`, or `panic!()` in any code path that DuckDB may call.**
 
-Rust panics that cross FFI boundaries are **undefined behavior**. With `panic = "abort"`
-in the release profile, a panic terminates the process — which is safer than UB, but still
-unacceptable in production.
+quack-rs catches panics at every `extern "C"` boundary and converts them to DuckDB errors,
+which requires `panic = "unwind"` in the release profile — under `panic = "abort"` the
+process dies with `SIGABRT` instead. That guard is a backstop, not a licence: a panicking
+code path still aborts the user's query, so keep them out of DuckDB-called code.
 
 ### Safe patterns
 

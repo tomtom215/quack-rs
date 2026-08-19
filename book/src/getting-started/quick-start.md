@@ -25,7 +25,7 @@ name = "my_extension"       # must match your extension name — see Pitfall P1
 crate-type = ["cdylib", "rlib"]
 
 [profile.release]
-panic = "abort"             # required — panics across FFI are undefined behavior
+panic = "unwind"            # required — quack-rs catches panics, and catching needs unwinding
 lto = true
 opt-level = 3
 codegen-units = 1

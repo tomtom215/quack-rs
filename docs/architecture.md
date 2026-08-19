@@ -314,12 +314,14 @@ API changes cost days of debugging.
 ## ADR-003: No Panics Across FFI
 
 **Context**: `panic!` in a `no_std`-adjacent context, or across a C FFI boundary,
-is undefined behaviour. DuckDB calls extension callbacks from C++; a Rust panic
-propagating into C++ unwinding is UB.
+is not something DuckDB can recover from. DuckDB calls extension callbacks from
+C++, and an unhandled Rust panic there ends the user's session.
 
 **Decision**: Every callback and entry point uses `Result`/`Option`. Errors are
-reported via `access.set_error`. The `panic = "abort"` release profile setting
-is a defence-in-depth measure, not a substitute for correct error handling.
+reported via `access.set_error`. As a backstop, every `extern "C"` boundary is
+wrapped in `catch_unwind`, which requires `panic = "unwind"`; `panic = "abort"`
+would defeat it, since the runtime aborts before unwinding starts. The guard is
+defence-in-depth, not a substitute for correct error handling.
 
 **Consequences**: All callbacks are slightly more verbose, but the invariant is
 enforced by the type system rather than convention.

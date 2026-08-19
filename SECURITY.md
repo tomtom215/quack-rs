@@ -68,7 +68,7 @@ This policy does **not** cover:
 quack-rs is designed with safety as a primary concern:
 
 1. **`#![deny(unsafe_op_in_unsafe_fn)]`** in `src/lib.rs` and **`unsafe_op_in_unsafe_fn = "deny"`** in `Cargo.toml`: All unsafe operations require explicit `unsafe` blocks with `// SAFETY:` comments, even inside `unsafe fn`.
-2. **No panics across FFI**: All entry points and callbacks use `Result`/`Option`. The release profile sets `panic = "abort"` as defense-in-depth.
+2. **No panics across FFI**: All entry points and callbacks use `Result`/`Option`, and every `extern "C"` boundary is wrapped in `catch_unwind` so a stray panic becomes a DuckDB error rather than a dead session. This requires `panic = "unwind"`; `panic = "abort"` would defeat it, since the runtime aborts before unwinding starts.
 3. **Double-free prevention**: `FfiState<T>::destroy_callback` nulls pointers after freeing.
 4. **Boolean UB prevention**: `VectorReader::read_bool` reads as `u8 != 0`, never transmutes to `bool`.
 5. **RAII for DuckDB handles**: `LogicalType` ensures `duckdb_destroy_logical_type` is always called.

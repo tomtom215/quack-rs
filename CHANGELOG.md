@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `panic = "abort"` guidance 0.16.0 corrected survived in nine other
+  places, including the example's real build.** 0.16.0 fixed the validator, the
+  scaffold and `validate/release_profile.rs`, but the advice it reversed stayed
+  in the pages users actually read first: the copy-paste `[profile.release]`
+  blocks in Quick Start, Installation and Publishing all said `panic = "abort"`
+  and marked it **required**, and Installation and the FAQ each carried a
+  section explaining why. `publishing.md` contradicted itself — line 236 said
+  `abort`, line 264 said `unwind`. Also corrected in `concepts/errors.md`,
+  `reference/pitfalls.md`, `docs/architecture.md`, `LESSONS.md`, `SECURITY.md`
+  and `examples/hello-ext/README.md`. Historical `CHANGELOG` entries are left
+  as written.
+
+  Anyone following the getting-started path would have pasted the one setting
+  that makes every `catch_unwind` guard in the crate inert.
+
+- **`examples/hello-ext` was still built with `panic = "abort"`.** Not
+  documentation — the reference extension users copy shipped with quack-rs's
+  panic safety disabled, contradicting the validator, the scaffold and the
+  docs. Now `unwind`, with a comment saying why, and pinned by a new test that
+  runs the example's own manifest through the rule
+  (`hello_ext_example_release_profile_is_valid`); reverting the manifest fails
+  it.
+
+- **`book/src/publishing.md`'s `ScaffoldConfig` example no longer compiled.**
+  0.16.0 added `target_duckdb_version` and `use_unstable_c_api`, so the
+  seven-field struct literal was missing two. Uses `..Default::default()` now,
+  which is what the `Default` impl added in 0.16.0 is for.
+
+
 ## [0.16.0] - 2026-08-19
 
 ### Security

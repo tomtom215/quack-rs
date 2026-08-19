@@ -32,6 +32,9 @@ let config = ScaffoldConfig {
     maintainer: "Your Name".to_string(),
     github_repo: "yourorg/duckdb-my-extension".to_string(),
     excluded_platforms: vec![],
+    // `ScaffoldConfig` implements `Default`, so new fields (0.16.0 added
+    // `target_duckdb_version` and `use_unstable_c_api`) do not break this.
+    ..Default::default()
 };
 
 let files = generate_scaffold(&config).expect("scaffold failed");
@@ -233,7 +236,7 @@ quack-rs = "0.13"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]
-panic = "abort"              # Required — no stack unwinding in FFI
+panic = "unwind"             # Required — quack-rs catches panics; catching needs unwinding
 opt-level = 3
 lto = "thin"
 strip = "symbols"
@@ -335,7 +338,8 @@ of your pinned `libduckdb-sys`.
 
 Community extensions are not vetted for security by the DuckDB team:
 
-- Never panic across FFI boundaries (`panic = "abort"` enforces this)
+- Never panic across FFI boundaries; keep `panic = "unwind"` so the `catch_unwind`
+  guards can turn a stray panic into a DuckDB error instead of killing the session
 - Validate user inputs at system boundaries (extension entry point is the boundary)
 - Do not include secrets, API keys, or credentials in your binary
 - Dynamic SQL in SQL macros must not construct queries from unsanitized user data

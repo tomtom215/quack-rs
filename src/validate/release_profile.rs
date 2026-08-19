@@ -213,4 +213,25 @@ mod tests {
         );
         assert!(!manifest.contains(r#"panic = "abort""#));
     }
+
+    /// The shipped example is what users copy, so it must satisfy the very
+    /// validator this module provides. It shipped `panic = "abort"` through
+    /// 0.16.0 -- the scaffold was fixed but the example was missed -- which
+    /// left every `catch_unwind` guard in the reference extension inert.
+    #[test]
+    fn hello_ext_example_release_profile_is_valid() {
+        let manifest = include_str!("../../examples/hello-ext/Cargo.toml");
+        let profile = manifest
+            .split("[profile.release]")
+            .nth(1)
+            .expect("hello-ext defines [profile.release]");
+        assert!(
+            profile.contains(r#"panic = "unwind""#),
+            "examples/hello-ext must set panic = \"unwind\"; `abort` disables quack-rs's panic guards"
+        );
+        assert!(
+            !profile.lines().any(|l| l.trim() == r#"panic = "abort""#),
+            "examples/hello-ext must not set panic = \"abort\""
+        );
+    }
 }

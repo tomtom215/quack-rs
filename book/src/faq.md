@@ -244,12 +244,16 @@ internal `Rc<RefCell<InnerConnection>>` layout. This is fragile and causes
 SEGFAULTs when the layout changes between `duckdb` crate versions.
 `init_extension` uses the correct C API entry sequence directly.
 
-### Why is `panic = "abort"` required?
+### Why is `panic = "unwind"` required?
 
-Panics cannot unwind across FFI boundaries in Rust. A panic in an
-`unsafe extern "C"` callback is undefined behavior. `panic = "abort"` converts
-panics to process termination, which is still bad but not undefined behavior.
-Always use `Result` and `?` in your callbacks instead.
+quack-rs wraps every `extern "C"` entry point in `catch_unwind`, turning a panic
+into a DuckDB error instead of a crash — and `catch_unwind` cannot catch anything
+under `panic = "abort"`, because the runtime aborts before unwinding starts. So
+`abort` silently disables every panic guard the crate provides.
+
+Panics escaping an `extern "C"` boundary are no longer undefined behavior; Rust
+defines that case as an abort. Still prefer `Result` and `?` in your callbacks —
+the guard is a backstop, not a substitute.
 
 ### Can I use async Rust in my extension?
 

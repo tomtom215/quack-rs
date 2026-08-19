@@ -30,22 +30,37 @@ crate-type = ["cdylib", "rlib"]
 #                      rlib  allows unit tests and documentation to work
 
 [profile.release]
-panic = "abort"             # REQUIRED — panics across FFI are undefined behavior
+panic = "unwind"            # REQUIRED — quack-rs catches panics; catching needs unwinding
 lto = true                  # recommended — reduces binary size, improves performance
 opt-level = 3               # recommended
 codegen-units = 1           # recommended — enables full LTO
 strip = true                # recommended — reduces binary size
 ```
 
-### Why `panic = "abort"`?
+### Why `panic = "unwind"`?
 
-Rust's default panic behavior unwinds the stack. When a panic crosses an FFI boundary into
-DuckDB's C++ code, the result is **undefined behavior** — DuckDB may crash, corrupt memory,
-or silently produce wrong results. The `panic = "abort"` setting converts panics into
-immediate process termination, which is far safer.
+quack-rs wraps every `extern "C"` entry point — the extension entry point and every
+scalar/table/aggregate/cast/copy callback macro — in `std::panic::catch_unwind`, so a panic
+in your code becomes a DuckDB error message instead of a crash.
 
-`quack-rs` itself never panics in FFI callbacks, but this setting protects you if a
-dependency or your own code panics.
+**`catch_unwind` cannot catch anything under `panic = "abort"`.** The runtime aborts before
+unwinding starts, so the process dies with `SIGABRT` and takes the user's DuckDB session
+with it. Setting `abort` therefore disables every panic guard quack-rs provides:
+
+```text
+$ rustc -O panic_probe.rs && ./panic_probe
+catch_unwind returned: true
+process survived the panic          exit=0
+
+$ rustc -O -C panic=abort panic_probe.rs && ./panic_probe
+Aborted                             exit=134
+```
+
+The older advice to set `abort` came from panics escaping an `extern "C"` boundary once
+being undefined behavior. They no longer are — Rust defines that as an abort — and quack-rs
+catches them before the boundary anyway, which is the whole point.
+
+`validate_release_profile` enforces this; see [Publishing](../publishing.md).
 
 ---
 
