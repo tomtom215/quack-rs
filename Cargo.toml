@@ -21,6 +21,7 @@ exclude = [
     "book.toml",
     "assets/",
     "deny.toml",
+    "osv-scanner.toml",
     "AUDIT.md",
     "RELEASING.md",
     "LESSONS.md",
