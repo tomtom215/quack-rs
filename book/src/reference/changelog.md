@@ -10,7 +10,7 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.16.0] — 2026-08-18
+## [0.16.0] — 2026-08-19
 
 ### Security
 
