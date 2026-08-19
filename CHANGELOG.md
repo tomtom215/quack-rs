@@ -91,6 +91,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/check-matrix.sh` now runs the combinations CI runs — including
   `bundled-test` alone and the `wasm32` legs — in one command.
 
+#### Security scanning
+
+- **`Security (OSV / GHSA)` failed on `RUSTSEC-2026-0235` (`rkyv` 0.7.46), an
+  advisory that no build of this crate can reach.** `osv-scanner` reads
+  `Cargo.lock`, and Cargo pins optional dependencies there whether or not their
+  feature is enabled, so the job flagged a crate that is never compiled. The
+  chain is quack-rs → `duckdb` (optional dependency, enabled by `bundled-test`)
+  → `rust_decimal` 1.40.0 → `rkyv` (optional feature of `rust_decimal`, not
+  enabled). `rust_decimal` itself *is* built; `rkyv` is not. It is also not
+  fixable here — `rust_decimal` 1.40 constrains `rkyv` to `^0.7`, and the fixed
+  version is 0.8.17. The advisory is present on `main` as well.
+
+  Suppressed via a new `osv-scanner.toml` carrying the full reachability
+  argument. The suppression does not rest on that comment staying true: the
+  `osv-scan` job now re-derives it on every run, failing the build if an `rkyv`
+  node ever appears in `cargo tree --all-features --target all`. The check
+  tests the *forward* tree, because `cargo tree -i` exits 0 with "nothing to
+  print" for a lockfile-only package and so cannot tell "not built" from
+  "built" by exit code; it also anchors on `rust_decimal` being present, so a
+  truncated or failed tree reports as unverified rather than as clean.
+
 #### CI guards
 
 - **`scripts/check-abi-table.py` treated an unreachable release header as

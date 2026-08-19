@@ -644,6 +644,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: stable
       - name: Install osv-scanner (pinned, checksum-verified)
         run: |
           VER=2.3.8
@@ -652,8 +655,40 @@ jobs:
             "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
           echo "${SHA}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
+      # osv-scanner.toml suppresses RUSTSEC-2026-0235 on the grounds that rkyv
+      # is never compiled. Re-prove that here rather than trusting a comment:
+      # if a feature change ever pulls rkyv into the build, this fails and the
+      # suppression has to go.
+      #
+      # Test the FORWARD tree, not `cargo tree -i`. The inverse form exits 0
+      # with "nothing to print" for a package that is in the lockfile but has
+      # no active edge, so it cannot distinguish "not built" from "built" by
+      # exit code. Counting nodes in the forward tree can.
+      - name: Confirm the suppressed advisory is still unreachable
+        run: |
+          if ! tree=$(cargo tree --all-features --target all -e normal,build 2>&1); then
+            echo "::error::cargo tree failed, so rkyv reachability is unverified"
+            printf '%s\n' "$tree"
+            exit 1
+          fi
+          # Anchor: rust_decimal (rkyv's only possible parent here) must be
+          # present, otherwise the tree is not covering the relevant subgraph
+          # and finding no rkyv would prove nothing.
+          if ! printf '%s\n' "$tree" | grep -qE 'rust_decimal v[0-9]'; then
+            echo "::error::rust_decimal absent from the tree; rkyv reachability is unverified"
+            exit 1
+          fi
+          if printf '%s\n' "$tree" | grep -qE '(^|[^a-z_-])rkyv v[0-9]'; then
+            echo "::error::rkyv is now in the build graph. Remove the RUSTSEC-2026-0235"
+            echo "::error::entry from osv-scanner.toml and address the advisory for real."
+            printf '%s\n' "$tree" | grep -E '(^|[^a-z_-])rkyv v[0-9]'
+            exit 1
+          fi
+          echo "rkyv absent from the build graph; suppression still justified"
       - name: Scan lockfiles (root + example) against OSV
-        run: ./osv-scanner --lockfile=Cargo.lock --lockfile=examples/hello-ext/Cargo.lock
+        run: |
+          ./osv-scanner --config=osv-scanner.toml \
+            --lockfile=Cargo.lock --lockfile=examples/hello-ext/Cargo.lock
 
   nightly:
     name: Nightly (informational)
