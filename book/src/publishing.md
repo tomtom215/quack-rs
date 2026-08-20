@@ -21,7 +21,7 @@ with quack-rs.
 `quack_rs::scaffold::generate_scaffold` generates all required files from a
 single function call:
 
-```rust
+```rust,no_run
 use quack_rs::scaffold::{ScaffoldConfig, generate_scaffold};
 
 let config = ScaffoldConfig {

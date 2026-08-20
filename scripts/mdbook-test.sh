@@ -50,5 +50,21 @@ exec "$(command -v rustdoc)" \\
 SHIMEOF
 chmod +x "$SHIM/rustdoc"
 
+# Doctests run, they do not just compile. The scaffold examples call
+# `std::fs::write`, and the first time this script ran they quietly deposited a
+# generated `src/lib.rs`, `src/wasm_lib.rs` and `test/sql/*.test` into book/src.
+# Those blocks are `no_run` now; this catches the next one that is not. Compare
+# before against after, not against HEAD, so uncommitted edits do not trip it.
+BEFORE=$(git status --porcelain book/ 2>/dev/null || true)
+
 echo "==> mdbook test"
 PATH="$SHIM:$PATH" mdbook test -L "$DEPS"
+
+AFTER=$(git status --porcelain book/ 2>/dev/null || true)
+if [ "$BEFORE" != "$AFTER" ]; then
+  echo "error: running the book's doctests changed the working tree:" >&2
+  diff <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") >&2 || true
+  echo "a code block wrote to disk -- mark it \`rust,no_run\`" >&2
+  exit 1
+fi
+echo "==> ok (doctests had no side effects on the working tree)"

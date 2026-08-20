@@ -136,6 +136,14 @@ Enabling the check needed three fixes of its own:
   `volatile`, `init`, and the whole `duckdb-1-5/` chapter set) is absent, which
   surfaces as `no method named ...` that reads like a documentation bug.
 
+Two of those blocks needed one more fix. `mdbook test` *runs* doctests, it does
+not only compile them, and the scaffold examples in `scaffold.md` and
+`publishing.md` call `std::fs::write` — so the first run quietly deposited a
+generated `src/lib.rs`, `src/wasm_lib.rs` and `test/sql/*.test` into `book/src`.
+Both are `no_run` now, so they still get compiled (which is what caught the
+`ScaffoldConfig` defect) without touching the disk, and
+`scripts/mdbook-test.sh` fails if a doctest run changes the working tree at all.
+
 89 blocks now compile on every docs run. 111 remaining blocks are progressive
 tutorial fragments and pseudo-code — `/* Builder */` placeholders, `...` elisions,
 identifiers defined in an earlier block — and are marked `rust,ignore`, which is

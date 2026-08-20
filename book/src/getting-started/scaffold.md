@@ -33,7 +33,7 @@ my_extension/
 
 ## Usage
 
-```rust
+```rust,no_run
 use quack_rs::scaffold::{ScaffoldConfig, generate_scaffold};
 use std::path::Path;
 
