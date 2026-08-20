@@ -18,7 +18,7 @@ Parquet, and JSON readers work.
 Unlike the other builders in quack-rs, `ReplacementScanBuilder` uses a single
 static call because the DuckDB C API takes all arguments at once:
 
-```rust
+```rust,ignore
 use quack_rs::replacement_scan::ReplacementScanBuilder;
 
 // Low-level: pass raw extra_data and an optional delete callback.
@@ -46,6 +46,9 @@ The raw callback receives `duckdb_replacement_scan_info`, but you can wrap it
 with `ReplacementScanInfo` for ergonomic, safe access:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::replacement_scan::ReplacementScanInfo;
 
 unsafe extern "C" fn my_scan_callback(

@@ -36,7 +36,7 @@ DuckDB may call `combine` multiple times as it merges results from parallel segm
 
 ## Registration
 
-```rust
+```rust,ignore
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::TypeId;
 
@@ -68,7 +68,7 @@ heap memory (e.g., when using `FfiState<T>`).
 
 ### `state_size`
 
-```rust
+```rust,ignore
 unsafe extern "C" fn state_size(_info: duckdb_function_info) -> idx_t {
     FfiState::<MyState>::size_callback(_info)
 }
@@ -79,7 +79,7 @@ Returns the size DuckDB must allocate per group. This is always `size_of::<*mut 
 
 ### `state_init`
 
-```rust
+```rust,ignore
 unsafe extern "C" fn state_init(info: duckdb_function_info, state: duckdb_aggregate_state) {
     unsafe { FfiState::<MyState>::init_callback(info, state) };
 }
@@ -90,7 +90,7 @@ the DuckDB-allocated state slot.
 
 ### `update`
 
-```rust
+```rust,ignore
 unsafe extern "C" fn update(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -115,7 +115,7 @@ unsafe extern "C" fn update(
 
 ### `combine`
 
-```rust
+```rust,ignore
 unsafe extern "C" fn combine(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -141,7 +141,7 @@ unsafe extern "C" fn combine(
 
 ### `finalize`
 
-```rust
+```rust,ignore
 unsafe extern "C" fn finalize(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -165,7 +165,7 @@ Always add it to your index.
 
 ### `state_destroy`
 
-```rust
+```rust,ignore
 unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
     unsafe { FfiState::<WordCountState>::destroy_callback(states, count) };
 }
@@ -182,7 +182,7 @@ For functions that accept or return parameterized types like `LIST(BIGINT)`,
 `MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`, use `param_logical` and
 `returns_logical` instead of `param` and `returns`:
 
-```rust
+```rust,ignore
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::{LogicalType, TypeId};
 
@@ -207,7 +207,7 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 `param_logical` and `param` can be interleaved — the parameter position is
 determined by the total number of calls made so far:
 
-```rust
+```rust,ignore
 AggregateFunctionBuilder::new("my_func")
     .param(TypeId::Varchar)                          // position 0: VARCHAR
     .param_logical(LogicalType::list(TypeId::BigInt)) // position 1: LIST(BIGINT)
@@ -225,7 +225,7 @@ If both `returns` and `returns_logical` are called, the logical type takes prece
 Attach arbitrary data to an aggregate function using `extra_info`. This is useful
 for parameterising the function behaviour (e.g., passing configuration):
 
-```rust
+```rust,ignore
 use std::os::raw::c_void;
 
 let config = Box::into_raw(Box::new(42u64)).cast::<c_void>();
@@ -258,6 +258,9 @@ aggregate function callbacks (update, combine, finalize, etc.). It exposes:
 - `set_error(message)` — reports an error, causing DuckDB to abort the query
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::aggregate::AggregateFunctionInfo;
 
 unsafe extern "C" fn update(

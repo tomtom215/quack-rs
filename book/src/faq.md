@@ -50,7 +50,7 @@ in production.
 
 **Yes, without any C++ wrapper code.** Use `quack_rs::sql_macro::SqlMacro`:
 
-```rust
+```rust,ignore
 use quack_rs::sql_macro::SqlMacro;
 
 // Scalar macro
@@ -79,7 +79,7 @@ via `param_logical(LogicalType)` and complex return types via
 Yes. The `init_extension` closure receives a `duckdb_connection` and can call
 as many `register_*` functions as needed:
 
-```rust
+```rust,ignore
 quack_rs::entry_point::init_extension(info, access, DUCKDB_API_VERSION, |con| {
     unsafe { register_word_count(con) }?;
     unsafe { register_sentence_count(con) }?;
@@ -101,7 +101,7 @@ separate copy. Use `libduckdb-sys` with the `loadable-extension` feature.
 
 Yes. Pass an empty slice to `param`:
 
-```rust
+```rust,ignore
 ScalarFunctionBuilder::new("current_quack")
     .returns(TypeId::Varchar)
     .function(quack_callback)
@@ -129,6 +129,9 @@ extension into an actual DuckDB process.
 `SqlMacro::to_sql()` is pure Rust and requires no DuckDB connection:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 let m = SqlMacro::scalar("triple", &["x"], "x * 3").unwrap();
 assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO triple(x) AS (x * 3)");
 ```

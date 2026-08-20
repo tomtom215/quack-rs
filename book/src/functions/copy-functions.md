@@ -15,7 +15,7 @@ extension's bind, init, sink, and finalize callbacks.
 
 ## Builder API
 
-```rust,no_run
+```rust,ignore
 use quack_rs::copy_function::CopyFunctionBuilder;
 
 let builder = CopyFunctionBuilder::try_new("my_format")?
@@ -88,6 +88,9 @@ the handle at the top of your callback to access helper methods:
 All four wrappers are re-exported from `quack_rs::copy_function`:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::copy_function::{CopyBindInfo, CopyGlobalInitInfo, CopySinkInfo, CopyFinalizeInfo};
 ```
 

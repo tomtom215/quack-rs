@@ -46,7 +46,7 @@ for file in &files {
 
 This generates:
 
-```
+```text
 my_extension/
 ├── Cargo.toml
 ├── Makefile
@@ -99,7 +99,7 @@ docs:
 
 Use `quack_rs::validate` to pre-validate fields before submission:
 
-```rust
+```rust,ignore
 use quack_rs::validate::{
     validate_extension_name,
     validate_extension_version,
@@ -126,7 +126,7 @@ Extension names must satisfy **all** of the following:
 Check existing names at [community-extensions.duckdb.org](https://community-extensions.duckdb.org/)
 before choosing. Use vendor-prefixed names to avoid collisions:
 
-```
+```text
 myorg_analytics   ✓
 analytics         ✗  (likely taken or too generic)
 ```
@@ -149,7 +149,7 @@ analytics         ✗  (likely taken or too generic)
 Use `validate_extension_version` to accept all three formats, and
 `classify_extension_version` to determine the stability tier:
 
-```rust
+```rust,ignore
 use quack_rs::validate::semver::classify_extension_version;
 
 match classify_extension_version("0.1.0")? {
@@ -198,7 +198,7 @@ fails CI when quack-rs's copy drifts from it.
 If your extension cannot be built for a platform (e.g., it uses a
 platform-specific system library), add it to `excluded_platforms`:
 
-```rust
+```rust,ignore
 ScaffoldConfig {
     excluded_platforms: vec![
         "wasm_mvp".to_string(),
@@ -211,7 +211,7 @@ ScaffoldConfig {
 
 Validate individual platform names with `validate_platform`:
 
-```rust
+```rust,ignore
 use quack_rs::validate::validate_platform;
 validate_platform("linux_amd64")?;  // Ok
 validate_platform("invalid")?;       // Err
@@ -254,7 +254,7 @@ strip = "symbols"
 The `validate_release_profile` validator checks that your release profile is
 correctly configured:
 
-```rust
+```rust,ignore
 use quack_rs::validate::validate_release_profile;
 
 // Pass all four release profile settings from your Cargo.toml

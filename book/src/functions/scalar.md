@@ -10,7 +10,7 @@ like `length()`, `upper()`, or `sin()`.
 
 DuckDB calls your scalar function once per data chunk (not once per row). The signature is:
 
-```rust
+```rust,ignore
 unsafe extern "C" fn my_fn(
     info: duckdb_function_info,     // function metadata (rarely needed)
     input: duckdb_data_chunk,       // input data — one or more columns
@@ -27,7 +27,7 @@ Inside the function, you:
 
 ## Registration
 
-```rust
+```rust,ignore
 use quack_rs::scalar::ScalarFunctionBuilder;
 use quack_rs::types::TypeId;
 
@@ -51,7 +51,7 @@ The builder validates that `returns` and `function` are set before calling
 
 For user-configurable function names (e.g., from a config file), use `try_new`:
 
-```rust
+```rust,ignore
 ScalarFunctionBuilder::try_new(name)?   // validates name before building
     .param(TypeId::Varchar)
     .returns(TypeId::Varchar)
@@ -99,6 +99,9 @@ unsafe extern "C" fn double_it(
 ## Multi-parameter example: `add(BIGINT, BIGINT) → BIGINT`
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 unsafe extern "C" fn add(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -125,6 +128,9 @@ unsafe extern "C" fn add(
 ## VARCHAR example: `shout(VARCHAR) → VARCHAR`
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 unsafe extern "C" fn shout(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -152,7 +158,7 @@ unsafe extern "C" fn shout(
 If your function accepts different parameter types or arities, use `ScalarFunctionSetBuilder`
 to register multiple overloads under a single name:
 
-```rust
+```rust,ignore
 use quack_rs::scalar::{ScalarFunctionSetBuilder, ScalarOverloadBuilder};
 use quack_rs::types::TypeId;
 
@@ -189,7 +195,7 @@ By default, DuckDB returns NULL if any argument is NULL — your function callba
 never called for those rows. If you need to handle NULLs explicitly (e.g., for a
 `COALESCE`-like function), set `SpecialNullHandling`:
 
-```rust
+```rust,ignore
 use quack_rs::types::NullHandling;
 
 ScalarFunctionBuilder::new("coalesce_custom")
@@ -210,7 +216,7 @@ and handle NULLs yourself.
 For scalar functions that accept or return parameterized types like `LIST(BIGINT)`,
 use `param_logical` and `returns_logical`:
 
-```rust
+```rust,ignore
 use quack_rs::scalar::ScalarFunctionBuilder;
 use quack_rs::types::{LogicalType, TypeId};
 
@@ -223,7 +229,7 @@ ScalarFunctionBuilder::new("flatten_list")
 
 These methods are also available on `ScalarOverloadBuilder` for function sets:
 
-```rust
+```rust,ignore
 ScalarOverloadBuilder::new()
     .param(TypeId::Varchar)
     .returns_logical(LogicalType::list(TypeId::Timestamp))  // LIST(TIMESTAMP) output
@@ -255,7 +261,7 @@ feature is enabled:
 Declares that the function accepts a variable number of trailing arguments, all
 of the given `TypeId`. Maps to `duckdb_scalar_function_set_varargs`.
 
-```rust
+```rust,ignore
 ScalarFunctionBuilder::new("concat_all")
     .varargs(TypeId::Varchar)
     .returns(TypeId::Varchar)
@@ -268,7 +274,7 @@ ScalarFunctionBuilder::new("concat_all")
 Like `varargs`, but accepts a `LogicalType` for parameterized variadic arguments.
 Maps to `duckdb_scalar_function_set_varargs`.
 
-```rust
+```rust,ignore
 ScalarFunctionBuilder::new("merge_lists")
     .varargs_logical(LogicalType::list(TypeId::BigInt))
     .returns_logical(LogicalType::list(TypeId::BigInt))
@@ -282,7 +288,7 @@ Marks the function as volatile, meaning DuckDB will not cache or reuse its
 results across calls with the same arguments. Maps to
 `duckdb_scalar_function_set_volatile`.
 
-```rust
+```rust,ignore
 ScalarFunctionBuilder::new("random_int")
     .returns(TypeId::Integer)
     .volatile()
@@ -296,7 +302,7 @@ Sets a custom bind callback that runs at plan time. Use this to inspect argument
 types and set the return type dynamically. Maps to
 `duckdb_scalar_function_set_bind`.
 
-```rust
+```rust,ignore
 ScalarFunctionBuilder::new("dynamic_return")
     .varargs(TypeId::Varchar)
     .returns(TypeId::Varchar)   // default; overridden in bind
@@ -311,7 +317,7 @@ Sets a local-init callback invoked once per thread before execution begins. Use
 this to allocate per-thread state. Maps to
 `duckdb_scalar_function_set_init`.
 
-```rust
+```rust,ignore
 ScalarFunctionBuilder::new("stateful_fn")
     .param(TypeId::BigInt)
     .returns(TypeId::BigInt)
@@ -328,7 +334,7 @@ Attach arbitrary data to a scalar function using `extra_info`. This is useful fo
 parameterising the function behaviour (e.g., a locale or configuration struct).
 The method is available on both `ScalarFunctionBuilder` and `ScalarOverloadBuilder`.
 
-```rust
+```rust,ignore
 use std::os::raw::c_void;
 
 let config = Box::into_raw(Box::new("en_US".to_string())).cast::<c_void>();
@@ -356,6 +362,9 @@ function callback. It exposes:
 - `set_error(message)` — reports an error, causing DuckDB to abort the query
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::scalar::ScalarFunctionInfo;
 
 unsafe extern "C" fn my_fn(

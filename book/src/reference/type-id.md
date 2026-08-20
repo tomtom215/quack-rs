@@ -95,6 +95,9 @@ assert_eq!(type_id, TypeId::BigInt);
 Returns the SQL type name as a static string.
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 assert_eq!(TypeId::BigInt.sql_name(), "BIGINT");
 assert_eq!(TypeId::Varchar.sql_name(), "VARCHAR");
 assert_eq!(TypeId::TimestampTz.sql_name(), "TIMESTAMPTZ");
@@ -105,6 +108,9 @@ assert_eq!(TypeId::TimestampTz.sql_name(), "TIMESTAMPTZ");
 `TypeId` implements `Display`, which outputs the SQL name:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 println!("{}", TypeId::Interval);  // prints: INTERVAL
 let s = format!("{}", TypeId::UBigInt); // "UBIGINT"
 ```
@@ -163,7 +169,7 @@ type_names.insert(TypeId::Varchar, "label");
 add new variants without it being a breaking change. If you match on `TypeId`,
 include a wildcard arm:
 
-```rust
+```rust,ignore
 match type_id {
     TypeId::BigInt => { /* ... */ }
     TypeId::Varchar => { /* ... */ }
@@ -178,7 +184,7 @@ match type_id {
 For types that require runtime parameters (such as `DECIMAL(p, s)` or
 parameterized `LIST`), use `quack_rs::types::LogicalType`:
 
-```rust
+```rust,ignore
 use quack_rs::types::{LogicalType, TypeId};
 
 let lt = LogicalType::new(TypeId::BigInt);

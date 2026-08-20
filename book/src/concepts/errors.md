@@ -6,7 +6,7 @@ quack-rs uses a single error type throughout: `ExtensionError`.
 
 ## `ExtensionError`
 
-```rust
+```rust,ignore
 use quack_rs::error::{ExtensionError, ExtResult};
 
 // From a string literal
@@ -29,7 +29,7 @@ The `From<std::io::Error>` impl is especially useful for extensions that
 allocate runtime resources (e.g., tokio) during initialization — the `?`
 operator works directly without `.map_err()`:
 
-```rust
+```rust,ignore
 fn register_all(con: &Connection) -> Result<(), ExtensionError> {
     let _rt = tokio::runtime::Runtime::new()?; // ← io::Error → ExtensionError
     // ... register functions ...
@@ -44,6 +44,9 @@ fn register_all(con: &Connection) -> Result<(), ExtensionError> {
 A type alias for `Result<T, ExtensionError>`, used throughout the SDK:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 pub type ExtResult<T> = Result<T, ExtensionError>;
 ```
 
@@ -53,7 +56,7 @@ pub type ExtResult<T> = Result<T, ExtensionError>;
 
 In your registration function:
 
-```rust
+```rust,ignore
 fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
     unsafe {
         ScalarFunctionBuilder::new("my_fn")
@@ -79,7 +82,7 @@ If any registration call fails, `?` returns the error from `register`, which
 
 `init_extension` converts `ExtensionError` to a `CString` for the DuckDB error callback:
 
-```rust
+```rust,ignore
 pub fn to_c_string(&self) -> CString {
     // Truncates at the first null byte if message contains one
     CString::new(self.message.as_bytes()).unwrap_or_else(...)
@@ -103,7 +106,7 @@ code path still aborts the user's query, so keep them out of DuckDB-called code.
 
 ### Safe patterns
 
-```rust
+```rust,ignore
 // ✅ Use Option methods
 if let Some(s) = FfiState::<MyState>::with_state_mut(state_ptr) {
     s.count += 1;

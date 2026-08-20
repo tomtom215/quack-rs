@@ -17,7 +17,7 @@ vectors without manual offset arithmetic.
 
 ### STRUCT
 
-```rust
+```rust,ignore
 use quack_rs::vector::{VectorReader, complex::StructVector};
 
 // Inside a scan or finalize callback:
@@ -36,7 +36,7 @@ for row in 0..row_count {
 
 ### LIST
 
-```rust
+```rust,ignore
 use quack_rs::vector::{VectorReader, complex::ListVector};
 
 let total_elements = unsafe { ListVector::get_size(list_vec) };
@@ -58,7 +58,7 @@ for row in 0..row_count {
 
 `MAP` is `LIST<STRUCT{key, value}>`. Access keys and values via the inner struct:
 
-```rust
+```rust,ignore
 use quack_rs::vector::{VectorReader, complex::MapVector};
 
 let total = unsafe { MapVector::total_entry_count(map_vec) };
@@ -80,7 +80,7 @@ for row in 0..row_count {
 
 ### STRUCT
 
-```rust
+```rust,ignore
 use quack_rs::vector::{VectorWriter, complex::StructVector};
 
 let mut x_writer = unsafe { StructVector::field_writer(out_vec, 0) };
@@ -97,7 +97,7 @@ for row in 0..batch_size {
 When a STRUCT field is itself a LIST, MAP, or ARRAY, use `child_vector()` on
 `StructWriter` or `StructReader` to get the raw vector handle for complex operations:
 
-```rust
+```rust,ignore
 use quack_rs::vector::{StructWriter, complex::ListVector};
 
 // STRUCT(name VARCHAR, services LIST<VARCHAR>, message VARCHAR)
@@ -124,7 +124,7 @@ unsafe { ListVector::set_size(list_vec, 3) };
 `{offset, length}` entry, and — importantly — re-fetches the child writer after
 every reserve:
 
-```rust
+```rust,ignore
 use quack_rs::vector::ListBuilder;
 
 let mut builder = unsafe { ListBuilder::new(list_vec) };
@@ -152,7 +152,7 @@ child and one for the value child.
 
 ### LIST — manual
 
-```rust
+```rust,ignore
 use quack_rs::vector::{VectorWriter, complex::ListVector};
 
 let total_elements: usize = rows.iter().map(|r| r.len()).sum();
@@ -176,7 +176,7 @@ The MAP write workflow is identical to LIST, but keys and values are written int
 the two struct child vectors. Prefer `ListBuilder::push_map_row` unless you know
 the total pair count before writing:
 
-```rust
+```rust,ignore
 use quack_rs::vector::{VectorWriter, complex::MapVector};
 
 unsafe { MapVector::reserve(map_vec, total_pairs) };

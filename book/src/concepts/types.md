@@ -10,7 +10,7 @@ quack-rs provides `TypeId` and `LogicalType` to bridge Rust types and DuckDB col
 `VARIANT` types added in DuckDB 1.5.x are exposed behind the `duckdb-1-5-3`
 feature — see [Known Limitations](../reference/known-limitations.md)):
 
-```rust
+```rust,ignore
 use quack_rs::types::TypeId;
 
 TypeId::Boolean
@@ -61,6 +61,9 @@ TypeId::Variant          // duckdb-1-5-3
 ### SQL name
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 assert_eq!(TypeId::BigInt.sql_name(), "BIGINT");
 assert_eq!(TypeId::Varchar.sql_name(), "VARCHAR");
 assert_eq!(format!("{}", TypeId::Timestamp), "TIMESTAMP");
@@ -90,7 +93,7 @@ assert_eq!(type_id, TypeId::BigInt);
 `LogicalType` is a RAII wrapper around DuckDB's `duckdb_logical_type`. It is used internally
 by the function builders.
 
-```rust
+```rust,ignore
 use quack_rs::types::{LogicalType, TypeId};
 
 let lt = LogicalType::new(TypeId::Varchar);

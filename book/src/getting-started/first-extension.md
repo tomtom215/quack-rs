@@ -58,6 +58,9 @@ An aggregate function accumulates state across many rows and emits one result pe
 ### 1a. The state struct
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
 #[derive(Default, Debug)]
 struct WordCountState {
     count: i64,
@@ -75,6 +78,12 @@ and manages the full lifecycle (init, combine, destroy).
 These two callbacks are always identical boilerplate — delegate to `FfiState`:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
+# #[derive(Default, Debug)]
+# struct WordCountState { count: i64 }
+# impl AggregateState for WordCountState {}
 unsafe extern "C" fn wc_state_size(_info: duckdb_function_info) -> idx_t {
     FfiState::<WordCountState>::size_callback(_info)
 }
@@ -91,6 +100,13 @@ into that slot.
 ### 1c. `update` — accumulate one batch
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
+# #[derive(Default, Debug)]
+# struct WordCountState { count: i64 }
+# impl AggregateState for WordCountState {}
+# fn count_words(s: &str) -> i64 { s.split_whitespace().count() as i64 }
 unsafe extern "C" fn wc_update(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -127,6 +143,12 @@ Key points:
 > be silently corrupted.
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
+# #[derive(Default, Debug)]
+# struct WordCountState { count: i64 }
+# impl AggregateState for WordCountState {}
 unsafe extern "C" fn wc_combine(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -149,6 +171,12 @@ unsafe extern "C" fn wc_combine(
 ### 1e. `finalize` — write output
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
+# #[derive(Default, Debug)]
+# struct WordCountState { count: i64 }
+# impl AggregateState for WordCountState {}
 unsafe extern "C" fn wc_finalize(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -173,6 +201,12 @@ unsafe extern "C" fn wc_finalize(
 ### 1f. `state_destroy`
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
+# #[derive(Default, Debug)]
+# struct WordCountState { count: i64 }
+# impl AggregateState for WordCountState {}
 unsafe extern "C" fn wc_state_destroy(
     states: *mut duckdb_aggregate_state,
     count: idx_t,
@@ -195,6 +229,10 @@ The callback receives the full chunk and an output vector (not per-row state poi
 If the input row is NULL, write NULL to output — never read from an invalid row.
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
+# fn first_word(s: &str) -> &str { s.split_whitespace().next().unwrap_or("") }
 unsafe extern "C" fn first_word_scalar(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -218,6 +256,9 @@ unsafe extern "C" fn first_word_scalar(
 The pure logic:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
 pub fn first_word(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or("")
 }
@@ -230,7 +271,7 @@ the null flag — this is required by DuckDB and handled for you by `VectorWrite
 
 ## Part 3 — Registration
 
-```rust
+```rust,ignore
 unsafe fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
     unsafe {
         AggregateFunctionBuilder::new("word_count")
@@ -261,13 +302,13 @@ a failure — this propagates to the entry point and is surfaced to the user.
 
 ## Part 4 — Entry point
 
-```rust
+```rust,ignore
 quack_rs::entry_point!(hello_ext_init_c_api, |con| unsafe { register(con) });
 ```
 
 This one line emits:
 
-```rust
+```rust,ignore
 #[no_mangle]
 pub unsafe extern "C" fn hello_ext_init_c_api(
     info: duckdb_extension_info,
@@ -293,6 +334,13 @@ the full initialization sequence.
 Test pure logic directly:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
+# #[derive(Default, Debug)]
+# struct WordCountState { count: i64 }
+# impl AggregateState for WordCountState {}
+# fn count_words(s: &str) -> i64 { s.split_whitespace().count() as i64 }
 #[test]
 fn count_words_whitespace_variants() {
     assert_eq!(count_words("  hello  world  "), 2);
@@ -310,6 +358,13 @@ fn first_word_empty_and_whitespace() {
 Test aggregate state with `AggregateTestHarness`:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t};
+# #[derive(Default, Debug)]
+# struct WordCountState { count: i64 }
+# impl AggregateState for WordCountState {}
+# fn count_words(s: &str) -> i64 { s.split_whitespace().count() as i64 }
 #[test]
 fn word_count_null_rows_are_skipped() {
     // NULL rows: the callback skips them (no update call)

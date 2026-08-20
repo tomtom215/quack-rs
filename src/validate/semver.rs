@@ -37,7 +37,8 @@ use crate::error::ExtensionError;
 ///
 /// - Must have exactly three numeric components separated by dots
 /// - Components must not have leading zeros (except `0` itself)
-/// - Pre-release identifiers are alphanumeric with dots/hyphens
+/// - Pre-release identifiers are alphanumeric with dots/hyphens, and a purely
+///   numeric one must not have a leading zero (semver rule 9)
 /// - Build metadata follows a `+` and is alphanumeric with dots/hyphens
 ///
 /// # Errors
@@ -66,7 +67,7 @@ pub fn validate_semver(version: &str) -> Result<(), ExtensionError> {
     // Split off build metadata first (after +)
     let (version_pre, _build) = match version.split_once('+') {
         Some((v, b)) => {
-            validate_identifiers(b, "build metadata")?;
+            validate_identifiers(b, "build metadata", false)?;
             (v, Some(b))
         }
         None => (version, None),
@@ -75,7 +76,7 @@ pub fn validate_semver(version: &str) -> Result<(), ExtensionError> {
     // Split off pre-release (after -)
     let (core, _pre) = match version_pre.split_once('-') {
         Some((c, p)) => {
-            validate_identifiers(p, "pre-release")?;
+            validate_identifiers(p, "pre-release", true)?;
             (c, Some(p))
         }
         None => (version_pre, None),
@@ -292,7 +293,11 @@ fn validate_numeric_component(
 }
 
 /// Validates dot-separated identifiers (pre-release or build metadata).
-fn validate_identifiers(s: &str, label: &str) -> Result<(), ExtensionError> {
+fn validate_identifiers(
+    s: &str,
+    label: &str,
+    forbid_numeric_leading_zero: bool,
+) -> Result<(), ExtensionError> {
     if s.is_empty() {
         return Err(ExtensionError::new(format!(
             "{label} identifier must not be empty"
@@ -311,6 +316,20 @@ fn validate_identifiers(s: &str, label: &str) -> Result<(), ExtensionError> {
         {
             return Err(ExtensionError::new(format!(
                 "{label} identifier '{ident}' contains invalid characters"
+            )));
+        }
+        // Semver rule 9: a pre-release identifier consisting only of digits is a
+        // *numeric* identifier and must not carry a leading zero. Rule 10 places no
+        // such restriction on build metadata, which is why `1.0.0-alpha+001` is
+        // valid while `1.0.0-alpha.01` is not. An identifier with any non-digit
+        // (`0a`, `0-1`) is alphanumeric, so the rule does not apply to it.
+        if forbid_numeric_leading_zero
+            && ident.len() > 1
+            && ident.starts_with('0')
+            && ident.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(ExtensionError::new(format!(
+                "{label} identifier '{ident}' is numeric and has a leading zero"
             )));
         }
     }
@@ -350,6 +369,36 @@ mod tests {
     fn valid_prerelease_and_build() {
         assert!(validate_semver("1.0.0-alpha+001").is_ok());
         assert!(validate_semver("1.0.0-rc.1+build.456").is_ok());
+    }
+
+    #[test]
+    fn numeric_prerelease_leading_zero_rejected() {
+        // Semver rule 9: numeric pre-release identifiers must not have a leading
+        // zero. These are the spec's own invalid examples.
+        assert!(validate_semver("1.0.0-01").is_err());
+        assert!(validate_semver("1.0.0-alpha.01").is_err());
+        assert!(validate_semver("1.0.0-0.03.7").is_err());
+    }
+
+    #[test]
+    fn alphanumeric_prerelease_leading_zero_allowed() {
+        // Rule 9 covers only *numeric* identifiers: one non-digit makes it
+        // alphanumeric, where a leading zero is fine.
+        assert!(validate_semver("1.0.0-0a").is_ok());
+        assert!(validate_semver("1.0.0-0-1").is_ok());
+        assert!(validate_semver("1.0.0-alpha.0x1").is_ok());
+        // "0" itself is a valid numeric identifier.
+        assert!(validate_semver("1.0.0-0").is_ok());
+        assert!(validate_semver("1.0.0-0.3.7").is_ok());
+    }
+
+    #[test]
+    fn build_metadata_leading_zero_still_allowed() {
+        // Rule 10 imposes no leading-zero restriction on build metadata, so this
+        // must keep passing even though the pre-release form of it does not.
+        assert!(validate_semver("1.0.0+001").is_ok());
+        assert!(validate_semver("1.0.0-alpha+001").is_ok());
+        assert!(validate_semver("1.0.0+0.03.7").is_ok());
     }
 
     #[test]

@@ -94,7 +94,7 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
 
 ## Builder API
 
-```rust
+```rust,ignore
 use quack_rs::table::{TableFunctionBuilder, BindInfo, FfiBindData, FfiInitData};
 use quack_rs::types::TypeId;
 
@@ -117,6 +117,9 @@ Bind data persists from the bind phase through all scan batches. Use
 `FfiBindData<T>` to allocate it safely:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 struct MyBindData {
     limit: i64,
 }
@@ -135,6 +138,9 @@ it at the right time — no `Box::into_raw` / `Box::from_raw` needed.
 Per-scan state (e.g., a current row index) uses `FfiInitData<T>`:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 struct MyScanState {
     pos: i64,
 }
@@ -149,7 +155,7 @@ unsafe extern "C" fn my_init(info: duckdb_init_info) {
 The `hello-ext` example registers `generate_series_ext(n BIGINT)` which emits
 integers `0 .. n-1`. See `examples/hello-ext/src/lib.rs` for the full source.
 
-```rust
+```rust,ignore
 // Bind: extract `n`, register one output column
 unsafe extern "C" fn gs_bind(info: duckdb_bind_info) {
     let bind_info = unsafe { BindInfo::new(info) };
@@ -185,7 +191,7 @@ unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chu
 
 ## Registration
 
-```rust
+```rust,ignore
 TableFunctionBuilder::new("generate_series_ext")
     .param(TypeId::BigInt)
     .bind(gs_bind)
@@ -200,7 +206,7 @@ TableFunctionBuilder::new("generate_series_ext")
 
 Named parameters let callers pass optional arguments by name (e.g., `step := 10`):
 
-```rust
+```rust,ignore
 TableFunctionBuilder::new("gen_series_v2")
     .param(TypeId::BigInt)                    // positional: n
     .named_param("step", TypeId::BigInt)      // named: step := <value>
@@ -217,7 +223,7 @@ In the bind callback, read the named parameter with
 
 For multi-threaded table functions, use `local_init` to allocate per-thread state:
 
-```rust
+```rust,ignore
 TableFunctionBuilder::new("gen_series_v2")
     .param(TypeId::BigInt)
     .bind(gs_v2_bind)
@@ -235,7 +241,7 @@ The local init callback receives `duckdb_init_info` and can use
 Use `InitInfo::set_max_threads` in the global init callback to tell DuckDB how
 many threads can scan concurrently:
 
-```rust
+```rust,ignore
 unsafe extern "C" fn gs_v2_init(info: duckdb_init_info) {
     let init_info = unsafe { InitInfo::new(info) };
     unsafe { init_info.set_max_threads(1) };
@@ -247,7 +253,7 @@ unsafe extern "C" fn gs_v2_init(info: duckdb_init_info) {
 
 Enable projection pushdown to let DuckDB skip unrequested columns:
 
-```rust
+```rust,ignore
 TableFunctionBuilder::new("my_func")
     .projection_pushdown(true)
     // ...
@@ -266,7 +272,7 @@ For parameterised types that `TypeId` cannot express (e.g. `LIST(BIGINT)`,
 `MAP(VARCHAR, INTEGER)`, `STRUCT(...)`), use `param_logical` and
 `named_param_logical`:
 
-```rust
+```rust,ignore
 use quack_rs::types::LogicalType;
 
 TableFunctionBuilder::new("read_data")

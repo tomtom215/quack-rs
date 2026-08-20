@@ -14,6 +14,9 @@ databases on behalf of a query.
 ## Opening through the cache
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::instance_cache::InstanceCache;
 
 # fn demo() -> Result<(), quack_rs::error::ExtensionError> {
@@ -30,6 +33,9 @@ Pass a [`DbConfig`] to control how a *freshly created* instance is configured; i
 is ignored when an instance already exists for the path:
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::instance_cache::InstanceCache;
 use quack_rs::config::DbConfig;
 

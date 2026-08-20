@@ -43,14 +43,14 @@ and your state lives in a `Box<T>` heap allocation whose pointer is stored in th
 
 ### Memory layout
 
-```
+```text
 DuckDB-allocated slot (state_size bytes = sizeof(*mut T)):
   [ inner: *mut T ]  ──→  Box<T>  (on the Rust heap)
 ```
 
 ### Lifecycle callbacks
 
-```rust
+```rust,ignore
 // state_size: DuckDB calls this once to know how many bytes to allocate per group
 FfiState::<MyState>::size_callback(_info)
 // Returns: size_of::<*mut MyState>()
@@ -66,7 +66,7 @@ FfiState::<MyState>::destroy_callback(states, count)
 
 ### Accessing state in callbacks
 
-```rust
+```rust,ignore
 // Immutable access (in finalize, combine source):
 if let Some(st) = FfiState::<MyState>::with_state(state_ptr) {
     let value = st.total;
@@ -88,7 +88,7 @@ rather than panicking on null is what keeps the extension panic-free.
 
 Without quack-rs, a naive destructor looks like:
 
-```rust
+```rust,ignore
 // ❌ Naive — causes double-free if DuckDB calls destroy twice
 unsafe extern "C" fn destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
     for i in 0..count as usize {
@@ -100,7 +100,7 @@ unsafe extern "C" fn destroy(states: *mut duckdb_aggregate_state, count: idx_t) 
 
 `FfiState::destroy_callback` does:
 
-```rust
+```rust,ignore
 // After drop(Box::from_raw(ffi.inner)):
 ffi.inner = std::ptr::null_mut();   // ← prevents double-free
 ```

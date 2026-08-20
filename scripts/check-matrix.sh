@@ -45,6 +45,10 @@ run() {
 }
 
 echo '── formatting and lints ─────────────────────────────────────────────────'
+# Lockfile freshness. Nothing passed --locked before, so a stale committed
+# lock was silently refreshed at build time and never failed a check.
+run 'cargo metadata --locked --format-version 1'
+run 'cargo metadata --locked --format-version 1 --manifest-path examples/hello-ext/Cargo.toml'
 run 'cargo fmt --all -- --check'
 run 'cargo clippy --all-targets -- -D warnings'
 run 'cargo clippy --all-targets --features duckdb-1-5 -- -D warnings'
@@ -79,6 +83,14 @@ run 'cargo doc --no-deps --features duckdb-1-5-3'
 # duckdb-1-5-3, so plain `cargo doc` -- what a dependant runs -- was
 # unexercised, and 0.16.0 shipped 8 unresolved intra-doc links as a result.
 run 'cargo doc --no-deps'
+# The book's Rust blocks. `mdbook build` never compiles them, so before this
+# nothing checked them; see scripts/mdbook-test.sh for why plain `mdbook test`
+# cannot do it alone. Skipped with a notice when mdbook is not installed.
+if command -v mdbook >/dev/null 2>&1; then
+  run 'scripts/mdbook-test.sh'
+else
+  echo 'SKIP  scripts/mdbook-test.sh (mdbook not installed: cargo install mdbook --locked)'
+fi
 
 if (( run_tests )); then
     echo '── test suites ──────────────────────────────────────────────────────────'

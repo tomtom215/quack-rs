@@ -85,6 +85,9 @@ fn test_compute_upper() {
 The real FFI callback becomes a thin wrapper:
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 unsafe extern "C" fn my_scalar(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -356,7 +359,7 @@ fn combine_propagates_config() {
 
 ### Inspecting intermediate state
 
-```rust
+```rust,ignore
 let mut h = AggregateTestHarness::<SumState>::new();
 h.update(|s| s.total += 5);
 assert_eq!(h.state().total, 5);   // borrow without consuming
@@ -366,7 +369,7 @@ assert_eq!(h.state().total, 8);
 
 ### Resetting
 
-```rust
+```rust,ignore
 let mut h = AggregateTestHarness::<SumState>::new();
 h.update(|s| s.total = 999);
 h.reset();
@@ -375,7 +378,7 @@ assert_eq!(h.state().total, 0);  // back to S::default()
 
 ### Pre-populating state
 
-```rust
+```rust,ignore
 let initial = MyState { window_size: 3600, count: 0 };
 let h = AggregateTestHarness::with_state(initial);
 ```
@@ -435,7 +438,7 @@ format runs SQL directly in DuckDB and verifies output line-by-line.
 
 ### File location
 
-```
+```text
 test/sql/my_extension.test
 ```
 
@@ -544,7 +547,7 @@ SELECT my_function('hello world');
 The `proptest` crate is well-suited for testing aggregate logic over arbitrary
 inputs:
 
-```rust
+```rust,ignore
 use proptest::prelude::*;
 
 proptest! {

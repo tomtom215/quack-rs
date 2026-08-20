@@ -1,0 +1,6 @@
+/target
+*.duckdb
+*.wal
+build/
+.env
+__pycache__/

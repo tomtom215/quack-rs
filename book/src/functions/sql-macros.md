@@ -20,6 +20,9 @@ string and call `.register(con)`.
 A scalar macro wraps a SQL expression. Think of it as a parameterized SQL alias:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::sql_macro::SqlMacro;
 
 fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
@@ -57,7 +60,7 @@ SELECT safe_div(revenue, orders) FROM monthly_stats;
 
 A table macro wraps a SQL query that returns rows:
 
-```rust
+```rust,ignore
 unsafe {
     // active_users(tbl) → SELECT * FROM tbl WHERE active = true
     SqlMacro::table(
@@ -91,7 +94,7 @@ SELECT count(*) FROM recent_orders(7);
 `to_sql()` returns the `CREATE OR REPLACE MACRO` statement without requiring a live connection.
 Use it for logging, debugging, or assertions in tests:
 
-```rust
+```rust,ignore
 let m = SqlMacro::scalar("add", &["a", "b"], "a + b")?;
 assert_eq!(
     m.to_sql(),
@@ -114,7 +117,7 @@ Macro names and parameter names are validated against the same rules as function
 - Not exceed 256 characters
 - No null bytes
 
-```rust
+```rust,ignore
 SqlMacro::scalar("MyMacro", &[], "1")   // ❌ Err — uppercase
 SqlMacro::scalar("my-macro", &[], "1") // ❌ Err — hyphen
 SqlMacro::scalar("f", &["X"], "1")     // ❌ Err — uppercase param
@@ -138,7 +141,7 @@ The **body** (expression or query) is your own extension code — it is included
 
 `SqlMacro::register` executes the `CREATE OR REPLACE MACRO` statement via `duckdb_query`:
 
-```rust
+```rust,ignore
 pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
     let sql = self.to_sql();
     unsafe { execute_sql(con, &sql) }

@@ -1,0 +1,31 @@
+[package]
+name = "my_extension"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "my_extension"
+crate-type = ["cdylib"]
+
+# WASM support: staticlib target for emcc compilation.
+# See extension-ci-tools for details.
+[[example]]
+name = "my_extension"
+crate-type = ["staticlib"]
+path = "src/wasm_lib.rs"
+
+[dependencies]
+quack-rs = { version = "0.16" }
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Keep this as `unwind`. quack-rs's callback wrappers (`scalar_callback!`,
+# `table_scan_callback!`) and its extension entry point use `catch_unwind` to
+# turn a panic in your code into a DuckDB error. Switching this to abort-on-panic
+# makes that machinery inert, so any panic kills the whole DuckDB process —
+# including an embedding application and the user's session.
+panic = "unwind"
+strip = true

@@ -15,6 +15,9 @@ report failures as an `ErrorData`.
 ## Inspecting an error
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::error_data::{DuckDbErrorType, ErrorData};
 
 # fn handle(err: ErrorData) {
@@ -33,6 +36,9 @@ if err.has_error() {
 Build a structured error to hand back to DuckDB (for example from a callback):
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::error_data::{DuckDbErrorType, ErrorData};
 
 let err = ErrorData::new(DuckDbErrorType::InvalidInput, "row index out of range");
@@ -46,7 +52,7 @@ assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
 so a structured DuckDB error can flow through the `?` operator in your
 registration or callback logic:
 
-```rust,no_run
+```rust,ignore
 use quack_rs::error::ExtensionError;
 use quack_rs::file_system::{FileOpenOptions, FileSystem};
 use quack_rs::client_context::ClientContext;
@@ -85,6 +91,9 @@ is stricter than Rust's in some cases. Use it to validate externally-sourced
 bytes before handing them to DuckDB string APIs:
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::error_data::check_valid_utf8;
 
 # fn demo(bytes: &[u8]) {

@@ -8,7 +8,7 @@ copy-pasting templates.
 
 ## What it generates
 
-```
+```text
 my_extension/
 ├── Cargo.toml                          # cdylib crate, pinned deps, release profile
 ├── Makefile                            # delegates to cargo + extension-ci-tools
@@ -46,6 +46,10 @@ fn main() {
         maintainer: "Your Name".to_string(),
         github_repo: "yourorg/duckdb-my-extension".to_string(),
         excluded_platforms: vec![],
+        // `ScaffoldConfig` implements `Default`, so the fields 0.16.0 added
+        // (`target_duckdb_version`, `use_unstable_c_api`, `git_ref`) are filled
+        // in rather than having to be spelled out here.
+        ..Default::default()
     };
 
     let files = generate_scaffold(&config).expect("scaffold generation failed");
@@ -116,14 +120,15 @@ Some extensions cannot be built for all platforms (e.g., extensions that depend 
 platform-specific system libraries, or WASM environments that lack threading).
 
 ```rust
-ScaffoldConfig {
+# use quack_rs::scaffold::ScaffoldConfig;
+let config = ScaffoldConfig {
     excluded_platforms: vec![
         "wasm_mvp".to_string(),
         "wasm_eh".to_string(),
         "wasm_threads".to_string(),
     ],
-    // ...
-}
+    ..Default::default()
+};
 ```
 
 Validate individual platform names with `quack_rs::validate::validate_platform`, or a

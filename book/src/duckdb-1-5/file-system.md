@@ -18,6 +18,9 @@ hand you (for example via `BindInfo::get_client_context()` or
 ## Reading a file
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::client_context::ClientContext;
 use quack_rs::file_system::{FileOpenOptions, FileSystem};
 
@@ -34,6 +37,9 @@ Some(buf)
 ## Writing a file
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::client_context::ClientContext;
 use quack_rs::file_system::{FileOpenOptions, FileSystem};
 

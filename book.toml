@@ -5,6 +5,12 @@ language = "en"
 multilingual = false
 src = "book/src"
 
+[rust]
+# Without this mdbook invokes rustdoc at its default edition (2015), where
+# `--extern` does not populate the extern prelude and every `use quack_rs::...`
+# block fails to resolve. Matches the crate's own edition.
+edition = "2021"
+
 [build]
 build-dir = "book/book"
 create-missing = false

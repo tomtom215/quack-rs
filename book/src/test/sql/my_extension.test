@@ -1,0 +1,29 @@
+# Integration tests for the my_extension extension.
+# Run via: make test
+#
+# Format reference: https://duckdb.org/dev/sqllogictest/intro.html
+# - query T = VARCHAR result, query I = INTEGER, query R = REAL, query B = BOOLEAN
+# - Expected output must match DuckDB's exact format (see LESSONS.md Pitfall P5)
+
+# Verify the extension loads without error
+require my_extension
+
+# ---- Replace the examples below with your actual function tests ----
+
+# Example: test a scalar function that returns a VARCHAR
+# query T
+# SELECT my_extension_hello('world');
+# ----
+# Hello from my_extension! world
+
+# Example: test an aggregate function
+# query I
+# SELECT my_extension_count(col) FROM (VALUES (1), (2), (3)) t(col);
+# ----
+# 3
+
+# Example: NULL handling
+# query I
+# SELECT my_extension_count(col) FROM (VALUES (NULL), (1)) t(col);
+# ----
+# 1

@@ -19,7 +19,7 @@ For a single signature, use `AggregateFunctionBuilder` directly.
 
 ## Registration
 
-```rust
+```rust,ignore
 use quack_rs::aggregate::AggregateFunctionSetBuilder;
 use quack_rs::types::TypeId;
 
@@ -70,7 +70,7 @@ See [Pitfall L6](../reference/pitfalls.md#l6-function-set-name-must-be-set-on-ea
 
 If all overloads share a complex return type, use `returns_logical` on the set builder:
 
-```rust
+```rust,ignore
 use quack_rs::aggregate::AggregateFunctionSetBuilder;
 use quack_rs::types::{LogicalType, TypeId};
 
@@ -90,7 +90,7 @@ AggregateFunctionSetBuilder::new("retention")
 
 Individual overloads can also use `param_logical` for complex parameter types:
 
-```rust
+```rust,ignore
 .overloads(2..=8, |n, builder| {
     builder
         .param(TypeId::Interval)

@@ -9,7 +9,7 @@ NULL before reading, and reading VARCHAR values from DuckDB vectors.
 
 Every row in a DuckDB vector may be NULL. Always check validity before reading:
 
-```rust
+```rust,ignore
 for row in 0..reader.row_count() {
     if unsafe { !reader.is_valid(row) } {
         // Propagate NULL to output
@@ -27,7 +27,7 @@ bytes from the data buffer.
 
 ### Writing NULL
 
-```rust
+```rust,ignore
 unsafe { writer.set_null(row) };
 ```
 
@@ -40,7 +40,7 @@ unsafe { writer.set_null(row) };
 
 To mark a row as valid after a previous `set_null`:
 
-```rust
+```rust,ignore
 unsafe { writer.set_valid(row) };
 ```
 
@@ -50,7 +50,7 @@ unsafe { writer.set_valid(row) };
 
 Read VARCHAR columns with `VectorReader::read_str`:
 
-```rust
+```rust,ignore
 let s: &str = unsafe { reader.read_str(row) };
 ```
 
@@ -78,7 +78,7 @@ both formats transparently. You never need to inspect the raw struct.
 
 An empty string (`""`) and NULL are distinct values:
 
-```rust
+```rust,ignore
 // NULL: is_valid returns false
 // Empty string: is_valid returns true, read_str returns ""
 if unsafe { !reader.is_valid(row) } {
@@ -93,7 +93,7 @@ if unsafe { !reader.is_valid(row) } {
 
 ### Writing VARCHAR
 
-```rust
+```rust,ignore
 unsafe { writer.write_varchar(row, my_str) };  // &str
 ```
 
@@ -105,7 +105,7 @@ unsafe { writer.write_varchar(row, my_str) };  // &str
 `BLOB` uses the same inline/pointer layout as `VARCHAR`, but may contain any
 bytes. Use `read_blob` so the data is not interpreted as UTF-8:
 
-```rust
+```rust,ignore
 let bytes: &[u8] = unsafe { reader.read_blob(row) };
 ```
 
@@ -117,6 +117,9 @@ outlive the callback.
 ## Complete NULL-safe VARCHAR pattern
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 unsafe extern "C" fn my_scalar(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -145,7 +148,7 @@ For advanced use cases where you need access to the raw string bytes or the
 inline/pointer distinction, `quack_rs::vector::string::DuckStringView` is
 available:
 
-```rust
+```rust,ignore
 use quack_rs::vector::string::{DuckStringView, DUCK_STRING_SIZE};
 
 // From raw 16-byte data (inside a vector callback).

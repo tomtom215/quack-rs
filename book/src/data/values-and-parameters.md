@@ -11,7 +11,7 @@ after use. The `Value` wrapper handles this automatically via RAII.
 Without `Value`, every parameter extraction requires three raw FFI calls and
 careful manual cleanup:
 
-```rust
+```rust,ignore
 // Before: raw FFI — easy to leak memory
 let param = duckdb_bind_get_parameter(info, 0);
 let n = duckdb_get_int64(param);
@@ -23,6 +23,9 @@ duckdb_destroy_value(&mut { param });  // forget this → memory leak
 `Value` wraps a `duckdb_value` handle and calls `duckdb_destroy_value` on drop:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::table::BindInfo;
 
 unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
@@ -63,7 +66,7 @@ an error if extraction fails.
 
 `as_blob()` copies the bytes into an owned `Vec<u8>` without UTF-8 validation:
 
-```rust
+```rust,ignore
 let bytes = unsafe { bind_info.get_parameter_value(0) }.as_blob()?;
 ```
 
@@ -72,7 +75,7 @@ let bytes = unsafe { bind_info.get_parameter_value(0) }.as_blob()?;
 Every extraction method has an `_or(default)` variant that returns `default`
 when the value handle is null:
 
-```rust
+```rust,ignore
 let timeout = val.as_i64_or(30);       // default 30 if NULL
 let host = val.as_str_or("localhost");  // default "localhost" if NULL
 let port = val.as_u16_or(5432);        // default 5432 if NULL
@@ -80,7 +83,7 @@ let port = val.as_u16_or(5432);        // default 5432 if NULL
 
 ## Checking for NULL
 
-```rust
+```rust,ignore
 let val = unsafe { bind_info.get_parameter_value(0) };
 if val.is_null() {
     // parameter was NULL or not provided
@@ -91,7 +94,7 @@ if val.is_null() {
 
 If you need the raw handle for an API not yet wrapped:
 
-```rust
+```rust,ignore
 let val = unsafe { bind_info.get_parameter_value(0) };
 let raw: duckdb_value = val.into_raw();  // takes ownership, no auto-destroy
 // ... use raw handle ...
@@ -106,6 +109,9 @@ Scan callbacks receive a `duckdb_data_chunk` for output. The `DataChunk` wrapper
 provides ergonomic access:
 
 ```rust
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::data_chunk::DataChunk;
 
 unsafe extern "C" fn my_scan(info: duckdb_function_info, output: duckdb_data_chunk) {

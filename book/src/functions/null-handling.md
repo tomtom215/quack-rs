@@ -14,7 +14,7 @@ However, some functions need to handle NULLs explicitly. For example:
 
 ## `NullHandling` enum
 
-```rust
+```rust,ignore
 use quack_rs::types::NullHandling;
 
 // Default: DuckDB auto-returns NULL for any NULL input
@@ -28,7 +28,7 @@ NullHandling::SpecialNullHandling
 
 ## Scalar functions
 
-```rust
+```rust,ignore
 use quack_rs::scalar::ScalarFunctionBuilder;
 use quack_rs::types::{TypeId, NullHandling};
 
@@ -48,7 +48,7 @@ each input column and handle NULLs yourself.
 
 ## Aggregate functions
 
-```rust
+```rust,ignore
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::{TypeId, NullHandling};
 

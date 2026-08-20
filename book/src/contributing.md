@@ -103,7 +103,7 @@ Every `unsafe` block must have a `// SAFETY:` comment explaining:
 1. Which invariant the caller guarantees
 2. Why the operation is valid given that invariant
 
-```rust
+```rust,ignore
 // SAFETY: `states` is a valid array of `count` pointers, each initialized
 // by `init_callback`. We are the only owner of `inner` at this point.
 unsafe { drop(Box::from_raw(ffi.inner)) };
@@ -143,7 +143,7 @@ Every public item must have a doc comment. Follow these conventions:
 
 ## Repository structure
 
-```
+```text
 quack-rs/
 ├── src/
 │   ├── lib.rs                     # Crate root; module declarations; DUCKDB_API_VERSION

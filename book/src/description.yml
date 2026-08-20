@@ -1,0 +1,23 @@
+extension:
+  name: my_extension
+  description: Does something useful
+  version: 0.1.0
+  language: Rust
+  build: cargo
+  license: MIT
+  requires_toolchains: rust;python3
+  maintainers:
+    - Your Name
+
+repo:
+  github: yourorg/duckdb-my-extension
+  # Must be a commit hash, not a branch.
+  ref: REPLACE_WITH_COMMIT_HASH
+  # ref_next: <hash>   # optional: a revision compatible with DuckDB main,
+  #                    # used while a new DuckDB release is being prepared.
+
+docs:
+  hello_world: |
+    SELECT my_extension_version();
+  extended_description: |
+    Does something useful

@@ -24,7 +24,7 @@ This bug passed 435 unit tests before being caught by E2E tests.
 
 **Fix**:
 
-```rust
+```rust,ignore
 unsafe extern "C" fn combine(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -63,7 +63,7 @@ already-freed memory → undefined behavior.
 **Fix**: `FfiState<T>::destroy_callback` nulls `inner` after freeing. Use it
 instead of writing your own destructor:
 
-```rust
+```rust,ignore
 unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
     unsafe { FfiState::<MyState>::destroy_callback(states, count) };
 }
@@ -85,7 +85,7 @@ undefined behavior. Panics cannot unwind across FFI boundaries in Rust.
 FFI callbacks. `FfiState::with_state_mut` returns `Option`, not `Result`, so
 callers use `if let`:
 
-```rust
+```rust,ignore
 // Safe pattern — no unwrap in FFI callback
 if let Some(st) = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) } {
     st.count += 1;
@@ -116,7 +116,7 @@ an uninitialized address → SEGFAULT.
 the validity bitmap on the write path. `VectorWriter::set_null` does this
 automatically:
 
-```rust
+```rust,ignore
 // Correct — handled by set_null
 unsafe { writer.set_null(row) };
 
@@ -140,7 +140,7 @@ behavior.
 **Fix**: Read as `u8` and compare with `!= 0`. `VectorReader::read_bool` always
 does this:
 
-```rust
+```rust,ignore
 let b: bool = unsafe { reader.read_bool(row) };  // safe: uses u8 != 0 internally
 ```
 

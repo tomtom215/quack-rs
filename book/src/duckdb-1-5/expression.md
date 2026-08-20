@@ -15,6 +15,9 @@ validated or pre-computed **once at bind time** rather than on every row.
 ## Folding a constant argument at bind time
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::scalar::ScalarBindInfo;
 use libduckdb_sys::duckdb_bind_info;
 

@@ -14,6 +14,35 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+#### A semver validator that accepted invalid versions
+
+`validate_semver` names <https://semver.org/> as its specification and enforces
+the leading-zero rule on the `MAJOR.MINOR.PATCH` core — but never applied it to
+pre-release identifiers. Spec rule 9 says a numeric pre-release identifier MUST
+NOT carry a leading zero, so `1.0.0-01`, `1.0.0-alpha.01` and `1.0.0-0.03.7` are
+all invalid semver, and all three were accepted. The existing tests were drawn
+from the spec's *valid* examples, so nothing covered the invalid side.
+
+The asymmetry with build metadata is deliberate and is now pinned by its own
+test: rule 10 imposes no leading-zero restriction, so `1.0.0-alpha+001` and
+`1.0.0+0.03.7` remain valid. Rule 9 also applies only to *numeric* identifiers —
+one non-digit makes it alphanumeric — so `1.0.0-0a` and `1.0.0-0-1` stay valid.
+
+**Behaviour change:** a version that was wrongly accepted is now rejected.
+`validate_extension_version`, the deliberately permissive validator used for
+community-extension descriptors, is unaffected.
+
+#### Lockfile drift was invisible to CI
+
+No job in any workflow passed `--locked`, so cargo silently refreshed a stale
+committed lockfile in place and nothing ever failed. That is why
+`examples/hello-ext/Cargo.lock` sat on `quack-rs 0.15.0` through two releases —
+and why, once 0.16.1 corrected it to 0.16.0, the subsequent version bump left it
+stale again at 0.16.0 against a 0.16.1 crate. Both lockfiles are now current, and
+`cargo metadata --locked` runs for each of them in CI and in
+`scripts/check-matrix.sh`. `cargo metadata` resolves without building, so the
+guard is fast.
+
 #### Documentation corrected against the code it describes
 
 0.16.0 changed behaviour in several places and left the prose describing the old
@@ -79,13 +108,56 @@ crate, found by auditing each 0.16.0 change for propagation.
   the README's compatibility note cited E2E coverage against DuckDB 1.5.0 when
   0.16.0 tests against 1.5.5.
 
-#### Known gap
+#### The book's code was never compiled, and one chapter's main example did not build
 
-`mdbook test` is not run in CI — `docs.yml` only runs `mdbook build` — so none
-of the book's 220 Rust code blocks are ever compiled. That is why a
-non-compiling example could ship. Enabling it needs the illustrative fragments
-annotated first, and could not be validated in the environment this release was
-prepared in, so it is left as a follow-up rather than added blind.
+`docs.yml` ran only `mdbook build`, which renders markdown without invoking the
+compiler. Not one of the book's Rust blocks had ever been checked. Turning the
+check on found a real defect that had shipped: the Scaffold chapter's primary
+usage example constructs a `ScaffoldConfig` without `target_duckdb_version`,
+`use_unstable_c_api` or `git_ref` — three fields 0.16.0 added — so anyone
+following that chapter hit `E0063: missing fields`. 0.16.1 had already corrected
+the same pattern in `publishing.md`; `scaffold.md` was a second copy the audit
+missed. Its excluded-platforms example did not compile either, and both now use
+`..Default::default()`.
+
+Enabling the check needed three fixes of its own:
+
+- **`mdbook test` cannot link this crate on its own.** It forwards only `-L` to
+  rustdoc, and `-L` does not put a crate in scope in any edition — that needs
+  `--extern`, which mdbook has no flag for. `scripts/mdbook-test.sh` supplies it
+  through a `rustdoc` shim on `PATH`, and builds into a dedicated target
+  directory so exactly one rlib per crate is in play (the main one accumulates
+  one per feature combination, which rustdoc cannot choose between).
+- **rustdoc defaults to edition 2015**, where `--extern` does not populate the
+  extern prelude, so every `use quack_rs::...` block failed to resolve.
+  `book.toml` now sets `[rust] edition = "2021"` to match the crate.
+- **The build needs `duckdb-1-5-3`**, as docs.rs already uses. With default
+  features the gated API the book documents (`ScalarFunctionBuilder::varargs`,
+  `volatile`, `init`, and the whole `duckdb-1-5/` chapter set) is absent, which
+  surfaces as `no method named ...` that reads like a documentation bug.
+
+89 blocks now compile on every docs run. 111 remaining blocks are progressive
+tutorial fragments and pseudo-code — `/* Builder */` placeholders, `...` elisions,
+identifiers defined in an earlier block — and are marked `rust,ignore`, which is
+what that annotation is for. Ten diagrams and directory trees that were fenced
+bare are now `text`; mdbook treats an unannotated fence as Rust, so they were
+being compiled too. The complete, compiling version of the tutorial chapter is
+`examples/hello-ext`, which CI builds and tests on every push.
+
+### Changed
+
+#### Dependencies
+
+- `duckdb` and `libduckdb-sys` 1.10504.0 → 1.10505.0 (DuckDB 1.5.5). Upstream
+  switched its download path from `reqwest` to `ureq`, which drops `tokio`,
+  `hyper`, `quinn`, `rust_decimal`, `rkyv` and the rest of that tree from the
+  build-dependency graph. `src/abi.rs`'s verified layout table already covers
+  1.5.2–1.5.5 at 546 slots, so the ABI guard needed no change.
+- `examples/hello-ext` moved to the same `libduckdb-sys` 1.10505.0.
+- `actions/checkout` 7.0.0 → 7.0.1, `Swatinem/rust-cache` 2.9.1 → 2.9.2 and
+  `actions/attest-build-provenance` 4.1.1 → 4.2.2, across every workflow and in
+  the workflow the scaffold generates, so new projects do not start on stale
+  pins.
 
 ## [0.16.0] — 2026-08-19
 

@@ -13,7 +13,7 @@ The `entry_point_v2!` macro gives your closure a `&Connection` instead of a raw
 `duckdb_connection`. The `Connection` type implements the `Registrar` trait, which
 provides ergonomic methods for registering every function type:
 
-```rust
+```rust,ignore
 use quack_rs::entry_point_v2;
 use quack_rs::connection::{Connection, Registrar};
 use quack_rs::error::ExtensionError;
@@ -38,7 +38,7 @@ entry_point_v2!(my_extension_init_c_api, |con| unsafe { register(con) });
 
 This emits:
 
-```rust
+```rust,ignore
 #[no_mangle]
 pub unsafe extern "C" fn my_extension_init_c_api(
     info: duckdb_extension_info,
@@ -93,6 +93,11 @@ entry_point!(my_extension_init_c_api, |con| register(con));
 If you need full control (e.g., multiple registration functions, conditional logic):
 
 ```rust
+# use quack_rs::error::ExtensionError;
+# type Con = libduckdb_sys::duckdb_connection;
+# unsafe fn register_scalar_functions(_c: Con) -> Result<(), ExtensionError> { Ok(()) }
+# unsafe fn register_aggregate_functions(_c: Con) -> Result<(), ExtensionError> { Ok(()) }
+# unsafe fn register_sql_macros(_c: Con) -> Result<(), ExtensionError> { Ok(()) }
 use quack_rs::entry_point::init_extension;
 use libduckdb_sys::{duckdb_extension_info, duckdb_extension_access};
 

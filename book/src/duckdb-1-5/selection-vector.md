@@ -13,6 +13,9 @@ This is an advanced, low-level primitive; most extensions never need it.
 ## Allocating and filling
 
 ```rust,no_run
+# use quack_rs::prelude::*;
+# use quack_rs::error::ExtensionError;
+# use libduckdb_sys::*;
 use quack_rs::selection_vector::SelectionVector;
 
 // Select source rows 3, 1, 4, 1, 5 (in that order) — note repeats are allowed.
