@@ -531,6 +531,61 @@ impl std::fmt::Display for TypeId {
 
 #[cfg(test)]
 mod tests {
+    // `composite_constructor_hint` is the one place the crate tells a user how
+    // to build a type `duckdb_create_logical_type` refuses. A wrong or missing
+    // arm turns a precise diagnostic into a generic one, and nothing else in
+    // the suite reads the arms individually, so pin every one of them.
+
+    #[test]
+    fn every_composite_type_names_its_own_constructor() {
+        for (type_id, expected) in [
+            (TypeId::Decimal, "LogicalType::decimal(width, scale)"),
+            (TypeId::Enum, "LogicalType::enum_type(&members)"),
+            (TypeId::List, "LogicalType::list(element_type)"),
+            (TypeId::Struct, "LogicalType::struct_type(&fields)"),
+            (TypeId::Map, "LogicalType::map(key_type, value_type)"),
+            (TypeId::Array, "LogicalType::array(element_type, size)"),
+            (TypeId::Union, "LogicalType::union_type(&members)"),
+        ] {
+            assert_eq!(
+                type_id.composite_constructor_hint(),
+                Some(expected),
+                "{type_id:?} must name its own constructor"
+            );
+            assert!(type_id.is_composite(), "{type_id:?} is composite");
+        }
+    }
+
+    #[test]
+    fn primitive_types_have_no_constructor_hint_and_are_not_composite() {
+        // The set `duckdb.h` names is exactly the seven above; everything else
+        // `duckdb_create_logical_type` builds directly.
+        for type_id in [
+            TypeId::Boolean,
+            TypeId::TinyInt,
+            TypeId::SmallInt,
+            TypeId::Integer,
+            TypeId::BigInt,
+            TypeId::HugeInt,
+            TypeId::Float,
+            TypeId::Double,
+            TypeId::Varchar,
+            TypeId::Blob,
+            TypeId::Date,
+            TypeId::Time,
+            TypeId::Timestamp,
+            TypeId::Interval,
+            TypeId::Uuid,
+        ] {
+            assert_eq!(
+                type_id.composite_constructor_hint(),
+                None,
+                "{type_id:?} is primitive"
+            );
+            assert!(!type_id.is_composite(), "{type_id:?} is not composite");
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -3732,6 +3732,13 @@ fn typed_scalar_closures_cover_the_common_shapes() {
         Some(2),
         "map2 must NULL out a row where *either* argument is NULL"
     );
+    assert_eq!(
+        fx.scalar("SELECT count(t_join(s, 'z')) FROM typed_t", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(2),
+        "map2_str must NULL out a row where *either* argument is NULL"
+    );
 
     // The `_opt` variants see the NULLs instead.
     assert_eq!(
@@ -4596,7 +4603,7 @@ mod arrow_interop {
     }
 
     #[test]
-    fn a_zero_row_chunk_round_trips() {
+    fn a_zero_row_array_is_refused_rather_than_aborting_a_debug_duckdb() {
         let fx = Fixture::open();
         let result = fx.query("SELECT 1::INTEGER AS id");
         let cols = columns(&result);
@@ -4617,15 +4624,27 @@ mod arrow_interop {
         // SAFETY: zero is always within capacity.
         unsafe { chunk.set_size(0) };
 
+        // Exporting a zero-row chunk is fine, and produces a well-formed empty
+        // Arrow array.
         let array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
         assert_eq!(array.len(), 0);
         assert_eq!(array.child_count(), 1);
 
+        // Importing one is not. DuckDB passes `arrow_array->length` through as
+        // the chunk's *capacity*, and a capacity of zero reaches
+        // `Allocator::AllocateData(0)`, whose `D_ASSERT(size > 0)` aborts a
+        // debug build of DuckDB while a release build silently carries on. That
+        // is refused here so the behaviour does not depend on how the engine was
+        // compiled — reaching this assertion under a debug DuckDB is the test.
         // SAFETY: same connection; one child array, one schema column.
-        let imported =
-            unsafe { data_chunk_from_arrow(fx.con(), array, &converted) }.expect("import");
-        assert_eq!(imported.column_count(), 1);
-        assert_eq!(imported.size(), 0);
+        let err = unsafe { data_chunk_from_arrow(fx.con(), array, &converted) }
+            .expect_err("a zero-row array must be refused, not handed to DuckDB");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        assert!(
+            err.message().unwrap_or_default().contains("zero-row"),
+            "{:?}",
+            err.message()
+        );
     }
 }
 

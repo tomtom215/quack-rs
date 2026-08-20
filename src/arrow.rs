@@ -65,6 +65,17 @@
 //! returns an [`ErrorData`] instead — which is why [`ArrowConvertedSchema`]
 //! remembers the column count of the schema it was built from.
 //!
+//! It also refuses a **zero-row** array. `duckdb_data_chunk_from_arrow` passes
+//! `arrow_array->length` through as the chunk's *capacity*
+//! (`dchunk->Initialize(alloc, types, length)`), and `VectorCacheBuffer`
+//! turns a capacity of zero into `Allocator::AllocateData(0)`, whose
+//! `D_ASSERT(size > 0)` aborts a **debug** build of `DuckDB`. A release build
+//! allocates nothing and carries on — so whether an empty batch works depends
+//! on how the engine happens to have been compiled, which is not a contract
+//! worth exposing. Skip empty batches, or build the empty chunk directly with
+//! `duckdb_create_data_chunk`, which defaults to a full-size capacity and is
+//! unaffected.
+//!
 //! # What it still cannot check
 //!
 //! Whether each child array's **buffers** match the type its schema declares.
@@ -208,6 +219,7 @@ impl ArrowOptions {
     /// # Safety
     ///
     /// `connection` must be a live `duckdb_connection`.
+    #[mutants::skip] // FFI wrapper — needs a live DuckDB connection
     pub unsafe fn from_connection(connection: duckdb_connection) -> Result<Self, ExtensionError> {
         let mut raw: duckdb_arrow_options = ptr::null_mut();
         // SAFETY: `connection` is live per this function's contract and `raw` is
@@ -232,6 +244,7 @@ impl ArrowOptions {
     ///
     /// Returns an [`ExtensionError`] when `DuckDB` returns null, which it does
     /// for a result with no internal data.
+    #[mutants::skip] // FFI wrapper — needs a live DuckDB result
     pub fn from_result(result: &QueryResult) -> Result<Self, ExtensionError> {
         // `duckdb_result_get_arrow_options` takes a `duckdb_result *` but only
         // reads `internal_data`, so a copy of the POD struct is enough — the
@@ -280,6 +293,7 @@ impl ArrowOptions {
 }
 
 impl Drop for ArrowOptions {
+    #[mutants::skip] // frees a DuckDB handle; nothing observable without a runtime
     fn drop(&mut self) {
         if self.raw.is_null() {
             return;
@@ -291,6 +305,7 @@ impl Drop for ArrowOptions {
 }
 
 impl core::fmt::Debug for ArrowOptions {
+    #[mutants::skip] // Debug rendering is not a behavioural contract
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ArrowOptions")
             .field("raw", &self.raw)
@@ -714,6 +729,7 @@ impl ArrowConvertedSchema {
 }
 
 impl Drop for ArrowConvertedSchema {
+    #[mutants::skip] // frees a DuckDB handle; nothing observable without a runtime
     fn drop(&mut self) {
         if self.raw.is_null() {
             return;
@@ -749,6 +765,7 @@ impl core::fmt::Debug for ArrowConvertedSchema {
 /// - [`DuckDbErrorType::OutOfRange`] if there are more columns than `idx_t` can
 ///   hold.
 /// - Whatever `DuckDB` reports for a type it cannot render as Arrow.
+#[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub fn to_arrow_schema(
     options: &ArrowOptions,
     columns: &[(&str, &LogicalType)],
@@ -814,6 +831,7 @@ pub fn to_arrow_schema(
 /// # Errors
 ///
 /// Whatever `DuckDB` reports for a type it cannot render as Arrow.
+#[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub fn data_chunk_to_arrow(
     options: &ArrowOptions,
     chunk: &DataChunk,
@@ -856,6 +874,7 @@ pub fn data_chunk_to_arrow(
 /// # Safety
 ///
 /// `connection` must be a live `duckdb_connection`.
+#[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub unsafe fn schema_from_arrow(
     connection: duckdb_connection,
     schema: &mut ArrowSchema,
@@ -920,6 +939,7 @@ pub unsafe fn schema_from_arrow(
 ///
 /// `connection` must be a live `duckdb_connection`, and `converted` must have
 /// been produced from it (or from another connection of the same database).
+#[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub unsafe fn data_chunk_from_arrow(
     connection: duckdb_connection,
     mut array: ArrowArray,
@@ -942,6 +962,18 @@ pub unsafe fn data_chunk_from_arrow(
                  this is refused here rather than read out of bounds.",
                 converted.column_count(),
             ),
+        ));
+    }
+    if array.is_empty() {
+        return Err(ErrorData::new(
+            DuckDbErrorType::InvalidInput,
+            "data_chunk_from_arrow: DuckDB cannot import a zero-row Arrow array. It passes \
+             `arrow_array->length` straight through as the chunk's *capacity* \
+             (`dchunk->Initialize(alloc, types, length)`), and a capacity of zero reaches \
+             `Allocator::AllocateData(0)`, whose `D_ASSERT(size > 0)` aborts a debug build of \
+             DuckDB. A release build allocates nothing and carries on, so this is refused here \
+             rather than left to depend on how the engine was compiled. Skip empty batches, or \
+             build the empty chunk directly with `duckdb_create_data_chunk`.",
         ));
     }
 
@@ -1013,6 +1045,144 @@ mod tests {
         raw.release = Some(count_array_release);
         // SAFETY: `count_array_release` frees nothing and nulls itself.
         unsafe { ArrowArray::from_raw(raw) }
+    }
+
+    /// A populated two-column struct schema, owned entirely by the caller.
+    ///
+    /// The accessors have to be exercised against a record that actually
+    /// carries values: reading only `empty()` proves the released guards work
+    /// and nothing else, so "always return None" would go unnoticed.
+    struct PopulatedSchema {
+        root: ArrowSchema,
+        // Kept alive for as long as `root` points into them. Declared after
+        // `root` in the struct but dropped after it in `Drop` order terms is
+        // not guaranteed, so `PopulatedSchema` never outlives a borrow of
+        // `root` and nothing here frees anything.
+        _children: Box<[RawArrowSchema; 2]>,
+        _child_ptrs: Box<[*mut RawArrowSchema; 2]>,
+        _strings: Vec<CString>,
+    }
+
+    fn populated_schema() -> PopulatedSchema {
+        let strings: Vec<CString> = ["+s", "duckdb_query_result", "i", "id", "u", "label"]
+            .iter()
+            .map(|s| CString::new(*s).expect("no interior NUL"))
+            .collect();
+
+        let mut children = Box::new([RawArrowSchema::empty(), RawArrowSchema::empty()]);
+        children[0].format = strings[2].as_ptr();
+        children[0].name = strings[3].as_ptr();
+        children[0].release = Some(count_schema_release);
+        children[1].format = strings[4].as_ptr();
+        children[1].name = strings[5].as_ptr();
+        children[1].release = Some(count_schema_release);
+
+        let child_ptrs = Box::new([
+            std::ptr::from_mut(&mut children[0]),
+            std::ptr::from_mut(&mut children[1]),
+        ]);
+
+        let mut raw = RawArrowSchema::empty();
+        raw.format = strings[0].as_ptr();
+        raw.name = strings[1].as_ptr();
+        raw.flags = 2; // ARROW_FLAG_NULLABLE
+        raw.n_children = 2;
+        raw.children = child_ptrs.as_ptr().cast_mut();
+        raw.release = Some(count_schema_release);
+
+        PopulatedSchema {
+            // SAFETY: `count_schema_release` frees nothing and nulls itself;
+            // every pointer above outlives the returned value.
+            root: unsafe { ArrowSchema::from_raw(raw) },
+            _children: children,
+            _child_ptrs: child_ptrs,
+            _strings: strings,
+        }
+    }
+
+    #[test]
+    fn a_populated_schema_reports_its_format_name_flags_and_children() {
+        let schema = populated_schema();
+        let root = &schema.root;
+        assert!(!root.is_released());
+        assert_eq!(root.format(), Some("+s"));
+        assert_eq!(root.name(), Some("duckdb_query_result"));
+        assert_eq!(root.flags(), 2);
+        assert_eq!(root.child_count(), 2);
+
+        let id = root.child(0).expect("child 0");
+        assert_eq!(id.format(), Some("i"));
+        assert_eq!(id.name(), Some("id"));
+
+        let label = root.child(1).expect("child 1");
+        assert_eq!(label.format(), Some("u"));
+        assert_eq!(label.name(), Some("label"));
+
+        assert!(root.child(2).is_none(), "past the end");
+    }
+
+    /// A populated array with two children, owned entirely by the caller.
+    struct PopulatedArray {
+        root: ArrowArray,
+        _children: Box<[RawArrowArray; 2]>,
+        _child_ptrs: Box<[*mut RawArrowArray; 2]>,
+    }
+
+    fn populated_array() -> PopulatedArray {
+        let mut children = Box::new([RawArrowArray::empty(), RawArrowArray::empty()]);
+        for (i, child) in children.iter_mut().enumerate() {
+            child.length = 7;
+            child.null_count = i64::try_from(i).expect("small");
+            child.release = Some(count_array_release);
+        }
+        let child_ptrs = Box::new([
+            std::ptr::from_mut(&mut children[0]),
+            std::ptr::from_mut(&mut children[1]),
+        ]);
+
+        let mut raw = RawArrowArray::empty();
+        raw.length = 7;
+        raw.null_count = 3;
+        raw.offset = 1;
+        raw.n_children = 2;
+        raw.children = child_ptrs.as_ptr().cast_mut();
+        raw.release = Some(count_array_release);
+
+        PopulatedArray {
+            // SAFETY: `count_array_release` frees nothing and nulls itself;
+            // every pointer above outlives the returned value.
+            root: unsafe { ArrowArray::from_raw(raw) },
+            _children: children,
+            _child_ptrs: child_ptrs,
+        }
+    }
+
+    #[test]
+    fn a_populated_array_reports_its_length_nulls_offset_and_children() {
+        let array = populated_array();
+        let root = &array.root;
+        assert!(!root.is_released());
+        assert_eq!(root.len(), 7);
+        assert!(!root.is_empty());
+        assert_eq!(root.null_count(), 3);
+        assert_eq!(root.offset(), 1);
+        assert_eq!(root.child_count(), 2);
+
+        assert_eq!(root.child(0).expect("child 0").len(), 7);
+        assert_eq!(root.child(0).expect("child 0").null_count(), 0);
+        assert_eq!(root.child(1).expect("child 1").null_count(), 1);
+        assert!(root.child(2).is_none(), "past the end");
+    }
+
+    #[test]
+    fn a_length_zero_array_is_empty_but_not_released() {
+        let mut raw = RawArrowArray::empty();
+        raw.release = Some(count_array_release);
+        // SAFETY: `count_array_release` frees nothing and nulls itself.
+        let array = unsafe { ArrowArray::from_raw(raw) };
+        assert!(!array.is_released(), "a live producer set `release`");
+        assert_eq!(array.len(), 0);
+        assert!(array.is_empty(), "zero rows is empty");
     }
 
     #[test]

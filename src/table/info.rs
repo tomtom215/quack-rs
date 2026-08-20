@@ -119,6 +119,7 @@ impl BindInfo {
     /// # }
     /// ```
     #[cfg(feature = "duckdb-1-5")]
+    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
     #[must_use]
     pub fn result_column_count(&self) -> usize {
         // SAFETY: `self.info` is valid per the constructor's contract.
@@ -138,6 +139,7 @@ impl BindInfo {
     ///
     /// Requires `duckdb-1-5`.
     #[cfg(feature = "duckdb-1-5")]
+    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
     #[must_use]
     pub fn result_column_name(&self, index: usize) -> Option<String> {
         if index >= self.result_column_count() {
@@ -174,6 +176,7 @@ impl BindInfo {
     ///
     /// Must be called during the bind callback, while `self.info` is live.
     #[cfg(feature = "duckdb-1-5")]
+    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
     #[must_use]
     pub unsafe fn result_column_type(&self, index: usize) -> Option<LogicalType> {
         if index >= self.result_column_count() {

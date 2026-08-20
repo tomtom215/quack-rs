@@ -478,6 +478,39 @@ pub trait SecretsManager: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    // `parse_scope_array` reads DuckDB's rendering of a VARCHAR[] out of
+    // `duckdb_secrets()`. It is pure string handling and the only part of this
+    // module that does not need a database, so pin its shape here rather than
+    // relying on whatever a live secret happens to carry.
+
+    #[test]
+    fn a_scope_array_round_trips_its_elements() {
+        assert_eq!(
+            parse_scope_array("['s3://', 's3n://']"),
+            vec!["s3://".to_owned(), "s3n://".to_owned()]
+        );
+        assert_eq!(parse_scope_array("['only']"), vec!["only".to_owned()]);
+    }
+
+    #[test]
+    fn an_empty_scope_array_yields_no_elements() {
+        assert!(parse_scope_array("[]").is_empty());
+        assert!(parse_scope_array("[ ]").is_empty());
+        assert!(parse_scope_array("").is_empty());
+    }
+
+    #[test]
+    fn an_unbracketed_scope_is_kept_as_a_single_element_rather_than_lost() {
+        assert_eq!(parse_scope_array("s3://"), vec!["s3://".to_owned()]);
+    }
+
+    #[test]
+    fn scope_elements_keep_their_contents_when_unquoted() {
+        // DuckDB quotes each element; anything that is not quoted is taken
+        // verbatim rather than having its first and last character stripped.
+        assert_eq!(parse_scope_array("[bare]"), vec!["bare".to_owned()]);
+    }
+
     use super::*;
 
     #[test]

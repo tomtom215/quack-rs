@@ -25,8 +25,8 @@
 //! [`mark_transferred`][ExtraInfo::mark_transferred] says `DuckDB` has taken
 //! over.
 
-use std::cell::Cell;
 use std::os::raw::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use libduckdb_sys::duckdb_delete_callback_t;
 
@@ -34,9 +34,17 @@ use libduckdb_sys::duckdb_delete_callback_t;
 pub struct ExtraInfo {
     data: *mut c_void,
     destroy: duckdb_delete_callback_t,
-    /// A `Cell` so a set builder can mark an overload transferred while
-    /// iterating its overloads by shared reference.
-    transferred: Cell<bool>,
+    /// Set through a shared reference, so a set builder can mark an overload
+    /// transferred while iterating its overloads by `&`.
+    ///
+    /// An `AtomicBool` rather than a `Cell<bool>`: `Cell` contains an
+    /// `UnsafeCell`, which is `!RefUnwindSafe`, and that propagates to every
+    /// builder that owns an `ExtraInfo` — silently removing an auto trait from
+    /// four public types. `AtomicBool` gives the same shared-reference mutation
+    /// with none of that. (`ExtraInfo` stays `!Sync` because of the raw
+    /// pointer, which is why `CopyFunctionBuilder` is `!Sync` like its three
+    /// sibling builders.)
+    transferred: AtomicBool,
 }
 
 impl ExtraInfo {
@@ -55,7 +63,7 @@ impl ExtraInfo {
         Self {
             data,
             destroy,
-            transferred: Cell::new(false),
+            transferred: AtomicBool::new(false),
         }
     }
 
@@ -73,13 +81,13 @@ impl ExtraInfo {
     ///
     /// Call this immediately after `duckdb_*_set_extra_info` returns.
     pub fn mark_transferred(&self) {
-        self.transferred.set(true);
+        self.transferred.store(true, Ordering::Relaxed);
     }
 }
 
 impl Drop for ExtraInfo {
     fn drop(&mut self) {
-        if self.transferred.get() || self.data.is_null() {
+        if self.transferred.load(Ordering::Relaxed) || self.data.is_null() {
             return;
         }
         let Some(destroy) = self.destroy else {
@@ -103,7 +111,7 @@ impl core::fmt::Debug for ExtraInfo {
         f.debug_struct("ExtraInfo")
             .field("data", &self.data)
             .field("destroy", &self.destroy.map(|_| "<fn>"))
-            .field("transferred", &self.transferred.get())
+            .field("transferred", &self.transferred.load(Ordering::Relaxed))
             .finish()
     }
 }

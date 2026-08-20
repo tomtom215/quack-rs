@@ -498,12 +498,14 @@ impl TableFunctionHandle {
     ///
     /// `None` for a type this build of quack-rs has no [`TypeId`] for.
     #[must_use]
+    #[mutants::skip] // covered by tests/ffi_roundtrip.rs, which `--lib` does not run
     pub fn param_types(&self) -> &[Option<TypeId>] {
         &self.param_types
     }
 }
 
 impl Drop for TableFunctionHandle {
+    #[mutants::skip] // frees a DuckDB handle; nothing observable without a runtime
     fn drop(&mut self) {
         // SAFETY: `self.func` was created by `duckdb_create_table_function` and
         // is destroyed exactly once. DuckDB copies the function on register and
@@ -513,6 +515,7 @@ impl Drop for TableFunctionHandle {
 }
 
 impl core::fmt::Debug for TableFunctionHandle {
+    #[mutants::skip] // Debug rendering is not a behavioural contract
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TableFunctionHandle")
             .field("func", &self.func)

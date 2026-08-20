@@ -196,6 +196,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`data_chunk_from_arrow` aborted a debug `DuckDB` on a zero-row array.**
+  `duckdb_data_chunk_from_arrow` passes `arrow_array->length` straight through
+  as the chunk's *capacity* (`dchunk->Initialize(alloc, types, length)`), and
+  `VectorCacheBuffer` turns a capacity of zero into
+  `Allocator::AllocateData(0)`, whose `D_ASSERT(size > 0)` aborts a debug build.
+  A release build allocates nothing and carries on — so whether an empty batch
+  worked depended on how the engine happened to be compiled. Zero-row arrays are
+  now refused with a message that says why. Caught by CI's coverage job, which
+  compiles DuckDB from source in debug; every local run linked a release
+  prebuilt libduckdb, where the assertion does not exist.
+
+- **`ExtraInfo` silently removed `RefUnwindSafe` from four public builders.**
+  Its `transferred` flag was a `Cell<bool>`, and `Cell` contains an
+  `UnsafeCell`, which is `!RefUnwindSafe` — so `ScalarFunctionBuilder`,
+  `TableFunctionBuilder`, `AggregateFunctionBuilder` and `CopyFunctionBuilder`
+  all lost the auto trait. It is an `AtomicBool` now, which offers the same
+  shared-reference mutation and restores the trait. (`CopyFunctionBuilder` is
+  still `!Sync`, from the raw `extra_info` pointer — matching its three sibling
+  builders, which were already `!Sync`.)
+
+- **Test gaps the mutation sweep exposed, once it could see the files.** Chief
+  among them the shift direction in `hugeint_from_i128` / `uhugeint_from_u128`:
+  swapping `>>` for `<<` still compiles, still round-trips zero and still
+  round-trips anything that fits in 64 bits, so nothing in the suite noticed.
+  Also `TypeId::composite_constructor_hint`'s per-variant arms,
+  `LogicalType::check_slot`'s rejection path, `composite_message`,
+  `LogicalTypeError::api_func`, `secrets::parse_scope_array`, the `arrow`
+  accessors against a populated record rather than only an empty one, and
+  `map2_str`'s NULL propagation when just one argument is NULL.
+
 - **Incremental mutation testing skipped every top-level `src/*.rs`.** The job
   selected changed files with the pathspec `src/**/*.rs`, but git's default
   wildmatch lets `*` cross `/`, so that pattern requires at least one directory

@@ -1559,6 +1559,64 @@ impl core::fmt::Debug for Value {
 mod tests {
     use super::*;
 
+    // `hugeint_from_i128` / `uhugeint_from_u128` are the only pure arithmetic in
+    // this module: everything else calls into DuckDB. They are also the easiest
+    // place in the crate to be silently wrong -- a shift in the wrong direction
+    // still compiles, still round-trips zero and still round-trips any value
+    // that fits in 64 bits, so the common cases in the end-to-end suite would
+    // not notice. Pin both halves against values whose upper and lower words
+    // differ.
+
+    #[test]
+    fn hugeint_splits_into_the_low_and_high_words_the_right_way_round() {
+        // 1 << 64 is exactly "upper = 1, lower = 0". A left shift would give 0.
+        let one_shifted = hugeint_from_i128(1_i128 << 64);
+        assert_eq!(one_shifted.lower, 0);
+        assert_eq!(one_shifted.upper, 1);
+
+        // A value with distinct words, so swapping them is visible.
+        let mixed = hugeint_from_i128((0x0123_4567_89ab_cdef_i128 << 64) | 0x1122_3344_5566_7788);
+        assert_eq!(mixed.lower, 0x1122_3344_5566_7788);
+        assert_eq!(mixed.upper, 0x0123_4567_89ab_cdef);
+
+        // Small positive: upper must be 0, not a shifted copy of the value.
+        let small = hugeint_from_i128(42);
+        assert_eq!(small.lower, 42);
+        assert_eq!(small.upper, 0);
+
+        // Negative values sign-extend the upper word; `>>` on i128 is arithmetic.
+        let minus_one = hugeint_from_i128(-1);
+        assert_eq!(minus_one.lower, u64::MAX);
+        assert_eq!(minus_one.upper, -1);
+
+        let min = hugeint_from_i128(i128::MIN);
+        assert_eq!(min.lower, 0);
+        assert_eq!(min.upper, i64::MIN);
+
+        let max = hugeint_from_i128(i128::MAX);
+        assert_eq!(max.lower, u64::MAX);
+        assert_eq!(max.upper, i64::MAX);
+    }
+
+    #[test]
+    fn uhugeint_splits_into_the_low_and_high_words_the_right_way_round() {
+        let one_shifted = uhugeint_from_u128(1_u128 << 64);
+        assert_eq!(one_shifted.lower, 0);
+        assert_eq!(one_shifted.upper, 1);
+
+        let mixed = uhugeint_from_u128((0x0123_4567_89ab_cdef_u128 << 64) | 0x1122_3344_5566_7788);
+        assert_eq!(mixed.lower, 0x1122_3344_5566_7788);
+        assert_eq!(mixed.upper, 0x0123_4567_89ab_cdef);
+
+        let small = uhugeint_from_u128(42);
+        assert_eq!(small.lower, 42);
+        assert_eq!(small.upper, 0);
+
+        let max = uhugeint_from_u128(u128::MAX);
+        assert_eq!(max.lower, u64::MAX);
+        assert_eq!(max.upper, u64::MAX);
+    }
+
     #[test]
     fn null_value_is_null() {
         let val = unsafe { Value::from_raw(std::ptr::null_mut()) };

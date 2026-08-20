@@ -1230,6 +1230,57 @@ impl core::fmt::Debug for LogicalType {
 
 #[cfg(test)]
 mod tests {
+    use super::{composite_message, LogicalType, LogicalTypeError, TypeId};
+
+    // `check_slot` is what every builder calls *before* allocating a DuckDB
+    // handle, and `composite_message` is the advice it carries. Both are pure,
+    // and neither is reachable from the end-to-end suite without a database, so
+    // they are pinned here.
+
+    #[test]
+    fn check_slot_rejects_a_composite_before_touching_duckdb() {
+        // Only the rejection path is unit-testable: a primitive falls through
+        // to `duckdb_create_logical_type`, which needs a live dispatch table.
+        // Rejecting *before* that call is the whole point of `check_slot`, so
+        // this test reaching its assertions at all is part of what it proves.
+        let err = LogicalType::check_slot(TypeId::Struct, "parameter 0")
+            .expect_err("STRUCT cannot come from a bare TypeId");
+        let msg = err.as_str();
+        assert!(msg.contains("parameter 0"), "names the slot: {msg}");
+        assert!(msg.contains("STRUCT"), "names the type: {msg}");
+        assert!(
+            msg.contains("LogicalType::struct_type(&fields)"),
+            "names the constructor to use instead: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_composite_message_names_the_type_and_its_constructor() {
+        let msg = composite_message(TypeId::Decimal);
+        assert!(!msg.is_empty());
+        assert!(msg.contains("DECIMAL"), "{msg}");
+        assert!(msg.contains("LogicalType::decimal(width, scale)"), "{msg}");
+        assert!(
+            msg.contains("param_logical"),
+            "points at the escape hatch: {msg}"
+        );
+
+        // A non-composite has no hint, so the message falls back rather than
+        // naming a constructor that does not exist.
+        let generic = composite_message(TypeId::BigInt);
+        assert!(
+            generic.contains("a dedicated LogicalType constructor"),
+            "{generic}"
+        );
+    }
+
+    #[test]
+    fn a_null_error_reports_the_api_function_that_returned_it() {
+        let err = LogicalTypeError::null("duckdb_create_list_type");
+        assert_eq!(err.api_func(), "duckdb_create_list_type");
+        assert_eq!(err.to_string(), "duckdb_create_list_type returned null");
+    }
+
     // Note: LogicalType tests that call DuckDB API (duckdb_create_logical_type)
     // require a running DuckDB runtime and are covered in tests/integration_test.rs.
     // The `loadable-extension` feature uses lazy-initialized function pointers
