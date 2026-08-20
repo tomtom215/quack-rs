@@ -3778,3 +3778,51 @@ fn typed_closures_run_once_per_chunk_over_a_multi_chunk_scan() {
         Some((1..=10_000_i128).sum::<i128>())
     );
 }
+
+#[test]
+fn a_custom_logical_type_is_registered_and_usable_from_sql() {
+    let fx = Fixture::open();
+
+    let mood = LogicalType::enum_type(&["sad", "ok", "happy"]);
+    // SAFETY: the type is live, and `con` is open.
+    unsafe {
+        mood.set_alias("mood");
+        mood.register(fx.con()).expect("register the type");
+    }
+
+    // The alias now names a real catalog type.
+    assert_eq!(
+        fx.scalar("SELECT 'happy'::mood::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        }),
+        Some("happy".to_owned())
+    );
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE m(v mood)") }.expect("use it as a column type");
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "INSERT INTO m VALUES ('ok'), ('sad')") }.expect("insert");
+    assert_eq!(
+        fx.scalar("SELECT count(*) FROM m WHERE v = 'ok'", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(1)
+    );
+
+    // A type with no alias has no name to register under, and the error says so
+    // rather than repeating DuckDB's bare failure code.
+    let anonymous = LogicalType::enum_type(&["a", "b"]);
+    // SAFETY: `con` is open.
+    let err = unsafe { anonymous.register(fx.con()) }.expect_err("no alias, no registration");
+    assert!(err.as_str().contains("no alias"), "{err}");
+
+    // Registering the same name twice is a catalog conflict, reported with the
+    // name in it.
+    let again = LogicalType::enum_type(&["x"]);
+    // SAFETY: the type is live, and `con` is open.
+    let err = unsafe {
+        again.set_alias("mood");
+        again.register(fx.con())
+    }
+    .expect_err("the name is taken");
+    assert!(err.as_str().contains("mood"), "{err}");
+}

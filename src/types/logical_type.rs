@@ -1065,6 +1065,81 @@ impl LogicalType {
         unsafe { Self::from_raw(duckdb_array_type_child_type(self.inner)) }
     }
 
+    /// Registers this type in the catalog of `con`, making it usable in SQL.
+    ///
+    /// This is how an extension ships a named type — `CREATE TYPE` from the C
+    /// API. Once registered, the alias can be used anywhere a type name can:
+    ///
+    /// ```sql
+    /// SELECT 'happy'::mood;
+    /// CREATE TABLE t(m mood);
+    /// ```
+    ///
+    /// `duckdb.h`: "Registers a custom type within the given connection. The
+    /// type must have an alias." Set one with
+    /// [`try_set_alias`][Self::try_set_alias] first; a type without an alias
+    /// has no name to register under and `DuckDB` rejects it.
+    ///
+    /// The `duckdb_create_type_info` third argument is passed as null: `DuckDB`
+    /// declares the handle but exposes no constructor for it in the C API, so
+    /// null is the only value an extension can supply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `DuckDB` rejects the registration — no alias, or a
+    /// name that already exists in the catalog.
+    ///
+    /// # Safety
+    ///
+    /// `con` must be a valid, open `duckdb_connection`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::types::LogicalType;
+    ///
+    /// # fn demo(con: libduckdb_sys::duckdb_connection)
+    /// # -> Result<(), quack_rs::error::ExtensionError> {
+    /// let mood = LogicalType::enum_type(&["sad", "ok", "happy"]);
+    /// // SAFETY: `con` is the connection DuckDB handed the entry point.
+    /// unsafe {
+    ///     mood.set_alias("mood");
+    ///     mood.register(con)?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub unsafe fn register(
+        &self,
+        con: libduckdb_sys::duckdb_connection,
+    ) -> Result<(), crate::error::ExtensionError> {
+        // SAFETY: `con` is valid per the caller's contract, `self.inner` is a
+        // live logical type, and the info handle has no C API constructor.
+        let state = unsafe {
+            libduckdb_sys::duckdb_register_logical_type(con, self.inner, std::ptr::null_mut())
+        };
+        if state == libduckdb_sys::DuckDBSuccess {
+            return Ok(());
+        }
+        // SAFETY: `self.inner` is live; `get_alias` returns an owned String or None.
+        let alias = unsafe { self.get_alias() };
+        Err(crate::error::ExtensionError::new(alias.map_or_else(
+            || {
+                String::from(
+                    "duckdb_register_logical_type failed: the type has no alias. Call \
+                     `set_alias` or `try_set_alias` before registering — DuckDB has no name \
+                     to register it under.",
+                )
+            },
+            |name| {
+                format!(
+                    "duckdb_register_logical_type failed for alias '{name}': the name is \
+                     probably already taken in this catalog"
+                )
+            },
+        )))
+    }
+
     /// Returns the underlying raw `duckdb_logical_type` handle.
     ///
     /// # Safety note

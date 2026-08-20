@@ -302,16 +302,17 @@ append_metadata target/release/libmy_extension.so \
 | [`sql_macro`] | SQL macro registration (no FFI callbacks) | `SqlMacro`, `MacroBody` |
 | [`data_chunk`] | Ergonomic wrapper for DuckDB data chunks | `DataChunk` |
 | [`chunk_writer`] | Auto-sizing chunk writer for scan callbacks | `ChunkWriter` |
-| [`value`] | RAII wrapper for DuckDB values with typed extraction | `Value` |
+| [`value`] | RAII wrapper for DuckDB values — every scalar and composite constructor, typed extraction | `Value` |
 | [`vector`] | Safe reading/writing of DuckDB vectors | `VectorReader`, `VectorWriter`, `ValidityBitmap`, `vector_size()` |
 | [`vector::complex`] | STRUCT / LIST / MAP / ARRAY child vector access | `StructVector`, `ListVector`, `MapVector`, `ArrayVector` |
+| [`vector::ops`]¹ | Whole-vector operations driven by a `SelectionVector` | `OwnedVector`, `copy_selected`, `slice`, `reference_value`, `reference_vector` |
 | [`vector::struct_writer`] | Batched typed writer for STRUCT output vectors | `StructWriter` |
 | [`vector::struct_reader`] | Batched typed reader for STRUCT input vectors | `StructReader` |
 | [`vector::string`] | 16-byte DuckDB string format | `DuckStringView`, `read_duck_string` |
-| [`types`] | DuckDB type system wrappers | `TypeId`, `LogicalType`, `NullHandling` |
+| [`types`] | DuckDB type system wrappers, incl. registering custom types | `TypeId`, `LogicalType` (`register`, `is_composite`), `NullHandling` |
 | [`interval`] | INTERVAL ↔ microseconds conversion | `DuckInterval`, `interval_to_micros` |
 | [`datetime`] | DATE/TIME/TIMESTAMP calendar conversions, HUGEINT/DECIMAL helpers | `Date`, `Time`, `Timestamp`, `date_from_days`, `is_finite_date` |
-| [`query`] | Running SQL from an extension | `QueryResult`, `PreparedStatement`, `OwnedConnection`, `OwnedDataChunk` |
+| [`query`] | Running SQL from an extension, incl. streaming¹ and cancellation | `QueryResult`, `PreparedStatement`, `OwnedConnection`, `OwnedDataChunk`, `InterruptHandle`, `QueryProgress` |
 | [`error`] | FFI-safe error type | `ExtensionError`, `ExtResult<T>` |
 | [`tls`] | Type-erased TLS config provider for HTTP-capable extensions | `TlsConfigProvider` |
 | [`warning`] | Structured security warning API | `ExtensionWarning`, `WarningSeverity`, `WarningCollector` |
@@ -362,6 +363,7 @@ append_metadata target/release/libmy_extension.so \
 [`sql_macro`]: https://docs.rs/quack-rs/latest/quack_rs/sql_macro/index.html
 [`vector`]: https://docs.rs/quack-rs/latest/quack_rs/vector/index.html
 [`vector::complex`]: https://docs.rs/quack-rs/latest/quack_rs/vector/complex/index.html
+[`vector::ops`]: https://docs.rs/quack-rs/latest/quack_rs/vector/ops/index.html
 [`vector::string`]: https://docs.rs/quack-rs/latest/quack_rs/vector/string/index.html
 [`types`]: https://docs.rs/quack-rs/latest/quack_rs/types/index.html
 [`interval`]: https://docs.rs/quack-rs/latest/quack_rs/interval/index.html

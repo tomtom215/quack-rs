@@ -24,6 +24,10 @@
 
 pub mod complex;
 pub mod list_builder;
+/// Whole-vector operations that consume a
+/// [`SelectionVector`][crate::selection_vector::SelectionVector].
+#[cfg(feature = "duckdb-1-5")]
+pub mod ops;
 pub mod reader;
 pub mod string;
 pub mod struct_reader;
@@ -33,6 +37,8 @@ pub mod validity;
 pub mod writer;
 
 pub use list_builder::{ListBuilder, MAX_LIST_CHILD_CAPACITY};
+#[cfg(feature = "duckdb-1-5")]
+pub use ops::OwnedVector;
 pub use reader::VectorReader;
 pub use string::{read_duck_blob, read_duck_string, DuckStringView};
 pub use struct_reader::StructReader;

@@ -89,7 +89,7 @@ pub struct ScalarFunctionBuilder {
     pub(super) return_logical: Option<LogicalType>,
     pub(super) function: Option<ScalarFn>,
     pub(super) null_handling: NullHandling,
-    pub(super) extra_info: Option<(*mut c_void, duckdb_delete_callback_t)>,
+    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
     #[cfg(feature = "duckdb-1-5")]
     pub(super) varargs: Option<LogicalType>,
     #[cfg(feature = "duckdb-1-5")]
@@ -305,7 +305,8 @@ impl ScalarFunctionBuilder {
         data: *mut c_void,
         destroy: duckdb_delete_callback_t,
     ) -> Self {
-        self.extra_info = Some((data, destroy));
+        // SAFETY: forwarded from this method's own contract.
+        self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, destroy) });
         self
     }
 
@@ -394,10 +395,13 @@ impl ScalarFunctionBuilder {
         }
 
         // Set extra info if provided
-        if let Some((data, destroy)) = self.extra_info {
+        if let Some(info) = self.extra_info {
             // SAFETY: func is valid; data and destroy are provided by caller.
             unsafe {
-                duckdb_scalar_function_set_extra_info(func, data, destroy);
+                duckdb_scalar_function_set_extra_info(func, info.data(), info.destroy());
+                // DuckDB owns the allocation from here; `ExtraInfo::drop` must
+                // not free it as well.
+                info.mark_transferred();
             }
         }
 

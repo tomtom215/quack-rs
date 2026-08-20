@@ -201,7 +201,7 @@ pub struct CastFunctionBuilder {
     target_logical: Option<LogicalType>,
     function: Option<CastFn>,
     implicit_cost: Option<i64>,
-    extra_info: Option<(*mut c_void, duckdb_delete_callback_t)>,
+    extra_info: Option<crate::extra_info::ExtraInfo>,
 }
 
 // SAFETY: CastFunctionBuilder owns the extra_info pointer and LogicalType handles
@@ -290,7 +290,8 @@ impl CastFunctionBuilder {
         ptr: *mut c_void,
         destroy: duckdb_delete_callback_t,
     ) -> Self {
-        self.extra_info = Some((ptr, destroy));
+        // SAFETY: forwarded from this method's own contract.
+        self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(ptr, destroy) });
         self
     }
 
@@ -361,11 +362,13 @@ impl CastFunctionBuilder {
         }
 
         // Attach extra info if provided
-        if let Some((ptr, destroy)) = self.extra_info {
+        if let Some(info) = self.extra_info {
             // SAFETY: ptr validity is the caller's responsibility per the safety
             // contract on extra_info().
             unsafe {
-                duckdb_cast_function_set_extra_info(cast, ptr, destroy);
+                duckdb_cast_function_set_extra_info(cast, info.data(), info.destroy());
+                // DuckDB owns the allocation from here.
+                info.mark_transferred();
             }
         }
 

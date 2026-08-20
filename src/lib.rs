@@ -155,6 +155,7 @@ pub mod datetime;
 mod debug_repr;
 pub mod entry_point;
 pub mod error;
+mod extra_info;
 pub mod interval;
 pub mod prelude;
 pub mod query;

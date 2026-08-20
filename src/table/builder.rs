@@ -132,7 +132,7 @@ pub struct TableFunctionBuilder {
     local_init: Option<InitFn>,
     scan: Option<ScanFn>,
     projection_pushdown: bool,
-    extra_info: Option<(*mut c_void, ExtraDestroyFn)>,
+    extra_info: Option<crate::extra_info::ExtraInfo>,
 }
 
 impl TableFunctionBuilder {
@@ -291,7 +291,8 @@ impl TableFunctionBuilder {
     /// `data` must remain valid until `DuckDB` calls `destroy`. The typical pattern
     /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
     pub unsafe fn extra_info(mut self, data: *mut c_void, destroy: ExtraDestroyFn) -> Self {
-        self.extra_info = Some((data, destroy));
+        // SAFETY: forwarded from this method's own contract.
+        self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, Some(destroy)) });
         self
     }
 
@@ -406,10 +407,12 @@ impl TableFunctionBuilder {
         }
 
         // Set extra info if provided.
-        if let Some((data, destroy)) = self.extra_info {
+        if let Some(info) = self.extra_info {
             // SAFETY: func is valid; data and destroy are provided by caller.
             unsafe {
-                duckdb_table_function_set_extra_info(func, data, Some(destroy));
+                duckdb_table_function_set_extra_info(func, info.data(), info.destroy());
+                // DuckDB owns the allocation from here.
+                info.mark_transferred();
             }
         }
 
@@ -528,24 +531,25 @@ mod tests {
         assert!(TableFunctionBuilder::try_new("func\0name").is_err());
     }
 
+    // Needs a real `LogicalType`, which needs a live DuckDB. The previous
+    // version of this test faked one from `NonNull::dangling()` and then
+    // `mem::forget`-ed the whole builder so `Drop` would not hand that address
+    // to `duckdb_destroy_logical_type` — a deliberate leak, and an invalid
+    // pointer sitting in a live struct, both of which Miri's leak checker and
+    // its pointer checks report. A real type costs one feature gate and makes
+    // the test honest.
     #[test]
+    #[cfg(feature = "_duckdb-testing")]
     fn param_logical_position_tracking() {
-        // Create a fake LogicalType from a dangling (non-null) pointer.
-        // We leak the builder at the end to prevent Drop from calling
-        // duckdb_destroy_logical_type on the invalid pointer.
-        let fake_lt = unsafe { LogicalType::from_raw(std::ptr::NonNull::dangling().as_ptr()) };
+        let _db = crate::testing::InMemoryDb::open().expect("dispatch table");
 
-        // Build with one simple param followed by one logical param.
+        // One simple param followed by one logical param.
         let b = TableFunctionBuilder::new("f")
             .param(TypeId::Integer)
-            .param_logical(fake_lt);
+            .param_logical(LogicalType::list(TypeId::Integer));
 
         assert_eq!(b.params.len(), 1);
         assert_eq!(b.logical_params.len(), 1);
-        assert_eq!(b.logical_params[0].0, 1); // position should be 1, not 0
-
-        // Prevent drop of the LogicalType inside b.logical_params
-        // by leaking the entire builder.
-        std::mem::forget(b);
+        assert_eq!(b.logical_params[0].0, 1, "position should be 1, not 0");
     }
 }

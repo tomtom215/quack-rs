@@ -81,7 +81,7 @@ pub(super) struct ScalarOverloadSpec {
     pub(super) return_logical: Option<LogicalType>,
     pub(super) function: Option<ScalarFn>,
     pub(super) null_handling: NullHandling,
-    pub(super) extra_info: Option<(*mut c_void, duckdb_delete_callback_t)>,
+    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
 }
 
 impl ScalarFunctionSetBuilder {
@@ -240,10 +240,12 @@ impl ScalarFunctionSetBuilder {
             }
 
             // Set extra info if provided
-            if let Some((data, destroy)) = overload.extra_info {
+            if let Some(info) = &overload.extra_info {
                 // SAFETY: func is valid; data and destroy are provided by caller.
                 unsafe {
-                    duckdb_scalar_function_set_extra_info(func, data, destroy);
+                    duckdb_scalar_function_set_extra_info(func, info.data(), info.destroy());
+                    // DuckDB owns the allocation from here.
+                    info.mark_transferred();
                 }
             }
 
@@ -286,7 +288,7 @@ pub struct ScalarOverloadBuilder {
     pub(super) return_logical: Option<LogicalType>,
     pub(super) function: Option<ScalarFn>,
     pub(super) null_handling: NullHandling,
-    pub(super) extra_info: Option<(*mut c_void, duckdb_delete_callback_t)>,
+    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
 }
 
 impl ScalarOverloadBuilder {
@@ -378,7 +380,8 @@ impl ScalarOverloadBuilder {
         data: *mut c_void,
         destroy: duckdb_delete_callback_t,
     ) -> Self {
-        self.extra_info = Some((data, destroy));
+        // SAFETY: forwarded from this method's own contract.
+        self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, destroy) });
         self
     }
 }
