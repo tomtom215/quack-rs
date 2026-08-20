@@ -421,8 +421,9 @@ impl AggregateFunctionBuilder {
             Ok(())
         } else {
             Err(ExtensionError::new(format!(
-                "duckdb_register_aggregate_function failed for '{}'",
-                self.name.to_string_lossy()
+                "duckdb_register_aggregate_function failed for '{name}': {hint}",
+                name = self.name.to_string_lossy(),
+                hint = crate::error::REGISTRATION_FAILURE_HINT
             )))
         }
     }

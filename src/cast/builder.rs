@@ -384,7 +384,10 @@ impl CastFunctionBuilder {
         if result == DuckDBSuccess {
             Ok(())
         } else {
-            Err(ExtensionError::new("duckdb_register_cast_function failed"))
+            Err(ExtensionError::new(format!(
+                "duckdb_register_cast_function failed: {}",
+                crate::error::REGISTRATION_FAILURE_HINT
+            )))
         }
     }
 }

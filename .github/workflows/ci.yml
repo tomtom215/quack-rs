@@ -358,8 +358,21 @@ jobs:
           exit "${status:-0}"
 
   extension-load:
-    name: Extension load test (DuckDB)
+    name: Extension load test (DuckDB ${{ matrix.duckdb }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # The README claims "quack-rs supports DuckDB 1.4.x and 1.5.x". One
+      # `releases/latest` run samples a single point of that claim and silently
+      # retargets whenever DuckDB ships. hello-ext uses only the frozen stable
+      # prefix and is stamped `C_STRUCT` + `v1.2.0`, so it is supposed to load
+      # into every one of these — which is exactly the property worth proving,
+      # and the one that would break silently.
+      #
+      # `latest` stays in the matrix as the early-warning signal for a DuckDB
+      # that has not been pinned here yet.
+      matrix:
+        duckdb: ["v1.4.4", "v1.5.0", "v1.5.5", "latest"]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -371,7 +384,12 @@ jobs:
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
-          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          if [ "${{ matrix.duckdb }}" = "latest" ]; then
+            url=https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
+          else
+            url=https://github.com/duckdb/duckdb/releases/download/${{ matrix.duckdb }}/duckdb_cli-linux-amd64.zip
+          fi
+          curl -fsSL "$url" -o duckdb.zip
           unzip -o duckdb.zip
           chmod +x duckdb
           # Record which DuckDB this job is actually testing against. Without

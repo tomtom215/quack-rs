@@ -69,6 +69,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into a `String`, called a `&mut` method, then read through the stale pointer.
   The library's `zeroize_string` was correct throughout.
 
+- **The reference example disabled every panic guard in the crate.**
+  `examples/hello-ext/Cargo.toml` shipped `panic = "abort"` — the setting
+  `validate_release_profile` rejects outright and the scaffold refuses to
+  generate, because it makes every `catch_unwind` in quack-rs inert. CI built
+  that example, loaded it into a real `DuckDB`, and held it up as the way to do
+  this. Two new tests hold the example *and* the scaffold's generated profile to
+  quack-rs's own validator, so the generator and the validator cannot drift.
+
+- **The `ScaffoldConfig` example in the README and two book pages did not
+  compile.** The struct gained three fields and the exhaustive literals were
+  never updated; rustdoc examples are compiled by `cargo test` but Markdown code
+  fences are not, so the copy a new user reaches for was the broken one. All now
+  use `..ScaffoldConfig::default()`.
+
+- **Registration failures now name what to check.**
+  `duckdb_register_*_function` reports failure as a bare `DuckDBError` with no
+  message. There are exactly three causes, and a name collision with a `DuckDB`
+  built-in (`list_sum`, `array_sum`, …) looks identical to a type error. The
+  message names all three and points at
+  `SELECT * FROM duckdb_functions() WHERE function_name = '<name>'`.
+
 ### Added
 
 - **Scalar functions as safe Rust closures.** `ScalarFunctionBuilder::map1` /
@@ -103,6 +124,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`LogicalType::register`** — `CREATE TYPE` from the C API, so an extension can
   ship a named `ENUM` or `STRUCT`. Stable-prefix; no feature needed.
 
+- **`ScalarBindData<T>` / `ScalarLocalState<T>`** (`duckdb-1-5`) — typed bind
+  data and per-thread local state for scalar functions, with the
+  `duckdb_delete_callback_t` generated and panic-safe. The raw
+  `set_bind_data` / `set_state` route makes the extension author write their own
+  `unsafe extern "C" fn` around `Box::from_raw`, which is the abort hazard above
+  relocated into user code.
+
 - **`vector::ops`** (`duckdb-1-5`) makes `SelectionVector` usable: `copy_selected`,
   `slice`, `reference_value`, `reference_vector` and `OwnedVector`. Documents
   that `slice` produces a *dictionary* vector, after which every reader in this
@@ -116,6 +144,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parser, the `duckdb_string_t` decoder and the validators) and `semver`
   (`cargo-semver-checks`). `tests/ffi_roundtrip.rs` is now linted — it is
   feature-gated, so the plain clippy job had been compiling it away to nothing.
+
+- `extension-load` is now a matrix over `DuckDB` v1.4.4, v1.5.0, v1.5.5 and
+  `latest`, rather than one `releases/latest` run that silently retargeted
+  whenever `DuckDB` shipped. That is the README's compatibility claim, proven
+  rather than sampled.
+
+- New end-to-end coverage for nested types as scalar-function *input* — `LIST`
+  offsets that are cumulative rather than uniform, NULL elements inside a list,
+  a `MAP` key miss, and an `ARRAY`'s fixed stride across rows. Writing them was
+  already covered; reading them does raw offset arithmetic against a layout only
+  `DuckDB` defines, which a mock cannot check.
 
 - `AUDIT.md` records the full review: what was read, what was probed, what was
   verified correct, and what is still open.

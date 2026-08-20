@@ -3826,3 +3826,447 @@ fn a_custom_logical_type_is_registered_and_usable_from_sql() {
     .expect_err("the name is taken");
     assert!(err.as_str().contains("mood"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// Nested types as scalar-function *input*.
+//
+// `list_builder_*` above cover writing LIST and MAP. Reading them back is the
+// other half, and it is the half that does raw offset arithmetic against a
+// layout only DuckDB defines: a LIST row is a `{offset, length}` into one flat
+// child vector shared by the whole chunk, and those offsets are not `row * len`
+// for anything but a uniform column. A mock cannot catch a mistake here.
+// ---------------------------------------------------------------------------
+
+quack_rs::scalar_callback!(struct_to_text, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let reader = unsafe { chunk.struct_reader(0, 2) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..rows {
+        let n = unsafe { reader.read_i64(row, 0) };
+        let s = unsafe { reader.read_str(row, 1) };
+        unsafe { writer.write_varchar(row, &format!("{n}:{s}")) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+quack_rs::scalar_callback!(list_sum, |_info, input, output| {
+    use quack_rs::vector::complex::ListVector;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let vector = unsafe { chunk.vector(0) };
+    // One child reader for the whole chunk: every row's elements live in the
+    // same flat child vector, addressed by that row's offset.
+    let total = unsafe { ListVector::get_size(vector) };
+    let child = unsafe { ListVector::child_reader(vector, total) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..rows {
+        let entry = unsafe { ListVector::get_entry(vector, row) };
+        let mut sum = 0_i64;
+        for i in 0..entry.length as usize {
+            let idx = entry.offset as usize + i;
+            if unsafe { child.is_valid(idx) } {
+                sum += unsafe { child.read_i64(idx) };
+            }
+        }
+        unsafe { writer.write_i64(row, sum) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+quack_rs::scalar_callback!(map_lookup, |_info, input, output| {
+    use quack_rs::vector::complex::MapVector;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let vector = unsafe { chunk.vector(0) };
+    let wanted = unsafe { chunk.reader(1) };
+    let total = unsafe { MapVector::total_entry_count(vector) };
+    let keys = unsafe { MapVector::key_reader(vector, total) };
+    let values = unsafe { MapVector::value_reader(vector, total) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..rows {
+        let entry = unsafe { MapVector::get_entry(vector, row) };
+        let key = unsafe { wanted.read_str(row) };
+        let mut found = None;
+        for i in 0..entry.length as usize {
+            let idx = entry.offset as usize + i;
+            if unsafe { keys.read_str(idx) } == key {
+                found = Some(unsafe { values.read_i64(idx) });
+                break;
+            }
+        }
+        match found {
+            Some(v) => unsafe { writer.write_i64(row, v) },
+            None => unsafe { writer.set_null(row) },
+        }
+    }
+});
+
+quack_rs::scalar_callback!(array_sum, |_info, input, output| {
+    use quack_rs::vector::complex::ArrayVector;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let vector = unsafe { chunk.vector(0) };
+    // An ARRAY's child vector has `parent_rows * array_size` elements laid out
+    // contiguously, so row `r`'s elements start at `r * SIZE`. There is no
+    // offset table: that is the difference from LIST.
+    const SIZE: usize = 3;
+    let child = unsafe { ArrayVector::get_child(vector) };
+    let reader = unsafe { VectorReader::from_vector(child, rows * SIZE) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..rows {
+        let mut sum = 0_i32;
+        for i in 0..SIZE {
+            sum += unsafe { reader.read_i32(row * SIZE + i) };
+        }
+        unsafe { writer.write_i32(row, sum) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+#[test]
+fn nested_types_read_correctly_as_scalar_arguments() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::new("q_struct_to_text")
+            .param_logical(LogicalType::struct_type(&[
+                ("n", TypeId::BigInt),
+                ("s", TypeId::Varchar),
+            ]))
+            .returns(TypeId::Varchar)
+            .function(struct_to_text)
+            .register(fx.con())
+            .expect("register q_struct_to_text");
+        ScalarFunctionBuilder::new("q_list_sum")
+            .param_logical(LogicalType::list(TypeId::BigInt))
+            .returns(TypeId::BigInt)
+            .function(list_sum)
+            .register(fx.con())
+            .expect("register q_list_sum");
+        ScalarFunctionBuilder::new("q_map_lookup")
+            .param_logical(LogicalType::map(TypeId::Varchar, TypeId::BigInt))
+            .param(TypeId::Varchar)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::SpecialNullHandling)
+            .function(map_lookup)
+            .register(fx.con())
+            .expect("register q_map_lookup");
+        ScalarFunctionBuilder::new("q_array_sum")
+            .param_logical(LogicalType::array(TypeId::Integer, 3))
+            .returns(TypeId::Integer)
+            .function(array_sum)
+            .register(fx.con())
+            .expect("register q_array_sum");
+    }
+
+    assert_eq!(
+        fx.scalar(
+            "SELECT q_struct_to_text({'n': 7::BIGINT, 's': 'x'})",
+            |r, i| { unsafe { r.read_str(i).to_owned() } }
+        ),
+        Some("7:x".to_owned())
+    );
+
+    // Variable-length lists in one chunk: row offsets are cumulative, not
+    // `row * length`, so a reader that assumed uniform stride would be wrong for
+    // every row after the first.
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE lists(l BIGINT[])") }.expect("create");
+    // SAFETY: `con` is open.
+    unsafe {
+        query(
+            fx.con(),
+            "INSERT INTO lists VALUES ([1,2,3]), ([]), ([10]), ([100,200]), (NULL)",
+        )
+    }
+    .expect("insert");
+
+    let mut result = fx.query("SELECT q_list_sum(l) AS s FROM lists");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: one BIGINT column with five rows.
+    let reader = unsafe { chunk.reader(0) };
+    let got: Vec<Option<i64>> = (0..chunk.size())
+        // SAFETY: `row` is in range.
+        .map(|row| unsafe { reader.is_valid(row).then(|| reader.read_i64(row)) })
+        .collect();
+    assert_eq!(got, vec![Some(6), Some(0), Some(10), Some(300), None]);
+    drop(chunk);
+    drop(result);
+
+    // A list containing NULL elements: the child vector's validity is what
+    // decides, not the parent's.
+    assert_eq!(
+        fx.scalar("SELECT q_list_sum([1, NULL, 3]::BIGINT[])", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(4)
+    );
+
+    // MAP: keys and values are two parallel child vectors behind one offset
+    // table, exactly like LIST.
+    assert_eq!(
+        fx.scalar(
+            "SELECT q_map_lookup(MAP{'a':1,'b':2}, 'b')",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(2)
+    );
+    assert_eq!(
+        fx.scalar("SELECT q_map_lookup(MAP{'a':1}, 'zz')", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        None,
+        "a missing key must produce NULL, not a stale value"
+    );
+
+    // ARRAY: fixed stride, no offset table.
+    assert_eq!(
+        fx.scalar("SELECT q_array_sum([1,2,3]::INTEGER[3])", |r, i| unsafe {
+            r.read_i32(i)
+        }),
+        Some(6)
+    );
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE arrs(a INTEGER[3])") }.expect("create");
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "INSERT INTO arrs VALUES ([1,2,3]), ([10,20,30])") }.expect("insert");
+    assert_eq!(
+        fx.scalar("SELECT sum(q_array_sum(a)) FROM arrs", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(66),
+        "the second row must read elements 3..6 of the child, not 0..3"
+    );
+}
+
+quack_rs::scalar_callback!(split_pair, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let reader = unsafe { chunk.reader(0) };
+    let mut n = unsafe { quack_rs::vector::complex::StructVector::field_writer(output, 0) };
+    let mut s = unsafe { quack_rs::vector::complex::StructVector::field_writer(output, 1) };
+    for row in 0..rows {
+        let text = unsafe { reader.read_str(row) };
+        let (head, tail) = text.split_once(':').unwrap_or((text, ""));
+        unsafe { n.write_i64(row, head.parse::<i64>().unwrap_or(-1)) };
+        unsafe { s.write_varchar(row, tail) };
+    }
+});
+
+#[test]
+fn a_struct_output_vector_is_written_field_by_field() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::new("q_split_pair")
+            .param(TypeId::Varchar)
+            .returns_logical(LogicalType::struct_type(&[
+                ("n", TypeId::BigInt),
+                ("s", TypeId::Varchar),
+            ]))
+            .function(split_pair)
+            .register(fx.con())
+            .expect("register q_split_pair");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT q_split_pair('42:hello')::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        }),
+        Some("{'n': 42, 's': hello}".to_owned())
+    );
+
+    // Over a full multi-chunk scan, so every row index of a full vector is
+    // written in both child vectors.
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum((q_split_pair(i::VARCHAR || ':x')).n) FROM range(5000) t(i)",
+            |r, i| unsafe { r.read_i128(i) }
+        ),
+        Some((0..5000_i128).sum::<i128>())
+    );
+}
+
+#[test]
+fn a_registration_failure_names_the_three_things_it_can_be() {
+    let fx = Fixture::open();
+
+    unsafe extern "C" fn never_called(
+        _: libduckdb_sys::duckdb_function_info,
+        _: libduckdb_sys::duckdb_data_chunk,
+        _: libduckdb_sys::duckdb_vector,
+    ) {
+    }
+
+    // `list_sum` is a DuckDB built-in. `duckdb_register_scalar_function` reports
+    // the collision as a bare DuckDBError with no message, which is
+    // indistinguishable from a type error or a missing callback — so the error
+    // has to name all three, and point at the query that settles it.
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        ScalarFunctionBuilder::new("list_sum")
+            .param_logical(LogicalType::list(TypeId::BigInt))
+            .returns(TypeId::BigInt)
+            .function(never_called)
+            .register(fx.con())
+    }
+    .expect_err("the name collides with a built-in");
+    let msg = err.as_str();
+    assert!(msg.contains("list_sum"), "names the function: {msg}");
+    assert!(msg.contains("duckdb_functions()"), "names the check: {msg}");
+
+    // Sanity: the built-in really is there, so the advice is actionable.
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'list_sum'",
+            |r, i| unsafe { r.read_i64(i) }
+        )
+        .map(|n| n > 0),
+        Some(true)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Typed scalar bind data / local state.
+//
+// The raw `set_bind_data` route above makes the extension author write an
+// `unsafe extern "C" fn drop_bind` that calls `Box::from_raw` — the same
+// abort-on-panicking-Drop hazard quack-rs removed from its own destructors.
+// These do the same job with the destructor generated and panic-safe.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "duckdb-1-5")]
+mod typed_scalar_state {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub static BIND_DROPS: AtomicUsize = AtomicUsize::new(0);
+    pub static STATE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Folded once at bind time; explodes when dropped.
+    pub struct Factor(pub i64);
+    impl Drop for Factor {
+        fn drop(&mut self) {
+            BIND_DROPS.fetch_add(1, Ordering::SeqCst);
+            panic!("typed bind data destructor deliberately exploded");
+        }
+    }
+
+    /// Per-thread scratch.
+    #[derive(Default)]
+    pub struct Calls(pub u64);
+    impl Drop for Calls {
+        fn drop(&mut self) {
+            STATE_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[cfg(feature = "duckdb-1-5")]
+unsafe extern "C" fn typed_bind(info: libduckdb_sys::duckdb_bind_info) {
+    use quack_rs::scalar::{ScalarBindData, ScalarBindInfo};
+    use typed_scalar_state::Factor;
+
+    // SAFETY: DuckDB passes a valid bind info.
+    let bind = unsafe { ScalarBindInfo::new(info) };
+    // SAFETY: two parameters were declared, so argument 1 exists.
+    let factor = unsafe { bind.argument(1) }
+        .and_then(|expr| {
+            if !expr.is_foldable() {
+                return None;
+            }
+            // SAFETY: inside a bind callback, so the context is live.
+            let ctx = unsafe { bind.get_client_context() };
+            expr.fold(&ctx).ok().map(|v| v.as_i64())
+        })
+        .unwrap_or(1);
+    ScalarBindData::set(&bind, Factor(factor));
+}
+
+#[cfg(feature = "duckdb-1-5")]
+unsafe extern "C" fn typed_init(info: libduckdb_sys::duckdb_init_info) {
+    use quack_rs::scalar::{ScalarInitInfo, ScalarLocalState};
+    use typed_scalar_state::Calls;
+
+    // SAFETY: DuckDB passes a valid init info.
+    let init = unsafe { ScalarInitInfo::new(info) };
+    ScalarLocalState::set(&init, Calls::default());
+}
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::scalar_callback!(typed_scaled, |info, input, output| {
+    use quack_rs::scalar::{ScalarBindData, ScalarFunctionInfo, ScalarLocalState};
+    use typed_scalar_state::{Calls, Factor};
+
+    // SAFETY: DuckDB passes a valid function info.
+    let fninfo = unsafe { ScalarFunctionInfo::new(info) };
+    // SAFETY: `typed_bind` stored a `Factor`, and nothing else did.
+    let factor = unsafe { ScalarBindData::<Factor>::get(&fninfo) }.map_or(1, |f| f.0);
+    // SAFETY: `typed_init` stored a `Calls` on this thread; no other borrow is live.
+    if let Some(calls) = unsafe { ScalarLocalState::<Calls>::get_mut(&fninfo) } {
+        calls.0 += 1;
+    }
+
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, reader.read_i64(row) * factor) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn typed_scalar_bind_data_and_local_state_need_no_hand_written_destructor() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+    use std::sync::atomic::Ordering;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::new("typed_scaled")
+            .param(TypeId::BigInt)
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .bind(typed_bind)
+            .init(typed_init)
+            .function(typed_scaled)
+            .register(fx.con())
+            .expect("register typed_scaled");
+    }
+
+    // The second argument is constant-folded at bind time, so the row loop never
+    // reads it.
+    assert_eq!(
+        fx.scalar(
+            "SELECT typed_scaled(21::BIGINT, 2::BIGINT)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(42)
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum(typed_scaled(i, 3::BIGINT)) FROM range(1000) t(i)",
+            |r, i| unsafe { r.read_i128(i) }
+        ),
+        Some((0..1000_i128).sum::<i128>() * 3)
+    );
+
+    drop(fx);
+
+    // `Factor::drop` panics. Through a hand-written `extern "C"` destructor that
+    // would abort the process; the generated one contains it, so reaching this
+    // line at all is the assertion.
+    assert!(
+        typed_scalar_state::BIND_DROPS.load(Ordering::SeqCst) >= 2,
+        "bind data must be freed once per bind, got {}",
+        typed_scalar_state::BIND_DROPS.load(Ordering::SeqCst)
+    );
+    assert!(
+        typed_scalar_state::STATE_DROPS.load(Ordering::SeqCst) >= 2,
+        "local state must be freed, got {}",
+        typed_scalar_state::STATE_DROPS.load(Ordering::SeqCst)
+    );
+}

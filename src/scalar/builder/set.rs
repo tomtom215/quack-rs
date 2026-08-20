@@ -264,8 +264,9 @@ impl ScalarFunctionSetBuilder {
             let result = unsafe { duckdb_register_scalar_function_set(con, set) };
             if result != DuckDBSuccess {
                 register_error = Some(ExtensionError::new(format!(
-                    "duckdb_register_scalar_function_set failed for '{}'",
-                    self.name.to_string_lossy()
+                    "duckdb_register_scalar_function_set failed for '{name}': {hint}",
+                    name = self.name.to_string_lossy(),
+                    hint = crate::error::REGISTRATION_FAILURE_HINT
                 )));
             }
         }

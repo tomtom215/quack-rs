@@ -42,6 +42,9 @@
 
 pub mod builder;
 pub mod info;
+/// Typed bind data and per-thread local state for scalar functions.
+#[cfg(feature = "duckdb-1-5")]
+pub mod state;
 pub mod typed;
 
 pub use builder::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};
@@ -53,4 +56,6 @@ pub use builder::{ScalarBindFn, ScalarInitFn};
 pub use info::ScalarFunctionInfo;
 #[cfg(feature = "duckdb-1-5")]
 pub use info::{ScalarBindInfo, ScalarInitInfo};
+#[cfg(feature = "duckdb-1-5")]
+pub use state::{ScalarBindData, ScalarLocalState};
 pub use typed::{ScalarOut, ScalarValue};

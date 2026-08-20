@@ -210,6 +210,60 @@ contradiction, and reports the container-type mistake by name.
 
 Worth reporting upstream.
 
+### D9 — The reference example disabled every panic guard in the crate (High)
+
+`examples/hello-ext/Cargo.toml` shipped with:
+
+```toml
+[profile.release]
+panic = "abort"
+```
+
+quack-rs's own `validate_release_profile` **rejects** that outright, and says
+why: "std::panic::catch_unwind cannot catch anything under panic = abort — the
+process aborts instead, taking the user's DuckDB session with it". The scaffold
+generates `panic = "unwind"` with a comment explaining the same thing. quack-rs's
+own `[profile.release]` sets `unwind` with a comment saying it "should not
+contradict the crate's own guidance".
+
+The example CI builds, loads into a real DuckDB, and holds up as the way to do
+this had it the other way round — so in the one artefact a new user copies,
+`scalar_callback!`'s guard, `init_extension`'s guard and every destructor fix in
+D1 were inert.
+
+Nothing caught it because nothing had ever pointed the validator at the crate's
+own files. Two tests now do: one holds `examples/hello-ext/Cargo.toml` to
+`validate_release_profile`, the other holds the profile `generate_scaffold`
+writes to the same check, so the generator and the validator cannot drift apart
+either.
+
+### D10 — The `ScaffoldConfig` example in the README and the book did not compile
+
+`ScaffoldConfig` gained `target_duckdb_version`, `use_unstable_c_api` and
+`git_ref`; the exhaustive struct literal in `README.md`,
+`book/src/publishing.md` and `book/src/getting-started/scaffold.md` was never
+updated. Rustdoc examples are compiled by `cargo test` and the one in
+`src/scaffold/mod.rs` was correct — Markdown code fences are not, so the copy a
+new user actually reaches for was the broken one.
+
+All three now use `..ScaffoldConfig::default()`, which is also what keeps them
+correct the next time the struct grows.
+
+> Worth considering for the next breaking release: `#[non_exhaustive]` on
+> `ScaffoldConfig` would make adding a field a non-breaking change permanently,
+> at the cost of one breaking change now. `cargo-semver-checks` (added here)
+> would surface it as exactly that.
+
+### D11 — Registration failures named nothing actionable (Low)
+
+`duckdb_register_*_function` reports failure as a bare `DuckDBError` with no
+message attached. quack-rs's error said only "duckdb_register_scalar_function
+failed for 'x'". There are exactly three causes, and this review hit the least
+obvious one while writing a test: `list_sum` and `array_sum` are DuckDB
+built-ins, and a name collision looks identical to a type error. The message now
+names all three and points at
+`SELECT * FROM duckdb_functions() WHERE function_name = '<name>'`.
+
 ---
 
 ## 3. Gaps closed
@@ -253,6 +307,16 @@ The 56 newly wrapped entries are the ones an extension actually reaches for:
   produces a *dictionary* vector, after which every reader in this crate silently
   reads the wrong rows.
 
+### Typed scalar bind data and local state
+
+`ScalarBindInfo::set_bind_data` and `ScalarInitInfo::set_state` take a raw
+pointer and a `duckdb_delete_callback_t`, so every extension using scalar bind
+data wrote its own `unsafe extern "C" fn drop_bind` around `Box::from_raw` —
+D1's hazard, relocated into user code. `ScalarBindData<T>` and
+`ScalarLocalState<T>` generate it instead, panic-safe, mirroring
+`FfiState`/`FfiBindData` for aggregates and table functions. A test registers a
+bind-data type whose `Drop` panics and shows the query completing.
+
 ### Ergonomics: scalar functions as closures
 
 Scalar functions are the most common extension function and had the least
@@ -291,9 +355,16 @@ memory is the harder half.
 | `fuzz` | `cargo-fuzz` over the description.yml parser, the `duckdb_string_t` decoder and the validators | ~32M execs, no crashes |
 | `semver` | `cargo-semver-checks` against the published crate — the API *is* the product | — |
 
-Also closed a lint gap: `tests/ffi_roundtrip.rs` is
-`#![cfg(feature = "_duckdb-testing")]`, so the plain clippy job compiled the
-repo's largest test file away to nothing and never linted it.
+Also closed two CI gaps:
+
+- `tests/ffi_roundtrip.rs` is `#![cfg(feature = "_duckdb-testing")]`, so the
+  plain clippy job compiled the repo's largest test file away to nothing and
+  never linted it.
+- `extension-load` pulled `releases/latest`, sampling a single point of the
+  README's "supports DuckDB 1.4.x and 1.5.x" claim and silently retargeting
+  whenever DuckDB shipped. It is now a matrix over v1.4.4, v1.5.0, v1.5.5 and
+  `latest`. Verified locally first: the same stamped binary loads and answers
+  correctly in all three pinned releases.
 
 ---
 
@@ -333,6 +404,14 @@ if nobody wrote down that they were checked.
   with `-D warnings`, so each one carries an explicit `#[allow]`; all of them are
   the `i128 → {u64, i64}` hugeint split or the documented DECIMAL width
   dispatch. Every `usize → idx_t` is widening on both 64-bit and wasm32.
+- **Nested-type reads are correct against a real DuckDB.** A `LIST` row is a
+  `{offset, length}` into one flat child vector shared by the whole chunk, and
+  those offsets are cumulative, not `row * length`; `MAP` is two parallel child
+  vectors behind one offset table; `ARRAY` has a fixed stride and no offset
+  table at all. New end-to-end tests read variable-length lists (including an
+  empty one, one containing NULL elements, and a NULL list), a map miss, and an
+  array column across rows — all through scalar functions, where a mock cannot
+  catch a wrong offset. All correct.
 - **`TypeId::from_duckdb_type`'s panic is documented and has a `try_` sibling**,
   and nothing inside the crate reaches it from a callback path that lacks a
   `catch_unwind`.
@@ -366,13 +445,7 @@ three FFI calls per string. That is a defensible trade, but it does mean the
 layout is hard-coded in Rust rather than delegated — noted so the choice is
 visible.
 
-### 5.2 `ScalarBindInfo::set_bind_data` still takes a raw destructor
-
-It hands the user a `duckdb_delete_callback_t` to write themselves — which is
-precisely the abort hazard D1 removed everywhere else. A typed
-`set_bind_data::<T>(value)` wrapper using a panic-safe destructor would close it.
-
-### 5.3 wasm32 is compile-checked only
+### 5.2 wasm32 is compile-checked only
 
 CI runs `cargo check --lib --target wasm32-unknown-emscripten`. Nothing executes.
 The one place pointer width genuinely matters is the `duckdb_string_t` decoder,
@@ -381,7 +454,7 @@ padding; the code reads the slot as `u64` and truncates, which is correct, but
 it has never been *run* on a 32-bit target. A DuckDB-Wasm smoke test would close
 this; it is a real piece of work.
 
-### 5.4 `AbiPolicy::Strict` refuses unknown engine versions — by design, with a cost
+### 5.3 `AbiPolicy::Strict` refuses unknown engine versions — by design, with a cost
 
 An extension built against a 546-slot layout refuses to load into any DuckDB
 whose version is not in `KNOWN_LAYOUTS`. That is right when the layout actually
@@ -392,7 +465,7 @@ layout-compatible, until quack-rs cuts a release. The escape hatches
 documented; the trade-off is sound, but it should be a conscious release-cadence
 commitment rather than an implicit one.
 
-### 5.5 Forward risk: DuckDB `main` re-versions the C extension API
+### 5.4 Forward risk: DuckDB `main` re-versions the C extension API
 
 This is the largest single item on the horizon, and it is not yet released.
 
@@ -421,16 +494,12 @@ the scaffold should target by default.
 the *versioning* change, because that is not what it looks at. Worth watching
 `duckdb/duckdb` releases directly.
 
-### 5.6 Smaller notes
+### 5.5 Smaller notes
 
 - `Value::is_null` (handle) versus `Value::is_sql_null` (value) is a real
   footgun that documentation now covers but naming does not. Renaming
   `is_null` → `is_handle_null` would be a breaking change; worth doing at the
   next major.
-- The `extension-load` CI job pulls `releases/latest`, so it silently retargets
-  when DuckDB releases. It prints the version, which is the right mitigation, but
-  a matrix over the supported 1.4.x/1.5.x releases would prove the compatibility
-  claim the README makes rather than sampling one point of it.
 - `LogicalType` has `try_*` constructors for the name-bearing types but not for
   `decimal`, `array`, `list_from_logical` or `map_from_logical`, which can still
   only panic on a null return. `Value::decimal` (added here) does return a
@@ -455,5 +524,5 @@ actually reaches for — values, parameters, cancellation, streaming, custom typ
 selection vectors — is covered rather than adjacent to covered.
 
 The honest remaining list is section 5. The two that would most change what
-quack-rs can claim are Arrow interop (5.1) and a wasm32 test that runs (5.3).
-The one that will demand attention on someone else's schedule is 5.5.
+quack-rs can claim are Arrow interop (5.1) and a wasm32 test that runs (5.2).
+The one that will demand attention on someone else's schedule is 5.4.

@@ -46,6 +46,9 @@ fn main() {
         maintainer: "Your Name".to_string(),
         github_repo: "yourorg/duckdb-my-extension".to_string(),
         excluded_platforms: vec![],
+        // `target_duckdb_version`, `use_unstable_c_api` and `git_ref` default
+        // to the stable-ABI settings; see `concepts/abi.md`.
+        ..ScaffoldConfig::default()
     };
 
     let files = generate_scaffold(&config).expect("scaffold generation failed");

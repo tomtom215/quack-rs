@@ -21,6 +21,20 @@
 use std::ffi::CString;
 use std::fmt;
 
+/// The advice appended to every `duckdb_register_*_function failed` message.
+///
+/// The C API reports registration failure as a bare `DuckDBError` with no
+/// reason attached — there is no `duckdb_..._error` for it — so the message
+/// quack-rs can produce is only as useful as the list of causes it names. There
+/// are three, and a name collision with a `DuckDB` built-in is by far the most
+/// common: `list_sum`, `array_sum` and friends already exist, and the failure
+/// looks identical to a type error.
+pub(crate) const REGISTRATION_FAILURE_HINT: &str =
+    "the C API reports no reason, and there are only three. The name may already \
+     be taken — DuckDB built-ins like `list_sum` and `array_sum` collide silently, \
+     so check `SELECT * FROM duckdb_functions() WHERE function_name = '<name>'`. \
+     A parameter or return type may be invalid. Or a required callback was never set.";
+
 /// An error that can occur during `DuckDB` extension initialization or registration.
 ///
 /// This type is designed for use with the `?` operator inside the extension

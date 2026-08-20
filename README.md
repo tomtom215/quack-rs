@@ -234,6 +234,11 @@ let config = ScaffoldConfig {
     maintainer: "Your Name".to_string(),
     github_repo: "yourorg/duckdb-my-extension".to_string(),
     excluded_platforms: vec![], // or vec!["wasm_mvp".to_string(), ...]
+    // `target_duckdb_version`, `use_unstable_c_api` and `git_ref` default to
+    // the stable-ABI settings. Set `use_unstable_c_api: true` (and
+    // `target_duckdb_version` to an exact release) when the extension enables
+    // the `duckdb-1-5` features — see the `abi` module.
+    ..Default::default()
 };
 
 let files = generate_scaffold(&config)?;
