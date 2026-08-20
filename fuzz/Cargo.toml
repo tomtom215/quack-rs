@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: MIT
+#
+# Fuzz targets for quack-rs.
+#
+# Deliberately a separate, unpublished crate rather than a workspace member:
+# `cargo-fuzz` requires nightly and libFuzzer, and the root crate's MSRV job
+# must stay able to build the whole workspace on stable.
+[package]
+name = "quack-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.quack-rs]
+path = ".."
+
+[[bin]]
+name = "description_yml"
+path = "fuzz_targets/description_yml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "duck_string"
+path = "fuzz_targets/duck_string.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validators"
+path = "fuzz_targets/validators.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = true

@@ -2876,7 +2876,7 @@ mod panicking_lifecycle {
                 use super::*;
 
                 /// # Safety
-                /// Called by DuckDB with its own valid handles.
+                /// Called by `DuckDB` with its own valid handles.
                 pub unsafe extern "C" fn update(
                     _info: libduckdb_sys::duckdb_function_info,
                     chunk: libduckdb_sys::duckdb_data_chunk,
@@ -2893,7 +2893,7 @@ mod panicking_lifecycle {
                 }
 
                 /// # Safety
-                /// Called by DuckDB with its own valid handles.
+                /// Called by `DuckDB` with its own valid handles.
                 pub unsafe extern "C" fn combine(
                     _info: libduckdb_sys::duckdb_function_info,
                     source: *mut libduckdb_sys::duckdb_aggregate_state,
@@ -2911,7 +2911,7 @@ mod panicking_lifecycle {
                 }
 
                 /// # Safety
-                /// Called by DuckDB with its own valid handles.
+                /// Called by `DuckDB` with its own valid handles.
                 pub unsafe extern "C" fn finalize(
                     _info: libduckdb_sys::duckdb_function_info,
                     states: *mut libduckdb_sys::duckdb_aggregate_state,
@@ -3508,7 +3508,7 @@ fn an_interrupt_handle_cancels_a_query_from_another_thread() {
 // NULL propagation, and the typed scalar API built on top of it.
 // ---------------------------------------------------------------------------
 
-/// Writes 999 into every row and never looks at input validity.
+// Writes 999 into every row and never looks at input validity.
 quack_rs::scalar_callback!(always_999, |_info, input, output| {
     let chunk = unsafe { DataChunk::from_raw(input) };
     let mut writer = unsafe { VectorWriter::from_vector(output) };
@@ -3517,7 +3517,7 @@ quack_rs::scalar_callback!(always_999, |_info, input, output| {
     }
 });
 
-/// The same, followed by `propagate_nulls`.
+// The same, followed by `propagate_nulls`.
 quack_rs::scalar_callback!(always_999_propagating, |_info, input, output| {
     let chunk = unsafe { DataChunk::from_raw(input) };
     let mut writer = unsafe { VectorWriter::from_vector(output) };

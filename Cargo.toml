@@ -16,6 +16,7 @@ autobenches = false
 exclude = [
     "docs/",
     "examples/",
+    "fuzz/",
     ".github/",
     "book/",
     "book.toml",
@@ -29,6 +30,7 @@ exclude = [
     "codecov.yml",
     "mutants.toml",
     "rust-toolchain.toml",
+    "lsan-suppressions.txt",
 ]
 
 [lib]

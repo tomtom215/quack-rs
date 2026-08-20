@@ -1,0 +1,13 @@
+extension:
+  name: quack
+  description: seed
+  version: 0.1.0
+  language: Rust
+  build: cmake
+  license: MIT
+  maintainers:
+    - tomtom215
+
+repo:
+  github: tomtom215/quack
+  ref: 0000000000000000000000000000000000000000

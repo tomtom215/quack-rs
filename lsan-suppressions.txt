@@ -1,0 +1,13 @@
+# LeakSanitizer suppressions for the `leak-check` CI job.
+#
+# The job exists to catch a missing `duckdb_destroy_*` in one of quack-rs's RAII
+# wrappers. DuckDB itself keeps a number of process-lifetime allocations that are
+# still reachable at exit and are not ours to free, so they are suppressed by
+# the library that made them -- never by symbol name inside quack-rs, which would
+# defeat the point.
+#
+# Anything allocated inside libduckdb and freed by a quack-rs destructor is still
+# reported when that destructor is missing, because the *allocating* frame is
+# what LeakSanitizer attributes and these entries only cover allocations that are
+# never freed by design.
+leak:libduckdb.so
