@@ -306,6 +306,13 @@ impl CastFunctionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // See `ScalarFunctionBuilder::register` -- validate before allocating.
+        if let Some(id) = self.source {
+            LogicalType::check_slot(id, "cast function source type")?;
+        }
+        if let Some(id) = self.target {
+            LogicalType::check_slot(id, "cast function target type")?;
+        }
         let function = self
             .function
             .ok_or_else(|| ExtensionError::new("cast function callback not set"))?;

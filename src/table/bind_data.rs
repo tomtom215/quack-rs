@@ -158,6 +158,14 @@ impl<T: 'static> FfiBindData<T> {
     ///
     /// `DuckDB` calls this when the query is complete. It drops the `Box<T>`.
     ///
+    /// # Pitfall L3: `T::drop` is user code
+    ///
+    /// `DuckDB` invokes this through an `extern "C"` function pointer with no
+    /// error channel, and Rust 1.81+ turns an unwind across `extern "C"` into a
+    /// process abort. The drop therefore runs under
+    /// [`catch_ffi_panic`][crate::callback::catch_ffi_panic]; a panicking
+    /// `Drop` impl costs the diagnostic, not the session.
+    ///
     /// # Safety
     ///
     /// - `ptr` must have been allocated by [`set`][FfiBindData::set] via `Box::into_raw`.
@@ -165,8 +173,11 @@ impl<T: 'static> FfiBindData<T> {
     pub unsafe extern "C" fn destroy(ptr: *mut c_void) {
         if !ptr.is_null() {
             // SAFETY: ptr was created by Box::into_raw(Box::<T>::new(...)) in set().
-            // DuckDB calls this exactly once.
-            unsafe { drop(Box::from_raw(ptr.cast::<T>())) };
+            // DuckDB calls this exactly once. `T::drop` is arbitrary user code,
+            // so the unwind is contained here rather than aborting the process.
+            drop(crate::callback::catch_ffi_panic(|| unsafe {
+                drop(Box::from_raw(ptr.cast::<T>()));
+            }));
         }
     }
 }

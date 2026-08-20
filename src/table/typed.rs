@@ -111,10 +111,12 @@ impl<S: Send + 'static> TypedCallbacks<S> {
         if ptr.is_null() {
             return;
         }
-        // SAFETY: ptr was produced by Box::into_raw in `build`.
-        unsafe {
+        // SAFETY: ptr was produced by Box::into_raw in `build`. The boxed
+        // closures capture user data whose `Drop` may panic, and this is an
+        // `extern "C"` boundary with no error channel, so contain the unwind.
+        drop(crate::callback::catch_ffi_panic(|| unsafe {
             drop(Box::from_raw(ptr.cast::<Self>()));
-        }
+        }));
     }
 }
 

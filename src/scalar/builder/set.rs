@@ -147,6 +147,15 @@ impl ScalarFunctionSetBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // See `ScalarFunctionBuilder::register` -- validate before allocating.
+        for (i, overload) in self.overloads.iter().enumerate() {
+            for (j, id) in overload.params.iter().enumerate() {
+                LogicalType::check_slot(*id, &format!("overload {i} parameter {j}"))?;
+            }
+            if let Some(id) = overload.return_type {
+                LogicalType::check_slot(id, &format!("overload {i} return type"))?;
+            }
+        }
         if self.overloads.is_empty() {
             return Err(ExtensionError::new(
                 "no overloads added to scalar function set",

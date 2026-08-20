@@ -322,11 +322,20 @@ impl ScalarFunctionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // Reject composite TypeIds before any DuckDB handle exists, so the
+        // diagnostic names the offending slot instead of surfacing as an opaque
+        // `duckdb_register_scalar_function failed`. See `TypeId::is_composite`.
+        for (i, id) in self.params.iter().enumerate() {
+            LogicalType::check_slot(*id, &format!("scalar function parameter {i}"))?;
+        }
+        if let Some(id) = self.return_type {
+            LogicalType::check_slot(id, "scalar function return type")?;
+        }
         // Resolve return type: prefer explicit LogicalType over TypeId.
         let ret_lt = if let Some(lt) = self.return_logical {
             lt
         } else if let Some(id) = self.return_type {
-            LogicalType::new(id)
+            LogicalType::for_slot(id, "scalar function return type")?
         } else {
             return Err(ExtensionError::new("return type not set"));
         };

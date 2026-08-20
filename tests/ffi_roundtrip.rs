@@ -2828,3 +2828,293 @@ fn the_instance_cache_shares_one_database() {
         libduckdb_sys::duckdb_close(&raw mut b);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Panics in user `Drop` / `Default` must not unwind out of an `extern "C"` fn.
+//
+// Rust 1.81+ turns such an unwind into `panic_cannot_unwind` — a hard process
+// abort, on a DuckDB worker thread, with no way for the host application to
+// recover. Before these guards, `SELECT panicky_agg(i) FROM range(10)` killed
+// the test binary with SIGABRT from inside
+// `duckdb::RowOperations::DestroyStates`.
+// ---------------------------------------------------------------------------
+
+mod panicking_lifecycle {
+    use quack_rs::aggregate::{AggregateState, FfiState};
+    use quack_rs::vector::{VectorReader, VectorWriter};
+
+    /// Counts rows; explodes when dropped.
+    #[derive(Default)]
+    pub struct DropBomb {
+        pub n: i64,
+    }
+
+    impl Drop for DropBomb {
+        fn drop(&mut self) {
+            panic!("state destructor deliberately exploded");
+        }
+    }
+
+    impl AggregateState for DropBomb {}
+
+    /// Explodes while being constructed.
+    pub struct DefaultBomb {
+        pub n: i64,
+    }
+
+    impl Default for DefaultBomb {
+        fn default() -> Self {
+            panic!("state initialiser deliberately exploded");
+        }
+    }
+
+    impl AggregateState for DefaultBomb {}
+
+    macro_rules! bomb_callbacks {
+        ($modname:ident, $state:ty) => {
+            pub mod $modname {
+                use super::*;
+
+                /// # Safety
+                /// Called by DuckDB with its own valid handles.
+                pub unsafe extern "C" fn update(
+                    _info: libduckdb_sys::duckdb_function_info,
+                    chunk: libduckdb_sys::duckdb_data_chunk,
+                    states: *mut libduckdb_sys::duckdb_aggregate_state,
+                ) {
+                    let reader = unsafe { VectorReader::new(chunk, 0) };
+                    for row in 0..reader.row_count() {
+                        if let Some(s) =
+                            unsafe { FfiState::<$state>::with_state_mut(*states.add(row)) }
+                        {
+                            s.n += unsafe { reader.read_i64(row) };
+                        }
+                    }
+                }
+
+                /// # Safety
+                /// Called by DuckDB with its own valid handles.
+                pub unsafe extern "C" fn combine(
+                    _info: libduckdb_sys::duckdb_function_info,
+                    source: *mut libduckdb_sys::duckdb_aggregate_state,
+                    target: *mut libduckdb_sys::duckdb_aggregate_state,
+                    count: libduckdb_sys::idx_t,
+                ) {
+                    for i in 0..count as usize {
+                        if let (Some(s), Some(t)) = (
+                            unsafe { FfiState::<$state>::with_state(*source.add(i)) },
+                            unsafe { FfiState::<$state>::with_state_mut(*target.add(i)) },
+                        ) {
+                            t.n += s.n;
+                        }
+                    }
+                }
+
+                /// # Safety
+                /// Called by DuckDB with its own valid handles.
+                pub unsafe extern "C" fn finalize(
+                    _info: libduckdb_sys::duckdb_function_info,
+                    states: *mut libduckdb_sys::duckdb_aggregate_state,
+                    result: libduckdb_sys::duckdb_vector,
+                    count: libduckdb_sys::idx_t,
+                    offset: libduckdb_sys::idx_t,
+                ) {
+                    let mut w = unsafe { VectorWriter::new(result) };
+                    for i in 0..count as usize {
+                        let idx = i + offset as usize;
+                        match unsafe { FfiState::<$state>::with_state(*states.add(i)) } {
+                            Some(s) => unsafe { w.write_i64(idx, s.n) },
+                            None => unsafe { w.set_null(idx) },
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    bomb_callbacks!(drop_bomb, DropBomb);
+    bomb_callbacks!(default_bomb, DefaultBomb);
+}
+
+#[test]
+fn a_panicking_aggregate_state_destructor_does_not_abort() {
+    use panicking_lifecycle::{drop_bomb, DropBomb};
+    use quack_rs::aggregate::{AggregateFunctionBuilder, FfiState};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        AggregateFunctionBuilder::new("drop_bomb_agg")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(FfiState::<DropBomb>::size_callback)
+            .init(FfiState::<DropBomb>::init_callback)
+            .update(drop_bomb::update)
+            .combine(drop_bomb::combine)
+            .finalize(drop_bomb::finalize)
+            .destructor(FfiState::<DropBomb>::destroy_callback)
+            .register(fx.con())
+            .expect("register drop_bomb_agg");
+    }
+
+    // The aggregate itself still computes the right answer: the destructor runs
+    // after finalize. DuckDB's state destructor has no error channel at all
+    // (`CAPIAggregateDestructor` takes no info and returns nothing), so the
+    // panic is contained and discarded rather than reported.
+    assert_eq!(
+        fx.scalar(
+            "SELECT drop_bomb_agg(i) FROM range(10) t(i)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(45)
+    );
+
+    // Reaching this line at all is the assertion that matters: before the fix
+    // the process died with SIGABRT partway through the query above.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+#[test]
+fn a_panicking_aggregate_state_initialiser_becomes_a_sql_error() {
+    use panicking_lifecycle::{default_bomb, DefaultBomb};
+    use quack_rs::aggregate::{AggregateFunctionBuilder, FfiState};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        AggregateFunctionBuilder::new("default_bomb_agg")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(FfiState::<DefaultBomb>::size_callback)
+            .init(FfiState::<DefaultBomb>::init_callback)
+            .update(default_bomb::update)
+            .combine(default_bomb::combine)
+            .finalize(default_bomb::finalize)
+            .destructor(FfiState::<DefaultBomb>::destroy_callback)
+            .register(fx.con())
+            .expect("register default_bomb_agg");
+    }
+
+    // `CAPIAggregateStateInit` *does* check the error flag and throws, so unlike
+    // the destructor this one surfaces to the user with its payload intact.
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT default_bomb_agg(i) FROM range(10) t(i)") }
+        .expect_err("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("deliberately exploded"),
+        "panic payload should reach the user: {err}"
+    );
+
+    // The connection survives.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+#[test]
+fn a_panicking_bind_state_destructor_does_not_abort() {
+    use quack_rs::table::{BindInfo, TableFunctionBuilder};
+
+    struct BindDropBomb;
+    impl Drop for BindDropBomb {
+        fn drop(&mut self) {
+            panic!("bind-state destructor deliberately exploded");
+        }
+    }
+
+    let fx = Fixture::open();
+    let builder = TableFunctionBuilder::new("bind_bomb")
+        .with_state::<BindDropBomb, _>(|bind: &BindInfo| {
+            bind.add_result_column("n", TypeId::BigInt);
+            Ok(BindDropBomb)
+        })
+        .scan(|_state, chunk| {
+            // Emit nothing: the point is the teardown, not the data.
+            unsafe { chunk.set_size(0) };
+            Ok(())
+        })
+        .build()
+        .expect("build bind_bomb");
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register bind_bomb");
+
+    // SAFETY: `con` is open.
+    let mut result =
+        unsafe { query(fx.con(), "SELECT count(*) FROM bind_bomb()") }.expect("scan runs");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: BIGINT column, row 0.
+    assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 0);
+    drop(chunk);
+    drop(result);
+
+    // The bind/init state is dropped at query teardown; before the fix that
+    // unwound out of `duckdb_delete_callback_t` and aborted.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+#[test]
+fn composite_type_ids_are_rejected_where_a_primitive_is_required() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    unsafe extern "C" fn never_called(
+        _: libduckdb_sys::duckdb_function_info,
+        _: libduckdb_sys::duckdb_data_chunk,
+        _: libduckdb_sys::duckdb_vector,
+    ) {
+    }
+
+    // `duckdb_create_logical_type` returns a *non-null* handle wrapping
+    // LogicalTypeId::INVALID for these, so a null check never fires. Registration
+    // used to fail with "duckdb_register_scalar_function failed", naming neither
+    // the parameter nor the fix.
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        ScalarFunctionBuilder::new("composite_param")
+            .param(TypeId::Struct)
+            .returns(TypeId::BigInt)
+            .function(never_called)
+            .register(fx.con())
+    }
+    .expect_err("a STRUCT parameter must be rejected");
+    let msg = err.as_str();
+    assert!(msg.contains("parameter 0"), "names the slot: {msg}");
+    assert!(msg.contains("STRUCT"), "names the type: {msg}");
+    assert!(
+        msg.contains("LogicalType::struct_type"),
+        "names the fix: {msg}"
+    );
+
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        ScalarFunctionBuilder::new("composite_return")
+            .param(TypeId::BigInt)
+            .returns(TypeId::Decimal)
+            .function(never_called)
+            .register(fx.con())
+    }
+    .expect_err("a bare DECIMAL return type must be rejected");
+    assert!(
+        err.as_str().contains("LogicalType::decimal"),
+        "names the fix: {err}"
+    );
+
+    // The `*_logical` route still works, which is the point of the message.
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::new("composite_ok")
+            .param_logical(LogicalType::struct_type(&[("x", TypeId::BigInt)]))
+            .returns_logical(LogicalType::decimal(18, 3))
+            .function(never_called)
+            .register(fx.con())
+    }
+    .expect("the logical-type route registers");
+}

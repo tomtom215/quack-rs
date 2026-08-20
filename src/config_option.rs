@@ -152,7 +152,7 @@ impl ConfigOptionBuilder {
         let type_id = self
             .option_type
             .ok_or_else(|| ExtensionError::new("config option type not set"))?;
-        let lt = LogicalType::new(type_id);
+        let lt = LogicalType::for_slot(type_id, "config option type")?;
 
         // SAFETY: duckdb_create_config_option allocates a new handle.
         let option: duckdb_config_option = unsafe { duckdb_create_config_option() };

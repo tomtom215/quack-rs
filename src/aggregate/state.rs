@@ -146,19 +146,63 @@ impl<T: AggregateState> FfiState<T> {
     /// Allocates a `T::default()` on the heap and stores the raw pointer in
     /// the `FfiState` at `state`.
     ///
+    /// # Pitfall L3: `T::default()` is user code
+    ///
+    /// `DuckDB` invokes this through an `extern "C"` function pointer, so a
+    /// panic escaping `T::default()` would abort the process (Rust 1.81+ turns
+    /// an unwind across `extern "C"` into `panic_cannot_unwind`). The call is
+    /// therefore run under
+    /// [`catch_ffi_panic`][crate::callback::catch_ffi_panic] and a panic is
+    /// reported through `duckdb_aggregate_function_set_error` — which
+    /// `DuckDB`'s `CAPIAggregateStateInit` checks, turning it into an ordinary
+    /// SQL error — instead of taking the session down.
+    ///
+    /// # Uninitialised memory
+    ///
+    /// `DuckDB` does not promise the state allocation is zeroed, so the slot is
+    /// written with a null `inner` *before* any user code runs. That keeps
+    /// [`with_state`][Self::with_state] and
+    /// [`destroy_callback`][Self::destroy_callback] sound even on the panicking
+    /// path, and avoids ever forming a `&mut Self` over uninitialised bytes.
+    ///
     /// # Safety
     ///
     /// - `state` must point to `size_of::<FfiState<T>>()` bytes of writable memory
     ///   allocated by `DuckDB`.
     /// - This function must only be called once per state allocation.
     pub unsafe extern "C" fn init_callback(
-        _info: duckdb_function_info,
+        info: duckdb_function_info,
         state: duckdb_aggregate_state,
     ) {
+        let slot = state.cast::<Self>();
         // SAFETY: DuckDB allocated `size_of::<FfiState<T>>()` bytes at `state`.
-        // We cast it to `*mut FfiState<T>` and write the inner pointer.
-        let ffi = unsafe { &mut *(state.cast::<Self>()) };
-        ffi.inner = Box::into_raw(Box::<T>::default());
+        // `ptr::write` initialises them without reading what was there, which
+        // `&mut *slot` would have required.
+        unsafe {
+            core::ptr::write(
+                slot,
+                Self {
+                    inner: core::ptr::null_mut(),
+                },
+            );
+        }
+
+        match crate::callback::catch_ffi_panic(Box::<T>::default) {
+            Ok(boxed) => {
+                // SAFETY: `slot` was initialised immediately above.
+                unsafe { (*slot).inner = Box::into_raw(boxed) };
+            }
+            Err(message) => {
+                let c_msg = crate::callback::message_to_c_string(&format!(
+                    "quack-rs: aggregate state initialiser panicked: {message}"
+                ));
+                // SAFETY: `info` is the handle DuckDB passed in, and DuckDB
+                // checks the error flag on return from the state-init callback.
+                unsafe {
+                    libduckdb_sys::duckdb_aggregate_function_set_error(info, c_msg.as_ptr());
+                }
+            }
+        }
     }
 
     /// The `state_destroy` callback function for use in the builder.
@@ -179,6 +223,16 @@ impl<T: AggregateState> FfiState<T> {
     /// least 64 bits on all `DuckDB`-supported platforms, so this path is
     /// unreachable on supported targets.
     ///
+    /// # Pitfall L3: `T::drop` is user code
+    ///
+    /// `DuckDB` calls the destructor as `info.destroy(states, count)` — no info
+    /// handle, no return value, and therefore **no error channel at all**
+    /// (verified in `CAPIAggregateDestructor`). A panic escaping `T::drop`
+    /// would abort the process, so each drop runs under
+    /// [`catch_ffi_panic`][crate::callback::catch_ffi_panic] and the message is
+    /// discarded. Every remaining state is still freed: one bad destructor does
+    /// not leak the rest of the group.
+    ///
     /// # Safety
     ///
     /// - `states` must point to an array of `count` valid `duckdb_aggregate_state`
@@ -188,15 +242,24 @@ impl<T: AggregateState> FfiState<T> {
         for i in 0..usize::try_from(count).unwrap_or(0) {
             // SAFETY: `states` is a valid array of `count` pointers.
             let state_ptr = unsafe { *states.add(i) };
+            let slot = state_ptr.cast::<Self>();
             // SAFETY: Each element was initialized by `init_callback` as `*mut Self`.
-            let ffi = unsafe { &mut *(state_ptr.cast::<Self>()) };
-            if !ffi.inner.is_null() {
-                // SAFETY: `inner` was created by `Box::into_raw(Box::new(T::default()))`.
-                // We are the only owner; dropping it here is correct.
-                unsafe { drop(Box::from_raw(ffi.inner)) };
-                // Null out the pointer to prevent double-free if called again.
-                ffi.inner = core::ptr::null_mut();
+            let inner = unsafe { (*slot).inner };
+            if inner.is_null() {
+                continue;
             }
+            // Null the pointer *before* dropping: if `T::drop` panics, the
+            // allocation is still released by the unwind, so leaving the
+            // pointer live would make a second destructor call a double free.
+            // SAFETY: `slot` was initialised by `init_callback`.
+            unsafe { (*slot).inner = core::ptr::null_mut() };
+            // SAFETY: `inner` was created by `Box::into_raw(Box::new(T::default()))`.
+            // We are the only owner; dropping it here is correct. The drop runs
+            // arbitrary user code, so it must not be allowed to unwind out of
+            // this `extern "C"` function.
+            drop(crate::callback::catch_ffi_panic(|| unsafe {
+                drop(Box::from_raw(inner));
+            }));
         }
     }
 

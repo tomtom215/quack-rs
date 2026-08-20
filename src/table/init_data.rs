@@ -102,12 +102,24 @@ impl<T: 'static> FfiInitData<T> {
 
     /// Destroy callback: drops the `Box<T>`.
     ///
+    /// # Pitfall L3: `T::drop` is user code
+    ///
+    /// `DuckDB` calls this through an `extern "C"` function pointer that has no
+    /// error channel, and an unwind across `extern "C"` aborts the process on
+    /// Rust 1.81+. The drop runs under
+    /// [`catch_ffi_panic`][crate::callback::catch_ffi_panic] so a panicking
+    /// `Drop` impl cannot take the session down.
+    ///
     /// # Safety
     ///
     /// `ptr` must have been allocated by [`set`][FfiInitData::set].
     pub unsafe extern "C" fn destroy(ptr: *mut c_void) {
         if !ptr.is_null() {
-            unsafe { drop(Box::from_raw(ptr.cast::<T>())) };
+            // SAFETY: `ptr` came from `Box::into_raw` in `set`; `T::drop` is
+            // arbitrary user code, so its unwind is contained here.
+            drop(crate::callback::catch_ffi_panic(|| unsafe {
+                drop(Box::from_raw(ptr.cast::<T>()));
+            }));
         }
     }
 }
@@ -172,12 +184,24 @@ impl<T: 'static> FfiLocalInitData<T> {
 
     /// Destroy callback: drops the `Box<T>`.
     ///
+    /// # Pitfall L3: `T::drop` is user code
+    ///
+    /// `DuckDB` calls this through an `extern "C"` function pointer that has no
+    /// error channel, and an unwind across `extern "C"` aborts the process on
+    /// Rust 1.81+. The drop runs under
+    /// [`catch_ffi_panic`][crate::callback::catch_ffi_panic] so a panicking
+    /// `Drop` impl cannot take the session down.
+    ///
     /// # Safety
     ///
     /// `ptr` must have been allocated by [`set`][FfiLocalInitData::set].
     pub unsafe extern "C" fn destroy(ptr: *mut c_void) {
         if !ptr.is_null() {
-            unsafe { drop(Box::from_raw(ptr.cast::<T>())) };
+            // SAFETY: `ptr` came from `Box::into_raw` in `set`; `T::drop` is
+            // arbitrary user code, so its unwind is contained here.
+            drop(crate::callback::catch_ffi_panic(|| unsafe {
+                drop(Box::from_raw(ptr.cast::<T>()));
+            }));
         }
     }
 }
