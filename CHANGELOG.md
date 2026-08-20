@@ -141,7 +141,10 @@ Both are `no_run` now, so they still get compiled (which is what caught the
 `ScaffoldConfig` defect) without touching the disk, and
 `scripts/mdbook-test.sh` fails if a doctest run changes the working tree at all.
 
-89 blocks now compile on every docs run. 111 remaining blocks are progressive
+89 blocks now compile on every CI run, as a `Book code samples` job in
+`ci.yml`. Not in `docs.yml`: that workflow only runs on push to `main`, so a
+book test there would first fire *after* a merge, which is too late to be a
+test. 111 remaining blocks are progressive
 tutorial fragments and pseudo-code — `/* Builder */` placeholders, `...` elisions,
 identifiers defined in an earlier block — and are marked `rust,ignore`, which is
 what that annotation is for. Ten diagrams and directory trees that were fenced

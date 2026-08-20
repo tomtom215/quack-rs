@@ -207,6 +207,29 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+  book:
+    name: Book code samples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Cache mdBook binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: ${{ runner.os }}-mdbook-0.4.40
+      - name: Install mdBook
+        run: |
+          command -v mdbook >/dev/null || cargo install mdbook --locked --version 0.4.40
+      # `mdbook build` renders markdown without invoking the compiler, so until
+      # now not one of the book's Rust blocks was ever checked -- that is how a
+      # `ScaffoldConfig` example missing three required fields shipped in two
+      # chapters. This lives here rather than in docs.yml because that workflow
+      # only runs on push to main: a book test there would first fire *after* a
+      # merge, which is too late to be a test.
+      - run: scripts/mdbook-test.sh
+
   msrv:
     name: MSRV (1.86.0)
     runs-on: ubuntu-latest

@@ -51,13 +51,6 @@ jobs:
             echo "mdBook $(mdbook --version) already cached."
           fi
 
-      # Compile the book's Rust blocks. Until now docs.yml only ran `mdbook
-      # build`, which renders markdown and never invokes the compiler, so not one
-      # of the book's code blocks was checked -- that is how a `ScaffoldConfig`
-      # example missing three required fields shipped in two chapters.
-      - name: Test book code samples
-        run: scripts/mdbook-test.sh
-
       - name: Generate sitemap.xml
         run: python3 scripts/generate-sitemap.py
 
