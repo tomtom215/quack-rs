@@ -3503,3 +3503,278 @@ fn an_interrupt_handle_cancels_a_query_from_another_thread() {
     // SAFETY: one BIGINT column, one row.
     assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 42);
 }
+
+// ---------------------------------------------------------------------------
+// NULL propagation, and the typed scalar API built on top of it.
+// ---------------------------------------------------------------------------
+
+/// Writes 999 into every row and never looks at input validity.
+quack_rs::scalar_callback!(always_999, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, 999) };
+    }
+});
+
+/// The same, followed by `propagate_nulls`.
+quack_rs::scalar_callback!(always_999_propagating, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, 999) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+#[test]
+fn default_null_handling_does_not_propagate_nulls_for_scalar_functions() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        ScalarFunctionBuilder::new("raw_999")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::DefaultNullHandling)
+            .function(always_999)
+            .register(fx.con())
+            .expect("register raw_999");
+        ScalarFunctionBuilder::new("propagating_999")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::DefaultNullHandling)
+            .function(always_999_propagating)
+            .register(fx.con())
+            .expect("register propagating_999");
+    }
+
+    // A *literal* NULL is constant-folded before the function is reached, so the
+    // obvious spot check passes even for the broken function. This is why the
+    // bug is easy to ship.
+    assert_eq!(
+        fx.scalar("SELECT raw_999(NULL::BIGINT)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        None,
+        "a literal NULL argument is constant-folded to NULL"
+    );
+
+    // From a real column it is a different story. This assertion pins DuckDB's
+    // actual behaviour (verified against 1.5.4): DEFAULT_NULL_HANDLING is a
+    // promise the *function* makes, enforced only by a debug-build assertion in
+    // `VerifyNullHandling`. If a future DuckDB starts propagating, this test
+    // fails and the documentation gets revisited.
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE nulls_t(i BIGINT)") }.expect("create");
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "INSERT INTO nulls_t VALUES (1), (NULL), (3)") }.expect("insert");
+
+    assert_eq!(
+        fx.scalar("SELECT count(raw_999(i)) FROM nulls_t", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(3),
+        "DuckDB does not NULL out the result for the NULL row: all three are non-NULL"
+    );
+
+    // `propagate_nulls` restores SQL semantics.
+    assert_eq!(
+        fx.scalar("SELECT count(propagating_999(i)) FROM nulls_t", |r, i| {
+            unsafe { r.read_i64(i) }
+        }),
+        Some(2),
+        "with propagate_nulls the NULL row yields NULL"
+    );
+}
+
+#[test]
+fn typed_scalar_closures_cover_the_common_shapes() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::map1("t_double", |x: i64| x * 2)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map2("t_add", |a: i64, b: i64| a + b)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map1("t_half", |x: f64| x / 2.0)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map1_str("t_len", |s: &str| s.chars().count() as i64)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map1_str("t_shout", |s: &str| s.to_uppercase())
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map2_str("t_join", |a: &str, b: &str| format!("{a}|{b}"))
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map1_opt("t_or_zero", |x: Option<i64>| Some(x.unwrap_or(0)))
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map2_opt("t_coalesce", |a: Option<i64>, b: Option<i64>| a.or(b))
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT t_double(21::BIGINT)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(42)
+    );
+    assert_eq!(
+        fx.scalar("SELECT t_add(20::BIGINT, 22::BIGINT)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(42)
+    );
+    assert!(
+        (fx.scalar("SELECT t_half(9.0::DOUBLE)", |r, i| unsafe {
+            r.read_f64(i)
+        })
+        .expect("non-NULL")
+            - 4.5)
+            .abs()
+            < f64::EPSILON
+    );
+    assert_eq!(
+        fx.scalar("SELECT t_len('héllo')", |r, i| unsafe { r.read_i64(i) }),
+        Some(5),
+        "the closure sees a &str borrowed from the vector, not bytes"
+    );
+    assert_eq!(
+        fx.scalar("SELECT t_shout('quack')", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        }),
+        Some("QUACK".to_owned())
+    );
+    assert_eq!(
+        fx.scalar("SELECT t_join('a', 'b')", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        }),
+        Some("a|b".to_owned())
+    );
+
+    // NULL propagation, from a real column rather than a folded literal.
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE typed_t(i BIGINT, s VARCHAR)") }.expect("create");
+    // SAFETY: `con` is open.
+    unsafe {
+        query(
+            fx.con(),
+            "INSERT INTO typed_t VALUES (1, 'a'), (NULL, NULL), (3, 'c')",
+        )
+    }
+    .expect("insert");
+
+    assert_eq!(
+        fx.scalar("SELECT count(t_double(i)) FROM typed_t", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(2),
+        "map1 must NULL out the row whose argument is NULL"
+    );
+    assert_eq!(
+        fx.scalar("SELECT count(t_len(s)) FROM typed_t", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(2),
+        "map1_str must NULL out the row whose argument is NULL"
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(t_add(i, 1::BIGINT)) FROM typed_t",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(2),
+        "map2 must NULL out a row where *either* argument is NULL"
+    );
+
+    // The `_opt` variants see the NULLs instead.
+    assert_eq!(
+        fx.scalar("SELECT sum(t_or_zero(i)) FROM typed_t", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(4),
+        "map1_opt is called for the NULL row and substitutes 0"
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT t_coalesce(NULL::BIGINT, 7::BIGINT)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(7)
+    );
+}
+
+#[test]
+fn a_panicking_typed_closure_becomes_a_sql_error() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::map1("t_boom", |x: i64| {
+            assert!(x != 13, "closure deliberately exploded");
+            x
+        })
+        .expect("build")
+        .register(fx.con())
+        .expect("register");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT t_boom(1::BIGINT)", |r, i| unsafe { r.read_i64(i) }),
+        Some(1)
+    );
+
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT t_boom(13::BIGINT)") }
+        .expect_err("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("deliberately exploded"),
+        "panic payload should reach the user: {err}"
+    );
+
+    // The connection survives.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+#[test]
+fn typed_closures_run_once_per_chunk_over_a_multi_chunk_scan() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::map1("t_inc", |x: i64| x + 1)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+    }
+
+    // 10000 rows spans several chunks, so the per-chunk executor is exercised
+    // repeatedly and every row index in a full vector is written.
+    assert_eq!(
+        fx.scalar("SELECT sum(t_inc(i)) FROM range(10000) t(i)", |r, i| {
+            unsafe { r.read_i128(i) }
+        }),
+        Some((1..=10_000_i128).sum::<i128>())
+    );
+}

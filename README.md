@@ -88,7 +88,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **16 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **17 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```
@@ -99,6 +99,8 @@ L4  ensure_validity_writable required before NULL output → VectorWriter handle
 L5  Boolean reading must use u8 != 0 → VectorReader enforces this
 L6  Function set name must be set on EACH member → Set builders enforce on every member
 L7  LogicalType memory leak → LogicalType implements Drop
+L8  DEFAULT_NULL_HANDLING does NOT propagate NULLs for scalar functions →
+    map1/map2/map1_str/map2_str do it; DataChunk::propagate_nulls for raw callbacks
 
 P1  Library name must match [lib] name in Cargo.toml exactly
 P2  C API version ("v1.2.0") ≠ DuckDB release version ("v1.4.4" / "v1.5.0")
@@ -293,6 +295,7 @@ append_metadata target/release/libmy_extension.so \
 | [`aggregate::state`] | Generic FFI state management | `AggregateState`, `FfiState<T>` |
 | [`aggregate::callbacks`] | Callback type aliases | `UpdateFn`, `CombineFn`, `FinalizeFn`, … |
 | [`scalar`] | Scalar function registration | `ScalarFunctionBuilder`, `ScalarFunctionSetBuilder`, `ScalarOverloadBuilder`, `ScalarFunctionInfo`, `ScalarBindInfo`¹, `ScalarInitInfo`¹ |
+| [`scalar::typed`] | Scalar functions as safe Rust closures | `ScalarFunctionBuilder::map1` / `map2` / `map1_str` / `map2_str` / `map1_opt` / `map2_opt`, `ScalarValue`, `ScalarOut` |
 | [`cast`] | Custom type cast functions | `CastFunctionBuilder`, `CastFunctionInfo`, `CastMode` |
 | [`table`] | Table function registration (bind/init/scan) | `TableFunctionBuilder`, `TypedTableFunctionBuilder`, `BindInfo`, `FfiBindData`, `FfiInitData` |
 | [`replacement_scan`] | `SELECT * FROM 'file.xyz'` replacement scans | `ReplacementScanBuilder` |
@@ -352,6 +355,7 @@ append_metadata target/release/libmy_extension.so \
 [`aggregate::state`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/state/index.html
 [`aggregate::callbacks`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/callbacks/index.html
 [`scalar`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/index.html
+[`scalar::typed`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/typed/index.html
 [`cast`]: https://docs.rs/quack-rs/latest/quack_rs/cast/index.html
 [`table`]: https://docs.rs/quack-rs/latest/quack_rs/table/index.html
 [`replacement_scan`]: https://docs.rs/quack-rs/latest/quack_rs/replacement_scan/index.html

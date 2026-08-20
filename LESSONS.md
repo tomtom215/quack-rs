@@ -136,6 +136,64 @@ individual function before adding it to the set.
 
 ---
 
+## L8: `DEFAULT_NULL_HANDLING` does not propagate NULLs for scalar functions
+
+**Status**: Documented, and made impossible by `ScalarFunctionBuilder::map1` /
+`map2` / `map1_str` / `map2_str`. `DataChunk::propagate_nulls` fixes it in one
+line for hand-written callbacks.
+
+**Symptom**: A scalar function returns a value where SQL requires NULL — but only
+for arguments that come from a column. `SELECT f(NULL)` looks correct, so the bug
+survives review and ships.
+
+**Root cause**: The name suggests DuckDB returns NULL on your behalf. For a
+**scalar** function registered through the C API it does not, at run time:
+
+- `src/main/capi/scalar_function-c.cpp` — `CAPIScalarFunction` flattens the input
+  and calls the extension's callback for the whole chunk, NULL rows included,
+  then checks only the *error* flag. It never inspects the result's validity.
+- `src/execution/expression_executor/execute_function.cpp` — the only NULL check
+  is `VerifyNullHandling`, whose entire body is inside `#ifdef DEBUG`. It
+  *asserts* that the function already produced NULL wherever an input was NULL.
+
+Every DuckDB a user installs is a release build, so that assertion is compiled
+out and a callback that ignores validity is simply believed.
+
+A literal `NULL` argument is **constant-folded** during binding — DuckDB
+substitutes NULL without calling the function at all — which is why the obvious
+spot check passes.
+
+**Reproduction** (DuckDB 1.5.4):
+
+```sql
+CREATE TABLE t(i BIGINT);
+INSERT INTO t VALUES (1), (NULL), (3);
+SELECT i, always_999(i) FROM t;   -- always_999 writes 999 unconditionally
+-- 1    -> 999
+-- NULL -> 999   <- not NULL
+-- 3    -> 999
+SELECT always_999(NULL::BIGINT);  -- NULL, because of constant folding
+```
+
+**Fix**:
+
+- `ScalarFunctionBuilder::map1` / `map2` / `map1_str` / `map2_str` skip NULL rows
+  and write NULL for them, so the closure never sees one.
+- `DataChunk::propagate_nulls(&mut writer)` at the end of a hand-written callback
+  marks the output NULL wherever any input column is NULL.
+- `map1_opt` / `map2_opt`, and `NullHandling::SpecialNullHandling`, are for
+  functions that genuinely mean to see NULLs.
+
+**Aggregates are different.** DuckDB's aggregate executor really does filter NULL
+rows before `update` under `DEFAULT_NULL_HANDLING`; this lesson is specific to
+scalar functions.
+
+Pinned by `default_null_handling_does_not_propagate_nulls_for_scalar_functions`
+in `tests/ffi_roundtrip.rs`, so a future DuckDB that changes this shows up as a
+test failure rather than a surprise.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured manually in `Cargo.toml`.
