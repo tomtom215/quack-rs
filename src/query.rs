@@ -654,12 +654,7 @@ impl PreparedStatement {
     ///
     /// See [`bind_i64`][Self::bind_i64].
     pub fn bind_i128(&self, index: usize, value: i128) -> Result<(), ExtensionError> {
-        let raw = libduckdb_sys::duckdb_hugeint {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            lower: value as u64,
-            #[allow(clippy::cast_possible_truncation)]
-            upper: (value >> 64) as i64,
-        };
+        let raw = crate::value::hugeint_from_i128(value);
         // SAFETY: `self.statement` is valid for this value's lifetime.
         self.check(
             unsafe { libduckdb_sys::duckdb_bind_hugeint(self.statement, index as idx_t, raw) },
@@ -673,12 +668,7 @@ impl PreparedStatement {
     ///
     /// See [`bind_i64`][Self::bind_i64].
     pub fn bind_u128(&self, index: usize, value: u128) -> Result<(), ExtensionError> {
-        let raw = libduckdb_sys::duckdb_uhugeint {
-            #[allow(clippy::cast_possible_truncation)]
-            lower: value as u64,
-            #[allow(clippy::cast_possible_truncation)]
-            upper: (value >> 64) as u64,
-        };
+        let raw = crate::value::uhugeint_from_u128(value);
         // SAFETY: `self.statement` is valid for this value's lifetime.
         self.check(
             unsafe { libduckdb_sys::duckdb_bind_uhugeint(self.statement, index as idx_t, raw) },
@@ -703,12 +693,7 @@ impl PreparedStatement {
         let raw = libduckdb_sys::duckdb_decimal {
             width,
             scale,
-            value: libduckdb_sys::duckdb_hugeint {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                lower: unscaled as u64,
-                #[allow(clippy::cast_possible_truncation)]
-                upper: (unscaled >> 64) as i64,
-            },
+            value: crate::value::hugeint_from_i128(unscaled),
         };
         // SAFETY: `self.statement` is valid for this value's lifetime.
         self.check(

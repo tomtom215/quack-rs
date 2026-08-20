@@ -74,7 +74,7 @@ pub struct Value {
 
 /// Splits an `i128` into `DuckDB`'s `{ lower: u64, upper: i64 }` `HUGEINT`.
 #[inline]
-const fn hugeint_from_i128(value: i128) -> libduckdb_sys::duckdb_hugeint {
+pub(crate) const fn hugeint_from_i128(value: i128) -> libduckdb_sys::duckdb_hugeint {
     libduckdb_sys::duckdb_hugeint {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         lower: value as u64,
@@ -85,13 +85,32 @@ const fn hugeint_from_i128(value: i128) -> libduckdb_sys::duckdb_hugeint {
 
 /// Splits a `u128` into `DuckDB`'s `{ lower: u64, upper: u64 }` `UHUGEINT`.
 #[inline]
-const fn uhugeint_from_u128(value: u128) -> libduckdb_sys::duckdb_uhugeint {
+pub(crate) const fn uhugeint_from_u128(value: u128) -> libduckdb_sys::duckdb_uhugeint {
     libduckdb_sys::duckdb_uhugeint {
         #[allow(clippy::cast_possible_truncation)]
         lower: value as u64,
         #[allow(clippy::cast_possible_truncation)]
         upper: (value >> 64) as u64,
     }
+}
+
+/// Reassembles `DuckDB`'s `{ lower: u64, upper: i64 }` `HUGEINT` into an `i128`.
+///
+/// The inverse of [`hugeint_from_i128`]. Both directions live here, next to each
+/// other and unit-tested, because the whole crate used to open-code this
+/// arithmetic at five separate call sites: a shift in the wrong direction still
+/// compiles and still round-trips anything that fits in 64 bits.
+#[inline]
+pub(crate) const fn hugeint_to_i128(raw: libduckdb_sys::duckdb_hugeint) -> i128 {
+    ((raw.upper as i128) << 64) | (raw.lower as i128)
+}
+
+/// Reassembles `DuckDB`'s `{ lower: u64, upper: u64 }` `UHUGEINT` into a `u128`.
+///
+/// The inverse of [`uhugeint_from_u128`].
+#[inline]
+pub(crate) const fn uhugeint_to_u128(raw: libduckdb_sys::duckdb_uhugeint) -> u128 {
+    ((raw.upper as u128) << 64) | (raw.lower as u128)
 }
 
 impl Value {
@@ -276,10 +295,7 @@ impl Value {
     #[must_use]
     pub fn as_i128(&self) -> i128 {
         // SAFETY: self.raw is valid per constructor contract.
-        let h = unsafe { duckdb_get_hugeint(self.raw) };
-        #[allow(clippy::cast_lossless)]
-        let result = (h.upper as i128) << 64 | (h.lower as i128);
-        result
+        hugeint_to_i128(unsafe { duckdb_get_hugeint(self.raw) })
     }
 
     /// Extracts the value as a `String`, returning `default` on failure.
@@ -601,8 +617,7 @@ impl Value {
     #[must_use]
     pub fn as_uuid(&self) -> u128 {
         // SAFETY: self.raw is valid per constructor contract.
-        let raw = unsafe { libduckdb_sys::duckdb_get_uuid(self.raw) };
-        (u128::from(raw.upper) << 64) | u128::from(raw.lower)
+        uhugeint_to_u128(unsafe { libduckdb_sys::duckdb_get_uuid(self.raw) })
     }
 
     /// Extracts a `DECIMAL` as its width, scale and unscaled value.
@@ -616,7 +631,7 @@ impl Value {
         crate::datetime::Decimal {
             width: raw.width,
             scale: raw.scale,
-            value: (i128::from(raw.value.upper) << 64) | i128::from(raw.value.lower),
+            value: hugeint_to_i128(raw.value),
         }
     }
 
@@ -625,8 +640,7 @@ impl Value {
     #[must_use]
     pub fn as_u128(&self) -> u128 {
         // SAFETY: self.raw is valid per constructor contract.
-        let raw = unsafe { libduckdb_sys::duckdb_get_uhugeint(self.raw) };
-        (u128::from(raw.upper) << 64) | u128::from(raw.lower)
+        uhugeint_to_u128(unsafe { libduckdb_sys::duckdb_get_uhugeint(self.raw) })
     }
 
     // ── LIST / STRUCT / MAP extraction ───────────────────────────────────
@@ -877,12 +891,7 @@ impl Value {
     #[inline]
     #[must_use]
     pub fn uuid(bits: u128) -> Self {
-        let raw = libduckdb_sys::duckdb_uhugeint {
-            #[allow(clippy::cast_possible_truncation)]
-            lower: bits as u64,
-            #[allow(clippy::cast_possible_truncation)]
-            upper: (bits >> 64) as u64,
-        };
+        let raw = uhugeint_from_u128(bits);
         // SAFETY: duckdb_create_uuid accepts any 128-bit pattern.
         Self {
             // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
@@ -1615,6 +1624,71 @@ mod tests {
         let max = uhugeint_from_u128(u128::MAX);
         assert_eq!(max.lower, u64::MAX);
         assert_eq!(max.upper, u64::MAX);
+    }
+
+    #[test]
+    fn the_128_bit_helpers_are_exact_inverses() {
+        // Every `as_i128` / `as_u128` / `as_uuid` / `as_decimal` accessor and
+        // every 128-bit bind now routes through these four, so a round trip at
+        // the extremes covers all of them at once.
+        for value in [
+            0_i128,
+            1,
+            -1,
+            42,
+            -42,
+            i128::from(i64::MAX),
+            i128::from(i64::MIN),
+            (0x0123_4567_89ab_cdef_i128 << 64) | 0x1122_3344_5566_7788,
+            i128::MAX,
+            i128::MIN,
+        ] {
+            assert_eq!(
+                hugeint_to_i128(hugeint_from_i128(value)),
+                value,
+                "i128 round trip for {value}"
+            );
+        }
+
+        for value in [
+            0_u128,
+            1,
+            42,
+            u128::from(u64::MAX),
+            1_u128 << 64,
+            (0x0123_4567_89ab_cdef_u128 << 64) | 0x1122_3344_5566_7788,
+            u128::MAX,
+        ] {
+            assert_eq!(
+                uhugeint_to_u128(uhugeint_from_u128(value)),
+                value,
+                "u128 round trip for {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_128_bit_helpers_read_the_words_the_right_way_round() {
+        // A round trip alone would survive swapping *both* directions, so pin
+        // the word order against a hand-built record too.
+        let raw = libduckdb_sys::duckdb_hugeint {
+            lower: 0x1122_3344_5566_7788,
+            upper: 0x0123_4567_89ab_cdef,
+        };
+        assert_eq!(
+            hugeint_to_i128(raw),
+            (0x0123_4567_89ab_cdef_i128 << 64) | 0x1122_3344_5566_7788
+        );
+
+        let raw = libduckdb_sys::duckdb_uhugeint { lower: 0, upper: 1 };
+        assert_eq!(uhugeint_to_u128(raw), 1_u128 << 64);
+
+        // Sign extension: upper = -1, lower = MAX is exactly -1.
+        let minus_one = libduckdb_sys::duckdb_hugeint {
+            lower: u64::MAX,
+            upper: -1,
+        };
+        assert_eq!(hugeint_to_i128(minus_one), -1);
     }
 
     #[test]

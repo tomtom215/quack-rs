@@ -226,6 +226,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still `!Sync`, from the raw `extra_info` pointer — matching its three sibling
   builders, which were already `!Sync`.)
 
+- **128-bit splitting and reassembly was open-coded at eight call sites.**
+  `Value::as_i128` / `as_u128` / `as_uuid` / `as_decimal` / `uuid` and
+  `PreparedStatement::bind_i128` / `bind_u128` / `bind_decimal` each did their
+  own `<< 64` / `>> 64` word arithmetic. That is the one place in the crate
+  where being silently wrong is easiest — a shift in the wrong direction still
+  compiles, still round-trips zero, and still round-trips anything that fits in
+  64 bits. They now all route through four `pub(crate)` helpers
+  (`hugeint_from_i128` / `hugeint_to_i128` / `uhugeint_from_u128` /
+  `uhugeint_to_u128`) that live next to each other and are unit-tested in both
+  directions, at the extremes and against hand-built records. Mutation testing
+  confirms all seven shift mutants across the three modules are now killed.
+
 - **Test gaps the mutation sweep exposed, once it could see the files.** Chief
   among them the shift direction in `hugeint_from_i128` / `uhugeint_from_u128`:
   swapping `>>` for `<<` still compiles, still round-trips zero and still

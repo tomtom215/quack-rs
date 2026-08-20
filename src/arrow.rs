@@ -1164,7 +1164,7 @@ mod tests {
         let mut raw = RawArrowArray::empty();
         raw.length = 7;
         raw.null_count = 3;
-        raw.offset = 1;
+        raw.offset = 2;
         raw.n_children = 2;
         raw.children = child_ptrs.as_ptr().cast_mut();
         raw.release = Some(count_array_release);
@@ -1186,7 +1186,7 @@ mod tests {
         assert_eq!(root.len(), 7);
         assert!(!root.is_empty());
         assert_eq!(root.null_count(), 3);
-        assert_eq!(root.offset(), 1);
+        assert_eq!(root.offset(), 2);
         assert_eq!(root.child_count(), 2);
 
         assert_eq!(root.child(0).expect("child 0").len(), 7);
