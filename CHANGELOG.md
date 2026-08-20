@@ -196,6 +196,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Incremental mutation testing skipped every top-level `src/*.rs`.** The job
+  selected changed files with the pathspec `src/**/*.rs`, but git's default
+  wildmatch lets `*` cross `/`, so that pattern requires at least one directory
+  component after `src/` and matches no top-level file at all. `src/value.rs`,
+  `src/query.rs`, `src/appender.rs` and every other module directly under
+  `src/` were silently excluded while the job reported success. It now filters
+  to `.rs` in the shell.
+
 - **Four CI jobs never actually ran.** `rust-toolchain.toml` pins
   `channel = "stable"`, and a rustup toolchain file overrides the default
   `dtolnay/rust-toolchain` sets — so the `miri`, `leak-check`, `fuzz` and

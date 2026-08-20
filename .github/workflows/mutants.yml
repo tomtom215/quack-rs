@@ -143,7 +143,17 @@ jobs:
       - name: Determine changed files
         id: changed
         run: |
-          FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- 'src/**/*.rs' | sort -u)
+          # Filter to .rs in the shell rather than with a `src/**/*.rs`
+          # pathspec: git's default wildmatch lets `*` cross `/`, so that
+          # pattern requires at least one directory component after `src/` and
+          # silently matches NO top-level file. `src/value.rs`, `src/query.rs`,
+          # `src/arrow.rs` and every other module directly under `src/` were
+          # skipped entirely, with the job still reporting success.
+          # `|| true` because `grep` exits 1 on no match, and this step runs
+          # under `bash -e`: a PR that touches no Rust file must reach the
+          # `skip=true` branch below, not abort here.
+          FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- 'src/' \
+            | grep '\.rs$' | sort -u || true)
           FILE_COUNT=$(printf '%s\n' "$FILES" | grep -c . 2>/dev/null || echo 0)
 
           if [ -z "$FILES" ] || [ "$FILE_COUNT" -eq 0 ]; then
