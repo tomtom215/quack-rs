@@ -51,6 +51,7 @@
 - [Virtual File System](duckdb-1-5/file-system.md)
 - [Selection Vectors](duckdb-1-5/selection-vector.md)
 - [Instance Cache](duckdb-1-5/instance-cache.md)
+- [Arrow Interop](duckdb-1-5/arrow.md)
 
 # Security
 

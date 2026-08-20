@@ -24,8 +24,6 @@
 
 pub mod complex;
 pub mod list_builder;
-/// Whole-vector operations that consume a
-/// [`SelectionVector`][crate::selection_vector::SelectionVector].
 #[cfg(feature = "duckdb-1-5")]
 pub mod ops;
 pub mod reader;

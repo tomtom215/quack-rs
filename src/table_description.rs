@@ -16,9 +16,10 @@
 //! Creating and naming columns needs no feature flag: `duckdb_table_description_*`
 //! has been in the frozen stable prefix of the extension API (slots 292–297)
 //! since v1.2.0. Two accessors are `DuckDB` 1.5.0 additions living in the
-//! unstable region and are gated on `duckdb-1-5`:
-//! [`column_count`][TableDescription::column_count] and
-//! [`column_type`][TableDescription::column_type].
+//! unstable region and are gated on `duckdb-1-5`: `column_count` and
+//! `column_type`. They are not linked here because the links would not resolve
+//! when the feature is off, which is exactly when a reader most wants to know
+//! they exist.
 //!
 //! # Example
 //!

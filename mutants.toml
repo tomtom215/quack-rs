@@ -30,12 +30,13 @@ examine_globs = [
 ]
 
 # ── Features ─────────────────────────────────────────────────────────────────
-# Enable duckdb-1-5-3 (implies duckdb-1-5) so feature-gated code paths and their
-# tests are included in mutation testing — including the duckdb-1-5-3 `TypeId`
-# variants (Geometry / Variant). Without this, mutants in
+# Enable duckdb-1-5-4 (implies duckdb-1-5-3, which implies duckdb-1-5) so
+# feature-gated code paths and their tests are included in mutation testing —
+# including the duckdb-1-5-3 `TypeId` variants (Geometry / Variant) and the
+# duckdb-1-5-4 arrow bridge. Without this, mutants in
 # #[cfg(feature = "duckdb-1-5...")] blocks are untestable (the tests that kill
 # them are also feature-gated).
-features = ["duckdb-1-5-3"]
+features = ["duckdb-1-5-4"]
 
 # ── Exclusions ───────────────────────────────────────────────────────────────
 # Thin re-export modules and test-only code produce unproductive mutants.

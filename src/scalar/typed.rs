@@ -9,7 +9,7 @@
 //! takes an `unsafe extern "C" fn`, which means every scalar function — the most
 //! common kind of extension function by far — starts with raw pointers, manual
 //! offset arithmetic, and the NULL-propagation contract described in
-//! [`NullHandling`][crate::types::NullHandling]. The constructors here take a
+//! [`NullHandling`]. The constructors here take a
 //! safe closure instead:
 //!
 //! ```rust,no_run

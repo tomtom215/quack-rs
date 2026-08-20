@@ -179,11 +179,11 @@ jobs:
             [ -n "$glob" ] && ARGS+=(--exclude "$glob")
           done < <(sed -n '/^exclude_globs = \[/,/^]/p' mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
 
-          # `--features duckdb-1-5-3` MUST be explicit: cargo-mutants does not
+          # `--features duckdb-1-5-4` MUST be explicit: cargo-mutants does not
           # apply mutants.toml `features` to this invocation, so without it the
           # duckdb-1-5-gated code (type_id's 1.5 type arms, the whole error_data
-          # module) is cfg'd out — its mutations would be inert and reported as
-          # false "missed".
+          # module, the arrow bridge) is cfg'd out — its mutations would be
+          # inert and reported as false "missed".
           #
           # `--cargo-arg=--lib` kills mutants with FAST, deterministic *unit*
           # tests: the bundled-DuckDB integration suite is slow, and run
@@ -193,7 +193,7 @@ jobs:
           # logic stays mutation-tested.
           set +e
           cargo mutants "${ARGS[@]}" \
-            --features duckdb-1-5-3 \
+            --features duckdb-1-5-4 \
             --cargo-arg=--lib \
             --exclude-re 'ErrorData' \
             --output mutants.out \

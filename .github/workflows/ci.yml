@@ -73,7 +73,7 @@ jobs:
       - run: cargo test --all-targets --features bundled-test
 
   # Exercises the `bundled-test-prebuilt` path: link a pre-built libduckdb
-  # instead of compiling DuckDB from C++ source. Combined with duckdb-1-5-3 this
+  # instead of compiling DuckDB from C++ source. Combined with duckdb-1-5-4 this
   # is also the only job that runs the DuckDB 1.5.x FFI wrapper tests (appender,
   # selection_vector, instance_cache, ...) against a real DuckDB runtime.
   # Linux only — the pre-built release archive is published per-platform.
@@ -99,15 +99,15 @@ jobs:
           # by libduckdb-sys does not propagate to this downstream test binary).
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
-        run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-3
+        run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
       # `tests/ffi_roundtrip.rs` is `#![cfg(feature = "_duckdb-testing")]`, so
       # the plain `clippy` job compiles it away to nothing and never lints the
       # largest test file in the repo. Lint it where it is actually built.
       - name: Clippy (including the end-to-end tests)
-        run: cargo clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-3 -- -D warnings
+        run: cargo clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-4 -- -D warnings
 
   test-duckdb-1-5:
-    name: Test duckdb-1-5 / duckdb-1-5-3 features
+    name: Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -119,6 +119,9 @@ jobs:
       - run: cargo check --all-targets --features duckdb-1-5-3
       - run: cargo test --all-targets --features duckdb-1-5-3
       - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
+      - run: cargo check --all-targets --features duckdb-1-5-4
+      - run: cargo test --all-targets --features duckdb-1-5-4
+      - run: cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings
 
   wasm:
     name: WASM (wasm32-unknown-emscripten)
@@ -134,7 +137,7 @@ jobs:
       # needs no emscripten toolchain. `--all-targets` is intentionally avoided —
       # it would pull the bundled-DuckDB test path, which requires em++.
       - run: cargo check --lib --target wasm32-unknown-emscripten
-      - run: cargo check --lib --features duckdb-1-5-3 --target wasm32-unknown-emscripten
+      - run: cargo check --lib --features duckdb-1-5-4 --target wasm32-unknown-emscripten
 
   clippy:
     name: Clippy
@@ -161,7 +164,7 @@ jobs:
           toolchain: beta
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
+      - run: cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings
 
   fmt:
     name: Format
@@ -180,11 +183,12 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      # Use --features duckdb-1-5-3 (implies duckdb-1-5) instead of --all-features
+      # Use --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
+      # duckdb-1-5) instead of --all-features
       # because bundled-test requires DuckDB headers from libduckdb-sys, which may
       # not be compiled yet when the build script runs (build scripts only
       # wait for [build-dependencies], not [dependencies]).
-      - run: cargo doc --no-deps --features duckdb-1-5-3
+      - run: cargo doc --no-deps --features duckdb-1-5-4
         env:
           RUSTDOCFLAGS: "-D warnings"
 
@@ -812,7 +816,7 @@ jobs:
           LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
         run: |
           cargo test -Zbuild-std --target x86_64-unknown-linux-gnu \
-            --features bundled-test-prebuilt,duckdb-1-5-3 --test ffi_roundtrip
+            --features bundled-test-prebuilt,duckdb-1-5-4 --test ffi_roundtrip
 
   semver:
     name: Public API (semver-checks)
@@ -831,7 +835,7 @@ jobs:
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --locked
       - name: Check the public API against the last published release
-        run: cargo semver-checks check-release --features duckdb-1-5-3
+        run: cargo semver-checks check-release --features duckdb-1-5-4
 
   fuzz:
     name: Fuzz (smoke)

@@ -275,9 +275,9 @@ Measured against the 546-entry `duckdb_ext_api_v1` of DuckDB v1.5.2–v1.5.5:
 | Region | Before | After |
 |---|---|---|
 | Stable prefix (357 slots, frozen since v1.2.0) | 270 referenced | **316** |
-| Unstable tail (189 slots, `duckdb-1-5`) | 106 referenced | **116** |
+| Unstable tail (189 slots, `duckdb-1-5`) | 106 referenced | **130** |
 
-The 56 newly wrapped entries are the ones an extension actually reaches for:
+The 70 newly wrapped entries are the ones an extension actually reaches for:
 
 - **`Value`** went from 9 constructors to the full set — every scalar width, the
   temporal family, `INTERVAL`, `BLOB`, `DECIMAL`, and the composites (`STRUCT`,
@@ -366,6 +366,92 @@ Also closed two CI gaps:
   `latest`. Verified locally first: the same stamped binary loads and answers
   correctly in all three pinned releases.
 
+### Arrow interop and `COPY … FROM`
+
+Both were listed as open items in section 5.1 of the first pass; they are closed
+here. Fourteen more unstable-region entries, all verified against DuckDB v1.5.4's
+`arrow-c.cpp`, `copy_function-c.cpp`, `table_function-c.cpp` and
+`arrow_converter.cpp` rather than against the header alone.
+
+**Arrow** (`src/arrow.rs`, new `duckdb-1-5-4` feature) wraps all eight
+non-deprecated Arrow entries: the four conversions, the converted-schema
+destructor, and the three `duckdb_arrow_options` calls. The remaining fourteen
+Arrow entries are the deprecated `duckdb_query_arrow` result API, which is
+inside `#ifndef DUCKDB_API_NO_DEPRECATED` — so the *live* Arrow surface is now
+fully covered.
+
+There is no `arrow` crate dependency. The interface is an ABI, and
+`libduckdb-sys` defines the two `#[repr(C)]` records with arrow-rs's layout, so
+bridging is a pointer cast. `ArrowArray::take_from` moves a record out of a
+foreign wrapper and leaves a released placeholder behind, so exactly one side
+ever calls `release`.
+
+Three findings drove the design, none of them stated in `duckdb.h`:
+
+1. `duckdb_data_chunk_from_arrow` sets `arrow_array->release = nullptr` **before**
+   the conversion loop body, so it claims the array on the error path too. The
+   wrapper takes the array **by value**; the by-value binding is dropped on the
+   way out, which releases it in the one case DuckDB does *not* claim it — a
+   zero-column converted schema, where the loop never runs.
+2. `ArrowConverter::ToArrowSchema` and `ToArrowArray` install `release` / assign
+   `*out_array` as their **last** statement, after everything that can throw. So
+   a failed conversion leaves a record with `release == NULL` and nothing to
+   free, and discarding it is correct rather than a leak.
+3. `duckdb_data_chunk_from_arrow` indexes `arrow_array->children[i]` once per
+   schema column with no bounds check, and dereferences an already-released
+   array. Both segfault. The wrapper checks both first — which is why
+   `ArrowConvertedSchema` records the `n_children` of the schema it was built
+   from, the C API having no accessor for it. The module also documents the case
+   it *cannot* check: a child whose buffers do not match its declared type,
+   because `ColumnArrowToDuckDB` reads `array.buffers[1]` without testing
+   `n_buffers` or the pointer. (Its sibling `GetValidityMask` is guarded; the
+   crash is the data buffer, not the validity one. Confirmed by crashing a
+   deliberately malformed array during this work.)
+
+The `duckdb-1-5-4` feature's floor is set by the bindings, not by DuckDB: all
+eight functions are in `duckdb_ext_api_v1` from **1.5.0** — checked against the
+v1.5.0 `duckdb_extension.h`, not assumed — but `libduckdb-sys` declared
+`ArrowSchema` / `ArrowArray` as opaque zero-sized bindgen placeholders until
+**1.10504.0**. `src/arrow.rs` carries a `const` assertion naming that.
+
+**`COPY … FROM`** closes the asymmetry in a shipped feature.
+`CopyFunctionBuilder::copy_from` attaches a quack-rs table function as a
+format's reader; `TableFunctionBuilder::build_handle` exists because such a
+reader is *attached* rather than registered, and `register` is now that plus
+`duckdb_register_table_function`. `BindInfo::result_column_count` /
+`result_column_name` / `result_column_type` read the target table's schema,
+which `COPY … FROM` fixes before the bind callback runs.
+
+Two findings here as well:
+
+1. `duckdb_register_copy_function` computes `is_copy_to` from
+   `info.sink != nullptr` and `is_copy_from` from `copy_from_bind != nullptr`,
+   **independently**, and accepts either. quack-rs required bind + sink +
+   finalize unconditionally, which made a read-only format impossible. Fixed:
+   the trio is required only when any of it is set.
+2. `duckdb.h` states "the table function must take a single VARCHAR parameter
+   (the file path)" and nothing enforces it —
+   `duckdb_copy_function_set_copy_from_function` only rejects `INVALID` types,
+   and `CCopyFromBind` builds the argument vector itself without consulting
+   `tf.arguments`. A mismatch therefore surfaces much later, inside the reader's
+   own bind callback, reading an argument that is not what it asked for.
+   `copy_from` turns it into a registration-time error.
+
+One user-visible quirk is documented rather than worked around: a bad `COPY …
+FROM` option is reported as `'X' is not a supported option for copy function
+'NAME'` where `NAME` is the *table function's* name, because `CCopyFromBind`
+reads `info.tf.name` and `set_copy_from_function` only substitutes the copy
+function's name when the table function has none. The docs say to name the two
+alike.
+
+Verified end to end against a real DuckDB 1.5.4: eleven Arrow tests (including a
+full chunk → Arrow → chunk round trip with NULLs, and a zero-row chunk) and
+seven `COPY … FROM` tests (a read-only format loading a table, a COPY option
+arriving as a named parameter, and every rejection path), all under Miri and
+LeakSanitizer.
+
+---
+
 ---
 
 ## 4. Verified correct — checked, and no change needed
@@ -422,22 +508,23 @@ if nobody wrote down that they were checked.
 
 Ordered by what a production extension is most likely to want.
 
-### 5.1 API surface still unwrapped (114 of 546 entries)
+### 5.1 API surface still unwrapped (100 of 546 entries)
 
 | Group | Count | Assessment |
 |---|---|---|
 | Deprecated per-value result accessors (`duckdb_value_int32`, `duckdb_row_count`, `duckdb_column_data`, …) | 24 | **Correctly skipped.** `duckdb.h` marks the whole group deprecated and says to use `duckdb_fetch_chunk`, which is what `QueryResult` does. |
-| Arrow interop (`duckdb_arrow_scan`, `duckdb_data_chunk_to_arrow`, `duckdb_schema_from_arrow`, …) | 22 | **Largest remaining gap.** An extension bridging to an Arrow-native library has to drop to raw FFI. Needs an `arrow` feature and a real design; not a small addition. |
+| Deprecated Arrow result API (`duckdb_query_arrow`, `duckdb_arrow_scan`, `duckdb_destroy_arrow`, …) | 14 | **Correctly skipped.** All fourteen sit inside `#ifndef DUCKDB_API_NO_DEPRECATED`. The eight non-deprecated Arrow entries are wrapped — see section 3. |
 | Task scheduler (`duckdb_execute_tasks`, `duckdb_create_task_state`, …) | 9 | Niche: for embedding DuckDB's scheduler, rarely what an extension wants. |
 | Pending-result execution (`duckdb_pending_prepared`, `duckdb_pending_execute_task`, …) | 8 | Now partly redundant: `execute_streaming` + `InterruptHandle` cover the common "long query, cancellable, incremental" need. Worth revisiting for cooperative progress reporting. |
 | Log storage (`duckdb_register_log_storage`, …) | 6 | New in 1.5 and genuinely useful — an extension can register a log sink. Good next addition. |
 | Profiling (`duckdb_get_profiling_info`, …) | 5 | Useful for extensions that expose their own EXPLAIN-like output. |
 | Extracted statements (`duckdb_extract_statements`, …) | 4 | Low value: `duckdb_query` already runs multi-statement scripts. |
-| `COPY … FROM` (`duckdb_copy_function_set_copy_from_function`, `..._bind_get_options`, `..._set_extra_info`) | 3 | **quack-rs supports `COPY TO` but not `COPY FROM`.** A real asymmetry in a shipped feature; worth closing. |
-| Table-function bind result columns (`duckdb_table_function_bind_get_result_column_*`) | 3 | Needed for table functions that adapt to the projection asked of them. |
 | Prepared-statement result metadata (`duckdb_prepared_statement_column_*`, `duckdb_param_type`, …) | 6 | Lets an extension learn a query's shape without running it. |
 | `duckdb_scalar_function_set_bind_data_copy` | 1 | Needed for scalar bind data under parallel execution. |
 | Misc (`duckdb_get_table_names`, `duckdb_appender_create_query`, `duckdb_create_bit`/`get_bit`, `duckdb_get_bignum`, `duckdb_create_data_chunk`, …) | ~13 | Individually small. |
+
+`COPY … FROM` and the table-function bind result-column accessors were rows in
+this table; both are closed in section 3.
 
 `duckdb_string_is_inlined` / `duckdb_string_t_length` / `duckdb_string_t_data`
 are deliberately unused: quack-rs decodes the 16-byte layout itself, which avoids
@@ -523,6 +610,10 @@ claim is machine-checked against a real database, and the surface an extension
 actually reaches for — values, parameters, cancellation, streaming, custom types,
 selection vectors — is covered rather than adjacent to covered.
 
-The honest remaining list is section 5. The two that would most change what
-quack-rs can claim are Arrow interop (5.1) and a wasm32 test that runs (5.2).
-The one that will demand attention on someone else's schedule is 5.4.
+The honest remaining list is section 5. Arrow interop and `COPY … FROM` — the
+two that section 5.1 called out as the ones that would most change what quack-rs
+can claim — are closed in section 3, verified against DuckDB's own sources and
+against a running database. What is left of 5.1 is either deprecated or niche.
+The remaining item that would most change the claim is a wasm32 test that
+actually runs (5.2); the one that will demand attention on someone else's
+schedule is 5.4.

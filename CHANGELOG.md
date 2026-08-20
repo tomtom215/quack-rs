@@ -136,7 +136,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that `slice` produces a *dictionary* vector, after which every reader in this
   crate reads the wrong rows.
 
+- **Arrow C Data Interface bridge** — the new `arrow` module behind a new
+  **`duckdb-1-5-4`** feature, wrapping the eight-function conversion family
+  DuckDB 1.5.0 added: `ArrowOptions` (from a connection or a `QueryResult`),
+  owning `ArrowSchema` / `ArrowArray` / `ArrowConvertedSchema` RAII types, and
+  `to_arrow_schema` / `data_chunk_to_arrow` / `schema_from_arrow` /
+  `data_chunk_from_arrow`. **No `arrow` crate dependency**: the module works on
+  the ABI records `libduckdb-sys` defines, which have arrow-rs's
+  `FFI_ArrowSchema` / `FFI_ArrowArray` layout, so bridging is a pointer cast —
+  `ArrowArray::take_from` moves a record out of a foreign wrapper and leaves a
+  released placeholder, so only one side ever calls `release`.
+
+  The ownership rules were read out of `arrow-c.cpp` and `arrow_converter.cpp`
+  rather than inferred: `duckdb_data_chunk_from_arrow` sets
+  `arrow_array->release = nullptr` *before* the conversion loop body, so it
+  claims the array on the error path too — hence `data_chunk_from_arrow` takes
+  the array **by value**, and the by-value binding still releases it in the one
+  case (a zero-column schema) where the loop never runs. `to_arrow_schema` and
+  `data_chunk_to_arrow` install `release` last, after everything that can throw,
+  so a failed conversion leaves nothing to free.
+
+  Two crashes DuckDB does not guard are refused here instead:
+  `duckdb_data_chunk_from_arrow` indexes `arrow_array->children[i]` once per
+  schema column with no bounds check and dereferences an already-released array,
+  so `ArrowConvertedSchema` remembers its column count and both are checked
+  first. The module documents the one case it still cannot check — a child whose
+  buffers do not match the type its schema declares.
+
+  The **`duckdb-1-5-4`** feature's floor is set by the bindings, not by DuckDB:
+  all eight functions are in `duckdb_ext_api_v1` from DuckDB **1.5.0** (verified
+  against the v1.5.0 `duckdb_extension.h`), but `libduckdb-sys` declared
+  `ArrowSchema` / `ArrowArray` as opaque zero-sized bindgen placeholders until
+  **1.10504.0**. `src/arrow.rs` carries a `const` assertion that says so.
+
+- **`COPY … FROM`** — `CopyFunctionBuilder::copy_from` attaches a quack-rs table
+  function as a format's reader, so an extension can implement loading as well
+  as writing. Supporting pieces:
+
+  - `TableFunctionBuilder::build_handle` returns a configured, unregistered
+    `TableFunctionHandle` — `register` is now that plus
+    `duckdb_register_table_function` — because a `COPY … FROM` reader is
+    *attached to a copy function* rather than registered on its own.
+  - `BindInfo::result_column_count` / `result_column_name` / `result_column_type`
+    (`duckdb-1-5`) read the target table's schema, which `COPY … FROM` fixes
+    before the bind callback runs. `duckdb.h` is explicit that such a bind
+    "should not define its own result columns".
+  - `CopyBindInfo::options` exposes the `COPY … TO` options as the STRUCT value
+    DuckDB builds, and `Value::struct_field_names` walks the field names off the
+    value's borrowed logical type without exposing the handle (pitfall P11).
+  - `CopyFunctionBuilder::extra_info`, with the same
+    ownership-until-transfer guarantee as the other builders.
+
+  `duckdb_copy_function_set_copy_from_function` reports every rejection by doing
+  nothing at all, so `copy_from` checks `duckdb.h`'s stated precondition — "the
+  table function must take a single VARCHAR parameter (the file path)" — which
+  DuckDB never enforces: `CCopyFromBind` builds the argument list itself and
+  never consults `tf.arguments`, so a mismatch surfaces much later inside the
+  reader's own bind callback.
+
 ### Changed
+
+- **`cargo doc` with `-D warnings` failed.** Six intra-doc links were broken or
+  redundant — `QueryResult::column_logical_type`, `scalar::typed`,
+  `vector::ops` (twice), `TableFunctionBuilder::build_handle` — and
+  `vector::ops` carried a doc comment on both the `pub mod` declaration and the
+  file's own `//!` header, so its module docs were resolved in the parent's
+  scope and every link into the module failed with no source location. Three
+  more links in `appender` and `table_description` pointed at `duckdb-1-5`-gated
+  methods and so broke the *default*-feature doc build. `cargo doc` is now clean
+  under `-D warnings` on all four feature sets.
+
+- **Pitfall L9 — `duckdb_data_chunk_from_arrow` takes the array even when it
+  fails.** `duckdb.h` reads like a success-path statement; `arrow-c.cpp` nulls
+  `arrow_array->release` inside the per-column loop, before the work that can
+  throw. Guessing either way gives you a bug — double release, or a leaked Arrow
+  buffer tree when a zero-column schema means the loop never runs. Documented in
+  `LESSONS.md` and the book, and made impossible by the by-value signature.
+
+  The pitfall count in the README, the crate docs and the FAQ was stale at 17;
+  `LESSONS.md` documents 21, and the book's catalogue was missing L8 and L9. All
+  four now agree.
+
+- **A copy function may now implement `COPY … FROM` alone.**
+  `CopyFunctionBuilder::register` used to require `bind`, `sink` *and*
+  `finalize`, which made a read-only format impossible even though
+  `duckdb_register_copy_function` accepts one: it decides what a copy function
+  supports from `info.sink != nullptr` and `copy_from_bind != nullptr`
+  independently. Leaving all three unset is now valid when `copy_from` is set;
+  setting only some of them is an error that says so. Existing `COPY … TO`
+  functions are unaffected.
 
 - CI gains four jobs: `miri` (546 unit tests under the interpreter),
   `leak-check` (LeakSanitizer over the end-to-end suite against a real

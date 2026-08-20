@@ -677,6 +677,63 @@ impl Value {
             .collect()
     }
 
+    /// Field names of a `STRUCT` value, in order.
+    ///
+    /// `DuckDB`'s C API exposes a struct value's children by position only —
+    /// the names live on the value's `LogicalType`. Reading them by hand means
+    /// calling `duckdb_get_value_type`, whose result `duckdb.h` says "must not
+    /// be destroyed" because the *value* owns it, which is exactly the kind of
+    /// borrowed handle it is easy to hand to
+    /// [`LogicalType::from_raw`][crate::types::LogicalType::from_raw] and then
+    /// double-free (pitfall P11). This does the walk without exposing it.
+    ///
+    /// Returns an empty vector for a null handle or a non-`STRUCT` value.
+    ///
+    /// Pair it with [`struct_child`][Self::struct_child], which is positional:
+    ///
+    /// ```rust,no_run
+    /// # use quack_rs::value::Value;
+    /// # fn demo(options: &Value) -> Option<String> {
+    /// let names = options.struct_field_names();
+    /// let idx = names.iter().position(|n| n == "compression")?;
+    /// options.struct_child(idx)?.as_str().ok()
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn struct_field_names(&self) -> Vec<String> {
+        if self.raw.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: `self.raw` is a valid duckdb_value per the constructor
+        // contract. The returned type is owned by the value — duckdb.h: "The
+        // type itself must not be destroyed" — so it is only read through, never
+        // wrapped in `LogicalType` and never destroyed here.
+        let logical = unsafe { libduckdb_sys::duckdb_get_value_type(self.raw) };
+        if logical.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: `logical` is non-null and lives as long as `self`.
+        let count = unsafe { libduckdb_sys::duckdb_struct_type_child_count(logical) };
+        (0..count)
+            .map(|i| {
+                // SAFETY: `i < count`. DuckDB allocates the name with
+                // `duckdb_malloc`, so it is freed with `duckdb_free`.
+                let ptr = unsafe { libduckdb_sys::duckdb_struct_type_child_name(logical, i) };
+                if ptr.is_null() {
+                    return String::new();
+                }
+                // SAFETY: `ptr` is a NUL-terminated string owned by us.
+                let owned = unsafe { std::ffi::CStr::from_ptr(ptr) }
+                    .to_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                // SAFETY: allocated by DuckDB, freed exactly once here.
+                unsafe { duckdb_free(ptr.cast::<std::os::raw::c_void>()) };
+                owned
+            })
+            .collect()
+    }
+
     /// Field `index` of a `STRUCT` value, or `None` if the handle is null or the
     /// index is out of range.
     ///

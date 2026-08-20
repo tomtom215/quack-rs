@@ -2283,6 +2283,9 @@ mod copy_fn {
     /// What finalize saw, so the test can assert on it after the COPY.
     pub static FINAL_ROWS: AtomicUsize = AtomicUsize::new(0);
     pub static FINAL_CHECKSUM: AtomicUsize = AtomicUsize::new(0);
+    /// The `COPY ... TO` options, as `CopyBindInfo::options` reported them:
+    /// `(field name, rendered value)` for every field of the STRUCT.
+    pub static OPTIONS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
     pub unsafe extern "C" fn drop_bind(ptr: *mut c_void) {
         if !ptr.is_null() {
@@ -2304,6 +2307,18 @@ mod copy_fn {
 #[cfg(feature = "duckdb-1-5")]
 quack_rs::copy_bind_callback!(my_format_bind, |info| {
     let bind = unsafe { quack_rs::copy_function::CopyBindInfo::new(info) };
+    // The COPY options arrive as one STRUCT value, whose field names live on
+    // the value's logical type rather than the value itself.
+    if let (Some(options), Ok(mut slot)) = (bind.options(), copy_fn::OPTIONS.lock()) {
+        slot.clear();
+        for (i, name) in options.struct_field_names().into_iter().enumerate() {
+            let rendered = options
+                .struct_child(i)
+                .map(|v| format!("{v:?}"))
+                .unwrap_or_default();
+            slot.push((name, rendered));
+        }
+    }
     let data = Box::new(copy_fn::BindData {
         columns: bind.column_count(),
     });
@@ -2396,9 +2411,24 @@ fn a_copy_function_runs_its_whole_lifecycle() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("out.myfmt");
     fx.query(&format!(
-        "COPY (SELECT i::BIGINT AS n FROM range(5000) t(i)) TO '{}' (FORMAT my_format)",
+        "COPY (SELECT i::BIGINT AS n FROM range(5000) t(i)) TO '{}' (FORMAT my_format, LEVEL 7)",
         path.display()
     ));
+
+    // Every COPY option, including FORMAT itself, reaches the bind callback as a
+    // field of one STRUCT value.
+    let options = copy_fn::OPTIONS.lock().expect("options").clone();
+    let names: Vec<&str> = options.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.iter().any(|n| n.eq_ignore_ascii_case("level")),
+        "the LEVEL option should be visible, got {names:?}"
+    );
+    let level = options
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("level"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or_default();
+    assert!(level.contains('7'), "LEVEL should carry its value: {level}");
 
     // 5000 rows spans several chunks, so the sink ran repeatedly.
     assert_eq!(copy_fn::FINAL_ROWS.load(Ordering::SeqCst), 5000);
@@ -4269,4 +4299,663 @@ fn typed_scalar_bind_data_and_local_state_need_no_hand_written_destructor() {
         "local state must be freed, got {}",
         typed_scalar_state::STATE_DROPS.load(Ordering::SeqCst)
     );
+}
+
+// ─── Arrow C Data Interface ──────────────────────────────────────────────────
+
+/// End-to-end exercises for [`quack_rs::arrow`].
+///
+/// The point of these is that they use no Arrow library at all: a chunk is
+/// exported through the C Data Interface and re-imported through it, and the
+/// values are compared with the ones the query produced. If an ownership rule in
+/// the wrapper were wrong, this is where a double free or a leak shows up — the
+/// `leak-check` and `miri` CI jobs run this file.
+#[cfg(feature = "duckdb-1-5-4")]
+mod arrow_interop {
+    use super::Fixture;
+    use quack_rs::arrow::{
+        data_chunk_from_arrow, data_chunk_to_arrow, schema_from_arrow, to_arrow_schema, ArrowArray,
+        ArrowOptions, ArrowSchema, RawArrowSchema,
+    };
+    use quack_rs::error_data::DuckDbErrorType;
+    use quack_rs::query::{OwnedDataChunk, QueryResult};
+    use quack_rs::types::{LogicalType, TypeId};
+    use std::ffi::CString;
+
+    /// Every column of a result, as `(name, logical type)`, in order.
+    fn columns(result: &QueryResult) -> Vec<(String, LogicalType)> {
+        (0..result.column_count())
+            .map(|i| {
+                (
+                    result.column_name(i).expect("column name"),
+                    result.column_logical_type(i).expect("column type"),
+                )
+            })
+            .collect()
+    }
+
+    /// Borrows `columns` in the shape `to_arrow_schema` takes.
+    fn as_pairs(columns: &[(String, LogicalType)]) -> Vec<(&str, &LogicalType)> {
+        columns
+            .iter()
+            .map(|(name, ty)| (name.as_str(), ty))
+            .collect()
+    }
+
+    /// A release callback that frees nothing, for hand-built schemas whose
+    /// strings are owned by the test.
+    unsafe extern "C" fn noop_release(schema: *mut RawArrowSchema) {
+        // SAFETY: DuckDB and quack-rs both pass a valid pointer, and the Arrow
+        // specification requires the callback to null its own `release`.
+        unsafe { (*schema).release = None };
+    }
+
+    #[test]
+    fn a_chunk_survives_a_full_round_trip_through_the_c_data_interface() {
+        let fx = Fixture::open();
+        let sql = "SELECT i::INTEGER AS id, \
+                        (i * 100)::BIGINT AS big, \
+                        CASE WHEN i % 3 = 0 THEN NULL ELSE 'row-' || i END AS label \
+                   FROM range(7) t(i) ORDER BY i";
+        let mut result = fx.query(sql);
+        let cols = columns(&result);
+        assert_eq!(cols.len(), 3);
+
+        let options = result.arrow_options().expect("result arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+
+        let chunk = result.next_chunk().expect("one chunk");
+        assert_eq!(chunk.size(), 7);
+        let array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
+        assert_eq!(array.len(), 7, "the array carries every row");
+        assert_eq!(array.child_count(), 3, "one child array per column");
+
+        // The Arrow array owns its own copy of the data, so the chunk it came
+        // from can go away before the import.
+        drop(chunk);
+        drop(result);
+
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
+        assert_eq!(converted.column_count(), 3);
+
+        // SAFETY: same connection; `array` was produced from `schema`'s columns.
+        let imported =
+            unsafe { data_chunk_from_arrow(fx.con(), array, &converted) }.expect("import");
+
+        assert_eq!(imported.column_count(), 3);
+        assert_eq!(imported.size(), 7);
+        // SAFETY: the chunk has three columns and seven rows.
+        let (ids, bigs, labels) =
+            unsafe { (imported.reader(0), imported.reader(1), imported.reader(2)) };
+        for row in 0..7 {
+            // SAFETY: `row` is in range for all three readers.
+            unsafe {
+                assert!(ids.is_valid(row), "id {row} is never NULL");
+                assert_eq!(ids.read_i32(row), i32::try_from(row).unwrap());
+                assert_eq!(bigs.read_i64(row), i64::try_from(row).unwrap() * 100);
+                if row % 3 == 0 {
+                    assert!(!labels.is_valid(row), "label {row} must survive as NULL");
+                } else {
+                    assert!(labels.is_valid(row));
+                    assert_eq!(labels.read_str(row), format!("row-{row}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn to_arrow_schema_produces_a_struct_with_one_named_child_per_column() {
+        let fx = Fixture::open();
+        let result = fx.query("SELECT 1::INTEGER AS id, 2::BIGINT AS big, 'x' AS label");
+        let cols = columns(&result);
+        let options = result.arrow_options().expect("arrow options");
+        let schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+
+        assert!(!schema.is_released());
+        assert_eq!(schema.format(), Some("+s"), "a record batch is a struct");
+        assert_eq!(schema.child_count(), 3);
+
+        let id = schema.child(0).expect("child 0");
+        assert_eq!(id.name(), Some("id"));
+        assert_eq!(id.format(), Some("i"), "INTEGER is Arrow int32");
+
+        let big = schema.child(1).expect("child 1");
+        assert_eq!(big.name(), Some("big"));
+        assert_eq!(big.format(), Some("l"), "BIGINT is Arrow int64");
+
+        let label = schema.child(2).expect("child 2");
+        assert_eq!(label.name(), Some("label"));
+        // Which string encoding DuckDB picks depends on the connection's arrow
+        // options (offset size, string views), so accept the whole family rather
+        // than pinning one and calling it a guarantee.
+        let format = label.format().expect("a format string");
+        assert!(
+            matches!(format, "u" | "U" | "vu"),
+            "VARCHAR should be an Arrow string encoding, got {format:?}"
+        );
+
+        assert!(schema.child(3).is_none(), "no fourth column");
+    }
+
+    #[test]
+    fn a_schema_and_an_array_can_be_released_early_and_the_drop_is_a_no_op() {
+        let fx = Fixture::open();
+        let mut result = fx.query("SELECT 42::INTEGER AS answer");
+        let cols = columns(&result);
+        let options = result.arrow_options().expect("arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+        let chunk = result.next_chunk().expect("one chunk");
+        let mut array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
+
+        // Calling DuckDB's own release callbacks — this is where a wrong
+        // ownership assumption would abort. Reaching the assertions is the test.
+        schema.release();
+        array.release();
+        assert!(schema.is_released());
+        assert!(array.is_released());
+        // Idempotent, and the implicit drops below add nothing.
+        schema.release();
+        array.release();
+    }
+
+    #[test]
+    fn arrow_options_are_available_from_a_connection_as_well_as_a_result() {
+        let fx = Fixture::open();
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let from_con = unsafe { ArrowOptions::from_connection(fx.con()) }.expect("from_connection");
+        assert!(!from_con.as_raw().is_null());
+
+        let id = LogicalType::new(TypeId::Integer);
+        let schema = to_arrow_schema(&from_con, &[("id", &id)]).expect("to_arrow_schema");
+        assert_eq!(schema.child_count(), 1);
+    }
+
+    #[test]
+    fn from_connection_rejects_a_null_connection() {
+        // The fixture is what populates the loadable-extension dispatch table;
+        // without it the call would not reach DuckDB at all.
+        let _fx = Fixture::open();
+        // SAFETY: a null connection is exactly the case DuckDB reports by
+        // writing null to the out-parameter.
+        let err = unsafe { ArrowOptions::from_connection(std::ptr::null_mut()) }
+            .expect_err("a null connection has no arrow options");
+        assert!(err.to_string().contains("null"), "{err}");
+    }
+
+    #[test]
+    fn to_arrow_schema_rejects_a_name_with_an_interior_nul() {
+        let fx = Fixture::open();
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let options = unsafe { ArrowOptions::from_connection(fx.con()) }.expect("arrow options");
+        let id = LogicalType::new(TypeId::Integer);
+        let err = to_arrow_schema(&options, &[("bad\0name", &id)])
+            .expect_err("DuckDB reads schema names as C strings");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        assert!(
+            err.message().unwrap_or_default().contains("NUL"),
+            "{:?}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn schema_from_arrow_refuses_an_already_released_schema() {
+        let fx = Fixture::open();
+        let mut schema = ArrowSchema::empty();
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let err = unsafe { schema_from_arrow(fx.con(), &mut schema) }
+            .expect_err("a released schema has no usable children pointer");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        assert!(
+            err.message().unwrap_or_default().contains("released"),
+            "{:?}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn schema_from_arrow_reports_an_arrow_type_duckdb_cannot_map() {
+        let fx = Fixture::open();
+
+        // Declared before `schema` so they outlive it: locals drop in reverse.
+        let root_format = CString::new("+s").unwrap();
+        let child_format = CString::new("?").unwrap();
+        let child_name = CString::new("unsupported").unwrap();
+        let mut child = RawArrowSchema::empty();
+        child.format = child_format.as_ptr();
+        child.name = child_name.as_ptr();
+        child.release = Some(noop_release);
+        let mut child_ptr: *mut RawArrowSchema = &raw mut child;
+        let mut root = RawArrowSchema::empty();
+        root.format = root_format.as_ptr();
+        root.n_children = 1;
+        root.children = &raw mut child_ptr;
+        root.release = Some(noop_release);
+
+        // SAFETY: `noop_release` frees nothing; the strings are owned above.
+        let mut schema = unsafe { ArrowSchema::from_raw(root) };
+        assert_eq!(schema.child_count(), 1);
+
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let err = unsafe { schema_from_arrow(fx.con(), &mut schema) }
+            .expect_err("'?' is not an Arrow format string DuckDB knows");
+        let message = err.message().unwrap_or_default();
+        assert!(
+            message.contains("Unsupported") || message.contains("unsupported"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn data_chunk_from_arrow_refuses_an_already_released_array() {
+        let fx = Fixture::open();
+        let result = fx.query("SELECT 1::INTEGER AS id");
+        let cols = columns(&result);
+        let options = result.arrow_options().expect("arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
+
+        // SAFETY: same connection; an empty array is already released.
+        let err = unsafe { data_chunk_from_arrow(fx.con(), ArrowArray::empty(), &converted) }
+            .expect_err("DuckDB would dereference a released array");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        assert!(
+            err.message().unwrap_or_default().contains("released"),
+            "{:?}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn data_chunk_from_arrow_refuses_an_array_with_the_wrong_child_count() {
+        let fx = Fixture::open();
+        // A two-column schema…
+        let mut two = fx.query("SELECT 1::INTEGER AS a, 2::INTEGER AS b");
+        let two_cols = columns(&two);
+        let options = two.arrow_options().expect("arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&two_cols)).expect("to_arrow_schema");
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
+        assert_eq!(converted.column_count(), 2);
+        drop(two.next_chunk());
+
+        // …fed a one-column array. DuckDB would read `children[1]` past the end.
+        let mut one = fx.query("SELECT 9::INTEGER AS only");
+        let one_chunk = one.next_chunk().expect("one chunk");
+        let array = data_chunk_to_arrow(&options, &one_chunk).expect("data_chunk_to_arrow");
+        assert_eq!(array.child_count(), 1);
+
+        // SAFETY: same connection; the mismatch is caught before DuckDB is called.
+        let err = unsafe { data_chunk_from_arrow(fx.con(), array, &converted) }
+            .expect_err("a one-column array cannot fill a two-column schema");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        let message = err.message().unwrap_or_default();
+        assert!(message.contains('1') && message.contains('2'), "{message}");
+    }
+
+    #[test]
+    fn a_zero_row_chunk_round_trips() {
+        let fx = Fixture::open();
+        let result = fx.query("SELECT 1::INTEGER AS id");
+        let cols = columns(&result);
+        let options = result.arrow_options().expect("arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
+
+        // An empty *result* yields no chunks at all, so the zero-row case has to
+        // come from a chunk built directly - which is also the shape an
+        // extension produces when a scan finds nothing.
+        let mut types = [cols[0].1.as_raw()];
+        // SAFETY: one valid logical type, which DuckDB copies.
+        let raw_chunk = unsafe { libduckdb_sys::duckdb_create_data_chunk(types.as_mut_ptr(), 1) };
+        assert!(!raw_chunk.is_null(), "duckdb_create_data_chunk");
+        // SAFETY: the chunk is ours to own and destroy.
+        let chunk = unsafe { OwnedDataChunk::from_raw(raw_chunk) };
+        // SAFETY: zero is always within capacity.
+        unsafe { chunk.set_size(0) };
+
+        let array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
+        assert_eq!(array.len(), 0);
+        assert_eq!(array.child_count(), 1);
+
+        // SAFETY: same connection; one child array, one schema column.
+        let imported =
+            unsafe { data_chunk_from_arrow(fx.con(), array, &converted) }.expect("import");
+        assert_eq!(imported.column_count(), 1);
+        assert_eq!(imported.size(), 0);
+    }
+}
+
+// ─── COPY ... FROM ───────────────────────────────────────────────────────────
+
+/// A read-only copy function: `COPY tbl FROM 'file' (FORMAT lines)` driven by a
+/// quack-rs table function.
+///
+/// The point of this module is the whole chain — `build_handle` →
+/// `copy_from` → `duckdb_copy_function_set_copy_from_function` →
+/// `CCopyFromBind` → the table function's own bind and scan — with the target
+/// table's schema read back through
+/// [`BindInfo::result_column_count`][quack_rs::table::BindInfo::result_column_count]
+/// rather than declared.
+#[cfg(feature = "duckdb-1-5")]
+mod copy_from {
+    use super::Fixture;
+    use quack_rs::copy_function::CopyFunctionBuilder;
+    use quack_rs::error::ExtensionError;
+    use quack_rs::table::TableFunctionBuilder;
+    use quack_rs::types::TypeId;
+
+    /// Rows parsed at bind time, handed to the scan one chunk at a time.
+    struct Reader {
+        rows: Vec<(i32, String)>,
+        next: usize,
+        /// The target table's columns, as `CCopyFromBind` supplied them.
+        schema: Vec<(String, Option<TypeId>)>,
+    }
+
+    /// Registers `lines`: a `COPY … FROM` handler for a trivial `id,label`
+    /// text format, with `skip_rows` as a COPY option.
+    fn register_lines_format(con: libduckdb_sys::duckdb_connection) {
+        let reader = TableFunctionBuilder::new("lines_reader")
+            // Exactly one VARCHAR — the file path. `CCopyFromBind` supplies it.
+            .param(TypeId::Varchar)
+            // COPY options arrive as named parameters, and an option the
+            // function never declared is a bind error naming the format.
+            .named_param("skip_rows", TypeId::BigInt)
+            .with_state::<Reader, _>(|bind| {
+                // A COPY ... FROM reader must NOT call add_result_column: the
+                // destination table already fixed the schema. Read it instead,
+                // and adapt — or refuse.
+                let schema: Vec<(String, Option<TypeId>)> = (0..bind.result_column_count())
+                    .map(|i| {
+                        let name = bind.result_column_name(i).unwrap_or_default();
+                        // SAFETY: called during bind, with `i` in range.
+                        let ty = unsafe { bind.result_column_type(i) };
+                        // SAFETY: the handle is live for as long as `ty` is.
+                        let id = ty.map(|t| unsafe { t.get_type_id() });
+                        (name, id)
+                    })
+                    .collect();
+                if schema.len() != 2 {
+                    return Err(ExtensionError::new(format!(
+                        "lines: expected a two-column target table, got {}",
+                        schema.len()
+                    )));
+                }
+                if schema[0].1 != Some(TypeId::Integer) || schema[1].1 != Some(TypeId::Varchar) {
+                    let named = |(name, id): &(String, Option<TypeId>)| {
+                        format!("{name} {}", id.map_or("<unknown>", TypeId::sql_name))
+                    };
+                    return Err(ExtensionError::new(format!(
+                        "lines: expected (INTEGER, VARCHAR), got ({}, {})",
+                        named(&schema[0]),
+                        named(&schema[1]),
+                    )));
+                }
+                // SAFETY: parameter 0 is declared above, and DuckDB always
+                // supplies the file path there for a COPY ... FROM.
+                let path = unsafe { bind.get_parameter_value(0) }
+                    .as_str()
+                    .map_err(|e| ExtensionError::new(format!("lines: bad path: {e}")))?;
+                // SAFETY: `skip_rows` is declared above; an absent option yields
+                // a null handle, which `as_i64_or` reports as the default.
+                let skip = usize::try_from(
+                    unsafe { bind.get_named_parameter_value("skip_rows") }.as_i64_or(0),
+                )
+                .unwrap_or(0);
+
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| ExtensionError::new(format!("lines: {path}: {e}")))?;
+                let rows = text
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .skip(skip)
+                    .map(|line| {
+                        let (id, label) = line.split_once(',').ok_or_else(|| {
+                            ExtensionError::new(format!("lines: no comma: {line}"))
+                        })?;
+                        let id: i32 = id
+                            .trim()
+                            .parse()
+                            .map_err(|e| ExtensionError::new(format!("lines: bad id: {e}")))?;
+                        Ok((id, label.trim().to_owned()))
+                    })
+                    .collect::<Result<Vec<_>, ExtensionError>>()?;
+
+                Ok(Reader {
+                    rows,
+                    next: 0,
+                    schema,
+                })
+            })
+            .scan(|state, chunk| {
+                assert_eq!(
+                    state.schema.len(),
+                    chunk.column_count(),
+                    "the output chunk has one vector per target column"
+                );
+                let take = (state.rows.len() - state.next).min(1024);
+                // SAFETY: two columns, exactly as the target table has.
+                let (mut ids, mut labels) = unsafe { (chunk.writer(0), chunk.writer(1)) };
+                for row in 0..take {
+                    let (id, label) = &state.rows[state.next + row];
+                    // SAFETY: `row` is below the chunk's capacity.
+                    unsafe {
+                        ids.write_i32(row, *id);
+                        labels.write_varchar(row, label);
+                    }
+                }
+                state.next += take;
+                // SAFETY: `take` is within the chunk's capacity.
+                unsafe { chunk.set_size(take) };
+                Ok(())
+            })
+            .build()
+            .expect("build lines_reader");
+
+        // SAFETY: every callback matches its declared signature.
+        let handle = unsafe { reader.build_handle() }.expect("build_handle");
+        assert_eq!(handle.param_types(), &[Some(TypeId::Varchar)]);
+
+        let copy = CopyFunctionBuilder::try_new("lines")
+            .expect("copy function name")
+            .copy_from(handle)
+            .expect("attach the reader");
+        // SAFETY: `con` is open.
+        unsafe { copy.register(con) }.expect("register the lines format");
+    }
+
+    fn write_fixture_file(name: &str, contents: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join(name), contents).expect("write fixture");
+        dir
+    }
+
+    #[test]
+    fn a_read_only_copy_function_loads_a_table() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "1,alpha\n2,beta\n3,gamma\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        fx.query("CREATE TABLE t (id INTEGER, label VARCHAR)");
+        fx.query(&format!("COPY t FROM '{path}' (FORMAT lines)"));
+
+        assert_eq!(
+            fx.scalar("SELECT count(*) FROM t", |r, i| unsafe { r.read_i64(i) }),
+            Some(3)
+        );
+        assert_eq!(
+            fx.scalar("SELECT sum(id)::BIGINT FROM t", |r, i| unsafe {
+                r.read_i64(i)
+            }),
+            Some(6)
+        );
+        assert_eq!(
+            fx.scalar(
+                "SELECT string_agg(label, '|' ORDER BY id) FROM t",
+                |r, i| { unsafe { r.read_str(i).to_owned() } }
+            )
+            .as_deref(),
+            Some("alpha|beta|gamma")
+        );
+    }
+
+    #[test]
+    fn a_copy_option_reaches_the_reader_as_a_named_parameter() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "0,header\n1,alpha\n2,beta\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        fx.query("CREATE TABLE t (id INTEGER, label VARCHAR)");
+        fx.query(&format!("COPY t FROM '{path}' (FORMAT lines, SKIP_ROWS 1)"));
+
+        assert_eq!(
+            fx.scalar("SELECT count(*) FROM t", |r, i| unsafe { r.read_i64(i) }),
+            Some(2)
+        );
+        assert_eq!(
+            fx.scalar("SELECT min(label) FROM t", |r, i| unsafe {
+                r.read_str(i).to_owned()
+            })
+            .as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn an_undeclared_copy_option_is_a_binder_error_naming_the_format() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "1,alpha\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        fx.query("CREATE TABLE t (id INTEGER, label VARCHAR)");
+        // SAFETY: `con` is open.
+        let err = unsafe {
+            quack_rs::query::query(
+                fx.con(),
+                &format!("COPY t FROM '{path}' (FORMAT lines, NONSENSE 1)"),
+            )
+        }
+        .expect_err("an option the reader never declared must not be accepted");
+        // Two things worth pinning down, because neither is obvious:
+        //   * the option name comes back exactly as the user typed it, even
+        //     though the lookup against the declared named parameters is
+        //     case-insensitive (SKIP_ROWS matches `skip_rows` above);
+        //   * the format named in the message is the *table function's* name,
+        //     not the copy function's. `CCopyFromBind` reports `info.tf.name`,
+        //     and `duckdb_copy_function_set_copy_from_function` only borrows the
+        //     copy function's name when the table function has none.
+        assert!(err.as_str().contains("NONSENSE"), "{err}");
+        assert!(err.as_str().contains("lines_reader"), "{err}");
+    }
+
+    #[test]
+    fn the_reader_sees_the_target_tables_schema_rather_than_declaring_one() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "1,alpha\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        // The bind callback rejects anything but two columns, and it only knows
+        // the column count because DuckDB told it — nothing in the reader
+        // declares a schema.
+        fx.query("CREATE TABLE three (a INTEGER, b VARCHAR, c INTEGER)");
+        // SAFETY: `con` is open.
+        let err = unsafe {
+            quack_rs::query::query(
+                fx.con(),
+                &format!("COPY three FROM '{path}' (FORMAT lines)"),
+            )
+        }
+        .expect_err("the reader refuses a three-column target");
+        assert!(err.as_str().contains("two-column target table"), "{err}");
+        assert!(err.as_str().contains('3'), "{err}");
+    }
+
+    #[test]
+    fn the_reader_sees_the_target_tables_column_types_too() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "1,alpha\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        fx.query("CREATE TABLE mistyped (id VARCHAR, label VARCHAR)");
+        // SAFETY: `con` is open.
+        let err = unsafe {
+            quack_rs::query::query(
+                fx.con(),
+                &format!("COPY mistyped FROM '{path}' (FORMAT lines)"),
+            )
+        }
+        .expect_err("the reader writes INTEGER into column 0");
+        assert!(
+            err.as_str().contains("expected (INTEGER, VARCHAR)"),
+            "{err}"
+        );
+        assert!(err.as_str().contains("id VARCHAR"), "{err}");
+    }
+
+    #[test]
+    fn copy_from_rejects_a_reader_whose_parameters_do_not_match_the_contract() {
+        let fx = Fixture::open();
+
+        for (label, build) in [
+            (
+                "no positional parameter",
+                (|| TableFunctionBuilder::new("no_params")) as fn() -> TableFunctionBuilder,
+            ),
+            ("a non-VARCHAR parameter", || {
+                TableFunctionBuilder::new("wrong_type").param(TypeId::BigInt)
+            }),
+            ("two parameters", || {
+                TableFunctionBuilder::new("two_params")
+                    .param(TypeId::Varchar)
+                    .param(TypeId::Varchar)
+            }),
+        ] {
+            let reader = build()
+                .with_state::<u8, _>(|_| Ok(0))
+                .scan(|_, chunk| {
+                    // SAFETY: end of stream.
+                    unsafe { chunk.set_size(0) };
+                    Ok(())
+                })
+                .build()
+                .expect("build");
+            // SAFETY: every callback matches its declared signature.
+            let handle = unsafe { reader.build_handle() }.expect("build_handle");
+            let err = CopyFunctionBuilder::try_new("rejected")
+                .expect("name")
+                .copy_from(handle)
+                .err()
+                .unwrap_or_else(|| panic!("{label} must be rejected"));
+            assert!(
+                err.as_str().contains("exactly one VARCHAR"),
+                "{label}: {err}"
+            );
+        }
+
+        drop(fx);
+    }
+
+    #[test]
+    fn a_copy_function_that_implements_neither_direction_is_refused() {
+        let fx = Fixture::open();
+        let builder = CopyFunctionBuilder::try_new("empty_format").expect("name");
+        // SAFETY: `con` is open.
+        let err = unsafe { builder.register(fx.con()) }
+            .expect_err("DuckDB refuses this with no message of its own");
+        assert!(err.as_str().contains("implements nothing"), "{err}");
+    }
 }

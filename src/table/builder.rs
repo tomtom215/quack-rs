@@ -66,12 +66,12 @@ use std::os::raw::c_void;
 use libduckdb_sys::{
     duckdb_bind_info, duckdb_connection, duckdb_create_table_function, duckdb_data_chunk,
     duckdb_destroy_table_function, duckdb_function_info, duckdb_init_info,
-    duckdb_register_table_function, duckdb_table_function_add_named_parameter,
-    duckdb_table_function_add_parameter, duckdb_table_function_set_bind,
-    duckdb_table_function_set_extra_info, duckdb_table_function_set_function,
-    duckdb_table_function_set_init, duckdb_table_function_set_local_init,
-    duckdb_table_function_set_name, duckdb_table_function_supports_projection_pushdown,
-    DuckDBSuccess,
+    duckdb_register_table_function, duckdb_table_function,
+    duckdb_table_function_add_named_parameter, duckdb_table_function_add_parameter,
+    duckdb_table_function_set_bind, duckdb_table_function_set_extra_info,
+    duckdb_table_function_set_function, duckdb_table_function_set_init,
+    duckdb_table_function_set_local_init, duckdb_table_function_set_name,
+    duckdb_table_function_supports_projection_pushdown, DuckDBSuccess,
 };
 
 use crate::error::ExtensionError;
@@ -308,6 +308,42 @@ impl TableFunctionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // SAFETY: forwarded from this method's own contract.
+        let handle = unsafe { self.build_handle() }?;
+
+        // Register. DuckDB copies the function; the handle is still ours.
+        // SAFETY: `con` is valid per the caller's contract, `handle` is live.
+        let result = unsafe { duckdb_register_table_function(con, handle.as_raw()) };
+
+        if result == DuckDBSuccess {
+            Ok(())
+        } else {
+            Err(ExtensionError::new(format!(
+                "duckdb_register_table_function failed for '{name}': {hint}",
+                name = handle.name(),
+                hint = crate::error::REGISTRATION_FAILURE_HINT
+            )))
+        }
+    }
+
+    /// Builds a configured, unregistered `duckdb_table_function`.
+    ///
+    /// [`register`][Self::register] is this plus
+    /// `duckdb_register_table_function`. The handle is exposed separately
+    /// because `COPY … FROM` needs a table function that is *attached to a copy
+    /// function* rather than registered on its own — see
+    /// `CopyFunctionBuilder::copy_from` (`duckdb-1-5`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError` if a parameter type is invalid, or if the bind,
+    /// init or scan callback was not set.
+    ///
+    /// # Safety
+    ///
+    /// The `DuckDB` C API dispatch table must be initialised (it always is
+    /// inside an extension).
+    pub unsafe fn build_handle(self) -> Result<TableFunctionHandle, ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.
         for (i, id) in self.params.iter().enumerate() {
             LogicalType::check_slot(*id, &format!("table function parameter {i}"))?;
@@ -331,7 +367,8 @@ impl TableFunctionBuilder {
             .ok_or_else(|| ExtensionError::new("scan callback not set"))?;
 
         // SAFETY: creates a new table function handle.
-        let mut func = unsafe { duckdb_create_table_function() };
+        let func = unsafe { duckdb_create_table_function() };
+        let mut param_types_for_copy_from: Vec<Option<TypeId>> = Vec::new();
 
         // SAFETY: func is a valid newly created handle.
         unsafe {
@@ -348,15 +385,18 @@ impl TableFunctionBuilder {
                 if logical_idx < self.logical_params.len()
                     && self.logical_params[logical_idx].0 == pos
                 {
+                    let logical = &self.logical_params[logical_idx].1;
+                    // SAFETY: `logical` is a live logical type.
+                    param_types_for_copy_from.push(TypeId::try_from_duckdb_type(unsafe {
+                        libduckdb_sys::duckdb_get_type_id(logical.as_raw())
+                    }));
                     unsafe {
-                        duckdb_table_function_add_parameter(
-                            func,
-                            self.logical_params[logical_idx].1.as_raw(),
-                        );
+                        duckdb_table_function_add_parameter(func, logical.as_raw());
                     }
                     logical_idx += 1;
                 } else if simple_idx < self.params.len() {
                     let lt = LogicalType::new(self.params[simple_idx]);
+                    param_types_for_copy_from.push(Some(self.params[simple_idx]));
                     unsafe {
                         duckdb_table_function_add_parameter(func, lt.as_raw());
                     }
@@ -416,25 +456,69 @@ impl TableFunctionBuilder {
             }
         }
 
-        // Register.
-        // SAFETY: con and func are valid.
-        let result = unsafe { duckdb_register_table_function(con, func) };
+        Ok(TableFunctionHandle {
+            func,
+            name: self.name,
+            param_types: param_types_for_copy_from,
+        })
+    }
+}
 
-        // Always destroy the function handle; ownership transferred to DuckDB on success.
-        // SAFETY: func was created above.
-        unsafe {
-            duckdb_destroy_table_function(&raw mut func);
-        }
+/// A configured `duckdb_table_function` that has not been registered.
+///
+/// Produced by
+/// [`TableFunctionBuilder::build_handle`][TableFunctionBuilder::build_handle].
+/// `DuckDB` copies the function when it is registered or attached to a copy
+/// function, so this always owns its handle and destroys it on drop.
+pub struct TableFunctionHandle {
+    func: duckdb_table_function,
+    name: CString,
+    /// Top-level type ids of the positional parameters, in order.
+    ///
+    /// Kept because `COPY … FROM` requires exactly one `VARCHAR` parameter and
+    /// `DuckDB` reports a violation by doing nothing at all — see
+    /// [`CopyFunctionBuilder::copy_from`][crate::copy_function::CopyFunctionBuilder::copy_from].
+    param_types: Vec<Option<TypeId>>,
+}
 
-        if result == DuckDBSuccess {
-            Ok(())
-        } else {
-            Err(ExtensionError::new(format!(
-                "duckdb_register_table_function failed for '{name}': {hint}",
-                name = self.name.to_string_lossy(),
-                hint = crate::error::REGISTRATION_FAILURE_HINT
-            )))
-        }
+impl TableFunctionHandle {
+    /// The raw handle. Do not destroy it — this value still owns it.
+    #[must_use]
+    pub const fn as_raw(&self) -> duckdb_table_function {
+        self.func
+    }
+
+    /// The function's name.
+    #[must_use]
+    pub fn name(&self) -> std::borrow::Cow<'_, str> {
+        self.name.to_string_lossy()
+    }
+
+    /// Top-level type ids of the positional parameters, in declaration order.
+    ///
+    /// `None` for a type this build of quack-rs has no [`TypeId`] for.
+    #[must_use]
+    pub fn param_types(&self) -> &[Option<TypeId>] {
+        &self.param_types
+    }
+}
+
+impl Drop for TableFunctionHandle {
+    fn drop(&mut self) {
+        // SAFETY: `self.func` was created by `duckdb_create_table_function` and
+        // is destroyed exactly once. DuckDB copies the function on register and
+        // on `set_copy_from_function`, so destroying ours never affects it.
+        unsafe { duckdb_destroy_table_function(&raw mut self.func) };
+    }
+}
+
+impl core::fmt::Debug for TableFunctionHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TableFunctionHandle")
+            .field("func", &self.func)
+            .field("name", &self.name)
+            .field("param_types", &self.param_types)
+            .finish()
     }
 }
 

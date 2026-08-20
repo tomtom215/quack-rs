@@ -257,10 +257,11 @@ impl QueryResult {
         Some(unsafe { OwnedDataChunk::from_raw(chunk) })
     }
 
-    /// Returns the full [`LogicalType`] of column `index`.
+    /// Returns the full [`LogicalType`][crate::types::LogicalType] of column
+    /// `index`.
     ///
     /// [`column_type`][Self::column_type] collapses a column to its top-level
-    /// [`TypeId`][crate::types::TypeId], which is all you need for a scalar but
+    /// [`TypeId`], which is all you need for a scalar but
     /// loses everything about a `STRUCT`'s fields, a `LIST`'s element type, a
     /// `DECIMAL`'s width and scale, or an `ENUM`'s dictionary. This keeps them.
     ///
@@ -312,6 +313,24 @@ impl QueryResult {
         // SAFETY: `duckdb_result_is_streaming` takes the result by value and
         // only reads it.
         unsafe { libduckdb_sys::duckdb_result_is_streaming(self.result) }
+    }
+
+    /// The Arrow production settings this result was created with
+    /// (`duckdb_result_get_arrow_options`).
+    ///
+    /// Hand these to
+    /// [`arrow::to_arrow_schema`][crate::arrow::to_arrow_schema] and
+    /// [`arrow::data_chunk_to_arrow`][crate::arrow::data_chunk_to_arrow] when
+    /// exporting this result's chunks: they carry the client properties captured
+    /// when the query ran, which is what the chunks were built against.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtensionError`] when `DuckDB` returns null, which it does
+    /// for a result with no internal data.
+    #[cfg(feature = "duckdb-1-5-4")]
+    pub fn arrow_options(&self) -> Result<crate::arrow::ArrowOptions, ExtensionError> {
+        crate::arrow::ArrowOptions::from_result(self)
     }
 
     /// Returns the raw `duckdb_result`.

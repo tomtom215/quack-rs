@@ -5,14 +5,14 @@
 
 //! Whole-vector operations (`DuckDB` 1.5.0+).
 //!
-//! [`SelectionVector`][crate::selection_vector::SelectionVector] is `DuckDB`'s
+//! [`SelectionVector`] is `DuckDB`'s
 //! zero-copy filtering primitive — and on its own it does nothing. These are the
 //! operations that consume one, plus the standalone [`OwnedVector`] that gives a
 //! copy somewhere to land.
 //!
 //! # The one thing to know before slicing
 //!
-//! [`slice`] turns its vector into a **dictionary vector**: the payload stays
+//! [`slice()`] turns its vector into a **dictionary vector**: the payload stays
 //! put and the vector gains an indirection through the selection. That is the
 //! point — no data is copied — but it also means
 //! `duckdb_vector_get_data` no longer maps row `i` to element `i`, so a
@@ -22,11 +22,11 @@
 //! quack-rs's readers are flat readers, which is correct everywhere `DuckDB`
 //! hands an extension a vector — `CAPIScalarFunction`, `CAPIAggregateUpdate`,
 //! the cast bridge and the copy sink all call `Flatten()` on their inputs first
-//! (verified in `DuckDB` 1.5.4's `src/main/capi/*.cpp`). [`slice`] is the one
+//! (verified in `DuckDB` 1.5.4's `src/main/capi/*.cpp`). [`slice()`] is the one
 //! way an extension can produce a non-flat vector for itself, so it is the one
 //! place that guarantee has to be re-established by hand.
 //!
-//! Prefer [`copy_selected`]: it writes the selected rows into a flat
+//! Prefer [`copy_selected()`]: it writes the selected rows into a flat
 //! destination, which every reader in this crate can then read normally.
 //!
 //! # Example: filter without copying the payload
@@ -126,7 +126,7 @@ impl Drop for OwnedVector {
 ///
 /// The destination stays **flat**, so the ordinary
 /// [`VectorReader`][crate::vector::VectorReader] reads it correctly — which is
-/// why this is the filtering primitive to reach for first, ahead of [`slice`].
+/// why this is the filtering primitive to reach for first, ahead of [`slice()`].
 ///
 /// `duckdb.h` on the offsets: `src_count` is "the number of entries from
 /// selection vector to copy … the effective length of the selection vector
@@ -208,7 +208,7 @@ pub unsafe fn slice(vector: duckdb_vector, sel: &SelectionVector, len: usize) {
 ///
 /// - `vector` must be a valid, writable vector.
 /// - `value`'s type must match the vector's, or `DuckDB` will reinterpret it.
-/// - As with [`slice`], the result is not a flat vector: do not read it back
+/// - As with [`slice()`], the result is not a flat vector: do not read it back
 ///   through a [`VectorReader`][crate::vector::VectorReader].
 pub unsafe fn reference_value(vector: duckdb_vector, value: &Value) {
     // SAFETY: forwarded from this function's own contract; `value` outlives the

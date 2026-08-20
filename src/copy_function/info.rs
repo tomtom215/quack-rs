@@ -94,6 +94,39 @@ impl CopyBindInfo {
         unsafe { duckdb_copy_function_bind_get_extra_info(self.info) }
     }
 
+    /// The options given to the `COPY … TO` statement, as a `STRUCT` value.
+    ///
+    /// `COPY t TO 'f' (FORMAT my_format, COMPRESSION 'zstd', LEVEL 3)` arrives
+    /// here as a `STRUCT` whose fields are the option names. Read them with
+    /// [`Value::struct_child`][crate::value::Value::struct_child] together with
+    /// the type's [`struct_child_name`][crate::types::LogicalType::struct_child_name].
+    ///
+    /// Returns `None` only when `DuckDB` hands back a null handle.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::copy_function::CopyBindInfo;
+    ///
+    /// # fn demo(bind: &CopyBindInfo) -> Option<String> {
+    /// let options = bind.options()?;
+    /// let names = options.struct_field_names();
+    /// let idx = names.iter().position(|n| n == "compression")?;
+    /// options.struct_child(idx)?.as_str().ok()
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn options(&self) -> Option<crate::value::Value> {
+        // SAFETY: `self.info` is valid per the constructor's contract. DuckDB
+        // returns a freshly allocated `duckdb_value` the caller owns.
+        let raw = unsafe { libduckdb_sys::duckdb_copy_function_bind_get_options(self.info) };
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: `raw` is owned by us from here; `Value` destroys it on drop.
+        Some(unsafe { crate::value::Value::from_raw(raw) })
+    }
+
     /// Sets the bind data pointer and its destructor.
     ///
     /// # Safety

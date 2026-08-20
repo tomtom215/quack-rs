@@ -194,6 +194,59 @@ test failure rather than a surprise.
 
 ---
 
+## L9: `duckdb_data_chunk_from_arrow` takes the array even when it fails
+
+**Status**: Made impossible by `arrow::data_chunk_from_arrow`, which takes the
+`ArrowArray` **by value**.
+
+**Symptom**: One of two opposite bugs, depending on which way you guessed. Treat
+the array as still yours after a failed conversion and you double-release it —
+DuckDB already stored a copy of the record in the chunk's owned data, so its
+`release` runs twice. Treat it as gone in *every* case and a zero-column
+conversion leaks the whole Arrow buffer tree.
+
+**Root cause**: `duckdb.h` says "Data ownership is passed on to DuckDB's
+DataChunk", which reads like a success-path statement. `src/main/capi/arrow-c.cpp`
+is more specific — the transfer happens inside the per-column loop, before any of
+the work that can throw:
+
+```cpp
+for (idx_t i = 0; i < dchunk->ColumnCount(); i++) {
+    ...
+    array_state->owned_data->arrow_array = *arrow_array;
+    // We set it to nullptr to effectively transfer the ownership
+    arrow_array->release = nullptr;
+    try { ... } catch (...) { return duckdb_create_error_data(...); }
+}
+```
+
+So the array is claimed on the error path too — but **only if the loop runs at
+all**. A converted schema with zero columns leaves `release` intact and the array
+still belongs to the caller. The early return for null arguments is the same.
+
+**Fix**: own the record in a wrapper whose `Drop` releases *only if `release`
+survived*, and consume it by value:
+
+```rust
+let chunk = unsafe { data_chunk_from_arrow(con, array, &converted) }?;
+// `array` is gone from the caller's view either way. Inside, the by-value
+// binding drops on the way out: a no-op when DuckDB nulled `release`, a
+// correct release when it did not.
+```
+
+The same wrapper handles the mirror-image case. `ArrowConverter::ToArrowSchema`
+and `ToArrowArray` install `release` / assign `*out_array` as their **last**
+statement, so a *failed* export leaves `release == NULL` and nothing to free —
+discarding the record is correct there, not a leak.
+
+**Related**: `duckdb_data_chunk_from_arrow` also indexes
+`arrow_array->children[i]` once per schema column with no bounds check, and
+dereferences an already-released array. Both are segfaults rather than errors;
+`data_chunk_from_arrow` checks them first, which is why `ArrowConvertedSchema`
+records the column count of the schema it was built from.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured manually in `Cargo.toml`.

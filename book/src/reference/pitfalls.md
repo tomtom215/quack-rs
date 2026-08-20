@@ -180,6 +180,57 @@ automatically when it goes out of scope.
 
 ---
 
+## L8: `DEFAULT_NULL_HANDLING` does not propagate NULLs for scalar functions
+
+**Status**: Made impossible by `ScalarFunctionBuilder::map1` / `map2` /
+`map1_str` / `map2_str`. `DataChunk::propagate_nulls` fixes it in one line for
+hand-written callbacks.
+
+**Symptom**: A scalar function returns a value where SQL requires NULL — but only
+for arguments that come from a column. `SELECT f(NULL)` looks correct, because a
+literal NULL is constant-folded before the function is reached, so the bug
+survives review and ships.
+
+**Root cause**: The name suggests DuckDB returns NULL on your behalf. For a
+scalar function registered through the C API it does not, at run time:
+`CAPIScalarFunction` calls the callback for every row including NULL ones and
+checks only the *error* flag, and the one NULL check in `ExpressionExecutor` —
+`VerifyNullHandling` — has its entire body inside `#ifdef DEBUG`. Every DuckDB a
+user installs is a release build.
+
+**Fix**: use the typed closure constructors, which skip NULL rows and write NULL
+for them, or call `DataChunk::propagate_nulls(&mut writer)` at the end of a
+hand-written callback. `map1_opt` / `map2_opt` and
+`NullHandling::SpecialNullHandling` are for functions that genuinely mean to see
+NULLs. **Aggregates are different** — their executor really does filter NULL rows.
+
+---
+
+## L9: `duckdb_data_chunk_from_arrow` takes the array even when it fails
+
+**Status**: Made impossible by `arrow::data_chunk_from_arrow`, which takes the
+`ArrowArray` **by value**.
+
+**Symptom**: One of two opposite bugs, depending on which way you guessed. Treat
+the array as still yours after a failed conversion and you double-release it.
+Treat it as gone in every case and a zero-column conversion leaks the whole
+Arrow buffer tree.
+
+**Root cause**: `duckdb.h` says "Data ownership is passed on to DuckDB's
+DataChunk", which reads like a success-path statement. `arrow-c.cpp` sets
+`arrow_array->release = nullptr` inside the per-column loop, *before* the work
+that can throw — so the array is claimed on the error path too, but only if the
+loop runs at all. A zero-column converted schema leaves `release` intact and the
+array still belongs to the caller.
+
+**Fix**: own the record in a wrapper whose `Drop` releases only if `release`
+survived, and consume it by value. The by-value binding drops on the way out: a
+no-op when DuckDB nulled `release`, a correct release when it did not. The
+mirror case is handled by the same rule — `ToArrowSchema` / `ToArrowArray`
+install `release` last, so a failed *export* leaves nothing to free.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured in `Cargo.toml`. Scaffold handles this.
