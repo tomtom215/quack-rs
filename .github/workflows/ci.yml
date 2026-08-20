@@ -182,6 +182,14 @@ jobs:
       - run: cargo doc --no-deps --features duckdb-1-5-3
         env:
           RUSTDOCFLAGS: "-D warnings"
+      # Also build with DEFAULT features. docs.rs and the job above both enable
+      # duckdb-1-5-3, so a dependant running plain `cargo doc` was on a path CI
+      # never exercised -- and 0.16.0 shipped eight unresolved intra-doc links
+      # because of it: prose that is always compiled linked to items that only
+      # exist behind `duckdb-1-5`.
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
   msrv:
     name: MSRV (1.86.0)

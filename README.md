@@ -77,7 +77,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 | Init error propagation | Forced to `panic!()` when runtime allocation fails | `ExtensionError` has `From<io::Error>` — use `?` directly |
 | TLS configuration | No standard way to inject custom TLS configs | `TlsConfigProvider` trait (type-erased, zero deps) |
 | Security warnings | Every extension re-invents warning infrastructure | `ExtensionWarning` + `WarningCollector` with CWE codes |
-| Secrets management | Custom in-memory secrets + DuckDB bridge per extension | `SecretsManager` trait + `SecretEntry` builder |
+| Secrets management | Leak-resistant credential types (redacting `Debug`, zeroizing `Drop`). The C API exposes no secret functions, so this is **not** a bridge into `CREATE SECRET` | `SecretsManager` trait + `SecretEntry` builder |
 | Extension naming | Rejected by DuckDB CI with no explanation | `validate_extension_name` catches issues before submission |
 | description.yml | No tooling to validate before submission | `validate_description_yml_str` validates the whole file |
 | New project setup | Hours of boilerplate + reading DuckDB internals | `generate_scaffold` produces all 11 required files |
@@ -121,13 +121,13 @@ See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
 
 ```toml
 [dependencies]
-quack-rs = "0.13"
+quack-rs = "0.16"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
 > **DuckDB compatibility**: `quack-rs` supports DuckDB **1.4.x and 1.5.x**.
 > Both releases expose the same C API version (`v1.2.0`), confirmed by E2E tests
-> against DuckDB 1.4.4 and DuckDB 1.5.0. The upper bound `<2` prevents silent
+> against DuckDB 1.4.4 and DuckDB 1.5.5. The upper bound `<2` prevents silent
 > adoption of a future major release that may change the C API. When the C API
 > version changes, `quack-rs` will need to be updated and re-released.
 
@@ -312,7 +312,7 @@ append_metadata target/release/libmy_extension.so \
 | [`error`] | FFI-safe error type | `ExtensionError`, `ExtResult<T>` |
 | [`tls`] | Type-erased TLS config provider for HTTP-capable extensions | `TlsConfigProvider` |
 | [`warning`] | Structured security warning API | `ExtensionWarning`, `WarningSeverity`, `WarningCollector` |
-| [`secrets`] | Secrets manager bridge trait | `SecretsManager`, `SecretEntry` |
+| [`secrets`] | Leak-resistant credential holding (not a `CREATE SECRET` bridge — the C API has none) | `SecretsManager`, `SecretEntry` |
 | [`config`] | RAII wrapper for DuckDB database configuration | `DbConfig` |
 | [`validate`] | Community extension compliance | All validators below |
 | [`validate::description_yml`] | description.yml parsing and validation | `parse_description_yml`, `DescriptionYml` |

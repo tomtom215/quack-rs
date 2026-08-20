@@ -44,7 +44,7 @@ quack_rs
 ├── client_context   ClientContext — client context access (requires `duckdb-1-5`)
 ├── config_option    ConfigOptionBuilder — extension-defined configuration options (requires `duckdb-1-5`)
 ├── copy_function    CopyFunctionBuilder, CopyBindInfo, CopySinkInfo — custom COPY TO handlers (requires `duckdb-1-5`)
-├── appender         Appender — bulk row appender (requires `duckdb-1-5`)
+├── appender         Appender — bulk row appender (stable ABI; some methods need `duckdb-1-5`)
 ├── error_data       ErrorData, DuckDbErrorType — structured error data + UTF-8 validation (requires `duckdb-1-5`)
 ├── expression       Expression — bound expression inspection / constant folding (requires `duckdb-1-5`)
 ├── file_system      FileSystem, FileHandle, FileOpenOptions, FileFlag — DuckDB virtual file system (requires `duckdb-1-5`)
@@ -63,7 +63,7 @@ quack_rs
 │   ├── type_id      TypeId enum — all DuckDB column types
 │   ├── logical_type LogicalType — RAII for duckdb_logical_type
 │   └── null_handling NullHandling — NULL propagation behaviour
-├── table_description TableDescription — table metadata queries (requires `duckdb-1-5`)
+├── table_description TableDescription — table metadata (stable ABI; count/types need `duckdb-1-5`)
 ├── sql_macro        SqlMacro — SQL macro registration (scalar and table macros)
 ├── interval         DuckInterval, interval_to_micros (checked + saturating)
 ├── config           DbConfig — RAII wrapper for duckdb_config
@@ -102,13 +102,13 @@ quack_rs
 | `client_context` | `ClientContext` — access to connection catalog, config options, and connection ID (requires `duckdb-1-5`) | Yes |
 | `config_option` | `ConfigOptionBuilder` — register extension-defined `SET`/`RESET` configuration options (requires `duckdb-1-5`) | Yes |
 | `copy_function` | `CopyFunctionBuilder`, `CopyBindInfo`, `CopySinkInfo`, `CopyGlobalInitInfo`, `CopyFinalizeInfo` — custom `COPY TO` handler registration (requires `duckdb-1-5`) | Yes |
-| `appender` | `Appender` — bulk row insertion: append a `DataChunk`, flush/close/clear, structured errors (requires `duckdb-1-5`) | Yes |
+| `appender` | `Appender` — bulk row insertion: append a `DataChunk`, flush/close. Available on the **stable ABI**; `clear`, `error_data` and `append_default_to_chunk` need `duckdb-1-5` | Yes |
 | `error_data` | `ErrorData`, `DuckDbErrorType`, `check_valid_utf8` — structured error data and UTF-8 validation (requires `duckdb-1-5`) | Yes |
 | `expression` | `Expression` — inspect/constant-fold scalar-function argument expressions at bind time (requires `duckdb-1-5`) | Yes |
 | `file_system` | `FileSystem`, `FileHandle`, `FileOpenOptions`, `FileFlag` — read/write via DuckDB's virtual file system (requires `duckdb-1-5`) | Yes |
 | `instance_cache` | `InstanceCache` — share one database instance across opens of the same path (requires `duckdb-1-5`) | Yes |
 | `selection_vector` | `SelectionVector` — allocate/fill zero-copy row-index vectors (requires `duckdb-1-5`) | Yes |
-| `table_description` | `TableDescription` — query table column count, names, and types at runtime (requires `duckdb-1-5`) | Yes |
+| `table_description` | `TableDescription` — column names and `DEFAULT`s on the **stable ABI**; column count and types need `duckdb-1-5` | Yes |
 | `replacement_scan` | `ReplacementScanBuilder` — `SELECT * FROM 'file.xyz'` registration | Yes |
 | `vector::reader` | Typed reads with correct alignment and boolean semantics | Yes |
 | `vector::writer` | Typed writes with NULL flag support | Yes |

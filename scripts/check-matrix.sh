@@ -75,6 +75,10 @@ fi
 
 echo '── docs ─────────────────────────────────────────────────────────────────'
 run 'cargo doc --no-deps --features duckdb-1-5-3'
+# Default features too: docs.rs and the CI doc job both enable
+# duckdb-1-5-3, so plain `cargo doc` -- what a dependant runs -- was
+# unexercised, and 0.16.0 shipped 8 unresolved intra-doc links as a result.
+run 'cargo doc --no-deps'
 
 if (( run_tests )); then
     echo '── test suites ──────────────────────────────────────────────────────────'

@@ -10,6 +10,83 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-08-19
+
+### Fixed
+
+#### Documentation corrected against the code it describes
+
+0.16.0 changed behaviour in several places and left the prose describing the old
+behaviour. Everything below is a case of the docs contradicting the shipped
+crate, found by auditing each 0.16.0 change for propagation.
+
+- **`panic = "abort"` was still recommended in nine places**, including the
+  copy-paste `[profile.release]` blocks in Quick Start, Installation and
+  Publishing — all marking it **required**. 0.16.0 established the opposite:
+  quack-rs wraps every `extern "C"` boundary in `catch_unwind`, which cannot
+  catch anything under `abort`, so the setting silently disables the crate's
+  entire panic safety. `publishing.md` contradicted itself, saying `abort` on
+  line 236 and `unwind` on line 264. Also corrected in `concepts/errors.md`,
+  `reference/pitfalls.md`, `faq.md`, `docs/architecture.md`, `LESSONS.md`,
+  `SECURITY.md` and `examples/hello-ext/README.md`.
+
+- **`cargo doc` failed with default features.** Eight unresolved intra-doc
+  links: module and method prose that is always compiled linked to
+  `Appender::error_data` / `clear` / `append_default_to_chunk` and
+  `TableDescription::column_count` / `column_type`, which only exist behind
+  `duckdb-1-5`. An unresolved intra-doc link is a rustdoc error under
+  `-D warnings`, so any dependant running `cargo doc` — or CI with that flag —
+  hit it. It survived because docs.rs and the CI doc job *both* build with
+  `--features duckdb-1-5-3`, leaving the plain build unexercised. The links are
+  now plain code spans, and CI plus `scripts/check-matrix.sh` build the docs
+  with default features as well.
+
+- **`examples/hello-ext` was actually built with `panic = "abort"`.** Not a
+  doc bug: the reference extension users copy shipped with quack-rs's panic
+  guards inert. Now `unwind`, pinned by a test that runs the example's own
+  manifest through the rule (`hello_ext_example_release_profile_is_valid`).
+
+- **Every install snippet said `quack-rs = "0.13"`** — in `README.md` (the
+  crates.io front page), Quick Start, Installation and Publishing. Three minor
+  versions stale, so a copy-paste skipped the wasm target, the blob fix, both
+  heap-corruption fixes and the ABI guard. Now `"0.16"`.
+
+- **`appender` and `table_description` were still documented as requiring
+  `duckdb-1-5`** in `docs/architecture.md`, `CONTRIBUTING.md` and
+  `book/src/contributing.md`. 0.16.0 ungated both — that was the point of the
+  change — so stable-ABI users were told a capability they had was unavailable.
+  The remaining per-method gating (`clear`, `error_data`,
+  `append_default_to_chunk`; column count and types) is now stated precisely.
+
+- **The book taught `DuckStringView::from_bytes`**, deprecated in 0.16.0, and
+  demonstrated it on a raw pointer deref — exactly the pointer-format case where
+  it now silently yields a view whose accessors return `None`, indistinguishable
+  from an empty string. Rewritten to use `from_raw` (unsafe, follows the
+  pointer) or `inline_from_bytes` (safe, refuses it).
+
+- **`secrets` was described as a bridge into DuckDB's `CREATE SECRET`** in both
+  `book/src/security/secrets.md` and `README.md`. 0.16.0 established there is no
+  `duckdb_secret_*` function anywhere in `duckdb_ext_api_v1`, so no such bridge
+  can exist; `src/secrets.rs` was corrected then and the user-facing copies were
+  not. Both now say what the module is for — leak-resistant credential types —
+  and what DuckDB does not expose.
+
+- **`book/src/publishing.md`'s `ScaffoldConfig` example no longer compiled.**
+  0.16.0 added `target_duckdb_version` and `use_unstable_c_api`, leaving the
+  struct literal two fields short. Uses `..Default::default()` now.
+
+- Smaller: `examples/hello-ext/Cargo.lock` still recorded `quack-rs 0.15.0`, and
+  the README's compatibility note cited E2E coverage against DuckDB 1.5.0 when
+  0.16.0 tests against 1.5.5.
+
+#### Known gap
+
+`mdbook test` is not run in CI — `docs.yml` only runs `mdbook build` — so none
+of the book's 220 Rust code blocks are ever compiled. That is why a
+non-compiling example could ship. Enabling it needs the illustrative fragments
+annotated first, and could not be validated in the environment this release was
+prepared in, so it is left as a follow-up rather than added blind.
+
 ## [0.16.0] — 2026-08-19
 
 ### Security

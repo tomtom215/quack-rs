@@ -1,11 +1,28 @@
 # Secrets Management
 
 Extensions that access external services (HTTP APIs, databases, cloud storage)
-commonly need credentials. DuckDB provides a native secrets API via
-`CREATE SECRET`, and the
+commonly need credentials.
+
+**DuckDB's `CREATE SECRET` system is not reachable from an extension.** There is
+no `duckdb_secret_*` function anywhere in `duckdb_ext_api_v1` — not one among the
+546 slots in DuckDB 1.5.5 — so an extension cannot ask DuckDB for a credential
+through the C API. Querying the `duckdb_secrets()` table function (which
+[`list_duckdb_secrets`] does) returns metadata only: DuckDB redacts the
+sensitive fields.
+
+```text
+CREATE SECRET s (TYPE s3, KEY_ID 'AKIAEXAMPLE', SECRET 'super-secret-value');
+SELECT secret_string FROM duckdb_secrets();
+-- ...;key_id=AKIAEXAMPLE;secret=redacted
+```
+
+So an extension needing the credential itself must get it another way — an
+environment variable, a config option, a file, its own key store. The
 [`secrets`](https://docs.rs/quack-rs/latest/quack_rs/secrets/index.html) module
-defines the Rust-side traits and types that extensions implement to bridge into
-that system.
+gives you leak-resistant types for holding those credentials once you have them;
+it is **not** a bridge into DuckDB's secret store.
+
+[`list_duckdb_secrets`]: https://docs.rs/quack-rs/latest/quack_rs/secrets/fn.list_duckdb_secrets.html
 
 ## Core Types
 

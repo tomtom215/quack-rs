@@ -55,8 +55,10 @@
 //! (slots 281–291 and 330–356) since v1.2.0, so using it does not push an
 //! extension onto the version-pinned unstable ABI. Three methods are the
 //! exception and are gated on `duckdb-1-5`:
-//! [`error_data`][Appender::error_data], [`clear`][Appender::clear] and
-//! [`append_default_to_chunk`][Appender::append_default_to_chunk].
+//! `error_data`, `clear` and `append_default_to_chunk`. (Not linked: with the
+//! feature off those items do not exist, and an intra-doc link to a missing
+//! item is a rustdoc error — which is how the default-feature `cargo doc`
+//! build broke in 0.16.0.)
 //!
 //! That gate also picks the error type — see [`AppendError`].
 
@@ -477,7 +479,7 @@ impl Appender {
     ///
     /// Returns an [`AppendError`] if the flush fails — a constraint violation,
     /// typically. On failure every buffered row is invalidated; with
-    /// `duckdb-1-5` they can be discarded with [`clear`][Self::clear].
+    /// `duckdb-1-5` they can be discarded with `clear`.
     pub fn flush(&self) -> Result<(), AppendError> {
         // SAFETY: self.appender is valid.
         let state = unsafe { duckdb_appender_flush(self.appender) };
@@ -525,8 +527,8 @@ impl Appender {
 
     /// Returns the message from the most recent failed operation, if any.
     ///
-    /// Always available; with `duckdb-1-5` prefer
-    /// [`error_data`][Self::error_data], which also carries the error category.
+    /// Always available; with `duckdb-1-5` prefer `error_data`, which also
+    /// carries the error category.
     #[must_use]
     pub fn error_message(&self) -> Option<String> {
         if self.appender.is_null() {

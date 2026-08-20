@@ -148,9 +148,23 @@ available:
 ```rust
 use quack_rs::vector::string::{DuckStringView, DUCK_STRING_SIZE};
 
-// From raw 16-byte data (inside a vector callback)
+// From raw 16-byte data (inside a vector callback).
+//
+// Use `from_raw` when the bytes really are a live `duckdb_string_t`: a string
+// longer than 12 bytes stores a *pointer*, and only `from_raw` will follow it.
+// It is `unsafe` precisely because it dereferences that pointer.
 let raw: &[u8; 16] = unsafe { &*data.add(idx * DUCK_STRING_SIZE).cast() };
-let view = DuckStringView::from_bytes(raw);
+let view = unsafe { DuckStringView::from_raw(raw) };
+
+// For untrusted bytes that may not be a real `duckdb_string_t`, use the safe
+// constructor instead — it refuses pointer-format values rather than following
+// an address it cannot vouch for:
+//
+//     if let Some(view) = DuckStringView::inline_from_bytes(raw) { ... }
+//
+// `DuckStringView::from_bytes` is deprecated since 0.16.0: it was safe but
+// silently yielded a view whose accessors return `None` for pointer-format
+// values, with no way to tell that apart from a genuinely empty string.
 
 println!("length: {}", view.len());
 println!("is_empty: {}", view.is_empty());

@@ -301,7 +301,7 @@ quack-rs/
 │   ├── copy_function/
 │   │   ├── mod.rs                 # CopyFunctionBuilder (requires `duckdb-1-5`)
 │   │   └── info.rs                # CopyBindInfo, CopySinkInfo, CopyGlobalInitInfo, CopyFinalizeInfo
-│   ├── appender.rs                # Appender — bulk row insertion (requires `duckdb-1-5`)
+│   ├── appender.rs                # Appender — bulk row insertion (stable ABI; clear/error_data need `duckdb-1-5`)
 │   ├── error_data.rs              # ErrorData, DuckDbErrorType — structured errors (requires `duckdb-1-5`)
 │   ├── expression.rs              # Expression — bound expr inspection/folding (requires `duckdb-1-5`)
 │   ├── file_system.rs             # FileSystem, FileHandle — DuckDB virtual file system (requires `duckdb-1-5`)
@@ -337,7 +337,7 @@ quack-rs/
 │   │   ├── mod.rs                 # ScaffoldConfig, GeneratedFile, generate_scaffold
 │   │   ├── templates.rs           # Template generators for all 11 scaffold files (pub(super))
 │   │   └── tests.rs               # Unit tests (29 tests)
-│   ├── table_description.rs       # TableDescription wrapper (requires `duckdb-1-5`)
+│   ├── table_description.rs       # TableDescription wrapper (stable ABI; column count/types need `duckdb-1-5`)
 │   ├── table/
 │   │   ├── mod.rs                 # Re-exports
 │   │   ├── builder.rs             # TableFunctionBuilder, type aliases (BindFn, InitFn, ScanFn)

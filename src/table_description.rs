@@ -17,8 +17,9 @@
 //! has been in the frozen stable prefix of the extension API (slots 292–297)
 //! since v1.2.0. Two accessors are `DuckDB` 1.5.0 additions living in the
 //! unstable region and are gated on `duckdb-1-5`:
-//! [`column_count`][TableDescription::column_count] and
-//! [`column_type`][TableDescription::column_type].
+//! `column_count` and `column_type`. (Not linked: with the feature off those
+//! items do not exist, and an intra-doc link to a missing item is a rustdoc
+//! error.)
 //!
 //! # Example
 //!
