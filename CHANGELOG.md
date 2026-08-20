@@ -196,6 +196,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Four CI jobs never actually ran.** `rust-toolchain.toml` pins
+  `channel = "stable"`, and a rustup toolchain file overrides the default
+  `dtolnay/rust-toolchain` sets — so the `miri`, `leak-check`, `fuzz` and
+  `nightly` jobs all resolved a bare `cargo` to stable. Miri and LeakSanitizer
+  failed loudly (`the 'miri' component ... is not available for the
+  'stable-...' toolchain`; `the -Z flag is only accepted on the nightly
+  channel`); the informational nightly job failed silently, re-testing stable.
+  All four now invoke `cargo +nightly` explicitly, with a comment saying why.
+
+  The `bundled-test-prebuilt` job's clippy step was also missing the `env:`
+  block its sibling test step has, so `build.rs` panicked looking for
+  `duckdb.hpp` before clippy ran.
+
 - **`cargo doc` with `-D warnings` failed.** Six intra-doc links were broken or
   redundant — `QueryResult::column_logical_type`, `scalar::typed`,
   `vector::ops` (twice), `TableFunctionBuilder::build_handle` — and

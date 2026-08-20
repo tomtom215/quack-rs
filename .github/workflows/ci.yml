@@ -103,7 +103,15 @@ jobs:
       # `tests/ffi_roundtrip.rs` is `#![cfg(feature = "_duckdb-testing")]`, so
       # the plain `clippy` job compiles it away to nothing and never lints the
       # largest test file in the repo. Lint it where it is actually built.
+      #
+      # The env block is repeated rather than shared: `build.rs` needs
+      # DUCKDB_LIB_DIR to find `duckdb.hpp` for the C++ shim on *every*
+      # invocation, clippy included, and a step without it panics in the build
+      # script before clippy ever runs.
       - name: Clippy (including the end-to-end tests)
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
         run: cargo clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-4 -- -D warnings
 
   test-duckdb-1-5:
@@ -737,8 +745,11 @@ jobs:
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # `+nightly` is not optional: `rust-toolchain.toml` pins `channel =
+      # "stable"`, and a rustup toolchain file overrides the default this action
+      # sets, so a bare `cargo` here runs stable and this job tests nothing new.
       - name: Test (nightly, informational)
-        run: cargo test --all-targets
+        run: cargo +nightly test --all-targets
 
   miri:
     name: Miri (undefined behaviour)
@@ -774,7 +785,11 @@ jobs:
           # interpreter for no extra coverage of the *unsafe* code, which is
           # what this job is for. `cargo test` still runs the full 256.
           PROPTEST_CASES: "8"
-        run: cargo miri test --lib
+        # `+nightly` is not optional -- see the note in the `nightly` job:
+        # `rust-toolchain.toml` pins stable and overrides this action's default,
+        # so a bare `cargo miri` resolves to stable, where the `miri` component
+        # does not exist.
+        run: cargo +nightly miri test --lib
 
   leak-check:
     name: LeakSanitizer (RAII wrappers vs a real DuckDB)
@@ -815,7 +830,8 @@ jobs:
           # destructor; 30 is enough to name the quack-rs frame.
           LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
         run: |
-          cargo test -Zbuild-std --target x86_64-unknown-linux-gnu \
+          # `+nightly` is not optional -- see the note in the `nightly` job.
+          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
             --features bundled-test-prebuilt,duckdb-1-5-4 --test ffi_roundtrip
 
   semver:
@@ -859,14 +875,15 @@ jobs:
       - name: Run each target briefly
         run: |
           set -euo pipefail
-          for target in $(cargo fuzz list --fuzz-dir fuzz); do
+          # `+nightly` is not optional -- see the note in the `nightly` job.
+          for target in $(cargo +nightly fuzz list --fuzz-dir fuzz); do
             echo "::group::$target"
             # Seed from the committed inputs. `fuzz/corpus` is generated and
             # gitignored: keeping a growing corpus in the history would add a
             # megabyte per PR for no review value.
             mkdir -p "fuzz/corpus/$target"
             cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
-            cargo fuzz run --fuzz-dir fuzz "$target" -- \
+            cargo +nightly fuzz run --fuzz-dir fuzz "$target" -- \
               -max_total_time=60 -rss_limit_mb=4096
             echo "::endgroup::"
           done
