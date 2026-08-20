@@ -41,9 +41,14 @@ jobs:
         run: |
           echo "::group::cargo-mutants execution log"
 
+          # `--output` names the PARENT directory: cargo-mutants writes its
+          # results to `<output>/mutants.out/`. Passing `mutants.out` put them
+          # in `mutants.out/mutants.out/`, where the report step below never
+          # looked -- so every count read 0, the score printed 100%, and the
+          # job passed green no matter how many mutants survived.
           set +e
           cargo mutants \
-            --output mutants.out \
+            --output . \
             --timeout 120 \
             --jobs 4 2>&1 | tee /tmp/mutants-run.log
           MUTANTS_EXIT=$?
@@ -201,12 +206,17 @@ jobs:
           # `--exclude-re ErrorData` drops the error_data FFI methods (ErrorData /
           # check_valid_utf8) that need a live runtime; the pure DuckDbErrorType
           # logic stays mutation-tested.
+          # `--output` names the PARENT directory: cargo-mutants writes its
+          # results to `<output>/mutants.out/`. Passing `mutants.out` put them
+          # in `mutants.out/mutants.out/`, where the report step below never
+          # looked -- so every count read 0, the score printed 100%, and the
+          # job passed green no matter how many mutants survived.
           set +e
           cargo mutants "${ARGS[@]}" \
             --features duckdb-1-5-4 \
             --cargo-arg=--lib \
             --exclude-re 'ErrorData' \
-            --output mutants.out \
+            --output . \
             --timeout 120 \
             --jobs 4 2>&1 | tee /tmp/mutants-run.log
           MUTANTS_EXIT=$?

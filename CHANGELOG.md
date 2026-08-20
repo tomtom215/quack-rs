@@ -236,6 +236,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accessors against a populated record rather than only an empty one, and
   `map2_str`'s NULL propagation when just one argument is NULL.
 
+- **The mutation-testing gate always reported 100% and always passed.**
+  `cargo mutants --output DIR` writes its results to `DIR/mutants.out/`, so
+  `--output mutants.out` put them in `mutants.out/mutants.out/`. The report step
+  counted `mutants.out/caught.txt` and friends, found nothing, computed
+  `SCORE=100%` from `TOTAL=0`, and skipped its `exit 1` because `MISSED` was
+  also 0. The run on this PR printed `MUTATION SCORE: 100%` and passed while
+  cargo-mutants' own summary line in the same log read `229 missed, 238 caught,
+  218 unviable`. Both jobs now pass `--output .`.
+
 - **Incremental mutation testing skipped every top-level `src/*.rs`.** The job
   selected changed files with the pathspec `src/**/*.rs`, but git's default
   wildmatch lets `*` cross `/`, so that pattern requires at least one directory
