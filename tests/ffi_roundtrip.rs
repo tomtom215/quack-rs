@@ -3118,3 +3118,388 @@ fn composite_type_ids_are_rejected_where_a_primitive_is_required() {
     }
     .expect("the logical-type route registers");
 }
+
+// ---------------------------------------------------------------------------
+// Values, parameter binding, streaming, cancellation.
+//
+// Everything below goes through a real DuckDB: a value is built with the Rust
+// API, bound to a prepared statement, and read back out of the result, so a
+// wrong physical encoding shows up as a wrong answer rather than as a passing
+// mock.
+// ---------------------------------------------------------------------------
+
+/// Binds one value into `SELECT ?` and renders the answer as text, which is the
+/// one representation every type shares.
+fn round_trip_value(fx: &Fixture, value: &quack_rs::value::Value) -> String {
+    // SAFETY: `con` is open.
+    let stmt = unsafe { quack_rs::query::prepare(fx.con(), "SELECT CAST(? AS VARCHAR)") }
+        .expect("prepare SELECT ?");
+    stmt.bind_value(1, value).expect("bind_value");
+    let mut result = stmt.execute().expect("execute");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: one VARCHAR column, one row.
+    let reader = unsafe { chunk.reader(0) };
+    // SAFETY: row 0 exists.
+    assert!(
+        unsafe { reader.is_valid(0) },
+        "the bound value came back NULL"
+    );
+    // SAFETY: VARCHAR column, row 0.
+    unsafe { reader.read_str(0) }.to_owned()
+}
+
+#[test]
+fn every_scalar_value_constructor_round_trips_through_a_bound_parameter() {
+    use quack_rs::interval::DuckInterval;
+    use quack_rs::value::Value;
+
+    let fx = Fixture::open();
+
+    let cases: Vec<(Value, &str)> = vec![
+        (Value::boolean(true), "true"),
+        (Value::tinyint(i8::MIN), "-128"),
+        (Value::smallint(i16::MIN), "-32768"),
+        (Value::integer(i32::MIN), "-2147483648"),
+        (Value::bigint(i64::MIN), "-9223372036854775808"),
+        (Value::utinyint(u8::MAX), "255"),
+        (Value::usmallint(u16::MAX), "65535"),
+        (Value::uinteger(u32::MAX), "4294967295"),
+        (Value::ubigint(u64::MAX), "18446744073709551615"),
+        (
+            Value::hugeint(i128::from(i64::MIN) * 2),
+            "-18446744073709551616",
+        ),
+        (
+            Value::uhugeint(u128::from(u64::MAX) + 1),
+            "18446744073709551616",
+        ),
+        (Value::float(0.5), "0.5"),
+        (Value::double(0.25), "0.25"),
+        (Value::varchar("héllo"), "héllo"),
+        (Value::date(0), "1970-01-01"),
+        (Value::time(3_600_000_000), "01:00:00"),
+        (Value::timestamp(0), "1970-01-01 00:00:00"),
+        (Value::timestamp_s(60), "1970-01-01 00:01:00"),
+        (Value::timestamp_ms(1_500), "1970-01-01 00:00:01.5"),
+        (Value::timestamp_ns(1_500_000_000), "1970-01-01 00:00:01.5"),
+        (
+            Value::interval(DuckInterval {
+                months: 1,
+                days: 2,
+                micros: 3_000_000,
+            }),
+            "1 month 2 days 00:00:03",
+        ),
+        (
+            Value::uuid(0x1111_1111_2222_3333_4444_5555_5555_5555),
+            "11111111-2222-3333-4444-555555555555",
+        ),
+    ];
+
+    for (value, expected) in cases {
+        let type_id = value.type_id();
+        assert_eq!(
+            round_trip_value(&fx, &value),
+            expected,
+            "value of type {type_id:?} did not survive the round trip"
+        );
+    }
+
+    // DECIMAL carries width and scale, so it gets its own shape.
+    let dec = Value::decimal(18, 3, 1_234).expect("DECIMAL(18, 3)");
+    assert_eq!(round_trip_value(&fx, &dec), "1.234");
+    assert!(
+        Value::decimal(39, 3, 0).is_err(),
+        "width 39 exceeds DuckDB's DECIMAL limit and must be reported"
+    );
+    assert!(
+        Value::decimal(4, 9, 0).is_err(),
+        "scale above width must be reported"
+    );
+
+    // BLOB is byte-exact where VARCHAR is not.
+    let blob = Value::blob(&[0x00, 0xff, 0x41]);
+    assert_eq!(round_trip_value(&fx, &blob), r"\x00\xFFA");
+
+    // SQL NULL has a perfectly good handle: `is_null` and `is_sql_null` are
+    // different questions and the API must not conflate them.
+    let null = Value::null_value();
+    assert!(!null.is_null(), "the handle is valid");
+    assert!(null.is_sql_null(), "the value is SQL NULL");
+    assert!(!Value::bigint(1).is_sql_null());
+}
+
+#[test]
+fn composite_value_constructors_build_values_duckdb_accepts() {
+    use quack_rs::value::Value;
+
+    let fx = Fixture::open();
+
+    // The constructors take the *element* type: duckdb.h's prose says "child
+    // (element) type" while its @param line says "the type of the list", and
+    // the implementation (`Value::LIST(child_type, values)`) settles it.
+    let element_ty = LogicalType::new(TypeId::BigInt);
+    let list = Value::list_value(&element_ty, &[Value::bigint(1), Value::bigint(2)])
+        .expect("build a LIST value");
+    assert_eq!(round_trip_value(&fx, &list), "[1, 2]");
+
+    // Passing the LIST type is the mistake the header invites; DuckDB reports
+    // it as a bare null, so quack-rs names it.
+    let list_ty = LogicalType::list(TypeId::BigInt);
+    let err = Value::list_value(&list_ty, &[Value::bigint(1)])
+        .expect_err("a LIST type where an element type belongs must be refused");
+    assert!(err.as_str().contains("element"), "{err}");
+
+    let struct_ty = LogicalType::struct_type(&[("x", TypeId::BigInt), ("y", TypeId::Varchar)]);
+    let strct = Value::struct_value(&struct_ty, &[Value::bigint(7), Value::varchar("seven")])
+        .expect("build a STRUCT value");
+    assert_eq!(round_trip_value(&fx, &strct), "{'x': 7, 'y': seven}");
+
+    // ARRAY derives its size from the value count, so there is nothing to keep
+    // in sync -- and again it is the element type that goes in.
+    let int_ty = LogicalType::new(TypeId::Integer);
+    let array = Value::array_value(
+        &int_ty,
+        &[Value::integer(1), Value::integer(2), Value::integer(3)],
+    )
+    .expect("build an ARRAY value");
+    assert_eq!(round_trip_value(&fx, &array), "[1, 2, 3]");
+
+    let enum_ty = LogicalType::enum_type(&["red", "green", "blue"]);
+    let green = Value::enum_value(&enum_ty, 1).expect("build an ENUM value");
+    assert_eq!(round_trip_value(&fx, &green), "green");
+    assert_eq!(green.as_enum_index(), 1);
+
+    // A short field slice must be refused rather than passed on:
+    // `duckdb_create_struct_value` takes no count and reads one value per field
+    // in the *type*, so a short slice reads past its end.
+    let err = Value::struct_value(&struct_ty, &[Value::bigint(7)])
+        .expect_err("a one-value slice for a two-field struct must be refused");
+    assert!(err.as_str().contains("2 field"), "{err}");
+    assert!(err.as_str().contains("out of bounds"), "{err}");
+
+    // A value that will not cast to the element type is DuckDB's own check,
+    // surfaced as an error rather than a Value with a null handle.
+    assert!(
+        Value::array_value(&struct_ty, &[Value::integer(1)]).is_err(),
+        "an INTEGER cannot become a STRUCT element"
+    );
+}
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn map_and_union_values_build_and_read_back() {
+    use quack_rs::value::Value;
+
+    let fx = Fixture::open();
+
+    let map_ty = LogicalType::map(TypeId::Varchar, TypeId::BigInt);
+    let map = Value::map(
+        &map_ty,
+        &[Value::varchar("a"), Value::varchar("b")],
+        &[Value::bigint(1), Value::bigint(2)],
+    )
+    .expect("build a MAP value");
+    assert_eq!(round_trip_value(&fx, &map), "{a=1, b=2}");
+    assert!(
+        Value::map(&map_ty, &[Value::varchar("a")], &[]).is_err(),
+        "mismatched key/value counts must be refused"
+    );
+
+    let union_ty = LogicalType::union_type(&[("num", TypeId::BigInt), ("txt", TypeId::Varchar)]);
+    let tagged = Value::union_value(&union_ty, 1, &Value::varchar("hi")).expect("build a UNION");
+    assert_eq!(round_trip_value(&fx, &tagged), "hi");
+    assert!(
+        Value::union_value(&union_ty, 1, &Value::bigint(1)).is_err(),
+        "DuckDB compares the value's type to the member's exactly"
+    );
+    assert!(
+        Value::union_value(&union_ty, 9, &Value::bigint(1)).is_err(),
+        "an out-of-range tag must be refused"
+    );
+}
+
+#[test]
+fn every_typed_bind_reaches_duckdb_with_the_right_width() {
+    use quack_rs::interval::DuckInterval;
+
+    let fx = Fixture::open();
+
+    /// Binds through `bind`, then asserts `SELECT CAST(? AS VARCHAR)` renders
+    /// `expected`.
+    fn check(
+        fx: &Fixture,
+        expected: &str,
+        bind: impl Fn(
+            &quack_rs::query::PreparedStatement,
+        ) -> Result<(), quack_rs::error::ExtensionError>,
+    ) {
+        // SAFETY: `con` is open.
+        let stmt = unsafe { quack_rs::query::prepare(fx.con(), "SELECT CAST(? AS VARCHAR)") }
+            .expect("prepare");
+        bind(&stmt).expect("bind");
+        let mut result = stmt.execute().expect("execute");
+        let chunk = result.next_chunk().expect("one chunk");
+        // SAFETY: one VARCHAR column, one row.
+        let got = unsafe { chunk.reader(0).read_str(0) }.to_owned();
+        assert_eq!(got, expected);
+    }
+
+    check(&fx, "-128", |s| s.bind_i8(1, i8::MIN));
+    check(&fx, "-32768", |s| s.bind_i16(1, i16::MIN));
+    check(&fx, "-2147483648", |s| s.bind_i32(1, i32::MIN));
+    check(&fx, "-9223372036854775808", |s| s.bind_i64(1, i64::MIN));
+    check(&fx, "255", |s| s.bind_u8(1, u8::MAX));
+    check(&fx, "65535", |s| s.bind_u16(1, u16::MAX));
+    check(&fx, "4294967295", |s| s.bind_u32(1, u32::MAX));
+    check(&fx, "18446744073709551615", |s| s.bind_u64(1, u64::MAX));
+    check(&fx, "0.5", |s| s.bind_f32(1, 0.5));
+    check(&fx, "0.25", |s| s.bind_f64(1, 0.25));
+    check(&fx, "-18446744073709551616", |s| {
+        s.bind_i128(1, i128::from(i64::MIN) * 2)
+    });
+    check(&fx, "18446744073709551616", |s| {
+        s.bind_u128(1, u128::from(u64::MAX) + 1)
+    });
+    check(&fx, "1.234", |s| s.bind_decimal(1, 18, 3, 1_234));
+    check(&fx, "1970-01-01", |s| s.bind_date(1, 0));
+    check(&fx, "01:00:00", |s| s.bind_time(1, 3_600_000_000));
+    check(&fx, "1970-01-01 00:00:00", |s| s.bind_timestamp(1, 0));
+    check(&fx, "1 month 2 days 00:00:03", |s| {
+        s.bind_interval(
+            1,
+            DuckInterval {
+                months: 1,
+                days: 2,
+                micros: 3_000_000,
+            },
+        )
+    });
+}
+
+#[test]
+fn column_logical_type_keeps_what_column_type_throws_away() {
+    let fx = Fixture::open();
+
+    let result = fx.query("SELECT {'a': 1::BIGINT, 'b': 'x'} AS s, 1.25::DECIMAL(9, 4) AS d");
+
+    // The collapsed view: correct, but a STRUCT is just "Struct".
+    assert_eq!(result.column_type(0), Some(TypeId::Struct));
+    assert_eq!(result.column_type(1), Some(TypeId::Decimal));
+
+    let s_ty = result.column_logical_type(0).expect("STRUCT logical type");
+    // SAFETY: `s_ty` is a live STRUCT logical type.
+    unsafe {
+        assert_eq!(s_ty.struct_child_count(), 2);
+        assert_eq!(s_ty.struct_child_name(0), "a");
+        assert_eq!(s_ty.struct_child_type(0).get_type_id(), TypeId::BigInt);
+        assert_eq!(s_ty.struct_child_name(1), "b");
+        assert_eq!(s_ty.struct_child_type(1).get_type_id(), TypeId::Varchar);
+    }
+
+    let d_ty = result.column_logical_type(1).expect("DECIMAL logical type");
+    // SAFETY: `d_ty` is a live DECIMAL logical type.
+    unsafe {
+        assert_eq!(d_ty.decimal_width(), 9);
+        assert_eq!(d_ty.decimal_scale(), 4);
+    }
+
+    assert!(result.column_logical_type(99).is_none());
+}
+
+#[test]
+fn result_kind_distinguishes_rows_from_row_counts() {
+    use quack_rs::query::ResultKind;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE k(i INTEGER)") }.expect("create");
+
+    assert_eq!(fx.query("SELECT 1").result_kind(), ResultKind::Rows);
+    // SAFETY: `con` is open.
+    let inserted = unsafe { query(fx.con(), "INSERT INTO k VALUES (1), (2)") }.expect("insert");
+    assert_eq!(inserted.result_kind(), ResultKind::ChangedRows);
+    assert_eq!(inserted.rows_changed(), 2);
+}
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_streaming_result_reads_the_same_rows_as_a_materialised_one() {
+    let fx = Fixture::open();
+
+    // Enough rows to span several chunks, so the streaming path actually loops.
+    const SQL: &str = "SELECT i FROM range(10000) t(i)";
+
+    // SAFETY: `con` is open.
+    let stmt = unsafe { quack_rs::query::prepare(fx.con(), SQL) }.expect("prepare");
+    let mut streamed = stmt.execute_streaming().expect("execute_streaming");
+    assert!(
+        streamed.is_streaming(),
+        "DuckDB chose to materialise a plain range scan; the assertions below \
+         would then prove nothing about the streaming path"
+    );
+
+    let mut sum: i64 = 0;
+    let mut chunks = 0;
+    while let Some(chunk) = streamed.next_chunk() {
+        chunks += 1;
+        // SAFETY: one BIGINT column.
+        let reader = unsafe { chunk.reader(0) };
+        for row in 0..chunk.size() {
+            // SAFETY: `row` is in range and the column is BIGINT.
+            sum += unsafe { reader.read_i64(row) };
+        }
+    }
+    assert!(chunks > 1, "a 10000-row result must span several chunks");
+    assert_eq!(sum, (0..10_000_i64).sum::<i64>());
+
+    // The materialised path must agree.
+    // SAFETY: `con` is open.
+    let stmt2 = unsafe { quack_rs::query::prepare(fx.con(), SQL) }.expect("prepare");
+    let mut materialised = stmt2.execute().expect("execute");
+    assert!(!materialised.is_streaming());
+    let mut sum2: i64 = 0;
+    while let Some(chunk) = materialised.next_chunk() {
+        // SAFETY: one BIGINT column.
+        let reader = unsafe { chunk.reader(0) };
+        for row in 0..chunk.size() {
+            // SAFETY: `row` is in range and the column is BIGINT.
+            sum2 += unsafe { reader.read_i64(row) };
+        }
+    }
+    assert_eq!(sum, sum2);
+}
+
+#[test]
+fn an_interrupt_handle_cancels_a_query_from_another_thread() {
+    use quack_rs::query::OwnedConnection;
+
+    let fx = Fixture::open();
+    // SAFETY: `db` is open for the fixture's lifetime.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("open an owned connection");
+
+    let handle = con.interrupt_handle();
+    // A cross join over a billion rows cannot complete before the canceller
+    // fires, so this is a race the test always wins.
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            handle.cancel();
+        });
+        con.query("SELECT count(*) FROM range(1000000000000) t(i) WHERE i % 7 = 3")
+    });
+
+    let err = outcome.expect_err("the query must be cancelled, not completed");
+    assert!(
+        err.as_str().to_lowercase().contains("interrupt"),
+        "the error should say the query was interrupted: {err}"
+    );
+
+    // The connection is reusable afterwards: interruption is not corruption.
+    let mut ok = con
+        .query("SELECT 42::BIGINT")
+        .expect("the connection survives");
+    let chunk = ok.next_chunk().expect("one chunk");
+    // SAFETY: one BIGINT column, one row.
+    assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 42);
+}

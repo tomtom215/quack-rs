@@ -72,6 +72,28 @@ pub struct Value {
     raw: duckdb_value,
 }
 
+/// Splits an `i128` into `DuckDB`'s `{ lower: u64, upper: i64 }` `HUGEINT`.
+#[inline]
+const fn hugeint_from_i128(value: i128) -> libduckdb_sys::duckdb_hugeint {
+    libduckdb_sys::duckdb_hugeint {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        lower: value as u64,
+        #[allow(clippy::cast_possible_truncation)]
+        upper: (value >> 64) as i64,
+    }
+}
+
+/// Splits a `u128` into `DuckDB`'s `{ lower: u64, upper: u64 }` `UHUGEINT`.
+#[inline]
+const fn uhugeint_from_u128(value: u128) -> libduckdb_sys::duckdb_uhugeint {
+    libduckdb_sys::duckdb_uhugeint {
+        #[allow(clippy::cast_possible_truncation)]
+        lower: value as u64,
+        #[allow(clippy::cast_possible_truncation)]
+        upper: (value >> 64) as u64,
+    }
+}
+
 impl Value {
     /// Wraps a raw `duckdb_value` handle.
     ///
@@ -823,6 +845,553 @@ impl Value {
             // the returned handle is owned by this `Value`.
             raw: unsafe { libduckdb_sys::duckdb_create_null_value() },
         }
+    }
+
+    // ── The rest of DuckDB's scalar constructors ─────────────────────────
+    //
+    // Every one of these lives in the *stable* prefix of `duckdb_ext_api_v1`,
+    // so they need no feature gate and work against every DuckDB from v1.2.0.
+
+    /// Creates a `TINYINT` value.
+    #[inline]
+    #[must_use]
+    pub fn tinyint(value: i8) -> Self {
+        Self {
+            // SAFETY: a plain scalar DuckDB accepts unconditionally; the
+            // returned handle is owned by this `Value`.
+            raw: unsafe { libduckdb_sys::duckdb_create_int8(value) },
+        }
+    }
+
+    /// Creates a `SMALLINT` value.
+    #[inline]
+    #[must_use]
+    pub fn smallint(value: i16) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_int16(value) },
+        }
+    }
+
+    /// Creates an `INTEGER` value.
+    #[inline]
+    #[must_use]
+    pub fn integer(value: i32) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_int32(value) },
+        }
+    }
+
+    /// Creates a `UTINYINT` value.
+    #[inline]
+    #[must_use]
+    pub fn utinyint(value: u8) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_uint8(value) },
+        }
+    }
+
+    /// Creates a `USMALLINT` value.
+    #[inline]
+    #[must_use]
+    pub fn usmallint(value: u16) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_uint16(value) },
+        }
+    }
+
+    /// Creates a `UINTEGER` value.
+    #[inline]
+    #[must_use]
+    pub fn uinteger(value: u32) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_uint32(value) },
+        }
+    }
+
+    /// Creates a `UBIGINT` value.
+    #[inline]
+    #[must_use]
+    pub fn ubigint(value: u64) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_uint64(value) },
+        }
+    }
+
+    /// Creates a `HUGEINT` value.
+    #[inline]
+    #[must_use]
+    pub fn hugeint(value: i128) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_hugeint(hugeint_from_i128(value)) },
+        }
+    }
+
+    /// Creates a `UHUGEINT` value.
+    #[inline]
+    #[must_use]
+    pub fn uhugeint(value: u128) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_uhugeint(uhugeint_from_u128(value)) },
+        }
+    }
+
+    /// Creates a `FLOAT` value.
+    #[inline]
+    #[must_use]
+    pub fn float(value: f32) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe { libduckdb_sys::duckdb_create_float(value) },
+        }
+    }
+
+    /// Creates a `TIME` value from microseconds since midnight.
+    #[inline]
+    #[must_use]
+    pub fn time(micros_since_midnight: i64) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe {
+                libduckdb_sys::duckdb_create_time(libduckdb_sys::duckdb_time {
+                    micros: micros_since_midnight,
+                })
+            },
+        }
+    }
+
+    /// Creates a `TIME WITH TIME ZONE` value from its packed 64-bit encoding.
+    ///
+    /// `DuckDB` packs `TIME_TZ` as 40 bits of microseconds and 24 bits of UTC
+    /// offset. Build the encoding with
+    /// [`time_tz_bits`][crate::datetime::time_tz_bits] rather than assembling it
+    /// by hand.
+    #[inline]
+    #[must_use]
+    pub fn time_tz(bits: u64) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe {
+                libduckdb_sys::duckdb_create_time_tz_value(libduckdb_sys::duckdb_time_tz { bits })
+            },
+        }
+    }
+
+    /// Creates a `TIMESTAMP WITH TIME ZONE` value from microseconds since the
+    /// epoch.
+    #[inline]
+    #[must_use]
+    pub fn timestamp_tz(micros: i64) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe {
+                libduckdb_sys::duckdb_create_timestamp_tz(libduckdb_sys::duckdb_timestamp {
+                    micros,
+                })
+            },
+        }
+    }
+
+    /// Creates a `TIMESTAMP_S` value from seconds since the epoch.
+    #[inline]
+    #[must_use]
+    pub fn timestamp_s(seconds: i64) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe {
+                libduckdb_sys::duckdb_create_timestamp_s(libduckdb_sys::duckdb_timestamp_s {
+                    seconds,
+                })
+            },
+        }
+    }
+
+    /// Creates a `TIMESTAMP_MS` value from milliseconds since the epoch.
+    #[inline]
+    #[must_use]
+    pub fn timestamp_ms(millis: i64) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe {
+                libduckdb_sys::duckdb_create_timestamp_ms(libduckdb_sys::duckdb_timestamp_ms {
+                    millis,
+                })
+            },
+        }
+    }
+
+    /// Creates a `TIMESTAMP_NS` value from nanoseconds since the epoch.
+    #[inline]
+    #[must_use]
+    pub fn timestamp_ns(nanos: i64) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe {
+                libduckdb_sys::duckdb_create_timestamp_ns(libduckdb_sys::duckdb_timestamp_ns {
+                    nanos,
+                })
+            },
+        }
+    }
+
+    /// Creates an `INTERVAL` value.
+    ///
+    /// `DuckDB` intervals are `{ months, days, micros }` and deliberately do not
+    /// collapse into a single duration — see
+    /// [`DuckInterval`][crate::interval::DuckInterval] (pitfall P8).
+    #[inline]
+    #[must_use]
+    pub fn interval(value: crate::interval::DuckInterval) -> Self {
+        Self {
+            // SAFETY: see [`tinyint`][Self::tinyint].
+            raw: unsafe {
+                libduckdb_sys::duckdb_create_interval(libduckdb_sys::duckdb_interval {
+                    months: value.months,
+                    days: value.days,
+                    micros: value.micros,
+                })
+            },
+        }
+    }
+
+    /// Creates a `BLOB` value from arbitrary bytes.
+    ///
+    /// Unlike [`varchar`][Self::varchar] this is byte-exact in both directions:
+    /// [`as_blob`][Self::as_blob] returns what went in, NUL bytes and all.
+    #[must_use]
+    pub fn blob(bytes: &[u8]) -> Self {
+        // SAFETY: `bytes` is valid for the duration of the call; DuckDB copies it.
+        let raw = unsafe {
+            libduckdb_sys::duckdb_create_blob(
+                bytes.as_ptr(),
+                libduckdb_sys::idx_t::try_from(bytes.len()).unwrap_or(libduckdb_sys::idx_t::MAX),
+            )
+        };
+        Self { raw }
+    }
+
+    /// Creates a `DECIMAL(width, scale)` value from its unscaled integer.
+    ///
+    /// `unscaled` is the value multiplied by `10^scale` — `DECIMAL(18, 3)`
+    /// holding `1.234` has `unscaled == 1234`.
+    ///
+    /// # Errors
+    ///
+    /// `duckdb.h`: "The width must be between 1 and 38, and the scale must not
+    /// exceed the width" — otherwise `duckdb_create_decimal` returns null,
+    /// reported here as an error rather than a `Value` with a null handle.
+    pub fn decimal(width: u8, scale: u8, unscaled: i128) -> Result<Self, ExtensionError> {
+        // SAFETY: a plain by-value struct; DuckDB validates width/scale itself
+        // and reports a violation by returning null.
+        let raw = unsafe {
+            libduckdb_sys::duckdb_create_decimal(libduckdb_sys::duckdb_decimal {
+                width,
+                scale,
+                value: hugeint_from_i128(unscaled),
+            })
+        };
+        if raw.is_null() {
+            return Err(ExtensionError::new(format!(
+                "duckdb_create_decimal returned null for DECIMAL({width}, {scale}): \
+                 width must be 1..=38 and scale must not exceed width"
+            )));
+        }
+        Ok(Self { raw })
+    }
+
+    // ── Composite constructors ───────────────────────────────────────────
+    //
+    // DuckDB *copies* every input value (`UnwrapValue` + `emplace_back` in
+    // `duckdb_value-c.cpp`), so the caller keeps ownership of the children and
+    // they are freed normally when their `Value`s drop.
+
+    /// Creates a `STRUCT` value.
+    ///
+    /// `fields` must line up positionally with `struct_type`'s fields.
+    ///
+    /// # Errors
+    ///
+    /// - The number of `fields` does not match the type's field count. This
+    ///   check is quack-rs's, and it is not cosmetic:
+    ///   `duckdb_create_struct_value` takes **no count argument** and reads
+    ///   `values[0..StructType::GetChildCount(type)]`, so passing a short slice
+    ///   reads past its end.
+    /// - `struct_type` is not a `STRUCT`, or contains an `ANY` / `INVALID` child
+    ///   type — `duckdb_create_struct_value` returns null for those.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::types::{LogicalType, TypeId};
+    /// use quack_rs::value::Value;
+    ///
+    /// # fn demo() -> Result<(), quack_rs::error::ExtensionError> {
+    /// let ty = LogicalType::struct_type(&[("x", TypeId::BigInt), ("y", TypeId::Varchar)]);
+    /// let v = Value::struct_value(&ty, &[Value::bigint(1), Value::varchar("two")])?;
+    /// # let _ = v;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn struct_value(
+        struct_type: &crate::types::LogicalType,
+        fields: &[Self],
+    ) -> Result<Self, ExtensionError> {
+        // SAFETY: `struct_type` is a live handle for the duration of the call.
+        let expected = usize::try_from(unsafe { struct_type.struct_child_count() }).unwrap_or(0);
+        if expected != fields.len() {
+            return Err(ExtensionError::new(format!(
+                "Value::struct_value: the type has {expected} field(s) but {} value(s) were \
+                 given; duckdb_create_struct_value reads one value per field and would read \
+                 out of bounds",
+                fields.len()
+            )));
+        }
+        let mut raws: Vec<duckdb_value> = fields.iter().map(Self::as_raw).collect();
+        // SAFETY: `raws` has exactly `expected` entries, which is what DuckDB
+        // reads; every entry is a live handle owned by `fields`, and DuckDB
+        // copies rather than takes them.
+        let raw = unsafe {
+            libduckdb_sys::duckdb_create_struct_value(struct_type.as_raw(), raws.as_mut_ptr())
+        };
+        Self::checked(raw, "duckdb_create_struct_value")
+    }
+
+    /// Creates a `LIST` value from its **element** type.
+    ///
+    /// # `element_type`, not the list type
+    ///
+    /// `duckdb.h` is self-contradictory here: the prose says "Creates a list
+    /// value from a child (element) type", while the `@param` line says "The
+    /// type of the list". The implementation settles it —
+    /// `duckdb_create_list_value` forwards to
+    /// `Value::LIST(const LogicalType &child_type, vector<Value>)`, so it is the
+    /// **element** type, and passing `LogicalType::list(..)` instead makes
+    /// `DuckDB` try to cast every element to a list and return null.
+    ///
+    /// For `LIST<BIGINT>`, pass `LogicalType::new(TypeId::BigInt)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `duckdb_create_list_value` reports failure: an
+    /// `ANY` or `INVALID` element type, or an item that will not cast to
+    /// `element_type`. Passing a `LIST` type is called out specifically, since
+    /// it is the mistake the header invites.
+    pub fn list_value(
+        element_type: &crate::types::LogicalType,
+        items: &[Self],
+    ) -> Result<Self, ExtensionError> {
+        Self::reject_container_type(element_type, crate::types::TypeId::List, "list_value")?;
+        let mut raws: Vec<duckdb_value> = items.iter().map(Self::as_raw).collect();
+        // SAFETY: the count is passed explicitly and matches `raws`; every entry
+        // is a live handle owned by `items`.
+        let raw = unsafe {
+            libduckdb_sys::duckdb_create_list_value(
+                element_type.as_raw(),
+                raws.as_mut_ptr(),
+                libduckdb_sys::idx_t::try_from(raws.len()).unwrap_or(libduckdb_sys::idx_t::MAX),
+            )
+        };
+        Self::checked(raw, "duckdb_create_list_value")
+    }
+
+    /// Creates an `ARRAY` (fixed-size list) value from its **element** type.
+    ///
+    /// As with [`list_value`][Self::list_value], this is the element type, not
+    /// the array type — `duckdb_create_array_value` forwards to
+    /// `Value::ARRAY(const LogicalType &child_type, vector<Value>)`, which
+    /// *derives* the array type as `ARRAY(child_type, values.size())`. The
+    /// resulting array's size is therefore `items.len()`; there is nothing to
+    /// keep in sync.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `duckdb_create_array_value` reports failure: an
+    /// `ANY` / `INVALID` element type, an item that will not cast to
+    /// `element_type`, or a length at or above `DuckDB`'s maximum array size.
+    pub fn array_value(
+        element_type: &crate::types::LogicalType,
+        items: &[Self],
+    ) -> Result<Self, ExtensionError> {
+        Self::reject_container_type(element_type, crate::types::TypeId::Array, "array_value")?;
+        let mut raws: Vec<duckdb_value> = items.iter().map(Self::as_raw).collect();
+        // SAFETY: as in `list_value`.
+        let raw = unsafe {
+            libduckdb_sys::duckdb_create_array_value(
+                element_type.as_raw(),
+                raws.as_mut_ptr(),
+                libduckdb_sys::idx_t::try_from(raws.len()).unwrap_or(libduckdb_sys::idx_t::MAX),
+            )
+        };
+        Self::checked(raw, "duckdb_create_array_value")
+    }
+
+    /// Catches the "passed the container type instead of the element type"
+    /// mistake that `duckdb.h`'s contradictory `@param` text invites.
+    ///
+    /// `DuckDB` would report it as a bare null return after failing to cast
+    /// every element to a container.
+    fn reject_container_type(
+        element_type: &crate::types::LogicalType,
+        container: crate::types::TypeId,
+        method: &str,
+    ) -> Result<(), ExtensionError> {
+        // SAFETY: `element_type` is a live handle for the duration of the call.
+        let id = unsafe {
+            crate::types::TypeId::try_from_duckdb_type(libduckdb_sys::duckdb_get_type_id(
+                element_type.as_raw(),
+            ))
+        };
+        if id == Some(container) {
+            return Err(ExtensionError::new(format!(
+                "Value::{method} takes the *element* type, not the {} type: pass the type of \
+                 one item (duckdb.h's prose says \"child (element) type\" while its @param \
+                 line says \"the type of the {}\"; the implementation takes the element type)",
+                container.sql_name(),
+                container.sql_name().to_lowercase()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Creates an `ENUM` value from its dictionary index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `enum_type` is not an `ENUM` or `index` is outside
+    /// its dictionary.
+    pub fn enum_value(
+        enum_type: &crate::types::LogicalType,
+        index: u64,
+    ) -> Result<Self, ExtensionError> {
+        // SAFETY: `enum_type` is a live handle for the duration of the call.
+        let raw = unsafe { libduckdb_sys::duckdb_create_enum_value(enum_type.as_raw(), index) };
+        Self::checked(raw, "duckdb_create_enum_value")
+    }
+
+    /// Wraps a possibly-null constructor result, naming the C function that
+    /// produced it.
+    fn checked(raw: duckdb_value, api_func: &'static str) -> Result<Self, ExtensionError> {
+        if raw.is_null() {
+            return Err(ExtensionError::new(format!(
+                "{api_func} returned null: the logical type and the supplied values do not \
+                 form a valid value (check the type's kind, its child types, and the value count)"
+            )));
+        }
+        Ok(Self { raw })
+    }
+
+    /// Returns `true` when this value's SQL type is `SQLNULL`.
+    ///
+    /// This is **not** [`is_null`][Self::is_null], which reports whether the
+    /// *handle* is null — a value that failed to construct, or one moved out
+    /// with [`into_raw`][Self::into_raw]. A SQL `NULL` has a perfectly valid
+    /// handle.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::value::Value;
+    ///
+    /// let v = Value::null_value();
+    /// assert!(!v.is_null(), "the handle is fine");
+    /// assert!(v.is_sql_null(), "the value is SQL NULL");
+    /// ```
+    #[must_use]
+    pub fn is_sql_null(&self) -> bool {
+        if self.raw.is_null() {
+            return false;
+        }
+        // SAFETY: `self.raw` is a valid duckdb_value per the constructor contract.
+        unsafe { libduckdb_sys::duckdb_is_null_value(self.raw) }
+    }
+
+    /// Returns the dictionary index of an `ENUM` value.
+    ///
+    /// `duckdb.h`: "A `uint64_t`, or `MinValue<uint64>` if the value cannot be
+    /// converted" — i.e. `0` for a non-`ENUM` value, which is also a legitimate
+    /// index, so check [`type_id`][Self::type_id] first when the type is not
+    /// already known.
+    #[must_use]
+    pub fn as_enum_index(&self) -> u64 {
+        if self.raw.is_null() {
+            return 0;
+        }
+        // SAFETY: `self.raw` is a valid duckdb_value per the constructor contract.
+        unsafe { libduckdb_sys::duckdb_get_enum_value(self.raw) }
+    }
+
+    /// Creates a `MAP` value from parallel key and value slices.
+    ///
+    /// Named `map` rather than `map_value` because
+    /// [`map_value`][Self::map_value] is already the accessor that reads the
+    /// value of the `index`-th entry.
+    ///
+    /// `map_type` is the `MAP` type itself. Requires `duckdb-1-5`:
+    /// `duckdb_create_map_value` sits in the unstable region of the C API
+    /// struct.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the slices differ in length, or when
+    /// `duckdb_create_map_value` reports failure — `map_type` is not a `MAP`,
+    /// a child type is `ANY` / `INVALID`, or a key repeats.
+    #[cfg(feature = "duckdb-1-5")]
+    pub fn map(
+        map_type: &crate::types::LogicalType,
+        keys: &[Self],
+        values: &[Self],
+    ) -> Result<Self, ExtensionError> {
+        if keys.len() != values.len() {
+            return Err(ExtensionError::new(format!(
+                "Value::map: {} key(s) but {} value(s)",
+                keys.len(),
+                values.len()
+            )));
+        }
+        let mut key_raws: Vec<duckdb_value> = keys.iter().map(Self::as_raw).collect();
+        let mut val_raws: Vec<duckdb_value> = values.iter().map(Self::as_raw).collect();
+        // SAFETY: both slices have exactly `entry_count` live handles, checked
+        // equal above; DuckDB copies rather than takes them.
+        let raw = unsafe {
+            libduckdb_sys::duckdb_create_map_value(
+                map_type.as_raw(),
+                key_raws.as_mut_ptr(),
+                val_raws.as_mut_ptr(),
+                libduckdb_sys::idx_t::try_from(key_raws.len()).unwrap_or(libduckdb_sys::idx_t::MAX),
+            )
+        };
+        Self::checked(raw, "duckdb_create_map_value")
+    }
+
+    /// Creates a `UNION` value for the member at `tag_index`.
+    ///
+    /// Requires `duckdb-1-5`: `duckdb_create_union_value` sits in the unstable
+    /// region of the C API struct.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `union_type` is not a `UNION`, `tag_index` is out
+    /// of range, or `value`'s type does not equal that member's declared type —
+    /// `DuckDB` compares them exactly and returns null on a mismatch.
+    #[cfg(feature = "duckdb-1-5")]
+    pub fn union_value(
+        union_type: &crate::types::LogicalType,
+        tag_index: u64,
+        value: &Self,
+    ) -> Result<Self, ExtensionError> {
+        // SAFETY: both handles are live for the duration of the call, and
+        // DuckDB copies the value rather than taking it.
+        let raw = unsafe {
+            libduckdb_sys::duckdb_create_union_value(union_type.as_raw(), tag_index, value.as_raw())
+        };
+        Self::checked(raw, "duckdb_create_union_value")
     }
 
     /// Returns the [`TypeId`][crate::types::TypeId] this value actually holds.
