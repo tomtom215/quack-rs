@@ -1016,32 +1016,53 @@ mod tests {
     // conversions live in `tests/ffi_roundtrip.rs`, where a real database is
     // available.
 
-    static SCHEMA_RELEASES: AtomicUsize = AtomicUsize::new(0);
-    static ARRAY_RELEASES: AtomicUsize = AtomicUsize::new(0);
+    // Each test owns its counter and hands it to the release callback through
+    // the record's own `private_data`, which is exactly what that field is for.
+    // A shared `static` would race: `cargo test` runs these in parallel, so one
+    // test's reset could land between another's drop and its assertion.
+
+    /// Increments the counter in `private_data`, if the test installed one.
+    ///
+    /// # Safety
+    ///
+    /// `private_data` must be null or a pointer to a live `AtomicUsize`.
+    unsafe fn bump(private_data: *mut std::os::raw::c_void) {
+        // SAFETY: forwarded from this function's own contract.
+        if let Some(counter) = unsafe { private_data.cast::<AtomicUsize>().as_ref() } {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     unsafe extern "C" fn count_schema_release(schema: *mut RawArrowSchema) {
-        SCHEMA_RELEASES.fetch_add(1, Ordering::SeqCst);
-        // The Arrow specification requires the callback to null its own
-        // `release`, which is how "already released" is observable.
-        // SAFETY: DuckDB and every other Arrow producer pass a valid pointer.
-        unsafe { (*schema).release = None };
+        // SAFETY: DuckDB and every other Arrow producer pass a valid pointer,
+        // and every schema built here stores its counter in `private_data`.
+        unsafe {
+            bump((*schema).private_data);
+            // The Arrow specification requires the callback to null its own
+            // `release`, which is how "already released" is observable.
+            (*schema).release = None;
+        }
     }
 
     unsafe extern "C" fn count_array_release(array: *mut RawArrowArray) {
-        ARRAY_RELEASES.fetch_add(1, Ordering::SeqCst);
         // SAFETY: as above.
-        unsafe { (*array).release = None };
+        unsafe {
+            bump((*array).private_data);
+            (*array).release = None;
+        }
     }
 
-    fn live_schema() -> ArrowSchema {
+    fn live_schema(counter: &'static AtomicUsize) -> ArrowSchema {
         let mut raw = RawArrowSchema::empty();
+        raw.private_data = std::ptr::from_ref(counter).cast_mut().cast();
         raw.release = Some(count_schema_release);
         // SAFETY: `count_schema_release` frees nothing and nulls itself.
         unsafe { ArrowSchema::from_raw(raw) }
     }
 
-    fn live_array() -> ArrowArray {
+    fn live_array(counter: &'static AtomicUsize) -> ArrowArray {
         let mut raw = RawArrowArray::empty();
+        raw.private_data = std::ptr::from_ref(counter).cast_mut().cast();
         raw.release = Some(count_array_release);
         // SAFETY: `count_array_release` frees nothing and nulls itself.
         unsafe { ArrowArray::from_raw(raw) }
@@ -1209,64 +1230,69 @@ mod tests {
 
     #[test]
     fn dropping_a_live_schema_releases_it_once() {
-        SCHEMA_RELEASES.store(0, Ordering::SeqCst);
-        drop(live_schema());
-        assert_eq!(SCHEMA_RELEASES.load(Ordering::SeqCst), 1);
+        static RELEASES: AtomicUsize = AtomicUsize::new(0);
+        drop(live_schema(&RELEASES));
+        assert_eq!(RELEASES.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn dropping_a_live_array_releases_it_once() {
-        ARRAY_RELEASES.store(0, Ordering::SeqCst);
-        drop(live_array());
-        assert_eq!(ARRAY_RELEASES.load(Ordering::SeqCst), 1);
+        static RELEASES: AtomicUsize = AtomicUsize::new(0);
+        drop(live_array(&RELEASES));
+        assert_eq!(RELEASES.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn releasing_explicitly_is_idempotent_and_drop_adds_nothing() {
-        SCHEMA_RELEASES.store(0, Ordering::SeqCst);
-        let mut schema = live_schema();
+        static SCHEMA: AtomicUsize = AtomicUsize::new(0);
+        static ARRAY: AtomicUsize = AtomicUsize::new(0);
+
+        let mut schema = live_schema(&SCHEMA);
         schema.release();
         schema.release();
         assert!(schema.is_released());
         drop(schema);
-        assert_eq!(SCHEMA_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(SCHEMA.load(Ordering::SeqCst), 1);
 
-        ARRAY_RELEASES.store(0, Ordering::SeqCst);
-        let mut array = live_array();
+        let mut array = live_array(&ARRAY);
         array.release();
         array.release();
         assert!(array.is_released());
         drop(array);
-        assert_eq!(ARRAY_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(ARRAY.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn into_raw_hands_the_release_callback_to_the_caller() {
-        SCHEMA_RELEASES.store(0, Ordering::SeqCst);
-        let mut raw = live_schema().into_raw();
+        static SCHEMA: AtomicUsize = AtomicUsize::new(0);
+        static ARRAY: AtomicUsize = AtomicUsize::new(0);
+
+        let mut raw = live_schema(&SCHEMA).into_raw();
         assert_eq!(
-            SCHEMA_RELEASES.load(Ordering::SeqCst),
+            SCHEMA.load(Ordering::SeqCst),
             0,
             "into_raw must not release"
         );
         let release = raw.release.expect("release survived into_raw");
         // SAFETY: the caller now owns the record; releasing it once is correct.
         unsafe { release(&raw mut raw) };
-        assert_eq!(SCHEMA_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(SCHEMA.load(Ordering::SeqCst), 1);
 
-        ARRAY_RELEASES.store(0, Ordering::SeqCst);
-        let mut raw = live_array().into_raw();
-        assert_eq!(ARRAY_RELEASES.load(Ordering::SeqCst), 0);
+        let mut raw = live_array(&ARRAY).into_raw();
+        assert_eq!(ARRAY.load(Ordering::SeqCst), 0);
         let release = raw.release.expect("release survived into_raw");
         // SAFETY: as above.
         unsafe { release(&raw mut raw) };
-        assert_eq!(ARRAY_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(ARRAY.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn take_from_neutralises_the_source_so_only_one_side_releases() {
-        SCHEMA_RELEASES.store(0, Ordering::SeqCst);
+        static SCHEMA: AtomicUsize = AtomicUsize::new(0);
+        static ARRAY: AtomicUsize = AtomicUsize::new(0);
+
         let mut source = RawArrowSchema::empty();
+        source.private_data = std::ptr::from_ref(&SCHEMA).cast_mut().cast();
         source.release = Some(count_schema_release);
         // SAFETY: `source` is a live, uniquely-owned record.
         let taken = unsafe { ArrowSchema::take_from(&raw mut source) };
@@ -1276,17 +1302,17 @@ mod tests {
             "the source must be left released so its own Drop is a no-op"
         );
         drop(taken);
-        assert_eq!(SCHEMA_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(SCHEMA.load(Ordering::SeqCst), 1);
 
-        ARRAY_RELEASES.store(0, Ordering::SeqCst);
         let mut source = RawArrowArray::empty();
+        source.private_data = std::ptr::from_ref(&ARRAY).cast_mut().cast();
         source.release = Some(count_array_release);
         // SAFETY: as above.
         let taken = unsafe { ArrowArray::take_from(&raw mut source) };
         assert!(!taken.is_released());
         assert!(source.release.is_none());
         drop(taken);
-        assert_eq!(ARRAY_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(ARRAY.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -1318,13 +1344,16 @@ mod tests {
 
     #[test]
     fn debug_says_released_without_touching_the_other_fields() {
+        static SCHEMA: AtomicUsize = AtomicUsize::new(0);
+        static ARRAY: AtomicUsize = AtomicUsize::new(0);
+
         assert!(format!("{:?}", ArrowSchema::empty()).contains("released"));
         assert!(format!("{:?}", ArrowArray::empty()).contains("released"));
 
-        let schema = live_schema();
+        let schema = live_schema(&SCHEMA);
         let rendered = format!("{schema:?}");
         assert!(rendered.contains("n_children"), "{rendered}");
-        let array = live_array();
+        let array = live_array(&ARRAY);
         let rendered = format!("{array:?}");
         assert!(rendered.contains("length"), "{rendered}");
     }

@@ -121,33 +121,44 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static FREED: AtomicUsize = AtomicUsize::new(0);
-
-    unsafe extern "C" fn count_free(ptr: *mut c_void) {
-        FREED.fetch_add(1, Ordering::SeqCst);
-        if !ptr.is_null() {
-            // SAFETY: every test below allocates with `Box::into_raw(Box::new(7u32))`.
-            drop(unsafe { Box::from_raw(ptr.cast::<u32>()) });
-        }
+    /// The payload each test allocates: a reference to *that test's* counter.
+    ///
+    /// A single shared `static` counter made these tests race. `cargo test` runs
+    /// them in parallel, so one test's `store(0)` could land between another's
+    /// drop and its assertion — which is exactly how
+    /// `dropping_an_untransferred_extra_info_frees_it` failed in CI while
+    /// passing everywhere else. Carrying the counter in the allocation gives
+    /// each test its own and keeps them parallel.
+    struct Tracked {
+        freed: &'static AtomicUsize,
     }
 
-    fn boxed() -> *mut c_void {
-        Box::into_raw(Box::new(7u32)).cast::<c_void>()
+    unsafe extern "C" fn count_free(ptr: *mut c_void) {
+        if ptr.is_null() {
+            return;
+        }
+        // SAFETY: every test allocates through `boxed`.
+        let tracked = unsafe { Box::from_raw(ptr.cast::<Tracked>()) };
+        tracked.freed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn boxed(freed: &'static AtomicUsize) -> *mut c_void {
+        Box::into_raw(Box::new(Tracked { freed })).cast::<c_void>()
     }
 
     #[test]
     fn dropping_an_untransferred_extra_info_frees_it() {
-        FREED.store(0, Ordering::SeqCst);
+        static FREED: AtomicUsize = AtomicUsize::new(0);
         // SAFETY: `count_free` frees exactly what `boxed` allocates.
-        let info = unsafe { ExtraInfo::new(boxed(), Some(count_free)) };
+        let info = unsafe { ExtraInfo::new(boxed(&FREED), Some(count_free)) };
         drop(info);
         assert_eq!(FREED.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn a_transferred_extra_info_leaves_the_allocation_to_duckdb() {
-        FREED.store(0, Ordering::SeqCst);
-        let raw = boxed();
+        static FREED: AtomicUsize = AtomicUsize::new(0);
+        let raw = boxed(&FREED);
         // SAFETY: as above.
         let info = unsafe { ExtraInfo::new(raw, Some(count_free)) };
         info.mark_transferred();
@@ -164,7 +175,7 @@ mod tests {
 
     #[test]
     fn a_null_pointer_or_absent_destructor_is_a_no_op() {
-        FREED.store(0, Ordering::SeqCst);
+        static FREED: AtomicUsize = AtomicUsize::new(0);
         // SAFETY: nothing is freed on either path.
         unsafe {
             drop(ExtraInfo::new(std::ptr::null_mut(), Some(count_free)));

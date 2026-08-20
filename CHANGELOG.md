@@ -196,6 +196,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Flaky tests: a shared counter raced across parallel tests.** The
+  `extra_info` tests and the new `arrow` ones each reset one `static
+  AtomicUsize` and then asserted on it, but `cargo test` runs tests in
+  parallel — so one test's reset could land between another's drop and its
+  assertion. `dropping_an_untransferred_extra_info_frees_it` failed in CI while
+  the identical job on the identical commit passed. Each test now owns its
+  counter: `extra_info` carries it in the allocation, and `arrow` carries it in
+  the record's own `private_data`, which is what that field is for. Verified
+  with 100 repeat runs, zero failures.
+
 - **`data_chunk_from_arrow` aborted a debug `DuckDB` on a zero-row array.**
   `duckdb_data_chunk_from_arrow` passes `arrow_array->length` straight through
   as the chunk's *capacity* (`dchunk->Initialize(alloc, types, length)`), and
