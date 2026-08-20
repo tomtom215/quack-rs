@@ -843,7 +843,7 @@ jobs:
             # gitignored: keeping a growing corpus in the history would add a
             # megabyte per PR for no review value.
             mkdir -p "fuzz/corpus/$target"
-            cp -n "fuzz/seeds/$target/." "fuzz/corpus/$target/" 2>/dev/null || true
+            cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
             cargo fuzz run --fuzz-dir fuzz "$target" -- \
               -max_total_time=60 -rss_limit_mb=4096
             echo "::endgroup::"

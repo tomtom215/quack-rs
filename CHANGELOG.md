@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A panicking `Drop` in extension state aborted the process.** Every FFI
+  destructor quack-rs generates — `FfiState<T>::destroy_callback`,
+  `FfiBindData` / `FfiInitData` / `FfiLocalInitData::destroy`,
+  `replacement_scan::drop_box`, `TypedCallbacks::destroy_extra` — dropped a
+  `Box<T>` of arbitrary user data directly inside an `extern "C" fn`. Since Rust
+  1.81 an unwind across that boundary is a guaranteed process abort. Reproduced
+  against `DuckDB` 1.5.4: an aggregate whose state type has a panicking `Drop`
+  killed the process with `SIGABRT` from inside
+  `duckdb::RowOperations::DestroyStates`, on a task-scheduler thread. All of them
+  now run under the new `callback::catch_ffi_panic`, which is public so
+  extensions writing their own `extern "C"` destructors get the same containment.
+
+  Where `DuckDB` offers an error channel the panic is now reported instead of
+  swallowed: `CAPIAggregateStateInit` checks the error flag and throws, so a
+  panicking `Default::default()` becomes an ordinary SQL error rather than a
+  silent NULL. The state destructor has none (`CAPIAggregateDestructor` takes no
+  info and returns nothing), so there the message is discarded.
+
+  `FfiState::init_callback` also no longer forms a `&mut Self` over the
+  possibly-uninitialised allocation `DuckDB` hands it.
+
+### Fixed
+
+- **Pitfall L8 — `DEFAULT_NULL_HANDLING` does not propagate NULLs for scalar
+  functions.** quack-rs documented that `DuckDB` "automatically returns NULL if
+  any argument is NULL, without your function callback being called". For a
+  scalar function registered through the C API that is false at run time:
+  `CAPIScalarFunction` calls the callback for every row including NULL ones and
+  never inspects the result's validity, and the only NULL check in
+  `ExpressionExecutor::Execute` is `VerifyNullHandling`, whose entire body is
+  inside `#ifdef DEBUG`. A callback that ignores validity therefore returns a
+  non-NULL answer for a NULL input, silently, in every release build.
+
+  `SELECT f(NULL)` still returns NULL — a literal NULL is constant-folded before
+  the function is reached — which is why the bug survives review. From a column
+  it does not. New `DataChunk::propagate_nulls` / `any_null` restore SQL
+  semantics in one line; the new typed constructors below get it right by
+  construction; the docs, the book chapter and `LESSONS.md` now state what
+  `DuckDB` does, with the source quoted. A regression test pins the behaviour.
+  Aggregates are unaffected — their executor really does filter NULL rows.
+
+- **Composite `TypeId`s silently produced an invalid type.**
+  `duckdb_create_logical_type` "returns an invalid logical type" for `DECIMAL`,
+  `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY` and `UNION` — a *non-null* handle
+  wrapping `LogicalTypeId::INVALID`, so the existing null check never fired.
+  `.param(TypeId::Struct)` failed much later with a message that named neither
+  the parameter nor the fix, and `get_type_id()` on one panicked. New
+  `TypeId::is_composite` / `composite_constructor_hint`; `LogicalType::new`
+  asserts, `try_new` errors, and every builder validates before allocating any
+  `DuckDB` handle.
+
+- **`extra_info` leaked when a builder was not registered.** `DuckDB` only takes
+  ownership at `duckdb_*_set_extra_info`; a dropped builder dropped the pointer.
+  This reached users through APIs that never mention a pointer —
+  `TableFunctionBuilder::with_state` boxes two closures. Found by Miri.
+
+- **Two stale-borrow bugs in `src/secrets.rs`'s own tests**, which took a pointer
+  into a `String`, called a `&mut` method, then read through the stale pointer.
+  The library's `zeroize_string` was correct throughout.
+
+### Added
+
+- **Scalar functions as safe Rust closures.** `ScalarFunctionBuilder::map1` /
+  `map2` / `map1_str` / `map2_str` / `map1_opt` / `map2_opt` take an ordinary
+  closure; parameter and return types come from its signature, NULLs propagate
+  correctly, and a panic becomes a SQL error. `VARCHAR` gets its own
+  constructors so the closure can borrow a `&str` straight out of the vector.
+  One indirect call per chunk, not per row.
+
+- **`Value` gained every remaining constructor** — all scalar widths, the
+  temporal family, `INTERVAL`, `BLOB`, `DECIMAL`, and the composites (`STRUCT`,
+  `LIST`, `ARRAY`, `ENUM`; `MAP` and `UNION` behind `duckdb-1-5`) — plus
+  `is_sql_null` (distinct from `is_null`, which asks about the handle) and
+  `as_enum_index`. `struct_value` checks the field count first, because
+  `duckdb_create_struct_value` takes no count and reads one value per field of
+  the *type*. `list_value` / `array_value` take the **element** type: `duckdb.h`
+  contradicts itself here, and the implementation settles it.
+
+- **`PreparedStatement` gained the remaining 18 typed binds** and `bind_value`,
+  the escape hatch for every composite type.
+
+- **Cancellation and progress.** `OwnedConnection::interrupt_handle` returns a
+  `Send + Sync` token, lifetime-tied to the connection, that a watchdog thread
+  can use to stop a running query.
+
+- **Streaming results.** `PreparedStatement::execute_streaming` and
+  `QueryResult::is_streaming` (`duckdb-1-5`).
+
+- **`QueryResult::column_logical_type`** keeps the nested structure that
+  `column_type` collapses, and **`result_kind`** separates rows from row counts.
+
+- **`LogicalType::register`** — `CREATE TYPE` from the C API, so an extension can
+  ship a named `ENUM` or `STRUCT`. Stable-prefix; no feature needed.
+
+- **`vector::ops`** (`duckdb-1-5`) makes `SelectionVector` usable: `copy_selected`,
+  `slice`, `reference_value`, `reference_vector` and `OwnedVector`. Documents
+  that `slice` produces a *dictionary* vector, after which every reader in this
+  crate reads the wrong rows.
+
+### Changed
+
+- CI gains four jobs: `miri` (546 unit tests under the interpreter),
+  `leak-check` (LeakSanitizer over the end-to-end suite against a real
+  `libduckdb`, now leak-clean), `fuzz` (`cargo-fuzz` over the description.yml
+  parser, the `duckdb_string_t` decoder and the validators) and `semver`
+  (`cargo-semver-checks`). `tests/ffi_roundtrip.rs` is now linted — it is
+  feature-gated, so the plain clippy job had been compiling it away to nothing.
+
+- `AUDIT.md` records the full review: what was read, what was probed, what was
+  verified correct, and what is still open.
+
 ## [0.16.0] - 2026-08-19
 
 ### Security

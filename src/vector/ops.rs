@@ -252,13 +252,16 @@ mod tests {
         let mut writer = unsafe { crate::vector::VectorWriter::from_vector(vector.as_raw()) };
         for row in 0..16 {
             // SAFETY: `row` is within the capacity declared above.
-            unsafe { writer.write_i64(row, row as i64 * 10) };
+            unsafe { writer.write_i64(row, i64::try_from(row).unwrap() * 10) };
         }
         // SAFETY: the vector holds 16 BIGINT rows written just above.
         let reader = unsafe { crate::vector::VectorReader::from_vector(vector.as_raw(), 16) };
         for row in 0..16 {
             // SAFETY: `row < 16`.
-            assert_eq!(unsafe { reader.read_i64(row) }, row as i64 * 10);
+            assert_eq!(
+                unsafe { reader.read_i64(row) },
+                i64::try_from(row).unwrap() * 10
+            );
         }
     }
 
@@ -274,7 +277,7 @@ mod tests {
         let mut writer = unsafe { crate::vector::VectorWriter::from_vector(src.as_raw()) };
         for row in 0..32 {
             // SAFETY: `row < 32`.
-            unsafe { writer.write_i64(row, row as i64) };
+            unsafe { writer.write_i64(row, i64::try_from(row).unwrap()) };
         }
 
         // Keep the odd rows, in reverse.
