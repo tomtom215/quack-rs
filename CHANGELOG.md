@@ -159,6 +159,17 @@ being compiled too. The complete, compiling version of the tutorial chapter is
   build-dependency graph. `src/abi.rs`'s verified layout table already covers
   1.5.2–1.5.5 at 546 slots, so the ABI guard needed no change.
 - `examples/hello-ext` moved to the same `libduckdb-sys` 1.10505.0.
+- **The `RUSTSEC-2026-0235` suppression is gone, because the advisory is.** rkyv
+  reached the lockfile only as an unenabled optional feature of `rust_decimal`,
+  which `duckdb` pulled in; osv-scanner reads the lockfile rather than the build
+  graph, so it reported a crate no build ever linked. DuckDB 1.10505.0 dropped
+  its `rust_decimal` dependency, removing both crates outright — so the entry in
+  `osv-scanner.toml` and the CI step that re-proved its justification were both
+  deleted. With no suppression in place, osv-scanner fails the job on its own if
+  rkyv ever returns, which is a stronger guarantee than the bespoke check was.
+  That check earned its keep on the way out: it anchors on `rust_decimal` being
+  present and fails closed when the anchor vanishes, so it caught this rather
+  than silently passing a vacuous "no rkyv found".
 - `actions/checkout` 7.0.0 → 7.0.1, `Swatinem/rust-cache` 2.9.1 → 2.9.2 and
   `actions/attest-build-provenance` 4.1.1 → 4.2.2, across every workflow and in
   the workflow the scaffold generates, so new projects do not start on stale

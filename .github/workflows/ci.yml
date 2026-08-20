@@ -679,46 +679,6 @@ jobs:
             "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
           echo "${SHA}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
-      # osv-scanner.toml suppresses RUSTSEC-2026-0235 on the grounds that rkyv
-      # is never compiled. Re-prove that here rather than trusting a comment:
-      # if a feature change ever pulls rkyv into the build, this fails and the
-      # suppression has to go.
-      #
-      # Two things this gets right on purpose:
-      #
-      # 1. stdout only. Cargo writes the tree to stdout and progress to stderr,
-      #    and it DOWNLOADS every lockfile entry -- including ones it will
-      #    never compile. Folding stderr in with 2>&1 makes the line
-      #    "Downloaded rkyv v0.7.46" look exactly like a tree node, which
-      #    failed this job on a cold runner while passing locally against a
-      #    warm cache. Keep stderr separate, for diagnostics only.
-      #
-      # 2. The forward tree, not `cargo tree -i`. The inverse form exits 0 with
-      #    "nothing to print" for a package that is in the lockfile but has no
-      #    active edge, so it cannot tell "not built" from "built" by exit code.
-      - name: Confirm the suppressed advisory is still unreachable
-        run: |
-          err=$(mktemp)
-          if ! tree=$(cargo tree --all-features --target all -e normal,build 2>"$err"); then
-            echo "::error::cargo tree failed, so rkyv reachability is unverified"
-            cat "$err"
-            exit 1
-          fi
-          # Anchor: rust_decimal (rkyv's only possible parent here) must be in
-          # the tree, else it is not covering the relevant subgraph and finding
-          # no rkyv would prove nothing.
-          if ! grep -qE 'rust_decimal v[0-9]' <<<"$tree"; then
-            echo "::error::rust_decimal absent from the tree; rkyv reachability is unverified"
-            cat "$err"
-            exit 1
-          fi
-          if grep -qE '(^|[^a-z_-])rkyv v[0-9]' <<<"$tree"; then
-            echo "::error::rkyv is now in the build graph. Remove the RUSTSEC-2026-0235"
-            echo "::error::entry from osv-scanner.toml and address the advisory for real."
-            grep -nE '(^|[^a-z_-])rkyv v[0-9]' <<<"$tree"
-            exit 1
-          fi
-          echo "rkyv absent from the build graph; suppression still justified"
       - name: Scan lockfiles (root + example) against OSV
         run: |
           ./osv-scanner --config=osv-scanner.toml \
