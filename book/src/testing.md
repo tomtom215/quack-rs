@@ -155,7 +155,7 @@ Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 ```toml
 # Zero-config but slow: compile libduckdb from C++ source (~5-10 min cold).
 [dev-dependencies]
-quack-rs = { version = "0.16", features = ["bundled-test"] }
+quack-rs = { version = "0.17", features = ["bundled-test"] }
 ```
 
 ```toml
@@ -164,7 +164,7 @@ quack-rs = { version = "0.16", features = ["bundled-test"] }
 # under target/); or set DUCKDB_LIB_DIR=/path/to/libduckdb if you already have
 # one extracted (requires libduckdb-sys >= 1.10503 for header auto-discovery).
 [dev-dependencies]
-quack-rs = { version = "0.16", features = ["bundled-test-prebuilt"] }
+quack-rs = { version = "0.17", features = ["bundled-test-prebuilt"] }
 ```
 
 Both keep `duckdb` out of a plain `cargo test` and out of your published
@@ -582,7 +582,7 @@ harness properties.
 
 ```toml
 [dev-dependencies]
-quack-rs = { version = "0.16", features = [] }
+quack-rs = { version = "0.17", features = [] }
 proptest = "1"
 ```
 
