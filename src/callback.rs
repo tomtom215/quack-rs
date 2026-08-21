@@ -706,3 +706,49 @@ pub fn message_to_c_string(message: &str) -> std::ffi::CString {
     std::ffi::CString::new(message.replace('\0', "?"))
         .unwrap_or_else(|_| std::ffi::CString::default())
 }
+
+/// Runs `body` with unwinding contained, returning the panic message on unwind.
+///
+/// # Why this exists
+///
+/// Every function quack-rs hands to `DuckDB` is an `extern "C" fn`. Since Rust
+/// 1.81 a panic that reaches such a boundary is a guaranteed **process abort**
+/// (`panic_cannot_unwind`), not merely undefined behaviour — so an aggregate
+/// state whose `Drop` calls `.unwrap()` takes the whole `DuckDB` session down.
+/// The macros in this module contain that for the callbacks *you* write; this
+/// function is the same containment for the ones quack-rs generates on your
+/// behalf, and it is public so extensions writing their own `extern "C"`
+/// destructors can use it too.
+///
+/// `AssertUnwindSafe` is applied internally: at an FFI boundary there is no
+/// caller left to observe a broken invariant, and aborting instead is strictly
+/// worse.
+///
+/// # Not a substitute for an error channel
+///
+/// Where the `DuckDB` callback has a `set_error` counterpart, report the message
+/// through it — see the macro table in the [module docs][self]. Some callbacks
+/// (notably the aggregate state destructor, which `DuckDB` invokes as
+/// `info.destroy(states, count)` with no info handle and no return value) have
+/// no channel at all; there, discarding the message is the only option left, and
+/// it still beats aborting.
+///
+/// # `panic = "abort"`
+///
+/// Like every `catch_unwind` in this crate, this is inert under
+/// `panic = "abort"`. Keep extension crates on `panic = "unwind"`.
+///
+/// # Example
+///
+/// ```rust
+/// use quack_rs::callback::catch_ffi_panic;
+///
+/// assert_eq!(catch_ffi_panic(|| 1 + 1), Ok(2));
+/// assert_eq!(catch_ffi_panic(|| panic!("boom")), Err("boom".to_string()));
+/// ```
+pub fn catch_ffi_panic<T, F>(body: F) -> Result<T, String>
+where
+    F: FnOnce() -> T,
+{
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).map_err(|p| panic_message(&p))
+}

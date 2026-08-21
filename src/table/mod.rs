@@ -101,7 +101,7 @@ pub mod init_data;
 pub mod typed;
 
 pub use bind_data::FfiBindData;
-pub use builder::{BindFn, InitFn, ScanFn, TableFunctionBuilder};
+pub use builder::{BindFn, InitFn, ScanFn, TableFunctionBuilder, TableFunctionHandle};
 pub use info::{BindInfo, FunctionInfo, InitInfo};
 pub use init_data::{FfiInitData, FfiLocalInitData};
 pub use typed::TypedTableFunctionBuilder;

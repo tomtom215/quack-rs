@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community
+// and encouraging more Rust development!
+
+//! Ownership of a function's `extra_info` allocation until `DuckDB` takes it.
+//!
+//! Every function builder can carry an `extra_info` pointer plus the destructor
+//! `DuckDB` will call for it. `DuckDB` only takes ownership at
+//! `duckdb_*_set_extra_info`, i.e. inside `register`. Between the call that
+//! supplies the pointer and the call that registers the function, the
+//! allocation belongs to the builder — and a builder that is dropped instead of
+//! registered used to drop the pointer on the floor.
+//!
+//! That is easy to dismiss as a path nobody takes, until a typed constructor
+//! allocates on the user's behalf:
+//! [`ScalarFunctionBuilder::map1`][crate::scalar::ScalarFunctionBuilder::map1]
+//! boxes a closure, and
+//! [`TableFunctionBuilder::with_state`][crate::table::TableFunctionBuilder::with_state]
+//! boxes two, so `build()` without `register()` leaks user data through an API
+//! that never mentions a pointer. Miri's leak checker found exactly that in this
+//! crate's own tests.
+//!
+//! [`ExtraInfo`] closes it: the destructor runs on drop unless
+//! [`mark_transferred`][ExtraInfo::mark_transferred] says `DuckDB` has taken
+//! over.
+
+use std::os::raw::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use libduckdb_sys::duckdb_delete_callback_t;
+
+/// An `extra_info` pointer and its destructor, owned until `DuckDB` takes them.
+pub struct ExtraInfo {
+    data: *mut c_void,
+    destroy: duckdb_delete_callback_t,
+    /// Set through a shared reference, so a set builder can mark an overload
+    /// transferred while iterating its overloads by `&`.
+    ///
+    /// An `AtomicBool` rather than a `Cell<bool>`: `Cell` contains an
+    /// `UnsafeCell`, which is `!RefUnwindSafe`, and that propagates to every
+    /// builder that owns an `ExtraInfo` — silently removing an auto trait from
+    /// four public types. `AtomicBool` gives the same shared-reference mutation
+    /// with none of that. (`ExtraInfo` stays `!Sync` because of the raw
+    /// pointer, which is why `CopyFunctionBuilder` is `!Sync` like its three
+    /// sibling builders.)
+    transferred: AtomicBool,
+}
+
+impl ExtraInfo {
+    /// Takes ownership of `data`, to be freed by `destroy`.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must be a pointer `destroy` can free exactly once, and no one
+    ///   else may free it.
+    /// - `destroy` must not panic. It is an `extern "C" fn`, so an unwind out of
+    ///   it aborts the process at its own boundary — before any `catch_unwind`
+    ///   on this side could see it. quack-rs's own destructors catch internally
+    ///   via [`catch_ffi_panic`][crate::callback::catch_ffi_panic]; a
+    ///   hand-written one must too.
+    pub unsafe fn new(data: *mut c_void, destroy: duckdb_delete_callback_t) -> Self {
+        Self {
+            data,
+            destroy,
+            transferred: AtomicBool::new(false),
+        }
+    }
+
+    /// The raw pointer, for handing to `duckdb_*_set_extra_info`.
+    pub const fn data(&self) -> *mut c_void {
+        self.data
+    }
+
+    /// The destructor, for handing to `duckdb_*_set_extra_info`.
+    pub const fn destroy(&self) -> duckdb_delete_callback_t {
+        self.destroy
+    }
+
+    /// Records that `DuckDB` now owns the allocation, so `Drop` leaves it alone.
+    ///
+    /// Call this immediately after `duckdb_*_set_extra_info` returns.
+    pub fn mark_transferred(&self) {
+        self.transferred.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for ExtraInfo {
+    fn drop(&mut self) {
+        if self.transferred.load(Ordering::Relaxed) || self.data.is_null() {
+            return;
+        }
+        let Some(destroy) = self.destroy else {
+            return;
+        };
+        // A panic inside `destroy` cannot be contained from here: `destroy` is
+        // an `extern "C" fn`, so Rust aborts at *its* boundary before any
+        // `catch_unwind` on this side is reached. Every destructor quack-rs
+        // generates catches internally (see `callback::catch_ffi_panic`); a
+        // user-supplied one must do the same, which is part of `extra_info`'s
+        // safety contract.
+        //
+        // SAFETY: `new`'s contract says `destroy` can free `data` exactly once,
+        // and `transferred` proves nobody else has.
+        unsafe { destroy(self.data) };
+    }
+}
+
+impl core::fmt::Debug for ExtraInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ExtraInfo")
+            .field("data", &self.data)
+            .field("destroy", &self.destroy.map(|_| "<fn>"))
+            .field("transferred", &self.transferred.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The payload each test allocates: a reference to *that test's* counter.
+    ///
+    /// A single shared `static` counter made these tests race. `cargo test` runs
+    /// them in parallel, so one test's `store(0)` could land between another's
+    /// drop and its assertion — which is exactly how
+    /// `dropping_an_untransferred_extra_info_frees_it` failed in CI while
+    /// passing everywhere else. Carrying the counter in the allocation gives
+    /// each test its own and keeps them parallel.
+    struct Tracked {
+        freed: &'static AtomicUsize,
+    }
+
+    unsafe extern "C" fn count_free(ptr: *mut c_void) {
+        if ptr.is_null() {
+            return;
+        }
+        // SAFETY: every test allocates through `boxed`.
+        let tracked = unsafe { Box::from_raw(ptr.cast::<Tracked>()) };
+        tracked.freed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn boxed(freed: &'static AtomicUsize) -> *mut c_void {
+        Box::into_raw(Box::new(Tracked { freed })).cast::<c_void>()
+    }
+
+    #[test]
+    fn dropping_an_untransferred_extra_info_frees_it() {
+        static FREED: AtomicUsize = AtomicUsize::new(0);
+        // SAFETY: `count_free` frees exactly what `boxed` allocates.
+        let info = unsafe { ExtraInfo::new(boxed(&FREED), Some(count_free)) };
+        drop(info);
+        assert_eq!(FREED.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_transferred_extra_info_leaves_the_allocation_to_duckdb() {
+        static FREED: AtomicUsize = AtomicUsize::new(0);
+        let raw = boxed(&FREED);
+        // SAFETY: as above.
+        let info = unsafe { ExtraInfo::new(raw, Some(count_free)) };
+        info.mark_transferred();
+        drop(info);
+        assert_eq!(
+            FREED.load(Ordering::SeqCst),
+            0,
+            "DuckDB owns it now; freeing here would be a double free"
+        );
+        // Free it by hand so the test itself does not leak.
+        // SAFETY: nothing else freed it.
+        unsafe { count_free(raw) };
+    }
+
+    #[test]
+    fn a_null_pointer_or_absent_destructor_is_a_no_op() {
+        static FREED: AtomicUsize = AtomicUsize::new(0);
+        // SAFETY: nothing is freed on either path.
+        unsafe {
+            drop(ExtraInfo::new(std::ptr::null_mut(), Some(count_free)));
+            drop(ExtraInfo::new(std::ptr::null_mut(), None));
+        }
+        assert_eq!(FREED.load(Ordering::SeqCst), 0);
+    }
+}

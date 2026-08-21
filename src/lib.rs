@@ -77,6 +77,7 @@
 //! | [`prelude`] | Convenience re-exports of the most commonly used items |
 //! | [`appender`] | Bulk row appender (`Appender`) |
 //! | [`table_description`] | Table metadata (column names, `DEFAULT`s) |
+//! | `arrow` | Arrow C Data Interface bridge, no `arrow` crate dependency (`duckdb-1-5-4` feature) |
 //! | `catalog` | Catalog entry lookup (`duckdb-1-5` feature) |
 //! | `client_context` | Client context access (`duckdb-1-5` feature) |
 //! | `config_option` | Extension-defined configuration options (`duckdb-1-5` feature) |
@@ -122,7 +123,7 @@
 //! ## Pitfalls
 //!
 //! See [`LESSONS.md`](https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md)
-//! for all 17 known `DuckDB` Rust FFI pitfalls, including symptoms, root causes, and fixes.
+//! for all 21 known `DuckDB` Rust FFI pitfalls, including symptoms, root causes, and fixes.
 //!
 //! ## Pitfall L1: COMBINE must propagate config fields
 //!
@@ -155,6 +156,7 @@ pub mod datetime;
 mod debug_repr;
 pub mod entry_point;
 pub mod error;
+mod extra_info;
 pub mod interval;
 pub mod prelude;
 pub mod query;
@@ -174,6 +176,8 @@ pub mod warning;
 
 // DuckDB 1.5.0+ modules — gated behind the `duckdb-1-5` feature flag.
 pub mod appender;
+#[cfg(feature = "duckdb-1-5-4")]
+pub mod arrow;
 #[cfg(feature = "duckdb-1-5")]
 pub mod catalog;
 #[cfg(feature = "duckdb-1-5")]

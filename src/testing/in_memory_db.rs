@@ -123,13 +123,17 @@ fn init_dispatch_table_once() {
         // values are valid function pointers for the lifetime of the process.
         let api = unsafe { quack_rs_create_api_v1() };
 
-        // Box the struct so we can hand a stable pointer to get_api_fn.
-        // The allocation is intentionally leaked; it must live for the
-        // duration of the process (the dispatch table holds no copy of it
-        // — duckdb_rs_extension_api_init reads through the pointer and
-        // stores each function pointer into its own atomic, after which
-        // the struct is no longer needed).
-        let api_ptr = Box::into_raw(Box::new(api));
+        // The struct stays on this stack frame. `duckdb_rs_extension_api_init`
+        // reads it through the pointer and copies each function pointer into
+        // its own `AtomicPtr`, keeping no reference afterwards (verified in
+        // `libduckdb-sys`'s generated `bindgen_bundled_version_loadable.rs`),
+        // so it only has to outlive that one call.
+        //
+        // This used to be `Box::into_raw`, deliberately leaked. It worked, but
+        // it was the only allocation the `leak-check` CI job had to suppress —
+        // and a leak-detector job that starts with a suppression for your own
+        // code is one bad day away from hiding a real missing destructor.
+        let api_ptr: *const libduckdb_sys::duckdb_ext_api_v1 = &raw const api;
 
         // A bare function (no closure captures) that satisfies the
         // duckdb_extension_access::get_api signature.  We pass the API
@@ -169,6 +173,10 @@ fn init_dispatch_table_once() {
             )
             .expect("failed to initialise DuckDB loadable-extension dispatch table");
         }
+
+        // `api` dies with this frame, so the thread-local must not keep
+        // pointing at it.
+        TL_API_PTR.with(|cell| cell.set(std::ptr::null()));
     });
 }
 

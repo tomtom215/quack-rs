@@ -41,9 +41,14 @@ jobs:
         run: |
           echo "::group::cargo-mutants execution log"
 
+          # `--output` names the PARENT directory: cargo-mutants writes its
+          # results to `<output>/mutants.out/`. Passing `mutants.out` put them
+          # in `mutants.out/mutants.out/`, where the report step below never
+          # looked -- so every count read 0, the score printed 100%, and the
+          # job passed green no matter how many mutants survived.
           set +e
           cargo mutants \
-            --output mutants.out \
+            --output . \
             --timeout 120 \
             --jobs 4 2>&1 | tee /tmp/mutants-run.log
           MUTANTS_EXIT=$?
@@ -143,7 +148,17 @@ jobs:
       - name: Determine changed files
         id: changed
         run: |
-          FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- 'src/**/*.rs' | sort -u)
+          # Filter to .rs in the shell rather than with a `src/**/*.rs`
+          # pathspec: git's default wildmatch lets `*` cross `/`, so that
+          # pattern requires at least one directory component after `src/` and
+          # silently matches NO top-level file. `src/value.rs`, `src/query.rs`,
+          # `src/arrow.rs` and every other module directly under `src/` were
+          # skipped entirely, with the job still reporting success.
+          # `|| true` because `grep` exits 1 on no match, and this step runs
+          # under `bash -e`: a PR that touches no Rust file must reach the
+          # `skip=true` branch below, not abort here.
+          FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- 'src/' \
+            | grep '\.rs$' | sort -u || true)
           FILE_COUNT=$(printf '%s\n' "$FILES" | grep -c . 2>/dev/null || echo 0)
 
           if [ -z "$FILES" ] || [ "$FILE_COUNT" -eq 0 ]; then
@@ -179,11 +194,20 @@ jobs:
             [ -n "$glob" ] && ARGS+=(--exclude "$glob")
           done < <(sed -n '/^exclude_globs = \[/,/^]/p' mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
 
-          # `--features duckdb-1-5-3` MUST be explicit: cargo-mutants does not
+          # Same for `exclude_re`. cargo-mutants only *combines* a CLI
+          # `--exclude-re` with the config file from 27.0.0 onwards; before
+          # that the flag replaced the config list outright. This job passes
+          # one below, so re-applying the config entries here keeps
+          # mutants.toml authoritative on either side of that change.
+          while IFS= read -r re; do
+            [ -n "$re" ] && ARGS+=(--exclude-re "$re")
+          done < <(sed -n '/^exclude_re = \[/,/^]/p' mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
+
+          # `--features duckdb-1-5-4` MUST be explicit: cargo-mutants does not
           # apply mutants.toml `features` to this invocation, so without it the
           # duckdb-1-5-gated code (type_id's 1.5 type arms, the whole error_data
-          # module) is cfg'd out — its mutations would be inert and reported as
-          # false "missed".
+          # module, the arrow bridge) is cfg'd out — its mutations would be
+          # inert and reported as false "missed".
           #
           # `--cargo-arg=--lib` kills mutants with FAST, deterministic *unit*
           # tests: the bundled-DuckDB integration suite is slow, and run
@@ -191,12 +215,17 @@ jobs:
           # `--exclude-re ErrorData` drops the error_data FFI methods (ErrorData /
           # check_valid_utf8) that need a live runtime; the pure DuckDbErrorType
           # logic stays mutation-tested.
+          # `--output` names the PARENT directory: cargo-mutants writes its
+          # results to `<output>/mutants.out/`. Passing `mutants.out` put them
+          # in `mutants.out/mutants.out/`, where the report step below never
+          # looked -- so every count read 0, the score printed 100%, and the
+          # job passed green no matter how many mutants survived.
           set +e
           cargo mutants "${ARGS[@]}" \
-            --features duckdb-1-5-3 \
+            --features duckdb-1-5-4 \
             --cargo-arg=--lib \
             --exclude-re 'ErrorData' \
-            --output mutants.out \
+            --output . \
             --timeout 120 \
             --jobs 4 2>&1 | tee /tmp/mutants-run.log
           MUTANTS_EXIT=$?

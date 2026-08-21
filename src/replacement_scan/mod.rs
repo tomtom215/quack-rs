@@ -285,9 +285,16 @@ impl ReplacementScanBuilder {
         data: T,
     ) {
         // Define the destructor before any statement so clippy is satisfied.
+        //
+        // PITFALL L3: `T::drop` is arbitrary user code and `DuckDB` calls this
+        // through an `extern "C"` pointer with no error channel, where an
+        // unwind is a process abort. Contain it.
         unsafe extern "C" fn drop_box<T>(ptr: *mut c_void) {
             if !ptr.is_null() {
-                unsafe { drop(Box::from_raw(ptr.cast::<T>())) };
+                // SAFETY: `ptr` came from `Box::into_raw` just below.
+                drop(crate::callback::catch_ffi_panic(|| unsafe {
+                    drop(Box::from_raw(ptr.cast::<T>()));
+                }));
             }
         }
 

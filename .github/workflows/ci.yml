@@ -73,7 +73,7 @@ jobs:
       - run: cargo test --all-targets --features bundled-test
 
   # Exercises the `bundled-test-prebuilt` path: link a pre-built libduckdb
-  # instead of compiling DuckDB from C++ source. Combined with duckdb-1-5-3 this
+  # instead of compiling DuckDB from C++ source. Combined with duckdb-1-5-4 this
   # is also the only job that runs the DuckDB 1.5.x FFI wrapper tests (appender,
   # selection_vector, instance_cache, ...) against a real DuckDB runtime.
   # Linux only — the pre-built release archive is published per-platform.
@@ -99,10 +99,23 @@ jobs:
           # by libduckdb-sys does not propagate to this downstream test binary).
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
-        run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-3
+        run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
+      # `tests/ffi_roundtrip.rs` is `#![cfg(feature = "_duckdb-testing")]`, so
+      # the plain `clippy` job compiles it away to nothing and never lints the
+      # largest test file in the repo. Lint it where it is actually built.
+      #
+      # The env block is repeated rather than shared: `build.rs` needs
+      # DUCKDB_LIB_DIR to find `duckdb.hpp` for the C++ shim on *every*
+      # invocation, clippy included, and a step without it panics in the build
+      # script before clippy ever runs.
+      - name: Clippy (including the end-to-end tests)
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: cargo clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-4 -- -D warnings
 
   test-duckdb-1-5:
-    name: Test duckdb-1-5 / duckdb-1-5-3 features
+    name: Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -114,6 +127,9 @@ jobs:
       - run: cargo check --all-targets --features duckdb-1-5-3
       - run: cargo test --all-targets --features duckdb-1-5-3
       - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
+      - run: cargo check --all-targets --features duckdb-1-5-4
+      - run: cargo test --all-targets --features duckdb-1-5-4
+      - run: cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings
 
   wasm:
     name: WASM (wasm32-unknown-emscripten)
@@ -129,7 +145,7 @@ jobs:
       # needs no emscripten toolchain. `--all-targets` is intentionally avoided —
       # it would pull the bundled-DuckDB test path, which requires em++.
       - run: cargo check --lib --target wasm32-unknown-emscripten
-      - run: cargo check --lib --features duckdb-1-5-3 --target wasm32-unknown-emscripten
+      - run: cargo check --lib --features duckdb-1-5-4 --target wasm32-unknown-emscripten
 
   clippy:
     name: Clippy
@@ -156,7 +172,7 @@ jobs:
           toolchain: beta
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
+      - run: cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings
 
   fmt:
     name: Format
@@ -175,11 +191,12 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      # Use --features duckdb-1-5-3 (implies duckdb-1-5) instead of --all-features
+      # Use --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
+      # duckdb-1-5) instead of --all-features
       # because bundled-test requires DuckDB headers from libduckdb-sys, which may
       # not be compiled yet when the build script runs (build scripts only
       # wait for [build-dependencies], not [dependencies]).
-      - run: cargo doc --no-deps --features duckdb-1-5-3
+      - run: cargo doc --no-deps --features duckdb-1-5-4
         env:
           RUSTDOCFLAGS: "-D warnings"
 
@@ -353,8 +370,21 @@ jobs:
           exit "${status:-0}"
 
   extension-load:
-    name: Extension load test (DuckDB)
+    name: Extension load test (DuckDB ${{ matrix.duckdb }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # The README claims "quack-rs supports DuckDB 1.4.x and 1.5.x". One
+      # `releases/latest` run samples a single point of that claim and silently
+      # retargets whenever DuckDB ships. hello-ext uses only the frozen stable
+      # prefix and is stamped `C_STRUCT` + `v1.2.0`, so it is supposed to load
+      # into every one of these — which is exactly the property worth proving,
+      # and the one that would break silently.
+      #
+      # `latest` stays in the matrix as the early-warning signal for a DuckDB
+      # that has not been pinned here yet.
+      matrix:
+        duckdb: ["v1.4.4", "v1.5.0", "v1.5.5", "latest"]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -366,7 +396,12 @@ jobs:
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
-          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
+          if [ "${{ matrix.duckdb }}" = "latest" ]; then
+            url=https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
+          else
+            url=https://github.com/duckdb/duckdb/releases/download/${{ matrix.duckdb }}/duckdb_cli-linux-amd64.zip
+          fi
+          curl -fsSL "$url" -o duckdb.zip
           unzip -o duckdb.zip
           chmod +x duckdb
           # Record which DuckDB this job is actually testing against. Without
@@ -710,5 +745,145 @@ jobs:
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # `+nightly` is not optional: `rust-toolchain.toml` pins `channel =
+      # "stable"`, and a rustup toolchain file overrides the default this action
+      # sets, so a bare `cargo` here runs stable and this job tests nothing new.
       - name: Test (nightly, informational)
-        run: cargo test --all-targets
+        run: cargo +nightly test --all-targets
+
+  miri:
+    name: Miri (undefined behaviour)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+        with:
+          toolchain: nightly
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # This crate is ~40% unsafe by surface area, and the parts that are *not*
+      # FFI -- the duckdb_string_t decoder, the validity bitmap arithmetic, the
+      # UUID bit flip, the interval maths, the secret zeroizer -- are exactly
+      # what Miri can check. It has already caught two stale-borrow bugs in
+      # `src/secrets.rs`'s tests that read a pointer derived before a `&mut`
+      # call, which no amount of `cargo test` would have surfaced.
+      #
+      # Only `--lib` runs here. The integration tests need a real DuckDB, and
+      # Miri cannot execute foreign functions; the tests that reach the C API
+      # are `#[cfg(feature = "_duckdb-testing")]` and are simply not compiled
+      # in this configuration.
+      #
+      # `-Zmiri-disable-isolation` is needed because proptest reads the current
+      # directory to place its regression files.
+      - name: Run the library unit tests under Miri
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+          # Miri interprets, so the "-D warnings" the rest of CI uses would also
+          # apply to nightly-only lints the stable build never sees.
+          RUSTFLAGS: ""
+          # proptest's default 256 cases per property costs minutes under an
+          # interpreter for no extra coverage of the *unsafe* code, which is
+          # what this job is for. `cargo test` still runs the full 256.
+          PROPTEST_CASES: "8"
+        # `+nightly` is not optional -- see the note in the `nightly` job:
+        # `rust-toolchain.toml` pins stable and overrides this action's default,
+        # so a bare `cargo miri` resolves to stable, where the `miri` component
+        # does not exist.
+        run: cargo +nightly miri test --lib
+
+  leak-check:
+    name: LeakSanitizer (RAII wrappers vs a real DuckDB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+        with:
+          toolchain: nightly
+          components: rust-src
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # Half of quack-rs's value proposition is RAII over DuckDB handles:
+      # LogicalType, Value, QueryResult, OwnedDataChunk, FileHandle,
+      # PreparedStatement, ErrorData, Appender. A missing destructor is not a
+      # test failure -- everything still returns the right answer -- so the only
+      # way to catch one is to look at the heap afterwards.
+      #
+      # LeakSanitizer intercepts malloc globally, so it sees DuckDB's C++
+      # allocations even though libduckdb itself is not instrumented.
+      - name: Fetch a prebuilt libduckdb
+        run: |
+          set -euo pipefail
+          curl -fsSL -o libduckdb.zip \
+            https://github.com/duckdb/duckdb/releases/download/v1.5.4/libduckdb-linux-amd64.zip
+          mkdir -p "$RUNNER_TEMP/libduckdb"
+          unzip -o -q libduckdb.zip -d "$RUNNER_TEMP/libduckdb"
+          echo "DUCKDB_LIB_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
+          echo "DUCKDB_INCLUDE_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
+      - name: Run the end-to-end suite under LeakSanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=leak"
+          # DuckDB's own one-time allocations (extension registry, the default
+          # allocator's arenas, static initialisers) are still reachable at
+          # exit and are not quack-rs's business. Suppress by library, so a leak
+          # from a quack-rs frame is still reported.
+          # A two-frame stack is useless for attributing a leak to a missing
+          # destructor; 30 is enough to name the quack-rs frame.
+          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
+        run: |
+          # `+nightly` is not optional -- see the note in the `nightly` job.
+          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
+            --features bundled-test-prebuilt,duckdb-1-5-4 --test ffi_roundtrip
+
+  semver:
+    name: Public API (semver-checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # quack-rs is an SDK: its public API *is* the product, and a downstream
+      # extension that stops compiling on a patch release is a worse outcome
+      # than a missing feature. This compares the working tree against the
+      # published crate and fails when the version bump does not cover the
+      # change.
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+      - name: Check the public API against the last published release
+        run: cargo semver-checks check-release --features duckdb-1-5-4
+
+  fuzz:
+    name: Fuzz (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # The description.yml parser is hand-rolled and reads a file from an
+      # arbitrary GitHub repository; the duckdb_string_t decoder reads 16 bytes
+      # whose meaning depends on a length field inside them. Both are exactly
+      # the shape a fuzzer is good at, and both are reachable from untrusted
+      # input in a real extension.
+      #
+      # A short smoke run per PR, not a campaign: it catches a newly introduced
+      # panic without holding up review. `fuzz/corpus` carries the seeds.
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run each target briefly
+        run: |
+          set -euo pipefail
+          # `+nightly` is not optional -- see the note in the `nightly` job.
+          for target in $(cargo +nightly fuzz list --fuzz-dir fuzz); do
+            echo "::group::$target"
+            # Seed from the committed inputs. `fuzz/corpus` is generated and
+            # gitignored: keeping a growing corpus in the history would add a
+            # megabyte per PR for no review value.
+            mkdir -p "fuzz/corpus/$target"
+            cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
+            cargo +nightly fuzz run --fuzz-dir fuzz "$target" -- \
+              -max_total_time=60 -rss_limit_mb=4096
+            echo "::endgroup::"
+          done

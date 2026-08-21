@@ -225,11 +225,20 @@ impl AggregateFunctionSetBuilder {
     /// `con` must be a valid, open `duckdb_connection`.
     #[allow(clippy::too_many_lines)]
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // See `AggregateFunctionBuilder::register` -- validate before allocating.
+        if let Some(id) = self.return_type {
+            LogicalType::check_slot(id, "aggregate function set return type")?;
+        }
+        for (i, overload) in self.overloads.iter().enumerate() {
+            for (j, id) in overload.params.iter().enumerate() {
+                LogicalType::check_slot(*id, &format!("overload {i} parameter {j}"))?;
+            }
+        }
         // Resolve return type: prefer explicit LogicalType over TypeId.
         let ret_lt = if let Some(lt) = self.return_logical {
             lt
         } else if let Some(id) = self.return_type {
-            LogicalType::new(id)
+            LogicalType::for_slot(id, "aggregate function set return type")?
         } else {
             return Err(ExtensionError::new("return type not set for function set"));
         };
@@ -356,8 +365,9 @@ impl AggregateFunctionSetBuilder {
             let result = unsafe { duckdb_register_aggregate_function_set(con, set) };
             if result != DuckDBSuccess {
                 register_error = Some(ExtensionError::new(format!(
-                    "duckdb_register_aggregate_function_set failed for '{}'",
-                    self.name.to_string_lossy()
+                    "duckdb_register_aggregate_function_set failed for '{name}': {hint}",
+                    name = self.name.to_string_lossy(),
+                    hint = crate::error::REGISTRATION_FAILURE_HINT
                 )));
             }
         }

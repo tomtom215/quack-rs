@@ -389,6 +389,74 @@ impl TypeId {
         }
     }
 
+    /// Names the constructor to use for a type id that carries parameters, or
+    /// `None` for a plain primitive.
+    ///
+    /// See [`is_composite`][Self::is_composite] for why these types are special.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use quack_rs::types::TypeId;
+    ///
+    /// assert_eq!(
+    ///     TypeId::List.composite_constructor_hint(),
+    ///     Some("LogicalType::list(element_type)")
+    /// );
+    /// assert_eq!(TypeId::BigInt.composite_constructor_hint(), None);
+    /// ```
+    #[must_use]
+    pub const fn composite_constructor_hint(self) -> Option<&'static str> {
+        // `duckdb.h` on `duckdb_create_logical_type`: "Returns an invalid
+        // logical type, if type is: DUCKDB_TYPE_INVALID, DUCKDB_TYPE_DECIMAL,
+        // DUCKDB_TYPE_ENUM, DUCKDB_TYPE_LIST, DUCKDB_TYPE_STRUCT,
+        // DUCKDB_TYPE_MAP, DUCKDB_TYPE_ARRAY, or DUCKDB_TYPE_UNION."
+        //
+        // "Invalid" there means a non-null handle wrapping LogicalTypeId::INVALID
+        // -- verified against DuckDB 1.5.4 -- so a null check does not catch it.
+        // The failure surfaces much later as an opaque
+        // `duckdb_register_*_function failed`, or as a panic from
+        // `LogicalType::get_type_id`.
+        match self {
+            Self::Decimal => Some("LogicalType::decimal(width, scale)"),
+            Self::Enum => Some("LogicalType::enum_type(&members)"),
+            Self::List => Some("LogicalType::list(element_type)"),
+            Self::Struct => Some("LogicalType::struct_type(&fields)"),
+            Self::Map => Some("LogicalType::map(key_type, value_type)"),
+            Self::Array => Some("LogicalType::array(element_type, size)"),
+            Self::Union => Some("LogicalType::union_type(&members)"),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` for the types `duckdb_create_logical_type` cannot build.
+    ///
+    /// `DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY` and `UNION` all carry
+    /// parameters — a width, a member list, a child type — that a bare type id
+    /// does not express, so each has its own `duckdb_create_*_type` constructor.
+    /// Passing one of them where a *primitive* type id is expected yields a
+    /// silently invalid type rather than an error, which is why
+    /// [`LogicalType::new`][crate::types::LogicalType::new] and the function
+    /// builders reject them up front.
+    ///
+    /// Use [`composite_constructor_hint`][Self::composite_constructor_hint] to
+    /// name the constructor to use instead, and pass the result through the
+    /// builders' `param_logical` / `returns_logical` methods.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use quack_rs::types::TypeId;
+    ///
+    /// assert!(TypeId::Struct.is_composite());
+    /// assert!(TypeId::Decimal.is_composite());
+    /// assert!(!TypeId::BigInt.is_composite());
+    /// ```
+    #[must_use]
+    pub const fn is_composite(self) -> bool {
+        self.composite_constructor_hint().is_some()
+    }
+
     /// Returns a human-readable SQL type name for this `TypeId`.
     ///
     /// # Example
@@ -463,6 +531,61 @@ impl std::fmt::Display for TypeId {
 
 #[cfg(test)]
 mod tests {
+    // `composite_constructor_hint` is the one place the crate tells a user how
+    // to build a type `duckdb_create_logical_type` refuses. A wrong or missing
+    // arm turns a precise diagnostic into a generic one, and nothing else in
+    // the suite reads the arms individually, so pin every one of them.
+
+    #[test]
+    fn every_composite_type_names_its_own_constructor() {
+        for (type_id, expected) in [
+            (TypeId::Decimal, "LogicalType::decimal(width, scale)"),
+            (TypeId::Enum, "LogicalType::enum_type(&members)"),
+            (TypeId::List, "LogicalType::list(element_type)"),
+            (TypeId::Struct, "LogicalType::struct_type(&fields)"),
+            (TypeId::Map, "LogicalType::map(key_type, value_type)"),
+            (TypeId::Array, "LogicalType::array(element_type, size)"),
+            (TypeId::Union, "LogicalType::union_type(&members)"),
+        ] {
+            assert_eq!(
+                type_id.composite_constructor_hint(),
+                Some(expected),
+                "{type_id:?} must name its own constructor"
+            );
+            assert!(type_id.is_composite(), "{type_id:?} is composite");
+        }
+    }
+
+    #[test]
+    fn primitive_types_have_no_constructor_hint_and_are_not_composite() {
+        // The set `duckdb.h` names is exactly the seven above; everything else
+        // `duckdb_create_logical_type` builds directly.
+        for type_id in [
+            TypeId::Boolean,
+            TypeId::TinyInt,
+            TypeId::SmallInt,
+            TypeId::Integer,
+            TypeId::BigInt,
+            TypeId::HugeInt,
+            TypeId::Float,
+            TypeId::Double,
+            TypeId::Varchar,
+            TypeId::Blob,
+            TypeId::Date,
+            TypeId::Time,
+            TypeId::Timestamp,
+            TypeId::Interval,
+            TypeId::Uuid,
+        ] {
+            assert_eq!(
+                type_id.composite_constructor_hint(),
+                None,
+                "{type_id:?} is primitive"
+            );
+            assert!(!type_id.is_composite(), "{type_id:?} is not composite");
+        }
+    }
+
     use super::*;
 
     #[test]

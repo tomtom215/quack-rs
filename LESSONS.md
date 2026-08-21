@@ -136,6 +136,117 @@ individual function before adding it to the set.
 
 ---
 
+## L8: `DEFAULT_NULL_HANDLING` does not propagate NULLs for scalar functions
+
+**Status**: Documented, and made impossible by `ScalarFunctionBuilder::map1` /
+`map2` / `map1_str` / `map2_str`. `DataChunk::propagate_nulls` fixes it in one
+line for hand-written callbacks.
+
+**Symptom**: A scalar function returns a value where SQL requires NULL — but only
+for arguments that come from a column. `SELECT f(NULL)` looks correct, so the bug
+survives review and ships.
+
+**Root cause**: The name suggests DuckDB returns NULL on your behalf. For a
+**scalar** function registered through the C API it does not, at run time:
+
+- `src/main/capi/scalar_function-c.cpp` — `CAPIScalarFunction` flattens the input
+  and calls the extension's callback for the whole chunk, NULL rows included,
+  then checks only the *error* flag. It never inspects the result's validity.
+- `src/execution/expression_executor/execute_function.cpp` — the only NULL check
+  is `VerifyNullHandling`, whose entire body is inside `#ifdef DEBUG`. It
+  *asserts* that the function already produced NULL wherever an input was NULL.
+
+Every DuckDB a user installs is a release build, so that assertion is compiled
+out and a callback that ignores validity is simply believed.
+
+A literal `NULL` argument is **constant-folded** during binding — DuckDB
+substitutes NULL without calling the function at all — which is why the obvious
+spot check passes.
+
+**Reproduction** (DuckDB 1.5.4):
+
+```sql
+CREATE TABLE t(i BIGINT);
+INSERT INTO t VALUES (1), (NULL), (3);
+SELECT i, always_999(i) FROM t;   -- always_999 writes 999 unconditionally
+-- 1    -> 999
+-- NULL -> 999   <- not NULL
+-- 3    -> 999
+SELECT always_999(NULL::BIGINT);  -- NULL, because of constant folding
+```
+
+**Fix**:
+
+- `ScalarFunctionBuilder::map1` / `map2` / `map1_str` / `map2_str` skip NULL rows
+  and write NULL for them, so the closure never sees one.
+- `DataChunk::propagate_nulls(&mut writer)` at the end of a hand-written callback
+  marks the output NULL wherever any input column is NULL.
+- `map1_opt` / `map2_opt`, and `NullHandling::SpecialNullHandling`, are for
+  functions that genuinely mean to see NULLs.
+
+**Aggregates are different.** DuckDB's aggregate executor really does filter NULL
+rows before `update` under `DEFAULT_NULL_HANDLING`; this lesson is specific to
+scalar functions.
+
+Pinned by `default_null_handling_does_not_propagate_nulls_for_scalar_functions`
+in `tests/ffi_roundtrip.rs`, so a future DuckDB that changes this shows up as a
+test failure rather than a surprise.
+
+---
+
+## L9: `duckdb_data_chunk_from_arrow` takes the array even when it fails
+
+**Status**: Made impossible by `arrow::data_chunk_from_arrow`, which takes the
+`ArrowArray` **by value**.
+
+**Symptom**: One of two opposite bugs, depending on which way you guessed. Treat
+the array as still yours after a failed conversion and you double-release it —
+DuckDB already stored a copy of the record in the chunk's owned data, so its
+`release` runs twice. Treat it as gone in *every* case and a zero-column
+conversion leaks the whole Arrow buffer tree.
+
+**Root cause**: `duckdb.h` says "Data ownership is passed on to DuckDB's
+DataChunk", which reads like a success-path statement. `src/main/capi/arrow-c.cpp`
+is more specific — the transfer happens inside the per-column loop, before any of
+the work that can throw:
+
+```cpp
+for (idx_t i = 0; i < dchunk->ColumnCount(); i++) {
+    ...
+    array_state->owned_data->arrow_array = *arrow_array;
+    // We set it to nullptr to effectively transfer the ownership
+    arrow_array->release = nullptr;
+    try { ... } catch (...) { return duckdb_create_error_data(...); }
+}
+```
+
+So the array is claimed on the error path too — but **only if the loop runs at
+all**. A converted schema with zero columns leaves `release` intact and the array
+still belongs to the caller. The early return for null arguments is the same.
+
+**Fix**: own the record in a wrapper whose `Drop` releases *only if `release`
+survived*, and consume it by value:
+
+```rust
+let chunk = unsafe { data_chunk_from_arrow(con, array, &converted) }?;
+// `array` is gone from the caller's view either way. Inside, the by-value
+// binding drops on the way out: a no-op when DuckDB nulled `release`, a
+// correct release when it did not.
+```
+
+The same wrapper handles the mirror-image case. `ArrowConverter::ToArrowSchema`
+and `ToArrowArray` install `release` / assign `*out_array` as their **last**
+statement, so a *failed* export leaves `release == NULL` and nothing to free —
+discarding the record is correct there, not a leak.
+
+**Related**: `duckdb_data_chunk_from_arrow` also indexes
+`arrow_array->children[i]` once per schema column with no bounds check, and
+dereferences an already-released array. Both are segfaults rather than errors;
+`data_chunk_from_arrow` checks them first, which is why `ArrowConvertedSchema`
+records the column count of the schema it was built from.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured manually in `Cargo.toml`.

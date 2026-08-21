@@ -89,6 +89,113 @@ impl BindInfo {
         self
     }
 
+    /// Number of result columns `DuckDB` already knows this table function must
+    /// produce.
+    ///
+    /// Zero for an ordinary table function, which is expected to declare its own
+    /// columns with
+    /// [`add_result_column`][Self::add_result_column]. Non-zero when the
+    /// function is driving a `COPY … FROM`: the target table's schema is fixed
+    /// before the bind callback runs, and `duckdb.h` is explicit that such a
+    /// function "should not define its own result columns using
+    /// `duckdb_bind_add_result_column`" and should read the expected schema from
+    /// here instead.
+    ///
+    /// Requires `duckdb-1-5`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::table::BindInfo;
+    ///
+    /// # fn demo(bind: &BindInfo) {
+    /// // A COPY ... FROM reader adapts to the table it is loading into.
+    /// for i in 0..bind.result_column_count() {
+    ///     let name = bind.result_column_name(i).unwrap_or_default();
+    ///     // SAFETY: `i` is in range.
+    ///     let ty = unsafe { bind.result_column_type(i) };
+    ///     let _ = (name, ty);
+    /// }
+    /// # }
+    /// ```
+    #[cfg(feature = "duckdb-1-5")]
+    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
+    #[must_use]
+    pub fn result_column_count(&self) -> usize {
+        // SAFETY: `self.info` is valid per the constructor's contract.
+        usize::try_from(unsafe {
+            libduckdb_sys::duckdb_table_function_bind_get_result_column_count(self.info)
+        })
+        .unwrap_or(0)
+    }
+
+    /// Name of result column `index`, or `None` if it is out of range.
+    ///
+    /// The C API returns a **borrowed** pointer into `DuckDB`'s own storage —
+    /// `names[col_idx].c_str()` — which `duckdb.h` says "must not be destroyed"
+    /// and which is only valid "for the duration of the bind callback or until
+    /// the next call to `duckdb_bind_add_result_column`". This copies it, so the
+    /// returned `String` is not subject to either restriction (pitfall P11).
+    ///
+    /// Requires `duckdb-1-5`.
+    #[cfg(feature = "duckdb-1-5")]
+    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
+    #[must_use]
+    pub fn result_column_name(&self, index: usize) -> Option<String> {
+        if index >= self.result_column_count() {
+            return None;
+        }
+        // SAFETY: `self.info` is valid and `index` is in range.
+        let ptr = unsafe {
+            libduckdb_sys::duckdb_table_function_bind_get_result_column_name(
+                self.info,
+                index as idx_t,
+            )
+        };
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: `ptr` is a NUL-terminated string DuckDB owns; it is copied
+        // here and never freed by this crate.
+        unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    }
+
+    /// Type of result column `index`, or `None` if it is out of range.
+    ///
+    /// Unlike [`result_column_name`][Self::result_column_name] this handle is
+    /// **owned** — `duckdb_table_function_bind_get_result_column_type` returns a
+    /// freshly allocated `LogicalType` — so it is wrapped in [`LogicalType`],
+    /// which destroys it on drop.
+    ///
+    /// Requires `duckdb-1-5`.
+    ///
+    /// # Safety
+    ///
+    /// Must be called during the bind callback, while `self.info` is live.
+    #[cfg(feature = "duckdb-1-5")]
+    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
+    #[must_use]
+    pub unsafe fn result_column_type(&self, index: usize) -> Option<LogicalType> {
+        if index >= self.result_column_count() {
+            return None;
+        }
+        // SAFETY: `self.info` is valid and `index` is in range.
+        let raw = unsafe {
+            libduckdb_sys::duckdb_table_function_bind_get_result_column_type(
+                self.info,
+                index as idx_t,
+            )
+        };
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: DuckDB returns a handle the caller owns and must destroy.
+        Some(unsafe { LogicalType::from_raw(raw) })
+    }
+
     /// Adds an output column with a pre-built `LogicalType`.
     ///
     /// Use this when the column type is a complex type (LIST, STRUCT, MAP) built

@@ -36,8 +36,9 @@ aggregate, table and cast functions, vectors, data chunks, values, SQL macros,
 replacement scans, the [`query`](../data/values-and-parameters.md) API and the
 `datetime` conversions.
 
-The `duckdb-1-5` and `duckdb-1-5-3` features are the unstable half — 105
-functions covering scalar bind/init, copy functions, catalog access, `ErrorData`,
+The `duckdb-1-5`, `duckdb-1-5-3` and `duckdb-1-5-4` features are the unstable
+half — 130 functions covering scalar bind/init, copy functions in both
+directions, the Arrow C Data Interface bridge, catalog access, `ErrorData`,
 `FileSystem`, `Expression`, `SelectionVector`, config options, table descriptions
 and the client context.
 

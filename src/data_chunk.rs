@@ -61,6 +61,10 @@ impl DataChunk {
     /// Returns the number of rows in this data chunk.
     #[inline]
     #[must_use]
+    // Nothing but `duckdb_data_chunk_get_size`, and a chunk cannot be built
+    // without a live engine, so the `--lib` mutation run cannot observe this
+    // returning anything. The end-to-end suite reads it on every scan.
+    #[mutants::skip]
     pub fn size(&self) -> usize {
         // SAFETY: self.raw is valid per constructor contract.
         usize::try_from(unsafe { duckdb_data_chunk_get_size(self.raw) }).unwrap_or(0)
@@ -83,9 +87,119 @@ impl DataChunk {
     /// Returns the number of columns in this data chunk.
     #[inline]
     #[must_use]
+    // As `size`: a bare `duckdb_data_chunk_get_column_count`.
+    #[mutants::skip]
     pub fn column_count(&self) -> usize {
         // SAFETY: self.raw is valid per constructor contract.
         usize::try_from(unsafe { duckdb_data_chunk_get_column_count(self.raw) }).unwrap_or(0)
+    }
+
+    /// Returns `true` when **any** column of this chunk is NULL at `row`.
+    ///
+    /// This is the SQL-standard NULL-propagation predicate for a scalar
+    /// function: if any argument is NULL, the result is NULL.
+    ///
+    /// # Why you have to ask
+    ///
+    /// [`NullHandling::DefaultNullHandling`][crate::types::NullHandling::DefaultNullHandling]
+    /// does **not** make `DuckDB` propagate NULLs for a C API scalar function at
+    /// run time — see
+    /// [`propagate_nulls`][Self::propagate_nulls] for the details and the
+    /// evidence.
+    ///
+    /// For a hot loop over many columns, prefer
+    /// [`propagate_nulls`][Self::propagate_nulls], which resolves each column's
+    /// validity pointer once instead of once per row.
+    ///
+    /// # Safety
+    ///
+    /// - `row` must be less than [`size`][Self::size].
+    /// - The chunk must be a valid input chunk for the current callback.
+    #[must_use]
+    pub unsafe fn any_null(&self, row: usize) -> bool {
+        for col in 0..self.column_count() {
+            // SAFETY: `col` is in range by construction, and `row` by contract.
+            let reader = unsafe { self.reader(col) };
+            // SAFETY: `row` is in range per this function's contract.
+            if !unsafe { reader.is_valid(row) } {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Marks `output` NULL at every row where any column of this chunk is NULL.
+    ///
+    /// # What `DuckDB` actually does with NULLs
+    ///
+    /// It is natural to read
+    /// [`NullHandling::DefaultNullHandling`][crate::types::NullHandling::DefaultNullHandling]
+    /// as "`DuckDB` returns NULL for me when an argument is NULL". For a C API
+    /// scalar function that is **not** what happens at run time:
+    ///
+    /// - `CAPIScalarFunction` calls the extension's callback for the whole
+    ///   flattened chunk, NULL rows included, and never inspects the result's
+    ///   validity.
+    /// - `ExpressionExecutor::Execute` then calls `VerifyNullHandling`, which is
+    ///   compiled **only under `#ifdef DEBUG`** and merely *asserts* that the
+    ///   function already produced NULL wherever an input was NULL.
+    ///
+    /// So in any release build of `DuckDB` — which is every build a user runs —
+    /// a callback that ignores input validity returns a non-NULL answer for a
+    /// NULL input, silently. `SELECT f(NULL)` still looks right, because a
+    /// literal NULL is constant-folded before the function is ever called;
+    /// the wrong answers only appear once the argument comes from a column.
+    /// (Verified against `DuckDB` 1.5.4: a function returning `999` for every
+    /// row returned `999`, valid, for a NULL row of a real table.)
+    ///
+    /// Call this after writing the output, and the SQL-standard behaviour is
+    /// restored. Functions that mean to see NULLs — `coalesce`-likes,
+    /// `is_null`-likes — should not call it, and should register with
+    /// [`NullHandling::SpecialNullHandling`][crate::types::NullHandling::SpecialNullHandling]
+    /// so `DuckDB`'s debug assertion does not fire.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::data_chunk::DataChunk;
+    /// use quack_rs::vector::VectorWriter;
+    ///
+    /// quack_rs::scalar_callback!(double_it, |_info, input, output| {
+    ///     let chunk = unsafe { DataChunk::from_raw(input) };
+    ///     let reader = unsafe { chunk.reader(0) };
+    ///     let mut writer = unsafe { VectorWriter::from_vector(output) };
+    ///     for row in 0..chunk.size() {
+    ///         unsafe { writer.write_i64(row, reader.read_i64(row) * 2) };
+    ///     }
+    ///     // Without this, `double_it(NULL)` is 0, not NULL.
+    ///     unsafe { chunk.propagate_nulls(&mut writer) };
+    /// });
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// - `output` must write to a vector with at least [`size`][Self::size]
+    ///   rows — the output vector of the callback this chunk was passed to.
+    /// - The chunk must be a valid input chunk for the current callback.
+    pub unsafe fn propagate_nulls(&self, output: &mut VectorWriter) {
+        let rows = self.size();
+        if rows == 0 {
+            return;
+        }
+        // Resolve every column's validity pointer once. A column with no
+        // validity mask has no NULLs at all and is skipped entirely, which is
+        // the common case and costs nothing.
+        let readers: Vec<VectorReader> = (0..self.column_count())
+            // SAFETY: `col` is in range by construction.
+            .map(|col| unsafe { self.reader(col) })
+            .collect();
+        for row in 0..rows {
+            // SAFETY: `row < rows`, and each reader covers the same chunk.
+            if readers.iter().any(|r| !unsafe { r.is_valid(row) }) {
+                // SAFETY: `row < rows <= output vector length` per contract.
+                unsafe { output.set_null(row) };
+            }
+        }
     }
 
     /// Returns the raw `duckdb_vector` handle for the given column index.

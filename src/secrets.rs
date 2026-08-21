@@ -360,8 +360,13 @@ fn zeroize_string(s: &mut String) {
     s.clear();
 }
 
-impl Drop for SecretEntry {
-    fn drop(&mut self) {
+impl SecretEntry {
+    /// Overwrites every owned buffer, leaving the entry empty.
+    ///
+    /// This is [`Drop`]'s whole body, split out so it can be tested: a `Drop`
+    /// impl's effect is only observable in memory that has already been freed,
+    /// which no sound test can read.
+    fn zeroize_in_place(&mut self) {
         // Zeroize all field values (the sensitive material).
         for value in self.fields.values_mut() {
             zeroize_string(value);
@@ -376,6 +381,15 @@ impl Drop for SecretEntry {
         // Zeroize metadata fields that may contain sensitive context.
         zeroize_string(&mut self.provider);
         zeroize_string(&mut self.scope);
+    }
+}
+
+impl Drop for SecretEntry {
+    // One delegation. Replacing the body with `()` is unobservable from a test —
+    // see `zeroize_in_place`, which carries the behaviour and is tested directly.
+    #[mutants::skip]
+    fn drop(&mut self) {
+        self.zeroize_in_place();
     }
 }
 
@@ -478,6 +492,39 @@ pub trait SecretsManager: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    // `parse_scope_array` reads DuckDB's rendering of a VARCHAR[] out of
+    // `duckdb_secrets()`. It is pure string handling and the only part of this
+    // module that does not need a database, so pin its shape here rather than
+    // relying on whatever a live secret happens to carry.
+
+    #[test]
+    fn a_scope_array_round_trips_its_elements() {
+        assert_eq!(
+            parse_scope_array("['s3://', 's3n://']"),
+            vec!["s3://".to_owned(), "s3n://".to_owned()]
+        );
+        assert_eq!(parse_scope_array("['only']"), vec!["only".to_owned()]);
+    }
+
+    #[test]
+    fn an_empty_scope_array_yields_no_elements() {
+        assert!(parse_scope_array("[]").is_empty());
+        assert!(parse_scope_array("[ ]").is_empty());
+        assert!(parse_scope_array("").is_empty());
+    }
+
+    #[test]
+    fn an_unbracketed_scope_is_kept_as_a_single_element_rather_than_lost() {
+        assert_eq!(parse_scope_array("s3://"), vec!["s3://".to_owned()]);
+    }
+
+    #[test]
+    fn scope_elements_keep_their_contents_when_unquoted() {
+        // DuckDB quotes each element; anything that is not quoted is taken
+        // verbatim rather than having its first and last character stripped.
+        assert_eq!(parse_scope_array("[bare]"), vec!["bare".to_owned()]);
+    }
+
     use super::*;
 
     #[test]
@@ -497,6 +544,24 @@ mod tests {
         assert_eq!(entry.get_field("nonexistent"), None);
         assert_eq!(entry.field_count(), 2);
         assert!(!entry.is_empty());
+    }
+
+    #[test]
+    fn zeroizing_an_entry_clears_every_buffer_it_owns() {
+        // `Drop` runs exactly this, and the crate advertises zeroize-on-drop as
+        // a security property — so it is worth an assertion rather than a
+        // reading of the code.
+        let mut entry = SecretEntry::new("test", "bearer")
+            .with_provider("config")
+            .with_scope("https://api.example.com")
+            .with_field("token", "abc123");
+
+        entry.zeroize_in_place();
+
+        assert_eq!(entry.field_count(), 0, "fields must be drained");
+        assert_eq!(entry.get_field("token"), None);
+        assert_eq!(entry.provider(), "", "provider must be overwritten");
+        assert_eq!(entry.scope(), "", "scope must be overwritten");
     }
 
     #[test]
@@ -572,22 +637,37 @@ mod tests {
 
     #[test]
     fn drop_zeroizes_field_values() {
-        // We can't directly observe memory after drop, but we can verify
-        // zeroize_string works correctly on a standalone string.
+        // We cannot observe memory after drop, but we can verify that
+        // `zeroize_string` really overwrote the buffer rather than just
+        // shortening the string.
         let mut s = String::from("sensitive-data-here");
-        let ptr = s.as_ptr();
         let len = s.len();
 
         zeroize_string(&mut s);
-
         assert!(s.is_empty(), "String should be empty after zeroize");
-        // Verify the original buffer was zeroed (the pointer is still valid
-        // because clear() doesn't deallocate).
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        assert!(
-            bytes.iter().all(|&b| b == 0),
-            "All bytes should be zero after zeroize"
-        );
+
+        // Look at the buffer *through the String*, after the mutation. Taking
+        // `s.as_ptr()` beforehand and reading it here would be a stale
+        // borrow: `zeroize_string`'s `&mut` retag invalidates it, which Miri
+        // reports as undefined behaviour under Stacked Borrows and which the
+        // compiler is free to reorder around.
+        //
+        // `clear()` does not deallocate, so bytes `0..len` are still allocated
+        // and still initialised — by zeroes, if the function did its job.
+        // SAFETY: `len <= capacity` (the string only shrank), and every byte in
+        // that range was initialised before `clear()` and overwritten with 0,
+        // which is valid UTF-8. `set_len(0)` restores the invariant before the
+        // borrow ends.
+        unsafe {
+            let buf = s.as_mut_vec();
+            assert!(len <= buf.capacity());
+            buf.set_len(len);
+            assert!(
+                buf.iter().all(|&b| b == 0),
+                "All bytes should be zero after zeroize"
+            );
+            buf.set_len(0);
+        }
     }
 
     #[test]
@@ -689,21 +769,29 @@ mod tests {
 
     /// Reads back the bytes `zeroize_string` wrote.
     ///
-    /// The pointer is taken from a `&mut` borrow *and* the read goes through
-    /// the same borrow's provenance: deriving it from `&s` first and reading
-    /// after the `&mut` call would be undefined behaviour under Stacked
-    /// Borrows, even though it happens to work today.
+    /// Every pointer into the buffer is derived **after** `zeroize_string`
+    /// returns. Taking one beforehand — from `&s` *or* from `&mut s` — and
+    /// reading it afterwards is undefined behaviour under Stacked Borrows,
+    /// because the `&mut` retag inside `zeroize_string` pops the earlier tag off
+    /// the borrow stack. Miri catches exactly this; the CI `miri` job exists
+    /// because two earlier versions of this helper did not.
     fn zeroize_and_read_back(text: &str) -> Vec<u8> {
         let mut s = String::from(text);
         let len = s.len();
-        let ptr = s.as_mut_ptr();
         zeroize_string(&mut s);
         assert!(s.is_empty());
         assert!(s.capacity() >= len, "the buffer must not have been freed");
-        // SAFETY: `clear()` sets the length to zero but does not deallocate, so
-        // `ptr` still points at `s`'s live buffer of at least `len` bytes, and
-        // `s` outlives this read.
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        // SAFETY: `clear()` sets the length to zero without deallocating, so
+        // bytes `0..len` are still allocated and still initialised — with
+        // zeroes, if the function did its job. NUL is valid UTF-8, and
+        // `set_len(0)` restores the String's invariant before the borrow ends.
+        let bytes = unsafe {
+            let buf = s.as_mut_vec();
+            buf.set_len(len);
+            let copy = buf.clone();
+            buf.set_len(0);
+            copy
+        };
         drop(s);
         bytes
     }

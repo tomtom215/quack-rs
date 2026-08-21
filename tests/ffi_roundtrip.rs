@@ -2283,6 +2283,9 @@ mod copy_fn {
     /// What finalize saw, so the test can assert on it after the COPY.
     pub static FINAL_ROWS: AtomicUsize = AtomicUsize::new(0);
     pub static FINAL_CHECKSUM: AtomicUsize = AtomicUsize::new(0);
+    /// The `COPY ... TO` options, as `CopyBindInfo::options` reported them:
+    /// `(field name, rendered value)` for every field of the STRUCT.
+    pub static OPTIONS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
     pub unsafe extern "C" fn drop_bind(ptr: *mut c_void) {
         if !ptr.is_null() {
@@ -2304,6 +2307,18 @@ mod copy_fn {
 #[cfg(feature = "duckdb-1-5")]
 quack_rs::copy_bind_callback!(my_format_bind, |info| {
     let bind = unsafe { quack_rs::copy_function::CopyBindInfo::new(info) };
+    // The COPY options arrive as one STRUCT value, whose field names live on
+    // the value's logical type rather than the value itself.
+    if let (Some(options), Ok(mut slot)) = (bind.options(), copy_fn::OPTIONS.lock()) {
+        slot.clear();
+        for (i, name) in options.struct_field_names().into_iter().enumerate() {
+            let rendered = options
+                .struct_child(i)
+                .map(|v| format!("{v:?}"))
+                .unwrap_or_default();
+            slot.push((name, rendered));
+        }
+    }
     let data = Box::new(copy_fn::BindData {
         columns: bind.column_count(),
     });
@@ -2396,9 +2411,24 @@ fn a_copy_function_runs_its_whole_lifecycle() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("out.myfmt");
     fx.query(&format!(
-        "COPY (SELECT i::BIGINT AS n FROM range(5000) t(i)) TO '{}' (FORMAT my_format)",
+        "COPY (SELECT i::BIGINT AS n FROM range(5000) t(i)) TO '{}' (FORMAT my_format, LEVEL 7)",
         path.display()
     ));
+
+    // Every COPY option, including FORMAT itself, reaches the bind callback as a
+    // field of one STRUCT value.
+    let options = copy_fn::OPTIONS.lock().expect("options").clone();
+    let names: Vec<&str> = options.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names.iter().any(|n| n.eq_ignore_ascii_case("level")),
+        "the LEVEL option should be visible, got {names:?}"
+    );
+    let level = options
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case("level"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or_default();
+    assert!(level.contains('7'), "LEVEL should carry its value: {level}");
 
     // 5000 rows spans several chunks, so the sink ran repeatedly.
     assert_eq!(copy_fn::FINAL_ROWS.load(Ordering::SeqCst), 5000);
@@ -2826,5 +2856,2125 @@ fn the_instance_cache_shares_one_database() {
         let mut b = second;
         libduckdb_sys::duckdb_close(&raw mut a);
         libduckdb_sys::duckdb_close(&raw mut b);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Panics in user `Drop` / `Default` must not unwind out of an `extern "C"` fn.
+//
+// Rust 1.81+ turns such an unwind into `panic_cannot_unwind` — a hard process
+// abort, on a DuckDB worker thread, with no way for the host application to
+// recover. Before these guards, `SELECT panicky_agg(i) FROM range(10)` killed
+// the test binary with SIGABRT from inside
+// `duckdb::RowOperations::DestroyStates`.
+// ---------------------------------------------------------------------------
+
+mod panicking_lifecycle {
+    use quack_rs::aggregate::{AggregateState, FfiState};
+    use quack_rs::vector::{VectorReader, VectorWriter};
+
+    /// Counts rows; explodes when dropped.
+    #[derive(Default)]
+    pub struct DropBomb {
+        pub n: i64,
+    }
+
+    impl Drop for DropBomb {
+        fn drop(&mut self) {
+            panic!("state destructor deliberately exploded");
+        }
+    }
+
+    impl AggregateState for DropBomb {}
+
+    /// Explodes while being constructed.
+    pub struct DefaultBomb {
+        pub n: i64,
+    }
+
+    impl Default for DefaultBomb {
+        fn default() -> Self {
+            panic!("state initialiser deliberately exploded");
+        }
+    }
+
+    impl AggregateState for DefaultBomb {}
+
+    macro_rules! bomb_callbacks {
+        ($modname:ident, $state:ty) => {
+            pub mod $modname {
+                use super::*;
+
+                /// # Safety
+                /// Called by `DuckDB` with its own valid handles.
+                pub unsafe extern "C" fn update(
+                    _info: libduckdb_sys::duckdb_function_info,
+                    chunk: libduckdb_sys::duckdb_data_chunk,
+                    states: *mut libduckdb_sys::duckdb_aggregate_state,
+                ) {
+                    let reader = unsafe { VectorReader::new(chunk, 0) };
+                    for row in 0..reader.row_count() {
+                        if let Some(s) =
+                            unsafe { FfiState::<$state>::with_state_mut(*states.add(row)) }
+                        {
+                            s.n += unsafe { reader.read_i64(row) };
+                        }
+                    }
+                }
+
+                /// # Safety
+                /// Called by `DuckDB` with its own valid handles.
+                pub unsafe extern "C" fn combine(
+                    _info: libduckdb_sys::duckdb_function_info,
+                    source: *mut libduckdb_sys::duckdb_aggregate_state,
+                    target: *mut libduckdb_sys::duckdb_aggregate_state,
+                    count: libduckdb_sys::idx_t,
+                ) {
+                    for i in 0..count as usize {
+                        if let (Some(s), Some(t)) = (
+                            unsafe { FfiState::<$state>::with_state(*source.add(i)) },
+                            unsafe { FfiState::<$state>::with_state_mut(*target.add(i)) },
+                        ) {
+                            t.n += s.n;
+                        }
+                    }
+                }
+
+                /// # Safety
+                /// Called by `DuckDB` with its own valid handles.
+                pub unsafe extern "C" fn finalize(
+                    _info: libduckdb_sys::duckdb_function_info,
+                    states: *mut libduckdb_sys::duckdb_aggregate_state,
+                    result: libduckdb_sys::duckdb_vector,
+                    count: libduckdb_sys::idx_t,
+                    offset: libduckdb_sys::idx_t,
+                ) {
+                    let mut w = unsafe { VectorWriter::new(result) };
+                    for i in 0..count as usize {
+                        let idx = i + offset as usize;
+                        match unsafe { FfiState::<$state>::with_state(*states.add(i)) } {
+                            Some(s) => unsafe { w.write_i64(idx, s.n) },
+                            None => unsafe { w.set_null(idx) },
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    bomb_callbacks!(drop_bomb, DropBomb);
+    bomb_callbacks!(default_bomb, DefaultBomb);
+}
+
+#[test]
+fn a_panicking_aggregate_state_destructor_does_not_abort() {
+    use panicking_lifecycle::{drop_bomb, DropBomb};
+    use quack_rs::aggregate::{AggregateFunctionBuilder, FfiState};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        AggregateFunctionBuilder::new("drop_bomb_agg")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(FfiState::<DropBomb>::size_callback)
+            .init(FfiState::<DropBomb>::init_callback)
+            .update(drop_bomb::update)
+            .combine(drop_bomb::combine)
+            .finalize(drop_bomb::finalize)
+            .destructor(FfiState::<DropBomb>::destroy_callback)
+            .register(fx.con())
+            .expect("register drop_bomb_agg");
+    }
+
+    // The aggregate itself still computes the right answer: the destructor runs
+    // after finalize. DuckDB's state destructor has no error channel at all
+    // (`CAPIAggregateDestructor` takes no info and returns nothing), so the
+    // panic is contained and discarded rather than reported.
+    assert_eq!(
+        fx.scalar(
+            "SELECT drop_bomb_agg(i) FROM range(10) t(i)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(45)
+    );
+
+    // Reaching this line at all is the assertion that matters: before the fix
+    // the process died with SIGABRT partway through the query above.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+#[test]
+fn a_panicking_aggregate_state_initialiser_becomes_a_sql_error() {
+    use panicking_lifecycle::{default_bomb, DefaultBomb};
+    use quack_rs::aggregate::{AggregateFunctionBuilder, FfiState};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        AggregateFunctionBuilder::new("default_bomb_agg")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(FfiState::<DefaultBomb>::size_callback)
+            .init(FfiState::<DefaultBomb>::init_callback)
+            .update(default_bomb::update)
+            .combine(default_bomb::combine)
+            .finalize(default_bomb::finalize)
+            .destructor(FfiState::<DefaultBomb>::destroy_callback)
+            .register(fx.con())
+            .expect("register default_bomb_agg");
+    }
+
+    // `CAPIAggregateStateInit` *does* check the error flag and throws, so unlike
+    // the destructor this one surfaces to the user with its payload intact.
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT default_bomb_agg(i) FROM range(10) t(i)") }
+        .expect_err("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("deliberately exploded"),
+        "panic payload should reach the user: {err}"
+    );
+
+    // The connection survives.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+#[test]
+fn a_panicking_bind_state_destructor_does_not_abort() {
+    use quack_rs::table::{BindInfo, TableFunctionBuilder};
+
+    struct BindDropBomb;
+    impl Drop for BindDropBomb {
+        fn drop(&mut self) {
+            panic!("bind-state destructor deliberately exploded");
+        }
+    }
+
+    let fx = Fixture::open();
+    let builder = TableFunctionBuilder::new("bind_bomb")
+        .with_state::<BindDropBomb, _>(|bind: &BindInfo| {
+            bind.add_result_column("n", TypeId::BigInt);
+            Ok(BindDropBomb)
+        })
+        .scan(|_state, chunk| {
+            // Emit nothing: the point is the teardown, not the data.
+            unsafe { chunk.set_size(0) };
+            Ok(())
+        })
+        .build()
+        .expect("build bind_bomb");
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register bind_bomb");
+
+    // SAFETY: `con` is open.
+    let mut result =
+        unsafe { query(fx.con(), "SELECT count(*) FROM bind_bomb()") }.expect("scan runs");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: BIGINT column, row 0.
+    assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 0);
+    drop(chunk);
+    drop(result);
+
+    // The bind/init state is dropped at query teardown; before the fix that
+    // unwound out of `duckdb_delete_callback_t` and aborted.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+#[test]
+fn composite_type_ids_are_rejected_where_a_primitive_is_required() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    unsafe extern "C" fn never_called(
+        _: libduckdb_sys::duckdb_function_info,
+        _: libduckdb_sys::duckdb_data_chunk,
+        _: libduckdb_sys::duckdb_vector,
+    ) {
+    }
+
+    // `duckdb_create_logical_type` returns a *non-null* handle wrapping
+    // LogicalTypeId::INVALID for these, so a null check never fires. Registration
+    // used to fail with "duckdb_register_scalar_function failed", naming neither
+    // the parameter nor the fix.
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        ScalarFunctionBuilder::new("composite_param")
+            .param(TypeId::Struct)
+            .returns(TypeId::BigInt)
+            .function(never_called)
+            .register(fx.con())
+    }
+    .expect_err("a STRUCT parameter must be rejected");
+    let msg = err.as_str();
+    assert!(msg.contains("parameter 0"), "names the slot: {msg}");
+    assert!(msg.contains("STRUCT"), "names the type: {msg}");
+    assert!(
+        msg.contains("LogicalType::struct_type"),
+        "names the fix: {msg}"
+    );
+
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        ScalarFunctionBuilder::new("composite_return")
+            .param(TypeId::BigInt)
+            .returns(TypeId::Decimal)
+            .function(never_called)
+            .register(fx.con())
+    }
+    .expect_err("a bare DECIMAL return type must be rejected");
+    assert!(
+        err.as_str().contains("LogicalType::decimal"),
+        "names the fix: {err}"
+    );
+
+    // The `*_logical` route still works, which is the point of the message.
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::new("composite_ok")
+            .param_logical(LogicalType::struct_type(&[("x", TypeId::BigInt)]))
+            .returns_logical(LogicalType::decimal(18, 3))
+            .function(never_called)
+            .register(fx.con())
+    }
+    .expect("the logical-type route registers");
+}
+
+// ---------------------------------------------------------------------------
+// Values, parameter binding, streaming, cancellation.
+//
+// Everything below goes through a real DuckDB: a value is built with the Rust
+// API, bound to a prepared statement, and read back out of the result, so a
+// wrong physical encoding shows up as a wrong answer rather than as a passing
+// mock.
+// ---------------------------------------------------------------------------
+
+/// Binds one value into `SELECT ?` and renders the answer as text, which is the
+/// one representation every type shares.
+fn round_trip_value(fx: &Fixture, value: &quack_rs::value::Value) -> String {
+    // SAFETY: `con` is open.
+    let stmt = unsafe { quack_rs::query::prepare(fx.con(), "SELECT CAST(? AS VARCHAR)") }
+        .expect("prepare SELECT ?");
+    stmt.bind_value(1, value).expect("bind_value");
+    let mut result = stmt.execute().expect("execute");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: one VARCHAR column, one row.
+    let reader = unsafe { chunk.reader(0) };
+    // SAFETY: row 0 exists.
+    assert!(
+        unsafe { reader.is_valid(0) },
+        "the bound value came back NULL"
+    );
+    // SAFETY: VARCHAR column, row 0.
+    unsafe { reader.read_str(0) }.to_owned()
+}
+
+#[test]
+fn every_scalar_value_constructor_round_trips_through_a_bound_parameter() {
+    use quack_rs::interval::DuckInterval;
+    use quack_rs::value::Value;
+
+    let fx = Fixture::open();
+
+    let cases: Vec<(Value, &str)> = vec![
+        (Value::boolean(true), "true"),
+        (Value::tinyint(i8::MIN), "-128"),
+        (Value::smallint(i16::MIN), "-32768"),
+        (Value::integer(i32::MIN), "-2147483648"),
+        (Value::bigint(i64::MIN), "-9223372036854775808"),
+        (Value::utinyint(u8::MAX), "255"),
+        (Value::usmallint(u16::MAX), "65535"),
+        (Value::uinteger(u32::MAX), "4294967295"),
+        (Value::ubigint(u64::MAX), "18446744073709551615"),
+        (
+            Value::hugeint(i128::from(i64::MIN) * 2),
+            "-18446744073709551616",
+        ),
+        (
+            Value::uhugeint(u128::from(u64::MAX) + 1),
+            "18446744073709551616",
+        ),
+        (Value::float(0.5), "0.5"),
+        (Value::double(0.25), "0.25"),
+        (Value::varchar("héllo"), "héllo"),
+        (Value::date(0), "1970-01-01"),
+        (Value::time(3_600_000_000), "01:00:00"),
+        (Value::timestamp(0), "1970-01-01 00:00:00"),
+        (Value::timestamp_s(60), "1970-01-01 00:01:00"),
+        (Value::timestamp_ms(1_500), "1970-01-01 00:00:01.5"),
+        (Value::timestamp_ns(1_500_000_000), "1970-01-01 00:00:01.5"),
+        (
+            Value::interval(DuckInterval {
+                months: 1,
+                days: 2,
+                micros: 3_000_000,
+            }),
+            "1 month 2 days 00:00:03",
+        ),
+        (
+            Value::uuid(0x1111_1111_2222_3333_4444_5555_5555_5555),
+            "11111111-2222-3333-4444-555555555555",
+        ),
+    ];
+
+    for (value, expected) in cases {
+        let type_id = value.type_id();
+        assert_eq!(
+            round_trip_value(&fx, &value),
+            expected,
+            "value of type {type_id:?} did not survive the round trip"
+        );
+    }
+
+    // DECIMAL carries width and scale, so it gets its own shape.
+    let dec = Value::decimal(18, 3, 1_234).expect("DECIMAL(18, 3)");
+    assert_eq!(round_trip_value(&fx, &dec), "1.234");
+    assert!(
+        Value::decimal(39, 3, 0).is_err(),
+        "width 39 exceeds DuckDB's DECIMAL limit and must be reported"
+    );
+    assert!(
+        Value::decimal(4, 9, 0).is_err(),
+        "scale above width must be reported"
+    );
+
+    // BLOB is byte-exact where VARCHAR is not.
+    let blob = Value::blob(&[0x00, 0xff, 0x41]);
+    assert_eq!(round_trip_value(&fx, &blob), r"\x00\xFFA");
+
+    // SQL NULL has a perfectly good handle: `is_null` and `is_sql_null` are
+    // different questions and the API must not conflate them.
+    let null = Value::null_value();
+    assert!(!null.is_null(), "the handle is valid");
+    assert!(null.is_sql_null(), "the value is SQL NULL");
+    assert!(!Value::bigint(1).is_sql_null());
+}
+
+#[test]
+fn composite_value_constructors_build_values_duckdb_accepts() {
+    use quack_rs::value::Value;
+
+    let fx = Fixture::open();
+
+    // The constructors take the *element* type: duckdb.h's prose says "child
+    // (element) type" while its @param line says "the type of the list", and
+    // the implementation (`Value::LIST(child_type, values)`) settles it.
+    let element_ty = LogicalType::new(TypeId::BigInt);
+    let list = Value::list_value(&element_ty, &[Value::bigint(1), Value::bigint(2)])
+        .expect("build a LIST value");
+    assert_eq!(round_trip_value(&fx, &list), "[1, 2]");
+
+    // Passing the LIST type is the mistake the header invites; DuckDB reports
+    // it as a bare null, so quack-rs names it.
+    let list_ty = LogicalType::list(TypeId::BigInt);
+    let err = Value::list_value(&list_ty, &[Value::bigint(1)])
+        .expect_err("a LIST type where an element type belongs must be refused");
+    assert!(err.as_str().contains("element"), "{err}");
+
+    let struct_ty = LogicalType::struct_type(&[("x", TypeId::BigInt), ("y", TypeId::Varchar)]);
+    let strct = Value::struct_value(&struct_ty, &[Value::bigint(7), Value::varchar("seven")])
+        .expect("build a STRUCT value");
+    assert_eq!(round_trip_value(&fx, &strct), "{'x': 7, 'y': seven}");
+
+    // ARRAY derives its size from the value count, so there is nothing to keep
+    // in sync -- and again it is the element type that goes in.
+    let int_ty = LogicalType::new(TypeId::Integer);
+    let array = Value::array_value(
+        &int_ty,
+        &[Value::integer(1), Value::integer(2), Value::integer(3)],
+    )
+    .expect("build an ARRAY value");
+    assert_eq!(round_trip_value(&fx, &array), "[1, 2, 3]");
+
+    let enum_ty = LogicalType::enum_type(&["red", "green", "blue"]);
+    let green = Value::enum_value(&enum_ty, 1).expect("build an ENUM value");
+    assert_eq!(round_trip_value(&fx, &green), "green");
+    assert_eq!(green.as_enum_index(), 1);
+
+    // A short field slice must be refused rather than passed on:
+    // `duckdb_create_struct_value` takes no count and reads one value per field
+    // in the *type*, so a short slice reads past its end.
+    let err = Value::struct_value(&struct_ty, &[Value::bigint(7)])
+        .expect_err("a one-value slice for a two-field struct must be refused");
+    assert!(err.as_str().contains("2 field"), "{err}");
+    assert!(err.as_str().contains("out of bounds"), "{err}");
+
+    // A value that will not cast to the element type is DuckDB's own check,
+    // surfaced as an error rather than a Value with a null handle.
+    assert!(
+        Value::array_value(&struct_ty, &[Value::integer(1)]).is_err(),
+        "an INTEGER cannot become a STRUCT element"
+    );
+}
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn map_and_union_values_build_and_read_back() {
+    use quack_rs::value::Value;
+
+    let fx = Fixture::open();
+
+    let map_ty = LogicalType::map(TypeId::Varchar, TypeId::BigInt);
+    let map = Value::map(
+        &map_ty,
+        &[Value::varchar("a"), Value::varchar("b")],
+        &[Value::bigint(1), Value::bigint(2)],
+    )
+    .expect("build a MAP value");
+    assert_eq!(round_trip_value(&fx, &map), "{a=1, b=2}");
+    assert!(
+        Value::map(&map_ty, &[Value::varchar("a")], &[]).is_err(),
+        "mismatched key/value counts must be refused"
+    );
+
+    let union_ty = LogicalType::union_type(&[("num", TypeId::BigInt), ("txt", TypeId::Varchar)]);
+    let tagged = Value::union_value(&union_ty, 1, &Value::varchar("hi")).expect("build a UNION");
+    assert_eq!(round_trip_value(&fx, &tagged), "hi");
+    assert!(
+        Value::union_value(&union_ty, 1, &Value::bigint(1)).is_err(),
+        "DuckDB compares the value's type to the member's exactly"
+    );
+    assert!(
+        Value::union_value(&union_ty, 9, &Value::bigint(1)).is_err(),
+        "an out-of-range tag must be refused"
+    );
+}
+
+#[test]
+fn every_typed_bind_reaches_duckdb_with_the_right_width() {
+    use quack_rs::interval::DuckInterval;
+
+    let fx = Fixture::open();
+
+    /// Binds through `bind`, then asserts `SELECT CAST(? AS VARCHAR)` renders
+    /// `expected`.
+    fn check(
+        fx: &Fixture,
+        expected: &str,
+        bind: impl Fn(
+            &quack_rs::query::PreparedStatement,
+        ) -> Result<(), quack_rs::error::ExtensionError>,
+    ) {
+        // SAFETY: `con` is open.
+        let stmt = unsafe { quack_rs::query::prepare(fx.con(), "SELECT CAST(? AS VARCHAR)") }
+            .expect("prepare");
+        bind(&stmt).expect("bind");
+        let mut result = stmt.execute().expect("execute");
+        let chunk = result.next_chunk().expect("one chunk");
+        // SAFETY: one VARCHAR column, one row.
+        let got = unsafe { chunk.reader(0).read_str(0) }.to_owned();
+        assert_eq!(got, expected);
+    }
+
+    check(&fx, "-128", |s| s.bind_i8(1, i8::MIN));
+    check(&fx, "-32768", |s| s.bind_i16(1, i16::MIN));
+    check(&fx, "-2147483648", |s| s.bind_i32(1, i32::MIN));
+    check(&fx, "-9223372036854775808", |s| s.bind_i64(1, i64::MIN));
+    check(&fx, "255", |s| s.bind_u8(1, u8::MAX));
+    check(&fx, "65535", |s| s.bind_u16(1, u16::MAX));
+    check(&fx, "4294967295", |s| s.bind_u32(1, u32::MAX));
+    check(&fx, "18446744073709551615", |s| s.bind_u64(1, u64::MAX));
+    check(&fx, "0.5", |s| s.bind_f32(1, 0.5));
+    check(&fx, "0.25", |s| s.bind_f64(1, 0.25));
+    check(&fx, "-18446744073709551616", |s| {
+        s.bind_i128(1, i128::from(i64::MIN) * 2)
+    });
+    check(&fx, "18446744073709551616", |s| {
+        s.bind_u128(1, u128::from(u64::MAX) + 1)
+    });
+    check(&fx, "1.234", |s| s.bind_decimal(1, 18, 3, 1_234));
+    check(&fx, "1970-01-01", |s| s.bind_date(1, 0));
+    check(&fx, "01:00:00", |s| s.bind_time(1, 3_600_000_000));
+    check(&fx, "1970-01-01 00:00:00", |s| s.bind_timestamp(1, 0));
+    check(&fx, "1 month 2 days 00:00:03", |s| {
+        s.bind_interval(
+            1,
+            DuckInterval {
+                months: 1,
+                days: 2,
+                micros: 3_000_000,
+            },
+        )
+    });
+}
+
+#[test]
+fn column_logical_type_keeps_what_column_type_throws_away() {
+    let fx = Fixture::open();
+
+    let result = fx.query("SELECT {'a': 1::BIGINT, 'b': 'x'} AS s, 1.25::DECIMAL(9, 4) AS d");
+
+    // The collapsed view: correct, but a STRUCT is just "Struct".
+    assert_eq!(result.column_type(0), Some(TypeId::Struct));
+    assert_eq!(result.column_type(1), Some(TypeId::Decimal));
+
+    let s_ty = result.column_logical_type(0).expect("STRUCT logical type");
+    // SAFETY: `s_ty` is a live STRUCT logical type.
+    unsafe {
+        assert_eq!(s_ty.struct_child_count(), 2);
+        assert_eq!(s_ty.struct_child_name(0), "a");
+        assert_eq!(s_ty.struct_child_type(0).get_type_id(), TypeId::BigInt);
+        assert_eq!(s_ty.struct_child_name(1), "b");
+        assert_eq!(s_ty.struct_child_type(1).get_type_id(), TypeId::Varchar);
+    }
+
+    let d_ty = result.column_logical_type(1).expect("DECIMAL logical type");
+    // SAFETY: `d_ty` is a live DECIMAL logical type.
+    unsafe {
+        assert_eq!(d_ty.decimal_width(), 9);
+        assert_eq!(d_ty.decimal_scale(), 4);
+    }
+
+    assert!(result.column_logical_type(99).is_none());
+}
+
+#[test]
+fn result_kind_distinguishes_rows_from_row_counts() {
+    use quack_rs::query::ResultKind;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE k(i INTEGER)") }.expect("create");
+
+    assert_eq!(fx.query("SELECT 1").result_kind(), ResultKind::Rows);
+    // SAFETY: `con` is open.
+    let inserted = unsafe { query(fx.con(), "INSERT INTO k VALUES (1), (2)") }.expect("insert");
+    assert_eq!(inserted.result_kind(), ResultKind::ChangedRows);
+    assert_eq!(inserted.rows_changed(), 2);
+}
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_streaming_result_reads_the_same_rows_as_a_materialised_one() {
+    let fx = Fixture::open();
+
+    // Enough rows to span several chunks, so the streaming path actually loops.
+    const SQL: &str = "SELECT i FROM range(10000) t(i)";
+
+    // SAFETY: `con` is open.
+    let stmt = unsafe { quack_rs::query::prepare(fx.con(), SQL) }.expect("prepare");
+    let mut streamed = stmt.execute_streaming().expect("execute_streaming");
+    assert!(
+        streamed.is_streaming(),
+        "DuckDB chose to materialise a plain range scan; the assertions below \
+         would then prove nothing about the streaming path"
+    );
+
+    let mut sum: i64 = 0;
+    let mut chunks = 0;
+    while let Some(chunk) = streamed.next_chunk() {
+        chunks += 1;
+        // SAFETY: one BIGINT column.
+        let reader = unsafe { chunk.reader(0) };
+        for row in 0..chunk.size() {
+            // SAFETY: `row` is in range and the column is BIGINT.
+            sum += unsafe { reader.read_i64(row) };
+        }
+    }
+    assert!(chunks > 1, "a 10000-row result must span several chunks");
+    assert_eq!(sum, (0..10_000_i64).sum::<i64>());
+
+    // The materialised path must agree.
+    // SAFETY: `con` is open.
+    let stmt2 = unsafe { quack_rs::query::prepare(fx.con(), SQL) }.expect("prepare");
+    let mut materialised = stmt2.execute().expect("execute");
+    assert!(!materialised.is_streaming());
+    let mut sum2: i64 = 0;
+    while let Some(chunk) = materialised.next_chunk() {
+        // SAFETY: one BIGINT column.
+        let reader = unsafe { chunk.reader(0) };
+        for row in 0..chunk.size() {
+            // SAFETY: `row` is in range and the column is BIGINT.
+            sum2 += unsafe { reader.read_i64(row) };
+        }
+    }
+    assert_eq!(sum, sum2);
+}
+
+#[test]
+fn an_interrupt_handle_cancels_a_query_from_another_thread() {
+    use quack_rs::query::OwnedConnection;
+
+    let fx = Fixture::open();
+    // SAFETY: `db` is open for the fixture's lifetime.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("open an owned connection");
+
+    let handle = con.interrupt_handle();
+    // A cross join over a billion rows cannot complete before the canceller
+    // fires, so this is a race the test always wins.
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            handle.cancel();
+        });
+        con.query("SELECT count(*) FROM range(1000000000000) t(i) WHERE i % 7 = 3")
+    });
+
+    let err = outcome.expect_err("the query must be cancelled, not completed");
+    assert!(
+        err.as_str().to_lowercase().contains("interrupt"),
+        "the error should say the query was interrupted: {err}"
+    );
+
+    // The connection is reusable afterwards: interruption is not corruption.
+    let mut ok = con
+        .query("SELECT 42::BIGINT")
+        .expect("the connection survives");
+    let chunk = ok.next_chunk().expect("one chunk");
+    // SAFETY: one BIGINT column, one row.
+    assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 42);
+}
+
+// ---------------------------------------------------------------------------
+// NULL propagation, and the typed scalar API built on top of it.
+// ---------------------------------------------------------------------------
+
+// Writes 999 into every row and never looks at input validity.
+quack_rs::scalar_callback!(always_999, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, 999) };
+    }
+});
+
+// The same, followed by `propagate_nulls`.
+quack_rs::scalar_callback!(always_999_propagating, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, 999) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+#[test]
+fn default_null_handling_does_not_propagate_nulls_for_scalar_functions() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        ScalarFunctionBuilder::new("raw_999")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::DefaultNullHandling)
+            .function(always_999)
+            .register(fx.con())
+            .expect("register raw_999");
+        ScalarFunctionBuilder::new("propagating_999")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::DefaultNullHandling)
+            .function(always_999_propagating)
+            .register(fx.con())
+            .expect("register propagating_999");
+    }
+
+    // A *literal* NULL is constant-folded before the function is reached, so the
+    // obvious spot check passes even for the broken function. This is why the
+    // bug is easy to ship.
+    assert_eq!(
+        fx.scalar("SELECT raw_999(NULL::BIGINT)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        None,
+        "a literal NULL argument is constant-folded to NULL"
+    );
+
+    // From a real column it is a different story. This assertion pins DuckDB's
+    // actual behaviour (verified against 1.5.4): DEFAULT_NULL_HANDLING is a
+    // promise the *function* makes, enforced only by a debug-build assertion in
+    // `VerifyNullHandling`. If a future DuckDB starts propagating, this test
+    // fails and the documentation gets revisited.
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE nulls_t(i BIGINT)") }.expect("create");
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "INSERT INTO nulls_t VALUES (1), (NULL), (3)") }.expect("insert");
+
+    assert_eq!(
+        fx.scalar("SELECT count(raw_999(i)) FROM nulls_t", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(3),
+        "DuckDB does not NULL out the result for the NULL row: all three are non-NULL"
+    );
+
+    // `propagate_nulls` restores SQL semantics.
+    assert_eq!(
+        fx.scalar("SELECT count(propagating_999(i)) FROM nulls_t", |r, i| {
+            unsafe { r.read_i64(i) }
+        }),
+        Some(2),
+        "with propagate_nulls the NULL row yields NULL"
+    );
+}
+
+#[test]
+fn typed_scalar_closures_cover_the_common_shapes() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::map1("t_double", |x: i64| x * 2)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map2("t_add", |a: i64, b: i64| a + b)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map1("t_half", |x: f64| x / 2.0)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map1_str("t_len", |s: &str| s.chars().count() as i64)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map1_str("t_shout", |s: &str| s.to_uppercase())
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map2_str("t_join", |a: &str, b: &str| format!("{a}|{b}"))
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map1_opt("t_or_zero", |x: Option<i64>| Some(x.unwrap_or(0)))
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+        ScalarFunctionBuilder::map2_opt("t_coalesce", |a: Option<i64>, b: Option<i64>| a.or(b))
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT t_double(21::BIGINT)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(42)
+    );
+    assert_eq!(
+        fx.scalar("SELECT t_add(20::BIGINT, 22::BIGINT)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(42)
+    );
+    assert!(
+        (fx.scalar("SELECT t_half(9.0::DOUBLE)", |r, i| unsafe {
+            r.read_f64(i)
+        })
+        .expect("non-NULL")
+            - 4.5)
+            .abs()
+            < f64::EPSILON
+    );
+    assert_eq!(
+        fx.scalar("SELECT t_len('héllo')", |r, i| unsafe { r.read_i64(i) }),
+        Some(5),
+        "the closure sees a &str borrowed from the vector, not bytes"
+    );
+    assert_eq!(
+        fx.scalar("SELECT t_shout('quack')", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        }),
+        Some("QUACK".to_owned())
+    );
+    assert_eq!(
+        fx.scalar("SELECT t_join('a', 'b')", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        }),
+        Some("a|b".to_owned())
+    );
+
+    // NULL propagation, from a real column rather than a folded literal.
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE typed_t(i BIGINT, s VARCHAR)") }.expect("create");
+    // SAFETY: `con` is open.
+    unsafe {
+        query(
+            fx.con(),
+            "INSERT INTO typed_t VALUES (1, 'a'), (NULL, NULL), (3, 'c')",
+        )
+    }
+    .expect("insert");
+
+    assert_eq!(
+        fx.scalar("SELECT count(t_double(i)) FROM typed_t", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(2),
+        "map1 must NULL out the row whose argument is NULL"
+    );
+    assert_eq!(
+        fx.scalar("SELECT count(t_len(s)) FROM typed_t", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(2),
+        "map1_str must NULL out the row whose argument is NULL"
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(t_add(i, 1::BIGINT)) FROM typed_t",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(2),
+        "map2 must NULL out a row where *either* argument is NULL"
+    );
+    assert_eq!(
+        fx.scalar("SELECT count(t_join(s, 'z')) FROM typed_t", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(2),
+        "map2_str must NULL out a row where *either* argument is NULL"
+    );
+
+    // The `_opt` variants see the NULLs instead.
+    assert_eq!(
+        fx.scalar("SELECT sum(t_or_zero(i)) FROM typed_t", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(4),
+        "map1_opt is called for the NULL row and substitutes 0"
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT t_coalesce(NULL::BIGINT, 7::BIGINT)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(7)
+    );
+}
+
+#[test]
+fn a_panicking_typed_closure_becomes_a_sql_error() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::map1("t_boom", |x: i64| {
+            assert!(x != 13, "closure deliberately exploded");
+            x
+        })
+        .expect("build")
+        .register(fx.con())
+        .expect("register");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT t_boom(1::BIGINT)", |r, i| unsafe { r.read_i64(i) }),
+        Some(1)
+    );
+
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT t_boom(13::BIGINT)") }
+        .expect_err("the panic must surface as an error");
+    assert!(
+        err.as_str().contains("deliberately exploded"),
+        "panic payload should reach the user: {err}"
+    );
+
+    // The connection survives.
+    assert_eq!(
+        fx.scalar("SELECT 5::BIGINT", |r, i| unsafe { r.read_i64(i) }),
+        Some(5)
+    );
+}
+
+#[test]
+fn typed_closures_run_once_per_chunk_over_a_multi_chunk_scan() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::map1("t_inc", |x: i64| x + 1)
+            .expect("build")
+            .register(fx.con())
+            .expect("register");
+    }
+
+    // 10000 rows spans several chunks, so the per-chunk executor is exercised
+    // repeatedly and every row index in a full vector is written.
+    assert_eq!(
+        fx.scalar("SELECT sum(t_inc(i)) FROM range(10000) t(i)", |r, i| {
+            unsafe { r.read_i128(i) }
+        }),
+        Some((1..=10_000_i128).sum::<i128>())
+    );
+}
+
+#[test]
+fn a_custom_logical_type_is_registered_and_usable_from_sql() {
+    let fx = Fixture::open();
+
+    let mood = LogicalType::enum_type(&["sad", "ok", "happy"]);
+    // SAFETY: the type is live, and `con` is open.
+    unsafe {
+        mood.set_alias("mood");
+        mood.register(fx.con()).expect("register the type");
+    }
+
+    // The alias now names a real catalog type.
+    assert_eq!(
+        fx.scalar("SELECT 'happy'::mood::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        }),
+        Some("happy".to_owned())
+    );
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE m(v mood)") }.expect("use it as a column type");
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "INSERT INTO m VALUES ('ok'), ('sad')") }.expect("insert");
+    assert_eq!(
+        fx.scalar("SELECT count(*) FROM m WHERE v = 'ok'", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(1)
+    );
+
+    // A type with no alias has no name to register under, and the error says so
+    // rather than repeating DuckDB's bare failure code.
+    let anonymous = LogicalType::enum_type(&["a", "b"]);
+    // SAFETY: `con` is open.
+    let err = unsafe { anonymous.register(fx.con()) }.expect_err("no alias, no registration");
+    assert!(err.as_str().contains("no alias"), "{err}");
+
+    // Registering the same name twice is a catalog conflict, reported with the
+    // name in it.
+    let again = LogicalType::enum_type(&["x"]);
+    // SAFETY: the type is live, and `con` is open.
+    let err = unsafe {
+        again.set_alias("mood");
+        again.register(fx.con())
+    }
+    .expect_err("the name is taken");
+    assert!(err.as_str().contains("mood"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// Nested types as scalar-function *input*.
+//
+// `list_builder_*` above cover writing LIST and MAP. Reading them back is the
+// other half, and it is the half that does raw offset arithmetic against a
+// layout only DuckDB defines: a LIST row is a `{offset, length}` into one flat
+// child vector shared by the whole chunk, and those offsets are not `row * len`
+// for anything but a uniform column. A mock cannot catch a mistake here.
+// ---------------------------------------------------------------------------
+
+quack_rs::scalar_callback!(struct_to_text, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let reader = unsafe { chunk.struct_reader(0, 2) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..rows {
+        let n = unsafe { reader.read_i64(row, 0) };
+        let s = unsafe { reader.read_str(row, 1) };
+        unsafe { writer.write_varchar(row, &format!("{n}:{s}")) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+quack_rs::scalar_callback!(list_sum, |_info, input, output| {
+    use quack_rs::vector::complex::ListVector;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let vector = unsafe { chunk.vector(0) };
+    // One child reader for the whole chunk: every row's elements live in the
+    // same flat child vector, addressed by that row's offset.
+    let total = unsafe { ListVector::get_size(vector) };
+    let child = unsafe { ListVector::child_reader(vector, total) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..rows {
+        let entry = unsafe { ListVector::get_entry(vector, row) };
+        let mut sum = 0_i64;
+        for i in 0..entry.length as usize {
+            let idx = entry.offset as usize + i;
+            if unsafe { child.is_valid(idx) } {
+                sum += unsafe { child.read_i64(idx) };
+            }
+        }
+        unsafe { writer.write_i64(row, sum) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+quack_rs::scalar_callback!(map_lookup, |_info, input, output| {
+    use quack_rs::vector::complex::MapVector;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let vector = unsafe { chunk.vector(0) };
+    let wanted = unsafe { chunk.reader(1) };
+    let total = unsafe { MapVector::total_entry_count(vector) };
+    let keys = unsafe { MapVector::key_reader(vector, total) };
+    let values = unsafe { MapVector::value_reader(vector, total) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..rows {
+        let entry = unsafe { MapVector::get_entry(vector, row) };
+        let key = unsafe { wanted.read_str(row) };
+        let mut found = None;
+        for i in 0..entry.length as usize {
+            let idx = entry.offset as usize + i;
+            if unsafe { keys.read_str(idx) } == key {
+                found = Some(unsafe { values.read_i64(idx) });
+                break;
+            }
+        }
+        match found {
+            Some(v) => unsafe { writer.write_i64(row, v) },
+            None => unsafe { writer.set_null(row) },
+        }
+    }
+});
+
+quack_rs::scalar_callback!(array_sum, |_info, input, output| {
+    use quack_rs::vector::complex::ArrayVector;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let vector = unsafe { chunk.vector(0) };
+    // An ARRAY's child vector has `parent_rows * array_size` elements laid out
+    // contiguously, so row `r`'s elements start at `r * SIZE`. There is no
+    // offset table: that is the difference from LIST.
+    const SIZE: usize = 3;
+    let child = unsafe { ArrayVector::get_child(vector) };
+    let reader = unsafe { VectorReader::from_vector(child, rows * SIZE) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..rows {
+        let mut sum = 0_i32;
+        for i in 0..SIZE {
+            sum += unsafe { reader.read_i32(row * SIZE + i) };
+        }
+        unsafe { writer.write_i32(row, sum) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+#[test]
+fn nested_types_read_correctly_as_scalar_arguments() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::new("q_struct_to_text")
+            .param_logical(LogicalType::struct_type(&[
+                ("n", TypeId::BigInt),
+                ("s", TypeId::Varchar),
+            ]))
+            .returns(TypeId::Varchar)
+            .function(struct_to_text)
+            .register(fx.con())
+            .expect("register q_struct_to_text");
+        ScalarFunctionBuilder::new("q_list_sum")
+            .param_logical(LogicalType::list(TypeId::BigInt))
+            .returns(TypeId::BigInt)
+            .function(list_sum)
+            .register(fx.con())
+            .expect("register q_list_sum");
+        ScalarFunctionBuilder::new("q_map_lookup")
+            .param_logical(LogicalType::map(TypeId::Varchar, TypeId::BigInt))
+            .param(TypeId::Varchar)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::SpecialNullHandling)
+            .function(map_lookup)
+            .register(fx.con())
+            .expect("register q_map_lookup");
+        ScalarFunctionBuilder::new("q_array_sum")
+            .param_logical(LogicalType::array(TypeId::Integer, 3))
+            .returns(TypeId::Integer)
+            .function(array_sum)
+            .register(fx.con())
+            .expect("register q_array_sum");
+    }
+
+    assert_eq!(
+        fx.scalar(
+            "SELECT q_struct_to_text({'n': 7::BIGINT, 's': 'x'})",
+            |r, i| { unsafe { r.read_str(i).to_owned() } }
+        ),
+        Some("7:x".to_owned())
+    );
+
+    // Variable-length lists in one chunk: row offsets are cumulative, not
+    // `row * length`, so a reader that assumed uniform stride would be wrong for
+    // every row after the first.
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE lists(l BIGINT[])") }.expect("create");
+    // SAFETY: `con` is open.
+    unsafe {
+        query(
+            fx.con(),
+            "INSERT INTO lists VALUES ([1,2,3]), ([]), ([10]), ([100,200]), (NULL)",
+        )
+    }
+    .expect("insert");
+
+    let mut result = fx.query("SELECT q_list_sum(l) AS s FROM lists");
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: one BIGINT column with five rows.
+    let reader = unsafe { chunk.reader(0) };
+    let got: Vec<Option<i64>> = (0..chunk.size())
+        // SAFETY: `row` is in range.
+        .map(|row| unsafe { reader.is_valid(row).then(|| reader.read_i64(row)) })
+        .collect();
+    assert_eq!(got, vec![Some(6), Some(0), Some(10), Some(300), None]);
+    drop(chunk);
+    drop(result);
+
+    // A list containing NULL elements: the child vector's validity is what
+    // decides, not the parent's.
+    assert_eq!(
+        fx.scalar("SELECT q_list_sum([1, NULL, 3]::BIGINT[])", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(4)
+    );
+
+    // MAP: keys and values are two parallel child vectors behind one offset
+    // table, exactly like LIST.
+    assert_eq!(
+        fx.scalar(
+            "SELECT q_map_lookup(MAP{'a':1,'b':2}, 'b')",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(2)
+    );
+    assert_eq!(
+        fx.scalar("SELECT q_map_lookup(MAP{'a':1}, 'zz')", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        None,
+        "a missing key must produce NULL, not a stale value"
+    );
+
+    // ARRAY: fixed stride, no offset table.
+    assert_eq!(
+        fx.scalar("SELECT q_array_sum([1,2,3]::INTEGER[3])", |r, i| unsafe {
+            r.read_i32(i)
+        }),
+        Some(6)
+    );
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "CREATE TABLE arrs(a INTEGER[3])") }.expect("create");
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), "INSERT INTO arrs VALUES ([1,2,3]), ([10,20,30])") }.expect("insert");
+    assert_eq!(
+        fx.scalar("SELECT sum(q_array_sum(a)) FROM arrs", |r, i| unsafe {
+            r.read_i128(i)
+        }),
+        Some(66),
+        "the second row must read elements 3..6 of the child, not 0..3"
+    );
+}
+
+quack_rs::scalar_callback!(split_pair, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let rows = chunk.size();
+    let reader = unsafe { chunk.reader(0) };
+    let mut n = unsafe { quack_rs::vector::complex::StructVector::field_writer(output, 0) };
+    let mut s = unsafe { quack_rs::vector::complex::StructVector::field_writer(output, 1) };
+    for row in 0..rows {
+        let text = unsafe { reader.read_str(row) };
+        let (head, tail) = text.split_once(':').unwrap_or((text, ""));
+        unsafe { n.write_i64(row, head.parse::<i64>().unwrap_or(-1)) };
+        unsafe { s.write_varchar(row, tail) };
+    }
+});
+
+#[test]
+fn a_struct_output_vector_is_written_field_by_field() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::new("q_split_pair")
+            .param(TypeId::Varchar)
+            .returns_logical(LogicalType::struct_type(&[
+                ("n", TypeId::BigInt),
+                ("s", TypeId::Varchar),
+            ]))
+            .function(split_pair)
+            .register(fx.con())
+            .expect("register q_split_pair");
+    }
+
+    assert_eq!(
+        fx.scalar("SELECT q_split_pair('42:hello')::VARCHAR", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        }),
+        Some("{'n': 42, 's': hello}".to_owned())
+    );
+
+    // Over a full multi-chunk scan, so every row index of a full vector is
+    // written in both child vectors.
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum((q_split_pair(i::VARCHAR || ':x')).n) FROM range(5000) t(i)",
+            |r, i| unsafe { r.read_i128(i) }
+        ),
+        Some((0..5000_i128).sum::<i128>())
+    );
+}
+
+#[test]
+fn a_registration_failure_names_the_three_things_it_can_be() {
+    let fx = Fixture::open();
+
+    unsafe extern "C" fn never_called(
+        _: libduckdb_sys::duckdb_function_info,
+        _: libduckdb_sys::duckdb_data_chunk,
+        _: libduckdb_sys::duckdb_vector,
+    ) {
+    }
+
+    // `list_sum` is a DuckDB built-in. `duckdb_register_scalar_function` reports
+    // the collision as a bare DuckDBError with no message, which is
+    // indistinguishable from a type error or a missing callback — so the error
+    // has to name all three, and point at the query that settles it.
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        ScalarFunctionBuilder::new("list_sum")
+            .param_logical(LogicalType::list(TypeId::BigInt))
+            .returns(TypeId::BigInt)
+            .function(never_called)
+            .register(fx.con())
+    }
+    .expect_err("the name collides with a built-in");
+    let msg = err.as_str();
+    assert!(msg.contains("list_sum"), "names the function: {msg}");
+    assert!(msg.contains("duckdb_functions()"), "names the check: {msg}");
+
+    // Sanity: the built-in really is there, so the advice is actionable.
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'list_sum'",
+            |r, i| unsafe { r.read_i64(i) }
+        )
+        .map(|n| n > 0),
+        Some(true)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Typed scalar bind data / local state.
+//
+// The raw `set_bind_data` route above makes the extension author write an
+// `unsafe extern "C" fn drop_bind` that calls `Box::from_raw` — the same
+// abort-on-panicking-Drop hazard quack-rs removed from its own destructors.
+// These do the same job with the destructor generated and panic-safe.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "duckdb-1-5")]
+mod typed_scalar_state {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    pub static BIND_DROPS: AtomicUsize = AtomicUsize::new(0);
+    pub static STATE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Folded once at bind time; explodes when dropped.
+    pub struct Factor(pub i64);
+    impl Drop for Factor {
+        fn drop(&mut self) {
+            BIND_DROPS.fetch_add(1, Ordering::SeqCst);
+            panic!("typed bind data destructor deliberately exploded");
+        }
+    }
+
+    /// Per-thread scratch.
+    #[derive(Default)]
+    pub struct Calls(pub u64);
+    impl Drop for Calls {
+        fn drop(&mut self) {
+            STATE_DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[cfg(feature = "duckdb-1-5")]
+unsafe extern "C" fn typed_bind(info: libduckdb_sys::duckdb_bind_info) {
+    use quack_rs::scalar::{ScalarBindData, ScalarBindInfo};
+    use typed_scalar_state::Factor;
+
+    // SAFETY: DuckDB passes a valid bind info.
+    let bind = unsafe { ScalarBindInfo::new(info) };
+    // SAFETY: two parameters were declared, so argument 1 exists.
+    let factor = unsafe { bind.argument(1) }
+        .and_then(|expr| {
+            if !expr.is_foldable() {
+                return None;
+            }
+            // SAFETY: inside a bind callback, so the context is live.
+            let ctx = unsafe { bind.get_client_context() };
+            expr.fold(&ctx).ok().map(|v| v.as_i64())
+        })
+        .unwrap_or(1);
+    ScalarBindData::set(&bind, Factor(factor));
+}
+
+#[cfg(feature = "duckdb-1-5")]
+unsafe extern "C" fn typed_init(info: libduckdb_sys::duckdb_init_info) {
+    use quack_rs::scalar::{ScalarInitInfo, ScalarLocalState};
+    use typed_scalar_state::Calls;
+
+    // SAFETY: DuckDB passes a valid init info.
+    let init = unsafe { ScalarInitInfo::new(info) };
+    ScalarLocalState::set(&init, Calls::default());
+}
+
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::scalar_callback!(typed_scaled, |info, input, output| {
+    use quack_rs::scalar::{ScalarBindData, ScalarFunctionInfo, ScalarLocalState};
+    use typed_scalar_state::{Calls, Factor};
+
+    // SAFETY: DuckDB passes a valid function info.
+    let fninfo = unsafe { ScalarFunctionInfo::new(info) };
+    // SAFETY: `typed_bind` stored a `Factor`, and nothing else did.
+    let factor = unsafe { ScalarBindData::<Factor>::get(&fninfo) }.map_or(1, |f| f.0);
+    // SAFETY: `typed_init` stored a `Calls` on this thread; no other borrow is live.
+    if let Some(calls) = unsafe { ScalarLocalState::<Calls>::get_mut(&fninfo) } {
+        calls.0 += 1;
+    }
+
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, reader.read_i64(row) * factor) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn typed_scalar_bind_data_and_local_state_need_no_hand_written_destructor() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+    use std::sync::atomic::Ordering;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::new("typed_scaled")
+            .param(TypeId::BigInt)
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .bind(typed_bind)
+            .init(typed_init)
+            .function(typed_scaled)
+            .register(fx.con())
+            .expect("register typed_scaled");
+    }
+
+    // The second argument is constant-folded at bind time, so the row loop never
+    // reads it.
+    assert_eq!(
+        fx.scalar(
+            "SELECT typed_scaled(21::BIGINT, 2::BIGINT)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(42)
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum(typed_scaled(i, 3::BIGINT)) FROM range(1000) t(i)",
+            |r, i| unsafe { r.read_i128(i) }
+        ),
+        Some((0..1000_i128).sum::<i128>() * 3)
+    );
+
+    drop(fx);
+
+    // `Factor::drop` panics. Through a hand-written `extern "C"` destructor that
+    // would abort the process; the generated one contains it, so reaching this
+    // line at all is the assertion.
+    assert!(
+        typed_scalar_state::BIND_DROPS.load(Ordering::SeqCst) >= 2,
+        "bind data must be freed once per bind, got {}",
+        typed_scalar_state::BIND_DROPS.load(Ordering::SeqCst)
+    );
+    assert!(
+        typed_scalar_state::STATE_DROPS.load(Ordering::SeqCst) >= 2,
+        "local state must be freed, got {}",
+        typed_scalar_state::STATE_DROPS.load(Ordering::SeqCst)
+    );
+}
+
+// ─── Arrow C Data Interface ──────────────────────────────────────────────────
+
+/// End-to-end exercises for [`quack_rs::arrow`].
+///
+/// The point of these is that they use no Arrow library at all: a chunk is
+/// exported through the C Data Interface and re-imported through it, and the
+/// values are compared with the ones the query produced. If an ownership rule in
+/// the wrapper were wrong, this is where a double free or a leak shows up — the
+/// `leak-check` and `miri` CI jobs run this file.
+#[cfg(feature = "duckdb-1-5-4")]
+mod arrow_interop {
+    use super::Fixture;
+    use quack_rs::arrow::{
+        data_chunk_from_arrow, data_chunk_to_arrow, schema_from_arrow, to_arrow_schema, ArrowArray,
+        ArrowOptions, ArrowSchema, RawArrowSchema,
+    };
+    use quack_rs::error_data::DuckDbErrorType;
+    use quack_rs::query::{OwnedDataChunk, QueryResult};
+    use quack_rs::types::{LogicalType, TypeId};
+    use std::ffi::CString;
+
+    /// Every column of a result, as `(name, logical type)`, in order.
+    fn columns(result: &QueryResult) -> Vec<(String, LogicalType)> {
+        (0..result.column_count())
+            .map(|i| {
+                (
+                    result.column_name(i).expect("column name"),
+                    result.column_logical_type(i).expect("column type"),
+                )
+            })
+            .collect()
+    }
+
+    /// Borrows `columns` in the shape `to_arrow_schema` takes.
+    fn as_pairs(columns: &[(String, LogicalType)]) -> Vec<(&str, &LogicalType)> {
+        columns
+            .iter()
+            .map(|(name, ty)| (name.as_str(), ty))
+            .collect()
+    }
+
+    /// A release callback that frees nothing, for hand-built schemas whose
+    /// strings are owned by the test.
+    unsafe extern "C" fn noop_release(schema: *mut RawArrowSchema) {
+        // SAFETY: DuckDB and quack-rs both pass a valid pointer, and the Arrow
+        // specification requires the callback to null its own `release`.
+        unsafe { (*schema).release = None };
+    }
+
+    #[test]
+    fn a_chunk_survives_a_full_round_trip_through_the_c_data_interface() {
+        let fx = Fixture::open();
+        let sql = "SELECT i::INTEGER AS id, \
+                        (i * 100)::BIGINT AS big, \
+                        CASE WHEN i % 3 = 0 THEN NULL ELSE 'row-' || i END AS label \
+                   FROM range(7) t(i) ORDER BY i";
+        let mut result = fx.query(sql);
+        let cols = columns(&result);
+        assert_eq!(cols.len(), 3);
+
+        let options = result.arrow_options().expect("result arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+
+        let chunk = result.next_chunk().expect("one chunk");
+        assert_eq!(chunk.size(), 7);
+        let array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
+        assert_eq!(array.len(), 7, "the array carries every row");
+        assert_eq!(array.child_count(), 3, "one child array per column");
+
+        // The Arrow array owns its own copy of the data, so the chunk it came
+        // from can go away before the import.
+        drop(chunk);
+        drop(result);
+
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
+        assert_eq!(converted.column_count(), 3);
+
+        // SAFETY: same connection; `array` was produced from `schema`'s columns.
+        let imported =
+            unsafe { data_chunk_from_arrow(fx.con(), array, &converted) }.expect("import");
+
+        assert_eq!(imported.column_count(), 3);
+        assert_eq!(imported.size(), 7);
+        // SAFETY: the chunk has three columns and seven rows.
+        let (ids, bigs, labels) =
+            unsafe { (imported.reader(0), imported.reader(1), imported.reader(2)) };
+        for row in 0..7 {
+            // SAFETY: `row` is in range for all three readers.
+            unsafe {
+                assert!(ids.is_valid(row), "id {row} is never NULL");
+                assert_eq!(ids.read_i32(row), i32::try_from(row).unwrap());
+                assert_eq!(bigs.read_i64(row), i64::try_from(row).unwrap() * 100);
+                if row % 3 == 0 {
+                    assert!(!labels.is_valid(row), "label {row} must survive as NULL");
+                } else {
+                    assert!(labels.is_valid(row));
+                    assert_eq!(labels.read_str(row), format!("row-{row}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn to_arrow_schema_produces_a_struct_with_one_named_child_per_column() {
+        let fx = Fixture::open();
+        let result = fx.query("SELECT 1::INTEGER AS id, 2::BIGINT AS big, 'x' AS label");
+        let cols = columns(&result);
+        let options = result.arrow_options().expect("arrow options");
+        let schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+
+        assert!(!schema.is_released());
+        assert_eq!(schema.format(), Some("+s"), "a record batch is a struct");
+        assert_eq!(schema.child_count(), 3);
+
+        let id = schema.child(0).expect("child 0");
+        assert_eq!(id.name(), Some("id"));
+        assert_eq!(id.format(), Some("i"), "INTEGER is Arrow int32");
+
+        let big = schema.child(1).expect("child 1");
+        assert_eq!(big.name(), Some("big"));
+        assert_eq!(big.format(), Some("l"), "BIGINT is Arrow int64");
+
+        let label = schema.child(2).expect("child 2");
+        assert_eq!(label.name(), Some("label"));
+        // Which string encoding DuckDB picks depends on the connection's arrow
+        // options (offset size, string views), so accept the whole family rather
+        // than pinning one and calling it a guarantee.
+        let format = label.format().expect("a format string");
+        assert!(
+            matches!(format, "u" | "U" | "vu"),
+            "VARCHAR should be an Arrow string encoding, got {format:?}"
+        );
+
+        assert!(schema.child(3).is_none(), "no fourth column");
+    }
+
+    #[test]
+    fn a_schema_and_an_array_can_be_released_early_and_the_drop_is_a_no_op() {
+        let fx = Fixture::open();
+        let mut result = fx.query("SELECT 42::INTEGER AS answer");
+        let cols = columns(&result);
+        let options = result.arrow_options().expect("arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+        let chunk = result.next_chunk().expect("one chunk");
+        let mut array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
+
+        // Calling DuckDB's own release callbacks — this is where a wrong
+        // ownership assumption would abort. Reaching the assertions is the test.
+        schema.release();
+        array.release();
+        assert!(schema.is_released());
+        assert!(array.is_released());
+        // Idempotent, and the implicit drops below add nothing.
+        schema.release();
+        array.release();
+    }
+
+    #[test]
+    fn arrow_options_are_available_from_a_connection_as_well_as_a_result() {
+        let fx = Fixture::open();
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let from_con = unsafe { ArrowOptions::from_connection(fx.con()) }.expect("from_connection");
+        assert!(!from_con.as_raw().is_null());
+
+        let id = LogicalType::new(TypeId::Integer);
+        let schema = to_arrow_schema(&from_con, &[("id", &id)]).expect("to_arrow_schema");
+        assert_eq!(schema.child_count(), 1);
+    }
+
+    #[test]
+    fn from_connection_rejects_a_null_connection() {
+        // The fixture is what populates the loadable-extension dispatch table;
+        // without it the call would not reach DuckDB at all.
+        let _fx = Fixture::open();
+        // SAFETY: a null connection is exactly the case DuckDB reports by
+        // writing null to the out-parameter.
+        let err = unsafe { ArrowOptions::from_connection(std::ptr::null_mut()) }
+            .expect_err("a null connection has no arrow options");
+        assert!(err.to_string().contains("null"), "{err}");
+    }
+
+    #[test]
+    fn to_arrow_schema_rejects_a_name_with_an_interior_nul() {
+        let fx = Fixture::open();
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let options = unsafe { ArrowOptions::from_connection(fx.con()) }.expect("arrow options");
+        let id = LogicalType::new(TypeId::Integer);
+        let err = to_arrow_schema(&options, &[("bad\0name", &id)])
+            .expect_err("DuckDB reads schema names as C strings");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        assert!(
+            err.message().unwrap_or_default().contains("NUL"),
+            "{:?}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn schema_from_arrow_refuses_an_already_released_schema() {
+        let fx = Fixture::open();
+        let mut schema = ArrowSchema::empty();
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let err = unsafe { schema_from_arrow(fx.con(), &mut schema) }
+            .expect_err("a released schema has no usable children pointer");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        assert!(
+            err.message().unwrap_or_default().contains("released"),
+            "{:?}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn schema_from_arrow_reports_an_arrow_type_duckdb_cannot_map() {
+        let fx = Fixture::open();
+
+        // Declared before `schema` so they outlive it: locals drop in reverse.
+        let root_format = CString::new("+s").unwrap();
+        let child_format = CString::new("?").unwrap();
+        let child_name = CString::new("unsupported").unwrap();
+        let mut child = RawArrowSchema::empty();
+        child.format = child_format.as_ptr();
+        child.name = child_name.as_ptr();
+        child.release = Some(noop_release);
+        let mut child_ptr: *mut RawArrowSchema = &raw mut child;
+        let mut root = RawArrowSchema::empty();
+        root.format = root_format.as_ptr();
+        root.n_children = 1;
+        root.children = &raw mut child_ptr;
+        root.release = Some(noop_release);
+
+        // SAFETY: `noop_release` frees nothing; the strings are owned above.
+        let mut schema = unsafe { ArrowSchema::from_raw(root) };
+        assert_eq!(schema.child_count(), 1);
+
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let err = unsafe { schema_from_arrow(fx.con(), &mut schema) }
+            .expect_err("'?' is not an Arrow format string DuckDB knows");
+        let message = err.message().unwrap_or_default();
+        assert!(
+            message.contains("Unsupported") || message.contains("unsupported"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn data_chunk_from_arrow_refuses_an_already_released_array() {
+        let fx = Fixture::open();
+        let result = fx.query("SELECT 1::INTEGER AS id");
+        let cols = columns(&result);
+        let options = result.arrow_options().expect("arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
+
+        // SAFETY: same connection; an empty array is already released.
+        let err = unsafe { data_chunk_from_arrow(fx.con(), ArrowArray::empty(), &converted) }
+            .expect_err("DuckDB would dereference a released array");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        assert!(
+            err.message().unwrap_or_default().contains("released"),
+            "{:?}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn data_chunk_from_arrow_refuses_an_array_with_the_wrong_child_count() {
+        let fx = Fixture::open();
+        // A two-column schema…
+        let mut two = fx.query("SELECT 1::INTEGER AS a, 2::INTEGER AS b");
+        let two_cols = columns(&two);
+        let options = two.arrow_options().expect("arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&two_cols)).expect("to_arrow_schema");
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
+        assert_eq!(converted.column_count(), 2);
+        drop(two.next_chunk());
+
+        // …fed a one-column array. DuckDB would read `children[1]` past the end.
+        let mut one = fx.query("SELECT 9::INTEGER AS only");
+        let one_chunk = one.next_chunk().expect("one chunk");
+        let array = data_chunk_to_arrow(&options, &one_chunk).expect("data_chunk_to_arrow");
+        assert_eq!(array.child_count(), 1);
+
+        // SAFETY: same connection; the mismatch is caught before DuckDB is called.
+        let err = unsafe { data_chunk_from_arrow(fx.con(), array, &converted) }
+            .expect_err("a one-column array cannot fill a two-column schema");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        let message = err.message().unwrap_or_default();
+        assert!(message.contains('1') && message.contains('2'), "{message}");
+    }
+
+    #[test]
+    fn a_zero_row_array_is_refused_rather_than_aborting_a_debug_duckdb() {
+        let fx = Fixture::open();
+        let result = fx.query("SELECT 1::INTEGER AS id");
+        let cols = columns(&result);
+        let options = result.arrow_options().expect("arrow options");
+        let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
+        // SAFETY: `fx.con()` is open for the fixture's lifetime.
+        let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
+
+        // An empty *result* yields no chunks at all, so the zero-row case has to
+        // come from a chunk built directly - which is also the shape an
+        // extension produces when a scan finds nothing.
+        let mut types = [cols[0].1.as_raw()];
+        // SAFETY: one valid logical type, which DuckDB copies.
+        let raw_chunk = unsafe { libduckdb_sys::duckdb_create_data_chunk(types.as_mut_ptr(), 1) };
+        assert!(!raw_chunk.is_null(), "duckdb_create_data_chunk");
+        // SAFETY: the chunk is ours to own and destroy.
+        let chunk = unsafe { OwnedDataChunk::from_raw(raw_chunk) };
+        // SAFETY: zero is always within capacity.
+        unsafe { chunk.set_size(0) };
+
+        // Exporting a zero-row chunk is fine, and produces a well-formed empty
+        // Arrow array.
+        let array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
+        assert_eq!(array.len(), 0);
+        assert_eq!(array.child_count(), 1);
+
+        // Importing one is not. DuckDB passes `arrow_array->length` through as
+        // the chunk's *capacity*, and a capacity of zero reaches
+        // `Allocator::AllocateData(0)`, whose `D_ASSERT(size > 0)` aborts a
+        // debug build of DuckDB while a release build silently carries on. That
+        // is refused here so the behaviour does not depend on how the engine was
+        // compiled — reaching this assertion under a debug DuckDB is the test.
+        // SAFETY: same connection; one child array, one schema column.
+        let err = unsafe { data_chunk_from_arrow(fx.con(), array, &converted) }
+            .expect_err("a zero-row array must be refused, not handed to DuckDB");
+        assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+        assert!(
+            err.message().unwrap_or_default().contains("zero-row"),
+            "{:?}",
+            err.message()
+        );
+    }
+}
+
+// ─── COPY ... FROM ───────────────────────────────────────────────────────────
+
+/// A read-only copy function: `COPY tbl FROM 'file' (FORMAT lines)` driven by a
+/// quack-rs table function.
+///
+/// The point of this module is the whole chain — `build_handle` →
+/// `copy_from` → `duckdb_copy_function_set_copy_from_function` →
+/// `CCopyFromBind` → the table function's own bind and scan — with the target
+/// table's schema read back through
+/// [`BindInfo::result_column_count`][quack_rs::table::BindInfo::result_column_count]
+/// rather than declared.
+#[cfg(feature = "duckdb-1-5")]
+mod copy_from {
+    use super::Fixture;
+    use quack_rs::copy_function::CopyFunctionBuilder;
+    use quack_rs::error::ExtensionError;
+    use quack_rs::table::TableFunctionBuilder;
+    use quack_rs::types::TypeId;
+
+    /// Rows parsed at bind time, handed to the scan one chunk at a time.
+    struct Reader {
+        rows: Vec<(i32, String)>,
+        next: usize,
+        /// The target table's columns, as `CCopyFromBind` supplied them.
+        schema: Vec<(String, Option<TypeId>)>,
+    }
+
+    /// Registers `lines`: a `COPY … FROM` handler for a trivial `id,label`
+    /// text format, with `skip_rows` as a COPY option.
+    fn register_lines_format(con: libduckdb_sys::duckdb_connection) {
+        let reader = TableFunctionBuilder::new("lines_reader")
+            // Exactly one VARCHAR — the file path. `CCopyFromBind` supplies it.
+            .param(TypeId::Varchar)
+            // COPY options arrive as named parameters, and an option the
+            // function never declared is a bind error naming the format.
+            .named_param("skip_rows", TypeId::BigInt)
+            .with_state::<Reader, _>(|bind| {
+                // A COPY ... FROM reader must NOT call add_result_column: the
+                // destination table already fixed the schema. Read it instead,
+                // and adapt — or refuse.
+                let schema: Vec<(String, Option<TypeId>)> = (0..bind.result_column_count())
+                    .map(|i| {
+                        let name = bind.result_column_name(i).unwrap_or_default();
+                        // SAFETY: called during bind, with `i` in range.
+                        let ty = unsafe { bind.result_column_type(i) };
+                        // SAFETY: the handle is live for as long as `ty` is.
+                        let id = ty.map(|t| unsafe { t.get_type_id() });
+                        (name, id)
+                    })
+                    .collect();
+                if schema.len() != 2 {
+                    return Err(ExtensionError::new(format!(
+                        "lines: expected a two-column target table, got {}",
+                        schema.len()
+                    )));
+                }
+                if schema[0].1 != Some(TypeId::Integer) || schema[1].1 != Some(TypeId::Varchar) {
+                    let named = |(name, id): &(String, Option<TypeId>)| {
+                        format!("{name} {}", id.map_or("<unknown>", TypeId::sql_name))
+                    };
+                    return Err(ExtensionError::new(format!(
+                        "lines: expected (INTEGER, VARCHAR), got ({}, {})",
+                        named(&schema[0]),
+                        named(&schema[1]),
+                    )));
+                }
+                // SAFETY: parameter 0 is declared above, and DuckDB always
+                // supplies the file path there for a COPY ... FROM.
+                let path = unsafe { bind.get_parameter_value(0) }
+                    .as_str()
+                    .map_err(|e| ExtensionError::new(format!("lines: bad path: {e}")))?;
+                // SAFETY: `skip_rows` is declared above; an absent option yields
+                // a null handle, which `as_i64_or` reports as the default.
+                let skip = usize::try_from(
+                    unsafe { bind.get_named_parameter_value("skip_rows") }.as_i64_or(0),
+                )
+                .unwrap_or(0);
+
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| ExtensionError::new(format!("lines: {path}: {e}")))?;
+                let rows = text
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .skip(skip)
+                    .map(|line| {
+                        let (id, label) = line.split_once(',').ok_or_else(|| {
+                            ExtensionError::new(format!("lines: no comma: {line}"))
+                        })?;
+                        let id: i32 = id
+                            .trim()
+                            .parse()
+                            .map_err(|e| ExtensionError::new(format!("lines: bad id: {e}")))?;
+                        Ok((id, label.trim().to_owned()))
+                    })
+                    .collect::<Result<Vec<_>, ExtensionError>>()?;
+
+                Ok(Reader {
+                    rows,
+                    next: 0,
+                    schema,
+                })
+            })
+            .scan(|state, chunk| {
+                assert_eq!(
+                    state.schema.len(),
+                    chunk.column_count(),
+                    "the output chunk has one vector per target column"
+                );
+                let take = (state.rows.len() - state.next).min(1024);
+                // SAFETY: two columns, exactly as the target table has.
+                let (mut ids, mut labels) = unsafe { (chunk.writer(0), chunk.writer(1)) };
+                for row in 0..take {
+                    let (id, label) = &state.rows[state.next + row];
+                    // SAFETY: `row` is below the chunk's capacity.
+                    unsafe {
+                        ids.write_i32(row, *id);
+                        labels.write_varchar(row, label);
+                    }
+                }
+                state.next += take;
+                // SAFETY: `take` is within the chunk's capacity.
+                unsafe { chunk.set_size(take) };
+                Ok(())
+            })
+            .build()
+            .expect("build lines_reader");
+
+        // SAFETY: every callback matches its declared signature.
+        let handle = unsafe { reader.build_handle() }.expect("build_handle");
+        assert_eq!(handle.param_types(), &[Some(TypeId::Varchar)]);
+
+        let copy = CopyFunctionBuilder::try_new("lines")
+            .expect("copy function name")
+            .copy_from(handle)
+            .expect("attach the reader");
+        // SAFETY: `con` is open.
+        unsafe { copy.register(con) }.expect("register the lines format");
+    }
+
+    fn write_fixture_file(name: &str, contents: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join(name), contents).expect("write fixture");
+        dir
+    }
+
+    #[test]
+    fn a_read_only_copy_function_loads_a_table() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "1,alpha\n2,beta\n3,gamma\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        fx.query("CREATE TABLE t (id INTEGER, label VARCHAR)");
+        fx.query(&format!("COPY t FROM '{path}' (FORMAT lines)"));
+
+        assert_eq!(
+            fx.scalar("SELECT count(*) FROM t", |r, i| unsafe { r.read_i64(i) }),
+            Some(3)
+        );
+        assert_eq!(
+            fx.scalar("SELECT sum(id)::BIGINT FROM t", |r, i| unsafe {
+                r.read_i64(i)
+            }),
+            Some(6)
+        );
+        assert_eq!(
+            fx.scalar(
+                "SELECT string_agg(label, '|' ORDER BY id) FROM t",
+                |r, i| { unsafe { r.read_str(i).to_owned() } }
+            )
+            .as_deref(),
+            Some("alpha|beta|gamma")
+        );
+    }
+
+    #[test]
+    fn a_copy_option_reaches_the_reader_as_a_named_parameter() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "0,header\n1,alpha\n2,beta\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        fx.query("CREATE TABLE t (id INTEGER, label VARCHAR)");
+        fx.query(&format!("COPY t FROM '{path}' (FORMAT lines, SKIP_ROWS 1)"));
+
+        assert_eq!(
+            fx.scalar("SELECT count(*) FROM t", |r, i| unsafe { r.read_i64(i) }),
+            Some(2)
+        );
+        assert_eq!(
+            fx.scalar("SELECT min(label) FROM t", |r, i| unsafe {
+                r.read_str(i).to_owned()
+            })
+            .as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn an_undeclared_copy_option_is_a_binder_error_naming_the_format() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "1,alpha\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        fx.query("CREATE TABLE t (id INTEGER, label VARCHAR)");
+        // SAFETY: `con` is open.
+        let err = unsafe {
+            quack_rs::query::query(
+                fx.con(),
+                &format!("COPY t FROM '{path}' (FORMAT lines, NONSENSE 1)"),
+            )
+        }
+        .expect_err("an option the reader never declared must not be accepted");
+        // Two things worth pinning down, because neither is obvious:
+        //   * the option name comes back exactly as the user typed it, even
+        //     though the lookup against the declared named parameters is
+        //     case-insensitive (SKIP_ROWS matches `skip_rows` above);
+        //   * the format named in the message is the *table function's* name,
+        //     not the copy function's. `CCopyFromBind` reports `info.tf.name`,
+        //     and `duckdb_copy_function_set_copy_from_function` only borrows the
+        //     copy function's name when the table function has none.
+        assert!(err.as_str().contains("NONSENSE"), "{err}");
+        assert!(err.as_str().contains("lines_reader"), "{err}");
+    }
+
+    #[test]
+    fn the_reader_sees_the_target_tables_schema_rather_than_declaring_one() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "1,alpha\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        // The bind callback rejects anything but two columns, and it only knows
+        // the column count because DuckDB told it — nothing in the reader
+        // declares a schema.
+        fx.query("CREATE TABLE three (a INTEGER, b VARCHAR, c INTEGER)");
+        // SAFETY: `con` is open.
+        let err = unsafe {
+            quack_rs::query::query(
+                fx.con(),
+                &format!("COPY three FROM '{path}' (FORMAT lines)"),
+            )
+        }
+        .expect_err("the reader refuses a three-column target");
+        assert!(err.as_str().contains("two-column target table"), "{err}");
+        assert!(err.as_str().contains('3'), "{err}");
+    }
+
+    #[test]
+    fn the_reader_sees_the_target_tables_column_types_too() {
+        let fx = Fixture::open();
+        register_lines_format(fx.con());
+        let dir = write_fixture_file("data.lines", "1,alpha\n");
+        let path = dir.path().join("data.lines");
+        let path = path.to_str().expect("utf-8 path");
+
+        fx.query("CREATE TABLE mistyped (id VARCHAR, label VARCHAR)");
+        // SAFETY: `con` is open.
+        let err = unsafe {
+            quack_rs::query::query(
+                fx.con(),
+                &format!("COPY mistyped FROM '{path}' (FORMAT lines)"),
+            )
+        }
+        .expect_err("the reader writes INTEGER into column 0");
+        assert!(
+            err.as_str().contains("expected (INTEGER, VARCHAR)"),
+            "{err}"
+        );
+        assert!(err.as_str().contains("id VARCHAR"), "{err}");
+    }
+
+    #[test]
+    fn copy_from_rejects_a_reader_whose_parameters_do_not_match_the_contract() {
+        let fx = Fixture::open();
+
+        for (label, build) in [
+            (
+                "no positional parameter",
+                (|| TableFunctionBuilder::new("no_params")) as fn() -> TableFunctionBuilder,
+            ),
+            ("a non-VARCHAR parameter", || {
+                TableFunctionBuilder::new("wrong_type").param(TypeId::BigInt)
+            }),
+            ("two parameters", || {
+                TableFunctionBuilder::new("two_params")
+                    .param(TypeId::Varchar)
+                    .param(TypeId::Varchar)
+            }),
+        ] {
+            let reader = build()
+                .with_state::<u8, _>(|_| Ok(0))
+                .scan(|_, chunk| {
+                    // SAFETY: end of stream.
+                    unsafe { chunk.set_size(0) };
+                    Ok(())
+                })
+                .build()
+                .expect("build");
+            // SAFETY: every callback matches its declared signature.
+            let handle = unsafe { reader.build_handle() }.expect("build_handle");
+            let err = CopyFunctionBuilder::try_new("rejected")
+                .expect("name")
+                .copy_from(handle)
+                .err()
+                .unwrap_or_else(|| panic!("{label} must be rejected"));
+            assert!(
+                err.as_str().contains("exactly one VARCHAR"),
+                "{label}: {err}"
+            );
+        }
+
+        drop(fx);
+    }
+
+    #[test]
+    fn a_copy_function_that_implements_neither_direction_is_refused() {
+        let fx = Fixture::open();
+        let builder = CopyFunctionBuilder::try_new("empty_format").expect("name");
+        // SAFETY: `con` is open.
+        let err = unsafe { builder.register(fx.con()) }
+            .expect_err("DuckDB refuses this with no message of its own");
+        assert!(err.as_str().contains("implements nothing"), "{err}");
     }
 }

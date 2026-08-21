@@ -26,13 +26,34 @@ custom window operator registration requires writing a C++ extension.
 If DuckDB exposes window registration in a future C API version, `quack-rs`
 will add wrappers in the corresponding release.
 
-## COPY functions (resolved in DuckDB 1.5.0)
+## COPY functions (resolved in DuckDB 1.5.0; both directions since)
 
 DuckDB 1.5.0 added `duckdb_create_copy_function` and related symbols to the public
 C extension API. quack-rs wraps these in the `copy_function` module behind the
 `duckdb-1-5` feature flag. See `CopyFunctionBuilder` for usage.
 
 This was previously listed as a known limitation (no C API counterpart prior to 1.5.0).
+
+`COPY … FROM` was a second, narrower gap: quack-rs wrapped the writing half only.
+`CopyFunctionBuilder::copy_from` now attaches a quack-rs table function as a
+format's reader, and a copy function may implement either direction or both — a
+read-only format leaves the writing callbacks unset entirely. See the
+[Copy Functions](../functions/copy-functions.md) chapter.
+
+## Arrow interop (resolved behind `duckdb-1-5-4`)
+
+DuckDB 1.5.0 added a conversion family that moves data straight between a
+`duckdb_data_chunk` and the Arrow C Data Interface. quack-rs wraps all eight
+non-deprecated entries in the `arrow` module, with **no `arrow` crate
+dependency** — see the [Arrow Interop](../duckdb-1-5/arrow.md) chapter.
+
+The remaining fourteen Arrow entries in the C API struct are the older
+`duckdb_query_arrow` result API, which lives inside
+`#ifndef DUCKDB_API_NO_DEPRECATED`; they are deliberately not wrapped.
+
+The feature is `duckdb-1-5-4` rather than `duckdb-1-5` because `libduckdb-sys`
+declared the two Arrow ABI records as opaque zero-sized placeholders until
+1.10504.0. The DuckDB functions themselves are present from 1.5.0.
 
 ## Callback accessor wrappers (resolved)
 

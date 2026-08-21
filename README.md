@@ -88,7 +88,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **16 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **21 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```
@@ -99,6 +99,8 @@ L4  ensure_validity_writable required before NULL output → VectorWriter handle
 L5  Boolean reading must use u8 != 0 → VectorReader enforces this
 L6  Function set name must be set on EACH member → Set builders enforce on every member
 L7  LogicalType memory leak → LogicalType implements Drop
+L8  DEFAULT_NULL_HANDLING does NOT propagate NULLs for scalar functions →
+    map1/map2/map1_str/map2_str do it; DataChunk::propagate_nulls for raw callbacks
 
 P1  Library name must match [lib] name in Cargo.toml exactly
 P2  C API version ("v1.2.0") ≠ DuckDB release version ("v1.4.4" / "v1.5.0")
@@ -232,6 +234,11 @@ let config = ScaffoldConfig {
     maintainer: "Your Name".to_string(),
     github_repo: "yourorg/duckdb-my-extension".to_string(),
     excluded_platforms: vec![], // or vec!["wasm_mvp".to_string(), ...]
+    // `target_duckdb_version`, `use_unstable_c_api` and `git_ref` default to
+    // the stable-ABI settings. Set `use_unstable_c_api: true` (and
+    // `target_duckdb_version` to an exact release) when the extension enables
+    // the `duckdb-1-5` features — see the `abi` module.
+    ..Default::default()
 };
 
 let files = generate_scaffold(&config)?;
@@ -293,22 +300,24 @@ append_metadata target/release/libmy_extension.so \
 | [`aggregate::state`] | Generic FFI state management | `AggregateState`, `FfiState<T>` |
 | [`aggregate::callbacks`] | Callback type aliases | `UpdateFn`, `CombineFn`, `FinalizeFn`, … |
 | [`scalar`] | Scalar function registration | `ScalarFunctionBuilder`, `ScalarFunctionSetBuilder`, `ScalarOverloadBuilder`, `ScalarFunctionInfo`, `ScalarBindInfo`¹, `ScalarInitInfo`¹ |
+| [`scalar::typed`] | Scalar functions as safe Rust closures | `ScalarFunctionBuilder::map1` / `map2` / `map1_str` / `map2_str` / `map1_opt` / `map2_opt`, `ScalarValue`, `ScalarOut` |
 | [`cast`] | Custom type cast functions | `CastFunctionBuilder`, `CastFunctionInfo`, `CastMode` |
 | [`table`] | Table function registration (bind/init/scan) | `TableFunctionBuilder`, `TypedTableFunctionBuilder`, `BindInfo`, `FfiBindData`, `FfiInitData` |
 | [`replacement_scan`] | `SELECT * FROM 'file.xyz'` replacement scans | `ReplacementScanBuilder` |
 | [`sql_macro`] | SQL macro registration (no FFI callbacks) | `SqlMacro`, `MacroBody` |
 | [`data_chunk`] | Ergonomic wrapper for DuckDB data chunks | `DataChunk` |
 | [`chunk_writer`] | Auto-sizing chunk writer for scan callbacks | `ChunkWriter` |
-| [`value`] | RAII wrapper for DuckDB values with typed extraction | `Value` |
+| [`value`] | RAII wrapper for DuckDB values — every scalar and composite constructor, typed extraction | `Value` |
 | [`vector`] | Safe reading/writing of DuckDB vectors | `VectorReader`, `VectorWriter`, `ValidityBitmap`, `vector_size()` |
 | [`vector::complex`] | STRUCT / LIST / MAP / ARRAY child vector access | `StructVector`, `ListVector`, `MapVector`, `ArrayVector` |
+| [`vector::ops`]¹ | Whole-vector operations driven by a `SelectionVector` | `OwnedVector`, `copy_selected`, `slice`, `reference_value`, `reference_vector` |
 | [`vector::struct_writer`] | Batched typed writer for STRUCT output vectors | `StructWriter` |
 | [`vector::struct_reader`] | Batched typed reader for STRUCT input vectors | `StructReader` |
 | [`vector::string`] | 16-byte DuckDB string format | `DuckStringView`, `read_duck_string` |
-| [`types`] | DuckDB type system wrappers | `TypeId`, `LogicalType`, `NullHandling` |
+| [`types`] | DuckDB type system wrappers, incl. registering custom types | `TypeId`, `LogicalType` (`register`, `is_composite`), `NullHandling` |
 | [`interval`] | INTERVAL ↔ microseconds conversion | `DuckInterval`, `interval_to_micros` |
 | [`datetime`] | DATE/TIME/TIMESTAMP calendar conversions, HUGEINT/DECIMAL helpers | `Date`, `Time`, `Timestamp`, `date_from_days`, `is_finite_date` |
-| [`query`] | Running SQL from an extension | `QueryResult`, `PreparedStatement`, `OwnedConnection`, `OwnedDataChunk` |
+| [`query`] | Running SQL from an extension, incl. streaming¹ and cancellation | `QueryResult`, `PreparedStatement`, `OwnedConnection`, `OwnedDataChunk`, `InterruptHandle`, `QueryProgress` |
 | [`error`] | FFI-safe error type | `ExtensionError`, `ExtResult<T>` |
 | [`tls`] | Type-erased TLS config provider for HTTP-capable extensions | `TlsConfigProvider` |
 | [`warning`] | Structured security warning API | `ExtensionWarning`, `WarningSeverity`, `WarningCollector` |
@@ -330,15 +339,21 @@ append_metadata target/release/libmy_extension.so \
 | [`catalog`]¹ | Catalog entry lookup | `CatalogEntry`, `Catalog`, `CatalogEntryType` |
 | [`client_context`]¹ | Client context access (catalog, config, connection ID) | `ClientContext` |
 | [`config_option`]¹ | Extension-defined configuration options | `ConfigOptionBuilder`, `ConfigOptionScope` |
-| [`copy_function`]¹ | Custom `COPY TO` handlers | `CopyFunctionBuilder`, `CopyBindInfo`, `CopyGlobalInitInfo`, `CopySinkInfo`, `CopyFinalizeInfo` |
+| [`copy_function`]¹ | Custom `COPY TO` and `COPY FROM` handlers | `CopyFunctionBuilder`, `CopyBindInfo`, `CopyGlobalInitInfo`, `CopySinkInfo`, `CopyFinalizeInfo` |
 | [`error_data`]¹ | Structured error data + UTF-8 validation | `ErrorData`, `DuckDbErrorType`, `check_valid_utf8` |
 | [`expression`]¹ | Bound expression inspection / constant folding | `Expression` |
 | [`file_system`]¹ | DuckDB virtual file system access | `FileSystem`, `FileHandle`, `FileOpenOptions`, `FileFlag` |
 | [`instance_cache`]¹ | Shared database instance cache | `InstanceCache` |
 | [`selection_vector`]¹ | Zero-copy row-index selection vectors | `SelectionVector` |
+| [`arrow`]² | Arrow C Data Interface bridge — no `arrow` crate dependency | `ArrowOptions`, `ArrowSchema`, `ArrowArray`, `ArrowConvertedSchema`, `to_arrow_schema`, `data_chunk_to_arrow`, `schema_from_arrow`, `data_chunk_from_arrow` |
 
 > ¹ Requires the `duckdb-1-5` feature flag (DuckDB 1.5.0+).
+>
+> ² Requires the `duckdb-1-5-4` feature flag. The functions themselves are in
+> DuckDB's C API from 1.5.0; the flag exists because `libduckdb-sys` did not
+> ship the Arrow C Data Interface struct layouts until 1.10504.0.
 
+[`arrow`]: https://docs.rs/quack-rs/latest/quack_rs/arrow/index.html
 [`callback`]: https://docs.rs/quack-rs/latest/quack_rs/callback/index.html
 [`chunk_writer`]: https://docs.rs/quack-rs/latest/quack_rs/chunk_writer/index.html
 [`data_chunk`]: https://docs.rs/quack-rs/latest/quack_rs/data_chunk/index.html
@@ -352,12 +367,14 @@ append_metadata target/release/libmy_extension.so \
 [`aggregate::state`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/state/index.html
 [`aggregate::callbacks`]: https://docs.rs/quack-rs/latest/quack_rs/aggregate/callbacks/index.html
 [`scalar`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/index.html
+[`scalar::typed`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/typed/index.html
 [`cast`]: https://docs.rs/quack-rs/latest/quack_rs/cast/index.html
 [`table`]: https://docs.rs/quack-rs/latest/quack_rs/table/index.html
 [`replacement_scan`]: https://docs.rs/quack-rs/latest/quack_rs/replacement_scan/index.html
 [`sql_macro`]: https://docs.rs/quack-rs/latest/quack_rs/sql_macro/index.html
 [`vector`]: https://docs.rs/quack-rs/latest/quack_rs/vector/index.html
 [`vector::complex`]: https://docs.rs/quack-rs/latest/quack_rs/vector/complex/index.html
+[`vector::ops`]: https://docs.rs/quack-rs/latest/quack_rs/vector/ops/index.html
 [`vector::string`]: https://docs.rs/quack-rs/latest/quack_rs/vector/string/index.html
 [`types`]: https://docs.rs/quack-rs/latest/quack_rs/types/index.html
 [`interval`]: https://docs.rs/quack-rs/latest/quack_rs/interval/index.html
@@ -863,6 +880,27 @@ requires `libduckdb-sys >= 1.10503.1` (DuckDB 1.5.3). It is a separate gate
 because these type-enum constants postdate the `duckdb-1-5` feature's 1.5.0
 floor (`VARIANT` was added in 1.5.3), so keeping them out of `duckdb-1-5`
 preserves compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
+
+### Arrow interop
+
+DuckDB 1.5.0 added a conversion family that moves data straight between a
+`duckdb_data_chunk` and the [Arrow C Data Interface] — `duckdb_to_arrow_schema`,
+`duckdb_data_chunk_to_arrow`, `duckdb_schema_from_arrow`,
+`duckdb_data_chunk_from_arrow` and the `duckdb_arrow_options` accessors.
+`quack-rs` wraps all of them in the [`arrow`] module behind the
+**`duckdb-1-5-4`** feature, with RAII types for every handle and by-value
+ownership where DuckDB claims the input.
+
+There is **no `arrow` crate dependency**. The interface is an ABI, not a
+library: `libduckdb-sys` defines the two `#[repr(C)]` records with arrow-rs's
+layout, so an extension that uses arrow-rs bridges across with a pointer cast,
+and one that does not pays nothing.
+
+The feature is separate from `duckdb-1-5` only because `libduckdb-sys` declared
+those records as opaque zero-sized placeholders until **1.10504.0**; the DuckDB
+functions themselves are present from 1.5.0.
+
+[Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
 
 > For the full list of resolved and open limitations, see the
 > [Known Limitations](https://quack-rs.com/reference/known-limitations.html) reference page.

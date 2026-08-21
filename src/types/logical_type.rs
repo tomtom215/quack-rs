@@ -26,20 +26,65 @@ use libduckdb_sys::{
 };
 use std::fmt;
 
-/// Error returned by fallible [`LogicalType`] constructors when the underlying
-/// `DuckDB` C API returns a null pointer.
+/// Error returned by the fallible [`LogicalType`] constructors.
+///
+/// Two things go wrong when building a logical type, and this reports both:
+///
+/// - the underlying `DuckDB` C API returned a null pointer (an out-of-range
+///   `DECIMAL` width, for instance), or
+/// - the requested type could not be built from a bare [`TypeId`] at all — see
+///   [`TypeId::is_composite`][crate::types::TypeId::is_composite].
 #[derive(Debug, Clone)]
 pub struct LogicalTypeError {
     api_func: &'static str,
+    /// When set, the whole message; otherwise `"<api_func> returned null"`.
+    detail: Option<String>,
+}
+
+impl LogicalTypeError {
+    /// The `DuckDB` C API function (or internal step) that failed.
+    #[must_use]
+    pub const fn api_func(&self) -> &'static str {
+        self.api_func
+    }
+
+    /// Builds the "returned null" form.
+    const fn null(api_func: &'static str) -> Self {
+        Self {
+            api_func,
+            detail: None,
+        }
+    }
 }
 
 impl fmt::Display for LogicalTypeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} returned null", self.api_func)
+        match &self.detail {
+            Some(detail) => f.write_str(detail),
+            None => write!(f, "{} returned null", self.api_func),
+        }
     }
 }
 
 impl std::error::Error for LogicalTypeError {}
+
+/// The diagnostic for a composite [`TypeId`] used where a primitive was needed.
+///
+/// Shared by [`LogicalType::new`]'s panic, [`LogicalType::try_new`]'s error, and
+/// every builder that turns a `TypeId` into a parameter or return type, so the
+/// advice is identical wherever the mistake is caught.
+fn composite_message(type_id: TypeId) -> String {
+    let hint = type_id
+        .composite_constructor_hint()
+        .unwrap_or("a dedicated LogicalType constructor");
+    format!(
+        "{} carries parameters that a bare TypeId cannot express, so \
+         duckdb_create_logical_type would return an invalid (non-null) type. \
+         Build it with {hint} and pass the result through the `*_logical` \
+         variant of this method (e.g. `param_logical` / `returns_logical`).",
+        type_id.sql_name()
+    )
+}
 
 /// An RAII wrapper around a `duckdb_logical_type` handle.
 ///
@@ -88,14 +133,26 @@ impl LogicalType {
         Self { inner: ptr }
     }
 
-    /// Creates a new `LogicalType` for the given `TypeId`.
+    /// Creates a new `LogicalType` for the given **primitive** `TypeId`.
     ///
     /// Calls `duckdb_create_logical_type` internally.
     ///
+    /// # Composite types are rejected
+    ///
+    /// `duckdb_create_logical_type` documents that it "returns an invalid
+    /// logical type" for `DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY` and
+    /// `UNION` — and "invalid" there means a **non-null handle** wrapping
+    /// `LogicalTypeId::INVALID`, so a null check does not catch it. Left alone,
+    /// that surfaces much later as an opaque `duckdb_register_*_function failed`
+    /// or as a panic from [`get_type_id`][Self::get_type_id]. Each of those
+    /// types carries parameters a bare id cannot express, so each has its own
+    /// constructor; see [`TypeId::is_composite`].
+    ///
     /// # Panics
     ///
-    /// Panics if `duckdb_create_logical_type` returns a null pointer (should never
-    /// happen for supported types, but is checked defensively).
+    /// - Panics if `type_id` is composite, naming the constructor to use
+    ///   instead. Use [`try_new`][Self::try_new] to get a `Result`.
+    /// - Panics if `duckdb_create_logical_type` returns a null pointer.
     ///
     /// # Example
     ///
@@ -108,11 +165,46 @@ impl LogicalType {
     /// ```
     #[must_use]
     pub fn new(type_id: TypeId) -> Self {
+        assert!(
+            !type_id.is_composite(),
+            "LogicalType::new({type_id:?}) would build an invalid type: {}",
+            composite_message(type_id)
+        );
         // SAFETY: `duckdb_create_logical_type` is safe to call with any valid DUCKDB_TYPE.
         // It returns a heap-allocated handle that must be freed with duckdb_destroy_logical_type.
         let inner = unsafe { duckdb_create_logical_type(type_id.to_duckdb_type()) };
         assert!(!inner.is_null(), "duckdb_create_logical_type returned null");
         Self { inner }
+    }
+
+    /// Builds a `LogicalType` for a named builder slot, turning a composite
+    /// [`TypeId`] into an [`ExtensionError`][crate::error::ExtensionError] that
+    /// says which slot was wrong and what to use instead.
+    ///
+    /// Without this, a composite id reaches `duckdb_create_logical_type`, comes
+    /// back as a non-null but invalid type, and only fails at
+    /// `duckdb_register_*_function` with a message that names neither the
+    /// offending parameter nor the fix.
+    pub(crate) fn for_slot(
+        type_id: TypeId,
+        slot: &str,
+    ) -> Result<Self, crate::error::ExtensionError> {
+        Self::try_new(type_id)
+            .map_err(|e| crate::error::ExtensionError::new(format!("{slot}: {e}")))
+    }
+
+    /// Validates that `type_id` can be turned into a logical type, without
+    /// building one.
+    ///
+    /// Builders call this **before** allocating any `DuckDB` handle, so a bad
+    /// type id is reported without leaking a half-built function. Once it has
+    /// passed, the [`new`][Self::new] calls further down cannot hit their
+    /// composite-type assertion.
+    pub(crate) fn check_slot(
+        type_id: TypeId,
+        slot: &str,
+    ) -> Result<(), crate::error::ExtensionError> {
+        Self::for_slot(type_id, slot).map(drop)
     }
 
     /// Creates a `LIST<element_type>` logical type.
@@ -486,17 +578,23 @@ impl LogicalType {
         Self { inner }
     }
 
-    /// Fallible version of [`LogicalType::new`]. Returns an error instead of
-    /// panicking if the `DuckDB` C API returns a null pointer.
+    /// Fallible version of [`LogicalType::new`].
+    ///
+    /// Returns an error instead of panicking when `type_id` is composite (see
+    /// [`LogicalType::new`]) or when the `DuckDB` C API returns a null pointer.
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
+        if type_id.is_composite() {
+            return Err(LogicalTypeError {
+                api_func: "duckdb_create_logical_type",
+                detail: Some(composite_message(type_id)),
+            });
+        }
         // SAFETY: every argument is a plain value or a logical-type handle borrowed
         // for the duration of the call. DuckDB returns a newly allocated handle,
         // which the caller checks for null.
         let inner = unsafe { duckdb_create_logical_type(type_id.to_duckdb_type()) };
         if inner.is_null() {
-            return Err(LogicalTypeError {
-                api_func: "duckdb_create_logical_type",
-            });
+            return Err(LogicalTypeError::null("duckdb_create_logical_type"));
         }
         Ok(Self { inner })
     }
@@ -510,9 +608,7 @@ impl LogicalType {
         // which the caller checks for null.
         let inner = unsafe { duckdb_create_list_type(element_lt.as_raw()) };
         if inner.is_null() {
-            return Err(LogicalTypeError {
-                api_func: "duckdb_create_list_type",
-            });
+            return Err(LogicalTypeError::null("duckdb_create_list_type"));
         }
         Ok(Self { inner })
     }
@@ -527,9 +623,7 @@ impl LogicalType {
         // which the caller checks for null.
         let inner = unsafe { duckdb_create_map_type(key_lt.as_raw(), val_lt.as_raw()) };
         if inner.is_null() {
-            return Err(LogicalTypeError {
-                api_func: "duckdb_create_map_type",
-            });
+            return Err(LogicalTypeError::null("duckdb_create_map_type"));
         }
         Ok(Self { inner })
     }
@@ -547,8 +641,8 @@ impl LogicalType {
         let c_names: Vec<CString> = fields
             .iter()
             .map(|&(n, _)| {
-                CString::new(n).map_err(|_| LogicalTypeError {
-                    api_func: "CString::new (field name contains null byte)",
+                CString::new(n).map_err(|_| {
+                    LogicalTypeError::null("CString::new (field name contains null byte)")
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -569,9 +663,7 @@ impl LogicalType {
             )
         };
         if inner.is_null() {
-            return Err(LogicalTypeError {
-                api_func: "duckdb_create_struct_type",
-            });
+            return Err(LogicalTypeError::null("duckdb_create_struct_type"));
         }
         Ok(Self { inner })
     }
@@ -585,8 +677,8 @@ impl LogicalType {
         let c_names: Vec<CString> = fields
             .iter()
             .map(|&(n, _)| {
-                CString::new(n).map_err(|_| LogicalTypeError {
-                    api_func: "CString::new (field name contains null byte)",
+                CString::new(n).map_err(|_| {
+                    LogicalTypeError::null("CString::new (field name contains null byte)")
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -607,9 +699,7 @@ impl LogicalType {
             )
         };
         if inner.is_null() {
-            return Err(LogicalTypeError {
-                api_func: "duckdb_create_struct_type",
-            });
+            return Err(LogicalTypeError::null("duckdb_create_struct_type"));
         }
         Ok(Self { inner })
     }
@@ -634,8 +724,8 @@ impl LogicalType {
         let c_names: Vec<CString> = members
             .iter()
             .map(|&(n, _)| {
-                CString::new(n).map_err(|_| LogicalTypeError {
-                    api_func: "CString::new (union member name contains null byte)",
+                CString::new(n).map_err(|_| {
+                    LogicalTypeError::null("CString::new (union member name contains null byte)")
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -656,9 +746,7 @@ impl LogicalType {
             )
         };
         if inner.is_null() {
-            return Err(LogicalTypeError {
-                api_func: "duckdb_create_union_type",
-            });
+            return Err(LogicalTypeError::null("duckdb_create_union_type"));
         }
         Ok(Self { inner })
     }
@@ -672,8 +760,8 @@ impl LogicalType {
         let c_names: Vec<CString> = members
             .iter()
             .map(|n| {
-                CString::new(*n).map_err(|_| LogicalTypeError {
-                    api_func: "CString::new (enum member name contains null byte)",
+                CString::new(*n).map_err(|_| {
+                    LogicalTypeError::null("CString::new (enum member name contains null byte)")
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -690,9 +778,7 @@ impl LogicalType {
             )
         };
         if inner.is_null() {
-            return Err(LogicalTypeError {
-                api_func: "duckdb_create_enum_type",
-            });
+            return Err(LogicalTypeError::null("duckdb_create_enum_type"));
         }
         Ok(Self { inner })
     }
@@ -704,9 +790,8 @@ impl LogicalType {
     ///
     /// `self` must wrap a valid `duckdb_logical_type`.
     pub unsafe fn try_set_alias(&self, alias: &str) -> Result<(), LogicalTypeError> {
-        let c_alias = std::ffi::CString::new(alias).map_err(|_| LogicalTypeError {
-            api_func: "CString::new (alias contains null byte)",
-        })?;
+        let c_alias = std::ffi::CString::new(alias)
+            .map_err(|_| LogicalTypeError::null("CString::new (alias contains null byte)"))?;
         // SAFETY: self.inner is valid per the caller's contract; c_alias outlives the call.
         unsafe { duckdb_logical_type_set_alias(self.inner, c_alias.as_ptr()) };
         Ok(())
@@ -980,6 +1065,81 @@ impl LogicalType {
         unsafe { Self::from_raw(duckdb_array_type_child_type(self.inner)) }
     }
 
+    /// Registers this type in the catalog of `con`, making it usable in SQL.
+    ///
+    /// This is how an extension ships a named type — `CREATE TYPE` from the C
+    /// API. Once registered, the alias can be used anywhere a type name can:
+    ///
+    /// ```sql
+    /// SELECT 'happy'::mood;
+    /// CREATE TABLE t(m mood);
+    /// ```
+    ///
+    /// `duckdb.h`: "Registers a custom type within the given connection. The
+    /// type must have an alias." Set one with
+    /// [`try_set_alias`][Self::try_set_alias] first; a type without an alias
+    /// has no name to register under and `DuckDB` rejects it.
+    ///
+    /// The `duckdb_create_type_info` third argument is passed as null: `DuckDB`
+    /// declares the handle but exposes no constructor for it in the C API, so
+    /// null is the only value an extension can supply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `DuckDB` rejects the registration — no alias, or a
+    /// name that already exists in the catalog.
+    ///
+    /// # Safety
+    ///
+    /// `con` must be a valid, open `duckdb_connection`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::types::LogicalType;
+    ///
+    /// # fn demo(con: libduckdb_sys::duckdb_connection)
+    /// # -> Result<(), quack_rs::error::ExtensionError> {
+    /// let mood = LogicalType::enum_type(&["sad", "ok", "happy"]);
+    /// // SAFETY: `con` is the connection DuckDB handed the entry point.
+    /// unsafe {
+    ///     mood.set_alias("mood");
+    ///     mood.register(con)?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub unsafe fn register(
+        &self,
+        con: libduckdb_sys::duckdb_connection,
+    ) -> Result<(), crate::error::ExtensionError> {
+        // SAFETY: `con` is valid per the caller's contract, `self.inner` is a
+        // live logical type, and the info handle has no C API constructor.
+        let state = unsafe {
+            libduckdb_sys::duckdb_register_logical_type(con, self.inner, std::ptr::null_mut())
+        };
+        if state == libduckdb_sys::DuckDBSuccess {
+            return Ok(());
+        }
+        // SAFETY: `self.inner` is live; `get_alias` returns an owned String or None.
+        let alias = unsafe { self.get_alias() };
+        Err(crate::error::ExtensionError::new(alias.map_or_else(
+            || {
+                String::from(
+                    "duckdb_register_logical_type failed: the type has no alias. Call \
+                     `set_alias` or `try_set_alias` before registering — DuckDB has no name \
+                     to register it under.",
+                )
+            },
+            |name| {
+                format!(
+                    "duckdb_register_logical_type failed for alias '{name}': the name is \
+                     probably already taken in this catalog"
+                )
+            },
+        )))
+    }
+
     /// Returns the underlying raw `duckdb_logical_type` handle.
     ///
     /// # Safety note
@@ -1070,6 +1230,57 @@ impl core::fmt::Debug for LogicalType {
 
 #[cfg(test)]
 mod tests {
+    use super::{composite_message, LogicalType, LogicalTypeError, TypeId};
+
+    // `check_slot` is what every builder calls *before* allocating a DuckDB
+    // handle, and `composite_message` is the advice it carries. Both are pure,
+    // and neither is reachable from the end-to-end suite without a database, so
+    // they are pinned here.
+
+    #[test]
+    fn check_slot_rejects_a_composite_before_touching_duckdb() {
+        // Only the rejection path is unit-testable: a primitive falls through
+        // to `duckdb_create_logical_type`, which needs a live dispatch table.
+        // Rejecting *before* that call is the whole point of `check_slot`, so
+        // this test reaching its assertions at all is part of what it proves.
+        let err = LogicalType::check_slot(TypeId::Struct, "parameter 0")
+            .expect_err("STRUCT cannot come from a bare TypeId");
+        let msg = err.as_str();
+        assert!(msg.contains("parameter 0"), "names the slot: {msg}");
+        assert!(msg.contains("STRUCT"), "names the type: {msg}");
+        assert!(
+            msg.contains("LogicalType::struct_type(&fields)"),
+            "names the constructor to use instead: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_composite_message_names_the_type_and_its_constructor() {
+        let msg = composite_message(TypeId::Decimal);
+        assert!(!msg.is_empty());
+        assert!(msg.contains("DECIMAL"), "{msg}");
+        assert!(msg.contains("LogicalType::decimal(width, scale)"), "{msg}");
+        assert!(
+            msg.contains("param_logical"),
+            "points at the escape hatch: {msg}"
+        );
+
+        // A non-composite has no hint, so the message falls back rather than
+        // naming a constructor that does not exist.
+        let generic = composite_message(TypeId::BigInt);
+        assert!(
+            generic.contains("a dedicated LogicalType constructor"),
+            "{generic}"
+        );
+    }
+
+    #[test]
+    fn a_null_error_reports_the_api_function_that_returned_it() {
+        let err = LogicalTypeError::null("duckdb_create_list_type");
+        assert_eq!(err.api_func(), "duckdb_create_list_type");
+        assert_eq!(err.to_string(), "duckdb_create_list_type returned null");
+    }
+
     // Note: LogicalType tests that call DuckDB API (duckdb_create_logical_type)
     // require a running DuckDB runtime and are covered in tests/integration_test.rs.
     // The `loadable-extension` feature uses lazy-initialized function pointers
@@ -1077,9 +1288,7 @@ mod tests {
 
     #[test]
     fn logical_type_error_display() {
-        let err = super::LogicalTypeError {
-            api_func: "duckdb_create_logical_type",
-        };
+        let err = super::LogicalTypeError::null("duckdb_create_logical_type");
         assert_eq!(err.to_string(), "duckdb_create_logical_type returned null");
     }
 

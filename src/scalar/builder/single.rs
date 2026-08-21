@@ -89,7 +89,7 @@ pub struct ScalarFunctionBuilder {
     pub(super) return_logical: Option<LogicalType>,
     pub(super) function: Option<ScalarFn>,
     pub(super) null_handling: NullHandling,
-    pub(super) extra_info: Option<(*mut c_void, duckdb_delete_callback_t)>,
+    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
     #[cfg(feature = "duckdb-1-5")]
     pub(super) varargs: Option<LogicalType>,
     #[cfg(feature = "duckdb-1-5")]
@@ -305,7 +305,8 @@ impl ScalarFunctionBuilder {
         data: *mut c_void,
         destroy: duckdb_delete_callback_t,
     ) -> Self {
-        self.extra_info = Some((data, destroy));
+        // SAFETY: forwarded from this method's own contract.
+        self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, destroy) });
         self
     }
 
@@ -322,11 +323,20 @@ impl ScalarFunctionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // Reject composite TypeIds before any DuckDB handle exists, so the
+        // diagnostic names the offending slot instead of surfacing as an opaque
+        // `duckdb_register_scalar_function failed`. See `TypeId::is_composite`.
+        for (i, id) in self.params.iter().enumerate() {
+            LogicalType::check_slot(*id, &format!("scalar function parameter {i}"))?;
+        }
+        if let Some(id) = self.return_type {
+            LogicalType::check_slot(id, "scalar function return type")?;
+        }
         // Resolve return type: prefer explicit LogicalType over TypeId.
         let ret_lt = if let Some(lt) = self.return_logical {
             lt
         } else if let Some(id) = self.return_type {
-            LogicalType::new(id)
+            LogicalType::for_slot(id, "scalar function return type")?
         } else {
             return Err(ExtensionError::new("return type not set"));
         };
@@ -385,10 +395,13 @@ impl ScalarFunctionBuilder {
         }
 
         // Set extra info if provided
-        if let Some((data, destroy)) = self.extra_info {
+        if let Some(info) = self.extra_info {
             // SAFETY: func is valid; data and destroy are provided by caller.
             unsafe {
-                duckdb_scalar_function_set_extra_info(func, data, destroy);
+                duckdb_scalar_function_set_extra_info(func, info.data(), info.destroy());
+                // DuckDB owns the allocation from here; `ExtraInfo::drop` must
+                // not free it as well.
+                info.mark_transferred();
             }
         }
 
@@ -449,8 +462,9 @@ impl ScalarFunctionBuilder {
             Ok(())
         } else {
             Err(ExtensionError::new(format!(
-                "duckdb_register_scalar_function failed for '{}'",
-                self.name.to_string_lossy()
+                "duckdb_register_scalar_function failed for '{name}': {hint}",
+                name = self.name.to_string_lossy(),
+                hint = crate::error::REGISTRATION_FAILURE_HINT
             )))
         }
     }

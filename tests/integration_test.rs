@@ -983,3 +983,92 @@ fn cast_builder_source_target_accessors() {
     assert_eq!(b.source(), Some(TypeId::Varchar));
     assert_eq!(b.target(), Some(TypeId::Integer));
 }
+
+// ─── The crate's own artefacts obey its own validators ───────────────────────
+
+/// Extracts a `key = value` from a `[profile.release]` section, ignoring
+/// comments and any other section.
+fn release_profile_value(manifest: &str, key: &str) -> Option<String> {
+    let mut in_profile = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_profile = line == "[profile.release]";
+            continue;
+        }
+        if !in_profile || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim() == key {
+            return Some(v.trim().trim_matches('"').to_owned());
+        }
+    }
+    None
+}
+
+/// `validate_release_profile` rejects `panic = "abort"` because it makes every
+/// `catch_unwind` in quack-rs inert — a panic then aborts the whole `DuckDB`
+/// process instead of becoming a SQL error.
+///
+/// The reference example shipped with `panic = "abort"` regardless, so CI built
+/// it, loaded it into `DuckDB`, and held it up as the way to do this, while every
+/// panic guarantee in it was switched off. Nothing caught the contradiction
+/// because nothing pointed the validator at the crate's own files.
+#[test]
+fn the_example_obeys_the_crates_own_release_profile_rules() {
+    use quack_rs::validate::validate_release_profile;
+
+    let manifest = include_str!("../examples/hello-ext/Cargo.toml");
+    let panic = release_profile_value(manifest, "panic")
+        .expect("the example must state its panic strategy explicitly");
+    let lto = release_profile_value(manifest, "lto").unwrap_or_default();
+    let opt = release_profile_value(manifest, "opt-level").unwrap_or_default();
+    let cgu = release_profile_value(manifest, "codegen-units").unwrap_or_default();
+
+    let check = validate_release_profile(&panic, &lto, &opt, &cgu)
+        .unwrap_or_else(|e| panic!("examples/hello-ext/Cargo.toml: {e}"));
+    assert!(
+        check.is_fully_optimized(),
+        "the example is what people copy; it should also be the profile quack-rs \
+         recommends for a shipped extension"
+    );
+}
+
+/// The same check for the profile `generate_scaffold` writes, so the generator
+/// and the validator cannot drift apart either.
+#[test]
+fn the_scaffold_generates_a_profile_its_own_validator_accepts() {
+    use quack_rs::scaffold::{generate_scaffold, ScaffoldConfig};
+    use quack_rs::validate::validate_release_profile;
+
+    let files = generate_scaffold(&ScaffoldConfig {
+        name: "profile_probe".to_string(),
+        description: "Checks the generated release profile".to_string(),
+        version: "0.1.0".to_string(),
+        license: "MIT".to_string(),
+        maintainer: "tomtom215".to_string(),
+        github_repo: "tomtom215/duckdb-profile-probe".to_string(),
+        excluded_platforms: vec![],
+        ..Default::default()
+    })
+    .expect("scaffold");
+
+    let manifest = &files
+        .iter()
+        .find(|f| f.path == "Cargo.toml")
+        .expect("the scaffold writes a Cargo.toml")
+        .content;
+
+    let panic = release_profile_value(manifest, "panic")
+        .expect("the generated profile must state its panic strategy explicitly");
+    let lto = release_profile_value(manifest, "lto").unwrap_or_default();
+    let opt = release_profile_value(manifest, "opt-level").unwrap_or_default();
+    let cgu = release_profile_value(manifest, "codegen-units").unwrap_or_default();
+
+    let check = validate_release_profile(&panic, &lto, &opt, &cgu)
+        .unwrap_or_else(|e| panic!("generated Cargo.toml: {e}"));
+    assert!(check.is_fully_optimized());
+}

@@ -100,6 +100,11 @@ impl<T: 'static> FfiBindData<T> {
         note = "always returns None — DuckDB has no duckdb_bind_get_bind_data. Keep the value \
                 in a local during bind; use get_from_init / get_from_function afterwards."
     )]
+    // Deprecated and unconditionally `None` — DuckDB has no
+    // `duckdb_bind_get_bind_data` to call. The `-> Option<&T> with None` mutant
+    // is therefore the function itself: equivalent by construction, unkillable
+    // by any test.
+    #[mutants::skip]
     pub const fn get_from_bind<'a>(info: duckdb_bind_info) -> Option<&'a T> {
         // Note: duckdb_bind_get_extra_info retrieves the extra_info set on the *function*,
         // not the bind_data. There is no "get bind data from bind info" in the C API —
@@ -158,6 +163,14 @@ impl<T: 'static> FfiBindData<T> {
     ///
     /// `DuckDB` calls this when the query is complete. It drops the `Box<T>`.
     ///
+    /// # Pitfall L3: `T::drop` is user code
+    ///
+    /// `DuckDB` invokes this through an `extern "C"` function pointer with no
+    /// error channel, and Rust 1.81+ turns an unwind across `extern "C"` into a
+    /// process abort. The drop therefore runs under
+    /// [`catch_ffi_panic`][crate::callback::catch_ffi_panic]; a panicking
+    /// `Drop` impl costs the diagnostic, not the session.
+    ///
     /// # Safety
     ///
     /// - `ptr` must have been allocated by [`set`][FfiBindData::set] via `Box::into_raw`.
@@ -165,8 +178,11 @@ impl<T: 'static> FfiBindData<T> {
     pub unsafe extern "C" fn destroy(ptr: *mut c_void) {
         if !ptr.is_null() {
             // SAFETY: ptr was created by Box::into_raw(Box::<T>::new(...)) in set().
-            // DuckDB calls this exactly once.
-            unsafe { drop(Box::from_raw(ptr.cast::<T>())) };
+            // DuckDB calls this exactly once. `T::drop` is arbitrary user code,
+            // so the unwind is contained here rather than aborting the process.
+            drop(crate::callback::catch_ffi_panic(|| unsafe {
+                drop(Box::from_raw(ptr.cast::<T>()));
+            }));
         }
     }
 }

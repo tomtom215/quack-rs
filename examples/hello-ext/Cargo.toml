@@ -16,7 +16,13 @@ quack_rs = { path = "../..", package = "quack-rs" }
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]
-panic = "abort"
+# `unwind`, not `abort`. quack-rs catches panics at every FFI boundary with
+# `std::panic::catch_unwind` and turns them into DuckDB errors; under
+# `panic = "abort"` that machinery is inert and any panic in extension code
+# takes the whole DuckDB process down. `validate_release_profile` rejects
+# `abort` outright, and `the_example_obeys_the_crates_own_release_profile_rules`
+# in `tests/integration_test.rs` holds this file to it.
+panic = "unwind"
 lto = true
 codegen-units = 1
 opt-level = 3

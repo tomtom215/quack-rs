@@ -72,12 +72,12 @@ pub(super) fn generate_makefile(config: &ScaffoldConfig) -> String {
     let abi_note = if config.use_unstable_c_api {
         "# USE_UNSTABLE_C_API=1: the binary is stamped C_STRUCT_UNSTABLE and DuckDB will\n\
          # only load it into exactly TARGET_DUCKDB_VERSION. Required if you enable\n\
-         # quack-rs's `duckdb-1-5` / `duckdb-1-5-3` features, because those wrap C API\n\
+         # quack-rs's `duckdb-1-5` / `-3` / `-4` features, because those wrap C API\n\
          # functions whose slot indices move between DuckDB releases."
     } else {
         "# USE_UNSTABLE_C_API=0: the binary is stamped C_STRUCT and loads into any DuckDB\n\
          # whose C extension API version is >= TARGET_DUCKDB_VERSION. Only valid while you\n\
-         # stay off quack-rs's `duckdb-1-5` / `duckdb-1-5-3` features; TARGET_DUCKDB_VERSION\n\
+         # stay off quack-rs's `duckdb-1-5` / `-3` / `-4` features; TARGET_DUCKDB_VERSION\n\
          # is then the *C API* version (v1.2.0), not a DuckDB release. See LESSONS.md P2."
     };
     // Tell quack-rs which DuckDB release these bindings were built against, so

@@ -87,8 +87,9 @@ pub struct ScaffoldConfig {
     pub target_duckdb_version: String,
     /// Whether the generated `Makefile` sets `USE_UNSTABLE_C_API=1`.
     ///
-    /// Set this when the extension enables quack-rs's `duckdb-1-5` /
-    /// `duckdb-1-5-3` features. Those wrap C API functions that live past the
+    /// Set this when the extension enables quack-rs's `duckdb-1-5`,
+    /// `duckdb-1-5-3` or `duckdb-1-5-4` features. Those wrap C API functions
+    /// that live past the
     /// stable prefix of `duckdb_ext_api_v1`, where `DuckDB` inserts new entries
     /// between releases — so the binary must be pinned to one release. See
     /// [`crate::abi`].

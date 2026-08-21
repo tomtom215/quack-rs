@@ -46,6 +46,9 @@ fn main() {
         maintainer: "Your Name".to_string(),
         github_repo: "yourorg/duckdb-my-extension".to_string(),
         excluded_platforms: vec![],
+        // `target_duckdb_version`, `use_unstable_c_api` and `git_ref` default
+        // to the stable-ABI settings; see `concepts/abi.md`.
+        ..ScaffoldConfig::default()
     };
 
     let files = generate_scaffold(&config).expect("scaffold generation failed");
@@ -76,7 +79,7 @@ fn main() {
 | `excluded_platforms` | `Vec<String>` | Platforms to skip (e.g., `["wasm_mvp", "wasm_eh"]`) |
 | `git_ref` | `String` | `repo.ref` — **a commit hash**, not a branch. Defaults to `REF_PLACEHOLDER` so it cannot be submitted unset |
 | `target_duckdb_version` | `String` | Written as `TARGET_DUCKDB_VERSION` in the Makefile |
-| `use_unstable_c_api` | `bool` | Set when the extension enables `duckdb-1-5` / `duckdb-1-5-3` |
+| `use_unstable_c_api` | `bool` | Set when the extension enables `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4` |
 
 ---
 

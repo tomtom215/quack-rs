@@ -69,7 +69,7 @@ pub struct AggregateFunctionBuilder {
     pub(super) finalize: Option<FinalizeFn>,
     pub(super) destructor: Option<DestroyFn>,
     pub(super) null_handling: NullHandling,
-    pub(super) extra_info: Option<(*mut c_void, duckdb_delete_callback_t)>,
+    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
 }
 
 impl AggregateFunctionBuilder {
@@ -277,7 +277,8 @@ impl AggregateFunctionBuilder {
         data: *mut c_void,
         destroy: duckdb_delete_callback_t,
     ) -> Self {
-        self.extra_info = Some((data, destroy));
+        // SAFETY: forwarded from this method's own contract.
+        self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, destroy) });
         self
     }
 
@@ -294,11 +295,18 @@ impl AggregateFunctionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // See `ScalarFunctionBuilder::register` -- validate before allocating.
+        for (i, id) in self.params.iter().enumerate() {
+            LogicalType::check_slot(*id, &format!("aggregate function parameter {i}"))?;
+        }
+        if let Some(id) = self.return_type {
+            LogicalType::check_slot(id, "aggregate function return type")?;
+        }
         // Resolve return type: prefer explicit LogicalType over TypeId.
         let ret_lt = if let Some(lt) = self.return_logical {
             lt
         } else if let Some(id) = self.return_type {
-            LogicalType::new(id)
+            LogicalType::for_slot(id, "aggregate function return type")?
         } else {
             return Err(ExtensionError::new("return type not set"));
         };
@@ -391,10 +399,12 @@ impl AggregateFunctionBuilder {
         }
 
         // Set extra info if provided
-        if let Some((data, destroy)) = self.extra_info {
+        if let Some(info) = self.extra_info {
             // SAFETY: func is valid; data and destroy are provided by caller.
             unsafe {
-                duckdb_aggregate_function_set_extra_info(func, data, destroy);
+                duckdb_aggregate_function_set_extra_info(func, info.data(), info.destroy());
+                // DuckDB owns the allocation from here.
+                info.mark_transferred();
             }
         }
 
@@ -411,8 +421,9 @@ impl AggregateFunctionBuilder {
             Ok(())
         } else {
             Err(ExtensionError::new(format!(
-                "duckdb_register_aggregate_function failed for '{}'",
-                self.name.to_string_lossy()
+                "duckdb_register_aggregate_function failed for '{name}': {hint}",
+                name = self.name.to_string_lossy(),
+                hint = crate::error::REGISTRATION_FAILURE_HINT
             )))
         }
     }

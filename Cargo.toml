@@ -1,6 +1,6 @@
 [package]
 name = "quack-rs"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 rust-version = "1.86.0"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
@@ -16,6 +16,7 @@ autobenches = false
 exclude = [
     "docs/",
     "examples/",
+    "fuzz/",
     ".github/",
     "book/",
     "book.toml",
@@ -29,6 +30,7 @@ exclude = [
     "codecov.yml",
     "mutants.toml",
     "rust-toolchain.toml",
+    "lsan-suppressions.txt",
 ]
 
 [lib]
@@ -135,6 +137,31 @@ duckdb-1-5 = []
 ##   type-enum values behind a single, verifiable version requirement.
 duckdb-1-5-3 = ["duckdb-1-5"]
 
+## Enables the Arrow C Data Interface bridge ([`arrow`](arrow) module) — the
+## `duckdb_to_arrow_schema` / `duckdb_data_chunk_to_arrow` /
+## `duckdb_schema_from_arrow` / `duckdb_data_chunk_from_arrow` family plus the
+## `duckdb_arrow_options` accessors. Implies (and re-enables) `duckdb-1-5-3`.
+##
+## Unlike the other version features, the floor here is set by the **bindings**,
+## not by DuckDB: every one of these functions is present in `duckdb_ext_api_v1`
+## from DuckDB **1.5.0** onward (verified against the v1.5.0 `duckdb_extension.h`),
+## but `libduckdb-sys` declared `ArrowSchema` / `ArrowArray` as opaque
+## zero-sized bindgen placeholders (`_unused: [u8; 0]`) until **1.10504.0**,
+## which is the first release to ship the real `#[repr(C)]` Arrow C Data
+## Interface layouts. You cannot allocate the caller-owned structs these APIs
+## require before that.
+##
+## So: requires `libduckdb-sys >= 1.10504.0` to be resolved by Cargo, and a
+## DuckDB **1.5.0+** engine at run time. Enabling it against an older binding is
+## a compile error (by design — `src/arrow.rs` carries a `const` assertion that
+## names the cause).
+##
+## No `arrow` crate dependency is added: the module works on the ABI structs
+## `libduckdb-sys` defines, which have the same layout as arrow-rs's
+## `FFI_ArrowSchema` / `FFI_ArrowArray` (libduckdb-sys asserts this in its own
+## test suite), so bridging is a pointer cast rather than a shared dependency.
+duckdb-1-5-4 = ["duckdb-1-5-3"]
+
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 duckdb = { version = ">=1.4.4, <2", optional = true }
@@ -201,4 +228,4 @@ return_self_not_must_use = "allow"
 # README's docs.rs links) resolve. Without this, docs.rs builds the empty default
 # feature set and every feature-gated item would be missing. `bundled-test` is
 # intentionally excluded (it compiles DuckDB from source).
-features = ["duckdb-1-5-3"]
+features = ["duckdb-1-5-4"]

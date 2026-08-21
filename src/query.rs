@@ -61,7 +61,9 @@
 //! # }
 //! ```
 
-use std::ffi::{CStr, CString};
+mod cstr;
+
+use std::ffi::CString;
 
 use libduckdb_sys::{
     duckdb_bind_blob, duckdb_bind_boolean, duckdb_bind_double, duckdb_bind_int64, duckdb_bind_null,
@@ -73,33 +75,10 @@ use libduckdb_sys::{
     duckdb_query, duckdb_result, duckdb_result_error, duckdb_rows_changed, idx_t, DuckDBSuccess,
 };
 
+use self::cstr::{c_str_to_owned, to_c_sql};
 use crate::data_chunk::DataChunk;
 use crate::error::ExtensionError;
 use crate::types::TypeId;
-
-/// Builds a `CString` from `sql`, rejecting interior NULs with a useful message.
-fn to_c_sql(sql: &str) -> Result<CString, ExtensionError> {
-    CString::new(sql)
-        .map_err(|_| ExtensionError::new("SQL text must not contain an interior NUL byte"))
-}
-
-/// Reads a NUL-terminated C string, or `None` if the pointer is null or the
-/// bytes are not UTF-8.
-///
-/// # Safety
-///
-/// `ptr` must be null or point to a NUL-terminated string that stays valid for
-/// the duration of the call.
-unsafe fn c_str_to_owned(ptr: *const std::os::raw::c_char) -> Option<String> {
-    if ptr.is_null() {
-        return None;
-    }
-    // SAFETY: `ptr` is non-null and NUL-terminated per the caller's contract.
-    unsafe { CStr::from_ptr(ptr) }
-        .to_str()
-        .ok()
-        .map(str::to_owned)
-}
 
 // ─── Data chunk ──────────────────────────────────────────────────────────────
 
@@ -166,6 +145,26 @@ impl Drop for OwnedDataChunk {
 }
 
 // ─── Query result ────────────────────────────────────────────────────────────
+
+/// What kind of outcome a statement produced.
+///
+/// Mirrors `duckdb_result_type`. A `SELECT` yields [`QueryResult`][Self::Rows];
+/// `INSERT` / `UPDATE` / `DELETE` yield [`ChangedRows`][Self::ChangedRows], for
+/// which [`QueryResult::rows_changed`] is meaningful; `CREATE` / `SET` and
+/// friends yield [`Nothing`][Self::Nothing].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ResultKind {
+    /// The statement produced rows.
+    Rows,
+    /// The statement changed rows; see [`QueryResult::rows_changed`].
+    ChangedRows,
+    /// The statement produced neither rows nor row counts.
+    Nothing,
+    /// `DuckDB` reported `DUCKDB_RESULT_TYPE_INVALID`, or a value this build
+    /// does not know.
+    Invalid,
+}
 
 /// A materialised `duckdb_result`, destroyed on drop.
 ///
@@ -235,6 +234,82 @@ impl QueryResult {
         }
         // SAFETY: `chunk` is non-null and owned by us from here on.
         Some(unsafe { OwnedDataChunk::from_raw(chunk) })
+    }
+
+    /// Returns the full [`LogicalType`][crate::types::LogicalType] of column
+    /// `index`.
+    ///
+    /// [`column_type`][Self::column_type] collapses a column to its top-level
+    /// [`TypeId`], which is all you need for a scalar but
+    /// loses everything about a `STRUCT`'s fields, a `LIST`'s element type, a
+    /// `DECIMAL`'s width and scale, or an `ENUM`'s dictionary. This keeps them.
+    ///
+    /// Returns `None` when `index` is out of range.
+    #[must_use]
+    pub fn column_logical_type(&self, index: usize) -> Option<crate::types::LogicalType> {
+        if index >= self.column_count() {
+            return None;
+        }
+        let mut result = self.result;
+        // SAFETY: `result` is a valid materialised result and `index` is in range.
+        let raw =
+            unsafe { libduckdb_sys::duckdb_column_logical_type(&raw mut result, index as idx_t) };
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: `duckdb_column_logical_type` returns a handle the caller owns
+        // and must destroy; `LogicalType` does that on drop.
+        Some(unsafe { crate::types::LogicalType::from_raw(raw) })
+    }
+
+    /// What kind of outcome the statement produced.
+    #[must_use]
+    pub fn result_kind(&self) -> ResultKind {
+        // SAFETY: `duckdb_result_return_type` takes the result by value and
+        // only reads it.
+        let raw = unsafe { libduckdb_sys::duckdb_result_return_type(self.result) };
+        match raw {
+            libduckdb_sys::duckdb_result_type_DUCKDB_RESULT_TYPE_QUERY_RESULT => ResultKind::Rows,
+            libduckdb_sys::duckdb_result_type_DUCKDB_RESULT_TYPE_CHANGED_ROWS => {
+                ResultKind::ChangedRows
+            }
+            libduckdb_sys::duckdb_result_type_DUCKDB_RESULT_TYPE_NOTHING => ResultKind::Nothing,
+            _ => ResultKind::Invalid,
+        }
+    }
+
+    /// Whether this result is streaming rather than fully materialised.
+    ///
+    /// Only [`PreparedStatement::execute_streaming`] can produce a streaming
+    /// result, and even then `DuckDB` may decide to materialise — which is why
+    /// this is a question rather than a guarantee.
+    ///
+    /// Requires `duckdb-1-5`: `duckdb_result_is_streaming` sits in the unstable
+    /// region of the C API struct.
+    #[cfg(feature = "duckdb-1-5")]
+    #[must_use]
+    pub fn is_streaming(&self) -> bool {
+        // SAFETY: `duckdb_result_is_streaming` takes the result by value and
+        // only reads it.
+        unsafe { libduckdb_sys::duckdb_result_is_streaming(self.result) }
+    }
+
+    /// The Arrow production settings this result was created with
+    /// (`duckdb_result_get_arrow_options`).
+    ///
+    /// Hand these to
+    /// [`arrow::to_arrow_schema`][crate::arrow::to_arrow_schema] and
+    /// [`arrow::data_chunk_to_arrow`][crate::arrow::data_chunk_to_arrow] when
+    /// exporting this result's chunks: they carry the client properties captured
+    /// when the query ran, which is what the chunks were built against.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtensionError`] when `DuckDB` returns null, which it does
+    /// for a result with no internal data.
+    #[cfg(feature = "duckdb-1-5-4")]
+    pub fn arrow_options(&self) -> Result<crate::arrow::ArrowOptions, ExtensionError> {
+        crate::arrow::ArrowOptions::from_result(self)
     }
 
     /// Returns the raw `duckdb_result`.
@@ -448,6 +523,354 @@ impl PreparedStatement {
         )
     }
 
+    /// Binds a `TINYINT` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_i8(&self, index: usize, value: i8) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_int8(self.statement, index as idx_t, value) },
+            index,
+        )
+    }
+
+    /// Binds a `SMALLINT` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_i16(&self, index: usize, value: i16) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_int16(self.statement, index as idx_t, value) },
+            index,
+        )
+    }
+
+    /// Binds an `INTEGER` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_i32(&self, index: usize, value: i32) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_int32(self.statement, index as idx_t, value) },
+            index,
+        )
+    }
+
+    /// Binds a `UTINYINT` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_u8(&self, index: usize, value: u8) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_uint8(self.statement, index as idx_t, value) },
+            index,
+        )
+    }
+
+    /// Binds a `USMALLINT` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_u16(&self, index: usize, value: u16) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_uint16(self.statement, index as idx_t, value) },
+            index,
+        )
+    }
+
+    /// Binds a `UINTEGER` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_u32(&self, index: usize, value: u32) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_uint32(self.statement, index as idx_t, value) },
+            index,
+        )
+    }
+
+    /// Binds a `UBIGINT` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_u64(&self, index: usize, value: u64) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_uint64(self.statement, index as idx_t, value) },
+            index,
+        )
+    }
+
+    /// Binds a `FLOAT` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_f32(&self, index: usize, value: f32) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_float(self.statement, index as idx_t, value) },
+            index,
+        )
+    }
+
+    /// Binds a `HUGEINT` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_i128(&self, index: usize, value: i128) -> Result<(), ExtensionError> {
+        let raw = crate::value::hugeint_from_i128(value);
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_hugeint(self.statement, index as idx_t, raw) },
+            index,
+        )
+    }
+
+    /// Binds a `UHUGEINT` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_u128(&self, index: usize, value: u128) -> Result<(), ExtensionError> {
+        let raw = crate::value::uhugeint_from_u128(value);
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_uhugeint(self.statement, index as idx_t, raw) },
+            index,
+        )
+    }
+
+    /// Binds a `DECIMAL(width, scale)` at 1-based `index`.
+    ///
+    /// `unscaled` is the value multiplied by `10^scale`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_decimal(
+        &self,
+        index: usize,
+        width: u8,
+        scale: u8,
+        unscaled: i128,
+    ) -> Result<(), ExtensionError> {
+        let raw = libduckdb_sys::duckdb_decimal {
+            width,
+            scale,
+            value: crate::value::hugeint_from_i128(unscaled),
+        };
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe { libduckdb_sys::duckdb_bind_decimal(self.statement, index as idx_t, raw) },
+            index,
+        )
+    }
+
+    /// Binds a `DATE` at 1-based `index`, as days since 1970-01-01.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_date(&self, index: usize, days: i32) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe {
+                libduckdb_sys::duckdb_bind_date(
+                    self.statement,
+                    index as idx_t,
+                    libduckdb_sys::duckdb_date { days },
+                )
+            },
+            index,
+        )
+    }
+
+    /// Binds a `TIME` at 1-based `index`, as microseconds since midnight.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_time(&self, index: usize, micros: i64) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe {
+                libduckdb_sys::duckdb_bind_time(
+                    self.statement,
+                    index as idx_t,
+                    libduckdb_sys::duckdb_time { micros },
+                )
+            },
+            index,
+        )
+    }
+
+    /// Binds a `TIMESTAMP` at 1-based `index`, as microseconds since the epoch.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_timestamp(&self, index: usize, micros: i64) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe {
+                libduckdb_sys::duckdb_bind_timestamp(
+                    self.statement,
+                    index as idx_t,
+                    libduckdb_sys::duckdb_timestamp { micros },
+                )
+            },
+            index,
+        )
+    }
+
+    /// Binds a `TIMESTAMP WITH TIME ZONE` at 1-based `index`, as microseconds
+    /// since the epoch.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_timestamp_tz(&self, index: usize, micros: i64) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe {
+                libduckdb_sys::duckdb_bind_timestamp_tz(
+                    self.statement,
+                    index as idx_t,
+                    libduckdb_sys::duckdb_timestamp { micros },
+                )
+            },
+            index,
+        )
+    }
+
+    /// Binds an `INTERVAL` at 1-based `index`.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    pub fn bind_interval(
+        &self,
+        index: usize,
+        value: crate::interval::DuckInterval,
+    ) -> Result<(), ExtensionError> {
+        // SAFETY: `self.statement` is valid for this value's lifetime.
+        self.check(
+            unsafe {
+                libduckdb_sys::duckdb_bind_interval(
+                    self.statement,
+                    index as idx_t,
+                    libduckdb_sys::duckdb_interval {
+                        months: value.months,
+                        days: value.days,
+                        micros: value.micros,
+                    },
+                )
+            },
+            index,
+        )
+    }
+
+    /// Binds an arbitrary [`Value`][crate::value::Value] at 1-based `index`.
+    ///
+    /// This is the escape hatch for everything the typed `bind_*` methods do
+    /// not cover — `STRUCT`, `LIST`, `MAP`, `ARRAY`, `UNION`, `ENUM`, `UUID`,
+    /// `BIT`, and any type a future `DuckDB` adds. `DuckDB` copies the value, so
+    /// `value` may be dropped immediately afterwards.
+    ///
+    /// # Errors
+    ///
+    /// See [`bind_i64`][Self::bind_i64].
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::types::{LogicalType, TypeId};
+    /// use quack_rs::value::Value;
+    ///
+    /// # fn demo(stmt: &quack_rs::query::PreparedStatement)
+    /// # -> Result<(), quack_rs::error::ExtensionError> {
+    /// let ty = LogicalType::list(TypeId::BigInt);
+    /// let list = Value::list_value(&ty, &[Value::bigint(1), Value::bigint(2)])?;
+    /// stmt.bind_value(1, &list)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn bind_value(
+        &self,
+        index: usize,
+        value: &crate::value::Value,
+    ) -> Result<(), ExtensionError> {
+        if value.is_null() {
+            return Err(ExtensionError::new(format!(
+                "bind_value: the Value at parameter {index} has a null handle"
+            )));
+        }
+        // SAFETY: `self.statement` is valid for this value's lifetime, and
+        // `value` outlives the call (DuckDB copies it).
+        self.check(
+            unsafe {
+                libduckdb_sys::duckdb_bind_value(self.statement, index as idx_t, value.as_raw())
+            },
+            index,
+        )
+    }
+
+    /// Executes the statement, asking `DuckDB` to stream the result instead of
+    /// materialising it.
+    ///
+    /// A materialised result holds every row in memory before the first one is
+    /// readable; a streaming result produces chunks on demand, which is what an
+    /// extension scanning a large table wants.
+    /// [`QueryResult::next_chunk`] drives both — `duckdb_fetch_chunk` is the
+    /// documented way to read either — so the only difference at the call site
+    /// is memory.
+    ///
+    /// `DuckDB` may still materialise (see
+    /// [`QueryResult::is_streaming`]), and a streaming result must be consumed
+    /// before another statement runs on the same connection.
+    ///
+    /// Requires `duckdb-1-5`: `duckdb_execute_prepared_streaming` sits in the
+    /// unstable region of the C API struct.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExtensionError`] carrying `DuckDB`'s message if execution
+    /// fails.
+    #[cfg(feature = "duckdb-1-5")]
+    pub fn execute_streaming(&self) -> Result<QueryResult, ExtensionError> {
+        let mut result: duckdb_result = unsafe { std::mem::zeroed() };
+        // SAFETY: `self.statement` is valid for this value's lifetime;
+        // `result` is a fresh out-parameter DuckDB fills in.
+        let state = unsafe {
+            libduckdb_sys::duckdb_execute_prepared_streaming(self.statement, &raw mut result)
+        };
+        if state == DuckDBSuccess {
+            return Ok(QueryResult { result });
+        }
+        // SAFETY: on failure DuckDB still populates the error slot; the result
+        // must be destroyed either way.
+        let message = unsafe { c_str_to_owned(duckdb_result_error(&raw mut result)) }
+            .unwrap_or_else(|| String::from("streaming execution failed without a message"));
+        // SAFETY: destroyed exactly once, here, on the error path.
+        unsafe { duckdb_destroy_result(&raw mut result) };
+        Err(ExtensionError::new(message))
+    }
+
     /// Clears every binding, so the statement can be reused with fresh values.
     ///
     /// # Errors
@@ -554,6 +977,119 @@ pub unsafe fn prepare(
     Err(ExtensionError::new(message))
 }
 
+// ─── Cancellation and progress ───────────────────────────────────────────────
+
+/// A snapshot of a running query's progress.
+///
+/// `percentage` is `-1.0` when `DuckDB` cannot report progress — the progress
+/// bar is disabled (`SET enable_progress_bar = true` turns it on), no query is
+/// running, or the connection handle was null.
+///
+/// The three fields are read from separate atomics, so they are individually
+/// current but not a consistent snapshot of one instant.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueryProgress {
+    /// Percent complete in `0.0..=100.0`, or `-1.0` when unavailable.
+    pub percentage: f64,
+    /// Rows processed so far.
+    pub rows_processed: u64,
+    /// Rows the plan expects to process in total.
+    pub total_rows_to_process: u64,
+}
+
+/// Requests cancellation of whatever `con` is currently running.
+///
+/// The call itself is non-blocking: it sets `ClientContext::interrupted`, an
+/// `atomic<bool>` the executor polls, so the running query fails with an
+/// interrupt error at its next check rather than immediately. Calling it while
+/// no query is running arms nothing — `DuckDB` clears the flag when a query
+/// starts.
+///
+/// # Safety
+///
+/// `con` must be a valid, open `duckdb_connection` **for the duration of this
+/// call**. It is sound to call this from a different thread than the one
+/// running the query — that is the point of the API — but it is not sound to
+/// race it against `duckdb_disconnect`. Prefer
+/// [`OwnedConnection::interrupt_handle`], whose lifetime enforces that.
+pub unsafe fn interrupt(con: duckdb_connection) {
+    // SAFETY: `con` is valid per the caller's contract; DuckDB null-checks it
+    // itself, and the flag it sets is atomic.
+    unsafe { libduckdb_sys::duckdb_interrupt(con) };
+}
+
+/// Reads the progress of whatever `con` is currently running.
+///
+/// # Safety
+///
+/// Same contract as [`interrupt`].
+#[must_use]
+pub unsafe fn query_progress(con: duckdb_connection) -> QueryProgress {
+    // SAFETY: `con` is valid per the caller's contract; every field DuckDB
+    // reads is an atomic.
+    let raw = unsafe { libduckdb_sys::duckdb_query_progress(con) };
+    QueryProgress {
+        percentage: raw.percentage,
+        rows_processed: raw.rows_processed,
+        total_rows_to_process: raw.total_rows_to_process,
+    }
+}
+
+/// A cancellation handle for an [`OwnedConnection`], usable from another thread.
+///
+/// Both operations reach `DuckDB` through atomics — `ClientContext::interrupted`
+/// is an `atomic<bool>`, and every field of `QueryProgress` is an atomic — so
+/// this is `Send + Sync`. The borrow of the connection is what keeps it sound:
+/// the handle cannot outlive the `duckdb_disconnect` in
+/// [`OwnedConnection`]'s `Drop`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use quack_rs::query::OwnedConnection;
+/// # fn demo(con: &OwnedConnection) -> Result<(), quack_rs::error::ExtensionError> {
+/// let watchdog = con.interrupt_handle();
+/// std::thread::scope(|scope| {
+///     scope.spawn(|| {
+///         std::thread::sleep(std::time::Duration::from_secs(30));
+///         watchdog.cancel();
+///     });
+///     con.query("SELECT count(*) FROM huge_table")
+/// })?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct InterruptHandle<'a> {
+    con: duckdb_connection,
+    _borrow: core::marker::PhantomData<&'a OwnedConnection>,
+}
+
+// SAFETY: the only operations are `duckdb_interrupt` and
+// `duckdb_query_progress`. The first sets `ClientContext::interrupted`, an
+// `atomic<bool>`; the second copy-constructs a `QueryProgress` whose three
+// fields are `atomic<double>` / `atomic<uint64_t>`. Neither touches
+// non-atomic connection state, and the `'a` borrow rules out a concurrent
+// disconnect.
+unsafe impl Send for InterruptHandle<'_> {}
+// SAFETY: as above — both operations take `&self` and are atomic.
+unsafe impl Sync for InterruptHandle<'_> {}
+
+impl InterruptHandle<'_> {
+    /// Requests cancellation of the query currently running on the connection.
+    pub fn cancel(&self) {
+        // SAFETY: the `'a` borrow keeps the connection open for this call.
+        unsafe { interrupt(self.con) };
+    }
+
+    /// Reads the progress of the query currently running on the connection.
+    #[must_use]
+    pub fn progress(&self) -> QueryProgress {
+        // SAFETY: the `'a` borrow keeps the connection open for this call.
+        unsafe { query_progress(self.con) }
+    }
+}
+
 // ─── Owned connection ────────────────────────────────────────────────────────
 
 /// A `duckdb_connection` this crate opened and will disconnect on drop.
@@ -620,6 +1156,35 @@ impl OwnedConnection {
         unsafe { prepare(self.con, sql) }
     }
 
+    /// Returns a `Send + Sync` handle for cancelling a query running on this
+    /// connection, or reading its progress, from another thread.
+    ///
+    /// The handle borrows the connection, so it cannot outlive the
+    /// `duckdb_disconnect` in [`Drop`].
+    #[must_use]
+    pub const fn interrupt_handle(&self) -> InterruptHandle<'_> {
+        InterruptHandle {
+            con: self.con,
+            _borrow: core::marker::PhantomData,
+        }
+    }
+
+    /// Requests cancellation of whatever this connection is currently running.
+    ///
+    /// See [`interrupt`] for what "cancellation" means here. To cancel from
+    /// another thread, use [`interrupt_handle`][Self::interrupt_handle].
+    pub fn interrupt(&self) {
+        // SAFETY: `self.con` is open for this value's lifetime.
+        unsafe { interrupt(self.con) };
+    }
+
+    /// Reads the progress of whatever this connection is currently running.
+    #[must_use]
+    pub fn progress(&self) -> QueryProgress {
+        // SAFETY: `self.con` is open for this value's lifetime.
+        unsafe { query_progress(self.con) }
+    }
+
     /// Returns the raw handle. Do not disconnect it — this value still owns it.
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_connection {
@@ -651,29 +1216,6 @@ unsafe impl Send for OwnedConnection {}
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rejects_sql_containing_an_interior_nul() {
-        let err = to_c_sql("SELECT 1\0; DROP TABLE t").expect_err("must reject NUL");
-        assert!(err.as_str().contains("NUL"), "{err}");
-    }
-
-    #[test]
-    fn accepts_ordinary_sql() {
-        assert_eq!(
-            to_c_sql("SELECT 1")
-                .expect("valid SQL")
-                .to_str()
-                .expect("utf8"),
-            "SELECT 1"
-        );
-    }
-
-    #[test]
-    fn null_c_string_reads_as_none() {
-        // SAFETY: a null pointer is explicitly handled.
-        assert_eq!(unsafe { c_str_to_owned(std::ptr::null()) }, None);
-    }
 
     #[test]
     fn owned_connection_is_send() {

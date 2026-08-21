@@ -30,12 +30,13 @@ examine_globs = [
 ]
 
 # ── Features ─────────────────────────────────────────────────────────────────
-# Enable duckdb-1-5-3 (implies duckdb-1-5) so feature-gated code paths and their
-# tests are included in mutation testing — including the duckdb-1-5-3 `TypeId`
-# variants (Geometry / Variant). Without this, mutants in
+# Enable duckdb-1-5-4 (implies duckdb-1-5-3, which implies duckdb-1-5) so
+# feature-gated code paths and their tests are included in mutation testing —
+# including the duckdb-1-5-3 `TypeId` variants (Geometry / Variant) and the
+# duckdb-1-5-4 arrow bridge. Without this, mutants in
 # #[cfg(feature = "duckdb-1-5...")] blocks are untestable (the tests that kill
 # them are also feature-gated).
-features = ["duckdb-1-5-3"]
+features = ["duckdb-1-5-4"]
 
 # ── Exclusions ───────────────────────────────────────────────────────────────
 # Thin re-export modules and test-only code produce unproductive mutants.
@@ -63,10 +64,37 @@ exclude_globs = [
     "src/table_description.rs", # TableDescription: FFI methods; tests are bundled-test-gated
     "src/scalar/info.rs",       # Scalar{Function,Bind,Init}Info: FFI accessor wrappers
     "src/copy_function/info.rs",# Copy{Bind,GlobalInit,Sink,Finalize}Info: FFI accessor wrappers
+    # The two largest FFI-wrapper modules, same rationale, split so that the
+    # rationale actually holds: every function still in these two files calls a
+    # DuckDB C API, so a --lib run with no live engine cannot kill any of their
+    # mutants. Their pure logic was moved out into sibling modules that are NOT
+    # excluded and stay mutation-tested:
+    #   src/value.rs -> src/value/hugeint.rs  (128-bit word splitting)
+    #                -> src/value/defaults.rs (the fourteen as_*_or accessors)
+    #   src/query.rs -> src/query/cstr.rs     (to_c_sql, c_str_to_owned)
+    # A path glob matches the file only, so the sibling modules are unaffected,
+    # and cargo-mutants still follows the mod statements in an excluded file.
+    "src/value.rs",             # Value: 130 duckdb_get_* / duckdb_create_* wrappers
+    "src/query.rs",             # QueryResult/PreparedStatement/Connection: FFI wrappers
 ]
 
-# Skip functions whose mutations are unproductive (Display/Debug impls,
-# or semantically unkillable patterns).
+# Skip mutants whose full name matches, regardless of which file they are in.
+# The name cargo-mutants matches against is the whole line it prints for the
+# mutant -- path, function, and replacement -- so a pattern anchored at the
+# function name never matches. `^fmt::` was one: it was meant to drop the
+# Display/Debug impls and instead matched nothing, leaving 17 unkillable
+# `Debug::fmt -> Ok(Default::default())` mutants alive in every sweep.
+#
+# The pattern has to allow a qualified path because that is what appears in the
+# mutant name: this crate writes `impl core::fmt::Debug for T`, so cargo-mutants
+# prints `<impl core::fmt::Debug for T>::fmt` and the documented `impl Debug`
+# pattern does not match it either. `[a-z:]*` covers `core::fmt::`, `fmt::` and
+# the unqualified form, and cannot match a type like `MyDebug`. No backslash
+# escapes: the mutation workflow re-applies these entries by grepping this file,
+# where TOML string escaping does not apply.
+#
+# Only `Debug` is listed. Display impls in this crate render error messages that
+# tests assert on, so their mutants are killed and belong in the gate.
 exclude_re = [
-    "^fmt::",                   # Display/Debug impls
+    "impl [a-z:]*Debug for",    # Debug impls: rendering is not behaviour
 ]
