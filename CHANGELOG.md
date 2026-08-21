@@ -196,6 +196,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: `CopyFunctionBuilder` is no longer `Send` or `Sync`.** Supporting
+  `COPY … FROM` gave it two new fields that each carry a raw pointer —
+  `copy_from: Option<TableFunctionHandle>` (a `duckdb_table_function`) and
+  `extra_info: Option<ExtraInfo>` (a `*mut c_void`) — and a raw pointer is
+  neither `Send` nor `Sync`. `cargo-semver-checks` classifies this as
+  `auto_trait_impl_removed`, a major break, which is why the crate version moves
+  to **0.17.0**: for a pre-1.0 crate Cargo treats the leftmost non-zero
+  component as the major, so the minor position is where a break goes
+  (`RELEASING.md`, "Semantic versioning policy").
+
+  The change aligns the type with its three siblings rather than making it an
+  outlier — `ScalarFunctionBuilder`, `TableFunctionBuilder` and
+  `AggregateFunctionBuilder` were already `!Send + !Sync` in 0.16.0, each
+  because it holds a raw `DuckDB` handle. A builder is a short-lived object
+  constructed and registered inside `duckdb_init_c_api`, and no `DuckDB` C API
+  accepts one from another thread, so the traits were never usable for anything
+  real. Code that moved a `CopyFunctionBuilder` between threads must now
+  construct it on the thread that registers it.
+
 - **Flaky tests: a shared counter raced across parallel tests.** The
   `extra_info` tests and the new `arrow` ones each reset one `static
   AtomicUsize` and then asserted on it, but `cargo test` runs tests in
@@ -222,9 +241,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UnsafeCell`, which is `!RefUnwindSafe` — so `ScalarFunctionBuilder`,
   `TableFunctionBuilder`, `AggregateFunctionBuilder` and `CopyFunctionBuilder`
   all lost the auto trait. It is an `AtomicBool` now, which offers the same
-  shared-reference mutation and restores the trait. (`CopyFunctionBuilder` is
-  still `!Sync`, from the raw `extra_info` pointer — matching its three sibling
-  builders, which were already `!Sync`.)
+  shared-reference mutation and restores the trait. (`RefUnwindSafe` only — the
+  same `extra_info` field is also one of the two that make `CopyFunctionBuilder`
+  `!Send + !Sync`, which is a separate and deliberate break; see the entry
+  above.)
 
 - **128-bit splitting and reassembly was open-coded at eight call sites.**
   `Value::as_i128` / `as_u128` / `as_uuid` / `as_decimal` / `uuid` and
