@@ -61,6 +61,10 @@ impl DataChunk {
     /// Returns the number of rows in this data chunk.
     #[inline]
     #[must_use]
+    // Nothing but `duckdb_data_chunk_get_size`, and a chunk cannot be built
+    // without a live engine, so the `--lib` mutation run cannot observe this
+    // returning anything. The end-to-end suite reads it on every scan.
+    #[mutants::skip]
     pub fn size(&self) -> usize {
         // SAFETY: self.raw is valid per constructor contract.
         usize::try_from(unsafe { duckdb_data_chunk_get_size(self.raw) }).unwrap_or(0)
@@ -83,6 +87,8 @@ impl DataChunk {
     /// Returns the number of columns in this data chunk.
     #[inline]
     #[must_use]
+    // As `size`: a bare `duckdb_data_chunk_get_column_count`.
+    #[mutants::skip]
     pub fn column_count(&self) -> usize {
         // SAFETY: self.raw is valid per constructor contract.
         usize::try_from(unsafe { duckdb_data_chunk_get_column_count(self.raw) }).unwrap_or(0)

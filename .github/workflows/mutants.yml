@@ -194,6 +194,15 @@ jobs:
             [ -n "$glob" ] && ARGS+=(--exclude "$glob")
           done < <(sed -n '/^exclude_globs = \[/,/^]/p' mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
 
+          # Same for `exclude_re`. cargo-mutants only *combines* a CLI
+          # `--exclude-re` with the config file from 27.0.0 onwards; before
+          # that the flag replaced the config list outright. This job passes
+          # one below, so re-applying the config entries here keeps
+          # mutants.toml authoritative on either side of that change.
+          while IFS= read -r re; do
+            [ -n "$re" ] && ARGS+=(--exclude-re "$re")
+          done < <(sed -n '/^exclude_re = \[/,/^]/p' mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
+
           # `--features duckdb-1-5-4` MUST be explicit: cargo-mutants does not
           # apply mutants.toml `features` to this invocation, so without it the
           # duckdb-1-5-gated code (type_id's 1.5 type arms, the whole error_data

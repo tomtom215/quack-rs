@@ -28,6 +28,14 @@
 //! ```
 
 mod blob;
+mod defaults;
+mod hugeint;
+
+// Re-exported unqualified so the eight call sites across this module and
+// `query` keep their existing `crate::value::hugeint_from_i128` paths.
+pub(crate) use hugeint::{
+    hugeint_from_i128, hugeint_to_i128, uhugeint_from_u128, uhugeint_to_u128,
+};
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -70,47 +78,6 @@ use crate::error::ExtensionError;
 /// - [`as_bool`][Value::as_bool] — BOOLEAN → `bool`
 pub struct Value {
     raw: duckdb_value,
-}
-
-/// Splits an `i128` into `DuckDB`'s `{ lower: u64, upper: i64 }` `HUGEINT`.
-#[inline]
-pub(crate) const fn hugeint_from_i128(value: i128) -> libduckdb_sys::duckdb_hugeint {
-    libduckdb_sys::duckdb_hugeint {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        lower: value as u64,
-        #[allow(clippy::cast_possible_truncation)]
-        upper: (value >> 64) as i64,
-    }
-}
-
-/// Splits a `u128` into `DuckDB`'s `{ lower: u64, upper: u64 }` `UHUGEINT`.
-#[inline]
-pub(crate) const fn uhugeint_from_u128(value: u128) -> libduckdb_sys::duckdb_uhugeint {
-    libduckdb_sys::duckdb_uhugeint {
-        #[allow(clippy::cast_possible_truncation)]
-        lower: value as u64,
-        #[allow(clippy::cast_possible_truncation)]
-        upper: (value >> 64) as u64,
-    }
-}
-
-/// Reassembles `DuckDB`'s `{ lower: u64, upper: i64 }` `HUGEINT` into an `i128`.
-///
-/// The inverse of [`hugeint_from_i128`]. Both directions live here, next to each
-/// other and unit-tested, because the whole crate used to open-code this
-/// arithmetic at five separate call sites: a shift in the wrong direction still
-/// compiles and still round-trips anything that fits in 64 bits.
-#[inline]
-pub(crate) const fn hugeint_to_i128(raw: libduckdb_sys::duckdb_hugeint) -> i128 {
-    ((raw.upper as i128) << 64) | (raw.lower as i128)
-}
-
-/// Reassembles `DuckDB`'s `{ lower: u64, upper: u64 }` `UHUGEINT` into a `u128`.
-///
-/// The inverse of [`uhugeint_from_u128`].
-#[inline]
-pub(crate) const fn uhugeint_to_u128(raw: libduckdb_sys::duckdb_uhugeint) -> u128 {
-    ((raw.upper as u128) << 64) | (raw.lower as u128)
 }
 
 impl Value {
@@ -296,156 +263,6 @@ impl Value {
     pub fn as_i128(&self) -> i128 {
         // SAFETY: self.raw is valid per constructor contract.
         hugeint_to_i128(unsafe { duckdb_get_hugeint(self.raw) })
-    }
-
-    /// Extracts the value as a `String`, returning `default` on failure.
-    ///
-    /// Convenience for `val.as_str().unwrap_or_else(|_| default.to_owned())`.
-    #[inline]
-    #[must_use]
-    pub fn as_str_or(&self, default: &str) -> String {
-        self.as_str().unwrap_or_else(|_| default.to_owned())
-    }
-
-    /// Extracts the value as a `String`, returning an empty string on failure.
-    ///
-    /// Convenience for `val.as_str().unwrap_or_default()`.
-    #[inline]
-    #[must_use]
-    pub fn as_str_or_default(&self) -> String {
-        self.as_str().unwrap_or_default()
-    }
-
-    /// Extracts the value as an `i32`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_i32_or(&self, default: i32) -> i32 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i32()
-        }
-    }
-
-    /// Extracts the value as an `i64`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_i64_or(&self, default: i64) -> i64 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i64()
-        }
-    }
-
-    /// Extracts the value as an `f32`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_f32_or(&self, default: f32) -> f32 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_f32()
-        }
-    }
-
-    /// Extracts the value as an `f64`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_f64_or(&self, default: f64) -> f64 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_f64()
-        }
-    }
-
-    /// Extracts the value as a `bool`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_bool_or(&self, default: bool) -> bool {
-        if self.is_null() {
-            default
-        } else {
-            self.as_bool()
-        }
-    }
-
-    /// Extracts the value as an `i8`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_i8_or(&self, default: i8) -> i8 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i8()
-        }
-    }
-
-    /// Extracts the value as an `i16`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_i16_or(&self, default: i16) -> i16 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i16()
-        }
-    }
-
-    /// Extracts the value as a `u8`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_u8_or(&self, default: u8) -> u8 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_u8()
-        }
-    }
-
-    /// Extracts the value as a `u16`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_u16_or(&self, default: u16) -> u16 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_u16()
-        }
-    }
-
-    /// Extracts the value as a `u32`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_u32_or(&self, default: u32) -> u32 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_u32()
-        }
-    }
-
-    /// Extracts the value as a `u64`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_u64_or(&self, default: u64) -> u64 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_u64()
-        }
-    }
-
-    /// Extracts the value as an `i128`, returning `default` if the handle is null.
-    #[inline]
-    #[must_use]
-    pub fn as_i128_or(&self, default: i128) -> i128 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i128()
-        }
     }
 
     /// Creates a `TIME_NS` value (time of day with nanosecond precision) from a
@@ -1568,129 +1385,6 @@ impl core::fmt::Debug for Value {
 mod tests {
     use super::*;
 
-    // `hugeint_from_i128` / `uhugeint_from_u128` are the only pure arithmetic in
-    // this module: everything else calls into DuckDB. They are also the easiest
-    // place in the crate to be silently wrong -- a shift in the wrong direction
-    // still compiles, still round-trips zero and still round-trips any value
-    // that fits in 64 bits, so the common cases in the end-to-end suite would
-    // not notice. Pin both halves against values whose upper and lower words
-    // differ.
-
-    #[test]
-    fn hugeint_splits_into_the_low_and_high_words_the_right_way_round() {
-        // 1 << 64 is exactly "upper = 1, lower = 0". A left shift would give 0.
-        let one_shifted = hugeint_from_i128(1_i128 << 64);
-        assert_eq!(one_shifted.lower, 0);
-        assert_eq!(one_shifted.upper, 1);
-
-        // A value with distinct words, so swapping them is visible.
-        let mixed = hugeint_from_i128((0x0123_4567_89ab_cdef_i128 << 64) | 0x1122_3344_5566_7788);
-        assert_eq!(mixed.lower, 0x1122_3344_5566_7788);
-        assert_eq!(mixed.upper, 0x0123_4567_89ab_cdef);
-
-        // Small positive: upper must be 0, not a shifted copy of the value.
-        let small = hugeint_from_i128(42);
-        assert_eq!(small.lower, 42);
-        assert_eq!(small.upper, 0);
-
-        // Negative values sign-extend the upper word; `>>` on i128 is arithmetic.
-        let minus_one = hugeint_from_i128(-1);
-        assert_eq!(minus_one.lower, u64::MAX);
-        assert_eq!(minus_one.upper, -1);
-
-        let min = hugeint_from_i128(i128::MIN);
-        assert_eq!(min.lower, 0);
-        assert_eq!(min.upper, i64::MIN);
-
-        let max = hugeint_from_i128(i128::MAX);
-        assert_eq!(max.lower, u64::MAX);
-        assert_eq!(max.upper, i64::MAX);
-    }
-
-    #[test]
-    fn uhugeint_splits_into_the_low_and_high_words_the_right_way_round() {
-        let one_shifted = uhugeint_from_u128(1_u128 << 64);
-        assert_eq!(one_shifted.lower, 0);
-        assert_eq!(one_shifted.upper, 1);
-
-        let mixed = uhugeint_from_u128((0x0123_4567_89ab_cdef_u128 << 64) | 0x1122_3344_5566_7788);
-        assert_eq!(mixed.lower, 0x1122_3344_5566_7788);
-        assert_eq!(mixed.upper, 0x0123_4567_89ab_cdef);
-
-        let small = uhugeint_from_u128(42);
-        assert_eq!(small.lower, 42);
-        assert_eq!(small.upper, 0);
-
-        let max = uhugeint_from_u128(u128::MAX);
-        assert_eq!(max.lower, u64::MAX);
-        assert_eq!(max.upper, u64::MAX);
-    }
-
-    #[test]
-    fn the_128_bit_helpers_are_exact_inverses() {
-        // Every `as_i128` / `as_u128` / `as_uuid` / `as_decimal` accessor and
-        // every 128-bit bind now routes through these four, so a round trip at
-        // the extremes covers all of them at once.
-        for value in [
-            0_i128,
-            1,
-            -1,
-            42,
-            -42,
-            i128::from(i64::MAX),
-            i128::from(i64::MIN),
-            (0x0123_4567_89ab_cdef_i128 << 64) | 0x1122_3344_5566_7788,
-            i128::MAX,
-            i128::MIN,
-        ] {
-            assert_eq!(
-                hugeint_to_i128(hugeint_from_i128(value)),
-                value,
-                "i128 round trip for {value}"
-            );
-        }
-
-        for value in [
-            0_u128,
-            1,
-            42,
-            u128::from(u64::MAX),
-            1_u128 << 64,
-            (0x0123_4567_89ab_cdef_u128 << 64) | 0x1122_3344_5566_7788,
-            u128::MAX,
-        ] {
-            assert_eq!(
-                uhugeint_to_u128(uhugeint_from_u128(value)),
-                value,
-                "u128 round trip for {value}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_128_bit_helpers_read_the_words_the_right_way_round() {
-        // A round trip alone would survive swapping *both* directions, so pin
-        // the word order against a hand-built record too.
-        let raw = libduckdb_sys::duckdb_hugeint {
-            lower: 0x1122_3344_5566_7788,
-            upper: 0x0123_4567_89ab_cdef,
-        };
-        assert_eq!(
-            hugeint_to_i128(raw),
-            (0x0123_4567_89ab_cdef_i128 << 64) | 0x1122_3344_5566_7788
-        );
-
-        let raw = libduckdb_sys::duckdb_uhugeint { lower: 0, upper: 1 };
-        assert_eq!(uhugeint_to_u128(raw), 1_u128 << 64);
-
-        // Sign extension: upper = -1, lower = MAX is exactly -1.
-        let minus_one = libduckdb_sys::duckdb_hugeint {
-            lower: u64::MAX,
-            upper: -1,
-        };
-        assert_eq!(hugeint_to_i128(minus_one), -1);
-    }
-
     #[test]
     fn null_value_is_null() {
         let val = unsafe { Value::from_raw(std::ptr::null_mut()) };
@@ -1714,49 +1408,6 @@ mod tests {
     #[test]
     fn size_of_value() {
         assert_eq!(std::mem::size_of::<Value>(), std::mem::size_of::<usize>());
-    }
-
-    #[test]
-    fn as_str_or_returns_default_for_null() {
-        let val = unsafe { Value::from_raw(std::ptr::null_mut()) };
-        assert_eq!(val.as_str_or("fallback"), "fallback");
-    }
-
-    #[test]
-    fn as_str_or_default_returns_empty_for_null() {
-        let val = unsafe { Value::from_raw(std::ptr::null_mut()) };
-        assert_eq!(val.as_str_or_default(), "");
-    }
-
-    #[test]
-    fn as_i64_or_returns_default_for_null() {
-        let val = unsafe { Value::from_raw(std::ptr::null_mut()) };
-        assert_eq!(val.as_i64_or(99), 99);
-    }
-
-    #[test]
-    fn as_i32_or_returns_default_for_null() {
-        let val = unsafe { Value::from_raw(std::ptr::null_mut()) };
-        assert_eq!(val.as_i32_or(42), 42);
-    }
-
-    #[test]
-    fn as_bool_or_returns_default_for_null() {
-        let val = unsafe { Value::from_raw(std::ptr::null_mut()) };
-        assert!(val.as_bool_or(true));
-        assert!(!val.as_bool_or(false));
-    }
-
-    #[test]
-    fn as_f64_or_returns_default_for_null() {
-        let val = unsafe { Value::from_raw(std::ptr::null_mut()) };
-        assert!((val.as_f64_or(2.72) - 2.72).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn as_f32_or_returns_default_for_null() {
-        let val = unsafe { Value::from_raw(std::ptr::null_mut()) };
-        assert!((val.as_f32_or(2.5) - 2.5).abs() < f32::EPSILON);
     }
 }
 

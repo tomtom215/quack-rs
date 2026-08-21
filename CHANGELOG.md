@@ -268,6 +268,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accessors against a populated record rather than only an empty one, and
   `map2_str`'s NULL propagation when just one argument is NULL.
 
+  With the three gate defects fixed and the two FFI-wrapper modules excluded,
+  the incremental sweep over this branch's 40 changed source files reports 404
+  mutants — 250 caught, 154 unviable, **none missed**. What survives after that
+  is annotated in the source with `#[mutants::skip]` and a reason, rather than
+  filtered out of sight: the bare FFI reads (`DataChunk::size` /
+  `column_count`, `ScalarBindData::set`, `ScalarLocalState::set`), two `Drop`
+  impls whose effect is only visible in freed memory or to a leak checker
+  (`OwnedVector`, `SecretEntry`), the deprecated `FfiBindData::get_from_bind`
+  whose mutant *is* the function (it returns `None` unconditionally, because
+  `DuckDB` has no `duckdb_bind_get_bind_data`), `map2` / `map2_str` whose
+  per-row NULL check only runs inside `DuckDB`'s expression executor, and
+  `Value::as_str_or_default`, whose null-handle answer is exactly the mutant's
+  `String::new()`.
+
+  Two of those turned into real work rather than an annotation. `SecretEntry`'s
+  zeroize-on-drop is a security property the crate advertises and nothing
+  asserted — its body is now `SecretEntry::zeroize_in_place`, tested directly,
+  with `Drop` left as a one-line delegation. And `hugeint_to_i128` combined its
+  halves with `|`; because the halves occupy disjoint bits, `|` → `^` cannot
+  change the result for any input, so that mutant was unkillable *by
+  construction*. The halves are added instead: identical here, incapable of
+  overflowing (`i64::MIN << 64` is exactly `i128::MIN`, and the round trips at
+  the extremes would panic in a debug build if that were wrong), and `-` or `*`
+  in its place dies at once.
+
 - **The mutation-testing gate always reported 100% and always passed.**
   `cargo mutants --output DIR` writes its results to `DIR/mutants.out/`, so
   `--output mutants.out` put them in `mutants.out/mutants.out/`. The report step
@@ -284,6 +309,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/query.rs`, `src/appender.rs` and every other module directly under
   `src/` were silently excluded while the job reported success. It now filters
   to `.rs` in the shell.
+
+- **The mutation gate's Display/Debug filter matched nothing.** `mutants.toml`
+  carried `exclude_re = ["^fmt::"]`, commented "Display/Debug impls".
+  cargo-mutants matches that regex against the whole line it prints for a
+  mutant — `src/x.rs:1: replace <impl core::fmt::Debug for T>::fmt -> … with …`
+  — which begins with the file path, so a pattern anchored at `fmt::` can never
+  match and seventeen unkillable `Debug::fmt -> Ok(Default::default())` mutants
+  survived every sweep. cargo-mutants' own documented form, `impl Debug`, does
+  not match this crate either: it writes `impl core::fmt::Debug for T`, and the
+  qualified path lands in the mutant name. The pattern is now
+  `impl [a-z:]*Debug for`. `Display` is deliberately not excluded — those impls
+  render error text that tests assert on, so their mutants die and belong in
+  the gate.
+
+  The incremental job now also re-applies `exclude_re` from `mutants.toml` as
+  CLI flags, the way it already did for `exclude_globs`: cargo-mutants only
+  *combines* a CLI `--exclude-re` with the config file from 27.0.0 onwards, and
+  that job passes one.
+
+- **`src/value.rs` and `src/query.rs` are excluded from mutation testing, and
+  their pure logic moved out so that it is not.** Every function left in those
+  two files wraps a `DuckDB` C call, which the gate's `--cargo-arg=--lib` run —
+  no live engine — structurally cannot reach; that is the same rationale
+  `mutants.toml` already carried for nine sibling modules, and between them the
+  two files accounted for 206 of the 220 survivors. Excluding them wholesale
+  would have swallowed the pure code too, so it moved to siblings that stay in
+  the gate: `src/value/hugeint.rs` (the four 128-bit word helpers),
+  `src/value/defaults.rs` (the fourteen `as_*_or` accessors, as a second
+  inherent `impl Value`) and `src/query/cstr.rs` (`to_c_sql`,
+  `c_str_to_owned`). Seven of the `as_*_or` accessors had no unit test at all,
+  and nothing exercised `c_str_to_owned`'s non-null path — all of them were
+  among the 220 — so nine new tests turn those survivors into kills rather than
+  hiding them. No public item moved: the re-export keeps every existing path.
 
 - **Four CI jobs never actually ran.** `rust-toolchain.toml` pins
   `channel = "stable"`, and a rustup toolchain file overrides the default

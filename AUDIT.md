@@ -355,6 +355,32 @@ memory is the harder half.
 | `fuzz` | `cargo-fuzz` over the description.yml parser, the `duckdb_string_t` decoder and the validators | ~32M execs, no crashes |
 | `semver` | `cargo-semver-checks` against the published crate — the API *is* the product | — |
 
+Mutation testing was already here, and was the part that most needed reading
+rather than trusting. Three separate defects meant the gate could not fail:
+
+1. `--output mutants.out` writes to `mutants.out/mutants.out/`, so the report
+   step counted nothing, divided by a total of zero, printed `100%`, and
+   skipped its `exit 1` — seventeen lines after cargo-mutants' own summary said
+   `229 missed, 238 caught`.
+2. The incremental job selected changed files with the pathspec `src/**/*.rs`.
+   Git's default wildmatch lets `*` cross `/`, so that requires at least one
+   directory component and matches **no** top-level file: `value.rs`,
+   `query.rs`, `arrow.rs` and every other module directly under `src/` were
+   never scanned.
+3. `mutants.toml` carried `exclude_re = ["^fmt::"]`, commented "Display/Debug
+   impls". cargo-mutants matches that regex against the whole line it prints
+   for a mutant, which begins with the file path, so it matched nothing and
+   seventeen unkillable `Debug::fmt` mutants survived every sweep.
+
+With all three fixed the gate reports honestly, and what it then found was a
+real bug class — eight call sites open-coding 128-bit word arithmetic, each
+with a live `>>`/`<<` mutant — plus a set of test gaps listed in the changelog.
+`src/value.rs` and `src/query.rs` are now excluded for the same reason nine
+sibling modules already were (every function is a `DuckDB` C call a `--lib` run
+cannot reach), with their pure logic moved into `value/hugeint.rs`,
+`value/defaults.rs` and `query/cstr.rs` so it stays in the gate rather than
+being excluded along with the wrappers.
+
 Also closed two CI gaps:
 
 - `tests/ffi_roundtrip.rs` is `#![cfg(feature = "_duckdb-testing")]`, so the

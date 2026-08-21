@@ -61,7 +61,9 @@
 //! # }
 //! ```
 
-use std::ffi::{CStr, CString};
+mod cstr;
+
+use std::ffi::CString;
 
 use libduckdb_sys::{
     duckdb_bind_blob, duckdb_bind_boolean, duckdb_bind_double, duckdb_bind_int64, duckdb_bind_null,
@@ -73,33 +75,10 @@ use libduckdb_sys::{
     duckdb_query, duckdb_result, duckdb_result_error, duckdb_rows_changed, idx_t, DuckDBSuccess,
 };
 
+use self::cstr::{c_str_to_owned, to_c_sql};
 use crate::data_chunk::DataChunk;
 use crate::error::ExtensionError;
 use crate::types::TypeId;
-
-/// Builds a `CString` from `sql`, rejecting interior NULs with a useful message.
-fn to_c_sql(sql: &str) -> Result<CString, ExtensionError> {
-    CString::new(sql)
-        .map_err(|_| ExtensionError::new("SQL text must not contain an interior NUL byte"))
-}
-
-/// Reads a NUL-terminated C string, or `None` if the pointer is null or the
-/// bytes are not UTF-8.
-///
-/// # Safety
-///
-/// `ptr` must be null or point to a NUL-terminated string that stays valid for
-/// the duration of the call.
-unsafe fn c_str_to_owned(ptr: *const std::os::raw::c_char) -> Option<String> {
-    if ptr.is_null() {
-        return None;
-    }
-    // SAFETY: `ptr` is non-null and NUL-terminated per the caller's contract.
-    unsafe { CStr::from_ptr(ptr) }
-        .to_str()
-        .ok()
-        .map(str::to_owned)
-}
 
 // ─── Data chunk ──────────────────────────────────────────────────────────────
 
@@ -1237,29 +1216,6 @@ unsafe impl Send for OwnedConnection {}
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rejects_sql_containing_an_interior_nul() {
-        let err = to_c_sql("SELECT 1\0; DROP TABLE t").expect_err("must reject NUL");
-        assert!(err.as_str().contains("NUL"), "{err}");
-    }
-
-    #[test]
-    fn accepts_ordinary_sql() {
-        assert_eq!(
-            to_c_sql("SELECT 1")
-                .expect("valid SQL")
-                .to_str()
-                .expect("utf8"),
-            "SELECT 1"
-        );
-    }
-
-    #[test]
-    fn null_c_string_reads_as_none() {
-        // SAFETY: a null pointer is explicitly handled.
-        assert_eq!(unsafe { c_str_to_owned(std::ptr::null()) }, None);
-    }
 
     #[test]
     fn owned_connection_is_send() {

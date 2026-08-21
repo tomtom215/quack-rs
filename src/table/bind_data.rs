@@ -100,6 +100,11 @@ impl<T: 'static> FfiBindData<T> {
         note = "always returns None — DuckDB has no duckdb_bind_get_bind_data. Keep the value \
                 in a local during bind; use get_from_init / get_from_function afterwards."
     )]
+    // Deprecated and unconditionally `None` — DuckDB has no
+    // `duckdb_bind_get_bind_data` to call. The `-> Option<&T> with None` mutant
+    // is therefore the function itself: equivalent by construction, unkillable
+    // by any test.
+    #[mutants::skip]
     pub const fn get_from_bind<'a>(info: duckdb_bind_info) -> Option<&'a T> {
         // Note: duckdb_bind_get_extra_info retrieves the extra_info set on the *function*,
         // not the bind_data. There is no "get bind data from bind info" in the C API —

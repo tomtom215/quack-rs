@@ -98,6 +98,11 @@ impl<T: 'static> ScalarBindData<T> {
     ///
     /// Call at most once per bind invocation. `DuckDB` replaces any previous
     /// value, dropping it through the destructor registered with it.
+    // The whole body is one `duckdb_scalar_function_set_bind_data` call; with no
+    // live engine there is no way to observe whether it happened, so the `--lib`
+    // mutation run cannot kill `with ()`. Covered end to end by the typed
+    // scalar-bind tests.
+    #[mutants::skip]
     pub fn set(info: &ScalarBindInfo, data: T) {
         let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
         // SAFETY: `raw` is a fresh `Box<T>` and `drop_boxed::<T>` is the
@@ -164,6 +169,9 @@ impl<T: 'static> ScalarLocalState<T> {
     /// Stores `state` as this thread's local state.
     ///
     /// Call at most once per init invocation.
+    // As `ScalarBindData::set`: one FFI call, no observable effect without a
+    // live engine.
+    #[mutants::skip]
     pub fn set(info: &ScalarInitInfo, state: T) {
         let raw = Box::into_raw(Box::new(state)).cast::<c_void>();
         // SAFETY: `raw` is a fresh `Box<T>` and `drop_boxed::<T>` is the

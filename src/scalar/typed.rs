@@ -343,6 +343,15 @@ impl ScalarFunctionBuilder {
     /// # Errors
     ///
     /// Returns an error if `name` is not a valid SQL identifier.
+    // The per-row NULL-propagation test `a.is_valid(row) && b.is_valid(row)`
+    // lives in a closure that only ever runs inside DuckDB's expression
+    // executor, so a `--lib` run cannot reach it and the `&& -> ||` mutant
+    // survives there. It does not survive the end-to-end suite:
+    // `typed_scalar_closures_cover_the_common_shapes` in
+    // `tests/ffi_roundtrip.rs` asserts that map2 NULLs out a row where
+    // *either* argument is NULL, reading from a real column rather than a
+    // constant-folded literal.
+    #[mutants::skip]
     pub fn map2<A, B, R, F>(name: &str, f: F) -> Result<Self, ExtensionError>
     where
         A: ScalarValue,
@@ -528,6 +537,15 @@ impl ScalarFunctionBuilder {
     /// # Errors
     ///
     /// Returns an error if `name` is not a valid SQL identifier.
+    // The per-row NULL-propagation test `a.is_valid(row) && b.is_valid(row)`
+    // lives in a closure that only ever runs inside DuckDB's expression
+    // executor, so a `--lib` run cannot reach it and the `&& -> ||` mutant
+    // survives there. It does not survive the end-to-end suite:
+    // `typed_scalar_closures_cover_the_common_shapes` in
+    // `tests/ffi_roundtrip.rs` asserts that map2_str NULLs out a row where
+    // *either* argument is NULL, reading from a real column rather than a
+    // constant-folded literal.
+    #[mutants::skip]
     pub fn map2_str<R, F>(name: &str, f: F) -> Result<Self, ExtensionError>
     where
         R: ScalarOut,

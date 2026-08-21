@@ -115,6 +115,10 @@ impl OwnedVector {
 }
 
 impl Drop for OwnedVector {
+    // The only effect is a `duckdb_destroy_vector`, which needs a live engine to
+    // reach and a leak checker to observe. That is what CI's LeakSanitizer job
+    // over the end-to-end suite is for; a `--lib` run cannot see it.
+    #[mutants::skip]
     fn drop(&mut self) {
         // SAFETY: `self.vector` was allocated by `duckdb_create_vector` and is
         // destroyed exactly once.

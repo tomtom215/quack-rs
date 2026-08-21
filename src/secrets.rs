@@ -360,8 +360,13 @@ fn zeroize_string(s: &mut String) {
     s.clear();
 }
 
-impl Drop for SecretEntry {
-    fn drop(&mut self) {
+impl SecretEntry {
+    /// Overwrites every owned buffer, leaving the entry empty.
+    ///
+    /// This is [`Drop`]'s whole body, split out so it can be tested: a `Drop`
+    /// impl's effect is only observable in memory that has already been freed,
+    /// which no sound test can read.
+    fn zeroize_in_place(&mut self) {
         // Zeroize all field values (the sensitive material).
         for value in self.fields.values_mut() {
             zeroize_string(value);
@@ -376,6 +381,15 @@ impl Drop for SecretEntry {
         // Zeroize metadata fields that may contain sensitive context.
         zeroize_string(&mut self.provider);
         zeroize_string(&mut self.scope);
+    }
+}
+
+impl Drop for SecretEntry {
+    // One delegation. Replacing the body with `()` is unobservable from a test —
+    // see `zeroize_in_place`, which carries the behaviour and is tested directly.
+    #[mutants::skip]
+    fn drop(&mut self) {
+        self.zeroize_in_place();
     }
 }
 
@@ -530,6 +544,24 @@ mod tests {
         assert_eq!(entry.get_field("nonexistent"), None);
         assert_eq!(entry.field_count(), 2);
         assert!(!entry.is_empty());
+    }
+
+    #[test]
+    fn zeroizing_an_entry_clears_every_buffer_it_owns() {
+        // `Drop` runs exactly this, and the crate advertises zeroize-on-drop as
+        // a security property — so it is worth an assertion rather than a
+        // reading of the code.
+        let mut entry = SecretEntry::new("test", "bearer")
+            .with_provider("config")
+            .with_scope("https://api.example.com")
+            .with_field("token", "abc123");
+
+        entry.zeroize_in_place();
+
+        assert_eq!(entry.field_count(), 0, "fields must be drained");
+        assert_eq!(entry.get_field("token"), None);
+        assert_eq!(entry.provider(), "", "provider must be overwritten");
+        assert_eq!(entry.scope(), "", "scope must be overwritten");
     }
 
     #[test]
