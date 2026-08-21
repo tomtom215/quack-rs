@@ -46,14 +46,14 @@
 //! ```toml
 //! # In your extension's Cargo.toml:
 //! [dev-dependencies]
-//! quack-rs = { version = "0.16", features = ["bundled-test"] }
+//! quack-rs = { version = "0.17", features = ["bundled-test"] }
 //! ```
 //!
 //! …or link a pre-built libduckdb for a much faster build:
 //!
 //! ```toml
 //! [dev-dependencies]
-//! quack-rs = { version = "0.16", features = ["bundled-test-prebuilt"] }
+//! quack-rs = { version = "0.17", features = ["bundled-test-prebuilt"] }
 //! ```
 //!
 //! With `bundled-test-prebuilt`, build with `DUCKDB_DOWNLOAD_LIB=1` (let

@@ -10,6 +10,408 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-21
+
+### Security
+
+- **A panicking `Drop` in extension state aborted the process.** Every FFI
+  destructor quack-rs generates — `FfiState<T>::destroy_callback`,
+  `FfiBindData` / `FfiInitData` / `FfiLocalInitData::destroy`,
+  `replacement_scan::drop_box`, `TypedCallbacks::destroy_extra` — dropped a
+  `Box<T>` of arbitrary user data directly inside an `extern "C" fn`. Since Rust
+  1.81 an unwind across that boundary is a guaranteed process abort. Reproduced
+  against `DuckDB` 1.5.4: an aggregate whose state type has a panicking `Drop`
+  killed the process with `SIGABRT` from inside
+  `duckdb::RowOperations::DestroyStates`, on a task-scheduler thread. All of them
+  now run under the new `callback::catch_ffi_panic`, which is public so
+  extensions writing their own `extern "C"` destructors get the same containment.
+
+  Where `DuckDB` offers an error channel the panic is now reported instead of
+  swallowed: `CAPIAggregateStateInit` checks the error flag and throws, so a
+  panicking `Default::default()` becomes an ordinary SQL error rather than a
+  silent NULL. The state destructor has none (`CAPIAggregateDestructor` takes no
+  info and returns nothing), so there the message is discarded.
+
+  `FfiState::init_callback` also no longer forms a `&mut Self` over the
+  possibly-uninitialised allocation `DuckDB` hands it.
+
+### Fixed
+
+- **Pitfall L8 — `DEFAULT_NULL_HANDLING` does not propagate NULLs for scalar
+  functions.** quack-rs documented that `DuckDB` "automatically returns NULL if
+  any argument is NULL, without your function callback being called". For a
+  scalar function registered through the C API that is false at run time:
+  `CAPIScalarFunction` calls the callback for every row including NULL ones and
+  never inspects the result's validity, and the only NULL check in
+  `ExpressionExecutor::Execute` is `VerifyNullHandling`, whose entire body is
+  inside `#ifdef DEBUG`. A callback that ignores validity therefore returns a
+  non-NULL answer for a NULL input, silently, in every release build.
+
+  `SELECT f(NULL)` still returns NULL — a literal NULL is constant-folded before
+  the function is reached — which is why the bug survives review. From a column
+  it does not. New `DataChunk::propagate_nulls` / `any_null` restore SQL
+  semantics in one line; the new typed constructors below get it right by
+  construction; the docs, the book chapter and `LESSONS.md` now state what
+  `DuckDB` does, with the source quoted. A regression test pins the behaviour.
+  Aggregates are unaffected — their executor really does filter NULL rows.
+
+- **Composite `TypeId`s silently produced an invalid type.**
+  `duckdb_create_logical_type` "returns an invalid logical type" for `DECIMAL`,
+  `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY` and `UNION` — a *non-null* handle
+  wrapping `LogicalTypeId::INVALID`, so the existing null check never fired.
+  `.param(TypeId::Struct)` failed much later with a message that named neither
+  the parameter nor the fix, and `get_type_id()` on one panicked. New
+  `TypeId::is_composite` / `composite_constructor_hint`; `LogicalType::new`
+  asserts, `try_new` errors, and every builder validates before allocating any
+  `DuckDB` handle.
+
+- **`extra_info` leaked when a builder was not registered.** `DuckDB` only takes
+  ownership at `duckdb_*_set_extra_info`; a dropped builder dropped the pointer.
+  This reached users through APIs that never mention a pointer —
+  `TableFunctionBuilder::with_state` boxes two closures. Found by Miri.
+
+- **Two stale-borrow bugs in `src/secrets.rs`'s own tests**, which took a pointer
+  into a `String`, called a `&mut` method, then read through the stale pointer.
+  The library's `zeroize_string` was correct throughout.
+
+- **The reference example disabled every panic guard in the crate.**
+  `examples/hello-ext/Cargo.toml` shipped `panic = "abort"` — the setting
+  `validate_release_profile` rejects outright and the scaffold refuses to
+  generate, because it makes every `catch_unwind` in quack-rs inert. CI built
+  that example, loaded it into a real `DuckDB`, and held it up as the way to do
+  this. Two new tests hold the example *and* the scaffold's generated profile to
+  quack-rs's own validator, so the generator and the validator cannot drift.
+
+- **The `ScaffoldConfig` example in the README and two book pages did not
+  compile.** The struct gained three fields and the exhaustive literals were
+  never updated; rustdoc examples are compiled by `cargo test` but Markdown code
+  fences are not, so the copy a new user reaches for was the broken one. All now
+  use `..ScaffoldConfig::default()`.
+
+- **Registration failures now name what to check.**
+  `duckdb_register_*_function` reports failure as a bare `DuckDBError` with no
+  message. There are exactly three causes, and a name collision with a `DuckDB`
+  built-in (`list_sum`, `array_sum`, …) looks identical to a type error. The
+  message names all three and points at
+  `SELECT * FROM duckdb_functions() WHERE function_name = '<name>'`.
+
+### Added
+
+- **Scalar functions as safe Rust closures.** `ScalarFunctionBuilder::map1` /
+  `map2` / `map1_str` / `map2_str` / `map1_opt` / `map2_opt` take an ordinary
+  closure; parameter and return types come from its signature, NULLs propagate
+  correctly, and a panic becomes a SQL error. `VARCHAR` gets its own
+  constructors so the closure can borrow a `&str` straight out of the vector.
+  One indirect call per chunk, not per row.
+
+- **`Value` gained every remaining constructor** — all scalar widths, the
+  temporal family, `INTERVAL`, `BLOB`, `DECIMAL`, and the composites (`STRUCT`,
+  `LIST`, `ARRAY`, `ENUM`; `MAP` and `UNION` behind `duckdb-1-5`) — plus
+  `is_sql_null` (distinct from `is_null`, which asks about the handle) and
+  `as_enum_index`. `struct_value` checks the field count first, because
+  `duckdb_create_struct_value` takes no count and reads one value per field of
+  the *type*. `list_value` / `array_value` take the **element** type: `duckdb.h`
+  contradicts itself here, and the implementation settles it.
+
+- **`PreparedStatement` gained the remaining 18 typed binds** and `bind_value`,
+  the escape hatch for every composite type.
+
+- **Cancellation and progress.** `OwnedConnection::interrupt_handle` returns a
+  `Send + Sync` token, lifetime-tied to the connection, that a watchdog thread
+  can use to stop a running query.
+
+- **Streaming results.** `PreparedStatement::execute_streaming` and
+  `QueryResult::is_streaming` (`duckdb-1-5`).
+
+- **`QueryResult::column_logical_type`** keeps the nested structure that
+  `column_type` collapses, and **`result_kind`** separates rows from row counts.
+
+- **`LogicalType::register`** — `CREATE TYPE` from the C API, so an extension can
+  ship a named `ENUM` or `STRUCT`. Stable-prefix; no feature needed.
+
+- **`ScalarBindData<T>` / `ScalarLocalState<T>`** (`duckdb-1-5`) — typed bind
+  data and per-thread local state for scalar functions, with the
+  `duckdb_delete_callback_t` generated and panic-safe. The raw
+  `set_bind_data` / `set_state` route makes the extension author write their own
+  `unsafe extern "C" fn` around `Box::from_raw`, which is the abort hazard above
+  relocated into user code.
+
+- **`vector::ops`** (`duckdb-1-5`) makes `SelectionVector` usable: `copy_selected`,
+  `slice`, `reference_value`, `reference_vector` and `OwnedVector`. Documents
+  that `slice` produces a *dictionary* vector, after which every reader in this
+  crate reads the wrong rows.
+
+- **Arrow C Data Interface bridge** — the new `arrow` module behind a new
+  **`duckdb-1-5-4`** feature, wrapping the eight-function conversion family
+  DuckDB 1.5.0 added: `ArrowOptions` (from a connection or a `QueryResult`),
+  owning `ArrowSchema` / `ArrowArray` / `ArrowConvertedSchema` RAII types, and
+  `to_arrow_schema` / `data_chunk_to_arrow` / `schema_from_arrow` /
+  `data_chunk_from_arrow`. **No `arrow` crate dependency**: the module works on
+  the ABI records `libduckdb-sys` defines, which have arrow-rs's
+  `FFI_ArrowSchema` / `FFI_ArrowArray` layout, so bridging is a pointer cast —
+  `ArrowArray::take_from` moves a record out of a foreign wrapper and leaves a
+  released placeholder, so only one side ever calls `release`.
+
+  The ownership rules were read out of `arrow-c.cpp` and `arrow_converter.cpp`
+  rather than inferred: `duckdb_data_chunk_from_arrow` sets
+  `arrow_array->release = nullptr` *before* the conversion loop body, so it
+  claims the array on the error path too — hence `data_chunk_from_arrow` takes
+  the array **by value**, and the by-value binding still releases it in the one
+  case (a zero-column schema) where the loop never runs. `to_arrow_schema` and
+  `data_chunk_to_arrow` install `release` last, after everything that can throw,
+  so a failed conversion leaves nothing to free.
+
+  Two crashes DuckDB does not guard are refused here instead:
+  `duckdb_data_chunk_from_arrow` indexes `arrow_array->children[i]` once per
+  schema column with no bounds check and dereferences an already-released array,
+  so `ArrowConvertedSchema` remembers its column count and both are checked
+  first. The module documents the one case it still cannot check — a child whose
+  buffers do not match the type its schema declares.
+
+  The **`duckdb-1-5-4`** feature's floor is set by the bindings, not by DuckDB:
+  all eight functions are in `duckdb_ext_api_v1` from DuckDB **1.5.0** (verified
+  against the v1.5.0 `duckdb_extension.h`), but `libduckdb-sys` declared
+  `ArrowSchema` / `ArrowArray` as opaque zero-sized bindgen placeholders until
+  **1.10504.0**. `src/arrow.rs` carries a `const` assertion that says so.
+
+- **`COPY … FROM`** — `CopyFunctionBuilder::copy_from` attaches a quack-rs table
+  function as a format's reader, so an extension can implement loading as well
+  as writing. Supporting pieces:
+
+  - `TableFunctionBuilder::build_handle` returns a configured, unregistered
+    `TableFunctionHandle` — `register` is now that plus
+    `duckdb_register_table_function` — because a `COPY … FROM` reader is
+    *attached to a copy function* rather than registered on its own.
+  - `BindInfo::result_column_count` / `result_column_name` / `result_column_type`
+    (`duckdb-1-5`) read the target table's schema, which `COPY … FROM` fixes
+    before the bind callback runs. `duckdb.h` is explicit that such a bind
+    "should not define its own result columns".
+  - `CopyBindInfo::options` exposes the `COPY … TO` options as the STRUCT value
+    DuckDB builds, and `Value::struct_field_names` walks the field names off the
+    value's borrowed logical type without exposing the handle (pitfall P11).
+  - `CopyFunctionBuilder::extra_info`, with the same
+    ownership-until-transfer guarantee as the other builders.
+
+  `duckdb_copy_function_set_copy_from_function` reports every rejection by doing
+  nothing at all, so `copy_from` checks `duckdb.h`'s stated precondition — "the
+  table function must take a single VARCHAR parameter (the file path)" — which
+  DuckDB never enforces: `CCopyFromBind` builds the argument list itself and
+  never consults `tf.arguments`, so a mismatch surfaces much later inside the
+  reader's own bind callback.
+
+### Changed
+
+- **Breaking: `CopyFunctionBuilder` is no longer `Send` or `Sync`.** Supporting
+  `COPY … FROM` gave it two new fields that each carry a raw pointer —
+  `copy_from: Option<TableFunctionHandle>` (a `duckdb_table_function`) and
+  `extra_info: Option<ExtraInfo>` (a `*mut c_void`) — and a raw pointer is
+  neither `Send` nor `Sync`. `cargo-semver-checks` classifies this as
+  `auto_trait_impl_removed`, a major break, which is why the crate version moves
+  to **0.17.0**: for a pre-1.0 crate Cargo treats the leftmost non-zero
+  component as the major, so the minor position is where a break goes
+  (`RELEASING.md`, "Semantic versioning policy").
+
+  The change aligns the type with its three siblings rather than making it an
+  outlier — `ScalarFunctionBuilder`, `TableFunctionBuilder` and
+  `AggregateFunctionBuilder` were already `!Send + !Sync` in 0.16.0, each
+  because it holds a raw `DuckDB` handle. A builder is a short-lived object
+  constructed and registered inside `duckdb_init_c_api`, and no `DuckDB` C API
+  accepts one from another thread, so the traits were never usable for anything
+  real. Code that moved a `CopyFunctionBuilder` between threads must now
+  construct it on the thread that registers it.
+
+- **Flaky tests: a shared counter raced across parallel tests.** The
+  `extra_info` tests and the new `arrow` ones each reset one `static
+  AtomicUsize` and then asserted on it, but `cargo test` runs tests in
+  parallel — so one test's reset could land between another's drop and its
+  assertion. `dropping_an_untransferred_extra_info_frees_it` failed in CI while
+  the identical job on the identical commit passed. Each test now owns its
+  counter: `extra_info` carries it in the allocation, and `arrow` carries it in
+  the record's own `private_data`, which is what that field is for. Verified
+  with 100 repeat runs, zero failures.
+
+- **`data_chunk_from_arrow` aborted a debug `DuckDB` on a zero-row array.**
+  `duckdb_data_chunk_from_arrow` passes `arrow_array->length` straight through
+  as the chunk's *capacity* (`dchunk->Initialize(alloc, types, length)`), and
+  `VectorCacheBuffer` turns a capacity of zero into
+  `Allocator::AllocateData(0)`, whose `D_ASSERT(size > 0)` aborts a debug build.
+  A release build allocates nothing and carries on — so whether an empty batch
+  worked depended on how the engine happened to be compiled. Zero-row arrays are
+  now refused with a message that says why. Caught by CI's coverage job, which
+  compiles DuckDB from source in debug; every local run linked a release
+  prebuilt libduckdb, where the assertion does not exist.
+
+- **`ExtraInfo` silently removed `RefUnwindSafe` from four public builders.**
+  Its `transferred` flag was a `Cell<bool>`, and `Cell` contains an
+  `UnsafeCell`, which is `!RefUnwindSafe` — so `ScalarFunctionBuilder`,
+  `TableFunctionBuilder`, `AggregateFunctionBuilder` and `CopyFunctionBuilder`
+  all lost the auto trait. It is an `AtomicBool` now, which offers the same
+  shared-reference mutation and restores the trait. (`RefUnwindSafe` only — the
+  same `extra_info` field is also one of the two that make `CopyFunctionBuilder`
+  `!Send + !Sync`, which is a separate and deliberate break; see the entry
+  above.)
+
+- **128-bit splitting and reassembly was open-coded at eight call sites.**
+  `Value::as_i128` / `as_u128` / `as_uuid` / `as_decimal` / `uuid` and
+  `PreparedStatement::bind_i128` / `bind_u128` / `bind_decimal` each did their
+  own `<< 64` / `>> 64` word arithmetic. That is the one place in the crate
+  where being silently wrong is easiest — a shift in the wrong direction still
+  compiles, still round-trips zero, and still round-trips anything that fits in
+  64 bits. They now all route through four `pub(crate)` helpers
+  (`hugeint_from_i128` / `hugeint_to_i128` / `uhugeint_from_u128` /
+  `uhugeint_to_u128`) that live next to each other and are unit-tested in both
+  directions, at the extremes and against hand-built records. Mutation testing
+  confirms all seven shift mutants across the three modules are now killed.
+
+- **Test gaps the mutation sweep exposed, once it could see the files.** Chief
+  among them the shift direction in `hugeint_from_i128` / `uhugeint_from_u128`:
+  swapping `>>` for `<<` still compiles, still round-trips zero and still
+  round-trips anything that fits in 64 bits, so nothing in the suite noticed.
+  Also `TypeId::composite_constructor_hint`'s per-variant arms,
+  `LogicalType::check_slot`'s rejection path, `composite_message`,
+  `LogicalTypeError::api_func`, `secrets::parse_scope_array`, the `arrow`
+  accessors against a populated record rather than only an empty one, and
+  `map2_str`'s NULL propagation when just one argument is NULL.
+
+  With the three gate defects fixed and the two FFI-wrapper modules excluded,
+  the incremental sweep over this branch's 40 changed source files reports 404
+  mutants — 250 caught, 154 unviable, **none missed**. What survives after that
+  is annotated in the source with `#[mutants::skip]` and a reason, rather than
+  filtered out of sight: the bare FFI reads (`DataChunk::size` /
+  `column_count`, `ScalarBindData::set`, `ScalarLocalState::set`), two `Drop`
+  impls whose effect is only visible in freed memory or to a leak checker
+  (`OwnedVector`, `SecretEntry`), the deprecated `FfiBindData::get_from_bind`
+  whose mutant *is* the function (it returns `None` unconditionally, because
+  `DuckDB` has no `duckdb_bind_get_bind_data`), `map2` / `map2_str` whose
+  per-row NULL check only runs inside `DuckDB`'s expression executor, and
+  `Value::as_str_or_default`, whose null-handle answer is exactly the mutant's
+  `String::new()`.
+
+  Two of those turned into real work rather than an annotation. `SecretEntry`'s
+  zeroize-on-drop is a security property the crate advertises and nothing
+  asserted — its body is now `SecretEntry::zeroize_in_place`, tested directly,
+  with `Drop` left as a one-line delegation. And `hugeint_to_i128` combined its
+  halves with `|`; because the halves occupy disjoint bits, `|` → `^` cannot
+  change the result for any input, so that mutant was unkillable *by
+  construction*. The halves are added instead: identical here, incapable of
+  overflowing (`i64::MIN << 64` is exactly `i128::MIN`, and the round trips at
+  the extremes would panic in a debug build if that were wrong), and `-` or `*`
+  in its place dies at once.
+
+- **The mutation-testing gate always reported 100% and always passed.**
+  `cargo mutants --output DIR` writes its results to `DIR/mutants.out/`, so
+  `--output mutants.out` put them in `mutants.out/mutants.out/`. The report step
+  counted `mutants.out/caught.txt` and friends, found nothing, computed
+  `SCORE=100%` from `TOTAL=0`, and skipped its `exit 1` because `MISSED` was
+  also 0. The run on this PR printed `MUTATION SCORE: 100%` and passed while
+  cargo-mutants' own summary line in the same log read `229 missed, 238 caught,
+  218 unviable`. Both jobs now pass `--output .`.
+
+- **Incremental mutation testing skipped every top-level `src/*.rs`.** The job
+  selected changed files with the pathspec `src/**/*.rs`, but git's default
+  wildmatch lets `*` cross `/`, so that pattern requires at least one directory
+  component after `src/` and matches no top-level file at all. `src/value.rs`,
+  `src/query.rs`, `src/appender.rs` and every other module directly under
+  `src/` were silently excluded while the job reported success. It now filters
+  to `.rs` in the shell.
+
+- **The mutation gate's Display/Debug filter matched nothing.** `mutants.toml`
+  carried `exclude_re = ["^fmt::"]`, commented "Display/Debug impls".
+  cargo-mutants matches that regex against the whole line it prints for a
+  mutant — `src/x.rs:1: replace <impl core::fmt::Debug for T>::fmt -> … with …`
+  — which begins with the file path, so a pattern anchored at `fmt::` can never
+  match and seventeen unkillable `Debug::fmt -> Ok(Default::default())` mutants
+  survived every sweep. cargo-mutants' own documented form, `impl Debug`, does
+  not match this crate either: it writes `impl core::fmt::Debug for T`, and the
+  qualified path lands in the mutant name. The pattern is now
+  `impl [a-z:]*Debug for`. `Display` is deliberately not excluded — those impls
+  render error text that tests assert on, so their mutants die and belong in
+  the gate.
+
+  The incremental job now also re-applies `exclude_re` from `mutants.toml` as
+  CLI flags, the way it already did for `exclude_globs`: cargo-mutants only
+  *combines* a CLI `--exclude-re` with the config file from 27.0.0 onwards, and
+  that job passes one.
+
+- **`src/value.rs` and `src/query.rs` are excluded from mutation testing, and
+  their pure logic moved out so that it is not.** Every function left in those
+  two files wraps a `DuckDB` C call, which the gate's `--cargo-arg=--lib` run —
+  no live engine — structurally cannot reach; that is the same rationale
+  `mutants.toml` already carried for nine sibling modules, and between them the
+  two files accounted for 206 of the 220 survivors. Excluding them wholesale
+  would have swallowed the pure code too, so it moved to siblings that stay in
+  the gate: `src/value/hugeint.rs` (the four 128-bit word helpers),
+  `src/value/defaults.rs` (the fourteen `as_*_or` accessors, as a second
+  inherent `impl Value`) and `src/query/cstr.rs` (`to_c_sql`,
+  `c_str_to_owned`). Seven of the `as_*_or` accessors had no unit test at all,
+  and nothing exercised `c_str_to_owned`'s non-null path — all of them were
+  among the 220 — so nine new tests turn those survivors into kills rather than
+  hiding them. No public item moved: the re-export keeps every existing path.
+
+- **Four CI jobs never actually ran.** `rust-toolchain.toml` pins
+  `channel = "stable"`, and a rustup toolchain file overrides the default
+  `dtolnay/rust-toolchain` sets — so the `miri`, `leak-check`, `fuzz` and
+  `nightly` jobs all resolved a bare `cargo` to stable. Miri and LeakSanitizer
+  failed loudly (`the 'miri' component ... is not available for the
+  'stable-...' toolchain`; `the -Z flag is only accepted on the nightly
+  channel`); the informational nightly job failed silently, re-testing stable.
+  All four now invoke `cargo +nightly` explicitly, with a comment saying why.
+
+  The `bundled-test-prebuilt` job's clippy step was also missing the `env:`
+  block its sibling test step has, so `build.rs` panicked looking for
+  `duckdb.hpp` before clippy ran.
+
+- **`cargo doc` with `-D warnings` failed.** Six intra-doc links were broken or
+  redundant — `QueryResult::column_logical_type`, `scalar::typed`,
+  `vector::ops` (twice), `TableFunctionBuilder::build_handle` — and
+  `vector::ops` carried a doc comment on both the `pub mod` declaration and the
+  file's own `//!` header, so its module docs were resolved in the parent's
+  scope and every link into the module failed with no source location. Three
+  more links in `appender` and `table_description` pointed at `duckdb-1-5`-gated
+  methods and so broke the *default*-feature doc build. `cargo doc` is now clean
+  under `-D warnings` on all four feature sets.
+
+- **Pitfall L9 — `duckdb_data_chunk_from_arrow` takes the array even when it
+  fails.** `duckdb.h` reads like a success-path statement; `arrow-c.cpp` nulls
+  `arrow_array->release` inside the per-column loop, before the work that can
+  throw. Guessing either way gives you a bug — double release, or a leaked Arrow
+  buffer tree when a zero-column schema means the loop never runs. Documented in
+  `LESSONS.md` and the book, and made impossible by the by-value signature.
+
+  The pitfall count in the README, the crate docs and the FAQ was stale at 17;
+  `LESSONS.md` documents 21, and the book's catalogue was missing L8 and L9. All
+  four now agree.
+
+- **A copy function may now implement `COPY … FROM` alone.**
+  `CopyFunctionBuilder::register` used to require `bind`, `sink` *and*
+  `finalize`, which made a read-only format impossible even though
+  `duckdb_register_copy_function` accepts one: it decides what a copy function
+  supports from `info.sink != nullptr` and `copy_from_bind != nullptr`
+  independently. Leaving all three unset is now valid when `copy_from` is set;
+  setting only some of them is an error that says so. Existing `COPY … TO`
+  functions are unaffected.
+
+- CI gains four jobs: `miri` (546 unit tests under the interpreter),
+  `leak-check` (LeakSanitizer over the end-to-end suite against a real
+  `libduckdb`, now leak-clean), `fuzz` (`cargo-fuzz` over the description.yml
+  parser, the `duckdb_string_t` decoder and the validators) and `semver`
+  (`cargo-semver-checks`). `tests/ffi_roundtrip.rs` is now linted — it is
+  feature-gated, so the plain clippy job had been compiling it away to nothing.
+
+- `extension-load` is now a matrix over `DuckDB` v1.4.4, v1.5.0, v1.5.5 and
+  `latest`, rather than one `releases/latest` run that silently retargeted
+  whenever `DuckDB` shipped. That is the README's compatibility claim, proven
+  rather than sampled.
+
+- New end-to-end coverage for nested types as scalar-function *input* — `LIST`
+  offsets that are cumulative rather than uniform, NULL elements inside a list,
+  a `MAP` key miss, and an `ARRAY`'s fixed stride across rows. Writing them was
+  already covered; reading them does raw offset arithmetic against a layout only
+  `DuckDB` defines, which a mock cannot check.
+
+- `AUDIT.md` records the full review: what was read, what was probed, what was
+  verified correct, and what is still open.
+
 ## [0.16.0] — 2026-08-19
 
 ### Security
@@ -1471,7 +1873,9 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 
 ---
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/tomtom215/quack-rs/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/tomtom215/quack-rs/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tomtom215/quack-rs/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tomtom215/quack-rs/compare/v0.12.1...v0.13.0
