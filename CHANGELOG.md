@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Aggregate function sets support a different return type per overload**
+  ([#121](https://github.com/tomtom215/quack-rs/issues/121)). `DuckDB` resolves
+  an aggregate overload from its **parameter types and arity only** — the return
+  type takes no part in resolution — so members of one set are free to return
+  different types, which is how `DuckDB`'s own `arg_max(ANY, ANY) -> ANY` and
+  `arg_max(ANY, ANY, ANY) -> ANY[]` coexist. quack-rs had the return type on
+  `AggregateFunctionSetBuilder` alone, which made that impossible to express.
+
+  `AggregateOverloadBuilder` now carries `returns` / `returns_logical`, and
+  `AggregateFunctionSetBuilder::overload(..)` takes one fully-configured
+  overload — mirroring `ScalarFunctionSetBuilder::overload` /
+  `ScalarOverloadBuilder`, which already worked this way:
+
+  ```rust
+  AggregateFunctionSetBuilder::new("my_agg")
+      .overload(
+          AggregateOverloadBuilder::new()
+              .param(TypeId::Integer)
+              .returns(TypeId::Integer)
+              // ... callbacks
+      )
+      .overload(
+          AggregateOverloadBuilder::new()
+              .param(TypeId::Varchar)
+              .returns(TypeId::Varchar)
+              // ... callbacks
+      )
+      .register(con)?;
+  ```
+
+  This is **additive**. `returns` / `returns_logical` on the *set* now act as a
+  default for every overload that does not set its own, so existing
+  `returns(..).overloads(range, ..)` code keeps working unchanged. Registration
+  fails, naming the overload index, only when an overload has neither its own
+  return type nor a set-level default.
+
+- **First end-to-end coverage of the aggregate function-set registration path**
+  (`tests/ffi_roundtrip.rs`). Neither the aggregate nor the scalar set builder
+  had an E2E test, despite Pitfall L6 — a set member whose name is unset is
+  dropped *silently*. Four new tests register a real three-overload set
+  (`BIGINT -> BIGINT`, `VARCHAR -> VARCHAR`, `(BIGINT, BIGINT) -> DECIMAL(18,2)`
+  via `returns_logical`), assert `typeof(..)` per overload, check the computed
+  values across multiple chunks and under `GROUP BY`, and cover the set-level
+  default and both rejection paths.
+
+### Changed
+
+- `AggregateFunctionSetBuilder::overloads` is unchanged, but the builder its
+  closure receives is now named `AggregateOverloadBuilder`, for symmetry with
+  `ScalarOverloadBuilder`. The old name remains as a deprecated type alias
+  (`quack_rs::aggregate::builder::OverloadBuilder`) and still compiles.
+- `AggregateOverloadBuilder` is exported from `quack_rs::aggregate` and from the
+  prelude. The old `OverloadBuilder` was reachable only at
+  `quack_rs::aggregate::builder::`, and had no public constructor, so a caller
+  could not build one outside an `overloads` closure.
+- `AggregateOverloadBuilder` moved to `src/aggregate/builder/overload.rs`,
+  keeping both it and `set.rs` inside the 500-line guideline in
+  `CONTRIBUTING.md`.
+
 ## [0.17.0] - 2026-08-21
 
 ### Security

@@ -104,6 +104,10 @@ cargo test
 # 2. Integration tests
 cargo test --test integration_test
 
+# 2b. Doctests — `--all-targets` does NOT include them, so they need their own
+#     run. For an SDK the rustdoc examples are part of the product.
+cargo test --doc --features duckdb-1-5-4
+
 # 3. Linting — zero warnings (warnings are treated as errors)
 cargo clippy --all-targets -- -D warnings
 
@@ -114,6 +118,9 @@ cargo fmt -- --check
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 # 6. MSRV — must compile on Rust 1.86.0 (matches CI; excludes benches which use criterion >=1.86)
+#    `+1.86.0` is required, not stylistic: `rust-toolchain.toml` pins
+#    `channel = "stable"` and a toolchain file overrides rustup's default, so a
+#    bare `cargo check` silently runs stable and checks nothing.
 cargo +1.86.0 check
 
 # 7. Live extension test — build hello-ext, package it, load in DuckDB 1.4.4 or 1.5.0

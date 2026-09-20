@@ -18,22 +18,58 @@ This directory contains all GitHub Actions workflows for the quack-rs project.
 
 ## Quality gates (enforced by CI)
 
-All of these must pass before merging any PR:
+Every job in `ci.yml` must be green before merging a PR, except the two marked
+informational. This table is generated from `ci.yml`; the hand-written list it
+replaced had drifted to fewer than half the jobs.
 
-1. `cargo check --all-targets`
-2. `cargo test --all-targets` (Linux, macOS, Windows)
-3. `cargo test --all-targets --features bundled-test` (Linux, macOS, Windows)
-4. `cargo clippy --all-targets -- -D warnings`
-5. `cargo fmt -- --check`
-6. `cargo doc --no-deps` (with `-D warnings`)
-7. `cargo +1.86.0 check` (MSRV)
-8. `cargo bench --no-run` (compile check)
-9. Example extension build + clippy + test
-10. Scaffold output compilation
-11. Entry point symbol verification (Linux/macOS)
-12. `cargo publish --dry-run`
-13. `cargo deny check` (license/advisory/source)
-14. Nightly Rust (informational, non-blocking)
+| Job ID | Name | |
+|---|---|---|
+| `check` | Check | blocking |
+| `test` | Test (${{ matrix.os }}) | blocking |
+| `test-bundled` | Test bundled-test (${{ matrix.os }}) | blocking |
+| `test-bundled-prebuilt` | Test bundled-test-prebuilt (prebuilt libduckdb) | blocking |
+| `test-duckdb-1-5` | Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features | blocking |
+| `wasm` | WASM (wasm32-unknown-emscripten) | blocking |
+| `clippy` | Clippy | blocking |
+| `clippy-beta` | Clippy (beta, informational) | informational |
+| `fmt` | Format | blocking |
+| `doc` | Documentation | blocking |
+| `msrv` | MSRV (1.86.0) | blocking |
+| `bench-compile` | Benchmark (compile check) | blocking |
+| `example-check` | Example (hello-ext · ${{ matrix.os }}) | blocking |
+| `scaffold-compile` | Scaffold (compile check) | blocking |
+| `symbol-check` | Symbol check (hello-ext · ${{ matrix.os }}) | blocking |
+| `abi-table` | ABI layout table (vs upstream DuckDB headers) | blocking |
+| `platform-table` | Platform list (vs upstream distribution matrix) | blocking |
+| `spdx-list` | SPDX shortlist (vs official registry) | blocking |
+| `msrv-vs-duckdb-ci` | MSRV vs DuckDB's extension CI | blocking |
+| `extension-load` | Extension load test (DuckDB ${{ matrix.duckdb }}) | blocking |
+| `scaffold-e2e` | Scaffold end-to-end (build, stamp, load, query) | blocking |
+| `abi-guard` | ABI guard rejects a cross-version unstable build | blocking |
+| `publish-dry-run` | Publish dry-run | blocking |
+| `security` | Security (cargo-deny) | blocking |
+| `osv-scan` | Security (OSV / GHSA) | blocking |
+| `nightly` | Nightly (informational) | informational |
+| `miri` | Miri (undefined behaviour) | blocking |
+| `leak-check` | LeakSanitizer (RAII wrappers vs a real DuckDB) | blocking |
+| `semver` | Public API (semver-checks) | blocking |
+| `fuzz` | Fuzz (smoke) | blocking |
+
+Regenerate after adding or renaming a job:
+
+```bash
+python3 - <<'EOF'
+import yaml, pathlib
+d = yaml.safe_load(pathlib.Path(".github/workflows/ci.yml").read_text())
+for k, j in d["jobs"].items():
+    kind = "informational" if j.get("continue-on-error") else "blocking"
+    print(f'| `{k}` | {j.get("name", k)} | {kind} |')
+EOF
+```
+
+Coverage (`coverage.yml`), mutation testing (`mutants.yml`), docs (`docs.yml`),
+benchmarks (`benchmarks.yml`) and release (`release.yml`) run in their own
+workflows.
 
 ## Adding a new workflow
 
