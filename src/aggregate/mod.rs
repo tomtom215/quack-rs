@@ -11,11 +11,16 @@
 //!   one fixed signature. Supports complex parameter types via
 //!   [`param_logical`][AggregateFunctionBuilder::param_logical] and complex
 //!   return types via [`returns_logical`][AggregateFunctionBuilder::returns_logical].
-//! - [`AggregateFunctionSetBuilder`]: Register a function set (multiple overloads
-//!   under one name) for functions with variadic signatures. Supports complex
-//!   return types via [`AggregateOverloadBuilder::returns_logical`] (or a set-wide
-//!   default via [`AggregateFunctionSetBuilder::returns_logical`]) and per-overload
-//!   complex parameters via [`AggregateOverloadBuilder::param_logical`].
+//! - [`AggregateFunctionSetBuilder`]: Register a function set — several
+//!   overloads under one name, differing in arity (the variadic case, since
+//!   `DuckDB` has no aggregate varargs), in parameter types, or in **return
+//!   type**. `DuckDB` resolves an overload from its parameter types and arity
+//!   alone, so each may return something different. Set it per overload with
+//!   [`AggregateOverloadBuilder::returns`] /
+//!   [`returns_logical`][AggregateOverloadBuilder::returns_logical], or once on
+//!   the set as a default via
+//!   [`AggregateFunctionSetBuilder::returns_logical`]. Complex parameter types
+//!   go through [`AggregateOverloadBuilder::param_logical`].
 //!
 //! # Pitfalls solved
 //!

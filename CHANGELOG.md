@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails, naming the overload index, only when an overload has neither its own
   return type nor a set-level default.
 
+- Unit tests asserting that every `AggregateOverloadBuilder` callback setter
+  stores into its own field. These setters are `const fn`, which makes their
+  cargo-mutants mutants **unviable** rather than caught — `Default::default()`
+  cannot be called in a const context, so the replacement fails to compile and
+  the mutation gate is structurally silent about them. That is a property of
+  the gate, not evidence the setters work.
+
 - **An AddressSanitizer job** (`ci.yml`, informational until it has a green
   run). `leak-check` answers "did we forget a destructor"; ASAN answers "did we
   write outside an allocation, or use one after free" — the class behind the two

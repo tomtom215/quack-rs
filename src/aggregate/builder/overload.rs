@@ -172,6 +172,12 @@ impl AggregateOverloadBuilder {
     ///
     /// If both `returns` and `returns_logical` are called on the same overload,
     /// the logical type takes precedence.
+    // Building a `LogicalType` calls `duckdb_create_logical_type`, which panics
+    // without a live dispatch table, so no `--lib` test can assert on what this
+    // stores. Covered end-to-end instead, by the DECIMAL(18,2) overload in
+    // `one_aggregate_set_serves_overloads_with_different_return_types`. Same
+    // reasoning as `ScalarOverloadBuilder::returns_logical`.
+    #[mutants::skip] // tested via E2E
     pub fn returns_logical(mut self, logical_type: LogicalType) -> Self {
         self.return_logical = Some(logical_type);
         self

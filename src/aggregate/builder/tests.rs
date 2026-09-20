@@ -4,6 +4,9 @@
 // and encouraging more Rust development!
 
 use super::*;
+use crate::aggregate::callbacks::{
+    CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn,
+};
 use crate::types::{NullHandling, TypeId};
 use libduckdb_sys::{
     duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t,
@@ -37,6 +40,7 @@ unsafe extern "C" fn sf(
     _: idx_t,
 ) {
 }
+unsafe extern "C" fn sd(_: *mut duckdb_aggregate_state, _: idx_t) {}
 
 // Verify that AggregateFunctionBuilder stores name correctly
 #[test]
@@ -114,6 +118,74 @@ fn overload_builder_default_matches_new() {
     assert!(d.return_type.is_none());
     assert!(d.return_logical.is_none());
     assert_eq!(d.null_handling, NullHandling::DefaultNullHandling);
+}
+
+// The callback setters are `const fn`, which makes their cargo-mutants mutants
+// *unviable* rather than caught: the replacement `Default::default()` cannot be
+// called in a const context, so it fails to compile and the mutation gate is
+// structurally silent about them. That is a property of the gate, not evidence
+// the setters work -- so assert it directly.
+#[test]
+fn every_overload_setter_stores_into_its_own_field() {
+    let ob = AggregateOverloadBuilder::new()
+        .state_size(ss)
+        .init(si)
+        .update(su)
+        .combine(sc)
+        .finalize(sf)
+        .destructor(sd)
+        .null_handling(NullHandling::SpecialNullHandling);
+
+    // Each field is set, and each holds the pointer it was given -- a setter
+    // writing to the wrong field would leave another one `None`.
+    assert!(ob.state_size.is_some(), "state_size");
+    assert!(ob.init.is_some(), "init");
+    assert!(ob.update.is_some(), "update");
+    assert!(ob.combine.is_some(), "combine");
+    assert!(ob.finalize.is_some(), "finalize");
+    assert!(ob.destructor.is_some(), "destructor");
+    assert_eq!(ob.null_handling, NullHandling::SpecialNullHandling);
+
+    assert!(std::ptr::fn_addr_eq(
+        ob.state_size.unwrap(),
+        ss as StateSizeFn
+    ));
+    assert!(std::ptr::fn_addr_eq(ob.init.unwrap(), si as StateInitFn));
+    assert!(std::ptr::fn_addr_eq(ob.update.unwrap(), su as UpdateFn));
+    assert!(std::ptr::fn_addr_eq(ob.combine.unwrap(), sc as CombineFn));
+    assert!(std::ptr::fn_addr_eq(ob.finalize.unwrap(), sf as FinalizeFn));
+    assert!(std::ptr::fn_addr_eq(
+        ob.destructor.unwrap(),
+        sd as DestroyFn
+    ));
+}
+
+#[test]
+fn a_setter_left_unset_stays_none() {
+    // The complement of the test above: nothing is set by default, so the
+    // assertions there cannot pass vacuously.
+    let ob = AggregateOverloadBuilder::new();
+    assert!(ob.state_size.is_none());
+    assert!(ob.init.is_none());
+    assert!(ob.update.is_none());
+    assert!(ob.combine.is_none());
+    assert!(ob.finalize.is_none());
+    assert!(ob.destructor.is_none());
+    assert_eq!(ob.null_handling, NullHandling::DefaultNullHandling);
+}
+
+#[test]
+fn the_set_builder_reports_its_own_name() {
+    assert_eq!(
+        AggregateFunctionSetBuilder::new("retention").name(),
+        "retention"
+    );
+    assert_eq!(
+        AggregateFunctionSetBuilder::try_new("word_count")
+            .expect("valid name")
+            .name(),
+        "word_count"
+    );
 }
 
 #[test]
