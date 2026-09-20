@@ -4,9 +4,6 @@
 // and encouraging more Rust development!
 
 use super::*;
-use crate::aggregate::callbacks::{
-    CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn,
-};
 use crate::types::{NullHandling, TypeId};
 use libduckdb_sys::{
     duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t,
@@ -114,7 +111,7 @@ fn overload_builder_params() {
 #[test]
 fn overload_builder_default_matches_new() {
     let d = AggregateOverloadBuilder::default();
-    assert!(d.params.is_empty());
+    assert_eq!(d.params.len(), 0);
     assert!(d.return_type.is_none());
     assert!(d.return_logical.is_none());
     assert_eq!(d.null_handling, NullHandling::DefaultNullHandling);
@@ -136,8 +133,18 @@ fn every_overload_setter_stores_into_its_own_field() {
         .destructor(sd)
         .null_handling(NullHandling::SpecialNullHandling);
 
-    // Each field is set, and each holds the pointer it was given -- a setter
-    // writing to the wrong field would leave another one `None`.
+    // Six setters, six fields, every one `Some`. That is complete: a setter
+    // cannot store into another callback's field, because `StateSizeFn`,
+    // `StateInitFn`, `UpdateFn`, `CombineFn`, `FinalizeFn` and `DestroyFn` are
+    // six distinct `extern "C"` signatures and any cross-wiring fails to
+    // compile. If a setter wrote to the wrong field, another would be `None`.
+    //
+    // An earlier version also compared each stored pointer against its input
+    // with `std::ptr::fn_addr_eq`. That was unsound, not just redundant: the
+    // function's own documentation says pointers to the same function may
+    // compare unequal, because codegen may emit more than one address for it.
+    // Miri models that and failed the `state_size` comparison while the native
+    // build happened to pass -- caught by the Miri job this branch repaired.
     assert!(ob.state_size.is_some(), "state_size");
     assert!(ob.init.is_some(), "init");
     assert!(ob.update.is_some(), "update");
@@ -145,19 +152,6 @@ fn every_overload_setter_stores_into_its_own_field() {
     assert!(ob.finalize.is_some(), "finalize");
     assert!(ob.destructor.is_some(), "destructor");
     assert_eq!(ob.null_handling, NullHandling::SpecialNullHandling);
-
-    assert!(std::ptr::fn_addr_eq(
-        ob.state_size.unwrap(),
-        ss as StateSizeFn
-    ));
-    assert!(std::ptr::fn_addr_eq(ob.init.unwrap(), si as StateInitFn));
-    assert!(std::ptr::fn_addr_eq(ob.update.unwrap(), su as UpdateFn));
-    assert!(std::ptr::fn_addr_eq(ob.combine.unwrap(), sc as CombineFn));
-    assert!(std::ptr::fn_addr_eq(ob.finalize.unwrap(), sf as FinalizeFn));
-    assert!(std::ptr::fn_addr_eq(
-        ob.destructor.unwrap(),
-        sd as DestroyFn
-    ));
 }
 
 #[test]
@@ -271,7 +265,7 @@ fn an_empty_set_is_rejected_before_any_return_type_check() {
     // Registration needs a live connection, so assert the precondition the
     // error path keys off: no overloads and no return type at all.
     let b = AggregateFunctionSetBuilder::new("empty");
-    assert!(b.overloads.is_empty());
+    assert_eq!(b.overloads.len(), 0);
     assert!(b.return_type.is_none());
 }
 
