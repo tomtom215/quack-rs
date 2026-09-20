@@ -34,14 +34,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-mutants
-        run: cargo install cargo-mutants --locked
+        env:
+          # Do not build third-party tools with warnings-as-errors:
+          # a new rustc warning in any of their dependencies would
+          # break CI for a reason unrelated to this repo.
+          RUSTFLAGS: ""
+        run: cargo install cargo-mutants --locked --version "27.1.0"
 
       - name: Run mutation tests
         id: mutants
@@ -145,16 +150,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-mutants
-        run: cargo install cargo-mutants --locked
+        env:
+          # Do not build third-party tools with warnings-as-errors:
+          # a new rustc warning in any of their dependencies would
+          # break CI for a reason unrelated to this repo.
+          RUSTFLAGS: ""
+        run: cargo install cargo-mutants --locked --version "27.1.0"
 
       - name: Determine changed files
         id: changed

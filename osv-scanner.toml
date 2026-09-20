@@ -4,28 +4,22 @@
 # the osv-scan job re-proves each justification before the scan runs, so a
 # suppression cannot outlive the reason it was granted.
 
-[[IgnoredVulns]]
-id = "RUSTSEC-2026-0235"
-reason = """
-rkyv 0.7.46 is never compiled, on any feature combination or target.
-
-quack-rs -> duckdb (optional dependency, enabled by `bundled-test`) -> \
-rust_decimal 1.40.0 -> rkyv (optional feature of rust_decimal, not enabled). \
-rust_decimal itself IS built under `bundled-test`; rkyv is not, because \
-nothing turns that feature on. Under `cargo tree --all-features --target all \
--e normal,build` the tree contains exactly one rust_decimal node and zero \
-rkyv nodes, and `cargo tree -i rkyv --target all` finds no active reverse \
-edge. Cargo still records rkyv in Cargo.lock, because the lockfile pins \
-optional dependencies whether or not their feature is on, and osv-scanner \
-reads the lockfile rather than the build graph -- so it reports a crate that \
-no build of this project links. The graph-aware `Security (cargo-deny)` job \
-passes on this same lockfile.
-
-It also cannot be fixed from here: rust_decimal 1.40 constrains rkyv to ^0.7, \
-so `cargo update -p rkyv` resolves nothing, and the fixed version is 0.8.17.
-
-Remove this entry once rust_decimal releases a version pinning rkyv ^0.8. The \
-"suppressed advisory is still unreachable" step in the osv-scan job fails the \
-build if an rkyv node ever appears in the tree, which is what keeps this \
-suppression honest.
-"""
+# No suppressions are active.
+#
+# RUSTSEC-2026-0235 (rkyv 0.7.46) was suppressed here until 2026-09-20. It was
+# reachable only as quack-rs -> duckdb -> rust_decimal -> rkyv, and the entry
+# was written to be removed once that path disappeared. It has: in duckdb
+# 1.10505.0 `rust_decimal` became an OPTIONAL dependency (it was required in
+# 1.10504.0 -- diffed against the crates.io index for both versions), and
+# quack-rs does not enable the feature that turns it on. rust_decimal and rkyv
+# are both absent from Cargo.lock, and osv-scanner reads the lockfile, so there
+# is nothing left to suppress.
+#
+# Unrelated but in the same relock: libduckdb-sys 1.10505.0 swapped its
+# `reqwest` build-dependency for `ureq`, which is most of why the lockfile lost
+# 100 packages net (hyper, tokio, quinn, rustls and their trees). That change
+# does not touch rkyv.
+#
+# The `Confirm the suppressed advisory is still unreachable` step in the
+# osv-scan job existed solely to keep that entry honest, and was removed with
+# it. Re-add both together if a future suppression is ever needed.

@@ -18,7 +18,7 @@ This directory contains all GitHub Actions workflows for the quack-rs project.
 
 ## Quality gates (enforced by CI)
 
-Every job in `ci.yml` must be green before merging a PR, except the two marked
+Every job in `ci.yml` must be green before merging a PR, except the three marked
 informational. This table is generated from `ci.yml`; the hand-written list it
 replaced had drifted to fewer than half the jobs.
 
@@ -52,6 +52,7 @@ replaced had drifted to fewer than half the jobs.
 | `nightly` | Nightly (informational) | informational |
 | `miri` | Miri (undefined behaviour) | blocking |
 | `leak-check` | LeakSanitizer (RAII wrappers vs a real DuckDB) | blocking |
+| `asan` | AddressSanitizer (informational) | informational |
 | `semver` | Public API (semver-checks) | blocking |
 | `fuzz` | Fuzz (smoke) | blocking |
 

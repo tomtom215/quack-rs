@@ -30,7 +30,7 @@ jobs:
     name: Test coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -38,16 +38,21 @@ jobs:
         with:
           components: llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        env:
+          # Do not build third-party tools with warnings-as-errors:
+          # a new rustc warning in any of their dependencies would
+          # break CI for a reason unrelated to this repo.
+          RUSTFLAGS: ""
+        run: cargo install cargo-llvm-cov --locked --version "0.9.1"
 
       - name: Generate coverage report
         run: cargo llvm-cov --all-targets --all-features --lcov --output-path lcov.info
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: lcov.info
           fail_ci_if_error: false

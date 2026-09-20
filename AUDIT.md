@@ -352,6 +352,7 @@ memory is the harder half.
 |---|---|---|
 | `miri` | Pointer provenance, aliasing, initialisation, leaks, over the pure-Rust half | Found D5 and D4. Ran with default features until 2026-09, which `cfg`'d out every `duckdb-1-5*` module — including `src/arrow.rs`, the largest block of pure-Rust `unsafe` in the crate. Now runs `--features duckdb-1-5-4`, so the claim in this row is true for the first time. |
 | `leak-check` | LeakSanitizer over the end-to-end suite against a real libduckdb — the only way a missing `duckdb_destroy_*` is visible | Found D6; now zero leaks across 58 end-to-end tests |
+| `asan` | AddressSanitizer over the same suite — out-of-bounds writes and use-after-free, the class behind the two heap-corruption defects in v0.16.0. Added 2026-09-20, informational until it has a green run on main. | — |
 | `fuzz` | `cargo-fuzz` over the description.yml parser, the `duckdb_string_t` decoder and the validators | ~32M execs, no crashes |
 | `semver` | `cargo-semver-checks` against the published crate — the API *is* the product | — |
 

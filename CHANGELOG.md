@@ -45,6 +45,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fails, naming the overload index, only when an overload has neither its own
   return type nor a set-level default.
 
+- **An AddressSanitizer job** (`ci.yml`, informational until it has a green
+  run). `leak-check` answers "did we forget a destructor"; ASAN answers "did we
+  write outside an allocation, or use one after free" — the class behind the two
+  heap-corruption defects fixed in v0.16.0, and the one a crate doing raw
+  pointer arithmetic into DuckDB's memory is most exposed to. Miri cannot reach
+  those paths: they call foreign functions.
+- **`scripts/duckdb-version-from-lock.sh`** — derives the DuckDB release tag
+  from the `libduckdb-sys` pin in `Cargo.lock` (1.10505.0 → v1.5.5). Two CI jobs
+  hard-coded `v1.5.4` next to a comment asking the next person to keep it in
+  sync with the dependency; bumping the lockfile would have left both linking a
+  libduckdb one release older than the bindings being generated against it.
+  Self-tested against all six known version mappings, including the pre-1.5
+  scheme.
+- **`scripts/sync-book-changelog.py`** — the book's changelog page is now
+  generated from `CHANGELOG.md`, with a `--check` mode wired into the `doc` job.
+  Kept by hand, the mirror had fallen ~19 KB behind and the *published* 0.16.0
+  entry was missing its entire "Portability and feature-combination breakage"
+  subsection. The only deliberate difference, an em dash in release headings,
+  is applied by the script.
+- `timeout-minutes` on all 31 `ci.yml` jobs. The default is 360 per job, so a
+  hang in `test-bundled` (which compiles DuckDB from C++ source) or
+  `leak-check` (`-Zbuild-std`) burned six hours of runner time.
+
 - **First end-to-end coverage of the aggregate function-set registration path**
   (`tests/ffi_roundtrip.rs`). Neither the aggregate nor the scalar set builder
   had an E2E test, despite Pitfall L6 — a set member whose name is unset is
@@ -67,6 +90,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AggregateOverloadBuilder` moved to `src/aggregate/builder/overload.rs`,
   keeping both it and `set.rs` inside the 500-line guideline in
   `CONTRIBUTING.md`.
+### Fixed
+
+- **`ScalarBindInfo::set_bind_data_copy`** — scalar bind data was silently lost
+  whenever `DuckDB` copied a bound expression. `CScalarFunctionBindData::Copy()`
+  populates the copy's bind data only if a copy callback is registered, and
+  quack-rs never exposed the setter, so `get_bind_data` could return null on a
+  copied expression: a wrong answer, not a crash.
+- **Four CI quality gates were testing nothing**, each verified against the
+  files rather than inferred:
+  - The MSRV job (`ci.yml`) and the release gate's MSRV entry ran a bare
+    `cargo check` after selecting 1.86.0. `rust-toolchain.toml` pins
+    `channel = "stable"` and a toolchain file overrides the rustup default, so
+    both ran stable. Now `cargo +1.86.0 check`.
+  - `clippy-beta` ran stable clippy for the same reason.
+  - Miri ran with default features, `cfg`-ing out every `duckdb-1-5*` module —
+    including `src/arrow.rs`, the largest block of pure-Rust `unsafe` here.
+  - Doctests were never compiled: every invocation used `--all-targets`, which
+    excludes them. All 183 pass.
+- `release.yml` still used `fail-fast: true`, the setting `LESSONS.md` blames
+  for a release that shipped with two platforms broken.
+- `MUTANTS_EXIT` captured `tee`'s status rather than cargo-mutants'.
+- `SECURITY.md` recommended `panic = "abort"`; that makes `catch_unwind` inert
+  and disables the crate's entire panic-containment mechanism. `Cargo.toml` has
+  always set `unwind`, and `validate_release_profile` rejects `abort`.
+- `RELEASING.md` Step 1 listed 9 check names against 30 CI jobs, and
+  `.github/workflows/README.md` listed 14. A maintainer following either could
+  tag with Miri, LeakSanitizer, `osv-scan` or `semver` red. The workflow README
+  now carries a table generated from `ci.yml`, with the generator inline.
+
+### Security
+
+- **The one active advisory suppression is gone, because the crate behind it
+  is.** RUSTSEC-2026-0235 (`rkyv` 0.7.46) was suppressed in `osv-scanner.toml`,
+  reachable only as quack-rs → `duckdb` → `rust_decimal` → `rkyv`. In `duckdb`
+  1.10505.0 `rust_decimal` became an **optional** dependency (it was required
+  in 1.10504.0), and quack-rs does not enable it — so neither crate is in
+  `Cargo.lock` any more. Both the suppression and the CI step that re-proved it
+  have been removed.
+- **`cargo deny` was scanning the wrong dependency graph.** `deny.toml` had
+  `graph.all-features = false`; since `duckdb` is optional and the crate
+  declares no `default` feature, neither the advisory scan nor the license scan
+  ever evaluated `duckdb`, `arrow`, `chrono` or `rust_decimal`. Now
+  `all-features = true`.
+- `ci.yml` and `mutants.yml` — the two workflows that build and execute
+  pull-request code — had no `permissions:` block, so the token inherited the
+  repository default. Both now take `contents: read`.
+- `mutants.yml` interpolated a PR-derived file list straight into a `run:`
+  block, where `$(...)` expands before bash parses the script. Moved to `env:`.
+- `persist-credentials: false` on all 42 `actions/checkout` steps.
+
+### Dependencies
+
+- `libduckdb-sys` / `duckdb` 1.10504.0 → **1.10505.0** (DuckDB 1.5.4 → 1.5.5),
+  `cc` 1.2.64 → 1.4.7, `arrow` 58.1.0 → 58.4.0. The relock removed **100
+  packages net**: `libduckdb-sys` 1.10505.0 swapped its `reqwest`
+  build-dependency for `ureq`, taking the hyper/tokio/quinn/rustls trees with
+  it. MSRV is unchanged at 1.86.0.
+- **No `duckdb-1-5-5` feature was added, deliberately.** DuckDB 1.5.5 adds no C
+  Extension API surface: `extension_api.hpp` is byte-identical between v1.5.4
+  and v1.5.5 (sha256 `0232a22a…3017031`, 89456 bytes, 546 function pointers in
+  each). There would be nothing to gate. See the note in `Cargo.toml`.
+- GitHub Actions, each SHA resolved against the upstream tag: `actions/checkout`
+  v7.0.0 → v7.0.1, `Swatinem/rust-cache` v2.9.1 → v2.9.2,
+  `codecov/codecov-action` v7.0.0 → v7.1.1,
+  `actions/attest-build-provenance` v4.1.1 → v4.2.2, `actions/deploy-pages`
+  v5.0.0 → v5.0.1. The `actions/configure-pages` pin was already v6.0.0; only
+  its comment said v5.0.0.
+- Pinned the four CI tools installed unpinned (`cargo-mutants` 27.1.0,
+  `cargo-semver-checks` 0.50.0, `cargo-llvm-cov` 0.9.1, `cargo-fuzz` 0.13.2).
+  `mutants.yml` reasons about behaviour introduced in cargo-mutants 27.0.0,
+  which held only by luck of whatever `cargo install` fetched. Every
+  `cargo install` step now also clears the workflow-wide
+  `RUSTFLAGS: "-D warnings"`, which was compiling third-party trees with
+  warnings-as-errors.
+
 
 ## [0.17.0] - 2026-08-21
 
