@@ -1086,6 +1086,489 @@ fn an_aggregate_function_computes_across_chunks() {
     }
 }
 
+// ─── Aggregate function sets ─────────────────────────────────────────────────
+
+/// Three overloads of one aggregate name, each with a **different** return type
+/// (issue #121). `DuckDB` resolves an aggregate overload from its parameter
+/// types and arity alone, so the return type is free to vary between members of
+/// a set — this is how `arg_max(ANY, ANY) -> ANY` and
+/// `arg_max(ANY, ANY, ANY) -> ANY[]` coexist upstream.
+///
+/// This is also the first end-to-end exercise of the function-set registration
+/// path itself, which carries Pitfall L6: a member whose name is not set is
+/// dropped *silently*, so only running SQL against every overload proves the
+/// whole set registered.
+mod multi_return_agg {
+    use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, idx_t};
+    use quack_rs::aggregate::{AggregateState, FfiState};
+    use quack_rs::data_chunk::DataChunk;
+    use quack_rs::vector::VectorWriter;
+
+    // Overload 1: my_agg(BIGINT) -> BIGINT, a sum.
+    #[derive(Default)]
+    pub struct SumState {
+        pub total: i64,
+        pub seen: u64,
+    }
+    impl AggregateState for SumState {}
+
+    pub unsafe extern "C" fn sum_update(
+        _info: duckdb_function_info,
+        input: duckdb_data_chunk,
+        states: *mut duckdb_aggregate_state,
+    ) {
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        let reader = unsafe { chunk.reader(0) };
+        for row in 0..chunk.size() {
+            let Some(state) = (unsafe { FfiState::<SumState>::with_state_mut(*states.add(row)) })
+            else {
+                continue;
+            };
+            if unsafe { reader.is_valid(row) } {
+                state.total += unsafe { reader.read_i64(row) };
+                state.seen += 1;
+            }
+        }
+    }
+
+    pub unsafe extern "C" fn sum_combine(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        target: *mut duckdb_aggregate_state,
+        count: idx_t,
+    ) {
+        for i in 0..count as usize {
+            let Some((total, seen)) = (unsafe { FfiState::<SumState>::with_state(*source.add(i)) })
+                .map(|s| (s.total, s.seen))
+            else {
+                continue;
+            };
+            if let Some(tgt) = unsafe { FfiState::<SumState>::with_state_mut(*target.add(i)) } {
+                // Pitfall L1: propagate every field, not just the one under test.
+                tgt.total += total;
+                tgt.seen += seen;
+            }
+        }
+    }
+
+    pub unsafe extern "C" fn sum_finalize(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        result: libduckdb_sys::duckdb_vector,
+        count: idx_t,
+        offset: idx_t,
+    ) {
+        let mut writer = unsafe { VectorWriter::from_vector(result) };
+        for i in 0..count as usize {
+            let row = offset as usize + i;
+            match unsafe { FfiState::<SumState>::with_state(*source.add(i)) } {
+                Some(s) if s.seen > 0 => unsafe { writer.write_i64(row, s.total) },
+                _ => unsafe { writer.set_null(row) },
+            }
+        }
+    }
+
+    // Overload 2: my_agg(VARCHAR) -> VARCHAR, the longest string seen.
+    // A heap-owning state, so the destructor path is exercised too.
+    #[derive(Default)]
+    pub struct LongestState {
+        pub best: String,
+        pub seen: u64,
+    }
+    impl AggregateState for LongestState {}
+
+    fn keep_longer(best: &mut String, candidate: &str) {
+        // Ties resolve to the lexicographically smaller string so the result is
+        // deterministic regardless of chunk or thread order.
+        if candidate.len() > best.len()
+            || (candidate.len() == best.len() && candidate < best.as_str())
+        {
+            best.clear();
+            best.push_str(candidate);
+        }
+    }
+
+    pub unsafe extern "C" fn longest_update(
+        _info: duckdb_function_info,
+        input: duckdb_data_chunk,
+        states: *mut duckdb_aggregate_state,
+    ) {
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        let reader = unsafe { chunk.reader(0) };
+        for row in 0..chunk.size() {
+            if !unsafe { reader.is_valid(row) } {
+                continue;
+            }
+            let value = unsafe { reader.read_str(row) };
+            let Some(state) =
+                (unsafe { FfiState::<LongestState>::with_state_mut(*states.add(row)) })
+            else {
+                continue;
+            };
+            if state.seen == 0 {
+                state.best.push_str(value);
+            } else {
+                keep_longer(&mut state.best, value);
+            }
+            state.seen += 1;
+        }
+    }
+
+    pub unsafe extern "C" fn longest_combine(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        target: *mut duckdb_aggregate_state,
+        count: idx_t,
+    ) {
+        for i in 0..count as usize {
+            let Some((best, seen)) =
+                (unsafe { FfiState::<LongestState>::with_state(*source.add(i)) })
+                    .map(|s| (s.best.clone(), s.seen))
+            else {
+                continue;
+            };
+            if seen == 0 {
+                continue;
+            }
+            if let Some(tgt) = unsafe { FfiState::<LongestState>::with_state_mut(*target.add(i)) } {
+                if tgt.seen == 0 {
+                    tgt.best = best;
+                } else {
+                    keep_longer(&mut tgt.best, &best);
+                }
+                tgt.seen += seen;
+            }
+        }
+    }
+
+    pub unsafe extern "C" fn longest_finalize(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        result: libduckdb_sys::duckdb_vector,
+        count: idx_t,
+        offset: idx_t,
+    ) {
+        let mut writer = unsafe { VectorWriter::from_vector(result) };
+        for i in 0..count as usize {
+            let row = offset as usize + i;
+            match unsafe { FfiState::<LongestState>::with_state(*source.add(i)) } {
+                Some(s) if s.seen > 0 => unsafe { writer.write_varchar(row, &s.best) },
+                _ => unsafe { writer.set_null(row) },
+            }
+        }
+    }
+
+    // Overload 3: my_agg(BIGINT, BIGINT) -> DECIMAL(18, 2), a two-argument sum
+    // scaled into a type no bare `TypeId` can express, so `returns_logical` on
+    // the overload is what makes it registerable.
+    #[derive(Default)]
+    pub struct PairState {
+        pub total: i64,
+        pub seen: u64,
+    }
+    impl AggregateState for PairState {}
+
+    pub unsafe extern "C" fn pair_update(
+        _info: duckdb_function_info,
+        input: duckdb_data_chunk,
+        states: *mut duckdb_aggregate_state,
+    ) {
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        let a = unsafe { chunk.reader(0) };
+        let b = unsafe { chunk.reader(1) };
+        for row in 0..chunk.size() {
+            if !unsafe { a.is_valid(row) } || !unsafe { b.is_valid(row) } {
+                continue;
+            }
+            let delta = unsafe { a.read_i64(row) } + unsafe { b.read_i64(row) };
+            if let Some(state) = unsafe { FfiState::<PairState>::with_state_mut(*states.add(row)) }
+            {
+                state.total += delta;
+                state.seen += 1;
+            }
+        }
+    }
+
+    pub unsafe extern "C" fn pair_combine(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        target: *mut duckdb_aggregate_state,
+        count: idx_t,
+    ) {
+        for i in 0..count as usize {
+            let Some((total, seen)) =
+                (unsafe { FfiState::<PairState>::with_state(*source.add(i)) })
+                    .map(|s| (s.total, s.seen))
+            else {
+                continue;
+            };
+            if let Some(tgt) = unsafe { FfiState::<PairState>::with_state_mut(*target.add(i)) } {
+                tgt.total += total;
+                tgt.seen += seen;
+            }
+        }
+    }
+
+    /// Same state as `pair_finalize`, but writes the plain total -- used by the
+    /// overload whose return type comes from the set-level BIGINT default.
+    pub unsafe extern "C" fn pair_finalize_raw(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        result: libduckdb_sys::duckdb_vector,
+        count: idx_t,
+        offset: idx_t,
+    ) {
+        let mut writer = unsafe { VectorWriter::from_vector(result) };
+        for i in 0..count as usize {
+            let row = offset as usize + i;
+            match unsafe { FfiState::<PairState>::with_state(*source.add(i)) } {
+                Some(s) if s.seen > 0 => unsafe { writer.write_i64(row, s.total) },
+                _ => unsafe { writer.set_null(row) },
+            }
+        }
+    }
+
+    pub unsafe extern "C" fn pair_finalize(
+        _info: duckdb_function_info,
+        source: *mut duckdb_aggregate_state,
+        result: libduckdb_sys::duckdb_vector,
+        count: idx_t,
+        offset: idx_t,
+    ) {
+        // DECIMAL(18, 2) is physically an i64 of hundredths.
+        let mut writer = unsafe { VectorWriter::from_vector(result) };
+        for i in 0..count as usize {
+            let row = offset as usize + i;
+            match unsafe { FfiState::<PairState>::with_state(*source.add(i)) } {
+                Some(s) if s.seen > 0 => unsafe { writer.write_i64(row, s.total * 100) },
+                _ => unsafe { writer.set_null(row) },
+            }
+        }
+    }
+}
+
+#[test]
+fn one_aggregate_set_serves_overloads_with_different_return_types() {
+    use multi_return_agg as m;
+    use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder, FfiState};
+
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        AggregateFunctionSetBuilder::try_new("my_agg")
+            .expect("name")
+            .overload(
+                AggregateOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .returns(TypeId::BigInt)
+                    .state_size(FfiState::<m::SumState>::size_callback)
+                    .init(FfiState::<m::SumState>::init_callback)
+                    .update(m::sum_update)
+                    .combine(m::sum_combine)
+                    .finalize(m::sum_finalize)
+                    .destructor(FfiState::<m::SumState>::destroy_callback),
+            )
+            .overload(
+                AggregateOverloadBuilder::new()
+                    .param(TypeId::Varchar)
+                    .returns(TypeId::Varchar)
+                    .state_size(FfiState::<m::LongestState>::size_callback)
+                    .init(FfiState::<m::LongestState>::init_callback)
+                    .update(m::longest_update)
+                    .combine(m::longest_combine)
+                    .finalize(m::longest_finalize)
+                    .destructor(FfiState::<m::LongestState>::destroy_callback),
+            )
+            .overload(
+                AggregateOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .param(TypeId::BigInt)
+                    .returns_logical(LogicalType::decimal(18, 2))
+                    .state_size(FfiState::<m::PairState>::size_callback)
+                    .init(FfiState::<m::PairState>::init_callback)
+                    .update(m::pair_update)
+                    .combine(m::pair_combine)
+                    .finalize(m::pair_finalize)
+                    .destructor(FfiState::<m::PairState>::destroy_callback),
+            )
+            .register(fx.con())
+            .expect("register my_agg set");
+    }
+
+    // Every overload is present under one name, and DuckDB picked each by its
+    // argument types alone.
+    assert_eq!(
+        fx.scalar(
+            "SELECT typeof(my_agg(i)) FROM range(3) t(i)",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some("BIGINT")
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT typeof(my_agg(s)) FROM (SELECT 'a' AS s) t",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some("VARCHAR")
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT typeof(my_agg(i, i)) FROM range(3) t(i)",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some("DECIMAL(18,2)")
+    );
+
+    // ...and each one computes the right answer. More rows than one vector
+    // holds, so DuckDB uses several chunks and therefore `combine`.
+    let rows = quack_rs::vector::vector_size() * 4;
+    let expected: i64 = (0..rows as i64).sum();
+    assert_eq!(
+        fx.scalar(
+            &format!("SELECT my_agg(i) FROM range({rows}) t(i)"),
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(expected)
+    );
+
+    assert_eq!(
+        fx.scalar(
+            "SELECT my_agg(s) FROM (VALUES ('aa'), ('bbbb'), ('c'), ('dddd')) t(s)",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        // 'bbbb' and 'dddd' tie on length; the smaller one wins.
+        Some("bbbb")
+    );
+
+    assert_eq!(
+        fx.scalar(
+            &format!("SELECT my_agg(i, i)::VARCHAR FROM range({rows}) t(i)"),
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some(format!("{}.00", expected * 2).as_str())
+    );
+
+    // GROUP BY drives many independent states through finalize at a non-zero
+    // offset, on the VARCHAR overload where the state owns a heap allocation.
+    let mut result = fx.query(
+        "SELECT g, my_agg(s) FROM (SELECT i % 3 AS g, repeat('x', (i % 5) + 1) AS s \
+         FROM range(300) t(i)) GROUP BY g ORDER BY g",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    assert_eq!(chunk.size(), 3);
+    for row in 0..3usize {
+        // SAFETY: column 0 is BIGINT, column 1 is VARCHAR, `row` is in bounds.
+        // `read_str` borrows the reader, so the reader must outlive the &str.
+        let g_reader = unsafe { chunk.reader(0) };
+        let s_reader = unsafe { chunk.reader(1) };
+        let (g, longest) = unsafe { (g_reader.read_i64(row), s_reader.read_str(row)) };
+        let want: String = (0..300i64)
+            .filter(|i| i % 3 == g)
+            .map(|i| "x".repeat(((i % 5) + 1) as usize))
+            .max_by_key(String::len)
+            .expect("each group is non-empty");
+        assert_eq!(longest, want, "group {g}");
+    }
+}
+
+#[test]
+fn an_aggregate_set_return_type_falls_back_to_the_set_level_default() {
+    use multi_return_agg as m;
+    use quack_rs::aggregate::{AggregateFunctionSetBuilder, FfiState};
+
+    let fx = Fixture::open();
+
+    // No overload sets a return type: the set-level default covers all of them.
+    // This is the pre-issue-#121 shape, kept working.
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        AggregateFunctionSetBuilder::new("default_ret_agg")
+            .returns(TypeId::BigInt)
+            .overloads(1..=2, |n, builder| {
+                let builder = (0..n).fold(builder, |b, _| b.param(TypeId::BigInt));
+                builder
+                    .state_size(FfiState::<m::PairState>::size_callback)
+                    .init(FfiState::<m::PairState>::init_callback)
+                    .update(if n == 1 {
+                        m::sum_update
+                    } else {
+                        m::pair_update
+                    })
+                    .combine(m::pair_combine)
+                    .finalize(m::pair_finalize_raw)
+                    .destructor(FfiState::<m::PairState>::destroy_callback)
+            })
+            .register(fx.con())
+            .expect("register default_ret_agg set");
+    }
+
+    assert_eq!(
+        fx.scalar(
+            "SELECT typeof(default_ret_agg(i)) FROM range(3) t(i)",
+            |r, i| unsafe { r.read_str(i).to_owned() }
+        )
+        .as_deref(),
+        Some("BIGINT")
+    );
+    assert_eq!(
+        fx.scalar("SELECT default_ret_agg(i, i) FROM range(4) t(i)", |r, i| {
+            unsafe { r.read_i64(i) }
+        }),
+        Some((0..4i64).sum::<i64>() * 2)
+    );
+}
+
+#[test]
+fn an_overload_without_any_return_type_is_rejected() {
+    use multi_return_agg as m;
+    use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder, FfiState};
+
+    let fx = Fixture::open();
+
+    // Neither the overload nor the set names a return type.
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        AggregateFunctionSetBuilder::new("no_ret_agg")
+            .overload(
+                AggregateOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .state_size(FfiState::<m::SumState>::size_callback)
+                    .init(FfiState::<m::SumState>::init_callback)
+                    .update(m::sum_update)
+                    .combine(m::sum_combine)
+                    .finalize(m::sum_finalize),
+            )
+            .register(fx.con())
+    }
+    .expect_err("an overload with no return type must be rejected");
+    assert!(err.as_str().contains("overload 0"), "{err}");
+    assert!(err.as_str().contains("return type"), "{err}");
+
+    // ...and nothing was registered under that name.
+    // SAFETY: `con` is open.
+    let lookup = unsafe { query(fx.con(), "SELECT no_ret_agg(1)") };
+    assert!(lookup.is_err(), "no_ret_agg must not exist");
+}
+
+#[test]
+fn an_empty_aggregate_set_is_rejected() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        quack_rs::aggregate::AggregateFunctionSetBuilder::new("empty_agg")
+            .returns(TypeId::BigInt)
+            .register(fx.con())
+    }
+    .expect_err("an empty set must be rejected");
+    assert!(err.as_str().contains("no overloads"), "{err}");
+}
+
 // ─── Panic guards for the remaining callback kinds ───────────────────────────
 
 /// An aggregate whose `update` panics, wired through `aggregate_update_callback!`.

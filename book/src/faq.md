@@ -71,7 +71,9 @@ scalar functions. See [SQL Macros](functions/sql-macros.md).
 Yes, using `AggregateFunctionSetBuilder` (for aggregates) or
 `ScalarFunctionSetBuilder` (for scalars). Both support complex parameter types
 via `param_logical(LogicalType)` and complex return types via
-`returns_logical(LogicalType)`. See
+`returns_logical(LogicalType)`, and in both, **each overload may return a
+different type** — DuckDB resolves an overload from its parameter types and
+arity alone. See
 [Overloading with Function Sets](functions/aggregate-sets.md).
 
 ### Can I register multiple functions in one extension?

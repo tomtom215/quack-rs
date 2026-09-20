@@ -158,7 +158,8 @@ quack-rs/
 │   │   ├── builder/               # Builder types for aggregate function registration
 │   │   │   ├── mod.rs             # Module doc + re-exports
 │   │   │   ├── single.rs          # AggregateFunctionBuilder (single-signature)
-│   │   │   ├── set.rs             # AggregateFunctionSetBuilder, OverloadBuilder
+│   │   │   ├── overload.rs        # AggregateOverloadBuilder
+│   │   │   ├── set.rs             # AggregateFunctionSetBuilder
 │   │   │   └── tests.rs           # Unit tests
 │   │   ├── info.rs                # AggregateFunctionInfo
 │   │   ├── callbacks.rs           # Callback type aliases

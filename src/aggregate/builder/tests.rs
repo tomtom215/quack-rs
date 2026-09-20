@@ -4,10 +4,39 @@
 // and encouraging more Rust development!
 
 use super::*;
-use crate::types::TypeId;
+use crate::types::{NullHandling, TypeId};
 use libduckdb_sys::{
     duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, duckdb_vector, idx_t,
 };
+
+// Callback stubs shared by the function-set tests. They are never invoked --
+// these tests only assert on what the builder records -- but the builder's
+// setters are typed, so real `extern "C"` items are needed.
+unsafe extern "C" fn ss(_: duckdb_function_info) -> idx_t {
+    0
+}
+unsafe extern "C" fn si(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+unsafe extern "C" fn su(
+    _: duckdb_function_info,
+    _: duckdb_data_chunk,
+    _: *mut duckdb_aggregate_state,
+) {
+}
+unsafe extern "C" fn sc(
+    _: duckdb_function_info,
+    _: *mut duckdb_aggregate_state,
+    _: *mut duckdb_aggregate_state,
+    _: idx_t,
+) {
+}
+unsafe extern "C" fn sf(
+    _: duckdb_function_info,
+    _: *mut duckdb_aggregate_state,
+    _: duckdb_vector,
+    _: idx_t,
+    _: idx_t,
+) {
+}
 
 // Verify that AggregateFunctionBuilder stores name correctly
 #[test]
@@ -34,32 +63,6 @@ fn builder_stores_return_type() {
 
 #[test]
 fn function_set_builder_stores_overloads() {
-    unsafe extern "C" fn ss(_: duckdb_function_info) -> idx_t {
-        0
-    }
-    unsafe extern "C" fn si(_: duckdb_function_info, _: duckdb_aggregate_state) {}
-    unsafe extern "C" fn su(
-        _: duckdb_function_info,
-        _: duckdb_data_chunk,
-        _: *mut duckdb_aggregate_state,
-    ) {
-    }
-    unsafe extern "C" fn sc(
-        _: duckdb_function_info,
-        _: *mut duckdb_aggregate_state,
-        _: *mut duckdb_aggregate_state,
-        _: idx_t,
-    ) {
-    }
-    unsafe extern "C" fn sf(
-        _: duckdb_function_info,
-        _: *mut duckdb_aggregate_state,
-        _: duckdb_vector,
-        _: idx_t,
-        _: idx_t,
-    ) {
-    }
-
     let b = AggregateFunctionSetBuilder::new("retention")
         .returns(TypeId::BigInt)
         .overloads(2..=4, |n, builder| {
@@ -97,11 +100,115 @@ fn function_set_builder_name() {
 
 #[test]
 fn overload_builder_params() {
-    let ob = OverloadBuilder::new()
+    let ob = AggregateOverloadBuilder::new()
         .param(TypeId::Boolean)
         .param(TypeId::Boolean)
         .param(TypeId::BigInt);
     assert_eq!(ob.params.len(), 3);
+}
+
+#[test]
+fn overload_builder_default_matches_new() {
+    let d = AggregateOverloadBuilder::default();
+    assert!(d.params.is_empty());
+    assert!(d.return_type.is_none());
+    assert!(d.return_logical.is_none());
+    assert_eq!(d.null_handling, NullHandling::DefaultNullHandling);
+}
+
+#[test]
+fn overload_builder_stores_its_own_return_type() {
+    let ob = AggregateOverloadBuilder::new()
+        .param(TypeId::Integer)
+        .returns(TypeId::Integer);
+    assert_eq!(ob.return_type, Some(TypeId::Integer));
+}
+
+// Issue #121: overloads in one set may return different types, because DuckDB
+// resolves an aggregate overload from parameter types and arity alone.
+#[test]
+fn a_set_keeps_a_distinct_return_type_per_overload() {
+    let b = AggregateFunctionSetBuilder::new("my_agg")
+        .overload(
+            AggregateOverloadBuilder::new()
+                .param(TypeId::Integer)
+                .returns(TypeId::Integer)
+                .state_size(ss)
+                .init(si)
+                .update(su)
+                .combine(sc)
+                .finalize(sf),
+        )
+        .overload(
+            AggregateOverloadBuilder::new()
+                .param(TypeId::Varchar)
+                .returns(TypeId::Varchar)
+                .state_size(ss)
+                .init(si)
+                .update(su)
+                .combine(sc)
+                .finalize(sf),
+        );
+
+    assert_eq!(b.overloads.len(), 2);
+    assert_eq!(b.overloads[0].params, vec![TypeId::Integer]);
+    assert_eq!(b.overloads[0].return_type, Some(TypeId::Integer));
+    assert_eq!(b.overloads[1].params, vec![TypeId::Varchar]);
+    assert_eq!(b.overloads[1].return_type, Some(TypeId::Varchar));
+    // No set-level default was needed.
+    assert!(b.return_type.is_none());
+    assert!(b.return_logical.is_none());
+}
+
+#[test]
+fn overload_and_overloads_can_be_mixed_and_keep_insertion_order() {
+    let b = AggregateFunctionSetBuilder::new("mixed")
+        .returns(TypeId::BigInt)
+        .overload(AggregateOverloadBuilder::new().param(TypeId::Varchar))
+        .overloads(2..=3, |n, builder| {
+            (0..n).fold(builder, |b, _| b.param(TypeId::Boolean))
+        });
+
+    assert_eq!(b.overloads.len(), 3);
+    assert_eq!(b.overloads[0].params, vec![TypeId::Varchar]);
+    assert_eq!(b.overloads[1].params.len(), 2);
+    assert_eq!(b.overloads[2].params.len(), 3);
+    // The `overloads` members inherit the set-level default: none of their own.
+    assert!(b.overloads[1].return_type.is_none());
+}
+
+#[test]
+fn overloads_closure_can_set_a_per_arity_return_type() {
+    let b = AggregateFunctionSetBuilder::new("per_arity").overloads(1..=2, |n, builder| {
+        let builder = (0..n).fold(builder, |b, _| b.param(TypeId::Integer));
+        if n == 1 {
+            builder.returns(TypeId::Integer)
+        } else {
+            builder.returns(TypeId::BigInt)
+        }
+    });
+
+    assert_eq!(b.overloads[0].return_type, Some(TypeId::Integer));
+    assert_eq!(b.overloads[1].return_type, Some(TypeId::BigInt));
+    // Building a `LogicalType` needs a live DuckDB dispatch table, so the
+    // `returns_logical` override is covered in `tests/ffi_roundtrip.rs`.
+}
+
+#[test]
+fn an_empty_set_is_rejected_before_any_return_type_check() {
+    // Registration needs a live connection, so assert the precondition the
+    // error path keys off: no overloads and no return type at all.
+    let b = AggregateFunctionSetBuilder::new("empty");
+    assert!(b.overloads.is_empty());
+    assert!(b.return_type.is_none());
+}
+
+#[test]
+fn the_deprecated_alias_still_names_the_same_type() {
+    #[allow(deprecated)]
+    let ob: crate::aggregate::builder::OverloadBuilder =
+        AggregateOverloadBuilder::new().param(TypeId::Boolean);
+    assert_eq!(ob.params.len(), 1);
 }
 
 #[test]

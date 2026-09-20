@@ -13,8 +13,9 @@
 //!   return types via [`returns_logical`][AggregateFunctionBuilder::returns_logical].
 //! - [`AggregateFunctionSetBuilder`]: Register a function set (multiple overloads
 //!   under one name) for functions with variadic signatures. Supports complex
-//!   return types via [`returns_logical`][AggregateFunctionSetBuilder::returns_logical]
-//!   and per-overload complex parameters via `OverloadBuilder::param_logical`.
+//!   return types via [`AggregateOverloadBuilder::returns_logical`] (or a set-wide
+//!   default via [`AggregateFunctionSetBuilder::returns_logical`]) and per-overload
+//!   complex parameters via [`AggregateOverloadBuilder::param_logical`].
 //!
 //! # Pitfalls solved
 //!
@@ -59,7 +60,9 @@ pub mod callbacks;
 pub mod info;
 pub mod state;
 
-pub use builder::{AggregateFunctionBuilder, AggregateFunctionSetBuilder};
+pub use builder::{
+    AggregateFunctionBuilder, AggregateFunctionSetBuilder, AggregateOverloadBuilder,
+};
 // Callback signature aliases, re-exported at the module root for symmetry with
 // `scalar` and `table`.
 pub use callbacks::{CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn};
