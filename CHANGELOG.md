@@ -99,6 +99,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CONTRIBUTING.md`.
 ### Fixed
 
+- **Pitfall L10** (`LESSONS.md`, `book/src/reference/pitfalls.md`) — scalar bind
+  data is dropped when `DuckDB` copies a bound expression. The book's pitfall
+  summary table was also missing L8 and L9; all three rows are now there.
 - **`ScalarBindInfo::set_bind_data_copy`** — scalar bind data was silently lost
   whenever `DuckDB` copied a bound expression. `CScalarFunctionBindData::Copy()`
   populates the copy's bind data only if a copy callback is registered, and

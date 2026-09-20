@@ -414,6 +414,10 @@ impl AggregateFunctionSetBuilder {
             }
 
             // Set callbacks
+            // SAFETY: func is a valid aggregate function handle, and each
+            // callback was checked to be Some above. The pointers are
+            // `extern "C" fn` items with 'static lifetime, so they outlive the
+            // registration.
             unsafe {
                 duckdb_aggregate_function_set_functions(
                     func,
@@ -426,6 +430,7 @@ impl AggregateFunctionSetBuilder {
             }
 
             if let Some(dtor) = overload.destructor {
+                // SAFETY: func is valid and `dtor` is a 'static `extern "C" fn`.
                 unsafe {
                     duckdb_aggregate_function_set_destructor(func, Some(dtor));
                 }
