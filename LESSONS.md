@@ -247,6 +247,70 @@ records the column count of the schema it was built from.
 
 ---
 
+## L10: Scalar bind data is dropped when `DuckDB` copies the expression
+
+**Status**: Fixable only from the extension, and now possible:
+[`ScalarBindInfo::set_bind_data_copy`].
+
+**Symptom**: A scalar function that allocates per-query state in its bind
+callback reads **null** from `duckdb_scalar_function_get_bind_data` during
+execution, for some queries and not others. Nothing crashes and nothing is
+reported: the callback simply runs without the state it bound, so the answer is
+quietly wrong.
+
+**Root cause**: `duckdb_scalar_function_set_bind_data` registers the pointer and
+its destructor, but *not* how to duplicate it. `DuckDB` copies a bound
+expression whenever it duplicates a plan, and `CScalarFunctionBindData::Copy()`
+in `src/main/capi/scalar_function-c.cpp` (read at `v1.5.5`; byte-identical in
+`v1.5.4`) only fills the copy in when a copy callback exists:
+
+```cpp
+unique_ptr<FunctionData> Copy() const override {
+    auto copy = make_uniq<CScalarFunctionBindData>(info);
+    if (copy_callback) {
+        copy->bind_data = copy_callback(bind_data);
+        copy->delete_callback = delete_callback;
+        copy->copy_callback = copy_callback;
+    }
+    return std::move(copy);   // bind_data stays null without a callback
+}
+```
+
+With no callback the copy carries `bind_data = nullptr`, and the original is
+untouched — which is why the failure is intermittent rather than total, and why
+it survives a test suite that only ever executes the first-bound expression.
+
+**Fix**: register a copy callback alongside the bind data, in the same bind
+callback and after `set_bind_data`:
+
+```rust
+unsafe extern "C" fn copy(data: *mut c_void) -> *mut c_void {
+    if data.is_null() {
+        return std::ptr::null_mut();
+    }
+    let src = unsafe { &*data.cast::<MyBindData>() };
+    Box::into_raw(Box::new(src.clone())).cast()
+}
+
+unsafe {
+    bind_info.set_bind_data(Box::into_raw(boxed).cast(), Some(destroy));
+    bind_info.set_bind_data_copy(Some(copy));
+}
+```
+
+The duplicate is freed with the **same** destructor as the original, so `copy`
+must return an independently owned allocation — returning the pointer it was
+given is a double free.
+
+**Related**: the copy callback runs across the FFI boundary like any other, so
+it must not unwind. Wrap anything that can panic in
+[`callback::catch_ffi_panic`] and return null.
+
+[`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/struct.ScalarBindInfo.html#method.set_bind_data_copy
+[`callback::catch_ffi_panic`]: https://docs.rs/quack-rs/latest/quack_rs/callback/fn.catch_ffi_panic.html
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured manually in `Cargo.toml`.

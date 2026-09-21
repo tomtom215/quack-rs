@@ -508,9 +508,9 @@ mod tests {
 
     #[test]
     fn an_empty_scope_array_yields_no_elements() {
-        assert!(parse_scope_array("[]").is_empty());
-        assert!(parse_scope_array("[ ]").is_empty());
-        assert!(parse_scope_array("").is_empty());
+        assert_eq!(parse_scope_array("[]"), [] as [String; 0]);
+        assert_eq!(parse_scope_array("[ ]"), [] as [String; 0]);
+        assert_eq!(parse_scope_array(""), [] as [String; 0]);
     }
 
     #[test]
@@ -674,7 +674,7 @@ mod tests {
     fn zeroize_empty_string_is_safe() {
         let mut s = String::new();
         zeroize_string(&mut s);
-        assert!(s.is_empty());
+        assert_eq!(s, "");
     }
 
     struct InMemorySecrets {
@@ -779,7 +779,7 @@ mod tests {
         let mut s = String::from(text);
         let len = s.len();
         zeroize_string(&mut s);
-        assert!(s.is_empty());
+        assert_eq!(s, "");
         assert!(s.capacity() >= len, "the buffer must not have been freed");
         // SAFETY: `clear()` sets the length to zero without deallocating, so
         // bytes `0..len` are still allocated and still initialised — with
@@ -799,7 +799,7 @@ mod tests {
     #[test]
     fn zeroize_string_with_special_characters() {
         let bytes = zeroize_and_read_back("p@$$w0rd!#%^&*()_+-=[]{}|;':\",./<>?");
-        assert!(!bytes.is_empty());
+        assert_ne!(bytes, [] as [u8; 0]);
         assert!(bytes.iter().all(|&b| b == 0));
     }
 
@@ -819,9 +819,9 @@ mod tests {
 
         // Zeroize directly to test
         zeroize_string(&mut entry.provider);
-        assert!(entry.provider.is_empty());
+        assert_eq!(entry.provider, "");
         zeroize_string(&mut entry.scope);
-        assert!(entry.scope.is_empty());
+        assert_eq!(entry.scope, "");
     }
 
     #[test]

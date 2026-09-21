@@ -50,7 +50,9 @@ jobs:
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
       crate_name:    ${{ steps.meta.outputs.crate_name }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Extract version metadata
         id: meta
@@ -124,7 +126,10 @@ jobs:
     needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      # `false`, per LESSONS.md: a release once shipped with Linux and Windows
+      # broken because macOS failed first and cancelled them before they
+      # reported. Every platform must report.
+      fail-fast: false
       matrix:
         include:
           - name: "test · Linux"
@@ -153,17 +158,22 @@ jobs:
             os: ubuntu-latest
             toolchain: stable
             command: cargo doc --no-deps --all-features
+          # `+1.86.0` is required: `rust-toolchain.toml` pins `channel =
+          # "stable"` and overrides the rustup default this action sets, so a
+          # bare `cargo check` would run stable and gate nothing.
           - name: "MSRV 1.86.0"
             os: ubuntu-latest
             toolchain: "1.86.0"
-            command: cargo check
+            command: cargo +1.86.0 check
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # master
         with:
           toolchain: ${{ matrix.toolchain }}
           components: ${{ matrix.components || '' }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: ${{ matrix.name }}
         run: ${{ matrix.command }}
         env:
@@ -175,11 +185,18 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-targets: false
       - name: Install cargo-deny
+        env:
+          # Do not build third-party tools with warnings-as-errors:
+          # a new rustc warning in any of their dependencies would
+          # break CI for a reason unrelated to this repo.
+          RUSTFLAGS: ""
         run: cargo install cargo-deny --locked --version "0.19.0"
       - name: Run cargo-deny
         run: |
@@ -200,9 +217,11 @@ jobs:
     outputs:
       crate_file: ${{ steps.pkg.outputs.crate_file }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: cargo package
         id: pkg
@@ -231,7 +250,7 @@ jobs:
       # SLSA Level 2 build provenance — creates a signed attestation linking
       # the .crate artifact to this workflow run, verifiable with `gh attestation verify`.
       - name: Attest build provenance (SLSA)
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: target/package/*.crate
 
@@ -251,9 +270,11 @@ jobs:
     needs: [ci, security]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo publish --dry-run
         shell: bash
         run: |
@@ -270,7 +291,9 @@ jobs:
     permissions:
       contents: write  # create release, upload assets
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -388,9 +411,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Publish to crates.io
         env:

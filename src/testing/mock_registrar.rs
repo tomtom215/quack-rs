@@ -456,7 +456,7 @@ mod tests {
     fn mock_registrar_records_copy_function() {
         let mock = MockRegistrar::new();
         assert!(!mock.has_copy_function("my_format"));
-        assert!(mock.copy_function_names().is_empty());
+        assert_eq!(mock.copy_function_names(), [] as [String; 0]);
 
         let builder = crate::copy_function::CopyFunctionBuilder::try_new("my_format").unwrap();
         unsafe { mock.register_copy_function(builder).unwrap() };
@@ -467,12 +467,20 @@ mod tests {
 
         // Config options go through the same trait, so an extension's whole
         // registration closure is mockable rather than only part of it.
+        assert!(!mock.has_config_option("my_option"));
+        assert_eq!(mock.config_option_names(), [] as [String; 0]);
+
         let option = crate::config_option::ConfigOptionBuilder::try_new("my_option")
             .expect("name")
             .option_type(TypeId::Varchar);
         // SAFETY: the mock ignores the connection entirely.
         unsafe { mock.register_config_option(option) }.expect("register");
         assert!(mock.has_config_option("my_option"));
+        // A name that was never registered must not match: without this, a
+        // `has_config_option` that always returns `true` passes every other
+        // assertion here. (Surviving mutant reported by the incremental
+        // mutation gate; mirrors the `has_copy_function` coverage above.)
+        assert!(!mock.has_config_option("other_option"));
         assert_eq!(mock.config_option_names(), vec!["my_option"]);
         assert_eq!(mock.copy_function_names().len(), 1);
         assert_eq!(mock.total_registrations(), 2);

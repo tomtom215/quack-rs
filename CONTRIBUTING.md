@@ -28,19 +28,22 @@ Thank you for contributing! Please read this document before opening a PR.
 | `rustfmt` | stable | Formatting |
 | `clippy` | stable | Linting |
 | `cargo-deny` | latest | License/advisory checks |
-| DuckDB CLI | 1.4.4, 1.5.0, or 1.5.1 | Live extension testing (required) |
+| DuckDB CLI | 1.5.5 (or 1.4.4 / 1.5.0) | Live extension testing (required) |
 
 Install the Rust toolchain via [rustup](https://rustup.rs/).
 
-Install DuckDB 1.5.1 (or 1.4.4/1.5.0) via `curl` (no system package manager needed):
+Install DuckDB via `curl` (no system package manager needed). CI's
+`extension-load` job exercises **v1.4.4, v1.5.0, v1.5.5 and `latest`** — the
+floor, the 1.5 floor, the current release, and an early-warning signal.
+Develop against v1.5.5:
 
 ```bash
-curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.1/duckdb_cli-linux-amd64.zip \
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip \
     -o /tmp/duckdb.zip \
     && unzip -o /tmp/duckdb.zip -d /tmp/ \
     && chmod +x /tmp/duckdb \
     && /tmp/duckdb --version
-# → v1.5.1
+# → v1.5.5
 ```
 
 ---
@@ -104,6 +107,10 @@ cargo test
 # 2. Integration tests
 cargo test --test integration_test
 
+# 2b. Doctests — `--all-targets` does NOT include them, so they need their own
+#     run. For an SDK the rustdoc examples are part of the product.
+cargo test --doc --features duckdb-1-5-4
+
 # 3. Linting — zero warnings (warnings are treated as errors)
 cargo clippy --all-targets -- -D warnings
 
@@ -113,10 +120,17 @@ cargo fmt -- --check
 # 5. Documentation — zero broken links or missing docs
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
+# 5b. The book's changelog page is GENERATED from CHANGELOG.md. Edit
+#     CHANGELOG.md, then regenerate; CI fails if they diverge.
+scripts/sync-book-changelog.py
+
 # 6. MSRV — must compile on Rust 1.86.0 (matches CI; excludes benches which use criterion >=1.86)
+#    `+1.86.0` is required, not stylistic: `rust-toolchain.toml` pins
+#    `channel = "stable"` and a toolchain file overrides rustup's default, so a
+#    bare `cargo check` silently runs stable and checks nothing.
 cargo +1.86.0 check
 
-# 7. Live extension test — build hello-ext, package it, load in DuckDB 1.4.4 or 1.5.0
+# 7. Live extension test — build hello-ext, package it, load in DuckDB (CI: 1.4.4, 1.5.0, 1.5.5, latest)
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
 cargo run --bin append_metadata -- \
     examples/hello-ext/target/release/libhello_ext.so \

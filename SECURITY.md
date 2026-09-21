@@ -69,7 +69,7 @@ This policy does **not** cover:
 quack-rs is designed with safety as a primary concern:
 
 1. **`#![deny(unsafe_op_in_unsafe_fn)]`** in `src/lib.rs` and **`unsafe_op_in_unsafe_fn = "deny"`** in `Cargo.toml`: All unsafe operations require explicit `unsafe` blocks with `// SAFETY:` comments, even inside `unsafe fn`.
-2. **No panics across FFI**: All entry points and callbacks use `Result`/`Option`. The release profile sets `panic = "abort"` as defense-in-depth.
+2. **No panics across FFI**: All entry points and callbacks use `Result`/`Option`, and every FFI boundary is wrapped in `catch_unwind` (see `callback::catch_ffi_panic`). The release profile therefore sets `panic = "unwind"`, **not** `abort`: under `panic = "abort"` a panic aborts the process before `catch_unwind` can run, which disables the crate's entire panic-containment mechanism. `validate_release_profile` rejects `abort` outright, and the generated scaffold never emits it.
 3. **Double-free prevention**: `FfiState<T>::destroy_callback` nulls pointers after freeing.
 4. **Boolean UB prevention**: `VectorReader::read_bool` reads as `u8 != 0`, never transmutes to `bool`.
 5. **RAII for DuckDB handles**: `LogicalType` ensures `duckdb_destroy_logical_type` is always called.

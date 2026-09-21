@@ -22,7 +22,7 @@
 - [ ] `cargo doc --no-deps` builds without warnings
 - [ ] All `unsafe` blocks have a `// SAFETY:` comment
 - [ ] SPDX header on every new file
-- [ ] No file exceeds 500 lines
+- [ ] No file grows past 500 lines without a reason (CONTRIBUTING's guideline, not a hard limit)
 
 ### Testing
 - [ ] New code has tests

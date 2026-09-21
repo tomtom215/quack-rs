@@ -583,7 +583,7 @@ fn quoted_excluded_platforms_with_trailing_semicolon_parse() {
         "windows_amd64_rtools;windows_amd64_mingw;windows_amd64;"
     );
     // No `requires_toolchains`: only 14 of 43 published extensions set it.
-    assert!(desc.requires_toolchains.is_empty());
+    assert_eq!(desc.requires_toolchains, "");
 }
 
 /// A `key: |` body indented under `extension:` is the field's *value*, not a
@@ -707,5 +707,5 @@ fn ref_next_is_parsed_and_does_not_shadow_ref() {
         .join("\n");
     let desc = parse_description_yml(&without).expect("parse");
     assert_eq!(desc.git_ref, "e5ed59b6ccf915c65e17eb6286b9a64f3ab09f59");
-    assert!(desc.git_ref_next.is_empty());
+    assert_eq!(desc.git_ref_next, "");
 }

@@ -1257,7 +1257,7 @@ mod tests {
     #[test]
     fn the_composite_message_names_the_type_and_its_constructor() {
         let msg = composite_message(TypeId::Decimal);
-        assert!(!msg.is_empty());
+        assert_ne!(msg, "");
         assert!(msg.contains("DECIMAL"), "{msg}");
         assert!(msg.contains("LogicalType::decimal(width, scale)"), "{msg}");
         assert!(

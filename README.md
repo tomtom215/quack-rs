@@ -1005,10 +1005,11 @@ and how to run the full test suite.
 
 ```shell
 cargo test --all-targets                      # all tests pass
+cargo test --doc --features duckdb-1-5-4      # rustdoc examples compile and run
 cargo clippy --all-targets -- -D warnings     # no clippy warnings
 cargo fmt -- --check                          # code is formatted
 cargo doc --no-deps                           # docs compile without warnings
-cargo check                                   # MSRV check (Rust 1.86.0)
+cargo +1.86.0 check                           # MSRV check (Rust 1.86.0)
 ```
 
 ---

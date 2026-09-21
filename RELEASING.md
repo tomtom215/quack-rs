@@ -83,19 +83,22 @@ git push origin "vX.Y.Z"
 
 ### Step 1 — Verify CI is green on `main`
 
-All checks on `main` must pass before tagging:
+**The entire `CI` workflow must be green on `main` before tagging — every job,
+not a subset.**
 
+This used to be a hand-maintained list of nine check names. It had drifted to
+cover fewer than a third of the jobs in `.github/workflows/ci.yml`, and the
+names no longer matched the rendered ones, so a maintainer following it
+literally could tag a release with `Miri`, `LeakSanitizer`, `osv-scan`,
+`semver` or `abi-guard` red. Read the run, not a list that rots:
+
+```bash
+gh run list --branch main --workflow ci.yml --limit 1
+gh run view <run-id>   # every job must be green; none may be skipped
 ```
-CI / check              ✅
-CI / test (Linux)       ✅
-CI / test (macOS)       ✅
-CI / test (Windows)     ✅
-CI / clippy             ✅
-CI / fmt                ✅
-CI / doc                ✅
-CI / MSRV (1.86.0)      ✅
-CI / security           ✅
-```
+
+Do not enumerate the jobs here again. Branch protection on `main` is the
+mechanism that should enforce this; this step is the human double-check.
 
 ### Step 2 — Update CHANGELOG.md
 

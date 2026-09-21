@@ -29,6 +29,7 @@
 //! | [`AggregateFunctionBuilder`] | `aggregate` module |
 //! | [`AggregateFunctionInfo`] | `aggregate` module |
 //! | [`AggregateFunctionSetBuilder`] | `aggregate` module |
+//! | [`AggregateOverloadBuilder`] | `aggregate` module |
 //! | [`AggregateState`] | `aggregate` module |
 //! | [`FfiState`] | `aggregate` module |
 //! | [`ScalarFunctionBuilder`] | `scalar` module |
@@ -135,8 +136,8 @@ pub use crate::cast::{CastFn, CastFunctionBuilder, CastFunctionInfo, CastMode};
 
 // Aggregate functions
 pub use crate::aggregate::{
-    AggregateFunctionBuilder, AggregateFunctionInfo, AggregateFunctionSetBuilder, AggregateState,
-    FfiState,
+    AggregateFunctionBuilder, AggregateFunctionInfo, AggregateFunctionSetBuilder,
+    AggregateOverloadBuilder, AggregateState, FfiState,
 };
 
 // Scalar functions

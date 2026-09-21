@@ -350,8 +350,9 @@ memory is the harder half.
 
 | Job | What it buys | First run |
 |---|---|---|
-| `miri` | Pointer provenance, aliasing, initialisation, leaks, over the pure-Rust half | Found D5 and D4; now 546 tests green in ~3 min |
+| `miri` | Pointer provenance, aliasing, initialisation, leaks, over the pure-Rust half | Found D5 and D4. Ran with default features until 2026-09, which `cfg`'d out every `duckdb-1-5*` module — including `src/arrow.rs`, the largest block of pure-Rust `unsafe` in the crate. Now runs `--features duckdb-1-5-4`, so the claim in this row is true for the first time. |
 | `leak-check` | LeakSanitizer over the end-to-end suite against a real libduckdb — the only way a missing `duckdb_destroy_*` is visible | Found D6; now zero leaks across 58 end-to-end tests |
+| `asan` | AddressSanitizer over the same suite — out-of-bounds writes and use-after-free, the class behind the two heap-corruption defects in v0.16.0. Added 2026-09-20, informational until it has a green run on main. | — |
 | `fuzz` | `cargo-fuzz` over the description.yml parser, the `duckdb_string_t` decoder and the validators | ~32M execs, no crashes |
 | `semver` | `cargo-semver-checks` against the published crate — the API *is* the product | — |
 
@@ -534,7 +535,12 @@ if nobody wrote down that they were checked.
 
 Ordered by what a production extension is most likely to want.
 
-### 5.1 API surface still unwrapped (100 of 546 entries)
+### 5.1 API surface still unwrapped (99 of 546 entries)
+
+> Re-measured 2026-09-20 against the v1.5.4 `duckdb_ext_api_v1` struct (546
+> function pointers; byte-identical in v1.5.5). 99 are unreferenced in `src/`,
+> of which 45 are in the header's deprecated block. The group counts below sum
+> to fewer than 99 because the Misc row is approximate.
 
 | Group | Count | Assessment |
 |---|---|---|
@@ -546,7 +552,7 @@ Ordered by what a production extension is most likely to want.
 | Profiling (`duckdb_get_profiling_info`, …) | 5 | Useful for extensions that expose their own EXPLAIN-like output. |
 | Extracted statements (`duckdb_extract_statements`, …) | 4 | Low value: `duckdb_query` already runs multi-statement scripts. |
 | Prepared-statement result metadata (`duckdb_prepared_statement_column_*`, `duckdb_param_type`, …) | 6 | Lets an extension learn a query's shape without running it. |
-| `duckdb_scalar_function_set_bind_data_copy` | 1 | Needed for scalar bind data under parallel execution. |
+| ~~`duckdb_scalar_function_set_bind_data_copy`~~ | ~~1~~ | **Closed 2026-09-20** — `ScalarBindInfo::set_bind_data_copy`. This was not merely a gap: `CScalarFunctionBindData::Copy()` in DuckDB's `src/main/capi/scalar_function-c.cpp` leaves the copy's `bind_data` **null** when no copy callback is registered, so every extension using `ScalarBindInfo::set_bind_data` could see null bind data on a copied expression — a silent wrong answer, not a crash. |
 | Misc (`duckdb_get_table_names`, `duckdb_appender_create_query`, `duckdb_create_bit`/`get_bit`, `duckdb_get_bignum`, `duckdb_create_data_chunk`, …) | ~13 | Individually small. |
 
 `COPY … FROM` and the table-function bind result-column accessors were rows in

@@ -643,7 +643,7 @@ mod tests {
         ];
         for t in types {
             // sql_name should not be empty and should match Display
-            assert!(!t.sql_name().is_empty());
+            assert_ne!(t.sql_name(), "");
             assert_eq!(t.sql_name(), format!("{t}"));
         }
     }

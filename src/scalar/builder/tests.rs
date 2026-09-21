@@ -121,7 +121,7 @@ fn set_try_new_empty_rejected() {
 #[test]
 fn overload_builder_default() {
     let ob = ScalarOverloadBuilder::default();
-    assert!(ob.params.is_empty());
+    assert_eq!(ob.params, [] as [TypeId; 0]);
     assert!(ob.return_type.is_none());
     assert!(ob.function.is_none());
 }

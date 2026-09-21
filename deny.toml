@@ -6,7 +6,14 @@
 
 # ── Dependency graph ──────────────────────────────────────────────────────────
 [graph]
-all-features = false
+# `true`, not `false`: `duckdb` is an OPTIONAL dependency and the crate declares
+# no `default` feature, so the default graph contains neither `duckdb` nor its
+# subtree (arrow, chrono, rust_decimal, ...). Both the advisory scan and the
+# license scan silently skipped all of it. This also matters for the
+# RUSTSEC-2026-0235 justification in `osv-scanner.toml`, which cites this job
+# passing as corroboration -- that was only meaningful once the crate in
+# question is actually in the graph.
+all-features = true
 no-default-features = false
 
 # ── License policy ────────────────────────────────────────────────────────────

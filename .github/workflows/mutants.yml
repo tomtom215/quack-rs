@@ -13,6 +13,11 @@ on:
   pull_request:
     branches: ["main"]
 
+# This workflow builds and executes code from pull requests and never writes
+# anything back to GitHub, so it gets the minimum token.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -29,12 +34,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-mutants
-        run: cargo install cargo-mutants --locked
+        env:
+          # Do not build third-party tools with warnings-as-errors:
+          # a new rustc warning in any of their dependencies would
+          # break CI for a reason unrelated to this repo.
+          RUSTFLAGS: ""
+        run: cargo install cargo-mutants --locked --version "27.1.0"
 
       - name: Run mutation tests
         id: mutants
@@ -51,7 +63,10 @@ jobs:
             --output . \
             --timeout 120 \
             --jobs 4 2>&1 | tee /tmp/mutants-run.log
-          MUTANTS_EXIT=$?
+          # `${PIPESTATUS[0]}`, not `$?`: these steps run under the default
+          # shell (`bash -e`, no `pipefail`), so `$?` after a pipeline is
+          # `tee`'s status -- always 0 -- and never cargo-mutants'.
+          MUTANTS_EXIT=${PIPESTATUS[0]}
           set -e
 
           echo "::endgroup::"
@@ -135,18 +150,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-mutants
-        run: cargo install cargo-mutants --locked
+        env:
+          # Do not build third-party tools with warnings-as-errors:
+          # a new rustc warning in any of their dependencies would
+          # break CI for a reason unrelated to this repo.
+          RUSTFLAGS: ""
+        run: cargo install cargo-mutants --locked --version "27.1.0"
 
       - name: Determine changed files
         id: changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           # Filter to .rs in the shell rather than with a `src/**/*.rs`
           # pathspec: git's default wildmatch lets `*` cross `/`, so that
@@ -157,7 +180,7 @@ jobs:
           # `|| true` because `grep` exits 1 on no match, and this step runs
           # under `bash -e`: a PR that touches no Rust file must reach the
           # `skip=true` branch below, not abort here.
-          FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- 'src/' \
+          FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD" -- 'src/' \
             | grep '\.rs$' | sort -u || true)
           FILE_COUNT=$(printf '%s\n' "$FILES" | grep -c . 2>/dev/null || echo 0)
 
@@ -175,11 +198,18 @@ jobs:
       - name: Run mutation tests on changed files
         id: mutants
         if: steps.changed.outputs.skip == 'false'
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: |
           echo "::group::cargo-mutants execution log"
 
           # `--file` for each changed source file.
-          IFS=',' read -ra CHANGED <<< "${{ steps.changed.outputs.files }}"
+          # CHANGED_FILES arrives through `env:`, NOT through workflow
+          # expression interpolation. An interpolated value is substituted into
+          # the script before bash parses it, so a PR adding `src/x$(...).rs`
+          # would execute that on the runner. Git does not quote `$`, a
+          # backtick, `;` or `&` in a path.
+          IFS=',' read -ra CHANGED <<< "$CHANGED_FILES"
           ARGS=()
           for f in "${CHANGED[@]}"; do
             [ -n "$f" ] && ARGS+=(--file "$f")
@@ -228,7 +258,10 @@ jobs:
             --output . \
             --timeout 120 \
             --jobs 4 2>&1 | tee /tmp/mutants-run.log
-          MUTANTS_EXIT=$?
+          # `${PIPESTATUS[0]}`, not `$?`: these steps run under the default
+          # shell (`bash -e`, no `pipefail`), so `$?` after a pipeline is
+          # `tee`'s status -- always 0 -- and never cargo-mutants'.
+          MUTANTS_EXIT=${PIPESTATUS[0]}
           set -e
 
           echo "::endgroup::"

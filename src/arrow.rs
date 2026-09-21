@@ -1068,29 +1068,25 @@ mod tests {
         unsafe { ArrowArray::from_raw(raw) }
     }
 
-    /// A populated two-column struct schema, owned entirely by the caller.
-    ///
     /// The accessors have to be exercised against a record that actually
     /// carries values: reading only `empty()` proves the released guards work
     /// and nothing else, so "always return None" would go unnoticed.
-    struct PopulatedSchema {
-        root: ArrowSchema,
-        // Kept alive for as long as `root` points into them. Declared after
-        // `root` in the struct but dropped after it in `Drop` order terms is
-        // not guaranteed, so `PopulatedSchema` never outlives a borrow of
-        // `root` and nothing here frees anything.
-        _children: Box<[RawArrowSchema; 2]>,
-        _child_ptrs: Box<[*mut RawArrowSchema; 2]>,
-        _strings: Vec<CString>,
-    }
-
-    fn populated_schema() -> PopulatedSchema {
+    ///
+    /// Every owner below is a **local**, and the pointers into them are derived
+    /// after the last move. This used to be a `populated_schema()` helper that
+    /// built the owners and then moved them into a returned struct; under
+    /// Stacked Borrows that move retags the `Box`, which pops the tag already
+    /// derived from it, so `child()` was reading through a dead tag. Miri only
+    /// caught it once the job started running with `--features duckdb-1-5-4`,
+    /// because this whole module is gated on it.
+    #[test]
+    fn a_populated_schema_reports_its_format_name_flags_and_children() {
         let strings: Vec<CString> = ["+s", "duckdb_query_result", "i", "id", "u", "label"]
             .iter()
             .map(|s| CString::new(*s).expect("no interior NUL"))
             .collect();
 
-        let mut children = Box::new([RawArrowSchema::empty(), RawArrowSchema::empty()]);
+        let mut children = [RawArrowSchema::empty(), RawArrowSchema::empty()];
         children[0].format = strings[2].as_ptr();
         children[0].name = strings[3].as_ptr();
         children[0].release = Some(count_schema_release);
@@ -1098,33 +1094,26 @@ mod tests {
         children[1].name = strings[5].as_ptr();
         children[1].release = Some(count_schema_release);
 
-        let child_ptrs = Box::new([
+        // Disjoint sub-places of one array, so the second retag leaves the
+        // first pointer's tag intact.
+        let mut child_ptrs = [
             std::ptr::from_mut(&mut children[0]),
             std::ptr::from_mut(&mut children[1]),
-        ]);
+        ];
 
         let mut raw = RawArrowSchema::empty();
         raw.format = strings[0].as_ptr();
         raw.name = strings[1].as_ptr();
         raw.flags = 2; // ARROW_FLAG_NULLABLE
         raw.n_children = 2;
-        raw.children = child_ptrs.as_ptr().cast_mut();
+        raw.children = child_ptrs.as_mut_ptr();
         raw.release = Some(count_schema_release);
 
-        PopulatedSchema {
-            // SAFETY: `count_schema_release` frees nothing and nulls itself;
-            // every pointer above outlives the returned value.
-            root: unsafe { ArrowSchema::from_raw(raw) },
-            _children: children,
-            _child_ptrs: child_ptrs,
-            _strings: strings,
-        }
-    }
+        // SAFETY: `count_schema_release` frees nothing and nulls itself, and
+        // every pointer above targets a local declared before `root`, so all of
+        // them outlive it (locals drop in reverse declaration order).
+        let root = unsafe { ArrowSchema::from_raw(raw) };
 
-    #[test]
-    fn a_populated_schema_reports_its_format_name_flags_and_children() {
-        let schema = populated_schema();
-        let root = &schema.root;
         assert!(!root.is_released());
         assert_eq!(root.format(), Some("+s"));
         assert_eq!(root.name(), Some("duckdb_query_result"));
@@ -1142,46 +1131,36 @@ mod tests {
         assert!(root.child(2).is_none(), "past the end");
     }
 
-    /// A populated array with two children, owned entirely by the caller.
-    struct PopulatedArray {
-        root: ArrowArray,
-        _children: Box<[RawArrowArray; 2]>,
-        _child_ptrs: Box<[*mut RawArrowArray; 2]>,
-    }
-
-    fn populated_array() -> PopulatedArray {
-        let mut children = Box::new([RawArrowArray::empty(), RawArrowArray::empty()]);
+    /// A populated array with two children. Same shape, and same Stacked
+    /// Borrows reasoning, as the schema test above: the owners are locals and
+    /// nothing moves after a pointer is taken.
+    #[test]
+    fn a_populated_array_reports_its_length_nulls_offset_and_children() {
+        let mut children = [RawArrowArray::empty(), RawArrowArray::empty()];
         for (i, child) in children.iter_mut().enumerate() {
             child.length = 7;
             child.null_count = i64::try_from(i).expect("small");
             child.release = Some(count_array_release);
         }
-        let child_ptrs = Box::new([
+
+        let mut child_ptrs = [
             std::ptr::from_mut(&mut children[0]),
             std::ptr::from_mut(&mut children[1]),
-        ]);
+        ];
 
         let mut raw = RawArrowArray::empty();
         raw.length = 7;
         raw.null_count = 3;
         raw.offset = 2;
         raw.n_children = 2;
-        raw.children = child_ptrs.as_ptr().cast_mut();
+        raw.children = child_ptrs.as_mut_ptr();
         raw.release = Some(count_array_release);
 
-        PopulatedArray {
-            // SAFETY: `count_array_release` frees nothing and nulls itself;
-            // every pointer above outlives the returned value.
-            root: unsafe { ArrowArray::from_raw(raw) },
-            _children: children,
-            _child_ptrs: child_ptrs,
-        }
-    }
+        // SAFETY: as in the schema test -- `count_array_release` frees nothing
+        // and nulls itself, and every pointer targets a local declared before
+        // `root`.
+        let root = unsafe { ArrowArray::from_raw(raw) };
 
-    #[test]
-    fn a_populated_array_reports_its_length_nulls_offset_and_children() {
-        let array = populated_array();
-        let root = &array.root;
         assert!(!root.is_released());
         assert_eq!(root.len(), 7);
         assert!(!root.is_empty());

@@ -16,11 +16,23 @@
 //! [`AggregateFunctionSetBuilder`] enforces this by calling the name-setter
 //! internally for every function added to the set.
 
+mod overload;
 mod set;
 mod single;
 
 #[cfg(test)]
 mod tests;
 
-pub use set::{AggregateFunctionSetBuilder, OverloadBuilder};
+pub use overload::AggregateOverloadBuilder;
+pub use set::AggregateFunctionSetBuilder;
 pub use single::AggregateFunctionBuilder;
+
+/// Former name of [`AggregateOverloadBuilder`].
+///
+/// Renamed for symmetry with [`ScalarOverloadBuilder`][crate::scalar::ScalarOverloadBuilder];
+/// the two now read the same way at a call site.
+#[deprecated(
+    since = "0.18.0",
+    note = "renamed to `AggregateOverloadBuilder` for symmetry with `ScalarOverloadBuilder`"
+)]
+pub type OverloadBuilder = AggregateOverloadBuilder;

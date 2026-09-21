@@ -14,31 +14,46 @@ use libduckdb_sys::{
     duckdb_register_aggregate_function_set, DuckDBSuccess,
 };
 
-use crate::aggregate::callbacks::{
-    CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn,
-};
+use super::overload::{AggregateOverloadBuilder, OverloadSpec};
 use crate::error::ExtensionError;
 use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
 
 /// Builder for registering a `DuckDB` aggregate function set (multiple overloads).
 ///
-/// Use this when your function accepts a variable number of arguments by
-/// registering N overloads (one per arity) under a single name.
+/// Use this when one function name needs several signatures — either a variable
+/// number of arguments (one overload per arity) or different parameter types.
 ///
 /// # ADR-2: Function sets for variadic signatures
 ///
 /// `DuckDB` does not support true varargs for aggregate functions. For functions
 /// that accept 2–32 boolean conditions, register 31 overloads.
 ///
+/// # Return types are per-overload
+///
+/// `DuckDB` resolves an aggregate overload from its **parameter types and arity
+/// only**; the return type plays no part in resolution. Each overload may
+/// therefore return a different type, set with
+/// [`AggregateOverloadBuilder::returns`] /
+/// [`AggregateOverloadBuilder::returns_logical`]. [`returns`][Self::returns] and
+/// [`returns_logical`][Self::returns_logical] on *this* builder set a **default**
+/// applied to every overload that does not carry its own — convenient when all
+/// arities of a variadic aggregate share one return type.
+///
+/// Registration fails if an overload has neither its own return type nor a
+/// set-level default.
+///
 /// # Pitfall L6: Name must be set on each member
 ///
 /// This builder calls `duckdb_aggregate_function_set_name` on EVERY individual
 /// function before adding it to the set. If you forget this call, `DuckDB`
 /// silently rejects the registration. Discovery of this bug required reading
-/// `DuckDB`'s own C++ test code at `test/api/capi/test_capi_aggregate_functions.cpp`.
+/// `DuckDB`'s own C++ test code at
+/// `test/api/capi/test_capi_aggregate_functions.cpp`.
 ///
-/// # Example
+/// # Examples
+///
+/// One return type shared by every arity — set it once on the set:
 ///
 /// ```rust,no_run
 /// use quack_rs::aggregate::AggregateFunctionSetBuilder;
@@ -60,25 +75,42 @@ use crate::validate::validate_function_name;
 /// //         .register(con)
 /// // }
 /// ```
+///
+/// Different return types per overload — set them on each overload:
+///
+/// ```rust,no_run
+/// use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder};
+/// use quack_rs::types::TypeId;
+///
+/// // AggregateFunctionSetBuilder::new("my_agg")
+/// //     .overload(
+/// //         AggregateOverloadBuilder::new()
+/// //             .param(TypeId::Integer)
+/// //             .returns(TypeId::Integer)
+/// //             .state_size(int_state_size)
+/// //             .init(int_init)
+/// //             .update(int_update)
+/// //             .combine(int_combine)
+/// //             .finalize(int_finalize),
+/// //     )
+/// //     .overload(
+/// //         AggregateOverloadBuilder::new()
+/// //             .param(TypeId::Varchar)
+/// //             .returns(TypeId::Varchar)
+/// //             .state_size(str_state_size)
+/// //             .init(str_init)
+/// //             .update(str_update)
+/// //             .combine(str_combine)
+/// //             .finalize(str_finalize),
+/// //     )
+/// //     .register(con)
+/// ```
 #[must_use]
 pub struct AggregateFunctionSetBuilder {
     pub(super) name: CString,
     pub(super) return_type: Option<TypeId>,
     pub(super) return_logical: Option<LogicalType>,
     pub(super) overloads: Vec<OverloadSpec>,
-}
-
-/// Specification for one overload within a function set.
-pub(super) struct OverloadSpec {
-    pub(super) params: Vec<TypeId>,
-    pub(super) logical_params: Vec<(usize, LogicalType)>,
-    pub(super) state_size: Option<StateSizeFn>,
-    pub(super) init: Option<StateInitFn>,
-    pub(super) update: Option<UpdateFn>,
-    pub(super) combine: Option<CombineFn>,
-    pub(super) finalize: Option<FinalizeFn>,
-    pub(super) destructor: Option<DestroyFn>,
-    pub(super) null_handling: NullHandling,
 }
 
 impl AggregateFunctionSetBuilder {
@@ -121,7 +153,9 @@ impl AggregateFunctionSetBuilder {
         self.name.to_str().unwrap_or("")
     }
 
-    /// Sets the return type for all overloads in this function set.
+    /// Sets the **default** return type, used by every overload that does not
+    /// set its own with [`AggregateOverloadBuilder::returns`] /
+    /// [`AggregateOverloadBuilder::returns_logical`].
     ///
     /// For complex return types like `LIST(BIGINT)`, use
     /// [`returns_logical`][Self::returns_logical] instead.
@@ -130,7 +164,8 @@ impl AggregateFunctionSetBuilder {
         self
     }
 
-    /// Sets the return type to a complex [`LogicalType`] for all overloads.
+    /// Sets the **default** return type to a complex [`LogicalType`], used by
+    /// every overload that does not set its own.
     ///
     /// Use this for parameterized return types that [`TypeId`] cannot express,
     /// such as `LIST(BOOLEAN)`, `LIST(TIMESTAMP)`, `MAP(VARCHAR, INTEGER)`, etc.
@@ -160,11 +195,46 @@ impl AggregateFunctionSetBuilder {
         self
     }
 
+    /// Adds a single, fully-configured overload to this function set.
+    ///
+    /// Use this when overloads differ in more than arity — different parameter
+    /// types, different return types, or different callbacks. For a family of
+    /// arities that share a shape, [`overloads`][Self::overloads] is shorter.
+    ///
+    /// The two may be mixed; overloads are registered in the order added.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder};
+    /// use quack_rs::types::TypeId;
+    ///
+    /// // AggregateFunctionSetBuilder::new("my_agg")
+    /// //     .overload(
+    /// //         AggregateOverloadBuilder::new()
+    /// //             .param(TypeId::Integer)
+    /// //             .returns(TypeId::Integer)
+    /// //             .state_size(state_size)
+    /// //             .init(init)
+    /// //             .update(update)
+    /// //             .combine(combine)
+    /// //             .finalize(finalize),
+    /// //     );
+    /// ```
+    pub fn overload(mut self, builder: AggregateOverloadBuilder) -> Self {
+        self.overloads.push(builder.into_spec());
+        self
+    }
+
     /// Adds overloads for each arity in `range`, using the given builder closure.
     ///
     /// The closure receives:
     /// - `n`: the number of parameters for this overload
-    /// - A fresh [`OverloadBuilder`] for configuring callbacks
+    /// - A fresh [`AggregateOverloadBuilder`] for configuring callbacks
+    ///
+    /// Each overload may set its own return type; any that does not falls back
+    /// to the set-level default from [`returns`][Self::returns] /
+    /// [`returns_logical`][Self::returns_logical].
     ///
     /// # Example
     ///
@@ -187,21 +257,11 @@ impl AggregateFunctionSetBuilder {
     /// ```
     pub fn overloads<F>(mut self, range: std::ops::RangeInclusive<usize>, f: F) -> Self
     where
-        F: Fn(usize, OverloadBuilder) -> OverloadBuilder,
+        F: Fn(usize, AggregateOverloadBuilder) -> AggregateOverloadBuilder,
     {
         for n in range {
-            let builder = f(n, OverloadBuilder::new());
-            self.overloads.push(OverloadSpec {
-                params: builder.params,
-                logical_params: builder.logical_params,
-                state_size: builder.state_size,
-                init: builder.init,
-                update: builder.update,
-                combine: builder.combine,
-                finalize: builder.finalize,
-                destructor: builder.destructor,
-                null_handling: builder.null_handling,
-            });
+            self.overloads
+                .push(f(n, AggregateOverloadBuilder::new()).into_spec());
         }
         self
     }
@@ -216,7 +276,8 @@ impl AggregateFunctionSetBuilder {
     /// # Errors
     ///
     /// Returns `ExtensionError` if:
-    /// - Return type was not set.
+    /// - No overloads were added.
+    /// - An overload has neither its own return type nor a set-level default.
     /// - Any overload is missing required callbacks.
     /// - `DuckDB` reports registration failure.
     ///
@@ -233,26 +294,55 @@ impl AggregateFunctionSetBuilder {
             for (j, id) in overload.params.iter().enumerate() {
                 LogicalType::check_slot(*id, &format!("overload {i} parameter {j}"))?;
             }
+            if let Some(id) = overload.return_type {
+                LogicalType::check_slot(id, &format!("overload {i} return type"))?;
+            }
         }
-        // Resolve return type: prefer explicit LogicalType over TypeId.
-        let ret_lt = if let Some(lt) = self.return_logical {
-            lt
-        } else if let Some(id) = self.return_type {
-            LogicalType::for_slot(id, "aggregate function set return type")?
-        } else {
-            return Err(ExtensionError::new("return type not set for function set"));
-        };
 
         if self.overloads.is_empty() {
             return Err(ExtensionError::new("no overloads added to function set"));
         }
+
+        // Resolve the set-level *default* return type once, if one was given.
+        // Overloads that carry their own return type never consult it.
+        let default_ret_lt: Option<LogicalType> = if let Some(lt) = self.return_logical {
+            Some(lt)
+        } else if let Some(id) = self.return_type {
+            Some(LogicalType::for_slot(
+                id,
+                "aggregate function set return type",
+            )?)
+        } else {
+            None
+        };
 
         // SAFETY: Creates a new aggregate function set handle.
         let mut set = unsafe { duckdb_create_aggregate_function_set(self.name.as_ptr()) };
 
         let mut register_error: Option<ExtensionError> = None;
 
-        for overload in &self.overloads {
+        for (i, overload) in self.overloads.iter().enumerate() {
+            // Resolve this overload's return type: its own LogicalType, then its
+            // own TypeId, then the set-level default. `_ret_lt_owner` keeps a
+            // `LogicalType` built from a bare `TypeId` alive until the
+            // `set_return_type` call below has copied it.
+            let (_ret_lt_owner, ret_raw) = if let Some(ref lt) = overload.return_logical {
+                (None, lt.as_raw())
+            } else if let Some(id) = overload.return_type {
+                let lt = LogicalType::new(id);
+                let raw = lt.as_raw();
+                (Some(lt), raw)
+            } else if let Some(ref lt) = default_ret_lt {
+                (None, lt.as_raw())
+            } else {
+                register_error = Some(ExtensionError::new(format!(
+                    "overload {i} has no return type and the function set has no default \
+                     return type: call `returns`/`returns_logical` on the overload, or on \
+                     the set to cover every overload"
+                )));
+                break;
+            };
+
             let Some(state_size) = overload.state_size else {
                 register_error = Some(ExtensionError::new("overload missing state_size"));
                 break;
@@ -316,13 +406,18 @@ impl AggregateFunctionSetBuilder {
                 }
             }
 
-            // Set return type (shared across all overloads)
-            // SAFETY: func and ret_lt.as_raw() are valid.
+            // Set this overload's return type.
+            // SAFETY: func and ret_raw are valid; `_ret_lt_owner` keeps ret_raw's
+            // owner alive across this call when the type was built from a TypeId.
             unsafe {
-                duckdb_aggregate_function_set_return_type(func, ret_lt.as_raw());
+                duckdb_aggregate_function_set_return_type(func, ret_raw);
             }
 
             // Set callbacks
+            // SAFETY: func is a valid aggregate function handle, and each
+            // callback was checked to be Some above. The pointers are
+            // `extern "C" fn` items with 'static lifetime, so they outlive the
+            // registration.
             unsafe {
                 duckdb_aggregate_function_set_functions(
                     func,
@@ -335,6 +430,7 @@ impl AggregateFunctionSetBuilder {
             }
 
             if let Some(dtor) = overload.destructor {
+                // SAFETY: func is valid and `dtor` is a 'static `extern "C" fn`.
                 unsafe {
                     duckdb_aggregate_function_set_destructor(func, Some(dtor));
                 }
@@ -381,106 +477,6 @@ impl AggregateFunctionSetBuilder {
     }
 }
 
-/// A builder for one overload within a [`AggregateFunctionSetBuilder`].
-///
-/// Returned by the closure passed to [`AggregateFunctionSetBuilder::overloads`].
-#[must_use]
-pub struct OverloadBuilder {
-    pub(super) params: Vec<TypeId>,
-    pub(super) logical_params: Vec<(usize, LogicalType)>,
-    pub(super) state_size: Option<StateSizeFn>,
-    pub(super) init: Option<StateInitFn>,
-    pub(super) update: Option<UpdateFn>,
-    pub(super) combine: Option<CombineFn>,
-    pub(super) finalize: Option<FinalizeFn>,
-    pub(super) destructor: Option<DestroyFn>,
-    pub(super) null_handling: NullHandling,
-}
-
-impl OverloadBuilder {
-    /// Creates a new `OverloadBuilder`.
-    pub(super) fn new() -> Self {
-        Self {
-            params: Vec::new(),
-            logical_params: Vec::new(),
-            state_size: None,
-            init: None,
-            update: None,
-            combine: None,
-            finalize: None,
-            destructor: None,
-            null_handling: NullHandling::DefaultNullHandling,
-        }
-    }
-
-    /// Adds a positional parameter to this overload.
-    ///
-    /// For complex types like `LIST(BIGINT)`, use
-    /// [`param_logical`][Self::param_logical].
-    pub fn param(mut self, type_id: TypeId) -> Self {
-        self.params.push(type_id);
-        self
-    }
-
-    /// Adds a positional parameter with a complex [`LogicalType`].
-    ///
-    /// Use this for parameterized types that [`TypeId`] cannot express, such as
-    /// `LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`.
-    #[mutants::skip] // position arithmetic tested via E2E
-    pub fn param_logical(mut self, logical_type: LogicalType) -> Self {
-        let position = self.params.len() + self.logical_params.len();
-        self.logical_params.push((position, logical_type));
-        self
-    }
-
-    /// Sets the `state_size` callback for this overload.
-    pub fn state_size(mut self, f: StateSizeFn) -> Self {
-        self.state_size = Some(f);
-        self
-    }
-
-    /// Sets the `init` callback for this overload.
-    pub fn init(mut self, f: StateInitFn) -> Self {
-        self.init = Some(f);
-        self
-    }
-
-    /// Sets the `update` callback for this overload.
-    pub fn update(mut self, f: UpdateFn) -> Self {
-        self.update = Some(f);
-        self
-    }
-
-    /// Sets the `combine` callback for this overload.
-    pub fn combine(mut self, f: CombineFn) -> Self {
-        self.combine = Some(f);
-        self
-    }
-
-    /// Sets the `finalize` callback for this overload.
-    pub fn finalize(mut self, f: FinalizeFn) -> Self {
-        self.finalize = Some(f);
-        self
-    }
-
-    /// Sets the optional destructor callback for this overload.
-    pub fn destructor(mut self, f: DestroyFn) -> Self {
-        self.destructor = Some(f);
-        self
-    }
-
-    /// Sets the NULL handling behaviour for this overload.
-    ///
-    /// By default, `DuckDB` skips NULL rows in aggregate functions
-    /// ([`DefaultNullHandling`][NullHandling::DefaultNullHandling]).
-    /// Set to [`SpecialNullHandling`][NullHandling::SpecialNullHandling] to receive
-    /// NULL values in your `update` callback.
-    pub const fn null_handling(mut self, handling: NullHandling) -> Self {
-        self.null_handling = handling;
-        self
-    }
-}
-
 impl core::fmt::Debug for AggregateFunctionSetBuilder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AggregateFunctionSetBuilder")
@@ -488,23 +484,6 @@ impl core::fmt::Debug for AggregateFunctionSetBuilder {
             .field("return_type", &self.return_type)
             .field("return_logical", &self.return_logical)
             .field("overloads", &self.overloads.len())
-            .finish()
-    }
-}
-
-impl core::fmt::Debug for OverloadBuilder {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        use crate::debug_repr::Callback;
-        f.debug_struct("OverloadBuilder")
-            .field("params", &self.params)
-            .field("logical_params", &self.logical_params.len())
-            .field("state_size", &Callback::of(&self.state_size))
-            .field("init", &Callback::of(&self.init))
-            .field("update", &Callback::of(&self.update))
-            .field("combine", &Callback::of(&self.combine))
-            .field("finalize", &Callback::of(&self.finalize))
-            .field("destructor", &Callback::of(&self.destructor))
-            .field("null_handling", &self.null_handling)
             .finish()
     }
 }

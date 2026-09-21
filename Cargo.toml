@@ -162,6 +162,19 @@ duckdb-1-5-3 = ["duckdb-1-5"]
 ## test suite), so bridging is a pointer cast rather than a shared dependency.
 duckdb-1-5-4 = ["duckdb-1-5-3"]
 
+# No `duckdb-1-5-5` feature exists, deliberately. DuckDB 1.5.5 (2026-07-21)
+# adds **no** C Extension API surface: `src/include/duckdb/main/capi/
+# extension_api.hpp` is byte-identical between v1.5.4 and v1.5.5 (sha256
+# 0232a22a1ea7f503fe934c024c11f4699138ff64b62db3b8a31451b563017031, 89456
+# bytes, both tags), 546 function pointers in each. The only ABI change in
+# 1.5.5 is three new `duckdb_statement_type` enum values, which this crate does
+# not model. There would be nothing for such a feature to gate.
+#
+# Watch upstream `main`: it bumps DUCKDB_EXTENSION_API_VERSION_STRING to
+# "v1.5.6" -- the first bump since v1.2.0 -- and adds
+# `duckdb_create_timestamp_tz_ns` / `duckdb_get_timestamp_tz_ns`. That release
+# will warrant a new feature gate; 1.5.5 does not.
+
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 duckdb = { version = ">=1.4.4, <2", optional = true }
