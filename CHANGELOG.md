@@ -107,6 +107,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   populates the copy's bind data only if a copy callback is registered, and
   quack-rs never exposed the setter, so `get_bind_data` could return null on a
   copied expression: a wrong answer, not a crash.
+- **An invalid `mutants.yml` that silently disabled the mutation gate.** A
+  shell comment added earlier in this branch wrote out an empty workflow
+  expression while explaining not to pass values that way. GitHub evaluates
+  expressions anywhere in the file, including inside shell comments, so the
+  empty one invalidated the whole workflow:
+
+  ```
+  Invalid workflow file: .github/workflows/mutants.yml
+  (Line: 203, Col: 14): An expression was expected
+  ```
+
+  This fails silently by design: GitHub records a run with **zero jobs** and the
+  workflow stops running. `mutants-incremental` therefore stopped executing on
+  pull requests while every other check stayed green — the same "a gate that is
+  not actually running" failure this release is otherwise about, introduced by
+  this branch rather than found in it.
+
+  `scripts/check-workflow-expressions.py` now runs in the `doc` job and rejects
+  this class. It fails on the exact commit that broke and passes on the fix.
+  Neither `yaml.safe_load` nor a JSON-Schema check catches it, because both
+  treat the `run:` block as an opaque string.
 - **22 `assert!(x.is_empty())` / `assert!(!x.is_empty())` assertions** that beta
   clippy's new `assert_is_empty` / `assert_is_not_empty` lints reject, across 10
   files. These are not style noise: `clippy-beta` was running *stable* clippy

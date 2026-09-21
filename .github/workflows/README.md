@@ -72,6 +72,31 @@ Coverage (`coverage.yml`), mutation testing (`mutants.yml`), docs (`docs.yml`),
 benchmarks (`benchmarks.yml`) and release (`release.yml`) run in their own
 workflows.
 
+## Pitfall: an invalid workflow file fails silently
+
+GitHub evaluates `${` + `{ ... }}` expressions **anywhere in the file**,
+including inside a shell comment in a `run:` block. An empty one is a syntax
+error that invalidates the entire workflow:
+
+```
+Invalid workflow file: .github/workflows/mutants.yml
+(Line: 203, Col: 14): An expression was expected
+```
+
+This does not fail loudly. GitHub records a run with **zero jobs** and the
+workflow stops running — `mutants.yml` silently stopped executing on pull
+requests this way, so the mutation gate was not running at all while every
+other check stayed green.
+
+Neither `yaml.safe_load` nor a JSON-Schema validator catches it, because both
+treat the `run:` block as an opaque string. `scripts/check-workflow-expressions.py`
+runs in the `doc` job and does.
+
+`actionlint` also catches it and catches much more besides. It is not wired in
+here only because it ships as a Go binary from GitHub releases and cannot be
+checksum-pinned the way `osv-scanner` is in `ci.yml`. If a pinned, verifiable
+install becomes available, adding it would be a strict improvement.
+
 ## Adding a new workflow
 
 1. Create a new `.yml` file in this directory.

@@ -254,6 +254,15 @@ jobs:
       # entry, so it is generated now and checked here.
       - name: Book changelog is in sync with CHANGELOG.md
         run: scripts/sync-book-changelog.py --check
+      # An invalid workflow file does not fail loudly: GitHub records a run
+      # with zero jobs and the workflow silently stops running. That is how the
+      # mutation gate stopped executing on PRs -- a shell comment inside a
+      # `run:` block wrote out an empty expression while explaining not to use
+      # one, and GitHub evaluates expressions even inside shell comments.
+      # Neither yaml.safe_load nor a JSON-Schema check sees it: both treat the
+      # `run:` block as an opaque string. See scripts/check-workflow-expressions.py.
+      - name: Workflow files contain no invalid expressions
+        run: scripts/check-workflow-expressions.py
 
   msrv:
     name: MSRV (1.86.0)

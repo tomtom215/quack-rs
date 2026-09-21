@@ -204,10 +204,11 @@ jobs:
           echo "::group::cargo-mutants execution log"
 
           # `--file` for each changed source file.
-          # CHANGED_FILES comes in through `env:`, NOT `${{ }}`: expression
-          # interpolation is substituted into the script before bash parses it,
-          # so a PR adding `src/x$(...).rs` would execute that on the runner.
-          # Git does not quote `$`, a backtick, `;` or `&` in a path.
+          # CHANGED_FILES arrives through `env:`, NOT through workflow
+          # expression interpolation. An interpolated value is substituted into
+          # the script before bash parses it, so a PR adding `src/x$(...).rs`
+          # would execute that on the runner. Git does not quote `$`, a
+          # backtick, `;` or `&` in a path.
           IFS=',' read -ra CHANGED <<< "$CHANGED_FILES"
           ARGS=()
           for f in "${CHANGED[@]}"; do
