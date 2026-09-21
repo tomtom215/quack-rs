@@ -596,7 +596,7 @@ mod tests {
     fn an_invalid_name_is_rejected_before_anything_is_allocated() {
         let err = ScalarFunctionBuilder::map1("has spaces", |x: i64| x)
             .expect_err("a name with a space is not a SQL identifier");
-        assert!(!err.as_str().is_empty());
+        assert_ne!(err.as_str(), "");
     }
 
     #[test]

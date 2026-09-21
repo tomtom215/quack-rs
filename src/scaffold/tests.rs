@@ -529,7 +529,7 @@ fn generated_description_does_not_pin_a_branch() {
     let desc = crate::validate::description_yml::parse_description_yml(yml)
         .expect("the scaffold must generate a parseable description.yml");
     assert_eq!(desc.git_ref, crate::scaffold::REF_PLACEHOLDER);
-    assert!(desc.git_ref_next.is_empty());
+    assert_eq!(desc.git_ref_next, "");
 }
 
 /// Every action in the generated CI workflow must be SHA-pinned.

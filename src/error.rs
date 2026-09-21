@@ -245,7 +245,7 @@ mod tests {
     fn from_error_wraps_display() {
         let parse_err = "abc".parse::<i32>().unwrap_err();
         let err = ExtensionError::from_error(parse_err);
-        assert!(!err.message.is_empty());
+        assert_ne!(err.message, "");
     }
 
     #[test]
@@ -295,7 +295,7 @@ mod tests {
     fn from_box_dyn_error() {
         let boxed: Box<dyn std::error::Error> = "abc".parse::<i32>().unwrap_err().into();
         let err = ExtensionError::from(boxed);
-        assert!(!err.message.is_empty());
+        assert_ne!(err.message, "");
     }
 
     #[test]
@@ -327,14 +327,14 @@ mod tests {
     fn from_nul_error() {
         let nul_err = std::ffi::CString::new("hello\0world").unwrap_err();
         let err = ExtensionError::from(nul_err);
-        assert!(!err.as_str().is_empty());
+        assert_ne!(err.as_str(), "");
     }
 
     #[test]
     fn from_fmt_error() {
         let fmt_err = std::fmt::Error;
         let err = ExtensionError::from(fmt_err);
-        assert!(!err.as_str().is_empty());
+        assert_ne!(err.as_str(), "");
     }
 
     #[test]
@@ -357,7 +357,7 @@ mod tests {
         let boxed: Box<dyn std::error::Error + Send + Sync> =
             "abc".parse::<i32>().unwrap_err().into();
         let err = ExtensionError::from(boxed);
-        assert!(!err.message.is_empty());
+        assert_ne!(err.message, "");
     }
 
     #[test]

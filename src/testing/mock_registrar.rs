@@ -456,7 +456,7 @@ mod tests {
     fn mock_registrar_records_copy_function() {
         let mock = MockRegistrar::new();
         assert!(!mock.has_copy_function("my_format"));
-        assert!(mock.copy_function_names().is_empty());
+        assert_eq!(mock.copy_function_names(), [] as [String; 0]);
 
         let builder = crate::copy_function::CopyFunctionBuilder::try_new("my_format").unwrap();
         unsafe { mock.register_copy_function(builder).unwrap() };

@@ -110,6 +110,13 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   populates the copy's bind data only if a copy callback is registered, and
   quack-rs never exposed the setter, so `get_bind_data` could return null on a
   copied expression: a wrong answer, not a crash.
+- **22 `assert!(x.is_empty())` / `assert!(!x.is_empty())` assertions** that beta
+  clippy's new `assert_is_empty` / `assert_is_not_empty` lints reject, across 10
+  files. These are not style noise: `clippy-beta` was running *stable* clippy
+  before this release, so it had never reported them, and when beta promotes to
+  stable the **blocking** `clippy` job inherits every one. Each now uses
+  `assert_eq!` / `assert_ne!` against an empty value, which is what the lint
+  asks for and prints the actual value on failure.
 - **Four CI quality gates were testing nothing**, each verified against the
   files rather than inferred:
   - The MSRV job (`ci.yml`) and the release gate's MSRV entry ran a bare

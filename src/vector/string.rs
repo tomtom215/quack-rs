@@ -412,7 +412,7 @@ mod tests {
         let view = unsafe { DuckStringView::from_raw(&bytes) };
         // Null pointer for long string should return None
         assert!(view.as_str().is_none());
-        assert!(unsafe { read_duck_blob(bytes.as_ptr(), 0) }.is_empty());
+        assert_eq!(unsafe { read_duck_blob(bytes.as_ptr(), 0) }, [] as [u8; 0]);
     }
 
     #[test]
