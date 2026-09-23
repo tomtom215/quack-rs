@@ -40,7 +40,7 @@
 //! # -> Result<(), quack_rs::error::ExtensionError> {
 //! // Keep every third row.
 //! let kept: Vec<u32> = (0..row_count as u32).step_by(3).collect();
-//! let mut sel = SelectionVector::new(kept.len());
+//! let mut sel = SelectionVector::new(kept.len())?;
 //! sel.as_mut_slice().copy_from_slice(&kept);
 //!
 //! let dst = OwnedVector::new(&LogicalType::new(TypeId::BigInt), kept.len())?;
@@ -286,7 +286,7 @@ mod tests {
 
         // Keep the odd rows, in reverse.
         let kept: Vec<u32> = (0..32u32).filter(|i| i % 2 == 1).rev().collect();
-        let mut sel = SelectionVector::new(kept.len());
+        let mut sel = SelectionVector::new(kept.len()).expect("allocate");
         sel.as_mut_slice().copy_from_slice(&kept);
 
         // SAFETY: same type, every index is a valid `src` row, `dst` has room.

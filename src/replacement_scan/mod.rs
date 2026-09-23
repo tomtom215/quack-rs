@@ -215,9 +215,15 @@ impl ReplacementScanInfo {
     /// Reports an error, causing `DuckDB` to abort this replacement scan attempt.
     ///
     /// If `message` contains an interior null byte it is truncated at that point.
-    #[mutants::skip] // FFI call requires DuckDB runtime
+    ///
+    /// `DuckDB` only raises the error when the stored message is non-empty, so
+    /// an empty message (or one that is empty after truncation, such as
+    /// `"\0..."`) would be silently ignored and the query would fall through
+    /// to "table does not exist". It is replaced with
+    /// [`EMPTY_ERROR_PLACEHOLDER`][Self::EMPTY_ERROR_PLACEHOLDER] instead.
+    #[mutants::skip] // FFI call requires DuckDB runtime; `error_cstring` is unit-tested
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = error_cstring(message);
         // SAFETY: self.info is valid.
         unsafe {
             duckdb_replacement_scan_set_error(self.info, c_msg.as_ptr());
@@ -229,6 +235,22 @@ impl ReplacementScanInfo {
     #[inline]
     pub const fn as_raw(&self) -> duckdb_replacement_scan_info {
         self.info
+    }
+
+    /// The message [`set_error`][Self::set_error] reports in place of an empty
+    /// one.
+    pub const EMPTY_ERROR_PLACEHOLDER: &'static str =
+        "replacement scan reported an error without a message";
+}
+
+/// Converts an error message for `duckdb_replacement_scan_set_error`, never
+/// producing an empty string (which `DuckDB` treats as "no error").
+fn error_cstring(message: &str) -> CString {
+    let c_msg = str_to_cstring(message);
+    if c_msg.as_bytes().is_empty() {
+        str_to_cstring(ReplacementScanInfo::EMPTY_ERROR_PLACEHOLDER)
+    } else {
+        c_msg
     }
 }
 
@@ -259,6 +281,10 @@ impl ReplacementScanBuilder {
     /// - `db` must be a valid, open `duckdb_database`.
     /// - `extra_data` must remain valid until `delete_callback` is called
     ///   (or until the database is closed if `delete_callback` is `None`).
+    /// - `extra_data` must be safe to share between threads: `DuckDB` passes it
+    ///   to `callback` from any connection's thread, concurrently, and calls
+    ///   `delete_callback` from whichever thread closes the database. Treat it
+    ///   as `&T` where `T: Send + Sync`.
     pub unsafe fn register(
         db: duckdb_database,
         callback: ReplacementScanFn,
@@ -276,10 +302,16 @@ impl ReplacementScanBuilder {
     /// Boxes `data` and registers a drop destructor automatically.
     /// This is the safe, ergonomic way to attach Rust data to a replacement scan.
     ///
+    /// `T` must be `Send + Sync`: the data lives in the database-wide
+    /// configuration, is handed (as `&T` behind the `data` pointer) to the
+    /// callback on whichever connection's thread is binding a query — possibly
+    /// several at once — and is dropped on whichever thread closes the
+    /// database.
+    ///
     /// # Safety
     ///
     /// `db` must be a valid, open `duckdb_database`.
-    pub unsafe fn register_with_data<T: 'static>(
+    pub unsafe fn register_with_data<T: Send + Sync + 'static>(
         db: duckdb_database,
         callback: ReplacementScanFn,
         data: T,
@@ -325,5 +357,18 @@ mod tests {
     fn str_to_cstring_truncates_at_null() {
         let c = super::str_to_cstring("bad\0message");
         assert_eq!(c.to_str().unwrap(), "bad");
+    }
+
+    /// `DuckDB` ignores an empty replacement-scan error, so an empty message —
+    /// or one a leading NUL truncates to empty — must be replaced.
+    #[test]
+    fn error_cstring_is_never_empty() {
+        let placeholder = ReplacementScanInfo::EMPTY_ERROR_PLACEHOLDER;
+        assert_eq!(super::error_cstring("").to_str().unwrap(), placeholder);
+        assert_eq!(
+            super::error_cstring("\0hidden").to_str().unwrap(),
+            placeholder
+        );
+        assert_eq!(super::error_cstring("boom").to_str().unwrap(), "boom");
     }
 }

@@ -62,12 +62,14 @@ writing your own destructor.
 
 ## L3: No panic across FFI boundaries
 
-**Status**: Made impossible by `init_extension` helper.
+**Status**: Made impossible by `init_extension` and the callback guards (which require
+`panic = "unwind"` in the release profile).
 
-**Symptom**: Extension causes DuckDB to crash or behave unpredictably.
+**Symptom**: The whole DuckDB process aborts when an extension callback panics.
 
-**Root cause**: `panic!()` and `.unwrap()` in `unsafe extern "C"` functions is undefined
-behavior. Panics cannot unwind across FFI boundaries in Rust.
+**Root cause**: a panic cannot unwind out of an `extern "C"` function. Since Rust 1.81 the
+runtime aborts the process when one tries (before 1.81 it was undefined behaviour), so an
+uncaught `panic!()` or `.unwrap()` in a callback takes down the user's session.
 
 **Fix**: Use `Result` and `?` inside `init_extension`. Never use `unwrap()` in FFI callbacks.
 `FfiState::with_state_mut` returns `Option`, not `Result`, so callers use `if let`.
@@ -78,11 +80,13 @@ behavior. Panics cannot unwind across FFI boundaries in Rust.
 
 **Status**: Made impossible by `VectorWriter::set_null`.
 
-**Symptom**: SEGFAULT when writing NULL values to the output vector.
+**Symptom**: NULLs written to an output vector are silently lost; the row reads back as a
+valid value. (It only crashes if you dereference the mask pointer yourself.)
 
-**Root cause**: `duckdb_vector_get_validity` returns an uninitialized pointer if
-`duckdb_vector_ensure_validity_writable` has not been called first. If you skip the first
-call and then try to set a row invalid, you write to an uninitialized address.
+**Root cause**: a vector that has never held a NULL usually has no validity mask, so
+`duckdb_vector_get_validity` returns NULL — as `duckdb.h` documents — and
+`duckdb_validity_set_row_invalid` / `_valid` return early on a NULL mask
+(`src/main/capi/data_chunk-c.cpp`). Nothing is written and nothing reports an error.
 
 **Fix**: Always call `duckdb_vector_ensure_validity_writable` before `duckdb_vector_get_validity`
 when writing NULLs. `VectorWriter::set_null` does this automatically.
@@ -280,8 +284,10 @@ With no callback the copy carries `bind_data = nullptr`, and the original is
 untouched — which is why the failure is intermittent rather than total, and why
 it survives a test suite that only ever executes the first-bound expression.
 
-**Fix**: register a copy callback alongside the bind data, in the same bind
-callback and after `set_bind_data`:
+**Fix**: use `ScalarBindData::set`, which registers a generated, panic-safe
+copy callback (it requires `T: Clone + Send + Sync`). With the raw API, register
+a copy callback alongside the bind data, in the same bind callback and after
+`set_bind_data`:
 
 ```rust
 unsafe extern "C" fn copy(data: *mut c_void) -> *mut c_void {
@@ -308,6 +314,39 @@ it must not unwind. Wrap anything that can panic in
 
 [`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/struct.ScalarBindInfo.html#method.set_bind_data_copy
 [`callback::catch_ffi_panic`]: https://docs.rs/quack-rs/latest/quack_rs/callback/fn.catch_ffi_panic.html
+
+---
+
+## L11: C API aggregates crash under `agg(x) OVER ()` and `agg(x ORDER BY y)`
+
+**Status**: A `DuckDB` defect, reported upstream as
+[duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Cannot be prevented or detected from an extension;
+documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` and
+`FfiState`.
+
+**Symptom**: An aggregate that works under `SELECT agg(x) FROM t` and `GROUP BY`
+segfaults (or corrupts memory, or returns a wrong answer) when used as a window
+over a whole-partition frame — `agg(x) OVER ()`, `OVER (PARTITION BY p)` — or as
+an ordered aggregate, `agg(x ORDER BY y)`.
+
+**Root cause**: `CAPIAggregateUpdate` (`src/main/capi/aggregate_function-c.cpp`)
+flattens the input vectors but not the state vector, then hands the callback
+`FlatVector::GetDataUnsafe(state)`. The C API registers no `simple_update`, so
+two executors fall back to calling `update` with a **constant** state vector and
+`count > 1`: `WindowConstantAggregatorLocalState` (`statep(Value::POINTER(0))`)
+and `SortedAggregateFunction` (`agg_state_vec.SetVectorType(CONSTANT_VECTOR)`).
+The callback reads `states[i]` for every row, as the C API contract says it
+may; only `states[0]` exists. Reproduced with a plain C aggregate (no quack-rs)
+against DuckDB 1.4.4, 1.5.0 and 1.5.5; AddressSanitizer places the fault in the
+callback, called from `CAPIAggregateUpdate`.
+
+**Fix**: none on the extension side — the callback receives a raw
+`duckdb_aggregate_state *` and cannot tell a constant vector from a flat one,
+and reading `states[1]` to find out is itself the out-of-bounds read. Until
+`DuckDB` fixes it, document for your users that the aggregate must not be used
+in those two query shapes. Frames that are not whole-partition (`ROWS BETWEEN 5
+PRECEDING AND CURRENT ROW`, segment-tree windows) and `DISTINCT` windows were
+checked and work.
 
 ---
 
@@ -556,7 +595,7 @@ it at compiled-in offsets. The struct has two regions:
 
 | Region | Slots | Guarantee |
 |--------|-------|-----------|
-| Stable | 0–356 | Frozen since v1.2.0 — identical names, identical order, in every release through v1.5.5 |
+| Stable | 0–356 | Frozen since v1.2.0 — same slots, order and signatures in every release through v1.5.5 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
 | Unstable | 357+ | DuckDB **inserts** entries in the middle, shifting every later slot |
 
 | DuckDB | Total slots | What moved |
@@ -768,26 +807,17 @@ or use `quack_rs::scaffold::generate_scaffold` to auto-generate all project file
 - Extension names must be globally unique across the entire DuckDB community extensions ecosystem
 - Check existing names at https://community-extensions.duckdb.org/ before choosing
 - Use vendor prefixing to avoid collisions (e.g., `myorg_analytics` instead of `analytics`)
-- Names must match `^[a-z][a-z0-9_-]*$` and not exceed 64 characters
+- Names must match `^[a-z][a-z0-9_]*$` and not exceed 64 characters (no hyphens: DuckDB
+  looks up the entry point as `<name>_init_c_api`, which cannot contain one)
 - The `[lib] name` in `Cargo.toml` MUST match the extension name (Pitfall P1)
 
 ### Platform Targets
 
-Community extensions are built for these platform targets:
-
-| Platform | Description |
-|----------|-------------|
-| `linux_amd64` | Linux x86_64 |
-| `linux_amd64_gcc4` | Linux x86_64 (GCC 4 compatible) |
-| `linux_arm64` | Linux AArch64 |
-| `osx_amd64` | macOS x86_64 |
-| `osx_arm64` | macOS Apple Silicon |
-| `windows_amd64` | Windows x86_64 |
-| `windows_amd64_mingw` | Windows x86_64 (MinGW) |
-| `windows_arm64` | Windows AArch64 |
-| `wasm_mvp` | WebAssembly (MVP) |
-| `wasm_eh` | WebAssembly (exception handling) |
-| `wasm_threads` | WebAssembly (threads) |
+Community extensions are built for the targets in `config/distribution_matrix.json` of
+`duckdb/extension-ci-tools`. The authoritative copy in this repository is the table in
+`book/src/publishing.md` ("Platform targets"), which `scripts/check-platform-table.py`
+checks against upstream in CI; it is not repeated here so there is one list to keep
+current. (`linux_amd64_gcc4`, which older guides list, has been retired upstream.)
 
 Use `excluded_platforms` in `description.yml` to skip platforms your extension cannot support.
 Validate with `quack_rs::validate::validate_platform` and `validate_excluded_platforms`.
@@ -797,7 +827,8 @@ Validate with `quack_rs::validate::validate_platform` and `validate_excluded_pla
 Community extensions are NOT vetted for security by the DuckDB team. The community extensions
 repository is a distribution mechanism, not a security guarantee. As an extension author:
 
-- Never panic across FFI boundaries (`quack-rs` enforces `panic = "abort"`)
+- Never let a panic escape an FFI boundary (`quack-rs` catches them in its callbacks,
+  which requires `panic = "unwind"`; `validate_release_profile` rejects `abort`)
 - Validate all user inputs at system boundaries
 - Do not include secrets, credentials, or API keys in your extension binary
 - Follow the OWASP top 10 where applicable (SQL injection via dynamic SQL, etc.)

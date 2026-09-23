@@ -3,7 +3,6 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-use super::parser::parse_kv;
 use super::*;
 
 fn valid_yml() -> &'static str {
@@ -28,7 +27,7 @@ fn valid_yml_parses_correctly() {
     let desc = parse_description_yml(valid_yml()).unwrap();
     assert_eq!(desc.name, "my_ext");
     assert_eq!(desc.description, "Fast analytics for DuckDB.");
-    assert_eq!(desc.version, "0.1.0");
+    assert_eq!(desc.version.as_deref(), Some("0.1.0"));
     assert_eq!(desc.language, "Rust");
     assert_eq!(desc.build, "cargo");
     assert_eq!(desc.license, "MIT");
@@ -121,8 +120,12 @@ fn invalid_version_rejected() {
     assert!(err.as_str().contains("version"));
 }
 
+/// An unlisted licence is reported, but as a warning: the community build never
+/// reads the field, and published extensions declare `BSL 1.1`, `GPL-3.0`
+/// and free text, so a hard error rejected files `DuckDB` accepts. An empty
+/// licence is still an error, checked at the end.
 #[test]
-fn invalid_license_rejected() {
+fn unlisted_license_is_a_warning() {
     let yml = "extension:\n\
                \x20\x20name: my_ext\n\
                \x20\x20description: d\n\
@@ -136,8 +139,18 @@ fn invalid_license_rejected() {
                repo:\n\
                \x20\x20github: j/r\n\
                \x20\x20ref: main\n";
-    let err = parse_description_yml(yml).unwrap_err();
-    assert!(err.as_str().contains("license"));
+    let desc = parse_description_yml(yml).unwrap();
+    assert_eq!(desc.license, "FAKE-LICENSE");
+    assert_eq!(desc.warnings.len(), 1, "{:?}", desc.warnings);
+    assert!(desc.warnings[0].contains("license"), "{:?}", desc.warnings);
+    assert!(
+        desc.warnings[0].contains("FAKE-LICENSE"),
+        "{:?}",
+        desc.warnings
+    );
+    let missing = yml.replace("  license: FAKE-LICENSE\n", "");
+    let err = parse_description_yml(&missing).unwrap_err();
+    assert!(err.as_str().contains("extension.license"), "{err}");
 }
 
 #[test]
@@ -354,7 +367,7 @@ fn unstable_git_hash_version_accepted() {
                \x20\x20github: j/r\n\
                \x20\x20ref: main\n";
     let desc = parse_description_yml(yml).unwrap();
-    assert_eq!(desc.version, "690bfc5");
+    assert_eq!(desc.version.as_deref(), Some("690bfc5"));
 }
 
 #[test]
@@ -373,7 +386,7 @@ fn stable_semver_version_accepted() {
                \x20\x20github: j/r\n\
                \x20\x20ref: main\n";
     let desc = parse_description_yml(yml).unwrap();
-    assert_eq!(desc.version, "1.2.3");
+    assert_eq!(desc.version.as_deref(), Some("1.2.3"));
 }
 
 #[test]
@@ -445,7 +458,7 @@ fn inline_comments_stripped_from_values() {
                \x20\x20ref: main # default branch\n";
     let desc = parse_description_yml(yml).unwrap();
     assert_eq!(desc.description, "Fast analytics");
-    assert_eq!(desc.version, "0.1.0");
+    assert_eq!(desc.version.as_deref(), Some("0.1.0"));
     assert_eq!(desc.language, "Rust");
     assert_eq!(desc.build, "cargo");
     assert_eq!(desc.license, "MIT");
@@ -454,39 +467,54 @@ fn inline_comments_stripped_from_values() {
     assert_eq!(desc.git_ref, "main");
 }
 
+/// One-field variant of [`valid_yml`] for scalar-decoding checks.
+fn with_description(line: &str) -> String {
+    valid_yml().replace("description: Fast analytics for DuckDB.", line)
+}
+
 #[test]
-fn parse_kv_unquotes_and_keeps_hash_inside_quotes() {
+fn quoted_values_are_unquoted_and_keep_a_hash_inside_the_quotes() {
     // Inside quotes a '#' is data, not a comment — and the quotes themselves
     // are syntax, so they come off.
-    assert_eq!(
-        parse_kv("key: \"value # not a comment\"", "key:"),
-        Some("value # not a comment")
-    );
+    let desc =
+        parse_description_yml(&with_description("description: \"value # not a comment\"")).unwrap();
+    assert_eq!(desc.description, "value # not a comment");
     // Real description.yml files single-quote the version.
+    let yml = valid_yml().replace("version: 0.1.0", "version: '2025120401'");
     assert_eq!(
-        parse_kv("  version: '2025120401'", "  version:"),
+        parse_description_yml(&yml).unwrap().version.as_deref(),
         Some("2025120401")
     );
-    // Unbalanced or repeated quotes are left alone rather than chewed through
-    // the way `trim_matches` would.
-    assert_eq!(parse_kv("key: \"unbalanced", "key:"), Some("\"unbalanced"));
-    assert_eq!(
-        parse_kv("key: \"\"doubled\"\"", "key:"),
-        Some("\"doubled\"")
-    );
-    assert_eq!(parse_kv("key: \"", "key:"), Some("\""));
+}
+
+/// Unbalanced or repeated quotes used to be passed through verbatim
+/// (`"unbalanced` became the value `"unbalanced`). They are YAML syntax
+/// errors — `yaml.safe_load` rejects all three — so they are errors here too,
+/// rather than values with stray quote characters in them.
+#[test]
+fn malformed_quoting_is_an_error() {
+    for line in [
+        "description: \"unbalanced",
+        "description: \"\"doubled\"\"",
+        "description: \"",
+    ] {
+        assert!(
+            parse_description_yml(&with_description(line)).is_err(),
+            "{line}"
+        );
+    }
 }
 
 #[test]
-fn parse_kv_strips_inline_comment_from_unquoted() {
-    let result = parse_kv("key: value # a comment", "key:");
-    assert_eq!(result, Some("value"));
+fn an_inline_comment_is_stripped_from_an_unquoted_value() {
+    let desc = parse_description_yml(&with_description("description: value # a comment")).unwrap();
+    assert_eq!(desc.description, "value");
 }
 
 #[test]
-fn parse_kv_no_comment() {
-    let result = parse_kv("key: plain_value", "key:");
-    assert_eq!(result, Some("plain_value"));
+fn an_unquoted_value_without_a_comment_is_kept_whole() {
+    let desc = parse_description_yml(&with_description("description: plain_value")).unwrap();
+    assert_eq!(desc.description, "plain_value");
 }
 
 // ─── Regression fixtures modelled on real published extensions ──────────────
@@ -524,7 +552,7 @@ fn prose_in_the_docs_section_is_not_metadata() {
                \x20\x20\x20\x20ref: not_the_ref\n";
     let desc = parse_description_yml(yml).expect("prose must not invalidate the file");
     assert_eq!(desc.name, "probe");
-    assert_eq!(desc.version, "1.2.3");
+    assert_eq!(desc.version.as_deref(), Some("1.2.3"));
     assert_eq!(desc.license, "MIT");
     assert_eq!(desc.git_ref, "abc1234");
 }
@@ -551,7 +579,11 @@ fn single_quoted_date_versions_parse() {
                \x20\x20github: rustyconover/duckdb-shellfs-extension\n\
                \x20\x20ref: 6e2eb0f\n";
     let desc = parse_description_yml(yml).expect("a real published file must parse");
-    assert_eq!(desc.version, "2025120401", "quotes must be stripped");
+    assert_eq!(
+        desc.version.as_deref(),
+        Some("2025120401"),
+        "quotes must be stripped"
+    );
     assert_eq!(desc.name, "shellfs");
     // The `docs:` block comes first here, and maintainers are indented only two
     // spaces — both shapes real files use.
@@ -606,7 +638,11 @@ fn block_scalars_inside_the_extension_section_are_captured_not_scanned() {
                \x20\x20github: j/r\n\
                \x20\x20ref: main\n";
     let desc = parse_description_yml(yml).expect("parse");
-    assert_eq!(desc.version, "1.2.3", "the body's version must not win");
+    assert_eq!(
+        desc.version.as_deref(),
+        Some("1.2.3"),
+        "the body's version must not win"
+    );
     assert_eq!(
         desc.description, "A multi-line description.\nversion: 9.9.9",
         "a literal block keeps its line breaks and is the field's value"
@@ -708,4 +744,39 @@ fn ref_next_is_parsed_and_does_not_shadow_ref() {
     let desc = parse_description_yml(&without).expect("parse");
     assert_eq!(desc.git_ref, "e5ed59b6ccf915c65e17eb6286b9a64f3ab09f59");
     assert_eq!(desc.git_ref_next, "");
+}
+
+/// Setting both spellings is ambiguous, so it is an error rather than one of
+/// them silently winning.
+#[test]
+fn license_and_licence_together_are_rejected() {
+    let yml = valid_yml().replace(
+        "  license: MIT\n",
+        "  license: MIT\n  licence: Apache-2.0\n",
+    );
+    let err = parse_description_yml(&yml).unwrap_err();
+    assert!(err.as_str().contains("both"), "{}", err.as_str());
+    assert!(
+        err.as_str().contains("extension.licence"),
+        "{}",
+        err.as_str()
+    );
+}
+
+/// An empty list entry (`-`, `- ""`, `- '  '`) is skipped, not an error and
+/// not an empty name.
+#[test]
+fn empty_list_entries_are_skipped() {
+    let yml = valid_yml()
+        .replace(
+            "    - Jane Doe\n",
+            "    - Jane Doe\n    -\n    - \"\"\n    - '  '\n",
+        )
+        .replace(
+            "  maintainers:\n",
+            "  excluded_platforms:\n    - osx_amd64\n    -\n  maintainers:\n",
+        );
+    let desc = parse_description_yml(&yml).unwrap();
+    assert_eq!(desc.maintainers, vec!["Jane Doe"]);
+    assert_eq!(desc.excluded_platforms, "osx_amd64");
 }

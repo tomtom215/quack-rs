@@ -36,7 +36,9 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
     // Read something back.
     let mut result = unsafe { con.query("SELECT current_setting('threads')") }?;
     if let Some(chunk) = result.next_chunk() {
-        let threads = unsafe { chunk.reader(0).read_str(0) };
+        // The reader must outlive the `&str` it hands out, so bind it first.
+        let reader = unsafe { chunk.reader(0) };
+        let threads = unsafe { reader.read_str(0) };
         eprintln!("DuckDB is using {threads} threads");
     }
     Ok(())
@@ -102,14 +104,18 @@ during registration and keep it. A `duckdb_connection` holds its own reference t
 the database instance, so it stays valid after loading finishes:
 
 ```rust,ignore
+use quack_rs::connection::Connection;
+use quack_rs::error::ExtensionError;
 use quack_rs::query::OwnedConnection;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
-static CONN: OnceLock<OwnedConnection> = OnceLock::new();
+// `OwnedConnection` is `Send` but not `Sync` (see below), so a `static` must
+// hold it behind a `Mutex`.
+static CONN: OnceLock<Mutex<OwnedConnection>> = OnceLock::new();
 
 fn register(con: &Connection) -> Result<(), ExtensionError> {
     let owned = unsafe { con.open_connection() }?;
-    let _ = CONN.set(owned);
+    let _ = CONN.set(Mutex::new(owned));
     Ok(())
 }
 ```

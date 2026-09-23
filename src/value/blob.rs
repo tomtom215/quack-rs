@@ -7,6 +7,7 @@ use libduckdb_sys::{duckdb_blob, duckdb_free, duckdb_get_blob};
 
 use super::Value;
 use crate::error::ExtensionError;
+use crate::types::TypeId;
 
 fn blob_size(blob: &duckdb_blob) -> Result<Option<usize>, ExtensionError> {
     if blob.data.is_null() {
@@ -19,6 +20,19 @@ fn blob_size(blob: &duckdb_blob) -> Result<Option<usize>, ExtensionError> {
     usize::try_from(blob.size)
         .map(Some)
         .map_err(|_| ExtensionError::new("duckdb_get_blob returned an unsupported blob size"))
+}
+
+/// Refuses every type but `BLOB`: `duckdb_get_blob` casts anything else with a
+/// throwing cast. `id` is the value's type, `None` if `DuckDB` reported one
+/// this build does not name.
+fn require_blob(id: Option<TypeId>) -> Result<(), ExtensionError> {
+    if id == Some(TypeId::Blob) {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "as_blob: value is {id:?}, not BLOB"
+        )))
+    }
 }
 
 #[mutants::skip] // DuckDB allocator effects are not observable from safe Rust tests.
@@ -37,14 +51,25 @@ impl Value {
     ///
     /// # Errors
     ///
-    /// Returns `ExtensionError` if the value handle is null, `duckdb_get_blob`
-    /// returns a null data pointer for a non-empty blob, or the blob size cannot
-    /// be represented by `usize` on the current platform.
+    /// Returns `ExtensionError` if the value handle is null, the value is SQL
+    /// `NULL`, its type is not `BLOB`, `duckdb_get_blob` returns a null data
+    /// pointer for a non-empty blob, or the blob size cannot be represented by
+    /// `usize` on the current platform.
+    ///
+    /// Only a `BLOB` is accepted. `duckdb_get_blob` casts anything else to
+    /// `BLOB` with a *throwing* cast — an `INTEGER`, or a `VARCHAR` with an
+    /// invalid `\x` escape, aborted the process — and it throws on SQL `NULL`
+    /// too. Read a `VARCHAR` with [`as_str`][Self::as_str].
     pub fn as_blob(&self) -> Result<Vec<u8>, ExtensionError> {
         if self.raw.is_null() {
             return Err(ExtensionError::new("Value is null"));
         }
-        // SAFETY: self.raw is a valid duckdb_value per constructor contract.
+        if self.is_sql_null() {
+            return Err(ExtensionError::new("Value is SQL NULL"));
+        }
+        require_blob(self.type_id())?;
+        // SAFETY: self.raw is a live, non-NULL BLOB, so duckdb_get_blob's
+        // cast is the identity and StringValue::Get cannot throw.
         let blob: duckdb_blob = unsafe { duckdb_get_blob(self.raw) };
         let size = match blob_size(&blob) {
             Ok(None) => return Ok(Vec::new()),
@@ -89,6 +114,16 @@ mod tests {
     }
 
     #[test]
+    fn only_a_blob_type_is_accepted() {
+        assert!(require_blob(Some(TypeId::Blob)).is_ok());
+        let err = require_blob(Some(TypeId::Varchar)).expect_err("VARCHAR is not BLOB");
+        assert_eq!(err.as_str(), "as_blob: value is Some(Varchar), not BLOB");
+        assert!(require_blob(Some(TypeId::Integer)).is_err());
+        let err = require_blob(None).expect_err("an unnamed type is not BLOB");
+        assert_eq!(err.as_str(), "as_blob: value is None, not BLOB");
+    }
+
+    #[test]
     fn null_value_as_blob_returns_error() {
         let value = unsafe { Value::from_raw(std::ptr::null_mut()) };
         assert!(value.as_blob().is_err());
@@ -120,6 +155,9 @@ mod tests {
         // SAFETY: duckdb_create_blob returns an owned value handle.
         let value = unsafe { Value::from_raw(raw) };
 
-        assert!(value.as_blob().expect("blob should be readable").is_empty());
+        assert_eq!(
+            value.as_blob().expect("blob should be readable"),
+            Vec::<u8>::new()
+        );
     }
 }

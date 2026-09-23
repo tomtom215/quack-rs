@@ -358,7 +358,7 @@ dealing with these constants directly.
 | P1 | Extension fails to load | `[lib] name` ≠ description.yml `name` | Match them exactly |
 | P2 | Extension fails API init | Using DuckDB release version in `api_init` | Use C API version (`"v1.2.0"`) |
 
-See [LESSONS.md](../LESSONS.md) for all 16 pitfalls with full analysis.
+See [LESSONS.md](../LESSONS.md) for every pitfall with full analysis.
 
 ---
 

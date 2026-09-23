@@ -36,7 +36,11 @@ fn main() {
                 };
                 println!(
                     "OK   {stem:<16} name={:<16} version={:<10} lang={:<6} build={:<8} lic={}{mismatch}",
-                    d.name, d.version, d.language, d.build, d.license
+                    d.name,
+                    d.version.as_deref().unwrap_or("-"),
+                    d.language,
+                    d.build,
+                    d.license
                 );
             }
             Err(e) => {

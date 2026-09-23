@@ -143,7 +143,8 @@ principles.
 ### 2. Zero panics across FFI
 
 `unwrap()`, `expect()`, and `panic!()` are forbidden in any code path that may be
-invoked by DuckDB. Panicking across a C FFI boundary is undefined behaviour. All
+invoked by DuckDB. A panic escaping a C FFI boundary aborts the process (Rust ≥ 1.81;
+undefined behaviour before that). All
 error handling uses `Result`/`Option` and the `?` operator. Errors are reported
 back to DuckDB via `access.set_error`.
 
@@ -313,13 +314,15 @@ API changes cost days of debugging.
 
 ## ADR-003: No Panics Across FFI
 
-**Context**: `panic!` in a `no_std`-adjacent context, or across a C FFI boundary,
-is undefined behaviour. DuckDB calls extension callbacks from C++; a Rust panic
-propagating into C++ unwinding is UB.
+**Context**: a panic cannot unwind out of an `extern "C"` function. Before Rust
+1.81 that was undefined behaviour; since 1.81 the runtime aborts the process.
+DuckDB calls extension callbacks from C++, so either way an escaping panic takes
+down the user's session.
 
 **Decision**: Every callback and entry point uses `Result`/`Option`. Errors are
-reported via `access.set_error`. The `panic = "abort"` release profile setting
-is a defence-in-depth measure, not a substitute for correct error handling.
+reported via `access.set_error`. Every callback and entry point also runs
+under `catch_unwind` as defence in depth, which is why the release profile must
+use `panic = "unwind"` (under `abort`, nothing can be caught).
 
 **Consequences**: All callbacks are slightly more verbose, but the invariant is
 enforced by the type system rather than convention.

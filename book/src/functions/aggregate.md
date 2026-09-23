@@ -4,6 +4,30 @@ Aggregate functions reduce multiple rows into a single value per group — like 
 `COUNT()`, or `AVG()`. DuckDB supports parallel aggregation, which introduces a `combine`
 step that merges partial results from parallel workers.
 
+## Known DuckDB limitation
+
+> **Known DuckDB limitation — out-of-bounds state reads.** Two query shapes make
+> DuckDB call every C-API aggregate's `update` with a state array holding **one**
+> state while passing `count > 1` rows, so the callback reads `states[1..count]`
+> past the end of the array (undefined behaviour, in any C-API aggregate, whether
+> built with quack-rs or by hand):
+>
+> - **Window aggregates whose frame is the whole partition**, e.g. `agg(x) OVER ()`
+>   — `WindowConstantAggregator` (`src/function/window/window_constant_aggregator.cpp`,
+>   ~lines 106 and 296–299 in DuckDB 1.5.5).
+> - **Ordered aggregates**, e.g. `agg(x ORDER BY y)` —
+>   `src/function/aggregate/sorted_aggregate_function.cpp`, ~lines 630–633.
+>
+> Both paths pass a `CONSTANT_VECTOR` of states because the function has no
+> `simple_update` (which the C API cannot set), and `CAPIAggregateUpdate`
+> (`src/main/capi/aggregate_function-c.cpp`, ~lines 92–110) passes the vector's
+> data pointer to the extension without flattening it. This is a defect in
+> DuckDB's C API, not in quack-rs, and it cannot be detected from inside the
+> callback: reading `states[1]` to check is itself the out-of-bounds read. Until
+> DuckDB fixes it, do not use C-API aggregates in those two query shapes.
+>
+> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
+
 ---
 
 ## The aggregate lifecycle

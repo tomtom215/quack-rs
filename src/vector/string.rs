@@ -194,8 +194,12 @@ impl<'a> DuckStringView<'a> {
     /// The pointer-format branch reads bytes 8–15 as a `u64` and truncates to
     /// `usize`. On 64-bit targets this is a lossless round-trip; on 32-bit
     /// (DuckDB-WASM via `wasm32-unknown-emscripten`) the C union still reserves
-    /// 8 bytes for the pointer slot but only the lower 4 carry the address —
-    /// the upper 4 are padding/zero. `u64 as usize` returns those lower bytes.
+    /// 8 bytes for the pointer slot but only the lower 4 carry the address.
+    /// The upper 4 (bytes 12–15) are **not** guaranteed to be zero: `DuckDB`'s
+    /// `string_t` constructor writes only the length, prefix and 4-byte
+    /// pointer for a long string, so those bytes keep whatever the slot held
+    /// before (e.g. the tail of an earlier inlined string). `u64 as usize`
+    /// keeps only the lower 4 bytes, so the stale upper ones are discarded.
     ///
     /// # Safety (internal)
     ///
@@ -217,9 +221,10 @@ impl<'a> DuckStringView<'a> {
             // to heap memory allocated by DuckDB and valid for the vector's lifetime.
             let ptr_bytes: [u8; 8] = self.bytes[8..16].try_into().ok()?;
             // Read as u64 so this works regardless of `usize` width; truncating
-            // to `usize` is a no-op on 64-bit and yields the low 4 bytes on wasm32
-            // (where the upper 4 bytes of the 8-byte slot are zero padding), so the
-            // truncation is intentional and lossless on every supported target.
+            // to `usize` is a no-op on 64-bit and yields the low 4 bytes on wasm32,
+            // where the upper 4 bytes of the 8-byte slot may hold stale data
+            // (DuckDB does not clear them) and must be discarded. The truncation
+            // is intentional and keeps the whole address on every supported target.
             #[allow(clippy::cast_possible_truncation)]
             let ptr_val = u64::from_le_bytes(ptr_bytes) as usize as *const u8;
             if ptr_val.is_null() {

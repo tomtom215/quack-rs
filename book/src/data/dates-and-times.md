@@ -31,25 +31,50 @@ let days = unsafe { reader.read_date(row) };
 let date = unsafe { datetime::date_from_days(days) };
 println!("{:04}-{:02}-{:02}", date.year, date.month, date.day);
 
-// …and back
-let days = unsafe { datetime::date_to_days(date) };
-unsafe { writer.write_date(row, days) };
+// …and back. `None` means DuckDB cannot represent the date.
+match unsafe { datetime::date_to_days(date) } {
+    Some(days) => unsafe { writer.write_date(row, days) },
+    None => unsafe { writer.set_null(row) },
+}
 ```
 
 `Time`, `TimeTz` and `Timestamp` work the same way:
 
 ```rust,ignore
-let ts = unsafe { datetime::timestamp_from_micros(reader.read_timestamp(row)) };
+let Some(ts) = unsafe { datetime::timestamp_from_micros(reader.read_timestamp(row)) } else {
+    // ±infinity (or the first ~4 hours of the i64 range): no calendar form.
+    unsafe { writer.set_null(row) };
+    continue;
+};
 assert_eq!(ts.time.micros % 1_000, 0);   // ts.date and ts.time are plain structs
 
-let micros = unsafe { datetime::timestamp_to_micros(ts) };
+let micros = unsafe { datetime::timestamp_to_micros(ts) };   // Option<i64>
 ```
+
+### Invalid input is `None`, not an abort
+
+Several of DuckDB's conversions **throw a C++ exception** on bad input, and the
+C API does not catch it — so calling them directly with, say, month 13 aborts
+the whole process ("Rust cannot catch foreign exceptions"). The wrappers check
+first, using DuckDB's own conditions, and return `None` instead:
+
+| Function | Returns `None` when |
+|----------|---------------------|
+| `date_to_days` | month not 1–12, day not in that month (leap years included), or the date is outside 5877642-06-25 BC – 5881580-07-10; `datetime::is_valid_date` is the same check |
+| `timestamp_from_micros` | the value is `±infinity`, or below `-106_751_991 * MICROS_PER_DAY` (which includes `i64::MIN`) |
+| `timestamp_to_micros` | the date is invalid, the result overflows `i64`, or it lands on `±infinity` |
+| `time_tz_bits` | the time is outside `0..=MICROS_PER_DAY`, or the offset beyond ±15:59:59 (`TIME_TZ_MAX_OFFSET_SECONDS`) |
+| `decimal_to_f64` | `width > 38` or `scale > width` |
+
+`time_to_micros` does no range check, exactly like DuckDB: an hour of 25
+simply gives a `TIME` past midnight.
 
 `TIMETZ` is a packed 64-bit value, not a plain integer — build and read it
 through the helpers rather than by hand:
 
 ```rust,ignore
-let bits = unsafe { datetime::time_tz_bits(12 * 3_600 * 1_000_000, -5 * 3_600) };
+let bits = unsafe { datetime::time_tz_bits(12 * 3_600 * 1_000_000, -5 * 3_600) }
+    .expect("noon, UTC-5, is in range");
 unsafe { writer.write_time_tz(row, bits) };
 
 let decoded = unsafe { datetime::time_tz_from_bits(reader.read_time_tz(row)) };
@@ -109,6 +134,8 @@ unsafe { writer.write_decimal(row, width, unscaled * 2) };
 
 `datetime::f64_to_decimal` and `datetime::decimal_to_f64` convert through
 DuckDB's own routines when a floating-point view is what you want.
+`decimal_to_f64` returns `None` for a width above 38 or a scale above the
+width: DuckDB would index its powers-of-ten table out of bounds.
 
 ## Wide integers
 

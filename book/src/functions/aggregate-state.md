@@ -3,6 +3,14 @@
 `FfiState<T>` manages the lifecycle of aggregate state — allocation, initialization, access,
 and destruction — so you never write raw pointer code for state management.
 
+> **Known DuckDB limitation.** C-API aggregates — which is to say every
+> `FfiState<T>` user — read out of bounds under `agg(x) OVER ()` (whole-partition window frames)
+> and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
+> [Aggregate Functions](aggregate.md#known-duckdb-limitation) for the details and
+> DuckDB source lines. Do not use C-API aggregates in those two query shapes.
+>
+> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
+
 ---
 
 ## `AggregateState` trait

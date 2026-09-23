@@ -130,6 +130,11 @@ impl DataChunk {
 
     /// Marks `output` NULL at every row where any column of this chunk is NULL.
     ///
+    /// Each row is nulled through [`VectorWriter::set_null`], so a `STRUCT` or
+    /// `ARRAY` output has its fields / elements nulled at that row too, and
+    /// `(f(x)).a` on a NULL row reads NULL rather than the value the callback
+    /// wrote there.
+    ///
     /// # What `DuckDB` actually does with NULLs
     ///
     /// It is natural to read

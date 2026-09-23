@@ -9,6 +9,7 @@
   <url><loc>https://quack-rs.com/concepts/entry-point.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/concepts/errors.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/concepts/types.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/concepts/abi.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/functions/scalar.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/functions/aggregate.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/functions/aggregate-state.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
@@ -24,6 +25,19 @@
   <url><loc>https://quack-rs.com/data/complex-types.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/data/nulls-and-strings.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/data/intervals.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/data/dates-and-times.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/data/running-sql.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/data/appender.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/data/table-description.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/duckdb-1-5/error-data.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/duckdb-1-5/expression.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/duckdb-1-5/file-system.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/duckdb-1-5/selection-vector.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/duckdb-1-5/instance-cache.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/duckdb-1-5/arrow.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/security/tls.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/security/warnings.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/security/secrets.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/testing.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/publishing.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/reference/pitfalls.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>

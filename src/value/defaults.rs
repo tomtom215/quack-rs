@@ -5,10 +5,11 @@
 
 //! The defaulting accessors — `Value::as_*_or`.
 //!
-//! Each one answers the question "what should this be when the handle is
-//! null?", which is pure branching on [`Value::is_null`] and never touches
-//! `DuckDB` on the default path. That is why they live here rather than in
-//! `value.rs`: `mutants.toml` excludes that file wholesale — every function
+//! Each one folds the `None` of the plain getter — null handle, SQL `NULL`,
+//! failed cast — into a caller-chosen default. A null handle is refused before
+//! any `DuckDB` call, so the default path is reachable without a live engine.
+//! That is why they live here rather than in
+//! `value.rs`: `.cargo/mutants.toml` excludes that file wholesale — every function
 //! left in it wraps a `DuckDB` C call the `--lib` mutation run cannot reach —
 //! and these fourteen can be, and are, killed by ordinary unit tests.
 
@@ -39,136 +40,124 @@ impl Value {
         self.as_str().unwrap_or_default()
     }
 
-    /// Extracts the value as an `i32`, returning `default` if the handle is null.
+    /// Extracts the value as an `i32`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_i32_or(&self, default: i32) -> i32 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i32()
-        }
+        self.as_i32().unwrap_or(default)
     }
 
-    /// Extracts the value as an `i64`, returning `default` if the handle is null.
+    /// Extracts the value as an `i64`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_i64_or(&self, default: i64) -> i64 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i64()
-        }
+        self.as_i64().unwrap_or(default)
     }
 
-    /// Extracts the value as an `f32`, returning `default` if the handle is null.
+    /// Extracts the value as an `f32`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_f32_or(&self, default: f32) -> f32 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_f32()
-        }
+        self.as_f32().unwrap_or(default)
     }
 
-    /// Extracts the value as an `f64`, returning `default` if the handle is null.
+    /// Extracts the value as an `f64`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_f64_or(&self, default: f64) -> f64 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_f64()
-        }
+        self.as_f64().unwrap_or(default)
     }
 
-    /// Extracts the value as a `bool`, returning `default` if the handle is null.
+    /// Extracts the value as a `bool`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_bool_or(&self, default: bool) -> bool {
-        if self.is_null() {
-            default
-        } else {
-            self.as_bool()
-        }
+        self.as_bool().unwrap_or(default)
     }
 
-    /// Extracts the value as an `i8`, returning `default` if the handle is null.
+    /// Extracts the value as an `i8`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_i8_or(&self, default: i8) -> i8 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i8()
-        }
+        self.as_i8().unwrap_or(default)
     }
 
-    /// Extracts the value as an `i16`, returning `default` if the handle is null.
+    /// Extracts the value as an `i16`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_i16_or(&self, default: i16) -> i16 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i16()
-        }
+        self.as_i16().unwrap_or(default)
     }
 
-    /// Extracts the value as a `u8`, returning `default` if the handle is null.
+    /// Extracts the value as a `u8`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_u8_or(&self, default: u8) -> u8 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_u8()
-        }
+        self.as_u8().unwrap_or(default)
     }
 
-    /// Extracts the value as a `u16`, returning `default` if the handle is null.
+    /// Extracts the value as a `u16`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_u16_or(&self, default: u16) -> u16 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_u16()
-        }
+        self.as_u16().unwrap_or(default)
     }
 
-    /// Extracts the value as a `u32`, returning `default` if the handle is null.
+    /// Extracts the value as a `u32`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_u32_or(&self, default: u32) -> u32 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_u32()
-        }
+        self.as_u32().unwrap_or(default)
     }
 
-    /// Extracts the value as a `u64`, returning `default` if the handle is null.
+    /// Extracts the value as a `u64`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_u64_or(&self, default: u64) -> u64 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_u64()
-        }
+        self.as_u64().unwrap_or(default)
     }
 
-    /// Extracts the value as an `i128`, returning `default` if the handle is null.
+    /// Extracts the value as an `i128`, returning `default` if it is absent or unreadable.
+    ///
+    /// `default` is returned for a null handle, a SQL `NULL`, and a failed
+    /// or impossible cast — every case in which the plain getter returns `None`.
     #[inline]
     #[must_use]
     pub fn as_i128_or(&self, default: i128) -> i128 {
-        if self.is_null() {
-            default
-        } else {
-            self.as_i128()
-        }
+        self.as_i128().unwrap_or(default)
     }
 }
 

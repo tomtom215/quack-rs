@@ -13,7 +13,7 @@
 //! in 64 bits, so the common cases in the end-to-end suite would not notice.
 //!
 //! They live in their own file so that the mutation-testing gate keeps
-//! examining them. `mutants.toml` excludes `src/value.rs` and `src/query.rs`
+//! examining them. `.cargo/mutants.toml` excludes `src/value.rs` and `src/query.rs`
 //! wholesale, because every other function in those two modules is a thin
 //! wrapper over a `DuckDB` C call that the `--lib` run cannot reach without a
 //! live engine. This module is reachable, so it stays in.

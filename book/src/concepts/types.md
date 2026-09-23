@@ -10,7 +10,7 @@ quack-rs provides `TypeId` and `LogicalType` to bridge Rust types and DuckDB col
 `VARIANT` types added in DuckDB 1.5.x are exposed behind the `duckdb-1-5-3`
 feature — see [Known Limitations](../reference/known-limitations.md)):
 
-```rust
+```rust,ignore
 use quack_rs::types::TypeId;
 
 TypeId::Boolean

@@ -31,7 +31,7 @@ Chunk sizes vary. Always loop from `0..reader.row_count()`, never assume a fixed
 
 ### NULL check
 
-```rust
+```rust,ignore
 if unsafe { !reader.is_valid(row) } {
     // row is NULL — skip or propagate NULL to output
     unsafe { writer.set_null(row) };
@@ -132,9 +132,22 @@ unsafe { writer.set_null(row) };
 ```
 
 > **Pitfall L4**: `set_null` calls `duckdb_vector_ensure_validity_writable` automatically
-> before accessing the validity bitmap. Calling `duckdb_vector_get_validity` without this
-> prerequisite returns an uninitialized pointer → SEGFAULT. `VectorWriter::set_null` handles
-> this correctly. See [Pitfall L4](../reference/pitfalls.md#l4-ensure_validity_writable-is-required-before-null-output).
+> before `duckdb_vector_get_validity`. A vector with no NULLs yet usually has no validity
+> mask, so without that call `get_validity` returns NULL and `duckdb_validity_set_row_invalid`
+> silently does nothing — the row you meant to be NULL reads back as a valid value.
+> `VectorWriter::set_null` handles this correctly. See [Pitfall L4](../reference/pitfalls.md#l4-ensure_validity_writable-is-required-before-null-output).
+
+#### NULL rows of STRUCT and ARRAY outputs
+
+For a `STRUCT` output, `set_null(row)` (and `set_null_range`, and
+`DataChunk::propagate_nulls`, which uses it) also nulls that row in **every
+field**, recursively; for an `ARRAY` of size `n` it nulls child rows
+`row * n .. row * n + n`. This mirrors DuckDB's internal `FlatVector::SetNull`,
+and it matters: `struct_extract` / `s.a` reads the field vector without looking
+at the parent, so a NULL struct row whose fields were left valid returns the
+stale field value. `StructWriter::set_row_null(row)` does the same from a
+`StructWriter`. `LIST` / `MAP` elements are not touched (as in DuckDB), and
+`set_valid` does not undo the recursion — rewrite the fields after it.
 
 ### Clearing NULL (v0.11.0+)
 

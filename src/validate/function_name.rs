@@ -29,6 +29,97 @@ use crate::error::ExtensionError;
 /// characters are unreasonable and may cause issues with catalog storage.
 const MAX_FUNCTION_NAME_LEN: usize = 256;
 
+/// `DuckDB`'s **reserved** SQL keywords, lowercase and sorted.
+///
+/// A function with one of these names cannot be called without quoting it —
+/// `SELECT order(1)` is a parser error, only `"order"(1)` works — so
+/// [`validate_function_name`] rejects them (case-insensitively). The other
+/// keyword categories (`unreserved`, `column_name`, `type_function`) are
+/// callable unquoted and stay allowed: `DuckDB` itself ships `left`, `similar`
+/// and `year`.
+///
+/// Taken from `SELECT keyword_name FROM duckdb_keywords() WHERE
+/// keyword_category = 'reserved'`, which returns this identical list on
+/// `DuckDB` 1.4.4, 1.5.0 and 1.5.5. An end-to-end test compares it against the
+/// linked engine, so a `DuckDB` release that changes the set fails CI.
+pub const DUCKDB_RESERVED_KEYWORDS: [&str; 75] = [
+    "all",
+    "analyse",
+    "analyze",
+    "and",
+    "any",
+    "array",
+    "as",
+    "asc",
+    "asymmetric",
+    "both",
+    "case",
+    "cast",
+    "check",
+    "collate",
+    "column",
+    "constraint",
+    "create",
+    "default",
+    "deferrable",
+    "desc",
+    "describe",
+    "distinct",
+    "do",
+    "else",
+    "end",
+    "except",
+    "false",
+    "fetch",
+    "for",
+    "foreign",
+    "from",
+    "group",
+    "having",
+    "in",
+    "initially",
+    "intersect",
+    "into",
+    "lambda",
+    "lateral",
+    "leading",
+    "limit",
+    "not",
+    "null",
+    "offset",
+    "on",
+    "only",
+    "or",
+    "order",
+    "pivot",
+    "pivot_longer",
+    "pivot_wider",
+    "placing",
+    "primary",
+    "qualify",
+    "references",
+    "returning",
+    "select",
+    "show",
+    "some",
+    "summarize",
+    "symmetric",
+    "table",
+    "then",
+    "to",
+    "trailing",
+    "true",
+    "union",
+    "unique",
+    "unpivot",
+    "using",
+    "variadic",
+    "when",
+    "where",
+    "window",
+    "with",
+];
+
 /// Validates a `DuckDB` function name.
 ///
 /// # Rules
@@ -38,10 +129,13 @@ const MAX_FUNCTION_NAME_LEN: usize = 256;
 /// - Must start with an ASCII letter or underscore
 /// - Must contain only ASCII letters, digits, or underscores
 /// - Must not contain interior null bytes
+/// - Must not be one of [`DUCKDB_RESERVED_KEYWORDS`] (compared
+///   case-insensitively)
 ///
 /// Every one of these is something that would actually break: a name needing
-/// quotes in SQL, a name starting with a digit that the parser reads as a
-/// number, or a name a C string truncates. Casing is **not** checked — see the
+/// quotes in SQL (including a reserved keyword such as `order`), a name
+/// starting with a digit that the parser reads as a number, or a name a C
+/// string truncates. Casing is **not** checked — see the
 /// [module docs][crate::validate::function_name] for why enforcing `snake_case`
 /// here would make a name `DuckDB` accepts unregisterable.
 ///
@@ -64,6 +158,8 @@ const MAX_FUNCTION_NAME_LEN: usize = 256;
 /// assert!(validate_function_name("my-func").is_err());  // needs quoting in SQL
 /// assert!(validate_function_name("1func").is_err());    // parsed as a number
 /// assert!(validate_function_name("my func").is_err());  // needs quoting in SQL
+/// assert!(validate_function_name("order").is_err());    // reserved keyword
+/// assert!(validate_function_name("left").is_ok());      // keyword, but not reserved
 /// ```
 pub fn validate_function_name(name: &str) -> Result<(), ExtensionError> {
     if name.is_empty() {
@@ -100,6 +196,19 @@ pub fn validate_function_name(name: &str) -> Result<(), ExtensionError> {
                  quotes in SQL is not worth the trouble it causes callers)"
             )));
         }
+    }
+
+    // Only reached for an all-ASCII name, so ASCII case folding is exact.
+    let lower = name.to_ascii_lowercase();
+    if DUCKDB_RESERVED_KEYWORDS
+        .binary_search(&lower.as_str())
+        .is_ok()
+    {
+        return Err(ExtensionError::new(format!(
+            "function name '{name}' is a reserved keyword in DuckDB's SQL: `SELECT {lower}(...)` \
+             is a parser error, so callers would have to write `\"{lower}\"(...)`; \
+             choose another name"
+        )));
     }
 
     Ok(())
@@ -152,6 +261,53 @@ mod tests {
                 "{name} should be rejected"
             );
         }
+    }
+
+    /// `SELECT order(1)` is a parser error in `DuckDB` 1.4.4–1.5.5; only
+    /// `"order"(1)` works. The module promises names needing quotes are
+    /// rejected, and reserved keywords are exactly such names.
+    #[test]
+    fn reserved_keywords_are_rejected_in_any_case() {
+        for name in [
+            "order",
+            "select",
+            "from",
+            "group",
+            "table",
+            "case",
+            "ORDER",
+            "Select",
+            "window",
+            "pivot_longer",
+        ] {
+            let err = validate_function_name(name)
+                .expect_err(&format!("reserved keyword {name} must be rejected"));
+            assert!(err.as_str().contains("reserved keyword"), "{name}: {err}");
+        }
+    }
+
+    /// Unreserved, column-name and type/function keywords are callable
+    /// unquoted (`SELECT similar(1)`, `SELECT left('ab', 1)` work), so they
+    /// must stay registerable.
+    #[test]
+    fn non_reserved_keywords_are_accepted() {
+        for name in [
+            "left", "similar", "overlaps", "year", "filter", "count", "orders",
+        ] {
+            assert!(validate_function_name(name).is_ok(), "{name}");
+        }
+    }
+
+    /// Pins the list's shape: sorted, unique, lowercase, and the size `DuckDB`
+    /// 1.4.4, 1.5.0 and 1.5.5 all report. `tests/ffi_roundtrip/tooling.rs`
+    /// compares it against the linked engine's `duckdb_keywords()`.
+    #[test]
+    fn reserved_keyword_list_is_sorted_unique_lowercase() {
+        assert_eq!(DUCKDB_RESERVED_KEYWORDS.len(), 75);
+        assert!(DUCKDB_RESERVED_KEYWORDS.windows(2).all(|w| w[0] < w[1]));
+        assert!(DUCKDB_RESERVED_KEYWORDS
+            .iter()
+            .all(|k| k.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')));
     }
 
     #[test]

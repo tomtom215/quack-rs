@@ -39,8 +39,9 @@ Rust **1.86.0** or later. This is enforced in `Cargo.toml` with
 
 Yes. It was extracted from
 [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a
-production DuckDB community extension. All 16 pitfalls it solves were discovered
-in production.
+production DuckDB community extension, where the first 16 of the pitfalls it now
+documents were discovered; the rest came from later audits against DuckDB's own
+source and a running database.
 
 ---
 
@@ -132,7 +133,7 @@ extension into an actual DuckDB process.
 
 ```rust
 let m = SqlMacro::scalar("triple", &["x"], "x * 3").unwrap();
-assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO triple(x) AS (x * 3)");
+assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "triple"("x") AS (x * 3)"#);
 ```
 
 For E2E testing, include the macro in your SQLLogicTest file:
@@ -246,12 +247,14 @@ internal `Rc<RefCell<InnerConnection>>` layout. This is fragile and causes
 SEGFAULTs when the layout changes between `duckdb` crate versions.
 `init_extension` uses the correct C API entry sequence directly.
 
-### Why is `panic = "abort"` required?
+### Why must the release profile use `panic = "unwind"`?
 
-Panics cannot unwind across FFI boundaries in Rust. A panic in an
-`unsafe extern "C"` callback is undefined behavior. `panic = "abort"` converts
-panics to process termination, which is still bad but not undefined behavior.
-Always use `Result` and `?` in your callbacks instead.
+quack-rs wraps every callback and entry point in `catch_unwind` and reports a
+panic as an ordinary SQL error. `catch_unwind` cannot catch anything under
+`panic = "abort"`: the process terminates at the panic site, taking the user's
+DuckDB session with it. `validate_release_profile` rejects `abort` for this
+reason. Returning `Result` and using `?` is still the right style — the guards
+are a safety net, not a substitute.
 
 ### Can I use async Rust in my extension?
 

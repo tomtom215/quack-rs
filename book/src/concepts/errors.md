@@ -79,7 +79,7 @@ If any registration call fails, `?` returns the error from `register`, which
 
 `init_extension` converts `ExtensionError` to a `CString` for the DuckDB error callback:
 
-```rust
+```rust,ignore
 pub fn to_c_string(&self) -> CString {
     // Truncates at the first null byte if message contains one
     CString::new(self.message.as_bytes()).unwrap_or_else(...)
@@ -96,9 +96,11 @@ The cardinal rule of DuckDB extension development:
 
 > **Never `unwrap()`, `expect()`, or `panic!()` in any code path that DuckDB may call.**
 
-Rust panics that cross FFI boundaries are **undefined behavior**. With `panic = "abort"`
-in the release profile, a panic terminates the process — which is safer than UB, but still
-unacceptable in production.
+A panic cannot unwind out of an `extern "C"` function: since Rust 1.81 the runtime aborts
+the process instead, taking the user's DuckDB session with it. quack-rs's callback macros
+and typed builders catch panics and turn them into SQL errors (which requires
+`panic = "unwind"` in the release profile), but that is a safety net for bugs, not an
+error-handling strategy.
 
 ### Safe patterns
 
@@ -115,7 +117,7 @@ let value = some_fallible_call()?;
 let count = maybe_count.unwrap_or(0);
 
 // ❌ Never in FFI callbacks
-let s = FfiState::<MyState>::with_state_mut(state_ptr).unwrap(); // undefined behavior
+let s = FfiState::<MyState>::with_state_mut(state_ptr).unwrap(); // panics if None
 ```
 
 ### In `init_extension`

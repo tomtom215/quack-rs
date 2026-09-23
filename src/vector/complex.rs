@@ -174,9 +174,17 @@ impl ListVector {
     ///
     /// Call before writing elements to ensure the child vector has enough space.
     ///
+    /// [`ListBuilder`][crate::vector::ListBuilder] checks the capacity limit
+    /// for you; prefer it when element counts come from input data.
+    ///
     /// # Safety
     ///
-    /// `vector` must be a valid `DuckDB` LIST vector.
+    /// - `vector` must be a valid `DuckDB` LIST vector.
+    /// - `capacity` must not exceed
+    ///   [`MAX_LIST_CHILD_CAPACITY`][crate::vector::MAX_LIST_CHILD_CAPACITY]
+    ///   (`2^37`). Above it `DuckDB` throws an `OutOfRangeException`
+    ///   (`VectorListBuffer::Reserve`), which the C API does not catch, so the
+    ///   process aborts.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
         // SAFETY: caller guarantees vector is valid.
@@ -318,7 +326,10 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid `DuckDB` MAP vector.
+    /// - `vector` must be a valid `DuckDB` MAP vector.
+    /// - `capacity` must not exceed
+    ///   [`MAX_LIST_CHILD_CAPACITY`][crate::vector::MAX_LIST_CHILD_CAPACITY]
+    ///   (`2^37`); see [`ListVector::reserve`], which this shares with `DuckDB`.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
         unsafe { duckdb_list_vector_reserve(vector, capacity as idx_t) };

@@ -79,6 +79,22 @@ impl CatalogEntryType {
         }
     }
 
+    /// Whether `duckdb_catalog_get_entry` can look this kind of entry up.
+    ///
+    /// Lookups go through a schema's catalog sets, which exist only for
+    /// tables, views, indexes, sequences, collations and types. For
+    /// `Schema`, `Database`, `PreparedStatement` and `Invalid`, `DuckDB`
+    /// 1.5.5 throws an `InternalException` ("Unsupported catalog type in
+    /// schema") from inside the C API with no `try`/`catch`, which aborts the
+    /// Rust process. [`CatalogEntry::lookup`] therefore refuses them.
+    #[must_use]
+    pub const fn is_lookup_supported(self) -> bool {
+        matches!(
+            self,
+            Self::Table | Self::View | Self::Index | Self::Sequence | Self::Collation | Self::Type
+        )
+    }
+
     /// Converts from the `DuckDB` C API constant.
     #[must_use]
     pub(crate) const fn from_raw(raw: duckdb_catalog_entry_type) -> Self {
@@ -115,6 +131,12 @@ pub struct CatalogEntry {
 impl CatalogEntry {
     /// Look up a catalog entry by type, schema, and name.
     ///
+    /// Returns `None` if no such entry exists, and also — without calling
+    /// `DuckDB` — for an `entry_type` that is not a schema-level entry
+    /// (`Schema`, `Database`, `PreparedStatement`, `Invalid`): looking those
+    /// up makes `DuckDB` throw a C++ exception through the C API, which aborts
+    /// the process. See [`CatalogEntryType::is_lookup_supported`].
+    ///
     /// # Safety
     ///
     /// - `catalog` must be a valid `duckdb_catalog` handle.
@@ -127,6 +149,9 @@ impl CatalogEntry {
         name: &CStr,
         entry_type: CatalogEntryType,
     ) -> Option<Self> {
+        if !entry_type.is_lookup_supported() {
+            return None;
+        }
         // SAFETY: catalog, context, schema, and name are valid per caller's contract.
         let entry = unsafe {
             duckdb_catalog_get_entry(
@@ -217,6 +242,9 @@ impl Catalog {
 
     /// Look up a catalog entry by type, schema, and name.
     ///
+    /// Returns `None` if no such entry exists or if `entry_type` cannot be
+    /// looked up (see [`CatalogEntry::lookup`]).
+    ///
     /// # Safety
     ///
     /// - `context` must be a valid `duckdb_client_context`.
@@ -266,6 +294,48 @@ mod tests {
             let raw = variant.to_raw();
             let back = CatalogEntryType::from_raw(raw);
             assert_eq!(variant, back, "round-trip failed for {variant:?}");
+        }
+    }
+
+    #[test]
+    fn only_schema_level_entry_types_are_lookup_supported() {
+        use CatalogEntryType as T;
+        for t in [
+            T::Table,
+            T::View,
+            T::Index,
+            T::Sequence,
+            T::Collation,
+            T::Type,
+        ] {
+            assert!(t.is_lookup_supported(), "{t:?}");
+        }
+        for t in [T::Schema, T::Database, T::PreparedStatement, T::Invalid] {
+            assert!(!t.is_lookup_supported(), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn lookup_of_an_unsupported_type_returns_none_without_calling_duckdb() {
+        // Null handles and no live DuckDB: this only passes because `lookup`
+        // returns before making any FFI call for these types.
+        for t in [
+            CatalogEntryType::Schema,
+            CatalogEntryType::Database,
+            CatalogEntryType::PreparedStatement,
+            CatalogEntryType::Invalid,
+        ] {
+            // SAFETY: returns before touching either handle.
+            let entry = unsafe {
+                CatalogEntry::lookup(
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    c"main",
+                    c"main",
+                    t,
+                )
+            };
+            assert!(entry.is_none(), "{t:?}");
         }
     }
 

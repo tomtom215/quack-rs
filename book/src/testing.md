@@ -155,7 +155,7 @@ Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 ```toml
 # Zero-config but slow: compile libduckdb from C++ source (~5-10 min cold).
 [dev-dependencies]
-quack-rs = { version = "0.17", features = ["bundled-test"] }
+quack-rs = { version = "0.18", features = ["bundled-test"] }
 ```
 
 ```toml
@@ -164,7 +164,7 @@ quack-rs = { version = "0.17", features = ["bundled-test"] }
 # under target/); or set DUCKDB_LIB_DIR=/path/to/libduckdb if you already have
 # one extracted (requires libduckdb-sys >= 1.10503 for header auto-discovery).
 [dev-dependencies]
-quack-rs = { version = "0.17", features = ["bundled-test-prebuilt"] }
+quack-rs = { version = "0.18", features = ["bundled-test-prebuilt"] }
 ```
 
 Both keep `duckdb` out of a plain `cargo test` and out of your published
@@ -414,14 +414,14 @@ use quack_rs::sql_macro::SqlMacro;
 fn scalar_macro_sql() {
     let m = SqlMacro::scalar("double_it", &["x"], "x * 2").unwrap();
     assert_eq!(m.to_sql(),
-        "CREATE OR REPLACE MACRO double_it(x) AS (x * 2)");
+        r#"CREATE OR REPLACE MACRO "double_it"("x") AS (x * 2)"#);
 }
 
 #[test]
 fn table_macro_sql() {
     let m = SqlMacro::table("recent", &["n"], "SELECT * FROM events LIMIT n").unwrap();
     assert_eq!(m.to_sql(),
-        "CREATE OR REPLACE MACRO recent(n) AS TABLE SELECT * FROM events LIMIT n");
+        r#"CREATE OR REPLACE MACRO "recent"("n") AS TABLE SELECT * FROM events LIMIT n"#);
 }
 ```
 
@@ -467,21 +467,21 @@ Directives:
 | `query T` | Query returning one TEXT column |
 | `----` | Expected output follows |
 
-### Installing DuckDB (1.4.4, 1.5.0, or 1.5.1)
+### Installing DuckDB (1.4.x or 1.5.x)
 
 A live DuckDB CLI is **required** for E2E testing. Install it via `curl`
-(no system package manager needed). DuckDB 1.4.4, 1.5.0, or 1.5.1 all work —
-they use the same C API version (`v1.2.0`). We recommend 1.5.1 for critical
-WAL and ART index fixes:
+(no system package manager needed). Every 1.4.x and 1.5.x release uses the same
+C API version (`v1.2.0`); CI's `extension-load` job tests 1.4.4, 1.5.0, 1.5.5
+and the latest release. Develop against the current release, 1.5.5:
 
 ```bash
-# DuckDB 1.5.1 (recommended)
-curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.1/duckdb_cli-linux-amd64.zip \
+# DuckDB 1.5.5 (current release)
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip \
     -o /tmp/duckdb.zip \
     && unzip -o /tmp/duckdb.zip -d /tmp/ \
     && chmod +x /tmp/duckdb \
     && /tmp/duckdb --version
-# → v1.5.1
+# → v1.5.5
 ```
 
 For macOS, replace `linux-amd64` with `osx-universal`. For Windows, use
@@ -582,7 +582,7 @@ harness properties.
 
 ```toml
 [dev-dependencies]
-quack-rs = { version = "0.17", features = [] }
+quack-rs = { version = "0.18", features = [] }
 proptest = "1"
 ```
 

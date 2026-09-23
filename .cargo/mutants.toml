@@ -3,6 +3,14 @@
 #
 # Configuration for cargo-mutants — mutation testing for quack-rs.
 #
+# This file MUST live at `.cargo/mutants.toml`: that is the only place
+# cargo-mutants reads configuration from without `--config`. Until September
+# 2026 it sat at the repository root, where no job ever read it, and it also
+# carried two keys cargo-mutants 27.1.0 rejects outright (`cap_timeout`,
+# `jobs`), so pointing `--config` at it would have failed to parse. The
+# per-mutant timeout cap and the job count are passed on the command line by
+# `.github/workflows/mutants.yml` (`--timeout 120 --jobs 4`).
+#
 # Install:  cargo install cargo-mutants
 # Run:      cargo mutants
 # Docs:     https://mutants.rs/
@@ -15,19 +23,13 @@ timeout_multiplier = 3.0
 # Floor: no mutant gets less than 30s even if the baseline is very fast.
 minimum_test_timeout = 30
 
-# Hard cap: kill any mutant that runs longer than 120s.  Prevents infinite
-# loops and deadlocks from blocking CI.
-cap_timeout = 120
 
-# ── Parallelism ──────────────────────────────────────────────────────────────
-# Run mutants in parallel.  GitHub-hosted ubuntu-latest runners have 4 vCPUs.
-jobs = 4
 
 # ── Files to test ───────────────────────────────────────────────────────────
-# Test all library source files.
-examine_globs = [
-    "src/**/*.rs",
-]
+# No `examine_globs`: the default already examines every source file, and a
+# config-level `examine_globs` would *override* a command-line `--file` rather
+# than be narrowed by it — which turned the incremental job (one `--file` per
+# changed file) into a full sweep. `exclude_globs` below still applies.
 
 # ── Features ─────────────────────────────────────────────────────────────────
 # Enable duckdb-1-5-4 (implies duckdb-1-5-3, which implies duckdb-1-5) so
@@ -76,6 +78,20 @@ exclude_globs = [
     # and cargo-mutants still follows the mod statements in an excluded file.
     "src/value.rs",             # Value: 130 duckdb_get_* / duckdb_create_* wrappers
     "src/query.rs",             # QueryResult/PreparedStatement/Connection: FFI wrappers
+    # Same rationale, added with the September 2026 audit fixes. Their pure
+    # logic lives in siblings that stay in the gate: src/value/checks.rs (the
+    # DECIMAL range check and the scalar-cast allow-list).
+    "src/value/getters.rs",     # Value::as_*: each copies the value and calls duckdb_get_*
+    "src/vector/nested_null.rs",# walks a vector's type and child masks through the C API
+    # FFI-only wrappers that were missing from this list: every surviving
+    # mutant in them (Sept 2026 run) is in a function that only calls DuckDB
+    # (`CatalogEntry::name`, `ClientContext::connection_id`,
+    # `DbConfig::get_flag`, their `Drop`s). Their behaviour is covered end to
+    # end in tests/ffi_roundtrip.rs; the pure `CatalogEntryType` logic has no
+    # survivors.
+    "src/catalog.rs",
+    "src/client_context.rs",
+    "src/config.rs",
 ]
 
 # Skip mutants whose full name matches, regardless of which file they are in.
@@ -95,6 +111,27 @@ exclude_globs = [
 #
 # Only `Debug` is listed. Display impls in this crate render error messages that
 # tests assert on, so their mutants are killed and belong in the gate.
+#
+# The two `src/abi.rs` entries are mutants that are *equivalent* in every
+# mutation build, so no test can kill them there:
+#
+# - `uses_unstable_api` is `cfg!(feature = duckdb-1-5)`. Every mutation run
+#   enables duckdb-1-5-4 (above, and on the workflow command line), which
+#   implies duckdb-1-5, so the function returns `true` in every mutated build
+#   and the `-> true` mutant is the same program. Its `-> false` mutant stays in
+#   the gate and is killed; `abi::tests::unstable_api_flag_tracks_the_feature`
+#   kills `-> true` in the default-feature `cargo test --lib`.
+# - `built_against_version` returns `None` whenever QUACK_RS_TARGET_DUCKDB_VERSION
+#   was unset at build time (build.rs then emits no QUACK_RS_BUILT_AGAINST_DUCKDB,
+#   so `option_env!` is `None`). The crate's own unit test
+#   `declared_version_is_none_unless_it_parses` requires exactly that build, so
+#   in any build where the suite passes the `-> None` mutant is the same
+#   program. The parsing it delegates to, `parse_declared_version`, stays in
+#   the gate, as do the `Some(..)` mutants of `built_against_version`, and
+#   `built_against_version_is_the_build_scripts_declaration` kills `-> None`
+#   in a build that does declare a version.
 exclude_re = [
     "impl [a-z:]*Debug for",    # Debug impls: rendering is not behaviour
+    "abi.rs.*replace uses_unstable_api -> bool with true",  # equivalent: see above
+    "abi.rs.*replace built_against_version -> Option<&'static str> with None",  # equivalent: see above
 ]

@@ -7,10 +7,29 @@
 //!
 //! `DuckDB` table functions have two init phases:
 //!
-//! - **Global init** (`init`): Called once per query. Use [`FfiInitData`] to store
-//!   global scan state (e.g., a file handle, row counter shared across threads).
-//! - **Local init** (`local_init`): Called once per thread. Use [`FfiLocalInitData`]
-//!   to store per-thread scan state (e.g., a thread-local buffer or offset).
+//! - **Global init** (`init`): Called once per execution of a bound plan. Use
+//!   [`FfiInitData`] to store global scan state (e.g., a file handle, row
+//!   counter shared across threads).
+//! - **Local init** (`local_init`): Called once per scanning thread. Use
+//!   [`FfiLocalInitData`] to store per-thread scan state (e.g., a thread-local
+//!   buffer or offset).
+//!
+//! # Threads
+//!
+//! Global init data is shared by **every** concurrent scan call. `DuckDB` runs
+//! up to [`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads]
+//! scans at once — whether or not `local_init` is set — and the default is 1.
+//! So with `max_threads > 1`:
+//!
+//! - [`FfiInitData::get`] hands several threads `&T` at once, which is why
+//!   [`FfiInitData::set`] requires `T: Send + Sync`;
+//! - [`FfiInitData::get_mut`] would hand several threads `&mut T` at once — a
+//!   data race. Keep mutable global state behind a `Mutex` or atomics and use
+//!   `get`, or leave `max_threads` at 1.
+//!
+//! Local init data belongs to one scanning task at a time, but that task may be
+//! resumed on a different worker thread, so [`FfiLocalInitData::set`] requires
+//! `T: Send`.
 //!
 //! # Example
 //!
@@ -54,11 +73,18 @@ impl<T: 'static> FfiInitData<T> {
     ///
     /// Call inside your global `init` callback.
     ///
+    /// `T` must be `Send + Sync`: the value is created on the init thread,
+    /// read by up to `max_threads` concurrent scan calls, and dropped on
+    /// whichever thread tears the plan down.
+    ///
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_init_info`.
     /// - Must be called at most once per init invocation.
-    pub unsafe fn set(info: duckdb_init_info, data: T) {
+    pub unsafe fn set(info: duckdb_init_info, data: T)
+    where
+        T: Send + Sync,
+    {
         let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
         // SAFETY: info is valid; raw is a heap allocation; destroy is a valid fn pointer.
         unsafe {
@@ -68,11 +94,14 @@ impl<T: 'static> FfiInitData<T> {
 
     /// Retrieves a shared reference to the global init data from a scan callback.
     ///
-    /// Returns `None` if no init data was set.
+    /// Returns `None` if no init data was set. Concurrent scan calls may hold
+    /// this reference at the same time; [`set`][Self::set] requires `T: Sync`
+    /// for that reason.
     ///
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_function_info` from a scan callback.
+    /// - `T` must be the type passed to [`set`][Self::set].
     /// - No mutable reference to the same data must exist simultaneously.
     pub unsafe fn get<'a>(info: duckdb_function_info) -> Option<&'a T> {
         // SAFETY: info is valid per caller's contract.
@@ -91,12 +120,21 @@ impl<T: 'static> FfiInitData<T> {
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_function_info` from a scan callback.
-    /// - No other reference to the same data must exist simultaneously.
+    /// - No other reference to the same data must exist simultaneously. Global
+    ///   init data is shared by every concurrent scan call of the query, so this
+    ///   holds only when the init callback left `max_threads` at 1 (the default)
+    ///   or the scan otherwise serialises calls to `get_mut`. With
+    ///   [`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads]
+    ///   above 1, use [`get`][Self::get] and interior mutability (`Mutex`,
+    ///   atomics) instead — `local_init` does **not** change this.
     pub unsafe fn get_mut<'a>(info: duckdb_function_info) -> Option<&'a mut T> {
+        // SAFETY: info is valid per caller's contract.
         let raw = unsafe { duckdb_function_get_init_data(info) };
         if raw.is_null() {
             return None;
         }
+        // SAFETY: raw was created by set() via Box::into_raw; exclusivity is
+        // the caller's contract above.
         Some(unsafe { &mut *raw.cast::<T>() })
     }
 
@@ -136,11 +174,17 @@ impl<T: 'static> FfiLocalInitData<T> {
     ///
     /// Call inside your `local_init` callback.
     ///
+    /// `T` must be `Send`: a scanning task may be resumed on a different
+    /// worker thread, and the value is dropped wherever the plan is torn down.
+    ///
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_init_info`.
     /// - Must be called at most once per `local_init` invocation.
-    pub unsafe fn set(info: duckdb_init_info, data: T) {
+    pub unsafe fn set(info: duckdb_init_info, data: T)
+    where
+        T: Send,
+    {
         let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
         // SAFETY: info is valid; raw is non-null. The same duckdb_init_set_init_data
         // function is used for both global and local init; DuckDB tracks which

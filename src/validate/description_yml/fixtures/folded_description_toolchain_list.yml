@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+extension:
+  name: cloud_files
+  description: >
+    Query remote file stores using
+    cloud:// URLs, with the same capabilities as s3://.
+
+    Supports Parquet, CSV and JSON.
+  version: 0.1.0
+  language: C++
+  build: cmake
+  license: GPL-3.0
+  maintainers: [Ann, "Bo, Jr."]
+  requires_toolchains:
+    - cmake
+    - openssl
+
+repo:
+  github: example/cloud-files
+  ref: v0.1.0

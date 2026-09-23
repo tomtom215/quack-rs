@@ -400,14 +400,12 @@ where
     // SAFETY: the dispatch table was initialised by the call above.
     unsafe { enforce_abi_policy(info, access, policy)? };
 
-    // Step 2: Get the database handle.
-    // SAFETY: access is valid and have_api is true, so get_database is non-null.
-    let get_database = unsafe { (*access).get_database }.ok_or_else(|| {
-        crate::error::ExtensionError::new("get_database function pointer is null")
-    })?;
-
-    // SAFETY: info is valid. The returned pointer is DuckDB-managed.
-    let db = unsafe { *get_database(info) };
+    // Step 2: Get the database handle. `None` means DuckDB failed and has
+    // already recorded why; reporting again would overwrite its message.
+    // SAFETY: info and access are the pointers DuckDB passed to the entry point.
+    let Some(db) = (unsafe { database_from_access(info, access)? }) else {
+        return Ok(false);
+    };
 
     // Step 3: Open a connection for function registration.
     let mut raw_con: duckdb_connection = core::ptr::null_mut();
@@ -484,13 +482,12 @@ where
     // SAFETY: the dispatch table was initialised by the call above.
     unsafe { enforce_abi_policy(info, access, policy)? };
 
-    // Step 2: Get the database handle.
-    // SAFETY: access is valid and have_api is true, so get_database is non-null.
-    let get_database = unsafe { (*access).get_database }
-        .ok_or_else(|| ExtensionError::new("get_database function pointer is null"))?;
-
-    // SAFETY: info is valid. The returned pointer is DuckDB-managed.
-    let db = unsafe { *get_database(info) };
+    // Step 2: Get the database handle. `None` means DuckDB failed and has
+    // already recorded why; reporting again would overwrite its message.
+    // SAFETY: info and access are the pointers DuckDB passed to the entry point.
+    let Some(db) = (unsafe { database_from_access(info, access)? }) else {
+        return Ok(false);
+    };
 
     // Step 3: Open a connection for function registration.
     let mut raw_con: duckdb_connection = core::ptr::null_mut();
@@ -519,6 +516,42 @@ where
     Ok(true)
 }
 
+/// Fetches the `duckdb_database` through `access.get_database`.
+///
+/// Returns `Ok(None)` when `get_database` returns a null pointer. `DuckDB`'s
+/// implementation (`ExtensionAccess::GetDatabase` in
+/// `src/main/extension/extension_load.cpp`) returns null only after catching an
+/// exception, and it records that exception as the load error before returning —
+/// so the caller must return `false` **without** calling `set_error`, which would
+/// replace `DuckDB`'s own diagnostic with a vaguer one. The loader then throws
+/// the recorded error.
+///
+/// # Errors
+///
+/// Returns an error if `access.get_database` itself is null; that is a broken
+/// access struct, and nothing has been reported yet.
+///
+/// # Safety
+///
+/// `access` must be a valid, non-null `duckdb_extension_access` and `info` the
+/// matching `duckdb_extension_info`.
+unsafe fn database_from_access(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+) -> Result<Option<libduckdb_sys::duckdb_database>, ExtensionError> {
+    // SAFETY: `access` is valid per this function's contract.
+    let get_database = unsafe { (*access).get_database }
+        .ok_or_else(|| ExtensionError::new("get_database function pointer is null"))?;
+    // SAFETY: `info` is the handle DuckDB passed with `access`.
+    let db_ptr = unsafe { get_database(info) };
+    if db_ptr.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: non-null, and DuckDB keeps the wrapper it points to alive for the
+    // whole load (`load_state.database_data`).
+    Ok(Some(unsafe { *db_ptr }))
+}
+
 /// Runs the user's registration closure, converting any panic into an
 /// [`ExtensionError`] instead of letting it unwind across the C boundary.
 ///
@@ -538,23 +571,13 @@ where
 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(register)) {
         Ok(result) => result,
+        // The payload is user data whose `Drop` may itself panic; dropping it
+        // here, unguarded, would unwind out of the C entry point after all.
         Err(panic) => Err(ExtensionError::new(format!(
             "extension registration panicked: {}",
-            panic_message(&panic)
+            crate::callback::take_panic_message(panic)
         ))),
     }
-}
-
-/// Extracts a human-readable message from a `catch_unwind` payload.
-fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    payload.downcast_ref::<&str>().map_or_else(
-        || {
-            payload
-                .downcast_ref::<String>()
-                .map_or_else(|| String::from("<non-string panic payload>"), Clone::clone)
-        },
-        |s| (*s).to_string(),
-    )
 }
 
 /// Applies an [`AbiPolicy`] to the result of [`crate::abi::check`].
@@ -638,7 +661,9 @@ mod tests {
     // Integration tests for init_extension require a DuckDB instance and are in
     // tests/integration_test.rs. Unit tests here verify pure-Rust logic.
 
-    use super::{catch_registration_panic, init_extension_internal, AbiPolicy};
+    use super::{
+        catch_registration_panic, database_from_access, init_extension_internal, AbiPolicy,
+    };
     use crate::error::ExtensionError;
 
     #[test]
@@ -731,5 +756,86 @@ mod tests {
         };
         let err = result.expect_err("interior NUL must be rejected");
         assert!(err.as_str().contains("NUL"), "{err}");
+    }
+
+    // ─── get_database returning null ────────────────────────────────────────
+    //
+    // A fake access struct stands in for DuckDB's here; nothing on this path
+    // touches the C API dispatch table, so no database is needed.
+
+    use libduckdb_sys::{duckdb_database, duckdb_extension_access, duckdb_extension_info};
+    use std::os::raw::c_char;
+
+    unsafe extern "C" fn no_error(_: duckdb_extension_info, _: *const c_char) {}
+    unsafe extern "C" fn no_api(
+        _: duckdb_extension_info,
+        _: *const c_char,
+    ) -> *const std::os::raw::c_void {
+        core::ptr::null()
+    }
+    unsafe extern "C" fn null_database(_: duckdb_extension_info) -> *mut duckdb_database {
+        core::ptr::null_mut()
+    }
+
+    /// A sentinel handle: only ever compared, never dereferenced.
+    static mut FAKE_DB: duckdb_database = 0x5eed as duckdb_database;
+
+    unsafe extern "C" fn fake_database(_: duckdb_extension_info) -> *mut duckdb_database {
+        // Only the address is taken here; no reference to the `static mut` is
+        // formed.
+        &raw mut FAKE_DB
+    }
+
+    fn access_with(
+        get_database: Option<unsafe extern "C" fn(duckdb_extension_info) -> *mut duckdb_database>,
+    ) -> duckdb_extension_access {
+        duckdb_extension_access {
+            set_error: Some(no_error),
+            get_database,
+            get_api: Some(no_api),
+        }
+    }
+
+    #[test]
+    fn a_null_database_is_reported_as_already_handled() {
+        // Before the fix this dereferenced the null pointer (SIGSEGV).
+        let access = access_with(Some(null_database));
+        // SAFETY: `access` is a valid struct; `info` is never dereferenced.
+        let db = unsafe { database_from_access(core::ptr::null_mut(), &raw const access) }
+            .expect("a null database is not a new error");
+        assert!(db.is_none(), "DuckDB already recorded the error");
+    }
+
+    #[test]
+    fn a_non_null_database_is_read_through() {
+        let access = access_with(Some(fake_database));
+        // SAFETY: as above.
+        let db = unsafe { database_from_access(core::ptr::null_mut(), &raw const access) }
+            .expect("get_database succeeded");
+        assert_eq!(db, Some(0x5eed as duckdb_database));
+    }
+
+    #[test]
+    fn a_missing_get_database_pointer_is_an_error() {
+        let access = access_with(None);
+        // SAFETY: as above.
+        let err = unsafe { database_from_access(core::ptr::null_mut(), &raw const access) }
+            .expect_err("no function pointer is our error to report");
+        assert!(err.as_str().contains("get_database"), "{err}");
+    }
+
+    #[test]
+    fn a_payload_whose_drop_panics_does_not_escape_registration() {
+        // Before the fix the payload was dropped outside any guard, so this
+        // aborted the test binary instead of returning.
+        struct PayloadBomb;
+        impl Drop for PayloadBomb {
+            fn drop(&mut self) {
+                panic!("payload destructor deliberately exploded");
+            }
+        }
+        let err = catch_registration_panic(|| std::panic::panic_any(PayloadBomb))
+            .expect_err("panic must become an error");
+        assert!(err.as_str().contains("registration panicked"), "{err}");
     }
 }

@@ -217,6 +217,24 @@ jobs:
       # `+beta` for the same reason as the MSRV job above: without it this ran
       # stable clippy and duplicated the `clippy` job.
       - run: cargo +beta clippy --all-targets --features duckdb-1-5-4 -- -D warnings
+      # The end-to-end tests (`tests/ffi_roundtrip.rs` and the `live_tests`
+      # modules) only compile with `bundled-test-prebuilt`, so the run above
+      # never lints them: beta's `assert_is_empty` fired on four of them while
+      # this job stayed green. Lint them too, against the same pre-built
+      # libduckdb (version derived from Cargo.lock) as `test-bundled-prebuilt`.
+      - name: Download pre-built libduckdb
+        run: |
+          set -euo pipefail
+          DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
+          echo "libduckdb-sys in Cargo.lock corresponds to DuckDB ${DUCKDB_TAG}"
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip" -o "${{ runner.temp }}/libduckdb.zip"
+          mkdir -p "${{ runner.temp }}/libduckdb"
+          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+      - name: Clippy beta (including the end-to-end tests)
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: cargo +beta clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-4 -- -D warnings
 
   fmt:
     name: Format
@@ -254,6 +272,10 @@ jobs:
       # entry, so it is generated now and checked here.
       - name: Book changelog is in sync with CHANGELOG.md
         run: scripts/sync-book-changelog.py --check
+      # The committed sitemap is generated from book/src/SUMMARY.md; nothing
+      # checked it, and it fell 14 pages behind.
+      - name: Book sitemap is in sync with SUMMARY.md
+        run: python3 scripts/generate-sitemap.py --check
       # An invalid workflow file does not fail loudly: GitHub records a run
       # with zero jobs and the workflow silently stops running. That is how the
       # mutation gate stopped executing on PRs -- a shell comment inside a
@@ -601,8 +623,12 @@ jobs:
           import re, pathlib
           p = pathlib.Path("/tmp/scaffolded/Cargo.toml")
           s = p.read_text()
-          s = re.sub(r'quack-rs = \{ version = "[^"]+" \}',
-                     'quack-rs = { path = "%s" }' % pathlib.Path.cwd(), s)
+          # `subn` + assert: if the template's dependency line ever changes
+          # shape, a bare `sub` matches nothing and the job silently builds
+          # the PUBLISHED crate instead of this working copy.
+          s, n = re.subn(r'quack-rs = \{ version = "[^"]+" \}',
+                         'quack-rs = { path = "%s" }' % pathlib.Path.cwd(), s)
+          assert n == 1, f"expected exactly one quack-rs dependency line, rewrote {n}"
           p.write_text(s)
           PY
           (cd /tmp/scaffolded && cargo build --release)
@@ -882,7 +908,7 @@ jobs:
         # `--features duckdb-1-5-4` matters: without it every `duckdb-1-5*`
         # module is cfg'd out, including `src/arrow.rs` -- the largest block of
         # pure-Rust `unsafe` in the crate, and exactly what Miri is here for.
-        # `mutants.toml` already sets the same features for the same reason.
+        # `.cargo/mutants.toml` already sets the same features for the same reason.
         run: cargo +nightly miri test --lib --features duckdb-1-5-4
 
   leak-check:
@@ -944,18 +970,18 @@ jobs:
   # memory is most exposed to. Miri cannot reach it: these paths call foreign
   # functions.
   #
-  # `continue-on-error: true` for now, deliberately: this job has never had a
-  # green run, and libduckdb itself is not instrumented, so the first runs may
-  # need suppressions the way `leak-check` needed lsan-suppressions.txt.
-  # Promote it to blocking (drop this line) after it passes on main, and add an
-  # asan-suppressions.txt if DuckDB's own frames turn up.
+  # Blocking since September 2026. It was `continue-on-error` until it had a
+  # green run on main, because libduckdb itself is not instrumented and the
+  # first runs might have needed suppressions. It then passed on main (84
+  # tests, 6455238) and locally over the 125-test suite with no reports and no
+  # suppressions. Add an asan-suppressions.txt only if DuckDB's own frames
+  # turn up.
   #
   # ASAN subsumes LSAN, so once this is blocking, `leak-check` can fold into it.
   asan:
-    name: AddressSanitizer (informational)
+    name: AddressSanitizer
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1046,7 +1072,15 @@ jobs:
         run: |
           set -euo pipefail
           # `+nightly` is not optional -- see the note in the `nightly` job.
-          for target in $(cargo +nightly fuzz list --fuzz-dir fuzz); do
+          # Captured first, then checked: `set -e` does not see a failure
+          # inside a `for ... in $(...)` word list, so a broken `fuzz list`
+          # (or one that printed nothing) used to run zero targets and pass.
+          TARGETS=$(cargo +nightly fuzz list --fuzz-dir fuzz)
+          if [ -z "$TARGETS" ]; then
+            echo "::error::cargo fuzz list printed no targets"
+            exit 1
+          fi
+          for target in $TARGETS; do
             echo "::group::$target"
             # Seed from the committed inputs. `fuzz/corpus` is generated and
             # gitignored: keeping a growing corpus in the history would add a

@@ -10,6 +10,14 @@
 //!
 //! ```rust,no_run
 //! use quack_rs::prelude::*;
+//!
+//! fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
+//!     let _ = con;
+//!     Ok(())
+//! }
+//!
+//! // The entry-point macros come with the glob import.
+//! entry_point!(my_extension_init_c_api, |con| register(con));
 //! ```
 //!
 //! # What is included
@@ -74,12 +82,12 @@
 //! | [`WarningCollector`] | `warning` module |
 //! | [`WarningSeverity`] | `warning` module |
 //! | [`DUCKDB_API_VERSION`] | crate root |
+//! | [`Appender`] | `appender` module |
 //!
 //! ## `DuckDB` 1.5.0+ items (require the `duckdb-1-5` feature)
 //!
 //! | Item | From |
 //! |------|------|
-//! | `Appender` | `appender` module |
 //! | `ErrorData` / `DuckDbErrorType` | `error_data` module |
 //! | `Expression` | `expression` module |
 //! | `FileSystem` / `FileHandle` / `FileOpenOptions` / `FileFlag` | `file_system` module |
@@ -145,6 +153,7 @@ pub use crate::aggregate::{
 pub use crate::scalar::{ScalarBindInfo, ScalarInitInfo};
 pub use crate::scalar::{
     ScalarFunctionBuilder, ScalarFunctionInfo, ScalarFunctionSetBuilder, ScalarOverloadBuilder,
+    TypedScalarFunctionBuilder,
 };
 
 // Copy functions
@@ -154,9 +163,11 @@ pub use crate::copy_function::{
     CopyGlobalInitFn, CopyGlobalInitInfo, CopySinkFn, CopySinkInfo,
 };
 
-// DuckDB 1.5.0+ API surfaces (require the `duckdb-1-5` feature).
-#[cfg(feature = "duckdb-1-5")]
+// The appender itself is in the stable C API and needs no feature (only a
+// few of its methods do), so it is exported unconditionally.
 pub use crate::appender::Appender;
+
+// DuckDB 1.5.0+ API surfaces (require the `duckdb-1-5` feature).
 #[cfg(feature = "duckdb-1-5")]
 pub use crate::error_data::{DuckDbErrorType, ErrorData};
 #[cfg(feature = "duckdb-1-5")]
@@ -222,5 +233,8 @@ pub use crate::warning::{ExtensionWarning, WarningCollector, WarningSeverity};
 // API version constant
 pub use crate::DUCKDB_API_VERSION;
 
-// The entry_point! macro is already available at the crate root via #[macro_export],
-// so `use quack_rs::prelude::*` brings it into scope automatically.
+// `#[macro_export]` places the entry-point macros at the crate root only; a glob
+// import of this module does not reach them unless they are re-exported here.
+// (`crate::entry_point` also names the module; this re-exports both, which is
+// harmless: the macro and module namespaces are separate.)
+pub use crate::{entry_point, entry_point_v2};

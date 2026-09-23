@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+extension:
+  name: sql_bridge
+  description: "Connect DuckDB to a remote SQL server over its native protocol (including TLS)."
+  version: "0.2.5"
+  language: "C++"
+  build: "cmake"
+  licence: "MIT"
+  maintainers:
+    - "Jane Doe"
+    - "bob # not a comment"
+  excluded_platforms:
+    - "osx_amd64"
+    - "windows_arm64"
+    - "wasm_mvp"
+  # vcpkg tag pinned to the builtin-baseline in the extension's vcpkg.json
+  vcpkg_commit: "52c9e08cdf8580d2d9762f547d22b96fd81e82f2"
+  test_config: '{"test_env_variables": {"SKIP_TESTS": "1"}}'
+
+repo:
+  github: "example-org/sql-bridge-extension"
+  # v0.2.5. A SHA rather than the tag name: a tag can be moved.
+  ref: d35b617c16587e02b4d6e62057ead8f84c1568bf
+
+docs:
+  hello_world: |
+    ATTACH 'Server=localhost;Database=master' AS db (TYPE sql_bridge);
+    SELECT * FROM db.dbo.t;
+  extended_description: |
+    name: not_the_name
+    version: 9.9.9

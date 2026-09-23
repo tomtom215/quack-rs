@@ -24,6 +24,26 @@ fn quack_rs_dependency_version() -> String {
 }
 
 pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
+    // A C_STRUCT build only uses the frozen stable prefix of the C API, so any
+    // 1.x bindings work. A C_STRUCT_UNSTABLE build is only correct against the
+    // exact release it declares, so its bindings are pinned to that release.
+    let libduckdb_sys = if config.use_unstable_c_api {
+        super::libduckdb_sys_requirement(&config.target_duckdb_version)
+            .unwrap_or_else(|_| String::from(">=1.4.4, <2"))
+    } else {
+        String::from(">=1.4.4, <2")
+    };
+    let libduckdb_sys_note = if config.use_unstable_c_api {
+        format!(
+            "# Pinned to the bindings for DuckDB {target} (TARGET_DUCKDB_VERSION in the\n\
+             # Makefile): a C_STRUCT_UNSTABLE binary must be compiled against exactly the\n\
+             # release it is stamped for. Change both together; `make release` refuses a\n\
+             # mismatch.\n",
+            target = config.target_duckdb_version
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"[package]
 name = "{name}"
@@ -43,7 +63,7 @@ path = "src/wasm_lib.rs"
 
 [dependencies]
 quack-rs = {{ version = "{quack_rs}" }}
-libduckdb-sys = {{ version = ">=1.4.4, <2", features = ["loadable-extension"] }}
+{libduckdb_sys_note}libduckdb-sys = {{ version = "{libduckdb_sys}", features = ["loadable-extension"] }}
 
 [profile.release]
 opt-level = 3
@@ -60,6 +80,8 @@ strip = true
         name = config.name,
         version = config.version,
         quack_rs = quack_rs_dependency_version(),
+        libduckdb_sys = libduckdb_sys,
+        libduckdb_sys_note = libduckdb_sys_note,
     )
 }
 
@@ -80,21 +102,33 @@ pub(super) fn generate_makefile(config: &ScaffoldConfig) -> String {
          # stay off quack-rs's `duckdb-1-5` / `-3` / `-4` features; TARGET_DUCKDB_VERSION\n\
          # is then the *C API* version (v1.2.0), not a DuckDB release. See LESSONS.md P2."
     };
-    // Tell quack-rs which DuckDB release these bindings were built against, so
-    // its ABI check can accept a release its layout table predates — which is
-    // what happens every time DuckDB ships and the community repository rebuilds
-    // this extension from unchanged source. Only meaningful when
-    // TARGET_DUCKDB_VERSION is a real release, i.e. in the unstable-ABI case.
-    let declare_line = if config.use_unstable_c_api {
-        "\n# Lets quack-rs's ABI check accept a DuckDB release newer than its layout table.\n         export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)\n"
+    // Unstable builds only: tell quack-rs's ABI check which release the bindings
+    // were built against (so it accepts a release its layout table predates,
+    // which is what happens every time DuckDB ships and the community
+    // repository rebuilds this extension from unchanged source), test against
+    // that same release, and refuse to build when the resolved libduckdb-sys
+    // is for a different one. Without that last guard, bumping
+    // TARGET_DUCKDB_VERSION alone makes the extension *declare* a release its
+    // bindings do not match — and for a release quack-rs has no layout entry
+    // for, the declaration is trusted.
+    let (declare_block, check_prereq, check_target) = if config.use_unstable_c_api {
+        (
+            "\n# pip version of DuckDB that `make test` runs against: the pinned release.\n\
+             DUCKDB_TEST_VERSION=$(patsubst v%,%,$(TARGET_DUCKDB_VERSION))\n\
+             \n\
+             # Lets quack-rs's ABI check accept a DuckDB release newer than its layout table.\n\
+             export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)\n",
+            "check_duckdb_pin ",
+            CHECK_DUCKDB_PIN_TARGET,
+        )
     } else {
-        ""
+        ("", "", "")
     };
     format!(
         r"# DuckDB Rust extension Makefile.
 # Delegates to cargo for building and to extension-ci-tools for metadata.
 
-.PHONY: all configure debug release test test_debug test_release clean clean_all
+.PHONY: all configure debug release test test_debug test_release clean clean_all{phony_check}
 
 PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -104,7 +138,7 @@ EXT_CONFIG=$(PROJ_DIR)extension_config.cmake
 {abi_note}
 USE_UNSTABLE_C_API={unstable}
 TARGET_DUCKDB_VERSION={target_version}
-{declare_line}
+{declare_block}
 all: configure release
 
 # Include extension-ci-tools build rules
@@ -113,9 +147,9 @@ include extension-ci-tools/makefiles/c_api_extensions/rust.Makefile
 
 configure: venv platform extension_version
 
-debug: build_extension_library_debug build_extension_with_metadata_debug
-release: build_extension_library_release build_extension_with_metadata_release
-
+debug: {check_prereq}build_extension_library_debug build_extension_with_metadata_debug
+release: {check_prereq}build_extension_library_release build_extension_with_metadata_release
+{check_target}
 test: test_release
 test_debug: test_extension_debug
 test_release: test_extension_release
@@ -127,9 +161,36 @@ clean_all: clean_configure clean
         abi_note = abi_note,
         unstable = unstable,
         target_version = config.target_duckdb_version,
-        declare_line = declare_line,
+        declare_block = declare_block,
+        check_prereq = check_prereq,
+        check_target = check_target,
+        phony_check = if config.use_unstable_c_api {
+            " check_duckdb_pin"
+        } else {
+            ""
+        },
     )
 }
+
+/// The `check_duckdb_pin` rule of an unstable-ABI `Makefile`.
+///
+/// Asks cargo which `libduckdb-sys` the build resolves to, decodes the
+/// `DuckDB` release it ships (the same mapping as quack-rs's
+/// `scripts/duckdb-version-from-lock.sh`) and fails unless it is
+/// `TARGET_DUCKDB_VERSION`. A plain string so the recipe's tab and `$$` reach
+/// the file exactly.
+const CHECK_DUCKDB_PIN_TARGET: &str = "
+# The bindings compiled in come from the libduckdb-sys pin in Cargo.toml, not
+# from TARGET_DUCKDB_VERSION. Refuse to build when they name different releases.
+check_duckdb_pin:
+\t@v=$$(cargo tree -e normal -i libduckdb-sys --depth 0 --prefix none | sed -n 's/^libduckdb-sys v//p' | head -n 1); \\
+\tm=$$(echo \"$$v\" | cut -d. -f2); \\
+\tif [ \"$${m:-0}\" -ge 10000 ] 2>/dev/null; then got=\"v$$((m / 10000)).$$((m / 100 % 100)).$$((m % 100))\"; else got=\"v$$v\"; fi; \\
+\tif [ \"$$got\" != \"$(TARGET_DUCKDB_VERSION)\" ]; then \\
+\t\techo \"error: libduckdb-sys $$v is DuckDB $$got, but TARGET_DUCKDB_VERSION=$(TARGET_DUCKDB_VERSION); update the libduckdb-sys pin in Cargo.toml\" >&2; \\
+\t\texit 1; \\
+\tfi
+";
 
 pub(super) fn generate_lib_rs(config: &ScaffoldConfig) -> String {
     format!(
@@ -222,7 +283,9 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
     let _ = writeln!(yml);
     let _ = writeln!(yml, "docs:");
     let _ = writeln!(yml, "  hello_world: |");
-    let _ = writeln!(yml, "    SELECT {}_version();", config.name);
+    // Must call something `generate_lib_rs` registers: this is the example the
+    // community-extensions site shows users to copy.
+    let _ = writeln!(yml, "    SELECT {}_hello('world');", config.name);
     let _ = writeln!(yml, "  extended_description: |");
     let _ = writeln!(yml, "    {}", config.description);
 

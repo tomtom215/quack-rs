@@ -44,49 +44,68 @@ run() {
     fi
 }
 
+# Keep these lists in step with .github/workflows/ci.yml. CI's highest
+# feature level is `duckdb-1-5-4` -- the only one that compiles `src/arrow.rs`
+# and the 1.5.4 C API wrappers -- so every level it builds is built here too.
 echo '── formatting and lints ─────────────────────────────────────────────────'
 run 'cargo fmt --all -- --check'
 run 'cargo clippy --all-targets -- -D warnings'
 run 'cargo clippy --all-targets --features duckdb-1-5 -- -D warnings'
 run 'cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings'
+run 'cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings'
 # `bundled-test` compiles the live-DuckDB tests and the `testing` module,
 # which no other combination lints.
 run 'cargo clippy --all-targets --features bundled-test -- -D warnings'
-run 'cargo clippy --all-targets --features bundled-test,duckdb-1-5-3 -- -D warnings'
+run 'cargo clippy --all-targets --features bundled-test,duckdb-1-5-4 -- -D warnings'
 
 echo '── compile checks, every feature combination CI builds ──────────────────'
 run 'cargo check --all-targets'
 run 'cargo check --all-targets --features duckdb-1-5'
 run 'cargo check --all-targets --features duckdb-1-5-3'
+run 'cargo check --all-targets --features duckdb-1-5-4'
 run 'cargo check --all-targets --features bundled-test'
-run 'cargo check --all-targets --features bundled-test,duckdb-1-5-3'
-# `bundled-test-prebuilt` needs a libduckdb on the system, so only its
-# compile surface is checkable here; it shares quack-rs's sources with
-# `bundled-test`, so the check above covers the same code.
+run 'cargo check --all-targets --features bundled-test,duckdb-1-5-4'
+# CI's `bundled-test-prebuilt` job links a downloaded libduckdb. Mirror it
+# when one is available (DUCKDB_LIB_DIR), else the bundled check above covers
+# the same quack-rs sources.
+if [[ -n "${DUCKDB_LIB_DIR:-}" ]]; then
+    run 'cargo clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-4 -- -D warnings'
+else
+    echo 'bundled-test-prebuilt: DUCKDB_LIB_DIR not set — SKIPPED'
+fi
 
 echo '── 32-bit target (const-eval and pointer-width differences) ─────────────'
 if rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-emscripten; then
     run 'cargo check --lib --target wasm32-unknown-emscripten'
-    run 'cargo check --lib --features duckdb-1-5-3 --target wasm32-unknown-emscripten'
+    run 'cargo check --lib --features duckdb-1-5-4 --target wasm32-unknown-emscripten'
 else
     echo 'wasm32-unknown-emscripten not installed — SKIPPED'
     echo '  rustup target add wasm32-unknown-emscripten'
 fi
 
 echo '── docs ─────────────────────────────────────────────────────────────────'
-run 'cargo doc --no-deps --features duckdb-1-5-3'
+run 'cargo doc --no-deps --features duckdb-1-5-4'
 
 if (( run_tests )); then
     echo '── test suites ──────────────────────────────────────────────────────────'
     run 'cargo test --all-targets'
+    run 'cargo test --all-targets --features duckdb-1-5'
     run 'cargo test --all-targets --features duckdb-1-5-3'
+    run 'cargo test --all-targets --features duckdb-1-5-4'
     run 'cargo test --all-targets --features bundled-test'
-    run 'cargo test --all-targets --features bundled-test,duckdb-1-5-3'
-    run 'cargo test --doc --features duckdb-1-5-3'
+    if [[ -n "${DUCKDB_LIB_DIR:-}" ]]; then
+        run 'cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4'
+    fi
+    run 'cargo test --doc --features duckdb-1-5-4'
 else
     echo
     echo 'Test suites skipped. Re-run with --tests to include them.'
 fi
+
+echo '── repository consistency (offline) ─────────────────────────────────────'
+run 'python3 scripts/check-workflow-expressions.py'
+run 'python3 scripts/sync-book-changelog.py --check'
+run 'python3 scripts/generate-sitemap.py --check'
 
 echo '── upstream drift guards ────────────────────────────────────────────────'
 for guard in abi-table platform-table spdx-list msrv-vs-duckdb-ci; do

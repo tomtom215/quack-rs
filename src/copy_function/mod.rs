@@ -13,6 +13,27 @@
 //! 3. **Sink** — receive data chunks to write.
 //! 4. **Finalize** — flush and close.
 //!
+//! # Threads
+//!
+//! The data pointers this API passes around are untyped, so the compiler
+//! cannot check this for you. Treat each one as `&T` shared between threads:
+//!
+//! - **`extra_info`** ([`CopyFunctionBuilder::extra_info`]) lives as long as
+//!   the database and is read from every connection's thread: `T: Send + Sync`.
+//! - **Bind data** ([`CopyBindInfo::set_bind_data`]) is read by every sink
+//!   call. `COPY … TO` with `PER_THREAD_OUTPUT` or `PARTITION_BY` runs the sink
+//!   on several threads **at once**, all sharing the one bind data:
+//!   `T: Send + Sync`, and do not mutate it without a lock.
+//! - **Global state** ([`CopyGlobalInitInfo::set_global_state`]) is one per
+//!   output file. With `PER_THREAD_OUTPUT` each thread gets its own; with
+//!   `PARTITION_BY` a partition's state can be reached from more than one
+//!   thread; with neither option the sink is not run in parallel. Mutating it
+//!   through the raw pointer is only sound under a lock (`Mutex`) unless you
+//!   know neither option is in play, so make it `T: Send` and guard mutation.
+//!
+//! All three may be dropped on a different thread from the one that created
+//! them.
+//!
 //! # Example
 //!
 //! ```rust,no_run

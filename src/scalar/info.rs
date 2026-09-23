@@ -229,6 +229,9 @@ impl ScalarBindInfo {
     /// Stores per-query bind data that can later be retrieved during execution
     /// via [`ScalarFunctionInfo::get_bind_data`].
     ///
+    /// Prefer [`ScalarBindData::set`][crate::scalar::ScalarBindData::set],
+    /// which generates the destructor *and* the copy callback.
+    ///
     /// # Pair this with [`set_bind_data_copy`][Self::set_bind_data_copy]
     ///
     /// `DuckDB` copies a bound expression whenever it duplicates a plan — and
@@ -254,11 +257,18 @@ impl ScalarBindInfo {
     ///
     /// Written up as Pitfall L10 in `LESSONS.md`.
     ///
+    /// # Calling it twice
+    ///
+    /// A second call overwrites the pointer and destructor without running the
+    /// first destructor: the first value is leaked.
+    ///
     /// # Safety
     ///
     /// `data` must point to valid memory. `destroy` will be called by `DuckDB`
     /// to free the data when the query finishes. The typical pattern is to box
-    /// your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// your data: `Box::into_raw(Box::new(my_data)).cast()`. `DuckDB` reads the
+    /// data from every executing thread at once, so it must be safe to share
+    /// across threads (`Sync`) and to free from any of them (`Send`).
     pub unsafe fn set_bind_data(&self, data: *mut c_void, destroy: duckdb_delete_callback_t) {
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
@@ -358,7 +368,10 @@ impl ScalarBindInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();
         // SAFETY: self.info is a valid bind-info handle per this fn's contract;
@@ -435,6 +448,9 @@ impl ScalarInitInfo {
     /// Stores per-thread state that can later be retrieved during execution
     /// via [`ScalarFunctionInfo::get_state`].
     ///
+    /// A second call overwrites the pointer and destructor without running the
+    /// first destructor: the first value is leaked.
+    ///
     /// # Safety
     ///
     /// `state` must point to valid memory. `destroy` will be called by `DuckDB`
@@ -467,7 +483,10 @@ impl ScalarInitInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();
         // SAFETY: self.info is a valid init-info handle per this fn's contract;

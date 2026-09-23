@@ -147,9 +147,9 @@ pub const DUCKDB_API_VERSION: &str = "v1.2.0";
 ```
 
 > **Pitfall P2**: This is the **C API version**, not the DuckDB release version.
-> DuckDB 1.4.x, 1.5.0, and 1.5.1 all use C API version `v1.2.0`. Passing the wrong string
+> Every DuckDB 1.4.x and 1.5.x release (through 1.5.5) uses C API version `v1.2.0`. Passing the wrong string
 > causes the metadata script to fail or produce incorrect metadata.
-> See [Pitfall P2](../reference/pitfalls.md#p2-extension-metadata-version-is-c-api-version).
+> See [Pitfall P2](../reference/pitfalls.md#p2-metadata-version-is-c-api-version-not-duckdb-version).
 
 ---
 

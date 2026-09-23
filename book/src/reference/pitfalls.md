@@ -73,12 +73,14 @@ unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: i
 
 ## L3: No panic across FFI boundaries
 
-**Status**: Made impossible by `init_extension` and `panic = "abort"`.
+**Status**: Made impossible by `init_extension` and the callback guards (which require `panic = "unwind"`).
 
 **Symptom**: Extension causes DuckDB to crash or behave unpredictably.
 
-**Root cause**: `panic!()` and `.unwrap()` in `unsafe extern "C"` functions is
-undefined behavior. Panics cannot unwind across FFI boundaries in Rust.
+**Root cause**: a panic cannot unwind out of an `extern "C"` function. Since
+Rust 1.81 the runtime aborts the process when one tries (before 1.81 it was
+undefined behaviour), so an uncaught `panic!()` or `.unwrap()` in a callback
+takes down the user's whole DuckDB session.
 
 **Fix**: Use `Result` and `?` inside `init_extension`. Never use `unwrap()` in
 FFI callbacks. `FfiState::with_state_mut` returns `Option`, not `Result`, so
@@ -91,12 +93,13 @@ if let Some(st) = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) } {
 }
 
 // Dangerous — never do this in an FFI callback
-let st = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) }.unwrap(); // UB if None
+let st = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) }.unwrap(); // panics if None
 ```
 
-The scaffold-generated `Cargo.toml` sets `panic = "abort"` in the release
-profile, which terminates the process instead of unwinding — still bad, but not
-undefined behavior.
+quack-rs's callback macros and typed builders catch a panic and report it as a
+SQL error. That requires `panic = "unwind"` in the release profile, which is
+what the scaffold generates and what `validate_release_profile` insists on:
+under `panic = "abort"` nothing can be caught.
 
 ---
 
@@ -104,11 +107,16 @@ undefined behavior.
 
 **Status**: Made impossible by `VectorWriter::set_null`.
 
-**Symptom**: SEGFAULT when writing NULL values to the output vector.
+**Symptom**: NULLs you write are silently lost — the row reads back as a
+valid value (whatever is in the data buffer).
 
-**Root cause**: `duckdb_vector_get_validity` returns an uninitialized pointer if
-`duckdb_vector_ensure_validity_writable` has not been called first. Writing to
-an uninitialized address → SEGFAULT.
+**Root cause**: a vector that has never held a NULL usually has no validity
+mask at all, and `duckdb_vector_get_validity` then returns NULL (as `duckdb.h`
+documents). `duckdb_validity_set_row_invalid` returns early on a NULL mask, so
+nothing is written and nothing crashes. `duckdb_vector_ensure_validity_writable`
+allocates the mask, after which `get_validity` returns it. (Dereferencing the
+NULL pointer yourself, instead of going through the C API helpers, would
+crash.)
 
 **Fix**: Always call `duckdb_vector_ensure_validity_writable` before accessing
 the validity bitmap on the write path. `VectorWriter::set_null` does this
@@ -119,9 +127,14 @@ automatically:
 unsafe { writer.set_null(row) };
 
 // Wrong — validity bitmap may not be allocated yet
-// let validity = duckdb_vector_get_validity(output);
-// set_bit(validity, row, false);  // SEGFAULT
+// let validity = duckdb_vector_get_validity(output);          // NULL
+// duckdb_validity_set_row_invalid(validity, row);            // silently ignored
 ```
+
+For `STRUCT` and `ARRAY` outputs `set_null` also nulls the children at that
+row, as DuckDB's internal `FlatVector::SetNull` does; a bare
+`duckdb_validity_set_row_invalid` on the parent leaves the fields valid, and
+`struct_extract` on the NULL row returns their stale values.
 
 ---
 
@@ -264,8 +277,10 @@ With no callback the copy carries `bind_data = nullptr`, and the original is
 untouched — which is why the failure is intermittent rather than total, and why
 it survives a test suite that only ever executes the first-bound expression.
 
-**Fix**: register a copy callback alongside the bind data, in the same bind
-callback and after `set_bind_data`:
+**Fix**: use `ScalarBindData::set`, which registers a generated, panic-safe
+copy callback (it requires `T: Clone + Send + Sync`). With the raw API, register
+a copy callback alongside the bind data, in the same bind callback and after
+`set_bind_data`:
 
 ```rust
 unsafe extern "C" fn copy(data: *mut c_void) -> *mut c_void {
@@ -292,6 +307,39 @@ it must not unwind. Wrap anything that can panic in
 
 [`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/struct.ScalarBindInfo.html#method.set_bind_data_copy
 [`callback::catch_ffi_panic`]: https://docs.rs/quack-rs/latest/quack_rs/callback/fn.catch_ffi_panic.html
+
+---
+
+## L11: C API aggregates crash under `agg(x) OVER ()` and `agg(x ORDER BY y)`
+
+**Status**: A `DuckDB` defect, reported upstream as
+[duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Cannot be prevented or detected from an extension;
+documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` and
+`FfiState`.
+
+**Symptom**: An aggregate that works under `SELECT agg(x) FROM t` and `GROUP BY`
+segfaults (or corrupts memory, or returns a wrong answer) when used as a window
+over a whole-partition frame — `agg(x) OVER ()`, `OVER (PARTITION BY p)` — or as
+an ordered aggregate, `agg(x ORDER BY y)`.
+
+**Root cause**: `CAPIAggregateUpdate` (`src/main/capi/aggregate_function-c.cpp`)
+flattens the input vectors but not the state vector, then hands the callback
+`FlatVector::GetDataUnsafe(state)`. The C API registers no `simple_update`, so
+two executors fall back to calling `update` with a **constant** state vector and
+`count > 1`: `WindowConstantAggregatorLocalState` (`statep(Value::POINTER(0))`)
+and `SortedAggregateFunction` (`agg_state_vec.SetVectorType(CONSTANT_VECTOR)`).
+The callback reads `states[i]` for every row, as the C API contract says it
+may; only `states[0]` exists. Reproduced with a plain C aggregate (no quack-rs)
+against DuckDB 1.4.4, 1.5.0 and 1.5.5; AddressSanitizer places the fault in the
+callback, called from `CAPIAggregateUpdate`.
+
+**Fix**: none on the extension side — the callback receives a raw
+`duckdb_aggregate_state *` and cannot tell a constant vector from a flat one,
+and reading `states[1]` to find out is itself the out-of-bounds read. Until
+`DuckDB` fixes it, document for your users that the aggregate must not be used
+in those two query shapes. Frames that are not whole-partition (`ROWS BETWEEN 5
+PRECEDING AND CURRENT ROW`, segment-tree windows) and `DISTINCT` windows were
+checked and work.
 
 ---
 
@@ -509,11 +557,11 @@ it at compiled-in offsets. The struct has two regions:
 
 | Region | Slots | Guarantee |
 |--------|-------|-----------|
-| Stable | 0–356 | Frozen since v1.2.0 — identical names and order in every release through v1.5.5 |
+| Stable | 0–356 | Frozen since v1.2.0 — same slots, order and signatures in every release through v1.5.5 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
 | Unstable | 357+ | `DuckDB` **inserts** entries in the middle, shifting every later slot |
 
 `duckdb_appender_clear` landed at slot 410 in v1.5.0 and
-`duckdb_geometry_type_get_crs` in the middle of v1.5.3's tail; each insertion
+`duckdb_geometry_type_get_crs` in the middle of v1.5.2's tail; each insertion
 moves everything after it. An extension compiled against one layout and loaded
 by another calls the wrong function through the right offset.
 
@@ -621,13 +669,14 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 | L1: combine config fields | Testable | Test with `AggregateTestHarness::combine` |
 | L2: state double-free | Prevented | Use `FfiState::destroy_callback` |
 | L3: panic across FFI | Prevented | Use `init_extension`, no `unwrap` in callbacks |
-| L4: validity bitmap SEGFAULT | Prevented | Use `VectorWriter::set_null` |
+| L4: NULL silently dropped (no validity mask) | Prevented | Use `VectorWriter::set_null` |
 | L5: bool UB | Prevented | Use `VectorReader::read_bool` |
 | L6: function set name | Prevented | Use `AggregateFunctionSetBuilder` |
 | L7: LogicalType leak | Prevented | Use `LogicalType` (RAII) |
 | L8: NULLs reach the callback anyway | Prevented | Use `map1`/`map2`, or `DataChunk::propagate_nulls` |
 | L9: Arrow array taken on failure | Prevented | Use `arrow::data_chunk_from_arrow` (takes by value) |
-| L10: bind data lost on expression copy | Fixable | Pair `set_bind_data` with `set_bind_data_copy` |
+| L10: bind data lost on expression copy | Prevented | Use `ScalarBindData::set` (or pair `set_bind_data` with `set_bind_data_copy`) |
+| L11: aggregate crash under `OVER ()` / `ORDER BY` | DuckDB defect | Do not use C API aggregates in those query shapes |
 | P1: lib name mismatch | Scaffold | Set `[lib] name` in `Cargo.toml` |
 | P2: API version string | Constant | Use `DUCKDB_API_VERSION` |
 | P3: unit tests insufficient | Documented | Write SQLLogicTest E2E tests |

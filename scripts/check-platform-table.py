@@ -70,7 +70,8 @@ def main() -> int:
     text = PLATFORM_RS.read_text()
     # DUCKDB_CI_PLATFORMS is the matrix-derived list; DUCKDB_PLATFORMS is a
     # superset that also accepts names appearing in real `excluded_platforms`
-    # fields (windows_amd64_rtools, and the matrix's group names).
+    # fields (windows_amd64_rtools, windows_arm64_mingw, and the matrix's group
+    # names).
     ours = rust_list("DUCKDB_CI_PLATFORMS", text)
     every = rust_list("DUCKDB_PLATFORMS", text)
     opt_in = rust_list("DUCKDB_OPT_IN_PLATFORMS", text)

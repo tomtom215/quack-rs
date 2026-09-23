@@ -6,7 +6,7 @@
 //! The two C-string conversions the `query` module runs everything through.
 //!
 //! Both are pure Rust — no `DuckDB` call on any path — which is why they live
-//! here rather than in `query.rs`: `mutants.toml` excludes that file wholesale,
+//! here rather than in `query.rs`: `.cargo/mutants.toml` excludes that file wholesale,
 //! because every function left in it wraps a `DuckDB` C call the `--lib`
 //! mutation run cannot reach. These two can be, and are, killed by ordinary
 //! unit tests.

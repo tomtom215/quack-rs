@@ -3,6 +3,14 @@
 DuckDB supports multiple signatures for the same function name via **function sets**.
 This is how you implement variadic aggregates like `retention(c1, c2, ..., c32)`.
 
+> **Known DuckDB limitation.** C-API aggregates — including every overload in a
+> set — read out of bounds under `agg(x) OVER ()` (whole-partition window frames)
+> and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
+> [Aggregate Functions](aggregate.md#known-duckdb-limitation) for the details and
+> DuckDB source lines. Do not use C-API aggregates in those two query shapes.
+>
+> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
+
 > **Note**: For scalar function overloads, see [`ScalarFunctionSetBuilder`](scalar.md#overloading-with-function-sets).
 
 ---
@@ -176,8 +184,8 @@ DuckDB's C API does not provide `duckdb_aggregate_function_set_varargs`. For tru
 aggregates, you must register N overloads — one for each supported arity. Function sets make
 this tractable.
 
-> **Note**: As of DuckDB 1.5.0, **scalar** functions now support varargs directly via
-> `ScalarFunctionBuilder::varargs()` (requires the `duckdb-1-5` feature). This limitation
+> **Note**: **Scalar** functions support varargs directly via
+> `ScalarFunctionBuilder::varargs()` (stable C API, no feature flag needed). This limitation
 > still applies to aggregate functions, which have no varargs counterpart in the C API.
 
 ADR-002 in the architecture docs explains this design decision in detail.

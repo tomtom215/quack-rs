@@ -52,7 +52,7 @@ replaced had drifted to fewer than half the jobs.
 | `nightly` | Nightly (informational) | informational |
 | `miri` | Miri (undefined behaviour) | blocking |
 | `leak-check` | LeakSanitizer (RAII wrappers vs a real DuckDB) | blocking |
-| `asan` | AddressSanitizer (informational) | informational |
+| `asan` | AddressSanitizer | blocking |
 | `semver` | Public API (semver-checks) | blocking |
 | `fuzz` | Fuzz (smoke) | blocking |
 

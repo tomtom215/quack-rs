@@ -31,9 +31,20 @@
 //! let date = unsafe { datetime::date_from_days(days) };
 //! assert_eq!((date.year, date.month, date.day), (1970, 1, 1));
 //!
-//! // …and back again.
-//! assert_eq!(unsafe { datetime::date_to_days(date) }, days);
+//! // …and back again. Composing can fail (a month of 13, a 30th of
+//! // February), so it returns an `Option`.
+//! assert_eq!(unsafe { datetime::date_to_days(date) }, Some(days));
 //! ```
+//!
+//! # Invalid input returns `None`, never aborts
+//!
+//! Several of `DuckDB`'s conversions throw a C++ exception on bad input — a
+//! `DATE` of 2026-13-01, decomposing the `infinity` `TIMESTAMP` — and the C API
+//! does not catch it, so it would abort the whole process. The wrappers here
+//! check first, mirroring `DuckDB`'s own conditions, and return `None`:
+//! [`date_to_days`], [`timestamp_from_micros`], [`timestamp_to_micros`],
+//! [`time_tz_bits`] and [`decimal_to_f64`]. [`is_valid_date`] exposes the date
+//! check on its own.
 //!
 //! # Infinity
 //!
@@ -55,6 +66,12 @@ use libduckdb_sys::{
     duckdb_timestamp_ns, duckdb_timestamp_s, duckdb_timestamp_struct, duckdb_to_date,
     duckdb_to_time, duckdb_to_timestamp, duckdb_uhugeint, duckdb_uhugeint_to_double,
 };
+
+mod checks;
+#[cfg(test)]
+mod tests;
+
+pub use checks::{is_valid_date, DECIMAL_MAX_WIDTH, MICROS_PER_DAY, TIME_TZ_MAX_OFFSET_SECONDS};
 
 /// A calendar date, as `DuckDB` decomposes a `DATE`.
 ///
@@ -184,13 +201,22 @@ pub unsafe fn date_from_days(days: i32) -> Date {
 
 /// Composes a calendar date into a `DATE` (days since 1970-01-01).
 ///
+/// Returns `None` if `DuckDB` cannot represent the date — a month outside
+/// 1–12, a day the month does not have, or a year beyond `DuckDB`'s range; see
+/// [`is_valid_date`]. `DuckDB` throws on such a date, which would abort the
+/// process, so it is checked here first.
+///
 /// # Safety
 ///
 /// See [`date_from_days`].
 #[must_use]
-pub unsafe fn date_to_days(date: Date) -> i32 {
-    // SAFETY: forwarded from this function's own contract.
-    unsafe { duckdb_to_date(date.into()) }.days
+pub unsafe fn date_to_days(date: Date) -> Option<i32> {
+    if !is_valid_date(date) {
+        return None;
+    }
+    // SAFETY: forwarded from this function's own contract; the date passed
+    // `Date::IsValid`, so `Date::FromDate` does not throw.
+    Some(unsafe { duckdb_to_date(date.into()) }.days)
 }
 
 /// Returns `false` for `DuckDB`'s `infinity` / `-infinity` `DATE` sentinels.
@@ -219,6 +245,10 @@ pub unsafe fn time_from_micros(micros: i64) -> Time {
 
 /// Composes a wall-clock time into a `TIME` (microseconds since midnight).
 ///
+/// Like `DuckDB`, this does not range-check the fields: it computes
+/// `((hour * 60 + min) * 60 + sec) * 1_000_000 + micros`, so an out-of-range
+/// field gives an out-of-range `TIME` rather than an error. It cannot throw.
+///
 /// # Safety
 ///
 /// See [`date_from_days`].
@@ -233,13 +263,24 @@ pub unsafe fn time_to_micros(time: Time) -> i64 {
 ///
 /// `offset_seconds` is the offset from UTC in seconds.
 ///
+/// Returns `None` unless `micros_since_midnight` is between 0 and
+/// [`MICROS_PER_DAY`] inclusive (`00:00:00`–`24:00:00`) and `offset_seconds` within
+/// ±[`TIME_TZ_MAX_OFFSET_SECONDS`] (±15:59:59). `DuckDB` packs the two fields
+/// without checking either, so a value outside those ranges would silently
+/// corrupt the other field.
+///
 /// # Safety
 ///
 /// See [`date_from_days`].
 #[must_use]
-pub unsafe fn time_tz_bits(micros_since_midnight: i64, offset_seconds: i32) -> u64 {
+pub unsafe fn time_tz_bits(micros_since_midnight: i64, offset_seconds: i32) -> Option<u64> {
+    if !checks::time_tz_encodable(micros_since_midnight, offset_seconds) {
+        return None;
+    }
     // SAFETY: forwarded from this function's own contract.
-    unsafe { libduckdb_sys::duckdb_create_time_tz(micros_since_midnight, offset_seconds) }.bits
+    Some(
+        unsafe { libduckdb_sys::duckdb_create_time_tz(micros_since_midnight, offset_seconds) }.bits,
+    )
 }
 
 /// Unpacks `DuckDB`'s `TIME WITH TIME ZONE` bit representation.
@@ -261,35 +302,54 @@ pub unsafe fn time_tz_from_bits(bits: u64) -> TimeTz {
 
 /// Decomposes a `TIMESTAMP` (microseconds since the epoch) into date and time.
 ///
-/// Check [`is_finite_timestamp`] first.
+/// Returns `None` for the `infinity` / `-infinity` sentinels (see
+/// [`is_finite_timestamp`]) and for the finite values below
+/// day `-106_751_991` (that many times [`MICROS_PER_DAY`]; the first ~4 hours of the `i64` range,
+/// including `i64::MIN`), whose day overflows when `DuckDB` multiplies it back
+/// into microseconds. `DuckDB` throws on all of them, which would abort the
+/// process, so they are checked here first.
 ///
 /// # Safety
 ///
 /// See [`date_from_days`].
 #[must_use]
-pub unsafe fn timestamp_from_micros(micros: i64) -> Timestamp {
-    // SAFETY: forwarded from this function's own contract.
+pub unsafe fn timestamp_from_micros(micros: i64) -> Option<Timestamp> {
+    if !checks::timestamp_decomposes(micros) {
+        return None;
+    }
+    // SAFETY: forwarded from this function's own contract; the check above
+    // rules out every input on which `Timestamp::Convert` throws.
     let raw: duckdb_timestamp_struct =
         unsafe { duckdb_from_timestamp(duckdb_timestamp { micros }) };
-    Timestamp {
+    Some(Timestamp {
         date: raw.date.into(),
         time: raw.time.into(),
-    }
+    })
 }
 
 /// Composes date and time into a `TIMESTAMP` (microseconds since the epoch).
 ///
+/// Returns `None` if the date is invalid (see [`is_valid_date`]), if the
+/// result overflows an `i64`, or if it would equal one of the infinity
+/// sentinels — every case in which `DuckDB` throws, which would abort the
+/// process. The time fields are not range-checked, exactly as in
+/// [`time_to_micros`].
+///
 /// # Safety
 ///
 /// See [`date_from_days`].
 #[must_use]
-pub unsafe fn timestamp_to_micros(timestamp: Timestamp) -> i64 {
+pub unsafe fn timestamp_to_micros(timestamp: Timestamp) -> Option<i64> {
+    // SAFETY: forwarded from this function's own contract.
+    let days = unsafe { date_to_days(timestamp.date) }?;
+    checks::timestamp_from_parts(days, checks::time_micros(timestamp.time))?;
     let raw = duckdb_timestamp_struct {
         date: timestamp.date.into(),
         time: timestamp.time.into(),
     };
-    // SAFETY: forwarded from this function's own contract.
-    unsafe { duckdb_to_timestamp(raw) }.micros
+    // SAFETY: forwarded from this function's own contract; the checks above
+    // mirror every throw in `Date::FromDate` and `Timestamp::FromDatetime`.
+    Some(unsafe { duckdb_to_timestamp(raw) }.micros)
 }
 
 /// Returns `false` for `DuckDB`'s `infinity` / `-infinity` `TIMESTAMP`
@@ -426,11 +486,19 @@ pub unsafe fn f64_to_decimal(value: f64, width: u8, scale: u8) -> Decimal {
 
 /// Converts a `DECIMAL` to `f64` the way `DuckDB` does.
 ///
+/// Returns `None` if `width` exceeds [`DECIMAL_MAX_WIDTH`] (38) or `scale`
+/// exceeds `width`. `DuckDB` indexes its powers-of-ten tables by `scale`
+/// without a bounds check, so such a scale reads past the table (returning
+/// `inf`, `NaN` or garbage).
+///
 /// # Safety
 ///
 /// See [`date_from_days`].
 #[must_use]
-pub unsafe fn decimal_to_f64(decimal: Decimal) -> f64 {
+pub unsafe fn decimal_to_f64(decimal: Decimal) -> Option<f64> {
+    if !checks::decimal_is_valid(decimal.width, decimal.scale) {
+        return None;
+    }
     let raw = duckdb_decimal {
         width: decimal.width,
         scale: decimal.scale,
@@ -441,243 +509,7 @@ pub unsafe fn decimal_to_f64(decimal: Decimal) -> f64 {
             upper: (decimal.value >> 64) as i64,
         },
     };
-    // SAFETY: forwarded from this function's own contract.
-    unsafe { duckdb_decimal_to_double(raw) }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn date_struct_round_trips_through_ffi_types() {
-        let date = Date {
-            year: 2026,
-            month: 8,
-            day: 18,
-        };
-        let raw: duckdb_date_struct = date.into();
-        assert_eq!(raw.year, 2026);
-        assert_eq!(raw.month, 8);
-        assert_eq!(raw.day, 18);
-        assert_eq!(Date::from(raw), date);
-    }
-
-    #[test]
-    fn time_struct_round_trips_through_ffi_types() {
-        let time = Time {
-            hour: 23,
-            min: 59,
-            sec: 58,
-            micros: 123_456,
-        };
-        let raw: duckdb_time_struct = time.into();
-        assert_eq!(Time::from(raw), time);
-    }
-
-    #[test]
-    fn decimal_is_ordered_and_hashable() {
-        use std::collections::HashSet;
-        let a = Decimal {
-            width: 18,
-            scale: 3,
-            value: 1_500,
-        };
-        let b = Decimal {
-            width: 18,
-            scale: 3,
-            value: 2_500,
-        };
-        assert!(a < b);
-        let set: HashSet<Decimal> = [a, b, a].into_iter().collect();
-        assert_eq!(set.len(), 2);
-    }
-}
-
-/// Conversions checked against a live `DuckDB`.
-#[cfg(all(test, feature = "_duckdb-testing"))]
-mod live_tests {
-    use super::*;
-    use crate::testing::InMemoryDb;
-
-    #[test]
-    fn epoch_day_zero_is_1970_01_01() {
-        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        // SAFETY: InMemoryDb::open() initialised the dispatch table.
-        let date = unsafe { date_from_days(0) };
-        assert_eq!(
-            date,
-            Date {
-                year: 1970,
-                month: 1,
-                day: 1
-            }
-        );
-    }
-
-    #[test]
-    fn date_round_trips_across_leap_years_and_bce() {
-        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        for days in [
-            -1_000_000_i32,
-            -719_162, // 0001-01-01
-            -1,
-            0,
-            1,
-            59,     // 1970-03-01
-            10_957, // 2000-01-01
-            11_017, // 2000-03-01, just past a leap day
-            20_685, // 2026-08-18
-            1_000_000,
-        ] {
-            // SAFETY: InMemoryDb::open() initialised the dispatch table.
-            let date = unsafe { date_from_days(days) };
-            assert_eq!(unsafe { date_to_days(date) }, days, "round trip for {days}");
-        }
-    }
-
-    #[test]
-    fn duckdb_agrees_with_our_conversion() {
-        // Cross-check against DuckDB's SQL layer rather than trusting the C API
-        // wrapper in isolation.
-        let db = InMemoryDb::open().expect("open in-memory DuckDB");
-        for days in [0_i32, 20_685, -719_162] {
-            // `INTERVAL {n} DAY` will not parse a negative literal, so add the
-            // interval as an expression instead.
-            let sql =
-                format!("SELECT strftime(DATE '1970-01-01' + INTERVAL ({days}) DAY, '%Y-%m-%d')");
-            let expected: String = db.query_one(&sql).expect("query");
-            // SAFETY: InMemoryDb::open() initialised the dispatch table.
-            let date = unsafe { date_from_days(days) };
-            let actual = format!("{:04}-{:02}-{:02}", date.year, date.month, date.day);
-            assert_eq!(actual, expected, "for {days} days since the epoch");
-        }
-    }
-
-    #[test]
-    fn infinity_sentinels_match_the_documented_constants() {
-        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        // SAFETY: InMemoryDb::open() initialised the dispatch table.
-        unsafe {
-            assert!(is_finite_date(0));
-            assert!(!is_finite_date(DATE_INFINITY_DAYS));
-            assert!(!is_finite_date(DATE_NEGATIVE_INFINITY_DAYS));
-            // -infinity is -i32::MAX, so i32::MIN is one step beyond it and is a
-            // finite (if nonsensical) date. Getting this backwards would make a
-            // caller treat a real date as infinity.
-            assert!(is_finite_date(i32::MIN));
-
-            assert!(is_finite_timestamp(0));
-            assert!(!is_finite_timestamp(TIMESTAMP_INFINITY_MICROS));
-            assert!(!is_finite_timestamp(TIMESTAMP_NEGATIVE_INFINITY_MICROS));
-            assert!(is_finite_timestamp(i64::MIN));
-
-            assert!(is_finite_timestamp_s(0));
-            assert!(is_finite_timestamp_ms(0));
-            assert!(is_finite_timestamp_ns(0));
-            assert!(!is_finite_timestamp_s(TIMESTAMP_INFINITY_MICROS));
-            assert!(!is_finite_timestamp_ms(TIMESTAMP_INFINITY_MICROS));
-            assert!(!is_finite_timestamp_ns(TIMESTAMP_INFINITY_MICROS));
-        }
-    }
-
-    #[test]
-    fn duckdb_sql_agrees_that_the_sentinels_are_infinite() {
-        let db = InMemoryDb::open().expect("open in-memory DuckDB");
-        let rendered: String = db
-            .query_one("SELECT ('infinity'::DATE)::VARCHAR")
-            .expect("query");
-        assert_eq!(rendered, "infinity");
-        // SAFETY: InMemoryDb::open() initialised the dispatch table.
-        assert!(!unsafe { is_finite_date(DATE_INFINITY_DAYS) });
-    }
-
-    #[test]
-    fn time_round_trips_including_microsecond_precision() {
-        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        for micros in [0_i64, 1, 999_999, 1_000_000, 86_399_999_999] {
-            // SAFETY: InMemoryDb::open() initialised the dispatch table.
-            let time = unsafe { time_from_micros(micros) };
-            assert_eq!(unsafe { time_to_micros(time) }, micros, "for {micros} us");
-        }
-        // SAFETY: dispatch table initialised above.
-        let end_of_day = unsafe { time_from_micros(86_399_999_999) };
-        assert_eq!(
-            end_of_day,
-            Time {
-                hour: 23,
-                min: 59,
-                sec: 59,
-                micros: 999_999
-            }
-        );
-    }
-
-    #[test]
-    fn timestamp_round_trips() {
-        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        for micros in [0_i64, 1, -1, 1_700_000_000_000_000, -1_700_000_000_000_000] {
-            // SAFETY: InMemoryDb::open() initialised the dispatch table.
-            let ts = unsafe { timestamp_from_micros(micros) };
-            assert_eq!(
-                unsafe { timestamp_to_micros(ts) },
-                micros,
-                "for {micros} us"
-            );
-        }
-    }
-
-    #[test]
-    fn time_tz_round_trips_with_offset() {
-        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        // SAFETY: InMemoryDb::open() initialised the dispatch table.
-        unsafe {
-            let bits = time_tz_bits(12 * 3_600 * 1_000_000, -5 * 3_600);
-            let decoded = time_tz_from_bits(bits);
-            assert_eq!(decoded.time.hour, 12);
-            assert_eq!(decoded.offset_seconds, -5 * 3_600);
-        }
-    }
-
-    #[test]
-    fn hugeint_conversions_match_duckdb() {
-        let db = InMemoryDb::open().expect("open in-memory DuckDB");
-        // SAFETY: InMemoryDb::open() initialised the dispatch table.
-        unsafe {
-            assert!((hugeint_to_f64(0) - 0.0).abs() < f64::EPSILON);
-            assert!((hugeint_to_f64(1) - 1.0).abs() < f64::EPSILON);
-            assert!((hugeint_to_f64(-1) + 1.0).abs() < f64::EPSILON);
-            assert_eq!(f64_to_hugeint(42.0), 42);
-            assert_eq!(f64_to_hugeint(-42.0), -42);
-            assert_eq!(f64_to_uhugeint(42.0), 42);
-            assert!((uhugeint_to_f64(u128::from(u64::MAX)) - 1.844_674_407_370_955e19).abs() < 1e6);
-        }
-        // Cross-check the sign handling of the split representation against SQL.
-        let expected: f64 = db
-            .query_one("SELECT (-170141183460469231731687303715884105728)::HUGEINT::DOUBLE")
-            .expect("query");
-        // SAFETY: dispatch table initialised above.
-        let actual = unsafe { hugeint_to_f64(i128::MIN) };
-        assert!(
-            (actual - expected).abs() / expected.abs() < 1e-12,
-            "{actual} != {expected}"
-        );
-    }
-
-    #[test]
-    fn decimal_conversions_preserve_width_and_scale() {
-        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        // SAFETY: InMemoryDb::open() initialised the dispatch table.
-        unsafe {
-            let decimal = f64_to_decimal(12.345, 18, 3);
-            assert_eq!(decimal.width, 18);
-            assert_eq!(decimal.scale, 3);
-            assert_eq!(decimal.value, 12_345);
-            assert!((decimal_to_f64(decimal) - 12.345).abs() < 1e-9);
-
-            let negative = f64_to_decimal(-12.345, 18, 3);
-            assert_eq!(negative.value, -12_345);
-            assert!((decimal_to_f64(negative) + 12.345).abs() < 1e-9);
-        }
-    }
+    // SAFETY: forwarded from this function's own contract; `scale <= 38`
+    // keeps DuckDB's table lookups in bounds.
+    Some(unsafe { duckdb_decimal_to_double(raw) })
 }

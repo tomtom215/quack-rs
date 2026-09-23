@@ -174,8 +174,10 @@ pub mod value;
 pub mod vector;
 pub mod warning;
 
-// DuckDB 1.5.0+ modules — gated behind the `duckdb-1-5` feature flag.
+// Stable C API; a few methods need `duckdb-1-5`, the module does not.
 pub mod appender;
+
+// DuckDB 1.5.0+ modules — gated behind a `duckdb-1-5*` feature flag.
 #[cfg(feature = "duckdb-1-5-4")]
 pub mod arrow;
 #[cfg(feature = "duckdb-1-5")]

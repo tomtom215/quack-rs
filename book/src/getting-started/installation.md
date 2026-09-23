@@ -6,7 +6,7 @@ Add the following to your extension's `Cargo.toml`:
 
 ```toml
 [dependencies]
-quack-rs = "0.13"
+quack-rs = "0.18"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
@@ -30,22 +30,28 @@ crate-type = ["cdylib", "rlib"]
 #                      rlib  allows unit tests and documentation to work
 
 [profile.release]
-panic = "abort"             # REQUIRED — panics across FFI are undefined behavior
+panic = "unwind"            # REQUIRED — quack-rs catches panics at every FFI boundary;
+                            #   "abort" makes that impossible (see below)
 lto = true                  # recommended — reduces binary size, improves performance
 opt-level = 3               # recommended
 codegen-units = 1           # recommended — enables full LTO
 strip = true                # recommended — reduces binary size
 ```
 
-### Why `panic = "abort"`?
+### Why `panic = "unwind"`, not `"abort"`?
 
-Rust's default panic behavior unwinds the stack. When a panic crosses an FFI boundary into
-DuckDB's C++ code, the result is **undefined behavior** — DuckDB may crash, corrupt memory,
-or silently produce wrong results. The `panic = "abort"` setting converts panics into
-immediate process termination, which is far safer.
+Every callback quack-rs generates, and every entry point, runs your code inside
+`std::panic::catch_unwind`, and turns a panic into an ordinary SQL error that DuckDB
+reports to the user. `catch_unwind` can only catch a panic that **unwinds**: under
+`panic = "abort"` the process terminates at the panic site, before any guard runs, taking
+the user's whole DuckDB session with it.
 
-`quack-rs` itself never panics in FFI callbacks, but this setting protects you if a
-dependency or your own code panics.
+(A panic that escapes an `extern "C"` function without being caught is not undefined
+behaviour on Rust ≥ 1.81 — the runtime aborts the process — but that is exactly the
+outcome the guards exist to prevent.)
+
+`validate_release_profile` rejects `panic = "abort"`, and the scaffold generator emits
+`panic = "unwind"`.
 
 ---
 
@@ -74,15 +80,21 @@ rustc --version   # must be ≥ 1.86.0
 
 ## Development dependencies
 
-For testing with a live DuckDB instance (example-extension tests only):
+To run SQL against your functions inside `cargo test`, enable one of quack-rs's test
+features as a dev-dependency:
 
 ```toml
 [dev-dependencies]
-duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }
+# Compiles DuckDB from C++ source: no setup, slow cold build.
+quack-rs = { version = "0.18", features = ["bundled-test"] }
+# ...or link a prebuilt libduckdb instead (set DUCKDB_DOWNLOAD_LIB=1 or DUCKDB_LIB_DIR):
+# quack-rs = { version = "0.18", features = ["bundled-test-prebuilt"] }
 ```
 
-> **Important**: you cannot call any `duckdb_*` function in a `cargo test` process when using
-> the `loadable-extension` feature. See [Testing Guide](../testing.md) for the full explanation.
+Either one initialises the `loadable-extension` dispatch table from the linked DuckDB, so
+`testing::InMemoryDb` works and the whole C API — including your own registration code — can
+be exercised in a test. Without them, any `duckdb_*` call in a `cargo test` process panics,
+because nothing has filled the dispatch table. See the [Testing Guide](../testing.md).
 
 ---
 

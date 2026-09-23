@@ -15,22 +15,32 @@ This is an advanced, low-level primitive; most extensions never need it.
 ```rust,no_run
 use quack_rs::selection_vector::SelectionVector;
 
+# fn demo() -> Result<(), quack_rs::error::ExtensionError> {
 // Select source rows 3, 1, 4, 1, 5 (in that order) — note repeats are allowed.
-let mut sel = SelectionVector::new(5);
+let mut sel = SelectionVector::new(5)?;
 sel.as_mut_slice().copy_from_slice(&[3, 1, 4, 1, 5]);
 
 assert_eq!(sel.len(), 5);
 assert_eq!(sel.as_slice(), &[3, 1, 4, 1, 5]);
+# Ok(())
+# }
 ```
 
-The indices are 32-bit (`sel_t` / `u32`) and are **uninitialised** after `new` —
-fill them via `as_mut_slice()` before use.
+The indices are 32-bit (`sel_t` / `u32`) and are **zeroed** by `new` — DuckDB
+itself leaves them uninitialised, so the wrapper clears them to keep
+`as_slice()` from exposing stale heap contents. Fill them via `as_mut_slice()`.
+
+`new` returns `Err` for a length above `selection_vector::MAX_LEN` (`2^32` on
+64-bit targets, the range of `sel_t`). DuckDB does not check the length itself:
+a large enough length overflows its allocation-size arithmetic into a tiny
+buffer, and a request of `2^48` bytes or more makes its allocator throw, which
+would abort the extension.
 
 ## API
 
 | Method | Description |
 |--------|-------------|
-| `SelectionVector::new(size)` | Allocate a vector of `size` indices |
+| `SelectionVector::new(size)` | Allocate `size` zeroed indices; `Err` above `MAX_LEN` |
 | `len()` / `is_empty()` | Number of indices |
 | `as_slice()` | `&[u32]` — read the indices |
 | `as_mut_slice()` | `&mut [u32]` — fill the indices |

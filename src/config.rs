@@ -76,15 +76,20 @@ impl DbConfig {
     /// Use [`DbConfig::flag_count`] / [`DbConfig::get_flag`] to enumerate all
     /// available options at runtime.
     ///
-    /// # Errors
+    /// # Unknown option names are accepted here
     ///
-    /// Returns `ExtensionError` if the option name or value is not recognised
-    /// by `DuckDB`.
+    /// `duckdb_set_config` does **not** reject a name it does not know: it
+    /// stores it among the config's unrecognised options (an extension loaded
+    /// later may define it), and the database open that uses this config is
+    /// what fails, with `unrecognized configuration parameter`. Check a name
+    /// against [`flag_count`][Self::flag_count] / [`get_flag`][Self::get_flag]
+    /// first if you need to catch a typo at this point.
     ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if `name` or `value` contain interior null bytes,
-    /// or if `DuckDB` does not recognise the option.
+    /// or if `DuckDB` rejects the value for an option it recognises (for
+    /// example a non-numeric `"threads"`).
     pub fn set(self, name: &str, value: &str) -> Result<Self, ExtensionError> {
         let c_name = CString::new(name).map_err(|_| {
             ExtensionError::new(format!("config name '{name}' contains a null byte"))

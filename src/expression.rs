@@ -40,7 +40,7 @@ use libduckdb_sys::{
 };
 
 use crate::client_context::ClientContext;
-use crate::error_data::ErrorData;
+use crate::error_data::{DuckDbErrorType, ErrorData};
 use crate::types::LogicalType;
 use crate::value::Value;
 
@@ -110,12 +110,20 @@ impl Expression {
 
     /// Folds this (constant) expression into a single [`Value`].
     ///
-    /// Only valid when [`is_foldable`][Expression::is_foldable] returns `true`.
+    /// Only succeeds when [`is_foldable`][Expression::is_foldable] returns
+    /// `true`.
+    ///
+    /// The returned [`Value`] always has a non-null handle, but may hold SQL
+    /// `NULL` (`fold` of `NULL::INTEGER`); its typed getters return `None` for
+    /// that.
     ///
     /// # Errors
     ///
-    /// Returns the structured [`ErrorData`] if folding fails (for example because
-    /// the expression is not constant).
+    /// Returns the structured [`ErrorData`] if evaluation fails, and an
+    /// [`DuckDbErrorType::InvalidInput`] error when the expression handle is
+    /// null or the expression is not foldable (for example it references a
+    /// column). `duckdb_expression_fold` reports that last case by returning
+    /// *no* error and leaving the output value unset.
     pub fn fold(&self, context: &ClientContext) -> Result<Value, ErrorData> {
         let mut out_value: duckdb_value = std::ptr::null_mut();
         // SAFETY: self.raw and context.as_raw() are valid; out_value is a valid
@@ -133,7 +141,16 @@ impl Expression {
             }
             return Err(err);
         }
-        // SAFETY: folding succeeded, so out_value is an owned duckdb_value.
+        if out_value.is_null() {
+            // `duckdb_expression_fold` returns early, with neither an error nor
+            // a value, for a null or non-foldable expression.
+            return Err(ErrorData::new(
+                DuckDbErrorType::InvalidInput,
+                "Expression::fold: the expression is not foldable (it is not constant)",
+            ));
+        }
+        // SAFETY: folding succeeded and out_value is non-null, so it is an
+        // owned duckdb_value.
         Ok(unsafe { Value::from_raw(out_value) })
     }
 }
