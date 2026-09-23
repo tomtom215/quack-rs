@@ -450,8 +450,16 @@ macro_rules! aggregate_destroy_callback {
 /// The body must evaluate to `bool` — `true` when every row converted.
 ///
 /// A panic is reported through `duckdb_cast_function_set_error` and the
-/// generated function returns `false`, which `DuckDB` treats as a failed cast
-/// (and `TRY_CAST` turns into NULL).
+/// generated function returns `false`. In a regular `CAST` that fails the
+/// query with the panic message. In a `TRY_CAST`, `DuckDB` ignores the return
+/// value (see [`CastFn`][crate::cast::CastFn]), so the generated function also
+/// sets **every** row of the chunk to `NULL` through
+/// `duckdb_cast_function_set_row_error`: whatever the body wrote before it
+/// panicked cannot be trusted, and a row it never reached would otherwise keep
+/// a stale value.
+///
+/// A body that returns `false` without panicking is passed through untouched;
+/// in `TRY_CAST` mode it must null its own failed rows.
 ///
 /// # Example
 ///
@@ -485,8 +493,30 @@ macro_rules! cast_callback {
                         &$crate::callback::take_panic_message(panic),
                     );
                     // SAFETY: `info` is the pointer DuckDB passed in.
-                    unsafe {
-                        ::libduckdb_sys::duckdb_cast_function_set_error($info, c_msg.as_ptr());
+                    let try_mode = unsafe {
+                        ::libduckdb_sys::duckdb_cast_function_get_cast_mode($info)
+                            == ::libduckdb_sys::duckdb_cast_mode_DUCKDB_CAST_TRY
+                    };
+                    if try_mode {
+                        // DuckDB ignores the return value of a TRY cast
+                        // (execute_cast.cpp), so the rows must be nulled here.
+                        for row in 0..$count {
+                            // SAFETY: `info` and `output` are the handles
+                            // DuckDB passed in, and `row < count`.
+                            unsafe {
+                                ::libduckdb_sys::duckdb_cast_function_set_row_error(
+                                    $info,
+                                    c_msg.as_ptr(),
+                                    row,
+                                    $output,
+                                );
+                            }
+                        }
+                    } else {
+                        // SAFETY: `info` is the pointer DuckDB passed in.
+                        unsafe {
+                            ::libduckdb_sys::duckdb_cast_function_set_error($info, c_msg.as_ptr());
+                        }
                     }
                     false
                 }

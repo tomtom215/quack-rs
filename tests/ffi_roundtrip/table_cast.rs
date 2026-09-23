@@ -1234,3 +1234,80 @@ mod copy_options_shape {
         );
     }
 }
+
+/// TBL-5: after a panicking cast callback, `TRY_CAST` returned whatever the
+/// output vector held (zeros or a previous chunk's values) instead of NULL:
+/// `DuckDB` ignores a cast function's return value in TRY mode
+/// (`execute_cast.cpp`), so only rows nulled explicitly become NULL.
+mod try_cast_after_panic {
+    use super::{Fixture, TypeId};
+    use quack_rs::cast::CastFunctionBuilder;
+
+    quack_rs::cast_callback!(tc_boom, |_info, _count, _input, _output| {
+        panic!("tc_boom exploded")
+    });
+
+    #[test]
+    fn a_panicking_cast_makes_every_try_cast_row_null() {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open; the callback matches `CastFn`.
+        unsafe {
+            CastFunctionBuilder::new(TypeId::Blob, TypeId::Integer)
+                .function(tc_boom)
+                .register(fx.con())
+        }
+        .expect("register");
+        assert_eq!(
+            fx.scalar(
+                "SELECT count(*) FROM (SELECT TRY_CAST(b AS INTEGER) AS v \
+                 FROM (SELECT ('\\x0' || (i % 10)::VARCHAR)::BLOB AS b FROM range(3000) t(i))) \
+                 WHERE v IS NULL",
+                |r, i| unsafe { r.read_i64(i) }
+            ),
+            Some(3000),
+            "every row of every chunk must be NULL"
+        );
+        let err = super::error_of(&fx, "SELECT CAST('\\x01'::BLOB AS INTEGER)");
+        assert!(err.contains("tc_boom exploded"), "{err}");
+    }
+}
+
+/// TBL-24: a cast that failed in normal mode with an empty message surfaced
+/// as `Conversion Error: ` with no text.
+mod cast_without_message {
+    use super::{Fixture, TypeId};
+    use quack_rs::cast::{CastFunctionBuilder, CastFunctionInfo};
+
+    quack_rs::cast_callback!(tc_empty_message, |info, count, _input, output| {
+        // SAFETY: `info` is the live cast info.
+        let info = unsafe { CastFunctionInfo::new(info) };
+        info.set_error("");
+        for row in 0..count {
+            // SAFETY: `output` is the live output vector and `row < count`.
+            unsafe { info.set_row_error("", row, output) };
+        }
+        false
+    });
+
+    #[test]
+    fn a_failed_cast_with_an_empty_message_still_says_something() {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open; the callback matches `CastFn`.
+        unsafe {
+            CastFunctionBuilder::new(TypeId::Blob, TypeId::SmallInt)
+                .function(tc_empty_message)
+                .register(fx.con())
+                .expect("register");
+        }
+        let err = super::error_of(&fx, "SELECT CAST('\\x01'::BLOB AS SMALLINT)");
+        assert!(err.contains("without a message"), "{err}");
+        // set_row_error nulls the rows it names, so TRY_CAST is NULL.
+        assert_eq!(
+            fx.scalar(
+                "SELECT TRY_CAST('\\x01'::BLOB AS SMALLINT) IS NULL",
+                |r, i| unsafe { r.read_bool(i) }
+            ),
+            Some(true)
+        );
+    }
+}
