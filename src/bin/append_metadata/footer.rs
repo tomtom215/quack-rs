@@ -29,7 +29,7 @@ pub const WASM_SECTION_HEADER: [u8; 22] = [
 /// `s` as one NUL-padded 32-byte footer field.
 ///
 /// A value of exactly 32 bytes fills the field with no terminator. That is
-/// what `DuckDB` expects: `ParseExtensionMetaData` (extension_load.cpp) reads
+/// what `DuckDB` expects: `ParseExtensionMetaData` (`extension_load.cpp`) reads
 /// each field as 32 bytes and strips trailing NULs (`FilterZeroAtEnd`), and
 /// extension-ci-tools' `padded_byte_string` pads to exactly 32.
 pub fn make_field(s: &str) -> Result<[u8; FIELD_SIZE], String> {

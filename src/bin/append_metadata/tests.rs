@@ -48,8 +48,8 @@ fn make_field_max_length_is_31_chars() {
     assert_eq!(f[31], 0);
 }
 
-/// DuckDB reads each field as 32 bytes and strips trailing NULs
-/// (`FilterZeroAtEnd`, extension_load.cpp), and extension-ci-tools pads to
+/// `DuckDB` reads each field as 32 bytes and strips trailing NULs
+/// (`FilterZeroAtEnd`, `extension_load.cpp`), and extension-ci-tools pads to
 /// exactly 32 — so a 32-byte value needs no terminator and is accepted there.
 #[test]
 fn make_field_accepts_exactly_32_chars_without_a_terminator() {

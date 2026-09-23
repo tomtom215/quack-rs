@@ -138,7 +138,7 @@ fn unstable_scaffold_rejects_a_release_libduckdb_sys_cannot_encode() {
 }
 
 /// Regression: the generated project's `cargo test` ran zero tests, and its
-/// SQLLogicTest file held nothing but `require` and commented-out examples, so
+/// `SQLLogicTest` file held nothing but `require` and commented-out examples, so
 /// both CI steps passed whatever the extension did.
 #[test]
 fn generated_lib_rs_carries_a_real_unit_test() {
