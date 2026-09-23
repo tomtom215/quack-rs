@@ -159,6 +159,7 @@ fn init_dispatch_table_once() {
     // inside `INIT` would leave the rest with "Once instance has previously
     // been poisoned").
     static SIZE_CHECK: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    static INIT: std::sync::Once = std::sync::Once::new();
     let size_check = SIZE_CHECK.get_or_init(|| {
         // SAFETY: both are plain C++ functions with no preconditions; the
         // version string is a static literal.
@@ -178,7 +179,6 @@ fn init_dispatch_table_once() {
         panic!("{message}");
     }
 
-    static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         // SAFETY: quack_rs_create_api_v1 is a thin C++ wrapper around
         // DuckDB's own CreateAPIv1().  It sets every field of the returned
