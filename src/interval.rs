@@ -32,7 +32,9 @@
 /// Microseconds per day, used for interval conversion.
 pub const MICROS_PER_DAY: i64 = 86_400 * 1_000_000;
 
-/// Microseconds per month (approximated as 30 days, matching `DuckDB`'s behaviour).
+/// Microseconds per month, approximated as 30 days — `DuckDB`'s
+/// `Interval::MICROS_PER_MONTH`, used for comparing intervals (see
+/// [`interval_to_micros`] for where `DuckDB` does and does not use it).
 pub const MICROS_PER_MONTH: i64 = 30 * MICROS_PER_DAY;
 
 /// A `DuckDB` `INTERVAL` value, matching the C struct layout exactly.
@@ -45,6 +47,14 @@ pub const MICROS_PER_MONTH: i64 = 30 * MICROS_PER_DAY;
 /// offset 8:  micros (i64)  — microseconds component
 /// total:     16 bytes
 /// ```
+///
+/// # Equality is field-by-field, not SQL equality
+///
+/// The derived `PartialEq`, `Eq` and `Hash` compare the three fields, so
+/// `{ months: 1, .. }` and `{ days: 30, .. }` are different values here while
+/// `DuckDB` says `interval '1 month' = interval '30 days'`. Comparing
+/// [`to_micros`][Self::to_micros] matches SQL when the three fields share a
+/// sign; see [`interval_to_micros`] for the mixed-sign case where it does not.
 ///
 /// # Safety
 ///
@@ -77,7 +87,8 @@ impl DuckInterval {
     ///
     /// Returns `None` if the result would overflow `i64`.
     ///
-    /// Month conversion uses 30 days/month, matching `DuckDB`'s approximation.
+    /// Month conversion uses 30 days/month; see [`interval_to_micros`] for
+    /// where that matches `DuckDB` and where it does not.
     ///
     /// # Example
     ///
@@ -119,8 +130,24 @@ impl Default for DuckInterval {
 
 /// Converts a [`DuckInterval`] to total microseconds with overflow checking.
 ///
-/// Uses the approximation: **1 month = 30 days**, which is what `DuckDB` uses
-/// internally when comparing or arithmetically combining intervals.
+/// Uses the approximation: **1 month = 30 days**. `DuckDB` uses the same
+/// approximation in exactly two places (checked on `DuckDB` 1.4.4 and 1.5.5):
+///
+/// - **Comparing intervals** — `interval '1 month' = interval '30 days'` is
+///   `true` (`Interval::DAYS_PER_MONTH = 30` in `interval.hpp`). `DuckDB`
+///   normalises the fields (`interval_t::Normalize`: micros carry into days,
+///   days into months, with truncating division) and compares them in order, so
+///   this agrees with comparing total microseconds only when the fields do
+///   not mix signs: `interval '1 month' - interval '1 day'` equals
+///   `interval '29 days'` in microseconds but compares **greater** in SQL.
+/// - **`epoch_us(interval)`** — returns exactly what this function returns;
+///   `epoch_us(interval '1 year')` is 360 days.
+///
+/// It is **not** what `DuckDB` does elsewhere: `interval + interval` keeps
+/// months, days and micros separate (`1 month 30 days`), adding an interval to
+/// a date uses calendar months (`2024-01-31 + 1 month` is `2024-02-29`), and
+/// `epoch(interval '1 year')` counts 365.25 days. Use this conversion for
+/// ordering or bucketing intervals, not for date arithmetic.
 ///
 /// # Returns
 ///
