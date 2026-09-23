@@ -99,7 +99,8 @@ pub trait AggregateState: Default + Send + 'static {}
 /// vector's data pointer to the extension without flattening it. This is a
 /// defect in `DuckDB`'s C API, not in quack-rs, and it cannot be detected
 /// from inside the callback — reading `states[1]` to check is itself the
-/// out-of-bounds read. Until `DuckDB` fixes it, do not use C-API aggregates in
+/// out-of-bounds read. Reported upstream as
+/// [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Until it is fixed, do not use C-API aggregates in
 /// those two query shapes.
 ///
 /// # Memory layout

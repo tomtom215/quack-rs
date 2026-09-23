@@ -25,6 +25,8 @@ step that merges partial results from parallel workers.
 > DuckDB's C API, not in quack-rs, and it cannot be detected from inside the
 > callback: reading `states[1]` to check is itself the out-of-bounds read. Until
 > DuckDB fixes it, do not use C-API aggregates in those two query shapes.
+>
+> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
 
 ---
 

@@ -8,6 +8,8 @@ This is how you implement variadic aggregates like `retention(c1, c2, ..., c32)`
 > and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
 > [Aggregate Functions](aggregate.md#known-duckdb-limitation) for the details and
 > DuckDB source lines. Do not use C-API aggregates in those two query shapes.
+>
+> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
 
 > **Note**: For scalar function overloads, see [`ScalarFunctionSetBuilder`](scalar.md#overloading-with-function-sets).
 

@@ -445,7 +445,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L8** | `DEFAULT_NULL_HANDLING` does not propagate NULLs for scalars | Non-NULL results for NULL inputs, from column data only (literals are constant-folded) | `map1`/`map2` family propagate by construction; `DataChunk::propagate_nulls` for raw callbacks |
 | **L9** | `duckdb_data_chunk_from_arrow` claims the array on failure | A double release after a failed conversion, or a leak after a zero-column one | `arrow::data_chunk_from_arrow` takes the array by value |
 | **L10** | Scalar bind data dropped when `DuckDB` copies the expression | Bind data reads as null for some queries (e.g. a filter pushed through a projection) — a wrong answer, not a crash | `ScalarBindData::set` registers a copy callback; raw API: `ScalarBindInfo::set_bind_data_copy` |
-| **L11** | C API aggregates under `agg(x) OVER ()` / `agg(x ORDER BY y)` | Segfault or memory corruption in `update` | A `DuckDB` defect (`CAPIAggregateUpdate` does not flatten the state vector); documented, cannot be prevented from an extension |
+| **L11** | C API aggregates under `agg(x) OVER ()` / `agg(x ORDER BY y)` | Segfault or memory corruption in `update` | A `DuckDB` defect (`CAPIAggregateUpdate` does not flatten the state vector), reported as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109); documented, cannot be prevented from an extension |
 
 ### Practical Pitfalls (P)
 

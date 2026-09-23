@@ -8,6 +8,8 @@ and destruction — so you never write raw pointer code for state management.
 > and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
 > [Aggregate Functions](aggregate.md#known-duckdb-limitation) for the details and
 > DuckDB source lines. Do not use C-API aggregates in those two query shapes.
+>
+> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
 
 ---
 

@@ -704,8 +704,11 @@ a flat one, and probing `states[1]` is itself the out-of-bounds read. The one-li
 upstream fix that suggests itself — `state.Flatten(count)` in
 `CAPIAggregateUpdate` — is also wrong: `WindowConstantAggregatorLocalState::Sink`
 caches `FlatVector::GetData(statep)` once and writes through it on every later
-iteration, and an in-place `Flatten` replaces that buffer. A report for DuckDB
-with a C reproducer has been drafted but not filed.
+iteration, and an in-place `Flatten` replaces that buffer. Reported upstream,
+with the C reproducer, as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109) (2026-09-23);
+the report also notes the defect is still present in `main`'s source at
+`94d7b64`, where the file moved to `src/main/capi/v1/` and `simple_update`
+became `cluster_update`.
 
 ### 7.3 Defects found and fixed
 
@@ -773,8 +776,10 @@ README assertion that panicked — are fixed and were recompiled.
 
 ### 7.5 Open items
 
-1. **L11 upstream.** File the drafted DuckDB issue. Until it is fixed, aggregate
-   authors must tell their users to avoid the two query shapes.
+1. **L11 upstream.** Filed as
+   [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Until it is fixed, aggregate authors
+   must tell their users to avoid the two query shapes; when it is, the
+   limitation sections and Pitfall L11 should name the first fixed release.
 2. **Config-option defaults.** The pre-check uses SQL `TRY_CAST`, which sees
    extension-registered casts; DuckDB's default-value cast does not. An extension
    that registers a more permissive `VARCHAR → T` cast *before* the option could

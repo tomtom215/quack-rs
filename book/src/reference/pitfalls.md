@@ -312,7 +312,8 @@ it must not unwind. Wrap anything that can panic in
 
 ## L11: C API aggregates crash under `agg(x) OVER ()` and `agg(x ORDER BY y)`
 
-**Status**: A `DuckDB` defect. Cannot be prevented or detected from an extension;
+**Status**: A `DuckDB` defect, reported upstream as
+[duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Cannot be prevented or detected from an extension;
 documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` and
 `FfiState`.
 

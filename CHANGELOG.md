@@ -329,8 +329,10 @@ Each such entry is marked **Breaking:**.
   sorted-aggregate executors pass a one-element state array with `count > 1`,
   so every aggregate registered through the C API — not only quack-rs's —
   reads out of bounds. Reproduced in plain C against DuckDB 1.4.4, 1.5.0 and
-  1.5.5. Documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder`,
-  `FfiState`, the aggregate book pages and as Pitfall L11.
+  1.5.5; reported upstream as
+  [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Documented on `AggregateFunctionBuilder`,
+  `AggregateFunctionSetBuilder`, `FfiState`, the aggregate book pages and as
+  Pitfall L11.
 
 - **The one active advisory suppression is gone, because the crate behind it
   is.** RUSTSEC-2026-0235 (`rkyv` 0.7.46) was suppressed in `osv-scanner.toml`,
