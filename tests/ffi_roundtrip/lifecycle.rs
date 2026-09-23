@@ -743,3 +743,91 @@ fn set_error_keeps_the_text_after_an_interior_nul() {
         assert!(err.contains("init head?init tail"), "{err}");
     }
 }
+
+// ─── Scalar bind data and expression equality ───────────────────────────────
+
+#[cfg(feature = "duckdb-1-5")]
+mod bind_counter {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    use quack_rs::data_chunk::DataChunk;
+    use quack_rs::scalar::{ScalarBindData, ScalarBindInfo, ScalarFunctionInfo};
+    use quack_rs::vector::VectorWriter;
+
+    pub static BINDS: AtomicI64 = AtomicI64::new(0);
+
+    /// Stores a fresh counter value on every bind: deliberately *not* a
+    /// function of the arguments.
+    pub unsafe extern "C" fn bind(info: libduckdb_sys::duckdb_bind_info) {
+        // SAFETY: DuckDB passes a valid bind info.
+        let bind = unsafe { ScalarBindInfo::new(info) };
+        ScalarBindData::set(&bind, BINDS.fetch_add(1, Ordering::SeqCst));
+    }
+
+    // Writes the bind data into every row.
+    quack_rs::scalar_callback!(write_bind, |info, input, output| {
+        // SAFETY: DuckDB passes a valid function info; `bind` stored an i64.
+        let fninfo = unsafe { ScalarFunctionInfo::new(info) };
+        let Some(value) = (unsafe { ScalarBindData::<i64>::get(&fninfo) }).copied() else {
+            fninfo.set_error("no bind data");
+            return;
+        };
+        // SAFETY: the output is BIGINT.
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        let mut writer = unsafe { VectorWriter::from_vector(output) };
+        for row in 0..chunk.size() {
+            unsafe { writer.write_i64(row, value) };
+        }
+    });
+}
+
+/// `CScalarFunctionBindData::Equals` compares only `extra_info` and the
+/// callback pointer, so two identical calls are merged even though each was
+/// bound separately and stored different bind data. Volatile calls are not
+/// merged. Pins the `ScalarBindData` documentation: if `DuckDB` starts
+/// comparing bind data, the first assertion fails.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn identical_calls_share_bind_data_unless_the_function_is_volatile() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+    use std::sync::atomic::Ordering;
+
+    let fx = Fixture::open();
+    for (name, volatile) in [("bind_ctr", false), ("bind_ctr_volatile", true)] {
+        let builder = ScalarFunctionBuilder::try_new(name)
+            .expect("valid name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .bind(bind_counter::bind)
+            .function(bind_counter::write_bind);
+        let builder = if volatile {
+            builder.volatile()
+        } else {
+            builder
+        };
+        // SAFETY: `con` is open; the callbacks match the declared signature.
+        unsafe { builder.register(fx.con()) }.unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    fx.query("CREATE TABLE bind_rows AS SELECT i::BIGINT AS i FROM range(3) t(i)");
+
+    // Returns (first column, second column, binds during the query) for row 0.
+    let run = |sql: &str| {
+        let before = bind_counter::BINDS.load(Ordering::SeqCst);
+        let mut result = fx.query(sql);
+        let chunk = result.next_chunk().expect("a chunk");
+        // SAFETY: two valid BIGINT columns.
+        let (a, b) = unsafe { (chunk.reader(0).read_i64(0), chunk.reader(1).read_i64(0)) };
+        (a, b, bind_counter::BINDS.load(Ordering::SeqCst) - before)
+    };
+
+    let (a, b, binds) = run("SELECT bind_ctr(i), bind_ctr(i) FROM bind_rows");
+    assert_eq!(binds, 2, "each call is bound on its own");
+    assert_eq!(
+        a, b,
+        "yet the two calls are merged: one bind data answers for both"
+    );
+
+    let (a, b, binds) = run("SELECT bind_ctr_volatile(i), bind_ctr_volatile(i) FROM bind_rows");
+    assert_eq!(binds, 2);
+    assert_ne!(a, b, "volatile calls keep their own bind data");
+}

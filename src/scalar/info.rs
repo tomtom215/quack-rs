@@ -253,6 +253,13 @@ impl ScalarBindInfo {
     /// A second call overwrites the pointer and destructor without running the
     /// first destructor: the first value is leaked.
     ///
+    /// # Identical calls share bind data
+    ///
+    /// `DuckDB` merges two calls with the same arguments without comparing
+    /// their bind data, so the value stored here must depend only on the
+    /// arguments, their types and `extra_info` — or the function must be
+    /// volatile. See [`ScalarBindData`][crate::scalar::ScalarBindData].
+    ///
     /// # Safety
     ///
     /// `data` must point to valid memory. `destroy` will be called by `DuckDB`

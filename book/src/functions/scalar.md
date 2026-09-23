@@ -380,6 +380,12 @@ let factor = unsafe { ScalarBindData::<Factor>::get(&fn_info) };
 - **Call `set` at most once per callback.** DuckDB overwrites the stored pointer
   on a second call without freeing the first value, so that value is leaked
   (never dropped).
+- **Bind data must depend only on the call's arguments** (their values when
+  constant, their types) and `extra_info`. DuckDB's
+  `CScalarFunctionBindData::Equals` ignores bind data, so two calls with the same
+  arguments — `SELECT f(i), f(i)` — are merged and share the first call's bind
+  data. A bind callback that reads a counter, a clock or a random source needs
+  the function marked `volatile()`, which stops the merge.
 
 ---
 
