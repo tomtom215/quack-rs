@@ -26,10 +26,10 @@ minimum_test_timeout = 30
 
 
 # ── Files to test ───────────────────────────────────────────────────────────
-# Test all library source files.
-examine_globs = [
-    "src/**/*.rs",
-]
+# No `examine_globs`: the default already examines every source file, and a
+# config-level `examine_globs` would *override* a command-line `--file` rather
+# than be narrowed by it — which turned the incremental job (one `--file` per
+# changed file) into a full sweep. `exclude_globs` below still applies.
 
 # ── Features ─────────────────────────────────────────────────────────────────
 # Enable duckdb-1-5-4 (implies duckdb-1-5-3, which implies duckdb-1-5) so
@@ -83,6 +83,15 @@ exclude_globs = [
     # DECIMAL range check and the scalar-cast allow-list).
     "src/value/getters.rs",     # Value::as_*: each copies the value and calls duckdb_get_*
     "src/vector/nested_null.rs",# walks a vector's type and child masks through the C API
+    # FFI-only wrappers that were missing from this list: every surviving
+    # mutant in them (Sept 2026 run) is in a function that only calls DuckDB
+    # (`CatalogEntry::name`, `ClientContext::connection_id`,
+    # `DbConfig::get_flag`, their `Drop`s). Their behaviour is covered end to
+    # end in tests/ffi_roundtrip.rs; the pure `CatalogEntryType` logic has no
+    # survivors.
+    "src/catalog.rs",
+    "src/client_context.rs",
+    "src/config.rs",
 ]
 
 # Skip mutants whose full name matches, regardless of which file they are in.
