@@ -183,7 +183,9 @@ impl StructWriter {
     ///
     /// # Panics
     ///
-    /// Panics if `field_idx >= field_count`.
+    /// Panics if `field_idx >= field_count`, or if `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN] (see
+    /// [`VectorWriter::write_varchar`][crate::vector::VectorWriter::write_varchar]).
     #[inline]
     pub unsafe fn write_varchar(&mut self, row: usize, field_idx: usize, value: &str) {
         // SAFETY: caller guarantees row is in bounds and field type is VARCHAR.
@@ -320,6 +322,11 @@ impl StructWriter {
     /// # Safety
     ///
     /// See [`write_i8`][Self::write_i8].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field_idx >= field_count`, or if `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN].
     #[inline]
     pub unsafe fn write_blob(&mut self, row: usize, field_idx: usize, value: &[u8]) {
         unsafe { self.fields[field_idx].write_blob(row, value) };
