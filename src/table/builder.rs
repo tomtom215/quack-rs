@@ -14,7 +14,8 @@
 //! ```text
 //! 1. bind       — parse args, declare output columns, optionally set cardinality hint
 //! 2. init       — allocate global scan state (shared across threads)
-//! 3. local_init — allocate per-thread scan state (optional)
+//! 3. local_init — allocate per-thread scan state (optional; parallelism itself
+//!    comes from `InitInfo::set_max_threads` in `init`)
 //! 4. scan       — fill one output chunk; set chunk size to 0 when exhausted
 //! ```
 //!
@@ -118,7 +119,8 @@ enum NamedParam {
 ///
 /// - [`param`][TableFunctionBuilder::param]: positional parameters.
 /// - [`named_param`][TableFunctionBuilder::named_param]: named parameters (`name := value`).
-/// - [`local_init`][TableFunctionBuilder::local_init]: per-thread init (enables parallel scan).
+/// - [`local_init`][TableFunctionBuilder::local_init]: per-thread scan state. It does not by
+///   itself make the scan parallel; [`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads] does.
 /// - [`projection_pushdown`][TableFunctionBuilder::projection_pushdown]: hint projection info to `DuckDB`.
 /// - [`extra_info`][TableFunctionBuilder::extra_info]: function-level data available in all callbacks.
 #[must_use]
@@ -186,6 +188,14 @@ impl TableFunctionBuilder {
         self.name.to_str().unwrap_or("")
     }
 
+    /// Whether [`projection_pushdown`][Self::projection_pushdown] was enabled.
+    ///
+    /// The typed builder refuses a raw builder that has it on; see
+    /// [`TypedTableFunctionBuilder::build`][crate::table::TypedTableFunctionBuilder::build].
+    pub(crate) const fn projection_pushdown_enabled(&self) -> bool {
+        self.projection_pushdown
+    }
+
     /// Adds a positional parameter with the given type.
     pub fn param(mut self, type_id: TypeId) -> Self {
         self.params.push(type_id);
@@ -239,6 +249,17 @@ impl TableFunctionBuilder {
     /// The bind callback is called once at query-parse time. It must:
     /// - Declare all output columns via [`crate::table::BindInfo::add_result_column`].
     /// - Optionally read parameters and store bind data via [`crate::table::FfiBindData::set`].
+    ///
+    /// # At least one column
+    ///
+    /// A bind that returns without declaring a column (and without calling
+    /// [`BindInfo::set_error`][crate::table::BindInfo::set_error]) makes
+    /// `DuckDB` fail the query with an `INTERNAL Error` — "Table function must
+    /// return at least one column", with a C++ stack trace
+    /// (`src/planner/binder/tableref/bind_table_function.cpp`). A raw callback
+    /// cannot be checked after it returns, so report the problem yourself with
+    /// `set_error`. The [typed builder][crate::table::TypedTableFunctionBuilder]
+    /// does this for you.
     pub fn bind(mut self, f: BindFn) -> Self {
         self.bind = Some(f);
         self
@@ -254,8 +275,16 @@ impl TableFunctionBuilder {
 
     /// Sets the per-thread local init callback (optional).
     ///
-    /// When set, `DuckDB` calls this once per worker thread. Use [`crate::table::FfiLocalInitData::set`]
-    /// to store thread-local scan state. Setting a local init enables parallel scanning.
+    /// When set, `DuckDB` calls this once per worker thread that runs the scan.
+    /// Use [`crate::table::FfiLocalInitData::set`] to store thread-local scan state.
+    ///
+    /// Setting a local init does **not** make the scan parallel. `DuckDB`
+    /// schedules at most `MaxThreads` scanners, and a C API table function's
+    /// `MaxThreads` is exactly what the global init passed to
+    /// [`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads] —
+    /// 1 when it was never called (`src/main/capi/table_function-c.cpp`,
+    /// `CTableGlobalInitData::MaxThreads`). Parallelism needs `set_max_threads`
+    /// above 1; `local_init` only gives each of those threads its own state.
     pub fn local_init(mut self, f: InitFn) -> Self {
         self.local_init = Some(f);
         self
@@ -288,8 +317,17 @@ impl TableFunctionBuilder {
     ///
     /// # Safety
     ///
-    /// `data` must remain valid until `DuckDB` calls `destroy`. The typical pattern
-    /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// - `data` must remain valid until `DuckDB` calls `destroy`. The typical
+    ///   pattern is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// - The pointee must be `Send + Sync`. `DuckDB` hands the same pointer to
+    ///   bind, init and scan on whichever threads run them — several at once
+    ///   when queries run concurrently or the scan is parallel
+    ///   ([`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads]
+    ///   above 1) — and `destroy` runs on whichever thread releases the
+    ///   function. Shared mutable state behind the pointer needs a `Mutex` or
+    ///   atomics.
+    /// - `destroy` must not panic; wrap its body in
+    ///   [`catch_ffi_panic`][crate::callback::catch_ffi_panic].
     pub unsafe fn extra_info(mut self, data: *mut c_void, destroy: ExtraDestroyFn) -> Self {
         // SAFETY: forwarded from this method's own contract.
         self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, Some(destroy)) });

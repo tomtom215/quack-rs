@@ -8,9 +8,8 @@
 //! These types provide safe, chainable methods for the most common operations
 //! performed inside bind, init, and scan callbacks.
 
-use std::ffi::CString;
-
 use std::os::raw::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use libduckdb_sys::{
     duckdb_bind_add_result_column, duckdb_bind_get_extra_info, duckdb_bind_get_named_parameter,
@@ -22,21 +21,18 @@ use libduckdb_sys::{
 #[cfg(feature = "duckdb-1-5")]
 use libduckdb_sys::{duckdb_client_context, duckdb_table_function_get_client_context};
 
+use crate::table::cstr::{error_cstring, str_to_cstring};
 use crate::types::{LogicalType, TypeId};
 use crate::value::Value;
 
-/// Converts a `&str` to `CString` without panicking.
+/// The message the table function wrappers report in place of an empty one.
 ///
-/// If the string contains an interior null byte, it is truncated at that point.
-/// This is preferred over `.expect()` in FFI callback contexts where panics are UB.
-#[mutants::skip] // private FFI helper — tested in replacement_scan::tests
-fn str_to_cstring(s: &str) -> CString {
-    CString::new(s).unwrap_or_else(|_| {
-        let pos = s.bytes().position(|b| b == 0).unwrap_or(s.len());
-        // SAFETY: pos is at the first null byte, so s[..pos] has no nulls.
-        CString::new(&s.as_bytes()[..pos]).unwrap_or_default()
-    })
-}
+/// [`BindInfo::set_error`], [`InitInfo::set_error`] and
+/// [`FunctionInfo::set_error`] substitute it for `""` (or a message that is
+/// empty after truncation at an interior NUL): `DuckDB` would otherwise report
+/// `Binder Error: ` followed by nothing, and the user would learn only that
+/// something failed.
+pub const EMPTY_ERROR_PLACEHOLDER: &str = "table function reported an error without a message";
 
 /// Helper wrapper around `duckdb_bind_info` for use inside bind callbacks.
 ///
@@ -60,6 +56,12 @@ fn str_to_cstring(s: &str) -> CString {
 /// ```
 pub struct BindInfo {
     info: duckdb_bind_info,
+    /// Whether [`set_error`][Self::set_error] has been called on this
+    /// wrapper. The typed bind trampoline reads it so its own "no columns
+    /// declared" error does not overwrite a more specific one (such as a
+    /// rejected column type). An `AtomicBool` rather than a `Cell` so the
+    /// wrapper stays `RefUnwindSafe`.
+    error_reported: AtomicBool,
 }
 
 impl BindInfo {
@@ -71,7 +73,20 @@ impl BindInfo {
     #[inline]
     #[must_use]
     pub const unsafe fn new(info: duckdb_bind_info) -> Self {
-        Self { info }
+        Self {
+            info,
+            error_reported: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether [`set_error`][Self::set_error] was called through this wrapper.
+    ///
+    /// An error set by calling `duckdb_bind_set_error` on
+    /// [`as_raw`][Self::as_raw] directly is not seen.
+    // Only the typed trampoline's `duckdb-1-5` column check reads it.
+    #[cfg_attr(not(feature = "duckdb-1-5"), allow(dead_code))]
+    pub(crate) fn error_reported(&self) -> bool {
+        self.error_reported.load(Ordering::Relaxed)
     }
 
     /// Declares an output column with the given name and type.
@@ -243,8 +258,25 @@ impl BindInfo {
 
     /// Sets a cardinality hint for the query optimizer.
     ///
-    /// `is_exact` — if `true`, `DuckDB` treats this as the exact row count;
-    /// if `false`, it is treated as an estimate.
+    /// # What `is_exact` actually does
+    ///
+    /// `duckdb.h` describes `is_exact` as "whether or not the cardinality is
+    /// exact", but `DuckDB` 1.5.5 implements it the other way round
+    /// (`src/main/capi/table_function-c.cpp`, `duckdb_bind_set_cardinality`):
+    ///
+    /// | `is_exact` | `NodeStatistics` recorded |
+    /// |---|---|
+    /// | `true`  | `NodeStatistics(rows)` — an **estimate only**, no upper bound |
+    /// | `false` | `NodeStatistics(rows, rows)` — the estimate **and** `max_cardinality = rows` |
+    ///
+    /// The estimate drives plan costing either way (`EXPLAIN` shows `~rows`
+    /// for both). The upper bound additionally feeds the optimizer's
+    /// statistics propagation for joins and set operations
+    /// (`src/optimizer/statistics/operator/propagate_join.cpp`), which treats
+    /// it as a limit, so pass `false` only when `rows` really is a bound the
+    /// scan never exceeds, and `true` for a guess.
+    /// quack-rs passes the flag through unchanged, so code stays correct if
+    /// `DuckDB` later swaps the branches to match its header.
     pub fn set_cardinality(&self, rows: u64, is_exact: bool) -> &Self {
         // SAFETY: self.info is valid.
         unsafe {
@@ -258,9 +290,11 @@ impl BindInfo {
     /// After calling this, `DuckDB` will abort query parsing and report the error.
     ///
     /// If `message` contains an interior null byte it is truncated at that point.
+    /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        self.error_reported.store(true, Ordering::Relaxed);
+        let c_msg = error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid.
         unsafe {
             duckdb_bind_set_error(self.info, c_msg.as_ptr());
@@ -406,17 +440,26 @@ impl InitInfo {
             .unwrap_or(0)
     }
 
-    /// Returns the output column index at the given projection position.
+    /// Returns the declared column index at the given projection position, or
+    /// `None` when `projection_idx` is not less than
+    /// [`projected_column_count`][Self::projected_column_count].
     ///
-    /// Only valid when projection pushdown is enabled.
+    /// Only meaningful when projection pushdown is enabled.
+    ///
+    /// `duckdb_init_get_column_index` answers an out-of-range position with
+    /// `0` — indistinguishable from "the first declared column" — so the range
+    /// check happens here.
     #[mutants::skip]
     #[must_use]
-    pub fn projected_column_index(&self, projection_idx: usize) -> usize {
-        // SAFETY: self.info is valid.
+    pub fn projected_column_index(&self, projection_idx: usize) -> Option<usize> {
+        if projection_idx >= self.projected_column_count() {
+            return None;
+        }
+        // SAFETY: self.info is valid and `projection_idx` is in range.
         usize::try_from(unsafe {
             libduckdb_sys::duckdb_init_get_column_index(self.info, projection_idx as idx_t)
         })
-        .unwrap_or(0)
+        .ok()
     }
 
     /// Sets the maximum number of threads for parallel scanning.
@@ -437,9 +480,10 @@ impl InitInfo {
     /// Reports an error from the init callback.
     ///
     /// If `message` contains an interior null byte it is truncated at that point.
+    /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid.
         unsafe { duckdb_init_set_error(self.info, c_msg.as_ptr()) };
     }
@@ -484,9 +528,10 @@ impl FunctionInfo {
     /// `DuckDB` will abort the query and propagate this as a SQL error.
     ///
     /// If `message` contains an interior null byte it is truncated at that point.
+    /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid.
         unsafe { duckdb_function_set_error(self.info, c_msg.as_ptr()) };
     }

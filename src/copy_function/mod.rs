@@ -440,59 +440,38 @@ mod tests {
     }
 
     #[test]
-    fn builder_stores_bind_callback() {
-        unsafe extern "C" fn dummy_bind(_info: duckdb_copy_function_bind_info) {}
-        let builder = CopyFunctionBuilder::try_new("fmt")
-            .unwrap()
-            .bind(dummy_bind);
-        assert_eq!(builder.name(), "fmt");
-    }
-
-    #[test]
-    fn builder_stores_global_init_callback() {
-        unsafe extern "C" fn dummy_init(_info: duckdb_copy_function_global_init_info) {}
-        let builder = CopyFunctionBuilder::try_new("fmt")
-            .unwrap()
-            .global_init(dummy_init);
-        assert_eq!(builder.name(), "fmt");
-    }
-
-    #[test]
-    fn builder_stores_sink_callback() {
-        unsafe extern "C" fn dummy_sink(
-            _info: duckdb_copy_function_sink_info,
-            _chunk: duckdb_data_chunk,
-        ) {
-        }
-        let builder = CopyFunctionBuilder::try_new("fmt")
-            .unwrap()
-            .sink(dummy_sink);
-        assert_eq!(builder.name(), "fmt");
-    }
-
-    #[test]
-    fn builder_stores_finalize_callback() {
-        unsafe extern "C" fn dummy_finalize(_info: duckdb_copy_function_finalize_info) {}
-        let builder = CopyFunctionBuilder::try_new("fmt")
-            .unwrap()
-            .finalize(dummy_finalize);
-        assert_eq!(builder.name(), "fmt");
-    }
-
-    #[test]
-    fn full_builder_chain_compiles() {
+    fn each_setter_stores_only_its_own_callback() {
         unsafe extern "C" fn bind(_: duckdb_copy_function_bind_info) {}
         unsafe extern "C" fn init(_: duckdb_copy_function_global_init_info) {}
         unsafe extern "C" fn sink(_: duckdb_copy_function_sink_info, _: duckdb_data_chunk) {}
         unsafe extern "C" fn finalize(_: duckdb_copy_function_finalize_info) {}
 
-        let builder = CopyFunctionBuilder::try_new("my_format")
+        let b = CopyFunctionBuilder::try_new("fmt").unwrap().bind(bind);
+        assert!(b.bind.is_some() && b.global_init.is_none() && b.sink.is_none());
+        let b = CopyFunctionBuilder::try_new("fmt")
             .unwrap()
-            .bind(bind)
-            .global_init(init)
-            .sink(sink)
+            .global_init(init);
+        assert!(b.global_init.is_some() && b.bind.is_none() && b.finalize.is_none());
+        let b = CopyFunctionBuilder::try_new("fmt").unwrap().sink(sink);
+        assert!(b.sink.is_some() && b.bind.is_none() && b.finalize.is_none());
+        let b = CopyFunctionBuilder::try_new("fmt")
+            .unwrap()
             .finalize(finalize);
-        assert_eq!(builder.name(), "my_format");
+        assert!(b.finalize.is_some() && b.bind.is_none() && b.sink.is_none());
+    }
+
+    /// The "implements nothing" check runs before `con` is used, so a null
+    /// connection is never dereferenced.
+    #[test]
+    fn register_without_callbacks_is_refused_before_duckdb_is_called() {
+        // SAFETY: `register` returns before using `con`.
+        let err = unsafe {
+            CopyFunctionBuilder::try_new("fmt")
+                .unwrap()
+                .register(std::ptr::null_mut())
+        }
+        .expect_err("a copy function with no callbacks must be refused");
+        assert!(err.as_str().contains("implements nothing"), "{err}");
     }
 
     #[test]

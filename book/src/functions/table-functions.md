@@ -10,8 +10,9 @@ lifecycle callbacks: **bind**, **init**, and **scan**.
    API that hides bind/init/scan trampolines behind safe Rust closures and gives every
    execution a fresh, typed scan state built from what `bind` produced.
 2. **`TableFunctionBuilder`** — the underlying raw builder used by `TypedTableFunctionBuilder`
-   internally. Reach for it when you need fine-grained control: `local_init`-driven
-   parallel scans, projection pushdown with column filtering, or callback shapes that
+   internally. Reach for it when you need fine-grained control: parallel scans
+   (`InitInfo::set_max_threads` above 1, usually with `local_init` for per-thread
+   state), projection pushdown with column filtering, or callback shapes that
    don't fit the "produce state in bind, mutate it in scan" model.
 
 Both builders are backed by the helper types `BindInfo`, `InitInfo`, `FunctionInfo`,
@@ -139,9 +140,17 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
   calling `InitInfo::set_max_threads(1)` internally.
 - The typed builder does **not** offer projection pushdown: with pushdown on, the
   scan's chunk holds only the projected columns and a closure written against the
-  declared schema would write the wrong column. Use the raw builder for pushdown.
-- Extensions that need multi-worker parallelism (`local_init` + thread-local buffers)
-  should use the raw [`TableFunctionBuilder`](#builder-api) directly.
+  declared schema would write the wrong column. `build()` returns an error if
+  `projection_pushdown(true)` was set on the raw builder before `with_state` /
+  `with_bind_init`. Use the raw builder for pushdown.
+- The bind closure must declare at least one column. With `duckdb-1-5`, a bind
+  that declares none is reported as an ordinary bind error; DuckDB itself raises an
+  `INTERNAL Error` with a C++ stack trace for it (and does so for a raw bind
+  callback, which quack-rs cannot check after it returns — call `set_error`
+  yourself).
+- Extensions that need multi-worker parallelism (`set_max_threads` above 1, with
+  `local_init` + thread-local buffers) should use the raw
+  [`TableFunctionBuilder`](#builder-api) directly.
 - `TypedTableFunctionBuilder::build()` returns a fully configured
   `TableFunctionBuilder`, so you can still pass it through any `Registrar`
   — including `MockRegistrar` for unit tests.
@@ -320,6 +329,8 @@ TableFunctionBuilder::new("my_func")
 > **Caution:** When projection pushdown is enabled, your scan callback must check
 > which columns DuckDB actually needs using `InitInfo::projected_column_count` and
 > `InitInfo::projected_column_index`. Writing to non-projected columns causes crashes.
+> `projected_column_index` returns `None` past the end of the projection (the C API
+> itself answers `0` there, which is indistinguishable from the first column).
 
 See `examples/hello-ext/src/lib.rs` for a complete example using `named_param`,
 `local_init`, and `set_max_threads`.
@@ -352,8 +363,8 @@ TableFunctionBuilder::new("read_data")
 |--------|-------------|
 | `add_result_column(name, TypeId)` | Declares an output column (a type DuckDB would silently drop, like `ANY`, is a bind error instead) |
 | `add_result_column_with_type(name, &LogicalType)` | Output column with complex type (same check, including nested `ANY`/`INVALID`) |
-| `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer |
-| `set_error(message)` | Report a bind-time error |
+| `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer — DuckDB 1.5.5 records `is_exact = false` as estimate **and** upper bound, `true` as estimate only (the reverse of its header); see the rustdoc |
+| `set_error(message)` | Report a bind-time error (an empty message is replaced by a placeholder) |
 | `parameter_count()` | Number of positional parameters |
 | `get_parameter(index)` | Returns a positional parameter value (`duckdb_value`) |
 | `get_named_parameter(name)` | Returns a named parameter value (`duckdb_value`) |
@@ -367,9 +378,9 @@ TableFunctionBuilder::new("read_data")
 | Method | Description |
 |--------|-------------|
 | `projected_column_count()` | Number of projected columns (with pushdown) |
-| `projected_column_index(idx)` | Output column index at projection position |
+| `projected_column_index(idx)` | Declared column index at projection position; `None` when `idx` is out of range |
 | `set_max_threads(n)` | Maximum concurrent scan threads (default 1; shared global state above 1) |
-| `set_error(message)` | Report an init-time error |
+| `set_error(message)` | Report an init-time error (an empty message is replaced by a placeholder) |
 | `get_extra_info()` | Returns the extra-info pointer set on the function |
 
 ### FunctionInfo helpers
@@ -378,13 +389,15 @@ TableFunctionBuilder::new("read_data")
 
 | Method | Description |
 |--------|-------------|
-| `set_error(message)` | Report a scan-time error |
+| `set_error(message)` | Report a scan-time error (an empty message is replaced by a placeholder) |
 | `get_extra_info()` | Returns the extra-info pointer set on the function |
 
 ### Extra info
 
 Use `TableFunctionBuilder::extra_info` to attach function-level data that is
-accessible from all callbacks (bind, init, and scan) via `get_extra_info()`.
+accessible from all callbacks (bind, init, and scan) via `get_extra_info()`. The
+pointee must be `Send + Sync`: DuckDB passes the same pointer to callbacks running
+on several threads at once, and frees it on whichever thread releases the function.
 
 ## Verified output (DuckDB 1.4.4 and 1.5.0)
 

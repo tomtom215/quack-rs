@@ -9,7 +9,7 @@
 //! opaque info handle from `DuckDB`. These wrappers provide safe, ergonomic
 //! access to the underlying C API functions.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::os::raw::c_void;
 
 use libduckdb_sys::{
@@ -29,16 +29,8 @@ use libduckdb_sys::{
     duckdb_copy_function_sink_info, duckdb_copy_function_sink_set_error, duckdb_delete_callback_t,
 };
 
+use crate::table::cstr::str_to_cstring;
 use crate::types::LogicalType;
-
-/// Converts a `&str` to `CString` without panicking.
-#[mutants::skip] // private FFI helper — tested in replacement_scan::tests
-fn str_to_cstring(s: &str) -> CString {
-    CString::new(s).unwrap_or_else(|_| {
-        let pos = s.bytes().position(|b| b == 0).unwrap_or(s.len());
-        CString::new(&s.as_bytes()[..pos]).unwrap_or_default()
-    })
-}
 
 // ── CopyBindInfo ─────────────────────────────────────────────────────────────
 
@@ -69,17 +61,29 @@ impl CopyBindInfo {
         unsafe { duckdb_copy_function_bind_get_column_count(self.info) }
     }
 
-    /// Returns the logical type of the column at `index`.
+    /// Returns the logical type of the column at `index`, or `None` if
+    /// `index` is not less than [`column_count`][Self::column_count].
+    ///
+    /// `duckdb_copy_function_bind_get_column_type` returns a null handle for
+    /// an out-of-range index; wrapping that in a [`LogicalType`] would hand
+    /// `DuckDB` a null pointer on the first use. This mirrors
+    /// [`BindInfo::result_column_type`][crate::table::BindInfo::result_column_type].
     ///
     /// # Safety
     ///
-    /// `index` must be less than [`column_count`][Self::column_count].
+    /// Must be called during the bind callback, while `self.info` is live.
     #[must_use]
-    pub unsafe fn column_type(&self, index: u64) -> LogicalType {
-        // SAFETY: self.info is valid; caller guarantees index is in range.
+    pub unsafe fn column_type(&self, index: u64) -> Option<LogicalType> {
+        if index >= self.column_count() {
+            return None;
+        }
+        // SAFETY: self.info is valid and `index` is in range.
         let raw = unsafe { duckdb_copy_function_bind_get_column_type(self.info, index) };
-        // SAFETY: DuckDB returns a valid logical type handle.
-        unsafe { LogicalType::from_raw(raw) }
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: DuckDB returns a freshly allocated handle the caller owns.
+        Some(unsafe { LogicalType::from_raw(raw) })
     }
 
     /// Retrieves the extra-info pointer previously set on the copy function.
@@ -98,8 +102,25 @@ impl CopyBindInfo {
     ///
     /// `COPY t TO 'f' (FORMAT my_format, COMPRESSION 'zstd', LEVEL 3)` arrives
     /// here as a `STRUCT` whose fields are the option names. Read them with
-    /// [`Value::struct_child`][crate::value::Value::struct_child] together with
-    /// the type's [`struct_child_name`][crate::types::LogicalType::struct_child_name].
+    /// [`Value::struct_field_names`][crate::value::Value::struct_field_names]
+    /// and [`Value::struct_child`][crate::value::Value::struct_child].
+    ///
+    /// How `DuckDB` 1.5.5 builds it (`MakeValueFromCopyOptions`,
+    /// `src/main/capi/copy_function-c.cpp`):
+    ///
+    /// - **Field names are upper-cased**: `compression` arrives as
+    ///   `COMPRESSION`, whatever case the user typed. `FORMAT` itself is not
+    ///   among them.
+    /// - **No options at all** gives a SQL `NULL`, not an empty `STRUCT`:
+    ///   the returned [`Value`][crate::value::Value] is non-null as a handle but
+    ///   [`is_sql_null`][crate::value::Value::is_sql_null], and has no fields.
+    /// - **An option with no value** (`(FORMAT f, HEADER)`) is a `NULL`
+    ///   field.
+    /// - **An option with several values** (`LST (1, 2)`) is a `LIST` when
+    ///   they share a type and an unnamed `STRUCT` otherwise; one value is
+    ///   that value.
+    /// - An explicit `NULL` value (`(FORMAT f, X NULL)`) never gets here:
+    ///   the binder rejects it ("NULL is not supported as a valid option").
     ///
     /// Returns `None` only when `DuckDB` hands back a null handle.
     ///
@@ -110,8 +131,12 @@ impl CopyBindInfo {
     ///
     /// # fn demo(bind: &CopyBindInfo) -> Option<String> {
     /// let options = bind.options()?;
+    /// if options.is_sql_null() {
+    ///     return None; // COPY ... (FORMAT my_format) with no other options
+    /// }
     /// let names = options.struct_field_names();
-    /// let idx = names.iter().position(|n| n == "compression")?;
+    /// // Option names arrive upper-cased.
+    /// let idx = names.iter().position(|n| n == "COMPRESSION")?;
     /// options.struct_child(idx)?.as_str().ok()
     /// # }
     /// ```
@@ -495,23 +520,29 @@ crate::debug_repr::impl_handle_debug!(
 mod tests {
     use super::*;
 
+    /// Each wrapper hands back exactly the handle it was built from.
     #[test]
-    fn copy_bind_info_wraps_null() {
-        let _info = unsafe { CopyBindInfo::new(std::ptr::null_mut()) };
+    fn info_wrappers_round_trip_their_handles() {
+        let raw = std::ptr::NonNull::<u8>::dangling().as_ptr();
+        // SAFETY: the handles are only stored and read back, never passed to DuckDB.
+        unsafe {
+            assert_eq!(CopyBindInfo::new(raw.cast()).as_raw().cast(), raw);
+            assert_eq!(CopyGlobalInitInfo::new(raw.cast()).as_raw().cast(), raw);
+            assert_eq!(CopySinkInfo::new(raw.cast()).as_raw().cast(), raw);
+            assert_eq!(CopyFinalizeInfo::new(raw.cast()).as_raw().cast(), raw);
+        }
     }
 
+    /// A null bind info reports no columns, so `column_type` refuses every
+    /// index before reaching `duckdb_copy_function_bind_get_column_type`.
     #[test]
-    fn copy_global_init_info_wraps_null() {
-        let _info = unsafe { CopyGlobalInitInfo::new(std::ptr::null_mut()) };
-    }
-
-    #[test]
-    fn copy_sink_info_wraps_null() {
-        let _info = unsafe { CopySinkInfo::new(std::ptr::null_mut()) };
-    }
-
-    #[test]
-    fn copy_finalize_info_wraps_null() {
-        let _info = unsafe { CopyFinalizeInfo::new(std::ptr::null_mut()) };
+    #[cfg(feature = "_duckdb-testing")]
+    fn column_type_is_none_out_of_range() {
+        let _db = crate::testing::InMemoryDb::open().expect("dispatch table");
+        // SAFETY: DuckDB null-checks the bind info in both calls.
+        let info = unsafe { CopyBindInfo::new(std::ptr::null_mut()) };
+        assert_eq!(info.column_count(), 0);
+        // SAFETY: as above.
+        assert!(unsafe { info.column_type(0) }.is_none());
     }
 }

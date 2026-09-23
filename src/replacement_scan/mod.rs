@@ -61,22 +61,14 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 
+use crate::table::cstr::str_to_cstring;
+
 use libduckdb_sys::{
     duckdb_add_replacement_scan, duckdb_create_varchar_length, duckdb_database,
     duckdb_delete_callback_t, duckdb_destroy_value, duckdb_replacement_scan_add_parameter,
     duckdb_replacement_scan_info, duckdb_replacement_scan_set_error,
     duckdb_replacement_scan_set_function_name, duckdb_value,
 };
-
-/// Converts a `&str` to `CString` without panicking.
-///
-/// If the string contains an interior null byte, it is truncated at that point.
-fn str_to_cstring(s: &str) -> CString {
-    CString::new(s).unwrap_or_else(|_| {
-        let pos = s.bytes().position(|b| b == 0).unwrap_or(s.len());
-        CString::new(&s.as_bytes()[..pos]).unwrap_or_default()
-    })
-}
 
 /// The replacement scan callback signature.
 ///
@@ -246,12 +238,7 @@ impl ReplacementScanInfo {
 /// Converts an error message for `duckdb_replacement_scan_set_error`, never
 /// producing an empty string (which `DuckDB` treats as "no error").
 fn error_cstring(message: &str) -> CString {
-    let c_msg = str_to_cstring(message);
-    if c_msg.as_bytes().is_empty() {
-        str_to_cstring(ReplacementScanInfo::EMPTY_ERROR_PLACEHOLDER)
-    } else {
-        c_msg
-    }
+    crate::table::cstr::error_cstring(message, ReplacementScanInfo::EMPTY_ERROR_PLACEHOLDER)
 }
 
 /// Builder / registration helper for `DuckDB` replacement scans.
@@ -346,17 +333,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replacement_scan_info_wraps_null() {
-        // Constructing with null should not crash in itself (no `DuckDB` calls made).
-        let _info = unsafe { ReplacementScanInfo::new(std::ptr::null_mut()) };
-    }
-
-    /// Verify that `str_to_cstring` truncates at interior null bytes instead
-    /// of panicking (FFI-safe behaviour).
-    #[test]
-    fn str_to_cstring_truncates_at_null() {
-        let c = super::str_to_cstring("bad\0message");
-        assert_eq!(c.to_str().unwrap(), "bad");
+    fn replacement_scan_info_round_trips_its_handle() {
+        let raw = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+        // SAFETY: the handle is only stored and read back, never passed to DuckDB.
+        let info = unsafe { ReplacementScanInfo::new(raw) };
+        assert_eq!(info.as_raw(), raw);
     }
 
     /// `DuckDB` ignores an empty replacement-scan error, so an empty message —

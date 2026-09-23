@@ -992,3 +992,245 @@ fn sql_macro_bodies_with_comments_work_and_extra_statements_are_refused() {
         "nothing is created"
     );
 }
+
+/// TBL-6: `projection_pushdown(true)` set on the raw builder *before*
+/// `with_state` survived into the typed function, so `SELECT b` returned
+/// column `a`'s value. `build` now refuses it.
+#[test]
+fn the_typed_builder_refuses_projection_pushdown_set_beforehand() {
+    let err = TableFunctionBuilder::new("tc_pushdown")
+        .projection_pushdown(true)
+        .with_state::<u8, _>(|bind| {
+            bind.add_result_column("a", TypeId::BigInt);
+            Ok(0)
+        })
+        .scan(|_state, chunk| {
+            // SAFETY: end of stream.
+            unsafe { chunk.set_size(0) };
+            Ok(())
+        })
+        .build()
+        .expect_err("projection pushdown must be refused");
+    assert!(err.as_str().contains("projection_pushdown"), "{err}");
+
+    let err = TableFunctionBuilder::new("tc_pushdown_bi")
+        .projection_pushdown(true)
+        .with_bind_init(|_bind| Ok(()), |(): &()| Ok(0_u8))
+        .scan(|_state, _chunk| Ok(()))
+        .build()
+        .expect_err("projection pushdown must be refused");
+    assert!(err.as_str().contains("projection_pushdown"), "{err}");
+}
+
+/// TBL-9: a bind that declares no result columns made `DuckDB` raise an
+/// `INTERNAL Error` ("Table function must return at least one column") with
+/// a C++ stack trace. The typed bind now reports it as an ordinary bind error.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_typed_bind_that_declares_no_columns_is_an_ordinary_bind_error() {
+    let fx = Fixture::open();
+    let builder = TableFunctionBuilder::new("tc_no_columns")
+        .with_state::<u8, _>(|_bind| Ok(0))
+        .scan(|_state, chunk| {
+            // SAFETY: end of stream.
+            unsafe { chunk.set_size(0) };
+            Ok(())
+        })
+        .build()
+        .expect("build");
+    // SAFETY: `con` is open.
+    unsafe { builder.register(fx.con()) }.expect("register");
+    let err = error_of(&fx, "SELECT * FROM tc_no_columns()");
+    assert!(!err.contains("INTERNAL"), "{err}");
+    assert!(err.contains("declared no result columns"), "{err}");
+}
+
+/// TBL-24: an empty bind error reached the user as `Binder Error: ` with no
+/// text. Both the raw `BindInfo::set_error("")` and a typed bind returning
+/// `Err("")` now report a placeholder.
+#[test]
+fn an_empty_table_function_error_message_is_replaced_by_a_placeholder() {
+    unsafe extern "C" fn empty_bind(info: libduckdb_sys::duckdb_bind_info) {
+        // SAFETY: `info` is the live bind info.
+        let bind = unsafe { quack_rs::table::BindInfo::new(info) };
+        bind.add_result_column("a", TypeId::BigInt);
+        bind.set_error("");
+    }
+    unsafe extern "C" fn no_init(_info: libduckdb_sys::duckdb_init_info) {}
+    unsafe extern "C" fn no_scan(
+        _info: libduckdb_sys::duckdb_function_info,
+        out: libduckdb_sys::duckdb_data_chunk,
+    ) {
+        // SAFETY: `out` is the live output chunk.
+        unsafe { libduckdb_sys::duckdb_data_chunk_set_size(out, 0) };
+    }
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open and the callbacks match their signatures.
+    unsafe {
+        TableFunctionBuilder::new("tc_empty_raw")
+            .bind(empty_bind)
+            .init(no_init)
+            .scan(no_scan)
+            .register(fx.con())
+            .expect("register tc_empty_raw");
+    }
+    let typed = TableFunctionBuilder::new("tc_empty_typed")
+        .with_state::<u8, _>(|bind| {
+            bind.add_result_column("a", TypeId::BigInt);
+            Err(quack_rs::error::ExtensionError::new(""))
+        })
+        .scan(|_state, _chunk| Ok(()))
+        .build()
+        .expect("build");
+    // SAFETY: `con` is open.
+    unsafe { typed.register(fx.con()) }.expect("register tc_empty_typed");
+    for sql in [
+        "SELECT * FROM tc_empty_raw()",
+        "SELECT * FROM tc_empty_typed()",
+    ] {
+        let err = error_of(&fx, sql);
+        assert!(err.contains("without a message"), "{sql}: {err}");
+    }
+}
+
+/// TBL-20: `InitInfo::projected_column_index` returned 0 — "the first
+/// declared column" — for a position past the projection (probe t03). It now
+/// returns `None` there.
+mod projected_column_index {
+    use super::{query, Fixture, TableFunctionBuilder, TypeId};
+    use quack_rs::table::{BindInfo, FfiInitData, InitInfo};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, PoisonError};
+
+    static SEEN: Mutex<Vec<Vec<Option<usize>>>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn bind(info: libduckdb_sys::duckdb_bind_info) {
+        // SAFETY: `info` is the live bind info.
+        let bind = unsafe { BindInfo::new(info) };
+        bind.add_result_column("a", TypeId::BigInt);
+        bind.add_result_column("b", TypeId::BigInt);
+        bind.add_result_column("c", TypeId::BigInt);
+    }
+    unsafe extern "C" fn init(info: libduckdb_sys::duckdb_init_info) {
+        // SAFETY: `info` is the live init info.
+        let init = unsafe { InitInfo::new(info) };
+        let count = init.projected_column_count();
+        SEEN.lock().unwrap_or_else(PoisonError::into_inner).push(
+            (0..=count + 1)
+                .map(|k| init.projected_column_index(k))
+                .collect(),
+        );
+        // SAFETY: `info` is the live init info.
+        unsafe { FfiInitData::<AtomicBool>::set(info, AtomicBool::new(false)) };
+    }
+    unsafe extern "C" fn scan(
+        info: libduckdb_sys::duckdb_function_info,
+        out: libduckdb_sys::duckdb_data_chunk,
+    ) {
+        // SAFETY: init data was set in `init`.
+        let done = unsafe { FfiInitData::<AtomicBool>::get(info) };
+        // SAFETY: `out` is the live output chunk.
+        let chunk = unsafe { quack_rs::data_chunk::DataChunk::from_raw(out) };
+        if done.is_none_or(|d| d.swap(true, Ordering::SeqCst)) {
+            // SAFETY: end of stream.
+            unsafe { chunk.set_size(0) };
+            return;
+        }
+        for col in 0..chunk.column_count() {
+            // SAFETY: every projected column is BIGINT and row 0 is in range.
+            unsafe { chunk.writer(col).write_i64(0, 0) };
+        }
+        // SAFETY: one row was written.
+        unsafe { chunk.set_size(1) };
+    }
+
+    #[test]
+    fn an_out_of_range_projection_position_is_none() {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open; the callbacks match their signatures.
+        unsafe {
+            TableFunctionBuilder::new("tc_projected")
+                .bind(bind)
+                .init(init)
+                .scan(scan)
+                .projection_pushdown(true)
+                .register(fx.con())
+        }
+        .expect("register");
+        SEEN.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        // SAFETY: `con` is open.
+        unsafe { query(fx.con(), "SELECT c, a FROM tc_projected()") }.expect("query");
+        assert_eq!(
+            *SEEN.lock().unwrap_or_else(PoisonError::into_inner),
+            vec![vec![Some(2), Some(0), None, None]]
+        );
+    }
+}
+
+/// TBL-12: the documented shape of `CopyBindInfo::options` — upper-cased
+/// names, SQL `NULL` when there are none, a `NULL` field for a valueless
+/// option (probe t15).
+#[cfg(feature = "duckdb-1-5")]
+mod copy_options_shape {
+    use super::Fixture;
+    use quack_rs::copy_function::{CopyBindInfo, CopyFunctionBuilder};
+    use std::sync::{Mutex, PoisonError};
+
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    quack_rs::copy_bind_callback!(record_options, |info| {
+        // SAFETY: `info` is the live bind info.
+        let bind = unsafe { CopyBindInfo::new(info) };
+        let shape = match bind.options() {
+            None => "no handle".to_owned(),
+            Some(o) if o.is_sql_null() => "SQL NULL".to_owned(),
+            Some(o) => {
+                // DuckDB builds the STRUCT from a hash map: field order is
+                // not specified, so sort.
+                let mut fields = o
+                    .struct_field_names()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| {
+                        let null = o.struct_child(i).is_none_or(|c| c.is_sql_null());
+                        format!("{n}{}", if null { "=NULL" } else { "" })
+                    })
+                    .collect::<Vec<_>>();
+                fields.sort();
+                fields.join(",")
+            }
+        };
+        SEEN.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(shape);
+        bind.set_error("stop after bind");
+    });
+    quack_rs::copy_sink_callback!(no_sink, |_info, _chunk| {});
+    quack_rs::copy_finalize_callback!(no_finalize, |_info| {});
+
+    #[test]
+    fn copy_options_arrive_upper_cased_and_null_when_absent() {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open; the callbacks match their signatures.
+        unsafe {
+            CopyFunctionBuilder::try_new("tc_opts")
+                .expect("name")
+                .bind(record_options)
+                .sink(no_sink)
+                .finalize(no_finalize)
+                .register(fx.con())
+        }
+        .expect("register");
+        for sql in [
+            "COPY (SELECT 1) TO 'x' (FORMAT tc_opts)",
+            "COPY (SELECT 1) TO 'x' (FORMAT tc_opts, compression 'zstd', header)",
+        ] {
+            let _ = super::error_of(&fx, sql);
+        }
+        assert_eq!(
+            *SEEN.lock().unwrap_or_else(PoisonError::into_inner),
+            vec!["SQL NULL".to_owned(), "COMPRESSION,HEADER=NULL".to_owned()]
+        );
+    }
+}

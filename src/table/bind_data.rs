@@ -118,17 +118,11 @@ impl<T: 'static> FfiBindData<T> {
     // by any test.
     #[mutants::skip]
     pub const fn get_from_bind<'a>(info: duckdb_bind_info) -> Option<&'a T> {
-        // Note: duckdb_bind_get_extra_info retrieves the extra_info set on the *function*,
-        // not the bind_data. There is no "get bind data from bind info" in the C API —
-        // that is intentional: bind data is write-only during bind and read-only afterward.
-        // If you need to read data you set, store it in the closure or a pre-existing struct.
-        //
-        // This method is provided for completeness via duckdb_bind_get_extra_info
-        // which retrieves function-level extra_info, not bind_data. Users who need
-        // to read data inside their own bind callback should pass it differently.
-        //
-        // For bind_data retrieval in *init* and *scan*, use get_from_init / get_from_function.
-        let _ = info; // Suppress unused variable warning; this design choice is intentional.
+        // The C API has no `duckdb_bind_get_bind_data`: bind data is write-only
+        // during bind. This never calls DuckDB (in particular not
+        // `duckdb_bind_get_extra_info`, which reads the function's extra info,
+        // a different pointer) and exists only so old callers keep compiling.
+        let _ = info;
         None
     }
 
@@ -223,12 +217,19 @@ mod tests {
     }
 
     #[test]
-    fn destroy_allocated_box() {
-        let boxed = Box::new(Config { value: 42 });
-        let raw = Box::into_raw(boxed).cast::<c_void>();
-        // SAFETY: raw is a valid Box-allocated pointer.
-        unsafe { FfiBindData::<Config>::destroy(raw) };
-        // If we reach here without panic/UB, the test passes.
+    fn destroy_drops_the_boxed_value_exactly_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct Counted;
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let raw = Box::into_raw(Box::new(Counted)).cast::<c_void>();
+        // SAFETY: raw is a valid Box-allocated `Counted`, destroyed once.
+        unsafe { FfiBindData::<Counted>::destroy(raw) };
+        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
     }
 
     #[test]

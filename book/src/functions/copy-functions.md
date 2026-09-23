@@ -136,7 +136,7 @@ the handle at the top of your callback to access helper methods:
 | Method | Description |
 |--------|-------------|
 | `column_count()` | Number of output columns |
-| `column_type(index)` | `LogicalType` of the column at `index` |
+| `column_type(index)` | `LogicalType` of the column at `index`, or `None` if out of range |
 | `options()` | The `COPY … TO` options, as one `STRUCT` `Value` |
 | `get_extra_info()` | Extra-info pointer set on the copy function |
 | `set_bind_data(data, destroy)` | Store bind data and its destructor |
