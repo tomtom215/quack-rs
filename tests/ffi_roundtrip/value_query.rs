@@ -232,13 +232,13 @@ fn every_getter_is_safe_on_every_value_type() {
         Value::varchar("not a number"),
         Value::varchar("1"),
         Value::date(19_000),
-        Value::time(1_000_000),
-        Value::time_tz(0),
-        Value::timestamp(1_700_000_000_000_000),
-        Value::timestamp_tz(0),
-        Value::timestamp_s(0),
-        Value::timestamp_ms(0),
-        Value::timestamp_ns(0),
+        Value::time(1_000_000).expect("in range"),
+        Value::time_tz(0).expect("in range"),
+        Value::timestamp(1_700_000_000_000_000).expect("in range"),
+        Value::timestamp_tz(0).expect("in range"),
+        Value::timestamp_s(0).expect("in range"),
+        Value::timestamp_ms(0).expect("in range"),
+        Value::timestamp_ns(0).expect("in range"),
         Value::interval(quack_rs::interval::DuckInterval {
             months: 1,
             days: 2,
@@ -252,7 +252,7 @@ fn every_getter_is_safe_on_every_value_type() {
         Value::struct_value(&struct_ty, &[Value::bigint(1)]).expect("STRUCT"),
     ];
     #[cfg(feature = "duckdb-1-5")]
-    values.push(Value::time_ns(5));
+    values.push(Value::time_ns(5).expect("in range"));
     for value in &values {
         let before = value.type_id();
         let results = all_scalar_getters(value);

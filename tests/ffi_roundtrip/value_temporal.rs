@@ -147,36 +147,47 @@ fn every_getter(value: &Value) -> GetterResults {
         ("FLOAT", value.as_f32().map(|x| text(&Value::float(x)))),
         ("DOUBLE", value.as_f64().map(|x| text(&Value::double(x)))),
         ("DATE", value.as_date().map(|x| text(&Value::date(x)))),
-        ("TIME", value.as_time().map(|x| text(&Value::time(x)))),
+        (
+            "TIME",
+            value
+                .as_time()
+                .map(|x| text(&Value::time(x).expect("a getter result is in range"))),
+        ),
         (
             "TIMETZ",
-            value.as_time_tz().map(|x| text(&Value::time_tz(x))),
+            value
+                .as_time_tz()
+                .map(|x| text(&Value::time_tz(x).expect("a getter result is in range"))),
         ),
         (
             "TIMESTAMP",
-            value.as_timestamp().map(|x| text(&Value::timestamp(x))),
+            value
+                .as_timestamp()
+                .map(|x| text(&Value::timestamp(x).expect("a getter result is in range"))),
         ),
         (
             "TIMESTAMPTZ",
             value
                 .as_timestamp_tz()
-                .map(|x| text(&Value::timestamp_tz(x))),
+                .map(|x| text(&Value::timestamp_tz(x).expect("a getter result is in range"))),
         ),
         (
             "TIMESTAMP_S",
-            value.as_timestamp_s().map(|x| text(&Value::timestamp_s(x))),
+            value
+                .as_timestamp_s()
+                .map(|x| text(&Value::timestamp_s(x).expect("a getter result is in range"))),
         ),
         (
             "TIMESTAMP_MS",
             value
                 .as_timestamp_ms()
-                .map(|x| text(&Value::timestamp_ms(x))),
+                .map(|x| text(&Value::timestamp_ms(x).expect("a getter result is in range"))),
         ),
         (
             "TIMESTAMP_NS",
             value
                 .as_timestamp_ns()
-                .map(|x| text(&Value::timestamp_ns(x))),
+                .map(|x| text(&Value::timestamp_ns(x).expect("a getter result is in range"))),
         ),
         (
             "INTERVAL",
@@ -187,7 +198,9 @@ fn every_getter(value: &Value) -> GetterResults {
     #[cfg(feature = "duckdb-1-5")]
     out.push((
         "TIME_NS",
-        value.as_time_ns().map(|x| text(&Value::time_ns(x))),
+        value
+            .as_time_ns()
+            .map(|x| text(&Value::time_ns(x).expect("a getter result is in range"))),
     ));
     out
 }
@@ -351,4 +364,127 @@ fn as_time_of_an_infinite_timestamp_parameter_is_none() {
         read("SELECT x FROM vq_inf_time(t := '-infinity'::TIMESTAMP)"),
         Some(-1)
     );
+}
+
+// ── F-V2: temporal constructors accept only values DuckDB can use ────────────
+
+/// `DuckDB`'s `duckdb_create_time` / `_timestamp_s` / … store any `int64`
+/// unchecked, and a later `as_str()`, `Debug` or getter on an out-of-range one
+/// threw through the C API (abort), crashed (`Value::time_ns(i64::MAX)`:
+/// `SIGSEGV` in `StringAsTime`) or printed garbage (`Value::time(-1)` rendered
+/// `00:00:00.00000/`). Those inputs are now errors, and every value just
+/// inside each bound renders.
+#[test]
+fn temporal_constructors_reject_what_duckdb_cannot_render() {
+    const DAY_US: i64 = 86_400_000_000;
+    const TS_MIN: i64 = -9_223_372_022_400_000_000;
+    let _fx = Fixture::open();
+
+    // Each input that aborted, crashed or rendered garbage before.
+    assert!(Value::time(-1).is_err());
+    assert!(Value::time(DAY_US + 1).is_err());
+    assert!(Value::time(i64::MAX).is_err());
+    assert!(Value::time_tz(u64::MAX).is_err());
+    assert!(Value::timestamp(i64::MIN).is_err());
+    assert!(Value::timestamp(TS_MIN - 1).is_err());
+    assert!(Value::timestamp_tz(i64::MIN).is_err());
+    assert!(Value::timestamp_s(100_000_000_000_000).is_err());
+    assert!(Value::timestamp_s(9_223_372_036_855).is_err());
+    assert!(Value::timestamp_s(i64::MAX - 1).is_err());
+    assert!(Value::timestamp_ms(i64::MAX - 1).is_err());
+    assert!(Value::timestamp_ms(9_223_372_036_854_776).is_err());
+    assert!(Value::timestamp_ns(i64::MIN).is_err());
+    assert!(Value::timestamp_ns(-9_223_286_400_000_000_001).is_err());
+    #[cfg(feature = "duckdb-1-5")]
+    {
+        assert!(Value::time_ns(i64::MAX).is_err());
+        assert!(Value::time_ns(-1).is_err());
+        assert!(Value::time_ns(86_400_000_000_001).is_err());
+    }
+    let message = Value::time(-1).expect_err("out of range").to_string();
+    assert!(message.contains("TIME"), "{message}");
+
+    // Every accepted boundary renders — through `as_str`, `Debug` and (with
+    // `duckdb-1-5`) `display_string` — to what DuckDB's SQL prints.
+    let ok = |v: Result<Value, _>| v.expect("in range");
+    let tz_max = ((DAY_US as u64) << 24) | (2 * 57_599);
+    #[cfg_attr(not(feature = "duckdb-1-5"), allow(unused_mut))]
+    let mut cases: Vec<(Value, &str)> = vec![
+        (ok(Value::time(0)), "00:00:00"),
+        (ok(Value::time(DAY_US)), "24:00:00"),
+        (ok(Value::time_tz(0)), "00:00:00+15:59:59"),
+        (ok(Value::time_tz(tz_max)), "24:00:00-15:59:59"),
+        (ok(Value::timestamp(TS_MIN)), "290309-12-22 (BC) 00:00:00"),
+        (
+            ok(Value::timestamp(i64::MAX - 1)),
+            "294247-01-10 04:00:54.775806",
+        ),
+        (ok(Value::timestamp(i64::MAX)), "infinity"),
+        (ok(Value::timestamp(-i64::MAX)), "-infinity"),
+        (
+            ok(Value::timestamp_tz(TS_MIN)),
+            "290309-12-22 (BC) 00:00:00+00",
+        ),
+        (ok(Value::timestamp_tz(-i64::MAX)), "-infinity"),
+        (
+            ok(Value::timestamp_s(-9_223_372_022_400)),
+            "290309-12-22 (BC) 00:00:00",
+        ),
+        (
+            ok(Value::timestamp_s(9_223_372_036_854)),
+            "294247-01-10 04:00:54",
+        ),
+        (ok(Value::timestamp_s(i64::MAX)), "infinity"),
+        (
+            ok(Value::timestamp_ms(-9_223_372_022_400_000)),
+            "290309-12-22 (BC) 00:00:00",
+        ),
+        (
+            ok(Value::timestamp_ms(9_223_372_036_854_775)),
+            "294247-01-10 04:00:54.775",
+        ),
+        (ok(Value::timestamp_ms(-i64::MAX)), "-infinity"),
+        (
+            ok(Value::timestamp_ns(-9_223_286_400_000_000_000)),
+            "1677-09-22 00:00:00",
+        ),
+        (
+            ok(Value::timestamp_ns(i64::MAX - 1)),
+            "2262-04-11 23:47:16.854775806",
+        ),
+        (ok(Value::timestamp_ns(i64::MAX)), "infinity"),
+        // DATE and INTERVAL stay infallible: DuckDB renders every i32 day
+        // (`Date::Convert` normalises by 400-year steps) and every interval
+        // (`IntervalToStringCast`'s buffer is sized for the extremes).
+        (Value::date(i32::MAX), "infinity"),
+        (Value::date(-i32::MAX), "-infinity"),
+        (
+            Value::interval(quack_rs::interval::DuckInterval {
+                months: i32::MIN,
+                days: i32::MIN,
+                micros: i64::MIN,
+            }),
+            "-178956970 years -8 months -2147483648 days -2562047788:00:54.775808",
+        ),
+    ];
+    #[cfg(feature = "duckdb-1-5")]
+    {
+        cases.push((ok(Value::time_ns(86_400_000_000_000)), "24:00:00"));
+        cases.push((ok(Value::time_ns(0)), "00:00:00"));
+    }
+    for (value, want) in &cases {
+        assert_eq!(value.as_str().expect("renders"), *want, "{value:?}");
+        let debug = format!("{value:?}");
+        assert!(debug.starts_with("Value"), "{debug}");
+        #[cfg(feature = "duckdb-1-5")]
+        assert!(
+            value.display_string().is_some_and(|s| s.contains(want)),
+            "{debug}"
+        );
+    }
+    // The two ends of DATE's i32 range that are not infinities render too.
+    for days in [i32::MIN, i32::MIN + 1, i32::MAX - 1] {
+        let text = Value::date(days).as_str().expect("renders");
+        assert!(!text.is_empty(), "{days}: {text}");
+    }
 }

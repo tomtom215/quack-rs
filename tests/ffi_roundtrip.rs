@@ -2117,7 +2117,10 @@ fn debug_impls_decode_live_duckdb_state() {
     assert_eq!(Value::boolean(true).type_id(), Some(TypeId::Boolean));
     assert_eq!(Value::double(1.5).type_id(), Some(TypeId::Double));
     assert_eq!(Value::date(0).type_id(), Some(TypeId::Date));
-    assert_eq!(Value::timestamp(0).type_id(), Some(TypeId::Timestamp));
+    assert_eq!(
+        Value::timestamp(0).expect("in range").type_id(),
+        Some(TypeId::Timestamp)
+    );
     assert_eq!(Value::uuid(0).type_id(), Some(TypeId::Uuid));
     #[cfg(feature = "duckdb-1-5")]
     assert_eq!(Value::null_value().type_id(), Some(TypeId::SqlNull));
@@ -3836,11 +3839,23 @@ fn every_scalar_value_constructor_round_trips_through_a_bound_parameter() {
         (Value::double(0.25), "0.25"),
         (Value::varchar("héllo"), "héllo"),
         (Value::date(0), "1970-01-01"),
-        (Value::time(3_600_000_000), "01:00:00"),
-        (Value::timestamp(0), "1970-01-01 00:00:00"),
-        (Value::timestamp_s(60), "1970-01-01 00:01:00"),
-        (Value::timestamp_ms(1_500), "1970-01-01 00:00:01.5"),
-        (Value::timestamp_ns(1_500_000_000), "1970-01-01 00:00:01.5"),
+        (Value::time(3_600_000_000).expect("in range"), "01:00:00"),
+        (
+            Value::timestamp(0).expect("in range"),
+            "1970-01-01 00:00:00",
+        ),
+        (
+            Value::timestamp_s(60).expect("in range"),
+            "1970-01-01 00:01:00",
+        ),
+        (
+            Value::timestamp_ms(1_500).expect("in range"),
+            "1970-01-01 00:00:01.5",
+        ),
+        (
+            Value::timestamp_ns(1_500_000_000).expect("in range"),
+            "1970-01-01 00:00:01.5",
+        ),
         (
             Value::interval(DuckInterval {
                 months: 1,

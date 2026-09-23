@@ -32,6 +32,7 @@ mod checks;
 mod defaults;
 mod getters;
 mod hugeint;
+mod temporal;
 
 pub(crate) use checks::validate_decimal;
 
@@ -45,7 +46,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 
 #[cfg(feature = "duckdb-1-5")]
-use libduckdb_sys::{duckdb_create_time_ns, duckdb_time_ns, duckdb_value_to_string};
+use libduckdb_sys::duckdb_value_to_string;
 use libduckdb_sys::{duckdb_destroy_value, duckdb_free, duckdb_get_varchar, duckdb_value};
 
 use crate::error::ExtensionError;
@@ -138,21 +139,6 @@ impl Value {
         // SAFETY: c_str was allocated by DuckDB and must be freed with duckdb_free.
         unsafe { duckdb_free(c_str.cast()) };
         result
-    }
-
-    /// Creates a `TIME_NS` value (time of day with nanosecond precision) from a
-    /// raw nanosecond count (`DuckDB` 1.5.0+).
-    ///
-    /// Pairs with [`as_time_ns`][Value::as_time_ns] and the
-    /// [`TypeId::TimeNs`][crate::types::TypeId::TimeNs] column type.
-    #[cfg(feature = "duckdb-1-5")]
-    #[inline]
-    #[must_use]
-    pub fn time_ns(nanos: i64) -> Self {
-        // SAFETY: duckdb_create_time_ns accepts any nanosecond count and returns
-        // an owned duckdb_value.
-        let raw = unsafe { duckdb_create_time_ns(duckdb_time_ns { nanos }) };
-        Self { raw }
     }
 
     /// Returns the **SQL literal** representation of this value, as `DuckDB`
@@ -389,32 +375,6 @@ impl Value {
         }
     }
 
-    /// Creates a `DATE` value from days since 1970-01-01.
-    #[inline]
-    #[must_use]
-    pub fn date(days: i32) -> Self {
-        // SAFETY: duckdb_create_date accepts any day count.
-        Self {
-            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
-            // the returned handle is owned by this `Value`.
-            raw: unsafe { libduckdb_sys::duckdb_create_date(libduckdb_sys::duckdb_date { days }) },
-        }
-    }
-
-    /// Creates a `TIMESTAMP` value from microseconds since the epoch.
-    #[inline]
-    #[must_use]
-    pub fn timestamp(micros: i64) -> Self {
-        // SAFETY: duckdb_create_timestamp accepts any microsecond count.
-        Self {
-            // SAFETY: the argument is a plain value DuckDB accepts unconditionally, and
-            // the returned handle is owned by this `Value`.
-            raw: unsafe {
-                libduckdb_sys::duckdb_create_timestamp(libduckdb_sys::duckdb_timestamp { micros })
-            },
-        }
-    }
-
     /// Creates a `VARCHAR` value.
     ///
     /// The length is passed explicitly, so no `CString` conversion can fail and
@@ -567,114 +527,6 @@ impl Value {
         Self {
             // SAFETY: see [`tinyint`][Self::tinyint].
             raw: unsafe { libduckdb_sys::duckdb_create_float(value) },
-        }
-    }
-
-    /// Creates a `TIME` value from microseconds since midnight.
-    #[inline]
-    #[must_use]
-    pub fn time(micros_since_midnight: i64) -> Self {
-        Self {
-            // SAFETY: see [`tinyint`][Self::tinyint].
-            raw: unsafe {
-                libduckdb_sys::duckdb_create_time(libduckdb_sys::duckdb_time {
-                    micros: micros_since_midnight,
-                })
-            },
-        }
-    }
-
-    /// Creates a `TIME WITH TIME ZONE` value from its packed 64-bit encoding.
-    ///
-    /// `DuckDB` packs `TIME_TZ` as 40 bits of microseconds and 24 bits of UTC
-    /// offset. Build the encoding with
-    /// [`time_tz_bits`][crate::datetime::time_tz_bits] rather than assembling it
-    /// by hand.
-    #[inline]
-    #[must_use]
-    pub fn time_tz(bits: u64) -> Self {
-        Self {
-            // SAFETY: see [`tinyint`][Self::tinyint].
-            raw: unsafe {
-                libduckdb_sys::duckdb_create_time_tz_value(libduckdb_sys::duckdb_time_tz { bits })
-            },
-        }
-    }
-
-    /// Creates a `TIMESTAMP WITH TIME ZONE` value from microseconds since the
-    /// epoch.
-    #[inline]
-    #[must_use]
-    pub fn timestamp_tz(micros: i64) -> Self {
-        Self {
-            // SAFETY: see [`tinyint`][Self::tinyint].
-            raw: unsafe {
-                libduckdb_sys::duckdb_create_timestamp_tz(libduckdb_sys::duckdb_timestamp {
-                    micros,
-                })
-            },
-        }
-    }
-
-    /// Creates a `TIMESTAMP_S` value from seconds since the epoch.
-    #[inline]
-    #[must_use]
-    pub fn timestamp_s(seconds: i64) -> Self {
-        Self {
-            // SAFETY: see [`tinyint`][Self::tinyint].
-            raw: unsafe {
-                libduckdb_sys::duckdb_create_timestamp_s(libduckdb_sys::duckdb_timestamp_s {
-                    seconds,
-                })
-            },
-        }
-    }
-
-    /// Creates a `TIMESTAMP_MS` value from milliseconds since the epoch.
-    #[inline]
-    #[must_use]
-    pub fn timestamp_ms(millis: i64) -> Self {
-        Self {
-            // SAFETY: see [`tinyint`][Self::tinyint].
-            raw: unsafe {
-                libduckdb_sys::duckdb_create_timestamp_ms(libduckdb_sys::duckdb_timestamp_ms {
-                    millis,
-                })
-            },
-        }
-    }
-
-    /// Creates a `TIMESTAMP_NS` value from nanoseconds since the epoch.
-    #[inline]
-    #[must_use]
-    pub fn timestamp_ns(nanos: i64) -> Self {
-        Self {
-            // SAFETY: see [`tinyint`][Self::tinyint].
-            raw: unsafe {
-                libduckdb_sys::duckdb_create_timestamp_ns(libduckdb_sys::duckdb_timestamp_ns {
-                    nanos,
-                })
-            },
-        }
-    }
-
-    /// Creates an `INTERVAL` value.
-    ///
-    /// `DuckDB` intervals are `{ months, days, micros }` and deliberately do not
-    /// collapse into a single duration — see
-    /// [`DuckInterval`][crate::interval::DuckInterval] (pitfall P8).
-    #[inline]
-    #[must_use]
-    pub fn interval(value: crate::interval::DuckInterval) -> Self {
-        Self {
-            // SAFETY: see [`tinyint`][Self::tinyint].
-            raw: unsafe {
-                libduckdb_sys::duckdb_create_interval(libduckdb_sys::duckdb_interval {
-                    months: value.months,
-                    days: value.days,
-                    micros: value.micros,
-                })
-            },
         }
     }
 
@@ -1171,7 +1023,7 @@ mod live_tests {
         // *literal* rather than a display string.
         assert_eq!(rendered(&Value::date(0)), "'1970-01-01'::DATE");
         assert_eq!(
-            rendered(&Value::timestamp(0)),
+            rendered(&Value::timestamp(0).expect("in range")),
             "'1970-01-01 00:00:00'::TIMESTAMP"
         );
         assert!(Value::null_value().display_string().is_some());
@@ -1195,7 +1047,10 @@ mod live_tests {
         assert_eq!(Value::date(days).as_date(), Some(days));
 
         let micros = 1_700_000_000_000_000_i64;
-        assert_eq!(Value::timestamp(micros).as_timestamp(), Some(micros));
+        assert_eq!(
+            Value::timestamp(micros).expect("in range").as_timestamp(),
+            Some(micros)
+        );
         assert_eq!(Value::bigint(i64::MIN).as_i64(), Some(i64::MIN));
         assert_eq!(Value::bigint(i64::MAX).as_i64(), Some(i64::MAX));
     }

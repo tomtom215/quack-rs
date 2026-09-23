@@ -71,12 +71,35 @@ reads as `Some(42)` through `as_i64()`, a `DOUBLE` `1.5` as `Some(2)` through
 - the value is SQL `NULL` (for example `my_func(n := NULL)`),
 - the handle is null (a named parameter the caller did not supply),
 - the type is not a scalar (`LIST`, `STRUCT`, `MAP`, `BLOB`, `ENUM`, …), or
-- the cast fails (`'abc'`, or a number out of range for the target).
+- the cast fails (`'abc'`, or a number out of range for the target), or
+- for the temporal getters, SQL would refuse the conversion: the time of an
+  infinite timestamp (`as_time()` of `'infinity'::TIMESTAMP`), a `TIMESTAMP`
+  outside `TIMESTAMP_NS`'s 1677–2262 range read with `as_timestamp_ns()`, or
+  a result outside the target type's range.
 
 No getter calls into DuckDB in the first three cases — DuckDB's own
 `duckdb_get_*` functions abort the process on a SQL `NULL` and crash on a null
 handle — and none modifies the value it reads (DuckDB's getters cast the value
-in place; quack-rs reads from a copy).
+in place; quack-rs reads from a copy). The temporal cases are checked before
+the call too: DuckDB converts those pairs with a cast that throws a C++
+exception instead of failing, which aborts the process from Rust.
+
+### Building values
+
+`Value::bigint`, `Value::varchar`, `Value::date`, `Value::interval` and the
+other scalar constructors are infallible. The temporal constructors that take
+a raw 64-bit payload — `time`, `time_tz`, `time_ns`, `timestamp`,
+`timestamp_tz`, `timestamp_s`, `timestamp_ms`, `timestamp_ns` — return
+`Result`: DuckDB stores any payload unchecked, and rendering or casting an
+out-of-range one aborts, crashes or prints garbage, so quack-rs accepts
+exactly the range DuckDB's SQL produces (`TIME` `00:00:00`–`24:00:00`, the
+`TIMESTAMP` span `290309-12-22 (BC)`–`294247-01-10` plus `±infinity`, and so
+on) and returns an error otherwise.
+
+```rust
+let noon = Value::time(12 * 3_600 * 1_000_000)?;
+assert!(Value::time(-1).is_err());
+```
 
 `as_blob()` copies the bytes into an owned `Vec<u8>` without UTF-8 validation.
 It accepts only a `BLOB`: DuckDB's conversion of anything else to `BLOB` can
