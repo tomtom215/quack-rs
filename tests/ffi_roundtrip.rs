@@ -5633,3 +5633,6 @@ mod value_query;
 
 #[path = "ffi_roundtrip/tooling.rs"]
 mod tooling;
+
+#[path = "ffi_roundtrip/value_temporal.rs"]
+mod value_temporal;

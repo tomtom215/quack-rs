@@ -22,11 +22,19 @@
 //! A failed cast returns `NullValue<T>` — `T::MIN`, `NaN`, `false` — which is
 //! also a legitimate value, so the result alone cannot say whether it worked.
 //!
+//! 4. **Some temporal casts throw.** `DefaultTryCastAs` reports a failed cast
+//!    only for pairs `DuckDB` binds through an error-reporting `TryCast` loop.
+//!    A few temporal pairs (`time_casts.cpp`) use `TemplatedCastLoop` with a
+//!    throwing operator instead: `as_time()` of `'infinity'::TIMESTAMP`, or
+//!    `as_timestamp_ns()` of any `TIMESTAMP` after 2262, threw straight
+//!    through the C API.
+//!
 //! `Value::read_cast` addresses all of them: it refuses null handles, SQL
-//! `NULL`s and non-scalar source types before any call, runs the getter on a
-//! private *copy* of the value, and reads success off the copy's type
-//! afterwards (`DefaultTryCastAs` rewrites the type only when the cast
-//! succeeds).
+//! `NULL`s and non-scalar source types before any call, checks the payload of
+//! a source whose cast could throw against the exact condition `DuckDB` throws
+//! on (`checks::cast_guard`), runs the getter on a private *copy* of the
+//! value, and reads success off the copy's type afterwards
+//! (`DefaultTryCastAs` rewrites the type only when the cast succeeds).
 
 #[cfg(feature = "duckdb-1-5")]
 use libduckdb_sys::duckdb_get_time_ns;
@@ -40,7 +48,7 @@ use libduckdb_sys::{
     duckdb_get_uint64, duckdb_get_uint8, duckdb_get_uuid, duckdb_get_value_type, duckdb_value,
 };
 
-use super::checks::is_scalar_cast_source;
+use super::checks::{cast_guard, is_scalar_cast_source, temporal_in_range, time_tz_in_range};
 use super::{hugeint_to_i128, uhugeint_to_u128, Value};
 use crate::types::TypeId;
 
@@ -90,12 +98,48 @@ impl Value {
         if self.is_sql_null() || !is_scalar_cast_source(source) {
             return None;
         }
+        // A pair `DuckDB` converts with a throwing loop: check the payload
+        // first. `cast_guard(t, t)` is `None`, so the same-type read inside
+        // `timestamp_payload` does not come back here.
+        if let Some(guard) = cast_guard(source, target) {
+            if !guard.accepts(self.timestamp_payload(source)?) {
+                return None;
+            }
+        }
         let copy = self.duplicate()?;
         let out = read(copy.raw);
         // `DefaultTryCastAs` assigns the target type only when the cast
         // succeeded; on failure the copy keeps its source type and `out` is
         // DuckDB's `NullValue<T>` sentinel, which must not be reported.
         (copy.type_id() == Some(target)).then_some(out)
+    }
+
+    /// The raw `int64` of a `TIMESTAMP`-family value, read at its own type.
+    ///
+    /// Reading a value at its own type never casts: `Value::TryCastAs` copies
+    /// it when the source and target types are equal. `None` for any other
+    /// type.
+    fn timestamp_payload(&self, source: TypeId) -> Option<i64> {
+        // SAFETY (every arm): `read_cast` passes a live, non-NULL handle of
+        // exactly the getter's type.
+        match source {
+            TypeId::Timestamp => {
+                self.read_cast(source, |v| unsafe { duckdb_get_timestamp(v) }.micros)
+            }
+            TypeId::TimestampTz => {
+                self.read_cast(source, |v| unsafe { duckdb_get_timestamp_tz(v) }.micros)
+            }
+            TypeId::TimestampS => {
+                self.read_cast(source, |v| unsafe { duckdb_get_timestamp_s(v) }.seconds)
+            }
+            TypeId::TimestampMs => {
+                self.read_cast(source, |v| unsafe { duckdb_get_timestamp_ms(v) }.millis)
+            }
+            TypeId::TimestampNs => {
+                self.read_cast(source, |v| unsafe { duckdb_get_timestamp_ns(v) }.nanos)
+            }
+            _ => None,
+        }
     }
 
     /// Whether the handle is non-null, the value is not SQL `NULL`, and its
@@ -225,6 +269,12 @@ impl Value {
     // hands the bind callback a `duckdb_value`; these read it without
     // reparsing DuckDB's rendering. They cast like the numeric getters, so a
     // `VARCHAR` '2024-01-01' reads as a `DATE`.
+    //
+    // A temporal getter also returns `None` when the conversion is one DuckDB
+    // refuses in SQL: the time of an infinite timestamp, a TIMESTAMP after
+    // 2262 as TIMESTAMP_NS, or a result outside the target type's range (the
+    // TIMESTAMP maximum rounds to a TIMESTAMP_S that DuckDB cannot convert
+    // back). Each agrees with `CAST(x AS target)` in SQL.
 
     /// Reads a `DATE` as days since 1970-01-01. Decode it with
     /// [`datetime::date_from_days`][crate::datetime::date_from_days].
@@ -238,11 +288,14 @@ impl Value {
     }
 
     /// Reads a `TIME` as microseconds since midnight. `None` on a null handle,
-    /// SQL `NULL`, non-scalar type or failed cast.
+    /// SQL `NULL`, non-scalar type or failed cast — including the time of an
+    /// infinite `TIMESTAMP`, which `DuckDB` refuses (it used to abort the
+    /// process here).
     #[must_use]
     pub fn as_time(&self) -> Option<i64> {
         // SAFETY: `read_cast` passes a live, non-NULL scalar handle.
         self.read_cast(TypeId::Time, |v| unsafe { duckdb_get_time(v) }.micros)
+            .filter(|&v| temporal_in_range(TypeId::Time, v))
     }
 
     /// Reads a `TIMETZ` as `DuckDB`'s packed 64-bit representation. Decode it
@@ -253,6 +306,7 @@ impl Value {
     pub fn as_time_tz(&self) -> Option<u64> {
         // SAFETY: `read_cast` passes a live, non-NULL scalar handle.
         self.read_cast(TypeId::TimeTz, |v| unsafe { duckdb_get_time_tz(v) }.bits)
+            .filter(|&bits| time_tz_in_range(bits))
     }
 
     /// Reads a `TIME_NS` as nanoseconds since midnight (`DuckDB` 1.5.0+).
@@ -263,6 +317,7 @@ impl Value {
     pub fn as_time_ns(&self) -> Option<i64> {
         // SAFETY: `read_cast` passes a live, non-NULL scalar handle.
         self.read_cast(TypeId::TimeNs, |v| unsafe { duckdb_get_time_ns(v) }.nanos)
+            .filter(|&v| temporal_in_range(TypeId::TimeNs, v))
     }
 
     /// Reads a `TIMESTAMP` as microseconds since the epoch. `None` on a null
@@ -274,6 +329,7 @@ impl Value {
             TypeId::Timestamp,
             |v| unsafe { duckdb_get_timestamp(v) }.micros,
         )
+        .filter(|&v| temporal_in_range(TypeId::Timestamp, v))
     }
 
     /// Reads a `TIMESTAMPTZ` as microseconds since the epoch, in UTC. `None`
@@ -284,6 +340,7 @@ impl Value {
         self.read_cast(TypeId::TimestampTz, |v| {
             unsafe { duckdb_get_timestamp_tz(v) }.micros
         })
+        .filter(|&v| temporal_in_range(TypeId::TimestampTz, v))
     }
 
     /// Reads a `TIMESTAMP_S` as seconds since the epoch. `None` on a null
@@ -294,6 +351,7 @@ impl Value {
         self.read_cast(TypeId::TimestampS, |v| {
             unsafe { duckdb_get_timestamp_s(v) }.seconds
         })
+        .filter(|&v| temporal_in_range(TypeId::TimestampS, v))
     }
 
     /// Reads a `TIMESTAMP_MS` as milliseconds since the epoch. `None` on a
@@ -304,16 +362,20 @@ impl Value {
         self.read_cast(TypeId::TimestampMs, |v| {
             unsafe { duckdb_get_timestamp_ms(v) }.millis
         })
+        .filter(|&v| temporal_in_range(TypeId::TimestampMs, v))
     }
 
     /// Reads a `TIMESTAMP_NS` as nanoseconds since the epoch. `None` on a
-    /// null handle, SQL `NULL`, non-scalar type or failed cast.
+    /// null handle, SQL `NULL`, non-scalar type or failed cast — including a
+    /// timestamp outside `TIMESTAMP_NS`'s range (before 1677-09-22 or after
+    /// 2262-04-11), which `DuckDB` refuses (it used to abort the process here).
     #[must_use]
     pub fn as_timestamp_ns(&self) -> Option<i64> {
         // SAFETY: `read_cast` passes a live, non-NULL scalar handle.
         self.read_cast(TypeId::TimestampNs, |v| {
             unsafe { duckdb_get_timestamp_ns(v) }.nanos
         })
+        .filter(|&v| temporal_in_range(TypeId::TimestampNs, v))
     }
 
     /// Reads an `INTERVAL`. `None` on a null handle, SQL `NULL`, non-scalar
