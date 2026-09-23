@@ -479,11 +479,11 @@ fn a_config_option_default_that_does_not_cast_is_an_error_not_an_abort() {
 
 /// Before the fix each of these lookups aborted the process: `DuckDB` throws
 /// "Unsupported catalog type in schema" from inside `duckdb_catalog_get_entry`
-/// with no `try`/`catch`. They now return `None` without calling `DuckDB`,
-/// and a supported lookup in the same transaction still works.
+/// with no `try`/`catch`. They are now refused without calling `DuckDB`, and
+/// a supported lookup in the same transaction still works.
 #[cfg(feature = "duckdb-1-5")]
 #[test]
-fn catalog_lookup_of_a_non_schema_entry_type_returns_none() {
+fn catalog_lookup_of_a_non_schema_entry_type_is_refused() {
     use quack_rs::catalog::{CatalogEntry, CatalogEntryType};
     use quack_rs::client_context::ClientContext;
 
@@ -503,7 +503,7 @@ fn catalog_lookup_of_a_non_schema_entry_type_returns_none() {
     ] {
         // SAFETY: catalog and context are valid and a transaction is active.
         let entry = unsafe { catalog.get_entry(ctx.as_raw(), c"main", c"main", entry_type) };
-        assert!(entry.is_none(), "{entry_type:?}");
+        assert!(entry.is_err(), "{entry_type:?}");
         // SAFETY: as above.
         let entry = unsafe {
             CatalogEntry::lookup(
@@ -514,16 +514,75 @@ fn catalog_lookup_of_a_non_schema_entry_type_returns_none() {
                 entry_type,
             )
         };
-        assert!(entry.is_none(), "{entry_type:?}");
+        assert!(entry.is_err(), "{entry_type:?}");
     }
 
     // SAFETY: as above.
     let table =
         unsafe { catalog.get_entry(ctx.as_raw(), c"main", c"tc_probe", CatalogEntryType::Table) }
+            .expect("a supported lookup is not refused")
             .expect("a supported lookup still works");
     assert_eq!(table.name(), Some("tc_probe"));
 
     drop(table);
+    drop(catalog);
+    fx.query("COMMIT");
+}
+
+/// TBL-2: a `TYPE` lookup of `inet` (or `json`, or an ICU collation name)
+/// made `DuckDB` autoload the owning extension on a miss, and a failed
+/// autoload threw through `duckdb_catalog_get_entry`, aborting the process
+/// (probe t10: "Rust cannot catch foreign exceptions"). With autoload on the
+/// lookup is now refused; with it off, it runs and simply misses.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn catalog_lookup_of_an_autoloadable_name_is_refused_while_autoload_is_on() {
+    use quack_rs::catalog::CatalogEntryType;
+    use quack_rs::client_context::ClientContext;
+
+    let fx = Fixture::open();
+    fx.query("SET autoinstall_known_extensions = false");
+    fx.query("SET autoload_known_extensions = true");
+    fx.query("CREATE TYPE tc_mood AS ENUM ('ok')");
+    // SAFETY: `con` is open.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    fx.query("BEGIN TRANSACTION");
+    // SAFETY: inside a transaction.
+    let catalog = unsafe { ctx.catalog(c"memory") }.expect("the memory catalog");
+    let lookup = |name: &std::ffi::CStr, ty| {
+        // SAFETY: catalog and context are valid and a transaction is active.
+        unsafe { catalog.get_entry(ctx.as_raw(), c"main", name, ty) }
+    };
+
+    for (name, ty) in [
+        (c"inet", CatalogEntryType::Type),
+        (c"JSON", CatalogEntryType::Type),
+        (c"de", CatalogEntryType::Collation),
+    ] {
+        let err = lookup(name, ty).expect_err("must be refused while autoload is on");
+        assert!(
+            err.as_str().contains("autoload_known_extensions"),
+            "{name:?}: {err}"
+        );
+    }
+    // Ordinary names are unaffected.
+    assert!(lookup(c"tc_mood", CatalogEntryType::Type)
+        .expect("not refused")
+        .is_some());
+    assert!(lookup(c"tc_no_such_type", CatalogEntryType::Type)
+        .expect("not refused")
+        .is_none());
+    fx.query("COMMIT");
+
+    // With autoload off, no autoload is attempted and the lookup just misses.
+    fx.query("SET autoload_known_extensions = false");
+    fx.query("BEGIN TRANSACTION");
+    assert!(lookup(c"inet", CatalogEntryType::Type)
+        .expect("not refused with autoload off")
+        .is_none());
+    assert!(lookup(c"de", CatalogEntryType::Collation)
+        .expect("not refused with autoload off")
+        .is_none());
     drop(catalog);
     fx.query("COMMIT");
 }

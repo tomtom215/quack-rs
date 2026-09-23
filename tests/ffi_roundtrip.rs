@@ -3286,6 +3286,7 @@ fn catalog_lookup_finds_a_table_inside_a_transaction() {
             CatalogEntryType::Table,
         )
     }
+    .expect("a table lookup is not refused")
     .expect("the table must be found");
     assert_eq!(table.name(), Some("catalog_probe"));
     assert_eq!(table.entry_type(), CatalogEntryType::Table);
@@ -3300,6 +3301,7 @@ fn catalog_lookup_finds_a_table_inside_a_transaction() {
             CatalogEntryType::View,
         )
     }
+    .expect("a view lookup is not refused")
     .expect("the view must be found");
     assert_eq!(view.name(), Some("catalog_probe_v"));
     assert_eq!(view.entry_type(), CatalogEntryType::View);
@@ -3315,6 +3317,7 @@ fn catalog_lookup_finds_a_table_inside_a_transaction() {
             CatalogEntryType::Table,
         )
     }
+    .expect("a table lookup is not refused")
     .is_none());
 
     drop(table);
