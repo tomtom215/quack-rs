@@ -1467,7 +1467,8 @@ mod live_tests {
                 month: 8,
                 day: 18,
             })
-        };
+        }
+        .expect("2026-08-18 is a valid date");
         assert_eq!(Value::date(days).as_date(), days);
 
         let micros = 1_700_000_000_000_000_i64;

@@ -24,6 +24,7 @@
 
 pub mod complex;
 pub mod list_builder;
+mod nested_null;
 #[cfg(feature = "duckdb-1-5")]
 pub mod ops;
 pub mod reader;

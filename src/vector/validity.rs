@@ -11,8 +11,11 @@
 //!
 //! # Pitfall L4: `ensure_validity_writable`
 //!
-//! When writing NULL values, `duckdb_vector_get_validity` returns an uninitialized
-//! pointer if `duckdb_vector_ensure_validity_writable` has not been called first.
+//! When writing NULL values, `duckdb_vector_get_validity` returns NULL for a
+//! vector that has no validity mask yet (the usual state of a vector no NULL
+//! has been written to) unless `duckdb_vector_ensure_validity_writable` has
+//! been called first — and `duckdb_validity_set_row_invalid` silently ignores a
+//! NULL mask, so the NULL would be dropped.
 //! [`ValidityBitmap::ensure_writable`] wraps this requirement so it cannot be
 //! forgotten.
 
@@ -46,8 +49,8 @@ impl ValidityBitmap<'_> {
     /// # Pitfall L4
     ///
     /// Calling `duckdb_vector_get_validity` without first calling
-    /// `duckdb_vector_ensure_validity_writable` returns an uninitialized pointer
-    /// when the vector has never had a NULL written into it.
+    /// `duckdb_vector_ensure_validity_writable` returns NULL when the vector
+    /// has no mask yet, and NULLs written through that are silently dropped.
     ///
     /// # Safety
     ///
@@ -99,6 +102,10 @@ impl ValidityBitmap<'_> {
     }
 
     /// Marks the row at `idx` as NULL (invalid).
+    ///
+    /// This touches only this one mask. For a `STRUCT` or `ARRAY` vector, use
+    /// [`VectorWriter::set_null`][crate::vector::VectorWriter::set_null]
+    /// instead, which also nulls the children as `DuckDB` expects.
     ///
     /// # Safety
     ///

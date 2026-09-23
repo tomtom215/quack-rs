@@ -32,9 +32,11 @@ unsafe { writer.set_null(row) };
 ```
 
 > **Pitfall L4**: `VectorWriter::set_null` calls `duckdb_vector_ensure_validity_writable`
-> before accessing the validity bitmap. Calling `duckdb_vector_get_validity` without this
-> prerequisite returns an uninitialized pointer → SEGFAULT. Never write NULL manually;
-> always use `set_null`. See [Pitfall L4](../reference/pitfalls.md#l4-ensure_validity_writable-is-required-before-null-output).
+> before accessing the validity bitmap. Without it, a vector that has no mask yet makes
+> `duckdb_vector_get_validity` return NULL, and the NULL you write is silently dropped.
+> Never write NULL manually; always use `set_null` — which, for a `STRUCT` or `ARRAY`
+> output, also nulls the fields / elements of that row the way DuckDB expects.
+> See [Pitfall L4](../reference/pitfalls.md#l4-ensure_validity_writable-is-required-before-null-output).
 
 ### Clearing NULL (v0.11.0+)
 

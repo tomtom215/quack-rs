@@ -44,6 +44,8 @@ use crate::vector::VectorWriter;
 /// direct typed writes without repeated `duckdb_struct_vector_get_child` calls.
 #[derive(Debug)]
 pub struct StructWriter {
+    /// The STRUCT vector itself, for row-level NULLs.
+    parent: VectorWriter,
     fields: Vec<VectorWriter>,
 }
 
@@ -63,7 +65,9 @@ impl StructWriter {
             // SAFETY: caller guarantees vector is valid STRUCT with field_count fields.
             fields.push(unsafe { StructVector::field_writer(vector, idx) });
         }
-        Self { fields }
+        // SAFETY: caller guarantees vector is a valid, writable STRUCT vector.
+        let parent = unsafe { VectorWriter::from_vector(vector) };
+        Self { parent, fields }
     }
 
     /// Returns the number of fields in this struct writer.
@@ -387,7 +391,29 @@ impl StructWriter {
         unsafe { self.write_i64(row, field_idx, micros_since_midnight) };
     }
 
+    /// Marks the whole struct at row `row` as NULL — the struct itself and
+    /// every field, recursively.
+    ///
+    /// This is what `DuckDB` does internally for a NULL struct row. Marking only
+    /// the fields NULL leaves the row a valid struct of NULLs (`{'a': NULL}`),
+    /// not a NULL; marking only the parent (a bare
+    /// `duckdb_validity_set_row_invalid`) leaves the fields valid, so
+    /// `struct_extract` on the NULL row returns their stale values.
+    ///
+    /// # Safety
+    ///
+    /// - `row` must be within the vector's capacity.
+    #[inline]
+    pub unsafe fn set_row_null(&mut self, row: usize) {
+        // SAFETY: the parent is the valid STRUCT vector passed to `new`, and
+        // `row` is in bounds per caller's contract.
+        unsafe { self.parent.set_null(row) };
+    }
+
     /// Marks field `field_idx` at row `row` as NULL.
+    ///
+    /// To make the whole struct row NULL use
+    /// [`set_row_null`][Self::set_row_null] instead.
     ///
     /// # Safety
     ///
@@ -428,16 +454,20 @@ mod tests {
     fn struct_writer_field_count() {
         // We can't create a real StructWriter without DuckDB, but we can verify
         // the Vec-based field storage works correctly.
-        let sw = StructWriter { fields: Vec::new() };
+        let sw = StructWriter {
+            parent: VectorWriter::detached(),
+            fields: Vec::new(),
+        };
         assert_eq!(sw.field_count(), 0);
     }
 
     #[test]
     fn size_of_struct_writer() {
-        // StructWriter is a Vec<VectorWriter> = 3 * usize (ptr, len, cap)
+        // StructWriter is the parent VectorWriter plus a Vec<VectorWriter>
+        // (ptr, len, cap).
         assert_eq!(
             std::mem::size_of::<StructWriter>(),
-            3 * std::mem::size_of::<usize>()
+            std::mem::size_of::<VectorWriter>() + 3 * std::mem::size_of::<usize>()
         );
     }
 }

@@ -11,16 +11,28 @@
 //! # Pitfall L4: `ensure_validity_writable`
 //!
 //! When writing NULL values, you must call `duckdb_vector_ensure_validity_writable`
-//! before `duckdb_vector_get_validity`. If you skip this call, `get_validity`
-//! returns an uninitialized pointer that will cause a segfault or silent corruption.
+//! before `duckdb_vector_get_validity`. A vector with no NULLs yet usually has no
+//! validity mask at all, and then `get_validity` returns NULL; the
+//! `duckdb_validity_set_row_*` functions return early on a NULL mask, so the
+//! NULL is **silently dropped** and the row reads back as a valid value.
 //!
 //! [`VectorWriter::set_null`] calls `ensure_validity_writable` automatically.
+//!
+//! # NULLs in nested vectors
+//!
+//! Marking a `STRUCT` or `ARRAY` row NULL also marks its children NULL — every
+//! field of the struct row, every element of the array row, recursively —
+//! exactly as `DuckDB`'s internal `FlatVector::SetNull` does. Without that,
+//! `struct_extract(s, 'a')` on a NULL row returns whatever was last written to
+//! field `a`. `LIST` and `MAP` children are not touched, matching `DuckDB`.
 
 use libduckdb_sys::{
     duckdb_validity_set_row_invalid, duckdb_validity_set_row_valid, duckdb_vector,
     duckdb_vector_assign_string_element_len, duckdb_vector_ensure_validity_writable,
     duckdb_vector_get_data, duckdb_vector_get_validity, idx_t,
 };
+
+use super::nested_null::{self, NullTarget};
 
 /// A typed writer for a `DuckDB` output vector in a `finalize` callback.
 ///
@@ -44,7 +56,16 @@ use libduckdb_sys::{
 pub struct VectorWriter {
     vector: duckdb_vector,
     data: *mut u8,
-    /// Lazily-resolved validity bitmap.
+    /// Lazily-resolved NULL-writing state; `None` until the first
+    /// `set_null` / `set_valid`. Boxed so a writer that never writes a NULL
+    /// stays three words and allocates nothing.
+    nulls: Option<Box<NullState>>,
+}
+
+/// What [`VectorWriter`] resolves once, on its first NULL write.
+#[derive(Debug)]
+struct NullState {
+    /// The writable validity bitmap.
     ///
     /// `duckdb_vector_ensure_validity_writable` allocates the mask on first use
     /// and is a no-op afterwards, and the resulting pointer is stable for the
@@ -52,6 +73,11 @@ pub struct VectorWriter {
     /// FFI calls per vector", which matters when a column is mostly NULL: a full
     /// 2048-row vector went from 4096 calls to 2.
     validity: *mut u64,
+    /// Child masks a NULL must also clear (STRUCT fields, ARRAY elements),
+    /// resolved on the first `set_null`. `None` until then; empty for a
+    /// vector that is neither STRUCT nor ARRAY. Resolving walks the type once
+    /// per writer rather than once per NULL row.
+    nested: Option<Vec<NullTarget>>,
 }
 
 impl VectorWriter {
@@ -67,7 +93,7 @@ impl VectorWriter {
         Self {
             vector,
             data,
-            validity: core::ptr::null_mut(),
+            nulls: None,
         }
     }
 
@@ -88,7 +114,7 @@ impl VectorWriter {
         Self {
             vector,
             data,
-            validity: core::ptr::null_mut(),
+            nulls: None,
         }
     }
 
@@ -521,11 +547,19 @@ impl VectorWriter {
 
     /// Marks row `idx` as NULL in the output vector.
     ///
+    /// For a `STRUCT` vector this also marks row `idx` NULL in every field,
+    /// recursively; for an `ARRAY` vector of size `n`, child rows
+    /// `idx * n .. idx * n + n`. See the
+    /// [module docs](crate::vector::writer#nulls-in-nested-vectors).
+    /// [`set_valid`][Self::set_valid] does not undo that: after it, write
+    /// the fields again and mark them valid.
+    ///
     /// # Pitfall L4: `ensure_validity_writable`
     ///
     /// This method calls `duckdb_vector_ensure_validity_writable` before
     /// `duckdb_vector_get_validity`, which is required before writing any NULL
-    /// flags. Forgetting this call returns an uninitialized pointer.
+    /// flags. Without it, a vector that has no mask yet yields a NULL mask
+    /// pointer and the NULL is silently dropped.
     ///
     /// # Safety
     ///
@@ -537,6 +571,8 @@ impl VectorWriter {
         unsafe {
             duckdb_validity_set_row_invalid(validity, idx as idx_t);
         }
+        // SAFETY: self.vector is valid; idx is in bounds per caller's contract.
+        unsafe { self.clear_nested(idx..idx + 1) };
     }
 
     /// Marks every row in `range` as NULL.
@@ -553,9 +589,35 @@ impl VectorWriter {
         }
         // SAFETY: self.vector is valid per constructor's contract.
         let validity = unsafe { self.writable_validity() };
-        for idx in range {
+        for idx in range.clone() {
             // SAFETY: idx is in bounds per caller's contract.
             unsafe { duckdb_validity_set_row_invalid(validity, idx as idx_t) };
+        }
+        // SAFETY: self.vector is valid; range is in bounds per caller's contract.
+        unsafe { self.clear_nested(range) };
+    }
+
+    /// Marks `rows` NULL in every STRUCT field / ARRAY element below this
+    /// vector, mirroring `DuckDB`'s `FlatVector::SetNull`.
+    ///
+    /// # Safety
+    ///
+    /// `self.vector` must still be a valid, flat, writable vector and every
+    /// index in `rows` within its capacity.
+    unsafe fn clear_nested(&mut self, rows: core::ops::Range<usize>) {
+        let vector = self.vector;
+        // Every caller resolved the validity mask first, so this is `Some`.
+        let Some(state) = self.nulls.as_deref_mut() else {
+            return;
+        };
+        let targets = state
+            .nested
+            // SAFETY: `vector` is valid, flat and writable per this function's
+            // contract.
+            .get_or_insert_with(|| unsafe { nested_null::resolve(vector) });
+        for target in targets.iter() {
+            // SAFETY: `rows` is in bounds per this function's contract.
+            unsafe { target.clear(rows.clone()) };
         }
     }
 
@@ -563,7 +625,8 @@ impl VectorWriter {
     ///
     /// # Pitfall L4: `ensure_validity_writable`
     ///
-    /// `duckdb_vector_get_validity` returns an unusable pointer until
+    /// For a vector with no mask yet, `duckdb_vector_get_validity` returns NULL
+    /// (writes through which are silently ignored) until
     /// `duckdb_vector_ensure_validity_writable` has allocated the mask. This
     /// does both, then caches the result — `EnsureWritable` is a no-op after the
     /// first call and the pointer is stable for the vector's lifetime.
@@ -572,13 +635,19 @@ impl VectorWriter {
     ///
     /// `self.vector` must still be a valid, flat, writable vector.
     unsafe fn writable_validity(&mut self) -> *mut u64 {
-        if self.validity.is_null() {
-            // SAFETY: self.vector is valid per constructor's contract.
-            unsafe { duckdb_vector_ensure_validity_writable(self.vector) };
-            // SAFETY: the mask was just allocated, so the pointer is usable.
-            self.validity = unsafe { duckdb_vector_get_validity(self.vector) };
-        }
-        self.validity
+        let vector = self.vector;
+        self.nulls
+            .get_or_insert_with(|| {
+                // SAFETY: `vector` is valid per constructor's contract.
+                unsafe { duckdb_vector_ensure_validity_writable(vector) };
+                // SAFETY: the mask was just allocated, so the pointer is usable.
+                let validity = unsafe { duckdb_vector_get_validity(vector) };
+                Box::new(NullState {
+                    validity,
+                    nested: None,
+                })
+            })
+            .validity
     }
 
     /// Marks row `idx` as valid (non-NULL) in the output vector.
@@ -607,6 +676,16 @@ impl VectorWriter {
     pub const fn as_raw(&self) -> duckdb_vector {
         self.vector
     }
+
+    /// A writer attached to no vector, for layout tests that never write.
+    #[cfg(test)]
+    pub(crate) const fn detached() -> Self {
+        Self {
+            vector: core::ptr::null_mut(),
+            data: core::ptr::null_mut(),
+            nulls: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -619,7 +698,8 @@ mod tests {
     fn size_of_vector_writer() {
         use super::VectorWriter;
         use std::mem::size_of;
-        // vector + data + cached validity pointer
+        // vector + data + the boxed, lazily-resolved NULL state (validity
+        // pointer and nested masks).
         assert_eq!(size_of::<VectorWriter>(), 3 * size_of::<usize>());
     }
 }

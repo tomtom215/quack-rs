@@ -3264,7 +3264,7 @@ fn a_selection_vector_round_trips_its_indices() {
 
     let _fx = Fixture::open();
 
-    let mut sel = SelectionVector::new(2048);
+    let mut sel = SelectionVector::new(2048).expect("allocate");
     assert_eq!(sel.as_slice().len(), 2048);
 
     for (i, slot) in sel.as_mut_slice().iter_mut().enumerate() {
@@ -3274,7 +3274,7 @@ fn a_selection_vector_round_trips_its_indices() {
     assert_eq!(sel.as_slice()[2047], 0);
 
     // A zero-length vector must not hand out a dangling non-empty slice.
-    let empty = SelectionVector::new(0);
+    let empty = SelectionVector::new(0).expect("allocate");
     assert!(empty.as_slice().is_empty());
 }
 
@@ -5461,3 +5461,5 @@ mod copy_from {
         assert!(err.as_str().contains("implements nothing"), "{err}");
     }
 }
+#[path = "ffi_roundtrip/vector_dt.rs"]
+mod vector_dt;

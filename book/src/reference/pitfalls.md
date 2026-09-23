@@ -104,11 +104,16 @@ undefined behavior.
 
 **Status**: Made impossible by `VectorWriter::set_null`.
 
-**Symptom**: SEGFAULT when writing NULL values to the output vector.
+**Symptom**: NULLs you write are silently lost — the row reads back as a
+valid value (whatever is in the data buffer).
 
-**Root cause**: `duckdb_vector_get_validity` returns an uninitialized pointer if
-`duckdb_vector_ensure_validity_writable` has not been called first. Writing to
-an uninitialized address → SEGFAULT.
+**Root cause**: a vector that has never held a NULL usually has no validity
+mask at all, and `duckdb_vector_get_validity` then returns NULL (as `duckdb.h`
+documents). `duckdb_validity_set_row_invalid` returns early on a NULL mask, so
+nothing is written and nothing crashes. `duckdb_vector_ensure_validity_writable`
+allocates the mask, after which `get_validity` returns it. (Dereferencing the
+NULL pointer yourself, instead of going through the C API helpers, would
+crash.)
 
 **Fix**: Always call `duckdb_vector_ensure_validity_writable` before accessing
 the validity bitmap on the write path. `VectorWriter::set_null` does this
@@ -119,9 +124,14 @@ automatically:
 unsafe { writer.set_null(row) };
 
 // Wrong — validity bitmap may not be allocated yet
-// let validity = duckdb_vector_get_validity(output);
-// set_bit(validity, row, false);  // SEGFAULT
+// let validity = duckdb_vector_get_validity(output);          // NULL
+// duckdb_validity_set_row_invalid(validity, row);            // silently ignored
 ```
+
+For `STRUCT` and `ARRAY` outputs `set_null` also nulls the children at that
+row, as DuckDB's internal `FlatVector::SetNull` does; a bare
+`duckdb_validity_set_row_invalid` on the parent leaves the fields valid, and
+`struct_extract` on the NULL row returns their stale values.
 
 ---
 
@@ -621,7 +631,7 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 | L1: combine config fields | Testable | Test with `AggregateTestHarness::combine` |
 | L2: state double-free | Prevented | Use `FfiState::destroy_callback` |
 | L3: panic across FFI | Prevented | Use `init_extension`, no `unwrap` in callbacks |
-| L4: validity bitmap SEGFAULT | Prevented | Use `VectorWriter::set_null` |
+| L4: NULL silently dropped (no validity mask) | Prevented | Use `VectorWriter::set_null` |
 | L5: bool UB | Prevented | Use `VectorReader::read_bool` |
 | L6: function set name | Prevented | Use `AggregateFunctionSetBuilder` |
 | L7: LogicalType leak | Prevented | Use `LogicalType` (RAII) |
