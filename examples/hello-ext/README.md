@@ -122,7 +122,7 @@ running DuckDB instance:
 cargo test
 ```
 
-39 tests live in `src/lib.rs` under `#[cfg(test)]`, covering:
+The unit tests live in `src/lib.rs` under `#[cfg(test)]`, covering:
 - `count_words` / `first_word` string helpers
 - `parse_varchar_to_int` parsing and edge cases
 - `WordCountState` aggregate lifecycle via `AggregateTestHarness`

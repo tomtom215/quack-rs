@@ -1057,6 +1057,74 @@ fn the_example_obeys_the_crates_own_release_profile_rules() {
     );
 }
 
+/// The repository-structure trees in `CONTRIBUTING.md` and the book list every
+/// source file under `src/` and `tests/`, and nothing that does not exist.
+///
+/// The trees were accurate when this test was written except for the one file
+/// most recently added, which is how such a tree goes stale: nothing fails.
+#[test]
+fn documented_source_trees_match_the_filesystem() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("book").is_dir() {
+        eprintln!("SKIPPED documented_source_trees_match_the_filesystem: book/ is not packaged");
+        return;
+    }
+    let mut actual = std::collections::BTreeSet::new();
+    let mut dirs = vec![root.join("src"), root.join("tests")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs" || e == "cpp") {
+                let rel = path.strip_prefix(root).expect("under root");
+                actual.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    for doc in ["CONTRIBUTING.md", "book/src/contributing.md"] {
+        let text = std::fs::read_to_string(root.join(doc)).expect(doc);
+        let block = text
+            .split("```")
+            .find(|b| b.contains("quack-rs/") && b.contains("├── src/"))
+            .unwrap_or_else(|| panic!("{doc}: no repository tree found"));
+        // Each level is four columns ("│   " or "    ") before "├── " / "└── ".
+        let mut stack: Vec<String> = Vec::new();
+        let mut listed = std::collections::BTreeSet::new();
+        for line in block.lines() {
+            let chars: Vec<char> = line.chars().collect();
+            let Some(pos) = line.find("├── ").or_else(|| line.find("└── ")) else {
+                continue;
+            };
+            let depth = line[..pos].chars().count() / 4;
+            let name: String = chars[line[..pos].chars().count() + 4..]
+                .iter()
+                .take_while(|c| !c.is_whitespace())
+                .collect();
+            stack.truncate(depth);
+            let full = format!("{}{name}", stack.concat());
+            if name.ends_with('/') {
+                stack.push(name);
+            } else if full.starts_with("src/") || full.starts_with("tests/") {
+                listed.insert(full);
+            }
+        }
+        let unlisted: Vec<_> = actual.difference(&listed).collect();
+        let phantom: Vec<_> = listed
+            .difference(&actual)
+            .filter(|p| {
+                std::path::Path::new(p.as_str())
+                    .extension()
+                    .is_some_and(|e| e == "rs" || e == "cpp")
+            })
+            .collect();
+        assert!(
+            unlisted.is_empty() && phantom.is_empty(),
+            "{doc}'s tree is stale.\nMissing from the tree: {unlisted:?}\nListed but absent: {phantom:?}"
+        );
+    }
+}
+
 /// Every "N pitfalls" claim in the documentation matches the number of
 /// pitfalls `LESSONS.md` actually documents.
 ///

@@ -234,10 +234,11 @@ from without `--config`.
 
 Tests follow the pattern: `{component}_{scenario}_{expected_outcome}`
 
-Examples:
-- `interval_to_micros_overflow_saturates`
-- `error_from_string_preserves_message`
-- `aggregate_state_combine_propagates_config`
+Examples from the suite:
+- `harness_combine_propagates_config` (`tests/integration_test.rs`)
+- `extension_error_message_preserved` (`tests/integration_test.rs`)
+- `default_null_handling_does_not_propagate_nulls_for_scalar_functions`
+  (`tests/ffi_roundtrip.rs`)
 
 ---
 
@@ -336,13 +337,13 @@ quack-rs/
 │   │       ├── overload.rs            # One overload within an [`AggregateFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` aggregate function set (multiple overloads)
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` aggregate function
-│   │       └── tests.rs               # Unit tests (23 tests)
+│   │       └── tests.rs               # Unit tests
 │   ├── bin/
 │   │   └── append_metadata/
 │   │       ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
 │   │       ├── footer.rs              # The 512-byte `DuckDB` extension footer, and the optional 22-byte WebAssembly custom-section header that precedes it
 │   │       ├── main.rs                # Append a DuckDB extension metadata block to a compiled .so / .dylib / .dll file,
-│   │       └── tests.rs               # Unit tests (31 tests)
+│   │       └── tests.rs               # Unit tests
 │   ├── callback/
 │   │   └── payload.rs                 # Disposing of a caught panic payload without re-entering the unwinder
 │   ├── cast/
@@ -354,7 +355,7 @@ quack-rs/
 │   ├── datetime/
 │   │   ├── checks.rs                  # Pure-Rust mirrors of the checks `DuckDB` makes before it throws
 │   │   ├── mod.rs                     # Calendar conversions for `DuckDB`'s temporal types
-│   │   └── tests.rs                   # Unit tests (18 tests)
+│   │   └── tests.rs                   # Unit tests
 │   ├── query/
 │   │   └── cstr.rs                    # The two C-string conversions the `query` module runs everything through
 │   ├── replacement_scan/
@@ -362,8 +363,8 @@ quack-rs/
 │   ├── scaffold/
 │   │   ├── mod.rs                     # Project scaffolding for `DuckDB` Rust extensions
 │   │   ├── templates.rs               # Template generators for scaffold file content
-│   │   ├── tests.rs                   # Unit tests (46 tests)
-│   │   └── tests_generated.rs         # Unit tests (6 tests)
+│   │   ├── tests.rs                   # Unit tests
+│   │   └── tests_generated.rs         # Unit tests
 │   ├── scalar/
 │   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks
 │   │   ├── mod.rs                     # Builder for registering `DuckDB` scalar functions
@@ -375,7 +376,7 @@ quack-rs/
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` scalar function set (multiple overloads)
 │   │       ├── signature.rs           # Detecting overloads that declare the same argument types
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` scalar function
-│   │       └── tests.rs               # Unit tests (16 tests)
+│   │       └── tests.rs               # Unit tests
 │   ├── table/
 │   │   ├── bind_data.rs               # Type-safe bind data management for table functions
 │   │   ├── builder.rs                 # Builder for registering `DuckDB` table functions
@@ -397,7 +398,9 @@ quack-rs/
 │   │   ├── logical_type.rs            # RAII wrapper for `duckdb_logical_type`
 │   │   ├── mod.rs                     # `DuckDB` type system wrappers
 │   │   ├── null_handling.rs           # NULL propagation behaviour for `DuckDB` functions
-│   │   └── type_id.rs                 # Ergonomic enum of all `DuckDB` column types
+│   │   ├── type_id.rs                 # Ergonomic enum of all `DuckDB` column types
+│   │   └── logical_type/
+│   │       └── construct.rs           # Every `LogicalType` constructor, as `try_*` plus a panicking wrapper
 │   ├── validate/
 │   │   ├── extension_name.rs          # Extension name validation per `DuckDB` community extension rules
 │   │   ├── function_name.rs           # SQL function name validation for `DuckDB` extensions
@@ -410,9 +413,9 @@ quack-rs/
 │   │       ├── mod.rs                 # Validation of `DuckDB` community extension `description.yml` files
 │   │       ├── model.rs               # A validated representation of a `DuckDB` community extension `description.yml`
 │   │       ├── parser.rs              # Parses and validates a `description.yml` string
-│   │       ├── tests.rs               # Unit tests (34 tests)
-│   │       ├── tests_corpus.rs        # Unit tests (5 tests)
-│   │       ├── tests_yaml.rs          # Unit tests (16 tests)
+│   │       ├── tests.rs               # Unit tests
+│   │       ├── tests_corpus.rs        # Unit tests
+│   │       ├── tests_yaml.rs          # Unit tests
 │   │       ├── validator.rs           # Validates a `description.yml` string and returns `Ok(())` if it passes all checks
 │   │       ├── yaml.rs                # A reader for the subset of YAML that `description.yml` files use
 │   │       └── yaml/
@@ -440,11 +443,11 @@ quack-rs/
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
 │   └── ffi_roundtrip/
-│       ├── scalar_agg.rs              # End-to-end tests (8 tests)
-│       ├── table_cast.rs              # End-to-end tests (12 tests)
-│       ├── tooling.rs                 # End-to-end tests (2 tests)
-│       ├── value_query.rs             # End-to-end tests (13 tests)
-│       └── vector_dt.rs               # End-to-end tests (6 tests)
+│       ├── scalar_agg.rs              # End-to-end tests
+│       ├── table_cast.rs              # End-to-end tests
+│       ├── tooling.rs                 # End-to-end tests
+│       ├── value_query.rs             # End-to-end tests
+│       └── vector_dt.rs               # End-to-end tests
 ├── benches/
 │   └── interval_bench.rs          # Criterion benchmarks for interval conversion
 ├── examples/
