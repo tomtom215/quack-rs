@@ -829,3 +829,36 @@ fn config_options_without_a_default_or_with_a_pseudo_type_are_refused_clearly() 
         );
     }
 }
+
+/// TBL-10: `FileFlag::CreateNew` mapped to `FILE_FLAGS_EXCLUSIVE_CREATE`
+/// alone, which only means something together with `FILE_FLAGS_FILE_CREATE`:
+/// it neither created a missing file nor refused an existing one.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn file_flag_create_new_creates_or_refuses() {
+    use quack_rs::client_context::ClientContext;
+    use quack_rs::file_system::{FileFlag, FileOpenOptions, FileSystem};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open for the whole test.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    let fs = FileSystem::from_client_context(&ctx).expect("file system");
+    let dir = std::env::temp_dir().join(format!("quack_rs_tc_create_new_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let existing = dir.join("existing.bin");
+    std::fs::write(&existing, b"keep me").expect("seed file");
+    let fresh = dir.join("fresh.bin");
+    let _ = std::fs::remove_file(&fresh);
+    let open = |path: &std::path::Path| {
+        let options = FileOpenOptions::new();
+        options.set_flag(FileFlag::Write, true);
+        options.set_flag(FileFlag::CreateNew, true);
+        let c_path = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("no NUL");
+        fs.open(&c_path, &options).map(drop)
+    };
+    assert!(open(&existing).is_err(), "an existing file must be refused");
+    assert_eq!(std::fs::read(&existing).expect("still there"), b"keep me");
+    assert!(open(&fresh).is_ok(), "a missing file must be created");
+    assert!(fresh.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

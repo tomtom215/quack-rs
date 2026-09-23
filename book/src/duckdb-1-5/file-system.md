@@ -57,9 +57,17 @@ cover the common cases; use `set_flag` for anything else.
 | `FileOpenOptions::read_only()` | Open for reading |
 | `FileOpenOptions::write_create()` | Open for writing, creating if absent |
 | `FileOpenOptions::new()` | Empty; configure with `set_flag` |
-| `set_flag(flag, value)` | Toggle an individual [`FileFlag`]; returns `true` on success |
+| `set_flag(flag, value)` | Set an individual [`FileFlag`]; returns `true` on success |
 
 `FileFlag` variants: `Read`, `Write`, `Create`, `CreateNew`, `Append`.
+
+- `Create`, `CreateNew` and `Append` need `Write` as well.
+- `CreateNew` ("create, failing if the file exists") also sets `Create`. DuckDB maps
+  it to `FILE_FLAGS_EXCLUSIVE_CREATE`, which only has that meaning together with
+  `FILE_FLAGS_FILE_CREATE`; on its own it neither created a missing file nor refused
+  an existing one.
+- `set_flag(flag, false)` does **not** clear a flag: the C API ORs flags in and
+  ignores `value`. Build a fresh `FileOpenOptions` instead.
 
 ## `FileHandle` operations
 
@@ -91,6 +99,26 @@ silently treat as an empty file.
 
 `FileSystem` exposes `open(path, options)` and `error_data()`. Both `FileSystem`
 and `FileHandle` are RAII: they are destroyed (and the handle closed) on drop.
+
+## Lifetimes
+
+A `FileSystem<'ctx>` borrows the `ClientContext` it came from, and a
+`FileHandle<'fs>` borrows the `FileSystem` that opened it. A handle refers to the
+database's file system, so using it after the database is closed is a
+use-after-free (valgrind: invalid read in `duckdb::FileHandle::Read`); the borrow
+makes that a compile error instead:
+
+```rust,compile_fail
+use quack_rs::client_context::ClientContext;
+use quack_rs::file_system::{FileOpenOptions, FileSystem};
+
+fn demo(ctx: &ClientContext) {
+    let fs = FileSystem::from_client_context(ctx).unwrap();
+    let handle = fs.open(c"data.csv", &FileOpenOptions::read_only()).unwrap();
+    drop(fs); // error[E0505]: cannot move out of `fs` because it is borrowed
+    let _ = handle.size();
+}
+```
 
 ## Related modules
 
