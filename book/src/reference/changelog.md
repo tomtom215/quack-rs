@@ -114,6 +114,10 @@ Each such entry is marked **Breaking:**.
 - CI: the **AddressSanitizer job is now blocking**, as planned when it was
   added. It passed on `main` and over the merged 125-test end-to-end suite with
   no reports and no suppressions.
+- CI: the informational **beta clippy job now also lints the end-to-end
+  tests**, with `bundled-test-prebuilt,duckdb-1-5-4` against a pre-built
+  libduckdb. Those tests compile only with `bundled-test-prebuilt`, so beta's
+  new `assert_is_empty` lint fired on four of them while the job stayed green.
 - Mutation testing: the configuration moved to `.cargo/mutants.toml`. At the
   repository root cargo-mutants never read it — so the full sweep ran without
   its exclusions or features (2,164 mutants listed instead of 1,348) — and it
