@@ -51,12 +51,96 @@
 //! # }
 //! ```
 
-use libduckdb_sys::{duckdb_vector, idx_t};
+use libduckdb_sys::{duckdb_logical_type, duckdb_vector, idx_t};
 
 use crate::error::ExtensionError;
 use crate::selection_vector::SelectionVector;
 use crate::types::LogicalType;
 use crate::value::Value;
+
+/// The most elements [`OwnedVector::new`] will ask `DuckDB` to put in one vector.
+///
+/// This is `DConstants::MAX_VECTOR_SIZE` (2^37), the same ceiling `DuckDB`
+/// enforces when a list child vector grows (`VectorListBuffer::Reserve`).
+///
+/// It applies to the vector itself and to every child vector it creates. An
+/// `ARRAY(T, n)` child holds `capacity * n` elements, so an array type lowers
+/// the usable row capacity accordingly. Every physical element is at most 16
+/// bytes, so a vector within this bound needs at most 2 TiB and its size can
+/// never wrap a 64-bit multiply.
+pub const MAX_CAPACITY: usize = if (1_u64 << 37) > usize::MAX as u64 {
+    usize::MAX
+} else {
+    1 << 37
+};
+
+/// The largest number of elements any single vector — `ty` itself or a child
+/// vector `DuckDB` allocates for it — would hold for a `rows`-row vector of
+/// `ty`, or `None` if that number does not fit in a `u64` (or `DuckDB`
+/// returned no child type, which it does not for a well-formed type).
+///
+/// Mirrors `Vector::Initialize` and its buffers in `DuckDB`'s
+/// `src/common/types/vector.cpp` / `vector_buffer.cpp`: `STRUCT` and `UNION`
+/// children, the `LIST` child and both `MAP` children are created with the
+/// parent's capacity; an `ARRAY(T, n)` child with `capacity * n`.
+///
+/// # Safety
+///
+/// `ty` must be a valid logical type handle.
+unsafe fn max_elements_per_vector(ty: duckdb_logical_type, rows: u64) -> Option<u64> {
+    use libduckdb_sys::{
+        DUCKDB_TYPE_DUCKDB_TYPE_ARRAY as ARRAY, DUCKDB_TYPE_DUCKDB_TYPE_LIST as LIST,
+        DUCKDB_TYPE_DUCKDB_TYPE_MAP as MAP, DUCKDB_TYPE_DUCKDB_TYPE_STRUCT as STRUCT,
+        DUCKDB_TYPE_DUCKDB_TYPE_UNION as UNION,
+    };
+    // SAFETY: `ty` is valid per this function's contract. Each child handle
+    // returned below is owned, and `LogicalType::from_raw` destroys it.
+    unsafe {
+        let child = |raw: duckdb_logical_type, child_rows: u64| {
+            if raw.is_null() {
+                return None;
+            }
+            let owned = LogicalType::from_raw(raw);
+            max_elements_per_vector(owned.as_raw(), child_rows)
+        };
+        let mut most = rows;
+        match libduckdb_sys::duckdb_get_type_id(ty) {
+            ARRAY => {
+                let size = libduckdb_sys::duckdb_array_type_array_size(ty);
+                let child_rows = rows.checked_mul(size)?;
+                most = most.max(child(
+                    libduckdb_sys::duckdb_array_type_child_type(ty),
+                    child_rows,
+                )?);
+            }
+            LIST => {
+                most = most.max(child(libduckdb_sys::duckdb_list_type_child_type(ty), rows)?);
+            }
+            MAP => {
+                most = most.max(child(libduckdb_sys::duckdb_map_type_key_type(ty), rows)?);
+                most = most.max(child(libduckdb_sys::duckdb_map_type_value_type(ty), rows)?);
+            }
+            STRUCT => {
+                for i in 0..libduckdb_sys::duckdb_struct_type_child_count(ty) {
+                    most = most.max(child(
+                        libduckdb_sys::duckdb_struct_type_child_type(ty, i),
+                        rows,
+                    )?);
+                }
+            }
+            UNION => {
+                for i in 0..libduckdb_sys::duckdb_union_type_member_count(ty) {
+                    most = most.max(child(
+                        libduckdb_sys::duckdb_union_type_member_type(ty, i),
+                        rows,
+                    )?);
+                }
+            }
+            _ => {}
+        }
+        Some(most)
+    }
+}
 
 /// A flat `duckdb_vector` this crate allocated, destroyed on drop.
 ///
@@ -77,17 +161,36 @@ impl OwnedVector {
     ///
     /// # Errors
     ///
-    /// Returns an error if `DuckDB` refuses to allocate the vector — an
-    /// `INVALID` or `ANY` type, or a capacity it cannot satisfy.
+    /// Returns an error, before anything is allocated, if `capacity` — or
+    /// `capacity` times the sizes of the `ARRAY` types nested in
+    /// `logical_type` — exceeds [`MAX_CAPACITY`]. Also returns an error if
+    /// `DuckDB` refuses to allocate the vector: an `INVALID` or `ANY` type, or
+    /// an allocation that fails.
+    ///
+    /// The capacity check is not optional hygiene. `DuckDB` sizes the buffer
+    /// as `capacity * element_size` with an unchecked multiply
+    /// (`VectorBuffer::CreateStandardVector`, `vector_buffer.cpp`), and an
+    /// `ARRAY` child as `capacity * array_size`, also unchecked. A capacity
+    /// that wraps gets a small buffer and a success return, and writes inside
+    /// the capacity this function reported would then overflow the heap.
     pub fn new(logical_type: &LogicalType, capacity: usize) -> Result<Self, ExtensionError> {
+        let rows = u64::try_from(capacity).unwrap_or(u64::MAX);
+        // SAFETY: `logical_type` is a live handle for the duration of the call.
+        let elements = unsafe { max_elements_per_vector(logical_type.as_raw(), rows) };
+        match elements {
+            Some(n) if n <= MAX_CAPACITY as u64 => {}
+            _ => {
+                return Err(ExtensionError::new(format!(
+                    "OwnedVector capacity {capacity} is out of range: the vector (or an \
+                     ARRAY child, which holds capacity * array_size elements) would exceed \
+                     DuckDB's maximum of {MAX_CAPACITY} elements per vector"
+                )));
+            }
+        }
         // SAFETY: `logical_type` is a live handle for the duration of the call;
-        // DuckDB returns an owned vector or null.
-        let vector = unsafe {
-            libduckdb_sys::duckdb_create_vector(
-                logical_type.as_raw(),
-                idx_t::try_from(capacity).unwrap_or(idx_t::MAX),
-            )
-        };
+        // DuckDB returns an owned vector or null. `rows` fits in `idx_t` because
+        // it is at most `MAX_CAPACITY`.
+        let vector = unsafe { libduckdb_sys::duckdb_create_vector(logical_type.as_raw(), rows) };
         if vector.is_null() {
             return Err(ExtensionError::new(
                 "duckdb_create_vector returned null: the logical type cannot back a vector \
@@ -302,6 +405,51 @@ mod tests {
                 "copy_selected must preserve the selection's order"
             );
         }
+    }
+
+    /// Regression: `DuckDB` sizes the buffer with an unchecked
+    /// `capacity * element_size`, so `(2^60 + 2)` HUGEINT rows (16 bytes each)
+    /// wrapped to a 32-byte allocation that `new` reported as success. Writing
+    /// rows inside the reported capacity then overflowed the heap into
+    /// neighbouring allocations.
+    #[test]
+    #[cfg(feature = "_duckdb-testing")]
+    fn a_capacity_whose_byte_size_wraps_is_refused() {
+        let _db = crate::testing::InMemoryDb::open().expect("dispatch table");
+        let hugeint = LogicalType::new(TypeId::HugeInt);
+        let err = OwnedVector::new(&hugeint, (1_usize << 60) + 2).expect_err("must refuse");
+        assert!(err.as_str().contains("out of range"), "{err}");
+        assert!(OwnedVector::new(&LogicalType::new(TypeId::BigInt), 1 << 61).is_err());
+        assert!(OwnedVector::new(&hugeint, MAX_CAPACITY + 1).is_err());
+    }
+
+    /// An `ARRAY(T, n)` child holds `capacity * n` elements, so the bound must
+    /// apply to that product, including through a `STRUCT` and a `LIST`.
+    #[test]
+    #[cfg(feature = "_duckdb-testing")]
+    fn an_array_child_counts_against_the_capacity_bound() {
+        let _db = crate::testing::InMemoryDb::open().expect("dispatch table");
+        let arr = LogicalType::array(TypeId::BigInt, 1000);
+        // 2^28 rows * 1000 elements > 2^37.
+        assert!(OwnedVector::new(&arr, 1 << 28).is_err());
+        assert!(OwnedVector::new(&arr, 2048).is_ok());
+
+        // 99_999 is the largest size `duckdb_create_array_type` accepts.
+        let nested = LogicalType::struct_type_from_logical(&[(
+            "xs",
+            LogicalType::list_from_logical(&LogicalType::array(TypeId::Integer, 99_999)),
+        )]);
+        // 2^21 rows * 99_999 elements > 2^37, reached through STRUCT -> LIST -> ARRAY.
+        assert!(OwnedVector::new(&nested, 1 << 21).is_err());
+        assert!(OwnedVector::new(&nested, 4).is_ok());
+
+        // 99_999^4 does not fit in a u64: the element count itself overflows,
+        // and even a single row must be refused rather than wrapped.
+        let mut deep = LogicalType::array(TypeId::TinyInt, 99_999);
+        for _ in 0..3 {
+            deep = LogicalType::array_from_logical(&deep, 99_999);
+        }
+        assert!(OwnedVector::new(&deep, 1).is_err());
     }
 
     #[test]
