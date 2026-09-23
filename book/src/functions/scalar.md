@@ -196,6 +196,14 @@ Like `AggregateFunctionSetBuilder`, this builder calls `duckdb_scalar_function_s
 on every individual function before adding it to the set
 ([Pitfall L6](../reference/pitfalls.md#l6-function-set-name-must-be-set-on-each-member)).
 
+`ScalarOverloadBuilder` has the same per-function settings as
+`ScalarFunctionBuilder`, applied to that overload only: `null_handling`,
+`extra_info`, `varargs` / `varargs_logical`, `volatile`, and (DuckDB 1.5+)
+`bind` / `init`. `register` checks every overload for a return type and a
+callback before it creates any DuckDB handle, and the error names the overload's
+index. A varargs type counts as part of an overload's signature, so `f(BIGINT)`
+and `f(BIGINT, BIGINT...)` may share a set.
+
 ---
 
 ## NULL Handling

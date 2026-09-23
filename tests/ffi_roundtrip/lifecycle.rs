@@ -354,3 +354,291 @@ fn scalar_collisions_replace_silently_and_aggregate_collisions_fail() {
         Some(4)
     );
 }
+
+// ─── Overload builders mirror the single-function builders ──────────────────
+
+mod overload_fns {
+    use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+
+    use quack_rs::aggregate::{AggregateFunctionInfo, FfiState};
+    use quack_rs::data_chunk::DataChunk;
+    use quack_rs::vector::VectorWriter;
+
+    use super::RowCounts;
+
+    /// A per-row counter, so re-evaluation is observable.
+    pub static TICKS: AtomicI64 = AtomicI64::new(0);
+
+    quack_rs::scalar_callback!(tick, |_info, input, output| {
+        // SAFETY: DuckDB passes a valid chunk and a BIGINT output vector.
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        let mut writer = unsafe { VectorWriter::from_vector(output) };
+        for row in 0..chunk.size() {
+            unsafe { writer.write_i64(row, TICKS.fetch_add(1, Ordering::SeqCst)) };
+        }
+    });
+
+    // Sums every BIGINT column of the chunk: the fixed parameter and varargs.
+    quack_rs::scalar_callback!(sum_columns, |_info, input, output| {
+        // SAFETY: DuckDB passes a valid chunk of BIGINT columns.
+        let chunk = unsafe { DataChunk::from_raw(input) };
+        let mut writer = unsafe { VectorWriter::from_vector(output) };
+        for row in 0..chunk.size() {
+            let total = (0..chunk.column_count())
+                .map(|col| unsafe { chunk.reader(col).read_i64(row) })
+                .sum::<i64>();
+            unsafe { writer.write_i64(row, total) };
+        }
+    });
+
+    #[cfg(feature = "duckdb-1-5")]
+    pub mod bound {
+        use quack_rs::data_chunk::DataChunk;
+        use quack_rs::scalar::{
+            ScalarBindData, ScalarBindInfo, ScalarFunctionInfo, ScalarInitInfo, ScalarLocalState,
+        };
+        use quack_rs::vector::VectorWriter;
+
+        /// Folds the constant second argument into bind data.
+        pub unsafe extern "C" fn bind(info: libduckdb_sys::duckdb_bind_info) {
+            // SAFETY: DuckDB passes a valid bind info.
+            let bind = unsafe { ScalarBindInfo::new(info) };
+            // SAFETY: the overload declares two parameters.
+            let factor = unsafe { bind.argument(1) }
+                .filter(quack_rs::expression::Expression::is_foldable)
+                .and_then(|expr| {
+                    // SAFETY: inside a bind callback, so the context is live.
+                    let ctx = unsafe { bind.get_client_context() };
+                    expr.fold(&ctx).ok().and_then(|v| v.as_i64())
+                })
+                .unwrap_or(1);
+            ScalarBindData::set(&bind, factor);
+        }
+
+        /// Counts chunks per thread.
+        pub unsafe extern "C" fn init(info: libduckdb_sys::duckdb_init_info) {
+            // SAFETY: DuckDB passes a valid init info.
+            let init = unsafe { ScalarInitInfo::new(info) };
+            ScalarLocalState::set(&init, 0_u64);
+        }
+
+        quack_rs::scalar_callback!(scale, |info, input, output| {
+            // SAFETY: DuckDB passes a valid function info; `bind` stored an
+            // i64 and `init` a u64, and nothing else stored either.
+            let fninfo = unsafe { ScalarFunctionInfo::new(info) };
+            let factor = unsafe { ScalarBindData::<i64>::get(&fninfo) }.copied();
+            let chunks = unsafe { ScalarLocalState::<u64>::get_mut(&fninfo) };
+            let (Some(factor), Some(chunks)) = (factor, chunks) else {
+                fninfo.set_error("bind data or local state missing");
+                return;
+            };
+            *chunks += 1;
+            // SAFETY: argument 0 is BIGINT and the output is BIGINT.
+            let chunk = unsafe { DataChunk::from_raw(input) };
+            let reader = unsafe { chunk.reader(0) };
+            let mut writer = unsafe { VectorWriter::from_vector(output) };
+            for row in 0..chunk.size() {
+                unsafe { writer.write_i64(row, reader.read_i64(row) * factor) };
+            }
+        });
+    }
+
+    /// Frees counted by the aggregate overload's `extra_info` destructor.
+    pub static AGG_INFO_FREES: AtomicUsize = AtomicUsize::new(0);
+
+    pub unsafe extern "C" fn free_offset(ptr: *mut std::os::raw::c_void) {
+        if ptr.is_null() {
+            return;
+        }
+        // SAFETY: allocated by `Box::into_raw(Box::new(i64))` in the test.
+        drop(unsafe { Box::from_raw(ptr.cast::<i64>()) });
+        AGG_INFO_FREES.fetch_add(1, Ordering::SeqCst);
+    }
+
+    // Finalizes to `valid + *extra_info`.
+    quack_rs::aggregate_finalize_callback!(
+        offset_finalize,
+        |info, source, result, count, offset| {
+            // SAFETY: DuckDB passes a valid function info whose extra_info is the
+            // boxed i64 the test attached to this overload.
+            let offset_by = unsafe {
+                let raw = AggregateFunctionInfo::new(info).get_extra_info();
+                (!raw.is_null()).then(|| *raw.cast::<i64>())
+            };
+            let mut writer = unsafe { VectorWriter::from_vector(result) };
+            for i in 0..count as usize {
+                let row = offset as usize + i;
+                let state = unsafe { FfiState::<RowCounts>::with_state(*source.add(i)) };
+                match (state, offset_by) {
+                    (Some(s), Some(by)) => unsafe { writer.write_i64(row, s.valid + by) },
+                    _ => unsafe { writer.set_null(row) },
+                }
+            }
+        }
+    );
+}
+
+/// `ScalarOverloadBuilder::volatile` and `varargs` reach `DuckDB` per overload.
+#[test]
+fn scalar_overloads_carry_their_own_volatility_and_varargs() {
+    use quack_rs::scalar::{ScalarFunctionSetBuilder, ScalarOverloadBuilder};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionSetBuilder::try_new("tick_set")
+            .expect("valid name")
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .returns(TypeId::BigInt)
+                    .function(overload_fns::tick)
+                    .volatile(),
+            )
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::Varchar)
+                    .returns(TypeId::BigInt)
+                    .function(overload_fns::tick),
+            )
+            .register(fx.con())
+            .expect("register tick_set");
+        ScalarFunctionSetBuilder::try_new("sum_set")
+            .expect("valid name")
+            // (BIGINT) and (BIGINT, BIGINT...) differ in DuckDB's eyes, so the
+            // duplicate-overload check must not reject them.
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .returns(TypeId::BigInt)
+                    .function(overload_fns::tick),
+            )
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .varargs(TypeId::BigInt)
+                    .returns(TypeId::BigInt)
+                    .function(overload_fns::sum_columns),
+            )
+            .register(fx.con())
+            .expect("register sum_set");
+    }
+
+    // Volatile overload: re-evaluated per row despite a constant argument.
+    assert_eq!(
+        i64_at(
+            &fx,
+            "SELECT count(DISTINCT tick_set(1::BIGINT)) FROM range(50)"
+        ),
+        Some(50)
+    );
+    // The other overload is not volatile, so the constant call is folded once.
+    assert_eq!(
+        i64_at(&fx, "SELECT count(DISTINCT tick_set('a')) FROM range(50)"),
+        Some(1)
+    );
+    // Varargs overload.
+    assert_eq!(
+        i64_at(&fx, "SELECT sum_set(1::BIGINT, 2::BIGINT, 39::BIGINT)"),
+        Some(42)
+    );
+}
+
+/// `ScalarOverloadBuilder::bind` and `init` reach `DuckDB` per overload.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn scalar_overloads_carry_their_own_bind_and_init() {
+    use quack_rs::scalar::{ScalarFunctionSetBuilder, ScalarOverloadBuilder};
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionSetBuilder::try_new("scale_set")
+            .expect("valid name")
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::Varchar)
+                    .returns(TypeId::BigInt)
+                    .function(overload_fns::tick),
+            )
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .param(TypeId::BigInt)
+                    .returns(TypeId::BigInt)
+                    .bind(overload_fns::bound::bind)
+                    .init(overload_fns::bound::init)
+                    .function(overload_fns::bound::scale),
+            )
+            .register(fx.con())
+            .expect("register scale_set");
+    }
+    fx.query("CREATE TABLE scale_in AS SELECT i::BIGINT AS i FROM range(10) t(i)");
+    assert_eq!(
+        i64_at(&fx, "SELECT sum(scale_set(i, 3))::BIGINT FROM scale_in"),
+        Some(45 * 3)
+    );
+}
+
+/// `AggregateOverloadBuilder::extra_info` reaches the overload's callbacks and
+/// is freed exactly once — by `DuckDB`, both when the set is dropped with the
+/// database and when `DuckDB` refuses the registration.
+#[test]
+fn an_aggregate_overloads_extra_info_reaches_its_callbacks_and_is_freed_once() {
+    use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder};
+    use std::sync::atomic::Ordering;
+
+    let offset_by = |by: i64| Box::into_raw(Box::new(by)).cast::<std::os::raw::c_void>();
+    let set = |name: &str, by: i64| {
+        let overload = |param: TypeId, by: i64| {
+            // SAFETY: `free_offset` frees exactly what `offset_by` allocates.
+            unsafe {
+                AggregateOverloadBuilder::new()
+                    .param(param)
+                    .returns(TypeId::BigInt)
+                    .state_size(FfiState::<RowCounts>::size_callback)
+                    .init(FfiState::<RowCounts>::init_callback)
+                    .update(row_counts_update)
+                    .combine(row_counts_combine)
+                    .finalize(overload_fns::offset_finalize)
+                    .destructor(FfiState::<RowCounts>::destroy_callback)
+                    .extra_info(offset_by(by), Some(overload_fns::free_offset))
+            }
+        };
+        AggregateFunctionSetBuilder::try_new(name)
+            .expect("valid name")
+            .overload(overload(TypeId::BigInt, by))
+            .overload(overload(TypeId::Varchar, by * 2))
+    };
+
+    let before = overload_fns::AGG_INFO_FREES.load(Ordering::SeqCst);
+    {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open.
+        unsafe { set("offset_agg", 1000).register(fx.con()) }.expect("register offset_agg");
+        assert_eq!(
+            i64_at(&fx, "SELECT offset_agg(i::BIGINT) FROM range(5) t(i)"),
+            Some(1005)
+        );
+        assert_eq!(
+            i64_at(&fx, "SELECT offset_agg(i::VARCHAR) FROM range(5) t(i)"),
+            Some(2005)
+        );
+
+        // `sum` is taken: DuckDB refuses the set after both overloads handed
+        // their extra_info over, and frees both when the set is destroyed.
+        let during = overload_fns::AGG_INFO_FREES.load(Ordering::SeqCst);
+        // SAFETY: `con` is open.
+        assert!(unsafe { set("sum", 1).register(fx.con()) }.is_err());
+        assert_eq!(
+            overload_fns::AGG_INFO_FREES.load(Ordering::SeqCst) - during,
+            2,
+            "a refused set frees each overload's extra_info exactly once"
+        );
+    }
+    // Closing the database frees the registered set's two.
+    assert_eq!(
+        overload_fns::AGG_INFO_FREES.load(Ordering::SeqCst) - before,
+        4
+    );
+}

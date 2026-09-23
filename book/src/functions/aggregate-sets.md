@@ -114,7 +114,14 @@ For each overload, in order:
 4. `AggregateFunctionSetBuilder::returns` (the set-level default)
 
 Registration fails, naming the overload index, if an overload reaches the end of
-that list with nothing set.
+that list with nothing set, or is missing a required callback. Both are checked
+for every overload before any DuckDB handle is created.
+
+Each overload can also carry its own `extra_info`
+(`AggregateOverloadBuilder::extra_info`), read in that overload's callbacks with
+`AggregateFunctionInfo::get_extra_info`. Ownership works as on
+`AggregateFunctionBuilder`: DuckDB frees it once registration has handed it over,
+even if registration then fails; the builder frees it if it never gets that far.
 
 `overload` and `overloads` may be mixed on one builder; overloads register in
 the order they were added.

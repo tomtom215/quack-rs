@@ -7,9 +7,10 @@ use std::ffi::CString;
 
 use libduckdb_sys::{
     duckdb_add_aggregate_function_to_set, duckdb_aggregate_function_set_destructor,
-    duckdb_aggregate_function_set_functions, duckdb_aggregate_function_set_name,
-    duckdb_aggregate_function_set_return_type, duckdb_aggregate_function_set_special_handling,
-    duckdb_connection, duckdb_create_aggregate_function, duckdb_create_aggregate_function_set,
+    duckdb_aggregate_function_set_extra_info, duckdb_aggregate_function_set_functions,
+    duckdb_aggregate_function_set_name, duckdb_aggregate_function_set_return_type,
+    duckdb_aggregate_function_set_special_handling, duckdb_connection,
+    duckdb_create_aggregate_function, duckdb_create_aggregate_function_set,
     duckdb_destroy_aggregate_function, duckdb_destroy_aggregate_function_set,
     duckdb_register_aggregate_function_set, DuckDBSuccess,
 };
@@ -284,12 +285,13 @@ impl AggregateFunctionSetBuilder {
     ///
     /// Returns `ExtensionError` if:
     /// - No overloads were added.
-    /// - An overload has neither its own return type nor a set-level default.
+    /// - An overload has neither its own return type nor a set-level default,
+    ///   or is missing a required callback. The error names the overload's
+    ///   index, and is reported before any `DuckDB` handle is allocated.
     /// - Two overloads declare the same argument types (compared structurally,
     ///   so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ). `DuckDB` itself would
     ///   accept such a set and then fail every call with "Could not choose a
     ///   best candidate function".
-    /// - Any overload is missing required callbacks.
     /// - `DuckDB` reports registration failure.
     ///
     /// # Name collisions
@@ -306,7 +308,17 @@ impl AggregateFunctionSetBuilder {
     /// `con` must be a valid, open `duckdb_connection`.
     #[allow(clippy::too_many_lines)]
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
-        // See `AggregateFunctionBuilder::register` -- validate before allocating.
+        // Validate everything before allocating any DuckDB handle. The checks
+        // that need no DuckDB call come first, so a missing callback is
+        // reported by index without touching the engine.
+        if self.overloads.is_empty() {
+            return Err(ExtensionError::new("no overloads added to function set"));
+        }
+        let has_default_return = self.return_type.is_some() || self.return_logical.is_some();
+        for (i, overload) in self.overloads.iter().enumerate() {
+            overload.check_complete(i, has_default_return)?;
+        }
+        // See `AggregateFunctionBuilder::register` -- reject composite TypeIds.
         if let Some(id) = self.return_type {
             LogicalType::check_slot(id, "aggregate function set return type")?;
         }
@@ -326,10 +338,6 @@ impl AggregateFunctionSetBuilder {
         // SAFETY: every logical parameter is a live `LogicalType` owned by this
         // builder, and the caller's contract means the C API is initialised.
         unsafe { reject_duplicate_overloads(&self.name.to_string_lossy(), &signatures)? };
-
-        if self.overloads.is_empty() {
-            return Err(ExtensionError::new("no overloads added to function set"));
-        }
 
         // Resolve the set-level *default* return type once, if one was given.
         // Overloads that carry their own return type never consult it.
@@ -353,7 +361,9 @@ impl AggregateFunctionSetBuilder {
             // Resolve this overload's return type: its own LogicalType, then its
             // own TypeId, then the set-level default. `_ret_lt_owner` keeps a
             // `LogicalType` built from a bare `TypeId` alive until the
-            // `set_return_type` call below has copied it.
+            // `set_return_type` call below has copied it. This `else` arm and
+            // the missing-callback ones below cannot run: every overload was
+            // checked before the set was created.
             let (_ret_lt_owner, ret_raw) = if let Some(ref lt) = overload.return_logical {
                 (None, lt.as_raw())
             } else if let Some(id) = overload.return_type {
@@ -364,31 +374,21 @@ impl AggregateFunctionSetBuilder {
                 (None, lt.as_raw())
             } else {
                 register_error = Some(ExtensionError::new(format!(
-                    "overload {i} has no return type and the function set has no default \
-                     return type: call `returns`/`returns_logical` on the overload, or on \
-                     the set to cover every overload"
+                    "overload {i} has no return type"
                 )));
                 break;
             };
 
-            let Some(state_size) = overload.state_size else {
-                register_error = Some(ExtensionError::new("overload missing state_size"));
-                break;
-            };
-            let Some(init) = overload.init else {
-                register_error = Some(ExtensionError::new("overload missing init"));
-                break;
-            };
-            let Some(update) = overload.update else {
-                register_error = Some(ExtensionError::new("overload missing update"));
-                break;
-            };
-            let Some(combine) = overload.combine else {
-                register_error = Some(ExtensionError::new("overload missing combine"));
-                break;
-            };
-            let Some(finalize) = overload.finalize else {
-                register_error = Some(ExtensionError::new("overload missing finalize"));
+            let (Some(state_size), Some(init), Some(update), Some(combine), Some(finalize)) = (
+                overload.state_size,
+                overload.init,
+                overload.update,
+                overload.combine,
+                overload.finalize,
+            ) else {
+                register_error = Some(ExtensionError::new(format!(
+                    "overload {i} is missing a required callback"
+                )));
                 break;
             };
 
@@ -469,6 +469,17 @@ impl AggregateFunctionSetBuilder {
                 // SAFETY: func is a valid aggregate function handle.
                 unsafe {
                     duckdb_aggregate_function_set_special_handling(func);
+                }
+            }
+
+            // Set extra info if provided
+            if let Some(info) = &overload.extra_info {
+                // SAFETY: func is valid; data and destroy are provided by caller.
+                unsafe {
+                    duckdb_aggregate_function_set_extra_info(func, info.data(), info.destroy());
+                    // DuckDB owns the allocation from here: the set's copy of
+                    // this function frees it, even if registration fails.
+                    info.mark_transferred();
                 }
             }
 

@@ -40,6 +40,9 @@ pub enum ParamRef<'a, L = LogicalType> {
     Id(TypeId),
     /// Declared with `param_logical(LogicalType)`.
     Logical(&'a L),
+    /// The overload's varargs type, which `DuckDB` counts as part of the
+    /// signature (`ScalarFunction::Equal`). Always last.
+    Varargs(&'a L),
 }
 
 /// The parameters in the order the set builders hand them to `DuckDB`.
@@ -76,7 +79,8 @@ pub fn merged_params<'a, L>(
 ///
 /// # Safety
 ///
-/// Every [`ParamRef::Logical`] must hold a live logical type, and the C API
+/// Every [`ParamRef::Logical`] and [`ParamRef::Varargs`] must hold a live
+/// logical type, and the C API
 /// must be initialised if any is present. A signature made only of
 /// [`ParamRef::Id`]s makes no `DuckDB` call.
 pub unsafe fn reject_duplicate_overloads(
@@ -124,6 +128,11 @@ unsafe fn signature_key(params: &[ParamRef<'_>]) -> String {
             ParamRef::Id(id) => out.push_str(id.sql_name()),
             // SAFETY: the handle is live per this function's contract.
             ParamRef::Logical(lt) => unsafe { describe(lt.as_raw(), &mut out) },
+            ParamRef::Varargs(lt) => {
+                // SAFETY: as above.
+                unsafe { describe(lt.as_raw(), &mut out) };
+                out.push_str("...");
+            }
         }
     }
     out
@@ -354,6 +363,7 @@ mod tests {
             .map(|p| match p {
                 ParamRef::Id(id) => format!("Id({})", id.sql_name()),
                 ParamRef::Logical(name) => format!("Logical({name})"),
+                ParamRef::Varargs(name) => format!("Varargs({name})"),
             })
             .collect()
     }
@@ -421,7 +431,7 @@ mod tests {
             .iter()
             .map(|p| match p {
                 ParamRef::Id(id) => Some(*id),
-                ParamRef::Logical(_) => None,
+                ParamRef::Logical(_) | ParamRef::Varargs(_) => None,
             })
             .collect();
         assert_eq!(ids, vec![Some(TypeId::BigInt), Some(TypeId::Varchar)]);
