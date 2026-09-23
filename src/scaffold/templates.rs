@@ -142,7 +142,12 @@ TARGET_DUCKDB_VERSION={target_version}
 {declare_block}
 all: configure release
 
-# Include extension-ci-tools build rules
+# Include extension-ci-tools build rules. A freshly generated project has a
+# .gitmodules but no submodule yet, and `git submodule update --init` does
+# nothing until the submodule has been added once (LESSONS.md P4).
+ifeq ($(wildcard extension-ci-tools/makefiles/c_api_extensions/base.Makefile),)
+$(error extension-ci-tools is missing. In a new repository run: git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools -- in a clone of an existing one: git submodule update --init --recursive)
+endif
 include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
 include extension-ci-tools/makefiles/c_api_extensions/rust.Makefile
 

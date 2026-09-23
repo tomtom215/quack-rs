@@ -472,11 +472,23 @@ generates a complete SQLLogicTest skeleton.
 
 **Symptom**: `make configure` or `make release` fails.
 
-**Fix**:
+**Fix**: In a **new** project (for example one fresh from the scaffold) the
+submodule has never been added: the scaffold writes `.gitmodules`, but a file
+cannot create the gitlink git needs, so `git submodule update --init` finds
+nothing to do and exits 0 without cloning anything. Add it once:
+
+```bash
+git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+```
+
+In a **clone** of a repository that already has the submodule:
 
 ```bash
 git submodule update --init --recursive
 ```
+
+The generated `Makefile` checks for the checkout before it includes anything
+from it and prints both commands if it is missing.
 
 ---
 
@@ -756,7 +768,7 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 | P1: lib name mismatch | Scaffold | Set `[lib] name` in `Cargo.toml` |
 | P2: API version string | Constant | Use `DUCKDB_API_VERSION` |
 | P3: unit tests insufficient | Documented | Write SQLLogicTest E2E tests |
-| P4: submodule not initialized | Build-time | `git submodule update --init` |
+| P4: submodule not initialized | Build-time | New project: `git submodule add …`; clone: `git submodule update --init` |
 | P5: SQLLogicTest exact match | Documented | Copy output from DuckDB CLI |
 | P6: register set silent fail | Prevented | Builder returns `Err` |
 | P7: VARCHAR format undocumented | Prevented | Use `VectorReader::read_str` |

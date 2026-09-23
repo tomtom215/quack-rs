@@ -462,12 +462,25 @@ SELECT my_function(col) FROM ...;
 **Symptom**: `make configure` or `make release` fails.
 
 **Root cause**: The community extension CI uses `extension-ci-tools` as a git submodule.
-If not initialized, the Makefile cannot find the build scripts.
+If it is not checked out, the Makefile cannot find the build scripts.
 
-**Fix**:
+**Fix**: In a **new** project (for example one fresh from the scaffold) the
+submodule has never been added: the scaffold writes `.gitmodules`, but a file
+cannot create the gitlink git needs, so `git submodule update --init` finds
+nothing to do and exits 0 without cloning anything. Add it once:
+
+```bash
+git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+```
+
+In a **clone** of a repository that already has the submodule:
+
 ```bash
 git submodule update --init --recursive
 ```
+
+The generated `Makefile` checks for the checkout before it includes anything
+from it and prints both commands if it is missing.
 
 ---
 
