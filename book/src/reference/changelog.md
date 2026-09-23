@@ -111,6 +111,16 @@ Each such entry is marked **Breaking:**.
 
 ### Changed
 
+- CI: the **AddressSanitizer job is now blocking**, as planned when it was
+  added. It passed on `main` and over the merged 125-test end-to-end suite with
+  no reports and no suppressions.
+- Mutation testing: the configuration moved to `.cargo/mutants.toml`. At the
+  repository root cargo-mutants never read it — so the full sweep ran without
+  its exclusions or features (2,164 mutants listed instead of 1,348) — and it
+  carried two keys cargo-mutants 27.1.0 rejects (`cap_timeout`, `jobs`). Its
+  `examine_globs` is gone too: once the file was read, that key overrode the
+  incremental job's `--file` flags instead of being narrowed by them.
+
 - **Breaking:** `ScalarFunctionBuilder::map1` / `map2` / `map1_str` / `map2_str` /
   `map1_opt` / `map2_opt` return `Result<TypedScalarFunctionBuilder, _>`. It
   offers `name()`, `volatile()` and `register(con)`; code that passes the result

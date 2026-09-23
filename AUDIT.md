@@ -352,7 +352,7 @@ memory is the harder half.
 |---|---|---|
 | `miri` | Pointer provenance, aliasing, initialisation, leaks, over the pure-Rust half | Found D5 and D4. Ran with default features until 2026-09, which `cfg`'d out every `duckdb-1-5*` module — including `src/arrow.rs`, the largest block of pure-Rust `unsafe` in the crate. Now runs `--features duckdb-1-5-4`, so the claim in this row is true for the first time. |
 | `leak-check` | LeakSanitizer over the end-to-end suite against a real libduckdb — the only way a missing `duckdb_destroy_*` is visible | Found D6; now zero leaks across 58 end-to-end tests |
-| `asan` | AddressSanitizer over the same suite — out-of-bounds writes and use-after-free, the class behind the two heap-corruption defects in v0.16.0. Added 2026-09-20, informational until it has a green run on main. | — |
+| `asan` | AddressSanitizer over the same suite — out-of-bounds writes and use-after-free, the class behind the two heap-corruption defects in v0.16.0. Added 2026-09-20, informational until it had a green run on main; blocking since 2026-09 (section 7). | Green on main (84 tests) and on the 125-test suite locally, with no suppressions |
 | `fuzz` | `cargo-fuzz` over the description.yml parser, the `duckdb_string_t` decoder and the validators | ~32M execs, no crashes |
 | `semver` | `cargo-semver-checks` against the published crate — the API *is* the product | — |
 
@@ -791,7 +791,7 @@ README assertion that panicked — are fixed and were recompiled.
 5. ~~The book changelog's relative links~~ — fixed in this pass:
    `scripts/sync-book-changelog.py` rewrites repository-file links to GitHub
    URLs, since the mirror lives in `book/src/reference/`.
-6. **`AddressSanitizer`** has passed on `main`; see section 7.6 for whether it
-   was made blocking in this pass.
+6. ~~AddressSanitizer is informational~~ — made blocking in this pass: green on
+   `main` (84 tests) and locally over the merged 125-test suite, no suppressions.
 7. `src/value.rs` (~1,100 lines) and `src/aggregate/builder/set.rs` (~508) exceed
    the 500-line guideline.

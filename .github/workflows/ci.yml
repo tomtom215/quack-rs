@@ -952,18 +952,18 @@ jobs:
   # memory is most exposed to. Miri cannot reach it: these paths call foreign
   # functions.
   #
-  # `continue-on-error: true` for now, deliberately: this job has never had a
-  # green run, and libduckdb itself is not instrumented, so the first runs may
-  # need suppressions the way `leak-check` needed lsan-suppressions.txt.
-  # Promote it to blocking (drop this line) after it passes on main, and add an
-  # asan-suppressions.txt if DuckDB's own frames turn up.
+  # Blocking since September 2026. It was `continue-on-error` until it had a
+  # green run on main, because libduckdb itself is not instrumented and the
+  # first runs might have needed suppressions. It then passed on main (84
+  # tests, 6455238) and locally over the 125-test suite with no reports and no
+  # suppressions. Add an asan-suppressions.txt only if DuckDB's own frames
+  # turn up.
   #
   # ASAN subsumes LSAN, so once this is blocking, `leak-check` can fold into it.
   asan:
-    name: AddressSanitizer (informational)
+    name: AddressSanitizer
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
