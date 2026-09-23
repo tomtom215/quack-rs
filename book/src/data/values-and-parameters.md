@@ -12,11 +12,14 @@ Without `Value`, every parameter extraction requires three raw FFI calls and
 careful manual cleanup:
 
 ```rust
+# use libduckdb_sys::*;
+# unsafe fn demo(info: duckdb_bind_info) {
 // Before: raw FFI — easy to leak memory, and `duckdb_get_int64` aborts the
 // process if the argument is SQL NULL (DuckDB throws a C++ exception).
 let mut param = unsafe { duckdb_bind_get_parameter(info, 0) };
 let n = unsafe { duckdb_get_int64(param) };
 unsafe { duckdb_destroy_value(&mut param) };  // forget this → memory leak
+# }
 ```
 
 ## The solution: `Value`
@@ -24,6 +27,9 @@ unsafe { duckdb_destroy_value(&mut param) };  // forget this → memory leak
 `Value` wraps a `duckdb_value` handle and calls `duckdb_destroy_value` on drop:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
 use quack_rs::table::BindInfo;
 
 unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
@@ -97,8 +103,15 @@ exactly the range DuckDB's SQL produces (`TIME` `00:00:00`–`24:00:00`, the
 on) and returns an error otherwise.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# // Values are DuckDB objects: fill the dispatch table first.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
 let noon = Value::time(12 * 3_600 * 1_000_000)?;
 assert!(Value::time(-1).is_err());
+# assert_eq!(noon.as_time(), Some(12 * 3_600 * 1_000_000));
+# Ok::<(), ExtensionError>(())
 ```
 
 `as_blob()` copies the bytes into an owned `Vec<u8>` without UTF-8 validation.
@@ -106,7 +119,13 @@ It accepts only a `BLOB`: DuckDB's conversion of anything else to `BLOB` can
 throw. Use `as_str()` for text.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(bind_info: BindInfo) -> Result<(), ExtensionError> {
 let bytes = unsafe { bind_info.get_parameter_value(0) }.as_blob()?;
+# Ok(())
+# }
 ```
 
 ### Defaulting variants
@@ -115,14 +134,25 @@ The integer, float, bool and string getters have an `_or(default)` variant
 that returns `default` wherever the plain getter returns `None` (or `Err`):
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# // Values are DuckDB objects: fill the dispatch table first.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+# let val = Value::null_value();
 let timeout = val.as_i64_or(30);       // 30 if NULL, absent, or not a number
 let host = val.as_str_or("localhost");  // "localhost" if NULL or absent
 let port = val.as_u16_or(5432);        // 5432 if NULL, absent, or out of range
+# assert_eq!((timeout, host.as_str(), port), (30, "localhost", 5432));
 ```
 
 ## Checking for NULL
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(bind_info: BindInfo) {
 let val = unsafe { bind_info.get_named_parameter_value("limit") };
 if val.is_null() {
     // the handle is null: the named parameter was not provided
@@ -130,6 +160,7 @@ if val.is_null() {
 if val.is_sql_null() {
     // the parameter was provided as SQL NULL
 }
+# }
 ```
 
 ## Escape hatch
@@ -137,10 +168,16 @@ if val.is_sql_null() {
 If you need the raw handle for an API not yet wrapped:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# use libduckdb_sys::duckdb_value;
+# unsafe fn demo(bind_info: BindInfo) {
 let val = unsafe { bind_info.get_parameter_value(0) };
 let raw: duckdb_value = val.into_raw();  // takes ownership, no auto-destroy
 // ... use raw handle ...
 // caller must call duckdb_destroy_value manually
+# }
 ```
 
 ---
@@ -151,6 +188,9 @@ Scan callbacks receive a `duckdb_data_chunk` for output. The `DataChunk` wrapper
 provides ergonomic access:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
 use quack_rs::data_chunk::DataChunk;
 
 unsafe extern "C" fn my_scan(info: duckdb_function_info, output: duckdb_data_chunk) {

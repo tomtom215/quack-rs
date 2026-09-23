@@ -29,6 +29,15 @@ For a single signature, use `AggregateFunctionBuilder` directly.
 ## Registration
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe extern "C" fn state_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 use quack_rs::aggregate::AggregateFunctionSetBuilder;
 use quack_rs::types::TypeId;
 
@@ -74,6 +83,20 @@ Set the return type on the overload with `AggregateOverloadBuilder::returns` (or
 `returns_logical`), and add each one with `overload`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn int_state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn int_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn int_update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn int_combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn int_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe extern "C" fn str_state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn str_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn str_update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn str_combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn str_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder};
 use quack_rs::types::TypeId;
 
@@ -99,6 +122,8 @@ AggregateFunctionSetBuilder::new("my_agg")
             .finalize(str_finalize),
     )
     .register(con)?;
+# Ok(())
+# }
 ```
 
 Each overload carries its own callbacks, so overloads with different parameter
@@ -155,6 +180,16 @@ If **all** overloads share one complex return type, set it once on the set
 builder as a default, rather than repeating it on every overload:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe extern "C" fn destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use quack_rs::aggregate::AggregateFunctionSetBuilder;
 use quack_rs::types::{LogicalType, TypeId};
 
@@ -170,17 +205,26 @@ AggregateFunctionSetBuilder::new("retention")
             .destructor(destroy)
     })
     .register(con)?;
+# Ok(())
+# }
 ```
 
 Individual overloads can also use `param_logical` for complex parameter types:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# fn demo() {
+# let _ = AggregateFunctionSetBuilder::new("retention")
 .overloads(2..=8, |n, builder| {
     builder
         .param(TypeId::Interval)
         .param_logical(LogicalType::list(TypeId::Timestamp)) // LIST(TIMESTAMP) parameter
         // ...
 })
+# ;
+# }
 ```
 
 ---

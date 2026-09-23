@@ -14,17 +14,23 @@ impossible.
 
 **Symptom**: Aggregate function returns wrong results. No error, no crash.
 
-**Root cause**: DuckDB's segment tree creates fresh **zero-initialized** target
-states via `state_init`, then calls `combine` to merge source states into them.
-If your `combine` only propagates data fields (`count`, `sum`) but omits
-configuration fields (`window_size`, `mode`), the configuration will be zero at
-`finalize` time, silently corrupting results.
+**Root cause**: DuckDB's segment tree creates fresh target states, initialised
+by `state_init` (with `FfiState<T>`, a `T::default()`), then calls `combine` to
+merge source states into them. If your `combine` only propagates data fields
+(`count`, `sum`) but omits configuration fields (`window_size`, `mode`), the
+configuration is still its `state_init` default at `finalize` time, silently
+corrupting results.
 
 This bug passed 435 unit tests before being caught by E2E tests.
 
 **Fix**:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { window_size: i64, mode: u8, count: i64 }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn combine(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -64,6 +70,11 @@ already-freed memory → undefined behavior.
 instead of writing your own destructor:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { window_size: i64, mode: u8, count: i64 }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
     unsafe { FfiState::<MyState>::destroy_callback(states, count) };
 }
@@ -87,6 +98,12 @@ FFI callbacks. `FfiState::with_state_mut` returns `Option`, not `Result`, so
 callers use `if let`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { window_size: i64, mode: u8, count: i64 }
+# impl AggregateState for MyState {}
+# unsafe fn demo(state_ptr: duckdb_aggregate_state) {
 // Safe pattern — no unwrap in FFI callback
 if let Some(st) = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) } {
     st.count += 1;
@@ -94,6 +111,7 @@ if let Some(st) = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) } {
 
 // Dangerous — never do this in an FFI callback
 let st = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) }.unwrap(); // panics if None
+# }
 ```
 
 quack-rs's callback macros and typed builders catch a panic and report it as a
@@ -123,12 +141,17 @@ the validity bitmap on the write path. `VectorWriter::set_null` does this
 automatically:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(writer: &mut VectorWriter, row: usize) {
 // Correct — handled by set_null
 unsafe { writer.set_null(row) };
 
 // Wrong — validity bitmap may not be allocated yet
 // let validity = duckdb_vector_get_validity(output);          // NULL
 // duckdb_validity_set_row_invalid(validity, row);            // silently ignored
+# }
 ```
 
 For `STRUCT` and `ARRAY` outputs `set_null` also nulls the children at that
@@ -152,7 +175,12 @@ behavior.
 does this:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(reader: &VectorReader, row: usize) {
 let b: bool = unsafe { reader.read_bool(row) };  // safe: uses u8 != 0 internally
+# }
 ```
 
 ---
@@ -284,6 +312,14 @@ a copy callback alongside the bind data, in the same bind callback and after
 `set_bind_data`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# use std::os::raw::c_void;
+# use quack_rs::scalar::ScalarBindInfo;
+# #[derive(Clone)] struct MyBindData;
+# unsafe extern "C" fn destroy(p: *mut c_void) { drop(unsafe { Box::from_raw(p.cast::<MyBindData>()) }); }
+# unsafe fn demo(bind_info: ScalarBindInfo, boxed: Box<MyBindData>) {
 unsafe extern "C" fn copy(data: *mut c_void) -> *mut c_void {
     if data.is_null() {
         return std::ptr::null_mut();
@@ -296,6 +332,7 @@ unsafe {
     bind_info.set_bind_data(Box::into_raw(boxed).cast(), Some(destroy));
     bind_info.set_bind_data_copy(Some(copy));
 }
+# }
 ```
 
 The duplicate is freed with the **same** destructor as the original, so `copy`

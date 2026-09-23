@@ -11,11 +11,15 @@ like `length()`, `upper()`, or `sin()`.
 DuckDB calls your scalar function once per data chunk (not once per row). The signature is:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
 unsafe extern "C" fn my_fn(
     info: duckdb_function_info,     // function metadata (rarely needed)
     input: duckdb_data_chunk,       // input data — one or more columns
     output: duckdb_vector,          // output vector — one value per input row
 )
+# {}
 ```
 
 Inside the function, you:
@@ -28,6 +32,10 @@ Inside the function, you:
 ## Registration
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn my_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
 use quack_rs::scalar::ScalarFunctionBuilder;
 use quack_rs::types::TypeId;
 
@@ -52,11 +60,18 @@ The builder validates that `returns` and `function` are set before calling
 For user-configurable function names (e.g., from a config file), use `try_new`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn my_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe fn demo(con: duckdb_connection, name: &str) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::try_new(name)?   // validates name before building
     .param(TypeId::Varchar)
     .returns(TypeId::Varchar)
     .function(my_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 `try_new` validates the name as an unquoted SQL identifier: `[A-Za-z_][A-Za-z0-9_]*`,
@@ -75,7 +90,13 @@ closure vectors of a different width than it reads and writes. Register it throu
 a `Registrar` with `register_typed_scalar`.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?.register(con)?;
+# Ok(())
+# }
 ```
 
 ---
@@ -83,6 +104,23 @@ ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?.register(con)?;
 ## Complete example: `double_it(BIGINT) → BIGINT`
 
 ```rust
+# use quack_rs::prelude::*;
+# fn live_connection() -> libduckdb_sys::duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), libduckdb_sys::DuckDBSuccess);
+#     }
+#     con
+# }
+# /// First column of the first row, as BIGINT; `None` for NULL.
+# fn query_i64(con: libduckdb_sys::duckdb_connection, sql: &str) -> Option<i64> {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
+#     let reader = unsafe { chunk.reader(0) };
+#     unsafe { reader.is_valid(0).then(|| reader.read_i64(0)) }
+# }
 use quack_rs::vector::{VectorReader, VectorWriter};
 use libduckdb_sys::{duckdb_function_info, duckdb_data_chunk, duckdb_vector};
 
@@ -107,6 +145,13 @@ unsafe extern "C" fn double_it(
         unsafe { writer.write_i64(row, value * 2) };
     }
 }
+# let con = live_connection();
+# unsafe {
+#     ScalarFunctionBuilder::new("double_it").param(TypeId::BigInt).returns(TypeId::BigInt)
+#         .function(double_it).register(con).unwrap();
+# }
+# assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
+# assert_eq!(query_i64(con, "SELECT double_it(NULL::BIGINT)"), None);
 ```
 
 ---
@@ -114,6 +159,9 @@ unsafe extern "C" fn double_it(
 ## Multi-parameter example: `add(BIGINT, BIGINT) → BIGINT`
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
 unsafe extern "C" fn add(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -140,6 +188,9 @@ unsafe extern "C" fn add(
 ## VARCHAR example: `shout(VARCHAR) → VARCHAR`
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
 unsafe extern "C" fn shout(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -168,6 +219,11 @@ If your function accepts different parameter types or arities, use `ScalarFuncti
 to register multiple overloads under a single name:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn add_ints(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe extern "C" fn add_doubles(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
 use quack_rs::scalar::{ScalarFunctionSetBuilder, ScalarOverloadBuilder};
 use quack_rs::types::TypeId;
 
@@ -217,6 +273,11 @@ itself — call `chunk.propagate_nulls(&mut writer)` at the end, or use the type
 NULL input (e.g., a `COALESCE`-like function) sets `SpecialNullHandling`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn my_coalesce_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use quack_rs::types::NullHandling;
 
 ScalarFunctionBuilder::new("coalesce_custom")
@@ -225,6 +286,8 @@ ScalarFunctionBuilder::new("coalesce_custom")
     .null_handling(NullHandling::SpecialNullHandling)
     .function(my_coalesce_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 With `SpecialNullHandling`, your callback must check `VectorReader::is_valid(row)`
@@ -238,6 +301,11 @@ For scalar functions that accept or return parameterized types like `LIST(BIGINT
 use `param_logical` and `returns_logical`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn flatten_list_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use quack_rs::scalar::ScalarFunctionBuilder;
 use quack_rs::types::{LogicalType, TypeId};
 
@@ -246,15 +314,25 @@ ScalarFunctionBuilder::new("flatten_list")
     .returns(TypeId::BigInt)
     .function(flatten_list_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 These methods are also available on `ScalarOverloadBuilder` for function sets:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn my_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# fn demo() {
+# let _ =
 ScalarOverloadBuilder::new()
     .param(TypeId::Varchar)
     .returns_logical(LogicalType::list(TypeId::Timestamp))  // LIST(TIMESTAMP) output
     .function(my_fn)
+# ;
+# }
 ```
 
 ---
@@ -284,11 +362,18 @@ Declares that the function accepts a variable number of trailing arguments, all
 of the given `TypeId`. Maps to `duckdb_scalar_function_set_varargs`.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn concat_all_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::new("concat_all")
     .varargs(TypeId::Varchar)
     .returns(TypeId::Varchar)
     .function(concat_all_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 ### `varargs_logical(logical_type: LogicalType)`
@@ -297,11 +382,18 @@ Like `varargs`, but accepts a `LogicalType` for parameterized variadic arguments
 Maps to `duckdb_scalar_function_set_varargs`.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn merge_lists_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::new("merge_lists")
     .varargs_logical(LogicalType::list(TypeId::BigInt))
     .returns_logical(LogicalType::list(TypeId::BigInt))
     .function(merge_lists_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 ### `volatile()`
@@ -312,11 +404,18 @@ results across calls with the same arguments. Maps to
 `TypedScalarFunctionBuilder`.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn random_int_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::new("random_int")
     .returns(TypeId::Integer)
     .volatile()
     .function(random_int_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 ---
@@ -333,12 +432,20 @@ types and set the return type dynamically. Maps to
 `duckdb_scalar_function_set_bind`.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn dynamic_return_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe extern "C" fn my_bind_fn(_: duckdb_bind_info) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::new("dynamic_return")
     .varargs(TypeId::Varchar)
     .returns(TypeId::Varchar)   // default; overridden in bind
     .bind(my_bind_fn)
     .function(dynamic_return_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 ### `init(init_fn)`
@@ -348,12 +455,20 @@ this to allocate per-thread state. Maps to
 `duckdb_scalar_function_set_init`.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn stateful_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe extern "C" fn my_init_fn(_: duckdb_init_info) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::new("stateful_fn")
     .param(TypeId::BigInt)
     .returns(TypeId::BigInt)
     .init(my_init_fn)
     .function(stateful_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 ### Typed bind data and local state
@@ -362,6 +477,11 @@ ScalarFunctionBuilder::new("stateful_fn")
 and init callbacks with a generated, panic-safe destructor:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# use quack_rs::scalar::{ScalarBindData, ScalarBindInfo, ScalarFunctionInfo};
+# unsafe fn demo(bind_info: ScalarBindInfo, fn_info: ScalarFunctionInfo) {
 #[derive(Clone)]
 struct Factor(i64);
 
@@ -369,6 +489,7 @@ struct Factor(i64);
 ScalarBindData::set(&bind_info, Factor(10));
 // in the function callback
 let factor = unsafe { ScalarBindData::<Factor>::get(&fn_info) };
+# }
 ```
 
 - **Bind data must be `Clone + Send + Sync`.** Every executing thread reads the
@@ -396,6 +517,14 @@ parameterising the function behaviour (e.g., a locale or configuration struct).
 The method is available on both `ScalarFunctionBuilder` and `ScalarOverloadBuilder`.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn locale_upper_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# unsafe extern "C" fn my_destroy(p: *mut std::os::raw::c_void) {
+#     drop(unsafe { Box::from_raw(p.cast::<String>()) });
+# }
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use std::os::raw::c_void;
 
 let config = Box::into_raw(Box::new("en_US".to_string())).cast::<c_void>();
@@ -407,6 +536,8 @@ unsafe {
         .function(locale_upper_fn)
         .register(con)?;
 }
+# Ok(())
+# }
 ```
 
 Inside the callback, retrieve the extra info with `ScalarFunctionInfo::get_extra_info()`.
@@ -423,6 +554,9 @@ function callback. It exposes:
 - `set_error(message)` — reports an error, causing DuckDB to abort the query
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
 use quack_rs::scalar::ScalarFunctionInfo;
 
 unsafe extern "C" fn my_fn(

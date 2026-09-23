@@ -362,8 +362,8 @@ fn test_word_count() {
 
 ### Testing `combine` (Pitfall L1)
 
-DuckDB creates fresh zero-initialized target states and calls `combine` to merge
-into them. You MUST propagate ALL fields — including configuration fields —
+DuckDB creates fresh target states — set up by `state_init`, which with
+`FfiState<T>` means `T::default()` — and calls `combine` to merge into them. You MUST propagate ALL fields — including configuration fields —
 not just accumulated data. Test this explicitly:
 
 ```rust,test_harness
@@ -379,7 +379,7 @@ fn combine_propagates_config() {
         s.count += 5;          // data field
     });
 
-    // h2 simulates a fresh zero-initialized state created by DuckDB
+    // h2 simulates a fresh target state: `state_init` gave it `MyState::default()`
     let mut h2 = AggregateTestHarness::<MyState>::new();
 
     h2.combine(&h1, |src, tgt| {

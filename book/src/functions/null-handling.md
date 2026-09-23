@@ -90,8 +90,33 @@ validity for you — a NULL argument short-circuits to a NULL result without eve
 calling your code:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# fn live_connection() -> libduckdb_sys::duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), libduckdb_sys::DuckDBSuccess);
+#     }
+#     con
+# }
+# /// First column of the first row, as BIGINT; `None` for NULL.
+# fn query_i64(con: libduckdb_sys::duckdb_connection, sql: &str) -> Option<i64> {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
+#     let reader = unsafe { chunk.reader(0) };
+#     unsafe { reader.is_valid(0).then(|| reader.read_i64(0)) }
+# }
+# let con = live_connection();
+# let run = || -> Result<(), ExtensionError> { unsafe {
 ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?
     .register(con)?;
+# } Ok(()) };
+# run().unwrap();
+# assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
+# assert_eq!(query_i64(con, "SELECT double_it(NULL::BIGINT)"), None);
 ```
 
 Use `map1_opt` / `map2_opt` when the function needs to *see* NULLs; those
@@ -103,6 +128,25 @@ When you write the `extern "C"` callback yourself, restore SQL semantics with on
 call at the end:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# fn live_connection() -> libduckdb_sys::duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), libduckdb_sys::DuckDBSuccess);
+#     }
+#     con
+# }
+# /// First column of the first row, as BIGINT; `None` for NULL.
+# fn query_i64(con: libduckdb_sys::duckdb_connection, sql: &str) -> Option<i64> {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
+#     let reader = unsafe { chunk.reader(0) };
+#     unsafe { reader.is_valid(0).then(|| reader.read_i64(0)) }
+# }
 quack_rs::scalar_callback!(double_it, |_info, input, output| {
     let chunk = unsafe { DataChunk::from_raw(input) };
     let reader = unsafe { chunk.reader(0) };
@@ -113,6 +157,11 @@ quack_rs::scalar_callback!(double_it, |_info, input, output| {
     // Without this, double_it(NULL) is 0, not NULL.
     unsafe { chunk.propagate_nulls(&mut writer) };
 });
+# let con = live_connection();
+# unsafe { ScalarFunctionBuilder::new("double_it").param(TypeId::BigInt).returns(TypeId::BigInt)
+#     .function(double_it).register(con).unwrap(); }
+# assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
+# assert_eq!(query_i64(con, "SELECT double_it(NULL::BIGINT)"), None);
 ```
 
 `propagate_nulls` resolves each column's validity pointer once and marks the
@@ -124,16 +173,16 @@ you need the decision inline.
 
 ## `NullHandling` enum
 
-```rust,ignore
+```rust
 use quack_rs::types::NullHandling;
 
 // Default: the function promises NULL in -> NULL out.
 // Scalar: you must keep that promise (see above).
 // Aggregate: `update` still receives NULL rows; skip them yourself.
-NullHandling::DefaultNullHandling
+NullHandling::DefaultNullHandling;
 
 // The function means to see NULLs and may return non-NULL for them.
-NullHandling::SpecialNullHandling
+NullHandling::SpecialNullHandling;
 ```
 
 ---
@@ -146,13 +195,18 @@ in DuckDB's `aggregate_function-c.cpp` flattens the inputs and passes the whole
 chunk through; nothing on the way filters by validity. An aggregate that ignores
 NULLs skips them itself:
 
-```rust,ignore
+```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(chunk: &DataChunk, reader: &VectorReader) {
 for row in 0..chunk.size() {
     if !unsafe { reader.is_valid(row) } {
         continue; // a NULL row: its data slot holds no meaningful value
     }
     // ... accumulate reader.read_i64(row) into *states.add(row) ...
 }
+# }
 ```
 
 `SpecialNullHandling` declares that the aggregate may return non-NULL for NULL
@@ -164,6 +218,15 @@ subquery in `WHERE`) answered differently under the two settings on DuckDB 1.5.5
 Set it anyway when it is true; it is what DuckDB expects.
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn my_state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn my_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn my_update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn my_combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn my_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::{TypeId, NullHandling};
 
@@ -177,6 +240,8 @@ AggregateFunctionBuilder::new("count_with_nulls")
     .combine(my_combine)
     .finalize(my_finalize)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 ### Empty groups in a correlated subquery

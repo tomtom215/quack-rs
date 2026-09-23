@@ -165,6 +165,9 @@ lossless.
 
 ## Bridging to arrow-rs
 
+This sketch uses the `arrow` crate's `FFI_ArrowArray`, which quack-rs does not
+depend on, so it is not compiled with the book:
+
 ```rust,ignore
 // quack-rs -> arrow-rs
 let ffi: FFI_ArrowArray = unsafe { std::mem::transmute(array.into_raw()) };

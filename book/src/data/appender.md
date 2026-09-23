@@ -17,7 +17,7 @@ Call one `append_*` per column, then finish the row. `row` calls `end_row` for
 you, which is the difference between a forgotten `end_row` being a non-issue and
 a silently short table:
 
-```rust,no_run
+```rust
 use quack_rs::appender::{AppendError, Appender};
 # use libduckdb_sys::duckdb_connection;
 
@@ -35,6 +35,27 @@ for (sensor, reading) in [("a", 1.5_f64), ("b", 2.5)] {
 appender.close()?;
 # Ok(())
 # }
+# fn live_connection() -> libduckdb_sys::duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), libduckdb_sys::DuckDBSuccess);
+#     }
+#     con
+# }
+# /// First column of the first row, as BIGINT; `None` for NULL.
+# fn query_i64(con: libduckdb_sys::duckdb_connection, sql: &str) -> Option<i64> {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
+#     let reader = unsafe { chunk.reader(0) };
+#     unsafe { reader.is_valid(0).then(|| reader.read_i64(0)) }
+# }
+# let con = live_connection();
+# unsafe { quack_rs::query::execute(con, "CREATE TABLE measurements (sensor VARCHAR, reading DOUBLE)") }.unwrap();
+# unsafe { demo(con) }.unwrap();
+# assert_eq!(query_i64(con, "SELECT count(*) FROM measurements"), Some(2));
+# assert_eq!(query_i64(con, "SELECT (sum(reading) * 10)::BIGINT FROM measurements"), Some(40));
 ```
 
 `append_str` uses `duckdb_append_varchar_length`, so **interior NUL bytes
@@ -104,7 +125,6 @@ without re-appending rows that were already committed:
 
 ```rust,no_run
 # use quack_rs::appender::Appender;
-# #[cfg(feature = "duckdb-1-5")]
 # fn demo(appender: &Appender) {
 if let Err(err) = appender.flush() {
     eprintln!("flush failed: {err}");
