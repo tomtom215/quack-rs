@@ -862,3 +862,84 @@ fn file_flag_create_new_creates_or_refuses() {
     assert!(fresh.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The error message from running `sql`, which must fail.
+fn error_of(fx: &Fixture, sql: &str) -> String {
+    // SAFETY: `con` is open.
+    unsafe { query(fx.con(), sql) }
+        .map(drop)
+        .expect_err(sql)
+        .as_str()
+        .to_owned()
+}
+
+/// TBL-11: a failed fold carried the exception's raw JSON
+/// (`{"exception_type":"Conversion",...}`) as its message and always the
+/// type `InvalidInput`.
+#[cfg(feature = "duckdb-1-5")]
+mod fold_errors {
+    use super::{Fixture, TypeId};
+    use quack_rs::error_data::DuckDbErrorType;
+    use quack_rs::scalar::{ScalarBindInfo, ScalarFunctionBuilder};
+    use std::sync::{Mutex, PoisonError};
+
+    static SEEN: Mutex<Vec<(DuckDbErrorType, String)>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn fold_bind(info: libduckdb_sys::duckdb_bind_info) {
+        // SAFETY: `info` is the live bind info.
+        let bind = unsafe { ScalarBindInfo::new(info) };
+        // SAFETY: argument 0 was declared.
+        let Some(expr) = (unsafe { bind.argument(0) }) else {
+            return;
+        };
+        // SAFETY: used only inside this callback.
+        let ctx = unsafe { bind.get_client_context() };
+        if let Err(e) = expr.fold(&ctx) {
+            SEEN.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((e.error_type(), e.message().unwrap_or_default()));
+        }
+    }
+    quack_rs::scalar_callback!(fold_exec, |_info, input, output| {
+        // SAFETY: `input` and `output` are the live vectors.
+        let chunk = unsafe { quack_rs::data_chunk::DataChunk::from_raw(input) };
+        let mut writer = unsafe { quack_rs::vector::VectorWriter::from_vector(output) };
+        for row in 0..chunk.size() {
+            // SAFETY: `row` is in range.
+            unsafe { writer.write_i64(row, 0) };
+        }
+    });
+
+    #[test]
+    fn a_failed_fold_reports_the_message_and_type_not_json() {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open; the callbacks match their signatures.
+        unsafe {
+            ScalarFunctionBuilder::try_new("tc_fold")
+                .expect("name")
+                .param(TypeId::BigInt)
+                .returns(TypeId::BigInt)
+                .bind(fold_bind)
+                .function(fold_exec)
+                .register(fx.con())
+                .expect("register");
+        }
+        for (sql, ty, message) in [
+            (
+                "SELECT tc_fold('abc'::BIGINT)",
+                DuckDbErrorType::Conversion,
+                "Could not convert string 'abc' to INT64",
+            ),
+            (
+                "SELECT tc_fold(9223372036854775807 + 1)",
+                DuckDbErrorType::OutOfRange,
+                "Overflow in addition of INT64 (9223372036854775807 + 1)!",
+            ),
+        ] {
+            SEEN.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            let _ = super::error_of(&fx, sql);
+            let seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            assert_eq!(seen, vec![(ty, message.to_owned())], "{sql}");
+        }
+    }
+}

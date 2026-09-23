@@ -53,6 +53,12 @@ unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
 `fold` only succeeds when [`is_foldable`][is_foldable] returns `true`; otherwise it
 returns a structured [`ErrorData`].
 
+When evaluation itself fails, DuckDB 1.5.5 hands the C API the exception's JSON
+form (`{"exception_type":"Conversion","exception_message":"...",...}`) and always
+tags it `INVALID_INPUT`. `fold` unpacks it: `err.message()` is the plain message
+and `err.error_type()` the type the exception named (`Conversion`, `OutOfRange`,
+...). Text that is not that JSON is passed through unchanged.
+
 ## Obtaining an `Expression`
 
 `ScalarBindInfo` (the wrapper around a scalar bind callback's `duckdb_bind_info`)
