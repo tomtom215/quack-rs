@@ -26,8 +26,13 @@ let db = cache.get_or_create(c"analytics.db", None)?;
 # }
 ```
 
-Pass a [`DbConfig`] to control how a *freshly created* instance is configured; it
-is ignored when an instance already exists for the path:
+Pass a [`DbConfig`] to control how a *freshly created* instance is configured.
+When an instance already exists for the path, the config must **match** the one it
+was created with — a different one is an error ("Can't open a connection to same
+database file with a different configuration than existing connections"), not
+silently ignored. `None` means DuckDB's defaults, so it too conflicts with an
+instance created with a custom config. An empty path (in-memory) is never cached:
+each call creates a separate database.
 
 ```rust,no_run
 use quack_rs::instance_cache::InstanceCache;
@@ -53,6 +58,16 @@ let db = cache.get_or_create(c"analytics.db", Some(&config))?;
 
 `get_or_create` returns `Result<duckdb_database, `[`ExtensionError`]`>`; on failure
 the error carries DuckDB's message.
+
+## Threads
+
+`InstanceCache` is `Send + Sync`, so one cache can serve several threads: DuckDB's
+`DBInstanceCache` guards its map with a mutex and serialises creation of each
+database. One ordering hazard remains, and it is DuckDB's: while the **last** handle
+to a cached file database is being closed, a concurrent `get_or_create` of the same
+path can fail with "Unique file handle conflict" because the closing instance still
+holds the file. Keep one handle open while other threads may open the path, or
+retry.
 
 ## Ownership
 
