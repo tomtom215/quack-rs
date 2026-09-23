@@ -5663,3 +5663,7 @@ mod query_stream;
 
 #[path = "ffi_roundtrip/value_nested.rs"]
 mod value_nested;
+
+#[cfg(feature = "duckdb-1-5-4")]
+#[path = "ffi_roundtrip/arrow_import.rs"]
+mod arrow_import;

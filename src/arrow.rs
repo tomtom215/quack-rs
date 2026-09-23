@@ -59,9 +59,11 @@
 //! # What this module refuses that `DuckDB` would not
 //!
 //! `duckdb_data_chunk_from_arrow` indexes `arrow_array->children[i]` once per
-//! column in the converted schema, with no bounds check, and dereferences the
-//! array without checking whether it has already been released. Both are
-//! segfaults rather than errors. [`data_chunk_from_arrow`] checks them first and
+//! column in the converted schema, with no bounds check, dereferences each
+//! child without a null check, reads `offset + length` rows of each child
+//! without comparing its length, and dereferences the array without checking
+//! whether it has already been released. Those are segfaults or out-of-bounds
+//! reads rather than errors. [`data_chunk_from_arrow`] checks them first and
 //! returns an [`ErrorData`] instead — which is why [`ArrowConvertedSchema`]
 //! remembers the column count of the schema it was built from.
 //!
@@ -89,6 +91,20 @@
 //! handed to [`data_chunk_from_arrow`] must be one a conforming Arrow producer
 //! built. Arrays that came from [`data_chunk_to_arrow`], from arrow-rs, or from
 //! any other real Arrow implementation qualify.
+//!
+//! Nor whether the array **conforms to the converted schema**: an Arrow array
+//! carries no type, so `DuckDB` reads each child as the format the schema
+//! declares, and an `int32` child imported under a `utf8` schema is read as
+//! string offsets. And `length` is taken on trust: `DuckDB` allocates the
+//! chunk for that many rows before its error handling starts, so an absurd
+//! length aborts the process with an allocation failure. Both are part of
+//! [`data_chunk_from_arrow`]'s `# Safety` contract.
+//!
+//! # Round trips that lose information
+//!
+//! `DuckDB`'s own converters do not round-trip every type exactly: a `TIMETZ`
+//! comes back as `TIME` with its offset dropped (`01:02:03+05:30` returns as
+//! `01:02:03`), and a `BIT` comes back as `BLOB`.
 //!
 //! # Example: chunk → Arrow → chunk
 //!
@@ -592,8 +608,14 @@ impl ArrowArray {
     ///
     /// # Safety
     ///
-    /// `raw` must be a record whose `release` callback this value may call
-    /// exactly once, and no other wrapper may hold the same record.
+    /// - `raw` must be a record whose `release` callback this value may call
+    ///   exactly once, and no other wrapper may hold the same record.
+    /// - It must be a valid Arrow C Data Interface array: `length`, `offset`
+    ///   and `null_count` true, and every buffer, child and dictionary pointer
+    ///   valid for the lengths and offsets the record and its descendants
+    ///   declare. The safe accessors here and [`data_chunk_from_arrow`] read
+    ///   through those pointers; the Arrow C Data Interface carries no sizes
+    ///   that could be checked instead.
     #[inline]
     #[must_use]
     pub const unsafe fn from_raw(raw: RawArrowArray) -> Self {
@@ -988,21 +1010,44 @@ pub unsafe fn schema_from_arrow(
 /// claim it (a zero-column converted schema, where the loop never runs).
 ///
 /// The resulting chunk keeps the Arrow buffers alive, so the data is shared, not
-/// copied.
+/// copied. Dictionary-encoded and run-end-encoded children are converted
+/// (`ColumnArrowToDuckDBDictionary` / `…RunEndEncoded`) as well as plain ones.
 ///
 /// # Errors
 ///
-/// - [`DuckDbErrorType::InvalidInput`] if `array` has already been released, or
-///   if its child count does not match `converted`'s column count. `DuckDB`
-///   checks neither and would read out of bounds.
-/// - Whatever `DuckDB` reports for a layout it cannot convert — dictionary and
-///   run-end encoded children are rejected with
-///   [`DuckDbErrorType::NotImplemented`].
+/// [`DuckDbErrorType::InvalidInput`], checked here because `DuckDB` does not
+/// check them and would read out of bounds or through a null pointer:
+///
+/// - `array` has already been released, has a negative `length` or `offset`,
+///   or has no rows (see below);
+/// - its child count does not match `converted`'s column count;
+/// - its `children` pointer, or one of the child pointers, is null;
+/// - a child is shorter than `offset + length` (the Arrow specification
+///   requires every child of a struct array to hold that many rows).
+///
+/// Every error `DuckDB` itself reports from the conversion also arrives as
+/// [`DuckDbErrorType::InvalidInput`]: `duckdb_data_chunk_from_arrow` maps all
+/// of them to `DUCKDB_ERROR_INVALID_INPUT`.
 ///
 /// # Safety
 ///
-/// `connection` must be a live `duckdb_connection`, and `converted` must have
-/// been produced from it (or from another connection of the same database).
+/// - `connection` must be a live `duckdb_connection`, and `converted` must
+///   have been produced from it (or from another connection of the same
+///   database).
+/// - `array` must be a valid Arrow struct array (see
+///   [`ArrowArray::from_raw`]) that **conforms to `converted`'s schema**: each
+///   child's physical layout must be the one its column's Arrow format
+///   describes. `DuckDB` reads a child's buffers as that format with no check
+///   — an `int32` child imported under a `utf8` schema has its values read as
+///   string offsets into a buffer that does not exist (a crash, or worse). An
+///   array exported with [`data_chunk_to_arrow`] under the schema that
+///   `converted` was made from conforms.
+/// - `length` must be the array's true row count. `DuckDB` allocates a chunk
+///   of that capacity before its error handling starts
+///   (`dchunk->Initialize(…, length)` in `arrow-c.cpp`), so a length too large
+///   to allocate throws through the C API and aborts the process. No bound
+///   short of the memory the producer's own buffers already occupy separates
+///   a valid length from an absurd one, so it cannot be checked here.
 #[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub unsafe fn data_chunk_from_arrow(
     connection: duckdb_connection,
@@ -1026,6 +1071,12 @@ pub unsafe fn data_chunk_from_arrow(
                  this is refused here rather than read out of bounds.",
                 converted.column_count(),
             ),
+        ));
+    }
+    if let Err(message) = check_struct_children(&array) {
+        return Err(ErrorData::new(
+            DuckDbErrorType::InvalidInput,
+            &format!("data_chunk_from_arrow: {message}"),
         ));
     }
     if array.is_empty() {
@@ -1068,6 +1119,54 @@ pub unsafe fn data_chunk_from_arrow(
     }
     // SAFETY: `out` is a fresh chunk this value now owns.
     Ok(unsafe { OwnedDataChunk::from_raw(out) })
+}
+
+/// The structural checks `duckdb_data_chunk_from_arrow` skips before it reads
+/// `arrow_array->children[i]` for every column: a negative length or offset,
+/// a null `children` array or child, and a child with fewer than the parent's
+/// `offset + length` rows. `array` must not be released.
+fn check_struct_children(array: &ArrowArray) -> Result<(), String> {
+    let raw = &array.0;
+    if raw.length < 0 || raw.offset < 0 {
+        return Err(format!(
+            "the Arrow array has a negative length ({}) or offset ({})",
+            raw.length, raw.offset
+        ));
+    }
+    let children = array.child_count();
+    if children == 0 {
+        return Ok(());
+    }
+    if raw.children.is_null() {
+        return Err(format!(
+            "the Arrow array declares {children} child array(s) but its `children` pointer is \
+             null"
+        ));
+    }
+    let needed = raw.length.checked_add(raw.offset).ok_or_else(|| {
+        format!(
+            "the Arrow array's offset ({}) plus length ({}) overflows",
+            raw.offset, raw.length
+        )
+    })?;
+    for index in 0..children {
+        // SAFETY: `children` is non-null and, per `ArrowArray::from_raw`'s
+        // contract, points at `n_children` child pointers.
+        let child = unsafe { *raw.children.add(index) };
+        if child.is_null() {
+            return Err(format!("child {index} of the Arrow array is null"));
+        }
+        // SAFETY: a non-null child pointer of a valid array points at a live
+        // record.
+        let child_length = unsafe { (*child).length };
+        if child_length < needed {
+            return Err(format!(
+                "child {index} of the Arrow array has {child_length} row(s), but the struct \
+                 array's offset + length needs {needed}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
