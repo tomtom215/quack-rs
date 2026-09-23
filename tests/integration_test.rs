@@ -1057,6 +1057,81 @@ fn the_example_obeys_the_crates_own_release_profile_rules() {
     );
 }
 
+/// Every "N pitfalls" claim in the documentation matches the number of
+/// pitfalls `LESSONS.md` actually documents.
+///
+/// The count had drifted three ways at once — 21 in the crate docs and the
+/// FAQ, 23 in the README and the book introduction — because each copy was
+/// edited by hand.
+#[test]
+fn documented_pitfall_counts_match_lessons_md() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("book").is_dir() {
+        eprintln!("SKIPPED documented_pitfall_counts_match_lessons_md: book/ is not packaged");
+        return;
+    }
+    let lessons = std::fs::read_to_string(root.join("LESSONS.md")).expect("LESSONS.md");
+    let actual = lessons
+        .lines()
+        .filter(|l| {
+            l.strip_prefix("## ")
+                .and_then(|h| h.split_once(':'))
+                .is_some_and(|(id, _)| {
+                    id.len() >= 2
+                        && matches!(id.as_bytes()[0], b'L' | b'P')
+                        && id[1..].bytes().all(|b| b.is_ascii_digit())
+                })
+        })
+        .count();
+    assert!(
+        actual > 0,
+        "no `## L<n>:` / `## P<n>:` headings found in LESSONS.md"
+    );
+
+    let mut files = vec![root.join("README.md"), root.join("src/lib.rs")];
+    let mut dirs = vec![root.join("book/src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "md")
+                && path.file_name().is_some_and(|n| n != "changelog.md")
+            {
+                files.push(path);
+            }
+        }
+    }
+    let mut wrong = Vec::new();
+    for file in &files {
+        let text =
+            std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        let words: Vec<&str> = text.split_whitespace().collect();
+        for (i, w) in words.iter().enumerate() {
+            let digits = w.trim_matches(|c: char| !c.is_ascii_digit());
+            let Ok(n) = digits.parse::<usize>() else {
+                continue;
+            };
+            // "<n> ... pitfall(s)" within the next four words, e.g. "23 documented
+            // FFI pitfalls", "all 21 known pitfalls", "23 pitfalls documented".
+            // Historical counts ("revealed 16 undocumented pitfalls", "the
+            // first 16 of the pitfalls") are about the past and stay as written.
+            let window = &words[i + 1..words.len().min(i + 5)];
+            let near = window.iter().any(|w| w.starts_with("pitfall"));
+            let historical = window.iter().any(|w| w.contains("undocumented"))
+                || i.checked_sub(1).is_some_and(|p| words[p] == "first");
+            if near && !historical && n != actual {
+                wrong.push(format!("{}: says {n}", file.display()));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "LESSONS.md documents {actual} pitfalls, but:\n{}",
+        wrong.join("\n")
+    );
+}
+
 /// Every paragraph of user-facing documentation that mentions
 /// `panic = "abort"` must be warning against it.
 ///

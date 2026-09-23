@@ -452,7 +452,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | ID | Name | Symptom | quack-rs Solution |
 |----|------|---------|-------------------|
 | **P1** | Library name mismatch | Extension fails to load | Documented; scaffold sets it correctly |
-| **P2** | C API version ≠ release version | Wrong `-dv` flag corrupts extension metadata | `DUCKDB_API_VERSION = "v1.2.0"` constant; `append_metadata` binary ships with the crate; `ScaffoldConfig` rejects `-dv`/ABI-type pairings DuckDB would refuse |
+| **P2** | C API version ≠ release version | Wrong `-dv` flag: the script succeeds, then `LOAD` refuses the file | `DUCKDB_API_VERSION = "v1.2.0"` constant; `append_metadata` binary ships with the crate; `ScaffoldConfig` rejects `-dv`/ABI-type pairings DuckDB would refuse |
 | **P3** | Missing E2E tests | Community submission rejected | Scaffold generates SQLLogicTest skeleton |
 | **P4** | Uninitialized submodule | `make` fails with missing files | Documented; scaffold generates `.gitmodules` |
 | **P5** | SQLLogicTest format mismatch | Tests fail with exact-match errors | Documented with format reference |
@@ -477,21 +477,30 @@ Every community extension must include a `description.yml` metadata file.
 `quack-rs` can validate the entire file before submission:
 
 ```rust
+use quack_rs::error::ExtensionError;
 use quack_rs::validate::description_yml::{
-    parse_description_yml, validate_rust_extension, validate_description_yml_str,
+    parse_description_yml, validate_description_yml_str, validate_rust_extension,
 };
 
-// Quick pass/fail check
-let result = validate_description_yml_str(include_str!("description.yml"));
-assert!(result.is_ok(), "description.yml has errors: {}", result.unwrap_err());
+fn check_description() -> Result<(), ExtensionError> {
+    let text = std::fs::read_to_string("description.yml")?;
 
-// Structured access for programmatic inspection
-let desc = parse_description_yml(include_str!("description.yml"))?;
-println!("Extension: {} v{}", desc.name, desc.version);
-println!("Maintainers: {:?}", desc.maintainers);
+    // Quick pass/fail check
+    validate_description_yml_str(&text)?;
 
-// Validate Rust-specific fields (language, build, toolchains)
-validate_rust_extension(&desc)?;
+    // Structured access for programmatic inspection
+    let desc = parse_description_yml(&text)?;
+    let version = desc.version.as_deref().unwrap_or("(none)");
+    println!("Extension: {} {version}", desc.name);
+    println!("Maintainers: {:?}", desc.maintainers);
+    // Non-fatal findings, e.g. a license SPDX does not list
+    for warning in &desc.warnings {
+        println!("warning: {warning}");
+    }
+
+    // Validate Rust-specific fields (language, build, toolchains)
+    validate_rust_extension(&desc)
+}
 ```
 
 **Validated fields:**
@@ -499,8 +508,8 @@ validate_rust_extension(&desc)?;
 | Field | Rule |
 |-------|------|
 | `extension.name` | `^[a-z][a-z0-9_]*$`, max 64 chars |
-| `extension.version` | Any of `[A-Za-z0-9._+-]`, up to 64 chars — DuckDB specifies no format, and 11 of 43 published extensions use a date-based build id |
-| `extension.license` | Recognized SPDX identifier |
+| `extension.version` | Any of `[A-Za-z0-9._+-]`, up to 64 chars — DuckDB specifies no format: of the 334 published community extensions that declare a version, 42 use a date-based build id such as `2025120401` (community-extensions `5ae7df8`, 2026-09-23) |
+| `extension.license` | Non-empty; an identifier SPDX does not list is reported in `warnings`, not rejected |
 | `extension.excluded_platforms` | Semicolon-separated list of known DuckDB platforms |
 | `extension.maintainers` | At least one maintainer required |
 | `repo.github` | Must contain `/` (owner/repo format) |

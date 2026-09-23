@@ -116,14 +116,14 @@
 //!    or improved safety. When in doubt, prefer simplicity.
 //! 2. **No panics across FFI**: `unwrap()` is forbidden in FFI callbacks and entry points.
 //! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2` to support `DuckDB` 1.4.x
-//!    and 1.5.x (through v1.5.4) while preventing silent adoption of breaking changes in
-//!    future major releases.
+//!    and 1.5.x while preventing silent adoption of breaking changes in future major
+//!    releases.
 //! 4. **Testable business logic**: state structs have zero FFI dependencies.
 //!
 //! ## Pitfalls
 //!
 //! See [`LESSONS.md`](https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md)
-//! for all 21 known `DuckDB` Rust FFI pitfalls, including symptoms, root causes, and fixes.
+//! for every known `DuckDB` Rust FFI pitfall, with symptoms, root causes, and fixes.
 //!
 //! ## Pitfall L1: COMBINE must propagate config fields
 //!
@@ -203,17 +203,19 @@ pub mod table_description;
 /// The `DuckDB` C API version string required by [`duckdb_rs_extension_api_init`][libduckdb_sys::duckdb_rs_extension_api_init].
 ///
 /// This constant corresponds to every `DuckDB` release from v1.4.x through
-/// v1.5.4: the C extension API version has remained `v1.2.0` across all of them
-/// (it did **not** change in the v1.5.1, v1.5.2, v1.5.3, or v1.5.4 patch
-/// releases). If you are targeting a different `DuckDB` release, consult the
-/// `DuckDB` changelog for the C API version.
+/// v1.5.5: the C extension API version has remained `v1.2.0` across all of them
+/// (`DUCKDB_EXTENSION_API_VERSION_{MAJOR,MINOR,PATCH}` in v1.5.5's
+/// `duckdb_extension.h` are 1, 2, 0). If you are targeting a different
+/// `DuckDB` release, read that value from its `duckdb_extension.h`.
 ///
 /// # Pitfall P2: C API version ≠ `DuckDB` release version
 ///
 /// The `-dv` flag passed to `append_extension_metadata.py` must be this value
 /// (`"v1.2.0"`), **not** the `DuckDB` release version (`"v1.4.4"` / `"v1.5.0"` /
-/// `"v1.5.3"`). Using the wrong value causes the metadata script to fail silently
-/// or produce incorrect metadata.
+/// `"v1.5.3"`). With the wrong value the metadata script still succeeds, and
+/// `LOAD` then refuses the file: "The file was built for `DuckDB` C API version
+/// 'v1.5.5', but we can only load extensions built for `DuckDB` C API 'v1.2.0'
+/// and lower".
 ///
 /// See `LESSONS.md` → Pitfall P2 for full details.
 pub const DUCKDB_API_VERSION: &str = "v1.2.0";

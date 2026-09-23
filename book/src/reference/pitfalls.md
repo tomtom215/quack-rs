@@ -366,7 +366,10 @@ crate-type = ["cdylib", "rlib"]
 
 **Status**: `DUCKDB_API_VERSION` constant encodes the correct value.
 
-**Symptom**: Metadata script fails or produces incorrect metadata.
+**Symptom**: The metadata script succeeds, and `LOAD` then refuses the file:
+"The file was built for DuckDB C API version 'v1.5.5', but we can only load
+extensions built for DuckDB C API 'v1.2.0' and lower" (verified on DuckDB 1.4.4
+and 1.5.5 with a file stamped `-dv v1.5.5`).
 
 **Root cause**: The `-dv` flag to `append_extension_metadata.py` must be the
 C API version (`v1.2.0`), not the DuckDB release version (`v1.4.4`). These are
