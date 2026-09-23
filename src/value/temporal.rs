@@ -125,7 +125,7 @@ impl Value {
     /// raw nanosecond count (`DuckDB` 1.5.0+).
     ///
     /// Pairs with [`as_time_ns`][Value::as_time_ns] and the
-    /// [`TypeId::TimeNs`][crate::types::TypeId::TimeNs] column type.
+    /// [`TypeId::TimeNs`] column type.
     ///
     /// # Errors
     ///
