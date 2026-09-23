@@ -91,7 +91,7 @@ Building a DuckDB extension in Rust — from project setup to community submissi
 `quack-rs` encapsulates **23 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
-```
+```text
 L1  COMBINE must propagate ALL config fields (not just data)
 L2  State destroy double-free → FfiState<T> nulls pointers after free
 L3  No panics across FFI → init_extension uses Result throughout
@@ -250,7 +250,7 @@ let config = ScaffoldConfig {
     ..Default::default()
 };
 
-let files = generate_scaffold(&config)?;
+let files = generate_scaffold(&config).expect("valid config");
 for file in &files {
     println!("{}", file.path);
     // write file.content to disk
@@ -259,7 +259,7 @@ for file in &files {
 
 This generates all 11 files required for a DuckDB community extension submission:
 
-```
+```text
 Cargo.toml                          ← cdylib, pinned deps, release profile
 Makefile                            ← delegates to cargo + extension-ci-tools
 extension_config.cmake              ← required by extension-ci-tools
@@ -579,7 +579,7 @@ explicit exclusions. The list below mirrors `config/distribution_matrix.json` in
 [`duckdb/extension-ci-tools`](https://github.com/duckdb/extension-ci-tools/blob/main/config/distribution_matrix.json),
 and a CI job (`scripts/check-platform-table.py`) fails when it drifts:
 
-```
+```text
 linux_amd64         linux_arm64
 linux_amd64_musl†   linux_arm64_musl†
 osx_amd64           osx_arm64
@@ -785,6 +785,9 @@ The documentation convention is:
   those blocks are required syntax rather than new assertions.
 
 ```rust
+use libduckdb_sys::duckdb_connection;
+use quack_rs::prelude::*;
+
 // Extension author code: one `unsafe`, at the one place a caller has to vouch
 // for something — that `con` is a live connection.
 fn register(con: duckdb_connection) -> ExtResult<()> {
