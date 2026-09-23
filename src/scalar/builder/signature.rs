@@ -383,7 +383,7 @@ mod tests {
             merged(&[], &[(0, "a"), (1, "b")]),
             vec!["Logical(a)", "Logical(b)"]
         );
-        assert!(merged(&[], &[]).is_empty());
+        assert_eq!(merged(&[], &[]), Vec::<String>::new());
     }
 
     #[test]

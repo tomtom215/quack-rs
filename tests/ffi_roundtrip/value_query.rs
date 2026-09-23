@@ -286,7 +286,10 @@ fn as_blob_refuses_values_that_are_not_blobs() {
     let _fx = Fixture::open();
     assert!(Value::integer(1).as_blob().is_err());
     assert!(Value::varchar("\\xZZ").as_blob().is_err());
-    assert!(Value::blob(&[]).as_blob().expect("empty blob").is_empty());
+    assert_eq!(
+        Value::blob(&[]).as_blob().expect("empty blob"),
+        Vec::<u8>::new()
+    );
 }
 
 // ── Findings 5 and 6: DECIMAL range ─────────────────────────────────────────
