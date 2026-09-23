@@ -115,6 +115,9 @@ the same rules as function names:
 - Start with an ASCII letter or underscore, then ASCII letters, digits or underscores
 - Not exceed 256 characters
 - No null bytes
+- Not a DuckDB reserved keyword (`order`, `select`, ...) — for parameters too: the
+  body could only refer to such a parameter as `"order"`, so it is refused with a
+  message that says "parameter name"
 
 Case is not restricted — DuckDB identifiers are case-insensitive, so a macro
 registered as `MyMacro` is callable as `mymacro(...)` or `MYMACRO(...)`.
@@ -135,25 +138,45 @@ SqlMacro::scalar("f", &["_x"], "1")    // ✅ Ok  — underscore prefix allowed
 Macro and parameter **names** are restricted to ASCII letters, digits and underscores,
 preventing SQL injection at the identifier level. `to_sql()` additionally emits every
 name as a double-quoted identifier (`"name"`) — the validated character set cannot
-contain `"`, so no escaping is needed — which keeps a name that happens to be a SQL
-keyword from turning into a parser error. Quoting does not make names case-sensitive
+contain `"`, so no escaping is needed. Quoting does not make names case-sensitive
 in DuckDB.
 
 The **body** (expression or query) is your own extension code — it is included verbatim.
-**Never build macro bodies from untrusted user input.**
+**Never build macro bodies from untrusted user input.** `register` does refuse a body
+that turns the statement into several (`1); DROP TABLE t; SELECT (1`) — it counts
+statements with DuckDB's own parser (`duckdb_extract_statements`) and executes
+nothing if there is more than one — but a body can still change the meaning of the
+single statement it is part of.
+
+A scalar body containing `--` gets a newline before the closing parenthesis, so a
+trailing line comment (`"x + 1 -- plus one"`) no longer comments it out.
+
+---
+
+## Where a macro lives
+
+A macro is not a function registration: `register` runs `CREATE OR REPLACE MACRO`,
+so the macro is an ordinary catalog object in the connection's default database and
+schema — the **user's** database:
+
+- **It persists.** In a database file the macro is still there in the next session,
+  even if the extension is never loaded again. Reloading is fine: `OR REPLACE`
+  replaces it.
+- **It needs a writable database.** On a read-only database the `CREATE` fails; an
+  entry point that propagates that error with `?` makes `LOAD` fail. Decide whether
+  a macro is essential there.
+- **It silently replaces a user's macro of the same name.** Prefix macro names with
+  your extension's name.
+- **It can shadow a built-in.** A macro named `abs` in the default schema is found
+  before the built-in `abs`, so `abs(-1)` calls the macro.
 
 ---
 
 ## How it works under the hood
 
-`SqlMacro::register` executes the `CREATE OR REPLACE MACRO` statement via `duckdb_query`:
-
-```rust
-pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
-    let sql = self.to_sql();
-    unsafe { execute_sql(con, &sql) }
-}
-```
+`SqlMacro::register` counts the statements in `to_sql()` with
+`duckdb_extract_statements`, refuses more than one, and executes the
+`CREATE OR REPLACE MACRO` statement via `duckdb_query`.
 
 `execute_sql` zero-initializes a `duckdb_result`, calls `duckdb_query`, extracts any error
 message via `duckdb_result_error`, and always calls `duckdb_destroy_result` — even on failure.

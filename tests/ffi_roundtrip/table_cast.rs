@@ -943,3 +943,52 @@ mod fold_errors {
         }
     }
 }
+
+/// TBL-8: a scalar macro body ending in a `--` comment swallowed the closing
+/// parenthesis quack-rs appends, and a body holding a statement separator ran
+/// every statement in it.
+#[test]
+fn sql_macro_bodies_with_comments_work_and_extra_statements_are_refused() {
+    use quack_rs::sql_macro::SqlMacro;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe {
+        SqlMacro::scalar("tc_plus_one", &["x"], "x + 1 -- plus one")
+            .expect("valid names")
+            .register(fx.con())
+    }
+    .expect("a trailing line comment must not break the macro");
+    assert_eq!(
+        fx.scalar("SELECT tc_plus_one(41)::BIGINT", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(42)
+    );
+
+    fx.query("CREATE TABLE tc_victim(i INTEGER)");
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        SqlMacro::scalar("tc_inject", &[], "1); DROP TABLE tc_victim; SELECT (1")
+            .expect("valid names")
+            .register(fx.con())
+    }
+    .expect_err("a body holding extra statements must be refused");
+    assert!(err.as_str().contains("statement"), "{err}");
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'tc_victim'",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(1),
+        "the table must survive"
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'tc_inject'",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(0),
+        "nothing is created"
+    );
+}
