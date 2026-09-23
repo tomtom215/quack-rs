@@ -153,13 +153,16 @@ fn a_string_result_over_duckdbs_limit_is_an_error_not_a_truncation() {
     let err = unsafe { query(fx.con(), "SELECT strlen(t_huge_str(4294967297))") }
         .expect_err("an over-long result must fail the query");
     assert!(
-        err.as_str().contains("exceeds DuckDB's maximum string length"),
+        err.as_str()
+            .contains("exceeds DuckDB's maximum string length"),
         "{err}"
     );
 
     // A value within the limit still round-trips.
     assert_eq!(
-        fx.scalar("SELECT strlen(t_huge_str(20))", |r, i| unsafe { r.read_i64(i) }),
+        fx.scalar("SELECT strlen(t_huge_str(20))", |r, i| unsafe {
+            r.read_i64(i)
+        }),
         Some(20)
     );
 }

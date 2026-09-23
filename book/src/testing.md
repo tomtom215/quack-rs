@@ -51,50 +51,81 @@ DuckDB API not initialized
 
 ## Mock types for callback logic
 
-When your scalar or table function callback reads inputs and writes outputs,
-extract that logic into a pure-Rust function. Then test it with
-`MockVectorReader` (input) and `MockVectorWriter` (output):
+Keep the per-row computation in a plain Rust function and test that function
+directly — it needs no vectors at all. The FFI callback is then a thin loop
+around it, and for the common shapes the typed constructors
+(`ScalarFunctionBuilder::map1`, `map1_str`, …) write that loop for you, NULL
+handling included.
 
 ```rust
-use quack_rs::testing::{MockVectorReader, MockVectorWriter};
-
-// Pure Rust logic — extracted from the FFI callback
-fn compute_upper(reader: &MockVectorReader, writer: &mut MockVectorWriter) {
-    for i in 0..reader.row_count() {
-        if reader.is_valid(i) {
-            let s = reader.try_get_str(i).unwrap_or("");
-            writer.write_varchar(i, &s.to_uppercase());
-        } else {
-            writer.set_null(i);
-        }
-    }
+// The logic: plain Rust, tested with plain `#[test]`s.
+fn shout(s: &str) -> String {
+    s.to_uppercase()
 }
 
 #[test]
-fn test_compute_upper() {
-    let reader = MockVectorReader::from_strs([Some("hello"), None, Some("world")]);
-    let mut writer = MockVectorWriter::new(3);
-    compute_upper(&reader, &mut writer);
-
-    assert_eq!(writer.try_get_str(0), Some("HELLO"));
-    assert!(writer.is_null(1));
-    assert_eq!(writer.try_get_str(2), Some("WORLD"));
+fn shout_uppercases() {
+    assert_eq!(shout("hello"), "HELLO");
 }
 ```
 
-The real FFI callback becomes a thin wrapper:
-
 ```rust,no_run
-unsafe extern "C" fn my_scalar(
+use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+use quack_rs::vector::{VectorReader, VectorWriter};
+# fn shout(s: &str) -> String { s.to_uppercase() }
+
+// The callback: a thin loop over the real vectors.
+unsafe extern "C" fn shout_callback(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
     output: duckdb_vector,
 ) {
-    // Real DuckDB wrappers — only used in production, not in cargo test
+    let rows = usize::try_from(unsafe { libduckdb_sys::duckdb_data_chunk_get_size(input) })
+        .unwrap_or(0);
     let reader = unsafe { VectorReader::new(input, 0) };
     let mut writer = unsafe { VectorWriter::new(output) };
-    // TODO: adapt mock-compatible logic to real readers/writers
+    for row in 0..rows {
+        if unsafe { reader.is_valid(row) } {
+            let out = shout(unsafe { reader.read_str(row) });
+            unsafe { writer.write_varchar(row, &out) };
+        } else {
+            unsafe { writer.set_null(row) };
+        }
+    }
 }
+```
+
+To test the loop itself against real vectors, use `InMemoryDb` (below): it
+runs the callback inside a real DuckDB.
+
+`MockVectorReader` and `MockVectorWriter` are in-memory stand-ins with the
+same method names as `VectorReader` and `VectorWriter`. They are **separate
+types**, so a function written against the mocks cannot be handed the real
+reader and writer; they are for prototyping and checking row-loop logic
+without a database. They do reproduce the behaviour of a real vector that a
+more forgiving mock would hide:
+
+- `set_null` clears a validity bit and a later `write_*` does not set it
+  again (a real vector keeps returning NULL for that row);
+- a row that is never written is valid, not NULL — use `is_written` to check
+  a loop wrote every row;
+- writing past the capacity given to `MockVectorWriter::new` panics.
+
+```rust
+use quack_rs::testing::{MockVectorReader, MockVectorWriter};
+
+let reader = MockVectorReader::from_strs([Some("hello"), None, Some("world")]);
+let mut writer = MockVectorWriter::new(3);
+for i in 0..reader.row_count() {
+    match reader.try_get_str(i) {
+        Some(s) => writer.write_varchar(i, &s.to_uppercase()),
+        None => writer.set_null(i),
+    }
+}
+assert_eq!(writer.try_get_str(0), Some("HELLO"));
+assert!(writer.is_null(1));
+assert_eq!(writer.try_get_str(2), Some("WORLD"));
+assert!((0..3).all(|i| writer.is_written(i) || writer.is_null(i)));
 ```
 
 ---

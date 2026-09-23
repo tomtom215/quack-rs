@@ -22,15 +22,23 @@
 //! These mock types provide the same write/read interface but store data in a
 //! plain `Vec`, with no `DuckDB` dependency at all.
 //!
-//! # Recommended pattern
+//! # What they are for
 //!
-//! Extract your callback logic into a pure-Rust function, then call it from both
-//! the FFI callback (with the real writer) and your tests (with the mock):
+//! Keep the per-row computation in plain Rust functions and test those
+//! directly. The mocks are for the row loop around it: they share the method
+//! names of [`VectorReader`][crate::vector::VectorReader] and
+//! [`VectorWriter`][crate::vector::VectorWriter] but are **separate types**, so
+//! a function written against them cannot be handed the real reader and writer.
+//! To run a real callback against real vectors, use
+//! `InMemoryDb` (`bundled-test` / `bundled-test-prebuilt` features).
+//!
+//! [`MockVectorWriter`] reproduces a real output vector's NULL and capacity
+//! behaviour rather than being more forgiving than it; see its type docs.
 //!
 //! ```rust
 //! use quack_rs::testing::{MockVectorWriter, MockVectorReader, MockDuckValue};
 //!
-//! /// Pure business logic — testable without DuckDB.
+//! /// A row loop prototyped against the mocks.
 //! fn compute_double(reader: &MockVectorReader, writer: &mut MockVectorWriter) {
 //!     for i in 0..reader.row_count() {
 //!         if reader.is_valid(i) {
@@ -113,136 +121,219 @@ pub enum MockDuckValue {
 /// assert_eq!(w.try_get_i64(1), Some(-7));
 /// assert!(w.is_null(2));
 /// ```
+///
+/// # It behaves like a real output vector, including where that hurts
+///
+/// A mock that is more forgiving than `DuckDB` makes a test pass for code that
+/// is wrong in production. So, as with a real vector (verified against
+/// `DuckDB` 1.5.5):
+///
+/// - **Validity is separate from data.** [`set_null`][Self::set_null] clears a
+///   validity bit and a later `write_*` does **not** set it again — a real
+///   vector keeps returning NULL for that row. Use
+///   [`set_valid`][Self::set_valid] to undo a NULL.
+/// - **A row that is never written is valid, not NULL.** `DuckDB` hands out
+///   output vectors whose rows are all valid and whose data is whatever the
+///   buffer last held, so a callback that forgets `set_null` returns garbage.
+///   Here such a row reports [`is_null`][Self::is_null] `== false` and
+///   [`is_written`][Self::is_written] `== false`, so a test can catch it.
+/// - **Capacity is fixed.** Writing at or past the capacity given to
+///   [`new`][Self::new] panics; on a real vector it is out-of-bounds memory
+///   access.
+/// - **Strings over [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN]
+///   panic**, as [`VectorWriter::write_varchar`][crate::vector::VectorWriter::write_varchar]
+///   does.
 #[derive(Debug, Default)]
 pub struct MockVectorWriter {
+    /// Data per row; `None` means never written.
     rows: Vec<Option<MockDuckValue>>,
+    /// Validity per row; `true` (valid) until `set_null`.
+    valid: Vec<bool>,
 }
 
 impl MockVectorWriter {
-    /// Creates a new writer pre-allocated for `capacity` rows (all NULL).
+    /// Creates a writer with room for `capacity` rows, all valid and unwritten.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             rows: vec![None; capacity],
+            valid: vec![true; capacity],
         }
     }
 
-    /// Ensures the internal buffer is large enough to hold row `idx`.
-    fn ensure_capacity(&mut self, idx: usize) {
-        if idx >= self.rows.len() {
-            self.rows.resize(idx + 1, None);
-        }
+    /// Panics unless `idx` is within the capacity, as a real vector requires.
+    #[track_caller]
+    fn check_bounds(&self, idx: usize) {
+        assert!(
+            idx < self.rows.len(),
+            "row {idx} is out of bounds for a mock vector of capacity {}; a real \
+             DuckDB vector has a fixed capacity and writing past it corrupts memory",
+            self.rows.len()
+        );
     }
 
-    /// Marks row `idx` as NULL.
+    /// Marks row `idx` as NULL. A later `write_*` does not undo this; see
+    /// [`set_valid`][Self::set_valid].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than the capacity.
+    #[track_caller]
     pub fn set_null(&mut self, idx: usize) {
-        self.ensure_capacity(idx);
-        self.rows[idx] = None;
+        self.check_bounds(idx);
+        self.valid[idx] = false;
     }
 
-    /// Returns `true` if row `idx` is NULL or has not been written.
+    /// Marks row `idx` as valid again, mirroring
+    /// [`VectorWriter::set_valid`][crate::vector::VectorWriter::set_valid].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than the capacity.
+    #[track_caller]
+    pub fn set_valid(&mut self, idx: usize) {
+        self.check_bounds(idx);
+        self.valid[idx] = true;
+    }
+
+    /// Returns `true` if row `idx` has been marked NULL.
+    ///
+    /// A row that was never written is **not** NULL — see the type-level docs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than the capacity.
     #[must_use]
+    #[track_caller]
     pub fn is_null(&self, idx: usize) -> bool {
-        self.rows.get(idx).is_none_or(Option::is_none)
+        self.check_bounds(idx);
+        !self.valid[idx]
     }
 
-    /// Returns the number of allocated rows (including NULLs).
+    /// Returns `true` if a value has been written at row `idx`, whether or not
+    /// the row is also marked NULL.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than the capacity.
+    #[must_use]
+    #[track_caller]
+    pub fn is_written(&self, idx: usize) -> bool {
+        self.check_bounds(idx);
+        self.rows[idx].is_some()
+    }
+
+    /// Returns the capacity: the number of rows this mock holds.
     #[must_use]
     pub fn len(&self) -> usize {
         self.rows.len()
     }
 
-    /// Returns `true` if no rows have been allocated.
+    /// Returns `true` if the capacity is zero.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
 
-    /// Returns the raw `Option<MockDuckValue>` for row `idx`.
+    /// Returns the value at row `idx` as `DuckDB` would read it.
     ///
-    /// Returns `None` if the row is NULL or has never been written.
+    /// Returns `None` if the row is NULL, has never been written, or is out of
+    /// bounds. Use [`is_null`][Self::is_null] and
+    /// [`is_written`][Self::is_written] to tell those apart.
     #[must_use]
     pub fn get(&self, idx: usize) -> Option<&MockDuckValue> {
-        self.rows.get(idx).and_then(|v| v.as_ref())
+        if self.valid.get(idx).copied() != Some(true) {
+            return None;
+        }
+        self.rows.get(idx).and_then(Option::as_ref)
     }
 
     // ── Numeric writes ──────────────────────────────────────────────────────
 
     /// Writes a `TINYINT` value at row `idx`.
     pub fn write_i8(&mut self, idx: usize, value: i8) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::I8(value));
     }
 
     /// Writes a `SMALLINT` value at row `idx`.
     pub fn write_i16(&mut self, idx: usize, value: i16) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::I16(value));
     }
 
     /// Writes an `INTEGER` value at row `idx`.
     pub fn write_i32(&mut self, idx: usize, value: i32) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::I32(value));
     }
 
     /// Writes a `BIGINT` value at row `idx`.
     pub fn write_i64(&mut self, idx: usize, value: i64) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::I64(value));
     }
 
     /// Writes a `UTINYINT` value at row `idx`.
     pub fn write_u8(&mut self, idx: usize, value: u8) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::U8(value));
     }
 
     /// Writes a `USMALLINT` value at row `idx`.
     pub fn write_u16(&mut self, idx: usize, value: u16) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::U16(value));
     }
 
     /// Writes a `UINTEGER` value at row `idx`.
     pub fn write_u32(&mut self, idx: usize, value: u32) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::U32(value));
     }
 
     /// Writes a `UBIGINT` value at row `idx`.
     pub fn write_u64(&mut self, idx: usize, value: u64) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::U64(value));
     }
 
     /// Writes a `FLOAT` value at row `idx`.
     pub fn write_f32(&mut self, idx: usize, value: f32) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::F32(value));
     }
 
     /// Writes a `DOUBLE` value at row `idx`.
     pub fn write_f64(&mut self, idx: usize, value: f64) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::F64(value));
     }
 
     /// Writes a `BOOLEAN` value at row `idx`.
     pub fn write_bool(&mut self, idx: usize, value: bool) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::Bool(value));
     }
 
     /// Writes a `HUGEINT` value at row `idx`.
     pub fn write_i128(&mut self, idx: usize, value: i128) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::I128(value));
     }
 
     /// Writes a `VARCHAR` value at row `idx`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is out of bounds or `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN].
+    #[track_caller]
     pub fn write_varchar(&mut self, idx: usize, value: &str) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
+        if let Err(e) = crate::vector::string::check_string_len(value.len()) {
+            panic!("write_varchar: {e}");
+        }
         self.rows[idx] = Some(MockDuckValue::Varchar(value.to_owned()));
     }
 
@@ -255,13 +346,22 @@ impl MockVectorWriter {
 
     /// Writes an `INTERVAL` value at row `idx`.
     pub fn write_interval(&mut self, idx: usize, value: DuckInterval) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
         self.rows[idx] = Some(MockDuckValue::Interval(value));
     }
 
     /// Writes a `BLOB` value at row `idx`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is out of bounds or `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN].
+    #[track_caller]
     pub fn write_blob(&mut self, idx: usize, value: &[u8]) {
-        self.ensure_capacity(idx);
+        self.check_bounds(idx);
+        if let Err(e) = crate::vector::string::check_string_len(value.len()) {
+            panic!("write_blob: {e}");
+        }
         self.rows[idx] = Some(MockDuckValue::Blob(value.to_vec()));
     }
 
@@ -792,22 +892,54 @@ mod tests {
         assert!(w.is_null(2));
     }
 
+    /// A real vector has a fixed capacity; the mock used to grow silently, so
+    /// a test could pass for a callback that writes out of bounds.
     #[test]
-    fn writer_grows_beyond_initial_capacity() {
+    #[should_panic(expected = "out of bounds for a mock vector of capacity 1")]
+    fn writer_refuses_to_write_past_its_capacity() {
         let mut w = MockVectorWriter::new(1);
-        w.write_i64(5, 99); // grows from 1 to 6
-        assert_eq!(w.len(), 6);
-        assert_eq!(w.try_get_i64(5), Some(99));
-        assert!(w.is_null(0)); // never written
+        w.write_i64(5, 99);
     }
 
     #[test]
-    fn writer_set_null_clears_previous_value() {
+    #[should_panic(expected = "out of bounds")]
+    fn writer_set_null_past_capacity_panics() {
+        MockVectorWriter::new(2).set_null(2);
+    }
+
+    #[test]
+    fn writer_set_null_hides_a_previous_value() {
         let mut w = MockVectorWriter::new(1);
         w.write_i64(0, 42);
         assert!(!w.is_null(0));
         w.set_null(0);
         assert!(w.is_null(0));
+        assert_eq!(w.try_get_i64(0), None);
+        assert!(w.is_written(0));
+    }
+
+    /// Validated against `DuckDB` 1.5.5: `set_null` followed by `write_i64` on a
+    /// real output vector still reads back NULL. The mock used to report the
+    /// written value, so it hid exactly that bug.
+    #[test]
+    fn writer_write_after_set_null_stays_null_like_duckdb() {
+        let mut w = MockVectorWriter::new(1);
+        w.set_null(0);
+        w.write_i64(0, 7);
+        assert!(w.is_null(0));
+        assert_eq!(w.try_get_i64(0), None);
+        w.set_valid(0);
+        assert_eq!(w.try_get_i64(0), Some(7));
+    }
+
+    /// Validated against `DuckDB` 1.5.5: rows a callback never writes come back
+    /// valid (with stale data), not NULL. The mock used to report them NULL.
+    #[test]
+    fn writer_unwritten_rows_are_valid_but_unwritten() {
+        let w = MockVectorWriter::new(2);
+        assert!(!w.is_null(0));
+        assert!(!w.is_written(0));
+        assert_eq!(w.get(0), None);
     }
 
     #[test]

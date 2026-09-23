@@ -650,17 +650,16 @@ fn mock_vector_writer_set_null_after_write() {
     assert_eq!(w.try_get_i64(0), None);
 }
 
+/// A real `DuckDB` vector has a fixed capacity; writing past it is
+/// out-of-bounds memory. The mock used to grow silently instead, so a test
+/// could pass for a callback that overruns its output. It must refuse.
 #[test]
-fn mock_vector_writer_grows_beyond_initial_capacity() {
+#[should_panic(expected = "out of bounds for a mock vector of capacity 0")]
+fn mock_vector_writer_refuses_to_grow_beyond_its_capacity() {
     use quack_rs::testing::MockVectorWriter;
 
     let mut w = MockVectorWriter::new(0);
     w.write_i64(3, 99);
-    assert_eq!(w.len(), 4);
-    assert_eq!(w.try_get_i64(3), Some(99));
-    assert!(w.is_null(0));
-    assert!(w.is_null(1));
-    assert!(w.is_null(2));
 }
 
 #[test]
