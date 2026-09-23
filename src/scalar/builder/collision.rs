@@ -111,6 +111,7 @@ unsafe fn render_signature(params: &[ParamRef<'_>]) -> Option<(Vec<String>, Stri
             ParamRef::Logical(lt) => types.push(unsafe { type_string(lt.as_raw()) }?),
             // SAFETY: as above.
             ParamRef::Varargs(lt) => varargs = unsafe { type_string(lt.as_raw()) }?,
+            ParamRef::VarargsId(id) => id_string(*id)?.clone_into(&mut varargs),
         }
     }
     Some((types, varargs))

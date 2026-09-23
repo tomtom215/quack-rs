@@ -31,7 +31,7 @@ pub(super) struct ScalarOverloadSpec {
     pub(super) function: Option<ScalarFn>,
     pub(super) null_handling: NullHandling,
     pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
-    pub(super) varargs: Option<LogicalType>,
+    pub(super) varargs: Option<super::signature::Varargs>,
     pub(super) volatile: bool,
     #[cfg(feature = "duckdb-1-5")]
     pub(super) bind: Option<ScalarBindFn>,
@@ -69,7 +69,7 @@ pub struct ScalarOverloadBuilder {
     pub(super) function: Option<ScalarFn>,
     pub(super) null_handling: NullHandling,
     pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
-    pub(super) varargs: Option<LogicalType>,
+    pub(super) varargs: Option<super::signature::Varargs>,
     pub(super) volatile: bool,
     #[cfg(feature = "duckdb-1-5")]
     pub(super) bind: Option<ScalarBindFn>,
@@ -148,10 +148,11 @@ impl ScalarOverloadBuilder {
     /// Marks this overload as accepting variadic arguments of the given type,
     /// after its fixed parameters.
     ///
-    /// Mirrors [`ScalarFunctionBuilder::varargs`][super::ScalarFunctionBuilder::varargs].
+    /// Mirrors [`ScalarFunctionBuilder::varargs`][super::ScalarFunctionBuilder::varargs],
+    /// including the error from `register` for a composite `type_id`.
     #[mutants::skip] // tested via E2E
     pub fn varargs(mut self, type_id: TypeId) -> Self {
-        self.varargs = Some(LogicalType::new(type_id));
+        self.varargs = Some(super::signature::Varargs::Id(type_id));
         self
     }
 
@@ -161,7 +162,7 @@ impl ScalarOverloadBuilder {
     /// [`ScalarFunctionBuilder::varargs_logical`][super::ScalarFunctionBuilder::varargs_logical].
     #[mutants::skip] // tested via E2E
     pub fn varargs_logical(mut self, logical_type: LogicalType) -> Self {
-        self.varargs = Some(logical_type);
+        self.varargs = Some(super::signature::Varargs::Logical(logical_type));
         self
     }
 

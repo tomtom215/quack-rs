@@ -359,7 +359,9 @@ alike:
 ### `varargs(type_id: TypeId)`
 
 Declares that the function accepts a variable number of trailing arguments, all
-of the given `TypeId`. Maps to `duckdb_scalar_function_set_varargs`.
+of the given `TypeId`. Maps to `duckdb_scalar_function_set_varargs`. A composite
+`TypeId` such as `List` or `Decimal` makes `register` return an error naming the
+varargs slot; use `varargs_logical` for those.
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,

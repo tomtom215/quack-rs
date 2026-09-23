@@ -21,11 +21,12 @@ use libduckdb_sys::{
     duckdb_decimal_width, duckdb_enum_dictionary_size, duckdb_enum_dictionary_value, duckdb_free,
     duckdb_get_type_id, duckdb_list_type_child_type, duckdb_logical_type,
     duckdb_logical_type_get_alias, duckdb_map_type_key_type, duckdb_map_type_value_type,
-    duckdb_struct_type_child_count, duckdb_struct_type_child_name, duckdb_struct_type_child_type,
-    duckdb_union_type_member_count, duckdb_union_type_member_name, duckdb_union_type_member_type,
-    idx_t, DUCKDB_TYPE_DUCKDB_TYPE_ARRAY, DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL,
-    DUCKDB_TYPE_DUCKDB_TYPE_ENUM, DUCKDB_TYPE_DUCKDB_TYPE_LIST, DUCKDB_TYPE_DUCKDB_TYPE_MAP,
-    DUCKDB_TYPE_DUCKDB_TYPE_STRUCT, DUCKDB_TYPE_DUCKDB_TYPE_UNION,
+    duckdb_scalar_function, duckdb_scalar_function_set_varargs, duckdb_struct_type_child_count,
+    duckdb_struct_type_child_name, duckdb_struct_type_child_type, duckdb_union_type_member_count,
+    duckdb_union_type_member_name, duckdb_union_type_member_type, idx_t,
+    DUCKDB_TYPE_DUCKDB_TYPE_ARRAY, DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL, DUCKDB_TYPE_DUCKDB_TYPE_ENUM,
+    DUCKDB_TYPE_DUCKDB_TYPE_LIST, DUCKDB_TYPE_DUCKDB_TYPE_MAP, DUCKDB_TYPE_DUCKDB_TYPE_STRUCT,
+    DUCKDB_TYPE_DUCKDB_TYPE_UNION,
 };
 
 use crate::error::ExtensionError;
@@ -43,6 +44,61 @@ pub enum ParamRef<'a, L = LogicalType> {
     /// The overload's varargs type, which `DuckDB` counts as part of the
     /// signature (`ScalarFunction::Equal`). Always last.
     Varargs(&'a L),
+    /// As [`Varargs`][Self::Varargs], declared with `varargs(TypeId)`.
+    VarargsId(TypeId),
+}
+
+/// A varargs type as declared.
+///
+/// A `TypeId` is kept as one until registration, where it is checked with the
+/// other slots and only then turned into a handle, so a composite id is an
+/// error from `register` rather than a panic from the setter.
+#[derive(Debug)]
+pub enum Varargs {
+    /// Declared with `varargs(TypeId)`.
+    Id(TypeId),
+    /// Declared with `varargs_logical(LogicalType)`.
+    Logical(LogicalType),
+}
+
+impl Varargs {
+    /// This varargs type as the last entry of a signature.
+    pub const fn param_ref(&self) -> ParamRef<'_> {
+        match self {
+            Self::Id(id) => ParamRef::VarargsId(*id),
+            Self::Logical(lt) => ParamRef::Varargs(lt),
+        }
+    }
+
+    /// Fails if a `TypeId` varargs type is composite; `slot` names it.
+    pub fn check(&self, slot: &str) -> Result<(), ExtensionError> {
+        match self {
+            Self::Id(id) => LogicalType::check_slot(*id, slot),
+            Self::Logical(_) => Ok(()),
+        }
+    }
+
+    /// Sets this varargs type on `func` (`duckdb_scalar_function_set_varargs`,
+    /// which copies the type).
+    ///
+    /// # Safety
+    ///
+    /// `func` must be a live scalar function handle, and a `TypeId` varargs
+    /// type must have passed [`check`][Self::check], so building it cannot hit
+    /// the composite-type panic in [`LogicalType::new`].
+    pub unsafe fn set_on(&self, func: duckdb_scalar_function) {
+        let built;
+        let ty = match self {
+            Self::Id(id) => {
+                built = LogicalType::new(*id);
+                &built
+            }
+            Self::Logical(lt) => lt,
+        };
+        // SAFETY: `func` is live per this function's contract, and `ty` is a
+        // live handle for the duration of the call.
+        unsafe { duckdb_scalar_function_set_varargs(func, ty.as_raw()) };
+    }
 }
 
 /// The parameters in the order the set builders hand them to `DuckDB`.
@@ -131,6 +187,10 @@ unsafe fn signature_key(params: &[ParamRef<'_>]) -> String {
             ParamRef::Varargs(lt) => {
                 // SAFETY: as above.
                 unsafe { describe(lt.as_raw(), &mut out) };
+                out.push_str("...");
+            }
+            ParamRef::VarargsId(id) => {
+                out.push_str(id.sql_name());
                 out.push_str("...");
             }
         }
@@ -364,8 +424,35 @@ mod tests {
                 ParamRef::Id(id) => format!("Id({})", id.sql_name()),
                 ParamRef::Logical(name) => format!("Logical({name})"),
                 ParamRef::Varargs(name) => format!("Varargs({name})"),
+                ParamRef::VarargsId(id) => format!("VarargsId({})", id.sql_name()),
             })
             .collect()
+    }
+
+    /// A varargs type declared by `TypeId` renders without `DuckDB`, differs
+    /// from a fixed parameter of the same type, and equal ones are duplicates.
+    #[test]
+    fn varargs_by_type_id_is_part_of_the_signature() {
+        let sigs = vec![
+            vec![ParamRef::Id(TypeId::BigInt)],
+            vec![ParamRef::VarargsId(TypeId::BigInt)],
+        ];
+        // SAFETY: no logical handles, so no DuckDB call is made.
+        unsafe { reject_duplicate_overloads("f", &sigs) }.expect("f(BIGINT) vs f(BIGINT...)");
+
+        let sigs = vec![
+            vec![
+                ParamRef::Id(TypeId::Varchar),
+                ParamRef::VarargsId(TypeId::BigInt),
+            ],
+            vec![
+                ParamRef::Id(TypeId::Varchar),
+                ParamRef::VarargsId(TypeId::BigInt),
+            ],
+        ];
+        // SAFETY: as above.
+        let err = unsafe { reject_duplicate_overloads("f", &sigs) }.expect_err("duplicate");
+        assert!(err.as_str().contains("(VARCHAR, BIGINT...)"), "{err}");
     }
 
     #[test]
@@ -431,7 +518,7 @@ mod tests {
             .iter()
             .map(|p| match p {
                 ParamRef::Id(id) => Some(*id),
-                ParamRef::Logical(_) | ParamRef::Varargs(_) => None,
+                ParamRef::Logical(_) | ParamRef::Varargs(_) | ParamRef::VarargsId(_) => None,
             })
             .collect();
         assert_eq!(ids, vec![Some(TypeId::BigInt), Some(TypeId::Varchar)]);

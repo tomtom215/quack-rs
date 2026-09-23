@@ -351,6 +351,68 @@ fn a_type_id_and_an_equal_logical_type_are_duplicates() {
     assert!(err.as_str().contains("overload 0 and overload 1"), "{err}");
 }
 
+/// `varargs(TypeId)` used to build its `LogicalType` inside the setter, so a
+/// composite id panicked there. It is now checked with the other slots and
+/// refused by `register`, naming the slot, before any handle is allocated.
+#[test]
+fn a_composite_varargs_type_id_is_refused_by_register() {
+    let fx = Fixture::open();
+    let single = ScalarFunctionBuilder::try_new("bad_varargs")
+        .expect("name")
+        .returns(TypeId::BigInt)
+        .varargs(TypeId::List)
+        .function(first_arg_as_i64);
+    // SAFETY: `con` is open.
+    let err = unsafe { single.register(fx.con()) }.expect_err("LIST needs a child type");
+    assert!(err.as_str().contains("scalar function varargs"), "{err}");
+
+    let set = ScalarFunctionSetBuilder::try_new("bad_varargs_set")
+        .expect("name")
+        .overload(bigint_overload())
+        .overload(
+            ScalarOverloadBuilder::new()
+                .returns(TypeId::BigInt)
+                .varargs(TypeId::Decimal)
+                .function(first_arg_as_i64),
+        );
+    // SAFETY: `con` is open.
+    let err = unsafe { set.register(fx.con()) }.expect_err("DECIMAL needs width and scale");
+    assert!(err.as_str().contains("overload 1 varargs"), "{err}");
+
+    // Neither was registered.
+    for name in ["bad_varargs", "bad_varargs_set"] {
+        // SAFETY: `con` is open.
+        let err = unsafe { query(fx.con(), &format!("SELECT {name}(1::BIGINT)")) }
+            .expect_err("the refused function must not exist");
+        assert!(err.as_str().contains(name), "{err}");
+    }
+}
+
+/// A varargs type given as a `TypeId` and as the equal `LogicalType` is the
+/// same signature to `DuckDB`.
+#[test]
+fn varargs_by_type_id_and_by_equal_logical_type_are_duplicates() {
+    let fx = Fixture::open();
+    let set = ScalarFunctionSetBuilder::try_new("dup_varargs")
+        .expect("name")
+        .overload(
+            ScalarOverloadBuilder::new()
+                .returns(TypeId::BigInt)
+                .varargs(TypeId::BigInt)
+                .function(first_arg_as_i64),
+        )
+        .overload(
+            ScalarOverloadBuilder::new()
+                .returns(TypeId::BigInt)
+                .varargs_logical(LogicalType::new(TypeId::BigInt))
+                .function(first_arg_as_i64),
+        );
+    // SAFETY: `con` is open.
+    let err = unsafe { set.register(fx.con()) }.expect_err("duplicate overloads");
+    assert!(err.as_str().contains("overload 0 and overload 1"), "{err}");
+    assert!(err.as_str().contains("(BIGINT...)"), "{err}");
+}
+
 quack_rs::scalar_callback!(writes_one, |_info, input, output| {
     let chunk = unsafe { quack_rs::data_chunk::DataChunk::from_raw(input) };
     let mut writer = unsafe { quack_rs::vector::VectorWriter::from_vector(output) };

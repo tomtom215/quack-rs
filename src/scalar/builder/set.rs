@@ -12,7 +12,7 @@ use libduckdb_sys::{
     duckdb_scalar_function_add_parameter, duckdb_scalar_function_set_extra_info,
     duckdb_scalar_function_set_function, duckdb_scalar_function_set_name,
     duckdb_scalar_function_set_return_type, duckdb_scalar_function_set_special_handling,
-    duckdb_scalar_function_set_varargs, duckdb_scalar_function_set_volatile, DuckDBSuccess,
+    duckdb_scalar_function_set_volatile, DuckDBSuccess,
 };
 #[cfg(feature = "duckdb-1-5")]
 use libduckdb_sys::{duckdb_scalar_function_set_bind, duckdb_scalar_function_set_init};
@@ -22,7 +22,7 @@ use crate::types::{LogicalType, NullHandling};
 use crate::validate::validate_function_name;
 
 use super::overload::{ScalarOverloadBuilder, ScalarOverloadSpec};
-use super::signature::{merged_params, reject_duplicate_overloads, ParamRef};
+use super::signature::{merged_params, reject_duplicate_overloads};
 
 /// Builder for registering a `DuckDB` scalar function set (multiple overloads).
 ///
@@ -179,6 +179,9 @@ impl ScalarFunctionSetBuilder {
             if let Some(id) = overload.return_type {
                 LogicalType::check_slot(id, &format!("overload {i} return type"))?;
             }
+            if let Some(ref varargs) = overload.varargs {
+                varargs.check(&format!("overload {i} varargs"))?;
+            }
         }
         let signatures: Vec<_> = self
             .overloads
@@ -186,7 +189,7 @@ impl ScalarFunctionSetBuilder {
             .map(|o| {
                 let mut params = merged_params(&o.params, &o.logical_params);
                 if let Some(ref varargs) = o.varargs {
-                    params.push(ParamRef::Varargs(varargs));
+                    params.push(varargs.param_ref());
                 }
                 params
             })
@@ -303,11 +306,10 @@ impl ScalarFunctionSetBuilder {
             }
 
             // Set varargs type if configured (stable C API since v1.2.0)
-            if let Some(ref varargs_type) = overload.varargs {
-                // SAFETY: func and varargs_type.as_raw() are valid.
-                unsafe {
-                    duckdb_scalar_function_set_varargs(func, varargs_type.as_raw());
-                }
+            if let Some(ref varargs) = overload.varargs {
+                // SAFETY: func is a valid scalar function handle, and every
+                // overload's varargs type was checked above.
+                unsafe { varargs.set_on(func) };
             }
 
             // Set volatile flag if configured (stable C API since v1.2.0)
