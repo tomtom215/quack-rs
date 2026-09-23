@@ -16,6 +16,7 @@ use libduckdb_sys::{
 
 use super::overload::{AggregateOverloadBuilder, OverloadSpec};
 use crate::error::ExtensionError;
+use crate::scalar::builder::signature::{merged_params, reject_duplicate_overloads};
 use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
 
@@ -23,6 +24,12 @@ use crate::validate::validate_function_name;
 ///
 /// Use this when one function name needs several signatures — either a variable
 /// number of arguments (one overload per arity) or different parameter types.
+///
+/// # Known `DuckDB` limitation
+///
+/// Every overload is a C-API aggregate, so each reads out of bounds under
+/// `agg(x) OVER ()` and `agg(x ORDER BY y)` — a `DuckDB` C API defect. See
+/// [`AggregateFunctionBuilder`][crate::aggregate::AggregateFunctionBuilder#known-duckdb-limitation].
 ///
 /// # ADR-2: Function sets for variadic signatures
 ///
@@ -278,6 +285,10 @@ impl AggregateFunctionSetBuilder {
     /// Returns `ExtensionError` if:
     /// - No overloads were added.
     /// - An overload has neither its own return type nor a set-level default.
+    /// - Two overloads declare the same argument types (compared structurally,
+    ///   so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ). `DuckDB` itself would
+    ///   accept such a set and then fail every call with "Could not choose a
+    ///   best candidate function".
     /// - Any overload is missing required callbacks.
     /// - `DuckDB` reports registration failure.
     ///
@@ -298,6 +309,14 @@ impl AggregateFunctionSetBuilder {
                 LogicalType::check_slot(id, &format!("overload {i} return type"))?;
             }
         }
+        let signatures: Vec<_> = self
+            .overloads
+            .iter()
+            .map(|o| merged_params(&o.params, &o.logical_params))
+            .collect();
+        // SAFETY: every logical parameter is a live `LogicalType` owned by this
+        // builder, and the caller's contract means the C API is initialised.
+        unsafe { reject_duplicate_overloads(&self.name.to_string_lossy(), &signatures)? };
 
         if self.overloads.is_empty() {
             return Err(ExtensionError::new("no overloads added to function set"));

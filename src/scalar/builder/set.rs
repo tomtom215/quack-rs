@@ -20,6 +20,7 @@ use crate::error::ExtensionError;
 use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
 
+use super::signature::{merged_params, reject_duplicate_overloads};
 use super::single::ScalarFn;
 
 /// Builder for registering a `DuckDB` scalar function set (multiple overloads).
@@ -140,12 +141,17 @@ impl ScalarFunctionSetBuilder {
     ///
     /// Returns `ExtensionError` if:
     /// - No overloads were added.
+    /// - Two overloads declare the same argument types (compared structurally,
+    ///   so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ). `DuckDB` itself would
+    ///   accept such a set and then fail every call with "Could not choose a
+    ///   best candidate function".
     /// - Any overload is missing a return type or function callback.
     /// - `DuckDB` reports registration failure.
     ///
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.
+    #[allow(clippy::too_many_lines)]
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.
         for (i, overload) in self.overloads.iter().enumerate() {
@@ -161,6 +167,14 @@ impl ScalarFunctionSetBuilder {
                 "no overloads added to scalar function set",
             ));
         }
+        let signatures: Vec<_> = self
+            .overloads
+            .iter()
+            .map(|o| merged_params(&o.params, &o.logical_params))
+            .collect();
+        // SAFETY: every logical parameter is a live `LogicalType` owned by this
+        // builder, and the caller's contract means the C API is initialised.
+        unsafe { reject_duplicate_overloads(&self.name.to_string_lossy(), &signatures)? };
 
         // SAFETY: Creates a new scalar function set handle.
         let mut set = unsafe { duckdb_create_scalar_function_set(self.name.as_ptr()) };

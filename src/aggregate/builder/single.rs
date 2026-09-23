@@ -23,6 +23,30 @@ use crate::validate::validate_function_name;
 
 /// Builder for registering a single-signature `DuckDB` aggregate function.
 ///
+/// # Known `DuckDB` limitation
+///
+/// **Two query shapes make every C-API aggregate read out of bounds.** In
+/// them `DuckDB` calls `update` with a state array holding **one** state while
+/// passing `count > 1` rows, so the callback reads `states[1..count]` past the
+/// end of the array — undefined behaviour in *any* C-API aggregate, whether
+/// built with quack-rs or by hand:
+///
+/// - **Window aggregates whose frame is the whole partition**, e.g.
+///   `agg(x) OVER ()` — `WindowConstantAggregator`
+///   (`src/function/window/window_constant_aggregator.cpp`, ~lines 106 and
+///   296–299 in `DuckDB` 1.5.5).
+/// - **Ordered aggregates**, e.g. `agg(x ORDER BY y)` —
+///   `src/function/aggregate/sorted_aggregate_function.cpp`, ~lines 630–633.
+///
+/// Both pass a `CONSTANT_VECTOR` of states because the function has no
+/// `simple_update` (the C API cannot set one), and `CAPIAggregateUpdate`
+/// (`src/main/capi/aggregate_function-c.cpp`, ~lines 92–110) hands the
+/// vector's data pointer to the extension without flattening it. This is a
+/// defect in `DuckDB`'s C API, not in quack-rs, and it cannot be detected
+/// from inside the callback — reading `states[1]` to check is itself the
+/// out-of-bounds read. Until `DuckDB` fixes it, do not use C-API aggregates in
+/// those two query shapes.
+///
 /// # Pitfall L6
 ///
 /// Unlike `duckdb_register_aggregate_function`, this builder also handles

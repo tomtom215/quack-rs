@@ -280,8 +280,10 @@ With no callback the copy carries `bind_data = nullptr`, and the original is
 untouched — which is why the failure is intermittent rather than total, and why
 it survives a test suite that only ever executes the first-bound expression.
 
-**Fix**: register a copy callback alongside the bind data, in the same bind
-callback and after `set_bind_data`:
+**Fix**: use `ScalarBindData::set`, which registers a generated, panic-safe
+copy callback (it requires `T: Clone + Send + Sync`). With the raw API, register
+a copy callback alongside the bind data, in the same bind callback and after
+`set_bind_data`:
 
 ```rust
 unsafe extern "C" fn copy(data: *mut c_void) -> *mut c_void {

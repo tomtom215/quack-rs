@@ -46,6 +46,7 @@ pub mod info;
 #[cfg(feature = "duckdb-1-5")]
 pub mod state;
 pub mod typed;
+mod typed_builder;
 
 pub use builder::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};
 // The callback signature aliases belong at the module root alongside the
@@ -59,3 +60,4 @@ pub use info::{ScalarBindInfo, ScalarInitInfo};
 #[cfg(feature = "duckdb-1-5")]
 pub use state::{ScalarBindData, ScalarLocalState};
 pub use typed::{ScalarOut, ScalarValue};
+pub use typed_builder::TypedScalarFunctionBuilder;

@@ -104,7 +104,6 @@ _duckdb-testing = ["dep:duckdb"]
 ## - `TypeId::TimeNs` column type
 ## - `TypeId::Any`, `TypeId::Varint`, `TypeId::SqlNull`, `TypeId::IntegerLiteral`, `TypeId::StringLiteral` column types
 ## - Scalar function bind/init lifecycle and local state
-## - Scalar function varargs and volatile flags
 ## - Config option registration (extension-defined settings)
 ## - Copy function support (custom `COPY TO` handlers)
 ## - Catalog entry lookup (incl. `Catalog::type_name`)

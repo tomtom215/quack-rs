@@ -43,6 +43,7 @@
 //! use quack_rs::scalar::state::ScalarBindData;
 //! use quack_rs::scalar::{ScalarBindInfo, ScalarFunctionInfo};
 //!
+//! #[derive(Clone)]
 //! struct Factor(i64);
 //!
 //! # #[allow(unused)]
@@ -59,6 +60,30 @@
 //!     let factor = unsafe { ScalarBindData::<Factor>::get(&fninfo) };
 //!     let _ = factor.map(|f| f.0);
 //! });
+//! ```
+//!
+//! # Thread safety
+//!
+//! `DuckDB` hands the *same* bind data to every thread executing the query
+//! (`CAPIScalarFunction` in `src/main/capi/scalar_function-c.cpp` reads it
+//! through the shared bound expression), so bind data must be `Send + Sync`.
+//! Local state is per thread but may be freed on a different thread from the
+//! one that created it, so it must be `Send`. Both bounds are enforced:
+//!
+//! ```rust,compile_fail
+//! # use quack_rs::scalar::{ScalarBindData, ScalarBindInfo};
+//! fn bind(info: &ScalarBindInfo) {
+//!     // `Rc` is neither `Send` nor `Sync`: rejected.
+//!     ScalarBindData::set(info, std::rc::Rc::new(1_i64));
+//! }
+//! ```
+//!
+//! ```rust,compile_fail
+//! # use quack_rs::scalar::{ScalarInitInfo, ScalarLocalState};
+//! fn init(info: &ScalarInitInfo) {
+//!     // `Rc` is not `Send`: rejected.
+//!     ScalarLocalState::set(info, std::rc::Rc::new(1_i64));
+//! }
 //! ```
 
 use std::marker::PhantomData;
@@ -84,35 +109,83 @@ unsafe extern "C" fn drop_boxed<T>(ptr: *mut c_void) {
     }));
 }
 
+/// Clones a `Box<T>` behind a `duckdb_copy_callback_t`, containing any panic.
+///
+/// Returns null if `T::clone` panics; the copy then has no bind data, which
+/// [`ScalarBindData::get`] reports as `None`.
+///
+/// # Safety
+///
+/// `ptr` must be null or point to a live `T` produced by
+/// [`ScalarBindData::set`].
+unsafe extern "C" fn clone_boxed<T: Clone>(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // `T::clone` is arbitrary user code and this is an `extern "C"` boundary
+    // with no error channel, so the unwind is contained here.
+    crate::callback::catch_ffi_panic(|| {
+        // SAFETY: `ptr` points to a live `T` owned by the bind data being
+        // copied; shared access only.
+        let src = unsafe { &*ptr.cast::<T>() };
+        Box::into_raw(Box::new(src.clone())).cast::<c_void>()
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
 /// Type-safe bind data for a `DuckDB` scalar function.
 ///
 /// Set once in the bind callback; read in init and in every execution. `DuckDB`
 /// owns the allocation and frees it through a generated, panic-safe destructor
 /// when the bound function is discarded.
-pub struct ScalarBindData<T: 'static> {
+///
+/// # Why `T: Clone + Send + Sync`
+///
+/// - **`Send + Sync`**: every thread executing the query reads the same value
+///   concurrently (see the [module docs][self]).
+/// - **`Clone`** (on [`set`][Self::set]): `DuckDB` copies the bound expression
+///   whenever the optimizer duplicates it — filter pushdown through a
+///   projection does — and a copy made without a copy callback has **no** bind
+///   data at all. `set` registers a generated copy callback that clones `T`.
+///
+/// For data that is expensive or impossible to clone, store an
+/// [`Arc<T>`][std::sync::Arc]: cloning it is a reference-count bump, and every
+/// copy then shares one value.
+pub struct ScalarBindData<T: Send + Sync + 'static> {
     _marker: PhantomData<T>,
 }
 
-impl<T: 'static> ScalarBindData<T> {
-    /// Stores `data` as this function's bind data.
+impl<T: Send + Sync + 'static> ScalarBindData<T> {
+    /// Stores `data` as this function's bind data, and registers the
+    /// destructor and copy callback that go with it.
     ///
-    /// Call at most once per bind invocation. `DuckDB` replaces any previous
-    /// value, dropping it through the destructor registered with it.
-    // The whole body is one `duckdb_scalar_function_set_bind_data` call; with no
-    // live engine there is no way to observe whether it happened, so the `--lib`
-    // mutation run cannot kill `with ()`. Covered end to end by the typed
-    // scalar-bind tests.
+    /// Call at most once per bind invocation: `DuckDB` overwrites the stored
+    /// pointer on a second call **without** freeing the first value, so the
+    /// first value is leaked (never dropped). quack-rs cannot free it for you —
+    /// the C API offers no way to read back what a bind callback stored.
+    // The whole body is two FFI calls; with no live engine there is no way to
+    // observe whether they happened, so the `--lib` mutation run cannot kill
+    // `with ()`. Covered end to end by the typed scalar-bind tests.
     #[mutants::skip]
-    pub fn set(info: &ScalarBindInfo, data: T) {
+    pub fn set(info: &ScalarBindInfo, data: T)
+    where
+        T: Clone,
+    {
         let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
-        // SAFETY: `raw` is a fresh `Box<T>` and `drop_boxed::<T>` is the
-        // matching destructor; DuckDB owns it from here.
-        unsafe { info.set_bind_data(raw, Some(drop_boxed::<T>)) };
+        // SAFETY: `raw` is a fresh `Box<T>`; `drop_boxed::<T>` is the matching
+        // destructor and `clone_boxed::<T>` produces allocations the same
+        // destructor frees. DuckDB owns it from here.
+        unsafe {
+            info.set_bind_data(raw, Some(drop_boxed::<T>));
+            info.set_bind_data_copy(Some(clone_boxed::<T>));
+        }
     }
 
     /// Borrows the bind data during execution.
     ///
-    /// Returns `None` if the bind callback never stored anything.
+    /// Returns `None` if the bind callback never stored anything, or if
+    /// `DuckDB` copied the bound expression and `T::clone` panicked while
+    /// copying it.
     ///
     /// # Safety
     ///
@@ -147,7 +220,7 @@ impl<T: 'static> ScalarBindData<T> {
     }
 }
 
-impl<T: 'static> core::fmt::Debug for ScalarBindData<T> {
+impl<T: Send + Sync + 'static> core::fmt::Debug for ScalarBindData<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("ScalarBindData<")?;
         f.write_str(core::any::type_name::<T>())?;
@@ -160,15 +233,19 @@ impl<T: 'static> core::fmt::Debug for ScalarBindData<T> {
 /// `DuckDB` calls the init callback once per execution thread, so each thread
 /// gets its own `T` and [`get_mut`][Self::get_mut] hands out `&mut T` without
 /// synchronisation. That is why `T` need only be `Send`, not `Sync` — and why a
-/// counter kept here is per-thread, not global.
-pub struct ScalarLocalState<T: 'static> {
+/// counter kept here is per-thread, not global. It must be `Send` because the
+/// thread that frees it need not be the one that created it.
+pub struct ScalarLocalState<T: Send + 'static> {
     _marker: PhantomData<T>,
 }
 
-impl<T: 'static> ScalarLocalState<T> {
+impl<T: Send + 'static> ScalarLocalState<T> {
     /// Stores `state` as this thread's local state.
     ///
-    /// Call at most once per init invocation.
+    /// Call at most once per init invocation: `DuckDB` overwrites the stored
+    /// pointer on a second call **without** freeing the first value, so the
+    /// first value is leaked (never dropped). The C API offers no way to read
+    /// the state back from an init callback, so quack-rs cannot free it.
     // As `ScalarBindData::set`: one FFI call, no observable effect without a
     // live engine.
     #[mutants::skip]
@@ -200,7 +277,7 @@ impl<T: 'static> ScalarLocalState<T> {
     }
 }
 
-impl<T: 'static> core::fmt::Debug for ScalarLocalState<T> {
+impl<T: Send + 'static> core::fmt::Debug for ScalarLocalState<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("ScalarLocalState<")?;
         f.write_str(core::any::type_name::<T>())?;
@@ -252,6 +329,48 @@ mod tests {
         // `extern "C"` boundary and abort the test binary.
         // SAFETY: `raw` came from `Box::into_raw(Box::new(DropBomb))`.
         unsafe { drop_boxed::<DropBomb>(raw) };
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Cloned(Vec<u8>);
+    impl Clone for Cloned {
+        fn clone(&self) -> Self {
+            assert!(self.0 != b"bomb", "bind data clone deliberately exploded");
+            Self(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn the_generated_copy_callback_produces_an_independent_box() {
+        let raw = Box::into_raw(Box::new(Cloned(vec![1, 2, 3]))).cast::<c_void>();
+        // SAFETY: `raw` came from `Box::into_raw(Box::new(Cloned(..)))`.
+        let copy = unsafe { clone_boxed::<Cloned>(raw) };
+        assert!(!copy.is_null());
+        assert_ne!(copy, raw, "a copy must be a separate allocation");
+        // SAFETY: both are live `Box<Cloned>` allocations.
+        unsafe {
+            assert_eq!(*copy.cast::<Cloned>(), Cloned(vec![1, 2, 3]));
+            drop_boxed::<Cloned>(raw);
+            // The copy survives the original being freed.
+            assert_eq!(*copy.cast::<Cloned>(), Cloned(vec![1, 2, 3]));
+            drop_boxed::<Cloned>(copy);
+        }
+    }
+
+    #[test]
+    fn the_generated_copy_callback_tolerates_null() {
+        // SAFETY: the null case is handled explicitly.
+        assert!(unsafe { clone_boxed::<Cloned>(std::ptr::null_mut()) }.is_null());
+    }
+
+    #[test]
+    fn a_panicking_clone_yields_null_instead_of_unwinding() {
+        let raw = Box::into_raw(Box::new(Cloned(b"bomb".to_vec()))).cast::<c_void>();
+        // SAFETY: `raw` came from `Box::into_raw(Box::new(Cloned(..)))`.
+        let copy = unsafe { clone_boxed::<Cloned>(raw) };
+        assert!(copy.is_null(), "a failed clone is reported as no bind data");
+        // SAFETY: `raw` is still live and owned here.
+        unsafe { drop_boxed::<Cloned>(raw) };
     }
 
     #[test]

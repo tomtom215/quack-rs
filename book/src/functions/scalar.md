@@ -59,9 +59,24 @@ ScalarFunctionBuilder::try_new(name)?   // validates name before building
     .register(con)?;
 ```
 
-`try_new` validates the name against DuckDB naming rules:
-`[a-z_][a-z0-9_]*`, max 256 characters. `new` panics on invalid names (suitable for
-compile-time-known names only).
+`try_new` validates the name as an unquoted SQL identifier: `[A-Za-z_][A-Za-z0-9_]*`,
+at most 256 characters. Mixed case is allowed (DuckDB itself ships
+`formatReadableSize`). `new` does **not** validate: it only panics if the name
+contains an interior NUL byte, so use it for compile-time-known names only.
+
+### Closures
+
+`ScalarFunctionBuilder::map1` / `map2` / `map1_str` / `map2_str` / `map1_opt` /
+`map2_opt` build the whole function from a Rust closure and return a
+`TypedScalarFunctionBuilder`. Its signature is fixed by the closure's types, so it
+deliberately offers only `name()`, `volatile()` and `register(con)` — no `returns`,
+`param`, `function` or `extra_info`, any of which would make DuckDB hand the
+closure vectors of a different width than it reads and writes. Register it through
+a `Registrar` with `register_typed_scalar`.
+
+```rust
+ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?.register(con)?;
+```
 
 ---
 
@@ -245,10 +260,11 @@ ScalarOverloadBuilder::new()
 
 ---
 
-## DuckDB 1.5.0 Additions (`duckdb-1-5`)
+## Varargs and volatility
 
-The following `ScalarFunctionBuilder` methods are available when the `duckdb-1-5`
-feature is enabled:
+These `ScalarFunctionBuilder` methods map to functions in DuckDB's **stable** C
+API (v1.2.0), so they need no feature flag and work on DuckDB 1.4.x and 1.5.x
+alike:
 
 ### `varargs(type_id: TypeId)`
 
@@ -280,7 +296,8 @@ ScalarFunctionBuilder::new("merge_lists")
 
 Marks the function as volatile, meaning DuckDB will not cache or reuse its
 results across calls with the same arguments. Maps to
-`duckdb_scalar_function_set_volatile`.
+`duckdb_scalar_function_set_volatile`. Also available on the closure-built
+`TypedScalarFunctionBuilder`.
 
 ```rust
 ScalarFunctionBuilder::new("random_int")
@@ -289,6 +306,13 @@ ScalarFunctionBuilder::new("random_int")
     .function(random_int_fn)
     .register(con)?;
 ```
+
+---
+
+## DuckDB 1.5.0 Additions (`duckdb-1-5`)
+
+The following `ScalarFunctionBuilder` methods are available when the `duckdb-1-5`
+feature is enabled:
 
 ### `bind(bind_fn)`
 
@@ -319,6 +343,31 @@ ScalarFunctionBuilder::new("stateful_fn")
     .function(stateful_fn)
     .register(con)?;
 ```
+
+### Typed bind data and local state
+
+`ScalarBindData<T>` and `ScalarLocalState<T>` store a Rust value from the bind
+and init callbacks with a generated, panic-safe destructor:
+
+```rust
+#[derive(Clone)]
+struct Factor(i64);
+
+// in the bind callback
+ScalarBindData::set(&bind_info, Factor(10));
+// in the function callback
+let factor = unsafe { ScalarBindData::<Factor>::get(&fn_info) };
+```
+
+- **Bind data must be `Clone + Send + Sync`.** Every executing thread reads the
+  same value concurrently, and DuckDB *copies* the bound expression whenever the
+  optimizer duplicates it (filter pushdown through a projection does). Without a
+  copy callback the copy has **no** bind data at all, so `set` registers one that
+  clones `T`. Wrap data that is expensive or impossible to clone in an `Arc<T>`.
+- **Local state must be `Send`**: it is per thread, but may be freed on another.
+- **Call `set` at most once per callback.** DuckDB overwrites the stored pointer
+  on a second call without freeing the first value, so that value is leaked
+  (never dropped).
 
 ---
 
@@ -383,6 +432,8 @@ bind callback. It exposes:
 - `get_argument(index) -> duckdb_expression` — argument expression at `index`
 - `get_extra_info() -> *mut c_void` — the extra-info pointer from registration
 - `set_bind_data(data, destroy)` — stores per-query data retrievable during execution
+- `set_bind_data_copy(copy)` — the callback DuckDB uses to duplicate that data when it
+  copies the bound expression; without one the copy's bind data is NULL
 - `set_error(message)` — reports an error
 - `get_client_context() -> ClientContext` — access to the connection's catalog and config
 
