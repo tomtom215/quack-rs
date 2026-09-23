@@ -313,8 +313,9 @@ macro_rules! aggregate_update_callback {
 ///
 /// # Pitfall L1
 ///
-/// `target` states are freshly zero-initialised, so the body must propagate
-/// **every** field of the state, not only the accumulated data. See
+/// `target` states were set up by the aggregate's `init` callback, not copied
+/// from anything, so the body must propagate **every** field of the state, not
+/// only the accumulated data. See
 /// [`CombineFn`][crate::aggregate::callbacks::CombineFn].
 ///
 /// # Example

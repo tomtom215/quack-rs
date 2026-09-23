@@ -45,16 +45,20 @@ flowchart TD
 
     SIZE["**state_size**()<br/>How many bytes to allocate per group?"]
     INIT["**state_init**(state)<br/>Initialize a fresh state"]
-    UPDATE["**update**(chunk, states[])<br/>Process one input batch"]
+    UPDATE["**update**(chunk, states[])<br/>Process one input batch<br/>(NULL rows included — check is_valid)"]
     COMBINE["**combine**(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
-    FINAL["**finalize**(states[], out, count)<br/>Write results to output vector"]
-    DESTROY["**state_destroy**(states[], count)<br/>Free memory"]
+    FINAL["**finalize**(states[], out, count, offset)<br/>Write count results at out[offset..], once per result batch"]
+    DESTROY["**state_destroy**(states[], count)<br/>Free memory — for every initialized state,<br/>including combine sources after the merge"]
 
     style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```
 
 DuckDB may call `combine` multiple times as it merges results from parallel segments.
-**Target states in `combine` are always fresh (zero-initialized via `state_init`).**
+**Target states in `combine` hold whatever `state_init` set up** — not a copy of the
+source — so `combine` must carry every field across. `state_size` is called whenever
+an operator sizes its state buffers (not once at registration), so it must always
+return the same value; `destroy` runs on `combine`'s source states once they have
+been merged, as well as after `finalize`.
 
 ---
 

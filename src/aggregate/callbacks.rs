@@ -16,12 +16,20 @@
 //!
 //! | Callback | When called | Purpose |
 //! |----------|-------------|---------|
-//! | [`StateSizeFn`] | Once at registration | Returns `sizeof(FfiState)` in bytes |
-//! | [`StateInitFn`] | Per state allocation | Initializes a fresh state |
-//! | [`UpdateFn`] | Per batch of rows | Accumulates data from a chunk into the state |
-//! | [`CombineFn`] | Parallel merge | Merges source state into target state |
-//! | [`FinalizeFn`] | Once at the end | Writes results from states to output vector |
-//! | [`DestroyFn`] | After finalize | Frees per-state memory |
+//! | [`StateSizeFn`] | Whenever an operator sizes its state buffers — at least once per query that uses the aggregate, never at registration | Returns `sizeof(FfiState)` in bytes; must return the same value every time |
+//! | [`StateInitFn`] | Per state allocation, including every `combine` target | Initializes a fresh state |
+//! | [`UpdateFn`] | Per batch of input rows | Accumulates data from a chunk into the states |
+//! | [`CombineFn`] | Parallel merge, window segment trees | Merges source states into target states |
+//! | [`FinalizeFn`] | Per batch of result rows, with a `count` and an `offset` | Writes results from `count` states to the output vector starting at `offset` |
+//! | [`DestroyFn`] | For every state that was initialized: after finalize, and on the source states once `combine` has merged them | Frees per-state memory |
+//!
+//! Sources (`DuckDB` 1.5.5): `CAPIAggregateStateSize`, `CAPIAggregateFinalize`
+//! and `CAPIAggregateDestructor` in `src/main/capi/aggregate_function-c.cpp`;
+//! the state-size calls in `aggregate_object.cpp`,
+//! `physical_ungrouped_aggregate.cpp` and the window executors; and
+//! `LocalUngroupedAggregateState`, whose states are destroyed after
+//! `GlobalUngroupedAggregateState::Combine` has merged them
+//! (`physical_ungrouped_aggregate.cpp`).
 //!
 //! # Important: Array-of-pointers calling convention
 //!
@@ -90,7 +98,9 @@ pub type StateInitFn =
 
 /// Accumulates data from a chunk into the aggregate states.
 ///
-/// `states` is a pointer to an array of state pointers — one per group.
+/// `states` is a pointer to an array of state pointers — one per **input row**
+/// (rows of the same group carry the same pointer), so `states[row]` is the
+/// state for row `row` of `input`.
 ///
 /// The chunk holds **every** input row, NULL rows included, whatever
 /// [`NullHandling`][crate::types::NullHandling] the aggregate was registered
@@ -108,8 +118,13 @@ pub type UpdateFn = unsafe extern "C" fn(
 ///
 /// # Pitfall L1: Combine must propagate ALL config fields
 ///
-/// The `target` states are freshly zero-initialized. All configuration fields
-/// must be copied from `source`, not just accumulated data values.
+/// A `target` state is not a copy of anything: it was set up by your
+/// [`StateInitFn`] (for [`FfiState<T>`][crate::aggregate::FfiState], that is
+/// `T::default()`) and may have seen no `update` at all. All configuration
+/// fields must be copied from `source`, not just accumulated data values.
+///
+/// After `combine` returns, `DuckDB` may call [`DestroyFn`] on the `source`
+/// states, so move out of them rather than keeping pointers into them.
 pub type CombineFn = unsafe extern "C" fn(
     info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -136,7 +151,10 @@ pub type FinalizeFn = unsafe extern "C" fn(
 
 /// Frees memory allocated by [`StateInitFn`].
 ///
-/// Called after finalize. Must free all heap allocations made in `StateInitFn`.
+/// Called for every state that was initialized — after finalize, but also on
+/// the source states of a [`CombineFn`] once they have been merged, and on
+/// states that are never finalized. Must free all heap allocations made in
+/// `StateInitFn`.
 pub type DestroyFn = unsafe extern "C" fn(states: *mut duckdb_aggregate_state, count: idx_t);
 
 #[cfg(test)]

@@ -67,7 +67,8 @@ FfiState::<MyState>::size_callback(_info)
 FfiState::<MyState>::init_callback(info, state)
 // Effect: writes Box::into_raw(Box::new(MyState::default())) into the slot
 
-// state_destroy: DuckDB calls this after finalize for every group
+// state_destroy: DuckDB calls this for every initialized state — after finalize,
+// and on combine's source states once they have been merged
 FfiState::<MyState>::destroy_callback(states, count)
 // Effect: for each state: drop(Box::from_raw(inner)); inner = null
 ```
