@@ -405,9 +405,20 @@ impl Drop for QueryResult {
 
 /// Runs `sql` on `con` and returns the materialised result.
 ///
+/// # Several statements in one string
+///
+/// `sql` may hold several `;`-separated statements, and `DuckDB` runs **every**
+/// one of them, in order. The result returned is the first statement that
+/// produces rows (a `SELECT`, …), or — when none does — the last statement's.
+/// Results of later row-producing statements are discarded (`DuckDB` chains
+/// them where the C API cannot reach them). The first statement that fails
+/// fails the call, but the statements before it have already run and, outside
+/// an explicit transaction, committed. A string with no statement at all
+/// (`""`, `";"`) succeeds with an empty result.
+///
 /// # Errors
 ///
-/// Returns [`ExtensionError`] carrying `DuckDB`'s own message if the statement
+/// Returns [`ExtensionError`] carrying `DuckDB`'s own message if a statement
 /// fails, or if `sql` contains an interior NUL byte.
 ///
 /// # Safety
@@ -421,10 +432,13 @@ pub unsafe fn query(con: duckdb_connection, sql: &str) -> Result<QueryResult, Ex
     if state == DuckDBSuccess {
         return Ok(QueryResult::new(result));
     }
-    // SAFETY: even on failure DuckDB populated `result`, so the error message is
-    // readable and the result must still be destroyed.
+    // SAFETY: on an ordinary failure DuckDB populated `result`, so the error
+    // message is readable and the result must be destroyed. On its
+    // `catch (...)` path it returns without touching `result`, which is still
+    // zeroed: `duckdb_result_error` then returns null and
+    // `duckdb_destroy_result` is a no-op on a zeroed result.
     let message = unsafe { c_str_to_owned(duckdb_result_error(&raw mut result)) }
-        .unwrap_or_else(|| String::from("query failed without an error message"));
+        .unwrap_or_else(|| no_error_message("duckdb_query"));
     // SAFETY: `result` is destroyed exactly once, here, on the error path.
     unsafe { duckdb_destroy_result(&raw mut result) };
     Err(ExtensionError::new(message))
@@ -432,6 +446,10 @@ pub unsafe fn query(con: duckdb_connection, sql: &str) -> Result<QueryResult, Ex
 
 /// Runs `sql` on `con` for its side effects and returns the number of rows
 /// changed.
+///
+/// With several statements in `sql`, every one runs, but the count is that
+/// of the statement whose result [`query`] returns — the first that produces
+/// rows, or else the last: `"SELECT 1; INSERT …"` reports `0`.
 ///
 /// # Errors
 ///
@@ -444,6 +462,19 @@ pub unsafe fn execute(con: duckdb_connection, sql: &str) -> Result<u64, Extensio
     // SAFETY: forwarded from this function's own contract.
     let result = unsafe { query(con, sql) }?;
     Ok(result.rows_changed())
+}
+
+/// The message for a failure `DuckDB` reported without one.
+///
+/// `duckdb_query`, `duckdb_execute_prepared` and
+/// `duckdb_execute_prepared_streaming` return `DuckDBError` from a
+/// `catch (...)` block without filling in the result, so there is no message
+/// to read (`duckdb-c.cpp`, `prepared-c.cpp`).
+fn no_error_message(api_func: &str) -> String {
+    format!(
+        "{api_func} reported failure without an error message: DuckDB caught an exception \
+         that is not a std::exception (its `catch (...)` path), which records nothing"
+    )
 }
 
 // ─── Prepared statements ─────────────────────────────────────────────────────
@@ -467,7 +498,13 @@ impl PreparedStatement {
         usize::try_from(unsafe { duckdb_nparams(self.statement) }).unwrap_or(0)
     }
 
-    /// Name of the parameter at 1-based `index`, if it has one.
+    /// Name of the parameter at 1-based `index`, or `None` when `index` is out
+    /// of range.
+    ///
+    /// Every parameter has a name: a named one (`$foo`) returns it with its
+    /// case preserved (while [`parameter_index`][Self::parameter_index]
+    /// matches case-insensitively), and a positional one (`?`) returns its
+    /// 1-based position as text — `"1"`, `"2"`, ….
     #[must_use]
     pub fn parameter_name(&self, index: usize) -> Option<String> {
         if index == 0 || index > self.parameter_count() {
@@ -938,10 +975,11 @@ impl PreparedStatement {
         if state == DuckDBSuccess {
             return Ok(QueryResult::new(result));
         }
-        // SAFETY: on failure DuckDB still populates the error slot; the result
-        // must be destroyed either way.
+        // SAFETY: on an ordinary failure DuckDB populates the error slot and
+        // the result must be destroyed; on its `catch (...)` path `result` is
+        // left zeroed, which both calls handle.
         let message = unsafe { c_str_to_owned(duckdb_result_error(&raw mut result)) }
-            .unwrap_or_else(|| String::from("streaming execution failed without a message"));
+            .unwrap_or_else(|| no_error_message("duckdb_execute_prepared_streaming"));
         // SAFETY: destroyed exactly once, here, on the error path.
         unsafe { duckdb_destroy_result(&raw mut result) };
         Err(ExtensionError::new(message))
@@ -976,9 +1014,11 @@ impl PreparedStatement {
         if state == DuckDBSuccess {
             return Ok(QueryResult::new(result));
         }
-        // SAFETY: DuckDB populated `result` even on failure.
+        // SAFETY: on an ordinary failure DuckDB populated `result`; on its
+        // `catch (...)` path it left the zeroed `result` untouched, and
+        // `duckdb_result_error` returns null for that.
         let message = unsafe { c_str_to_owned(duckdb_result_error(&raw mut result)) }
-            .unwrap_or_else(|| String::from("prepared statement failed without an error message"));
+            .unwrap_or_else(|| no_error_message("duckdb_execute_prepared"));
         // SAFETY: destroyed exactly once, here, on the error path.
         unsafe { duckdb_destroy_result(&raw mut result) };
         Err(ExtensionError::new(message))
@@ -1024,6 +1064,9 @@ impl Drop for PreparedStatement {
 }
 
 /// Prepares `sql` on `con`.
+///
+/// `sql` must hold exactly one statement; unlike [`query`], a string with
+/// several is an error.
 ///
 /// # Errors
 ///

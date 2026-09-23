@@ -238,7 +238,10 @@ impl Value {
     /// [`LogicalType::from_raw`][crate::types::LogicalType::from_raw] and then
     /// double-free (pitfall P11). This does the walk without exposing it.
     ///
-    /// Returns an empty vector for a null handle or a non-`STRUCT` value.
+    /// Returns an empty vector for a null handle or a value whose type has no
+    /// struct children. A `UNION` value is stored as a struct of its tag and
+    /// its members, so it returns `""` for the tag followed by the member
+    /// names — positions that line up with `struct_child`.
     ///
     /// Pair it with [`struct_child`][Self::struct_child], which is positional:
     ///

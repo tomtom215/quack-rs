@@ -68,6 +68,17 @@ reads the error DuckDB recorded and returns it, so a partial result cannot pass
 for a complete one. The `?` above is what keeps it from being silently
 truncated.
 
+### Several statements in one string
+
+`query` and `execute` accept several `;`-separated statements, and DuckDB runs
+**every one**, in order. The result you get back is the first statement that
+produces rows — or, when none does, the last statement's; the results of later
+row-producing statements are discarded. So `"SELECT 1; INSERT …"` runs the
+`INSERT` but `execute` reports `0` rows changed. The first failing statement
+fails the call, after the ones before it have run (and, outside an explicit
+transaction, committed). An empty string, or just `;`, succeeds with an empty
+result. `prepare` takes exactly one statement.
+
 ## Bind values, do not interpolate them
 
 Anything that did not come from your own source text — a table name from a

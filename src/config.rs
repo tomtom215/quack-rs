@@ -118,7 +118,14 @@ impl DbConfig {
         unsafe { duckdb_config_count() }
     }
 
-    /// Returns the name and description for the configuration flag at `index`.
+    /// Returns the name and the second string `DuckDB` reports for the
+    /// configuration flag at `index`.
+    ///
+    /// For a core option or one of its aliases the second string is the
+    /// option's description. For a setting that belongs to an extension
+    /// (`s3_region`, …) it is **the extension's name** (`"httpfs"`): the third
+    /// branch of `duckdb_get_config_flag` reports `entry->extension` there,
+    /// not a description.
     ///
     /// `index` must be less than [`flag_count()`][DbConfig::flag_count].
     ///

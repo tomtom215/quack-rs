@@ -5658,6 +5658,7 @@ mod value_temporal;
 #[path = "ffi_roundtrip/appender_rows.rs"]
 mod appender_rows;
 
+#[cfg(feature = "duckdb-1-5")]
 #[path = "ffi_roundtrip/query_stream.rs"]
 mod query_stream;
 
@@ -5667,3 +5668,6 @@ mod value_nested;
 #[cfg(feature = "duckdb-1-5-4")]
 #[path = "ffi_roundtrip/arrow_import.rs"]
 mod arrow_import;
+
+#[path = "ffi_roundtrip/query_docs.rs"]
+mod query_docs;

@@ -489,9 +489,13 @@ impl From<ErrorData> for ExtensionError {
 /// Checks whether `bytes` form a valid UTF-8 string according to `DuckDB`'s
 /// validator (`DuckDB` 1.5.0+).
 ///
-/// `DuckDB` enforces stricter rules than Rust in some cases (e.g. rejecting
-/// certain code points), so this is useful when validating externally-sourced
-/// bytes before handing them to `DuckDB` string APIs.
+/// `DuckDB`'s rules match Rust's: every Unicode scalar value is accepted, and
+/// surrogates, overlong encodings, code points above `U+10FFFF`, truncated
+/// sequences and stray continuation bytes are rejected, exactly where
+/// [`std::str::from_utf8`] rejects them (checked over all 1,112,064 scalar
+/// values and each malformed class). Use this when you want `DuckDB`'s
+/// structured [`ErrorData`] for the failure; for a yes/no answer,
+/// `std::str::from_utf8` is equivalent and needs no engine.
 ///
 /// # Errors
 ///

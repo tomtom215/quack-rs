@@ -80,9 +80,12 @@ Unknown or future categories map to `DuckDbErrorType::Invalid`.
 
 ## UTF-8 validation
 
-The free function `check_valid_utf8` exposes DuckDB's own UTF-8 validator, which
-is stricter than Rust's in some cases. Use it to validate externally-sourced
-bytes before handing them to DuckDB string APIs:
+The free function `check_valid_utf8` exposes DuckDB's own UTF-8 validator. Its
+rules match Rust's exactly — it accepts every Unicode scalar value and rejects
+surrogates, overlong forms, code points above `U+10FFFF`, truncated sequences
+and stray continuation bytes, just as `std::str::from_utf8` does — so reach for
+it when you want DuckDB's structured `ErrorData` for the failure; for a yes/no
+answer `std::str::from_utf8` is equivalent:
 
 ```rust,no_run
 use quack_rs::error_data::check_valid_utf8;
