@@ -66,7 +66,9 @@ Pre-release versions use the suffix convention `vX.Y.Z-alpha.N`,
 # 1. Prepare
 vim CHANGELOG.md      # Move [Unreleased] → [X.Y.Z] - YYYY-MM-DD
 vim Cargo.toml        # version = "X.Y.Z"
-git add CHANGELOG.md Cargo.toml
+scripts/sync-book-changelog.py   # regenerate the book's changelog page
+# ...and bump every "0.X" version snippet in README.md / book / CITATION.cff (Step 3b)
+git add -A
 git commit -m "chore: release vX.Y.Z"
 git push origin main
 
@@ -75,7 +77,12 @@ git tag -s "vX.Y.Z" -m "Release vX.Y.Z"
 git push origin "vX.Y.Z"
 
 # 3. Wait for CI, then approve the crates-io deployment in the GitHub Actions UI
+
+# 4. Verify: tag on origin, crates.io max_version, docs.rs build (Step 9)
 ```
+
+Version snippets in the docs are bumped in the same commit as `Cargo.toml`
+(Step 3b), and that commit is the one tagged.
 
 ---
 
@@ -123,8 +130,9 @@ Update the comparison link at the bottom of `CHANGELOG.md`:
 [0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
 ```
 
-Also update the **book changelog** (`book/src/reference/changelog.md`) to mirror the
-new CHANGELOG.md entry — these must stay in sync.
+The **book changelog** (`book/src/reference/changelog.md`) is generated from
+`CHANGELOG.md`: regenerate it with `scripts/sync-book-changelog.py` (CI fails
+if the two diverge). Do not edit it by hand.
 
 ### Step 2b — Update SECURITY.md
 
@@ -141,15 +149,31 @@ version = "0.3.0"   # ← update this
 
 Do **not** update `Cargo.lock` manually — it will update itself on next build.
 
+### Step 3b — Bump the version in the documentation snippets, in the same PR
+
+Every `quack-rs = "0.X"` / `version = "0.X"` snippet a reader copies — in
+`README.md`, the book, the feature documentation in `Cargo.toml`, and
+`CITATION.cff` — must name the new version **in the release PR itself**. The
+commit that gets tagged is that PR's merge commit, so a snippet bumped in a
+follow-up PR is wrong in the tagged source, in the published `.crate` (whose
+README is what crates.io renders) and in the docs.rs build of the release.
+Find the stale ones with, for example:
+
+```bash
+git grep -n '0\.17' -- README.md book/src Cargo.toml CITATION.cff src/lib.rs
+```
+
 ### Step 4 — Commit the version bump
 
 ```bash
-git add CHANGELOG.md Cargo.toml
+git add CHANGELOG.md Cargo.toml   # plus the snippets from Step 3b
 git commit -m "chore: release v0.3.0"
 git push origin main
 ```
 
-Wait for the CI run on `main` to pass before tagging.
+Wait for the CI run on `main` to pass before tagging. If the release goes
+through a pull request, tag the commit that PR produced on `main` — with the
+changelog, the version and the snippets all in it — never a commit before it.
 
 ### Step 5 — Create a signed git tag
 
@@ -226,6 +250,34 @@ manual approval from an authorised reviewer.
 The job then runs `cargo publish` using the `CARGO_REGISTRY_TOKEN` secret.
 
 ### Step 9 — Post-release verification
+
+A release is not done until all three of these hold. Nothing else notices when
+one does not: `0.17.0` was merged to `main` as a release commit, yet on
+2026-09-23 crates.io still reported `0.16.0` as the newest version, so
+`cargo add quack-rs` kept resolving to the previous release.
+
+```bash
+V=0.3.0   # the version in Cargo.toml
+
+# 1. The tag exists on origin, not only locally
+git ls-remote --tags origin "refs/tags/v$V"          # must print one line
+
+# 2. crates.io's newest version is this one
+curl -fsSL -A "quack-rs release check" https://crates.io/api/v1/crates/quack-rs \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["crate"]["max_version"])'
+# must print $V (for a pre-release, check "newest_version" instead)
+
+# 3. docs.rs built this version
+curl -fsSL "https://docs.rs/crate/quack-rs/$V/status.json"
+# must print {"doc_status":true,"version":"$V"}; a 404 means no build (yet --
+# allow 5-10 minutes after publishing, then investigate)
+```
+
+If any of them fails, the release is incomplete: finish it (push the tag,
+approve the `crates-io` deployment, check the docs.rs build log) before doing
+anything else.
+
+The remaining checks:
 
 ```bash
 # Verify the crate is live
