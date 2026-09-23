@@ -219,10 +219,13 @@ impl SqlMacro {
     /// let m = SqlMacro::scalar("add", &["a", "b"], "a + b").unwrap();
     /// assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "add"("a", "b") AS (a + b)"#);
     ///
-    /// let t = SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM tbl WHERE active = true").unwrap();
+    /// // A table parameter is read through `query_table`: a bare `FROM tbl` would
+    /// // look for a table named `tbl` when the macro is created, and fail.
+    /// let t = SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM query_table(tbl) WHERE active = true")
+    ///     .unwrap();
     /// assert_eq!(
     ///     t.to_sql(),
-    ///     r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM tbl WHERE active = true"#
+    ///     r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM query_table(tbl) WHERE active = true"#
     /// );
     /// ```
     #[must_use]
