@@ -460,6 +460,46 @@ fn malformed_target_duckdb_versions_are_rejected() {
 }
 
 #[test]
+fn malformed_target_duckdb_versions_are_rejected_as_malformed() {
+    // Each of these is refused by the format check itself, not by a later
+    // check that happens to reject it for another reason: "v1.5" has digits
+    // but too few parts, "v1..5" an empty part, and "v1.x.5" / "vX.Y.Z" a
+    // non-digit part.
+    for bad in ["v1.5", "v1..5", "v1.x.5", "vX.Y.Z", "v1.5.5.1", "v"] {
+        for use_unstable_c_api in [false, true] {
+            let config = ScaffoldConfig {
+                use_unstable_c_api,
+                target_duckdb_version: bad.to_string(),
+                ..valid_config()
+            };
+            let err = generate_scaffold(&config).unwrap_err();
+            assert!(
+                err.as_str().contains("vMAJOR.MINOR.PATCH"),
+                "{bad:?} (unstable = {use_unstable_c_api}): {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn libduckdb_sys_pins_only_releases_from_the_1_4_4_floor() {
+    assert_eq!(libduckdb_sys_requirement("v1.4.4").unwrap(), "=1.4.4");
+    assert_eq!(libduckdb_sys_requirement("v1.4.9").unwrap(), "=1.4.9");
+    assert_eq!(libduckdb_sys_requirement("v1.5.5").unwrap(), "~1.10505.0");
+    for too_old in ["v1.4.3", "v1.4.0"] {
+        let err = libduckdb_sys_requirement(too_old).unwrap_err();
+        assert!(err.as_str().contains("at least 1.4.4"), "{too_old}: {err}");
+    }
+    // The same floor applies through the public entry point.
+    let config = ScaffoldConfig {
+        use_unstable_c_api: true,
+        target_duckdb_version: "v1.4.3".to_string(),
+        ..valid_config()
+    };
+    assert!(generate_scaffold(&config).is_err());
+}
+
+#[test]
 fn cargo_toml_tracks_the_current_quack_rs_version() {
     let files = generate_scaffold(&valid_config()).unwrap();
     let cargo = &files

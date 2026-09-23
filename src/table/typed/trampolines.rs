@@ -277,4 +277,33 @@ mod tests {
         let s: Box<dyn std::any::Any + Send> = Box::new(42_i32);
         assert!(panic_message(&*s).contains("unknown payload"));
     }
+
+    #[test]
+    fn contain_payload_returns_the_payload_message() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom");
+        assert_eq!(
+            contain_payload(payload),
+            "quack-rs: typed table function closure panicked: boom"
+        );
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("bang"));
+        assert_eq!(
+            contain_payload(payload),
+            "quack-rs: typed table function closure panicked: bang"
+        );
+    }
+
+    #[test]
+    fn contain_payload_survives_a_payload_whose_drop_panics() {
+        struct DropBomb;
+        impl Drop for DropBomb {
+            fn drop(&mut self) {
+                panic!("payload destructor panicked");
+            }
+        }
+        let payload: Box<dyn std::any::Any + Send> = Box::new(DropBomb);
+        assert_eq!(
+            contain_payload(payload),
+            "quack-rs: typed table function closure panicked (unknown payload)"
+        );
+    }
 }

@@ -18,25 +18,28 @@ use std::os::raw::c_char;
 
 use libduckdb_sys::{
     duckdb_array_type_array_size, duckdb_array_type_child_type, duckdb_decimal_scale,
-    duckdb_decimal_width, duckdb_destroy_logical_type, duckdb_enum_dictionary_size,
-    duckdb_enum_dictionary_value, duckdb_free, duckdb_get_type_id, duckdb_list_type_child_type,
-    duckdb_logical_type, duckdb_logical_type_get_alias, duckdb_map_type_key_type,
-    duckdb_map_type_value_type, duckdb_struct_type_child_count, duckdb_struct_type_child_name,
-    duckdb_struct_type_child_type, duckdb_union_type_member_count, duckdb_union_type_member_name,
-    duckdb_union_type_member_type, idx_t, DUCKDB_TYPE_DUCKDB_TYPE_ARRAY,
-    DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL, DUCKDB_TYPE_DUCKDB_TYPE_ENUM, DUCKDB_TYPE_DUCKDB_TYPE_LIST,
-    DUCKDB_TYPE_DUCKDB_TYPE_MAP, DUCKDB_TYPE_DUCKDB_TYPE_STRUCT, DUCKDB_TYPE_DUCKDB_TYPE_UNION,
+    duckdb_decimal_width, duckdb_enum_dictionary_size, duckdb_enum_dictionary_value, duckdb_free,
+    duckdb_get_type_id, duckdb_list_type_child_type, duckdb_logical_type,
+    duckdb_logical_type_get_alias, duckdb_map_type_key_type, duckdb_map_type_value_type,
+    duckdb_struct_type_child_count, duckdb_struct_type_child_name, duckdb_struct_type_child_type,
+    duckdb_union_type_member_count, duckdb_union_type_member_name, duckdb_union_type_member_type,
+    idx_t, DUCKDB_TYPE_DUCKDB_TYPE_ARRAY, DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL,
+    DUCKDB_TYPE_DUCKDB_TYPE_ENUM, DUCKDB_TYPE_DUCKDB_TYPE_LIST, DUCKDB_TYPE_DUCKDB_TYPE_MAP,
+    DUCKDB_TYPE_DUCKDB_TYPE_STRUCT, DUCKDB_TYPE_DUCKDB_TYPE_UNION,
 };
 
 use crate::error::ExtensionError;
 use crate::types::{LogicalType, TypeId};
 
 /// One declared parameter, however it was declared.
-pub enum ParamRef<'a> {
+///
+/// `L` is always [`LogicalType`] outside this module's tests, which use a
+/// stand-in so the interleaving can be checked without a live `DuckDB`.
+pub enum ParamRef<'a, L = LogicalType> {
     /// Declared with `param(TypeId)`.
     Id(TypeId),
     /// Declared with `param_logical(LogicalType)`.
-    Logical(&'a LogicalType),
+    Logical(&'a L),
 }
 
 /// The parameters in the order the set builders hand them to `DuckDB`.
@@ -44,10 +47,10 @@ pub enum ParamRef<'a> {
 /// This mirrors the interleaving loop in both `register` implementations
 /// exactly — including what it does with an out-of-order logical position — so
 /// the signature compared here is the one `DuckDB` actually receives.
-pub fn merged_params<'a>(
+pub fn merged_params<'a, L>(
     params: &'a [TypeId],
-    logical: &'a [(usize, LogicalType)],
-) -> Vec<ParamRef<'a>> {
+    logical: &'a [(usize, L)],
+) -> Vec<ParamRef<'a, L>> {
     let mut out = Vec::with_capacity(params.len() + logical.len());
     let mut simple_idx = 0;
     let mut logical_idx = 0;
@@ -127,14 +130,29 @@ unsafe fn signature_key(params: &[ParamRef<'_>]) -> String {
 }
 
 /// A child logical type handle, destroyed on drop.
-struct Owned(duckdb_logical_type);
+///
+/// A non-null handle is also held as a [`LogicalType`], whose own `Drop`
+/// destroys it; a null one (an accessor that could not describe the child) is
+/// never passed to `duckdb_destroy_logical_type`.
+struct Owned {
+    /// The handle, or null.
+    raw: duckdb_logical_type,
+    /// Destroys `raw` on drop; `None` exactly when `raw` is null.
+    _guard: Option<LogicalType>,
+}
 
-impl Drop for Owned {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: the handle was returned to us by a `*_child_type` style
-            // accessor, which transfers ownership.
-            unsafe { duckdb_destroy_logical_type(&raw mut self.0) };
+impl Owned {
+    /// Takes ownership of `raw`.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be null, or a handle returned by a `*_child_type` style
+    /// accessor, which transfers ownership to the caller.
+    unsafe fn new(raw: duckdb_logical_type) -> Self {
+        Self {
+            raw,
+            // SAFETY: non-null, and ours to destroy, per this function's contract.
+            _guard: (!raw.is_null()).then(|| unsafe { LogicalType::from_raw(raw) }),
         }
     }
 }
@@ -182,24 +200,24 @@ unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
                 );
             }
             DUCKDB_TYPE_DUCKDB_TYPE_LIST => {
-                let child = Owned(duckdb_list_type_child_type(ty));
+                let child = Owned::new(duckdb_list_type_child_type(ty));
                 out.push_str("LIST(");
-                describe(child.0, out);
+                describe(child.raw, out);
                 out.push(')');
             }
             DUCKDB_TYPE_DUCKDB_TYPE_ARRAY => {
-                let child = Owned(duckdb_array_type_child_type(ty));
+                let child = Owned::new(duckdb_array_type_child_type(ty));
                 out.push_str("ARRAY(");
-                describe(child.0, out);
+                describe(child.raw, out);
                 let _ = write!(out, ", {})", duckdb_array_type_array_size(ty));
             }
             DUCKDB_TYPE_DUCKDB_TYPE_MAP => {
-                let key = Owned(duckdb_map_type_key_type(ty));
-                let value = Owned(duckdb_map_type_value_type(ty));
+                let key = Owned::new(duckdb_map_type_key_type(ty));
+                let value = Owned::new(duckdb_map_type_value_type(ty));
                 out.push_str("MAP(");
-                describe(key.0, out);
+                describe(key.raw, out);
                 out.push_str(", ");
-                describe(value.0, out);
+                describe(value.raw, out);
                 out.push(')');
             }
             DUCKDB_TYPE_DUCKDB_TYPE_STRUCT => {
@@ -258,7 +276,8 @@ unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
 /// `name` must be null or a `DuckDB`-allocated string, and `ty` a logical type
 /// handle the caller owns.
 unsafe fn describe_member(out: &mut String, i: idx_t, name: *mut c_char, ty: duckdb_logical_type) {
-    let ty = Owned(ty);
+    // SAFETY: forwarded from this function's own contract.
+    let ty = unsafe { Owned::new(ty) };
     if i > 0 {
         out.push_str(", ");
     }
@@ -266,7 +285,7 @@ unsafe fn describe_member(out: &mut String, i: idx_t, name: *mut c_char, ty: duc
     let name = unsafe { take_c_string(name) };
     let _ = write!(out, "{name:?} ");
     // SAFETY: `ty` is a live handle owned by the guard above.
-    unsafe { describe(ty.0, out) };
+    unsafe { describe(ty.raw, out) };
 }
 
 #[cfg(test)]
@@ -327,9 +346,77 @@ mod tests {
         assert!(msg.contains("(BIGINT, VARCHAR)"), "{msg}");
     }
 
+    /// `merged_params` with `&str` stand-ins for the logical types, rendered
+    /// as `Id(..)` / `Logical(..)` so a whole ordering compares at once.
+    fn merged(params: &[TypeId], logical: &[(usize, &'static str)]) -> Vec<String> {
+        merged_params(params, logical)
+            .iter()
+            .map(|p| match p {
+                ParamRef::Id(id) => format!("Id({})", id.sql_name()),
+                ParamRef::Logical(name) => format!("Logical({name})"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn merged_params_places_logical_params_at_their_positions() {
+        assert_eq!(
+            merged(
+                &[TypeId::BigInt, TypeId::Varchar, TypeId::Double],
+                &[(0, "a"), (2, "b")]
+            ),
+            vec![
+                "Logical(a)",
+                "Id(BIGINT)",
+                "Logical(b)",
+                "Id(VARCHAR)",
+                "Id(DOUBLE)",
+            ]
+        );
+        // A trailing logical parameter, after every simple one.
+        assert_eq!(
+            merged(&[TypeId::BigInt, TypeId::Varchar], &[(2, "z")]),
+            vec!["Id(BIGINT)", "Id(VARCHAR)", "Logical(z)"]
+        );
+        // Only logical parameters.
+        assert_eq!(
+            merged(&[], &[(0, "a"), (1, "b")]),
+            vec!["Logical(a)", "Logical(b)"]
+        );
+        assert!(merged(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn merged_params_mirrors_register_for_out_of_order_positions() {
+        // `register` walks positions 0..total and only takes a logical type
+        // when the next one's position is the current one. A position past the
+        // end is never reached, so that logical type is left out and the slot
+        // it would have filled stays empty.
+        assert_eq!(
+            merged(&[TypeId::BigInt], &[(5, "late")]),
+            vec!["Id(BIGINT)"]
+        );
+        // Positions listed out of order: (2) blocks the queue, so (0) is never
+        // reached either, and the simple parameters fill the first slots.
+        assert_eq!(
+            merged(&[TypeId::BigInt], &[(2, "two"), (0, "zero")]),
+            vec!["Id(BIGINT)", "Logical(two)"]
+        );
+    }
+
+    #[test]
+    fn a_null_child_handle_is_held_but_never_destroyed() {
+        // SAFETY: null is allowed; dropping it must not reach
+        // `duckdb_destroy_logical_type`, which would panic without a live
+        // DuckDB here.
+        let child = unsafe { Owned::new(std::ptr::null_mut()) };
+        assert!(child.raw.is_null());
+        drop(child);
+    }
+
     #[test]
     fn merged_params_keeps_simple_params_in_order() {
-        let merged = merged_params(&[TypeId::BigInt, TypeId::Varchar], &[]);
+        let merged = merged_params::<LogicalType>(&[TypeId::BigInt, TypeId::Varchar], &[]);
         let ids: Vec<_> = merged
             .iter()
             .map(|p| match p {
