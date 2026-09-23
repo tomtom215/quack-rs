@@ -898,6 +898,15 @@ does not exist in the C API.
 If DuckDB exposes the window function API in a future C API version, `quack-rs` will
 add wrappers in the relevant release.
 
+### Aggregates crash under `agg(x) OVER ()` and `agg(x ORDER BY y)`
+
+A DuckDB defect ([duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109))
+makes **every** aggregate registered through the C API read out of bounds — usually a
+segfault — when it runs as a whole-partition window (`OVER ()`, `OVER (PARTITION BY p)`)
+or as an ordered aggregate (`agg(x ORDER BY y)`). No extension can detect or prevent it;
+tell your users to avoid those two shapes until it is fixed upstream. See
+[Pitfall L11](LESSONS.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
+
 ### VARIANT and GEOMETRY types
 
 DuckDB v1.5.1 introduced the `VARIANT` type (Iceberg v3 support); it landed in

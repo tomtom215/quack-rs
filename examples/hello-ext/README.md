@@ -1,8 +1,16 @@
 # hello-ext
 
-A comprehensive, fully-working DuckDB community extension built with [quack-rs]
-that exercises **every feature** of the SDK. Use it as a reference implementation
-or copy-paste starting point for your own extension.
+A fully-working DuckDB community extension built with [quack-rs] that exercises
+the SDK's function kinds — scalar, aggregate, table, cast, SQL macro and
+replacement scan — against the stable C API. Use it as a reference
+implementation or copy-paste starting point for your own extension. Features
+that need the `duckdb-1-5*` flags (copy functions, Arrow, config options, …)
+are not in it; their chapters in the book have examples.
+
+> **The aggregates here (`word_count`, `typed_sum`) must not be used as
+> `agg(x) OVER ()` or `agg(x ORDER BY y)`.** A DuckDB defect crashes every C API
+> aggregate in those two shapes — see
+> [Pitfall L11](../../LESSONS.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
 
 ## What it registers
 
@@ -250,21 +258,29 @@ SELECT value FROM gen_series_v2(3);                                  -- 0, 1, 2
 ## Adapting this for your own extension
 
 1. **Copy** this directory: `cp -r examples/hello-ext ../my-ext`
-2. **Rename** the crate in `Cargo.toml` (`name = "my-ext"`)
+2. **Rename** the crate in `Cargo.toml` (`name = "my_ext"` — underscores, not
+   hyphens: the name becomes the C entry-point symbol, and
+   `quack_rs::validate::validate_extension_name` rejects hyphens)
 3. **Replace** the functions in `src/lib.rs` — use the existing functions as
    patterns for the type you need (scalar, aggregate, table, cast, etc.)
-4. **Update the entry point** — the symbol `my_ext_init_c_api` must match
-   your crate name with underscores replacing hyphens
-5. **Run** `cargo build --release` and load in DuckDB
+4. **Update the entry point** — the symbol must be `<crate name>_init_c_api`,
+   here `my_ext_init_c_api`
+5. **Run** `cargo build --release`, stamp the library with `append_metadata`
+   and load it in DuckDB, as in [Live DuckDB testing](#live-duckdb-testing)
 
 ### Checklist for a real extension
 
 - [ ] Replace placeholder functions with your logic
 - [ ] Add `repository`, `homepage`, `documentation` to `Cargo.toml`
 - [ ] Add a `description.yml` (see `quack_rs::validate::parse_description_yml`)
-- [ ] Verify your `[profile.release]` has `panic = "abort"`, `lto = true`
-      (use `quack_rs::validate::validate_release_profile`)
-- [ ] Add integration tests using `duckdb = { features = ["bundled"] }`
+- [ ] Verify your `[profile.release]` has `panic = "unwind"` (never
+      `"abort"`: it disables every panic guard quack-rs installs) and
+      `lto = true` (use `quack_rs::validate::validate_release_profile`)
+- [ ] Add SQL-level tests with quack-rs's `bundled-test` (or
+      `bundled-test-prebuilt`) feature and `quack_rs::testing::InMemoryDb`.
+      Not a `duckdb = { features = ["bundled"] }` dev-dependency: Cargo
+      unifies it with this crate's `loadable-extension` feature and the first
+      DuckDB call panics (Pitfall P9)
 
 ## Code tour
 

@@ -189,9 +189,12 @@ instead of linking against `libduckdb`, the crate emits a shared library that
 receives a function pointer table from DuckDB at load time. See
 [The loadable-extension Feature](#the-loadable-extension-feature).
 
-At test time, add `duckdb = { version = ">=1.4.4, <2", features = ["bundled"] }` as a
-dev-dependency if you need a live DuckDB instance. Note the constraint described
-in [CONTRIBUTING.md](../CONTRIBUTING.md#test-strategy).
+For SQL-level tests against a live DuckDB, enable quack-rs's `bundled-test` (or
+`bundled-test-prebuilt`) feature and use `quack_rs::testing::InMemoryDb`. Do
+**not** add `duckdb = { features = ["bundled"] }` as a dev-dependency of an
+extension crate: Cargo unifies it with the extension's `loadable-extension`
+feature, and the first DuckDB call then panics with "DuckDB API not initialized"
+(Pitfall P9 in `LESSONS.md`).
 
 ---
 

@@ -1057,6 +1057,80 @@ fn the_example_obeys_the_crates_own_release_profile_rules() {
     );
 }
 
+/// Every paragraph of user-facing documentation that mentions
+/// `panic = "abort"` must be warning against it.
+///
+/// The Cargo manifests are held to `validate_release_profile` above, but the
+/// docs are prose: the book once said `panic = "abort"` was *required*, and
+/// after that was fixed the hello-ext README's checklist still told readers to
+/// verify their profile "has `panic = "abort"`". This test fails on either.
+/// A paragraph passes when it also contains one of the words below.
+#[test]
+fn documentation_never_recommends_panic_abort() {
+    // Stems, matched as substrings — except "not", matched as a whole word
+    // below so that "note" or "annotation" do not count as a warning.
+    const NEGATIONS: &[&str] = &[
+        "never",
+        "reject",
+        "inert",
+        "disable",
+        "terminat",
+        "dies",
+        "kill",
+        "abort the",
+        "aborts",
+        "crash",
+        "nothing can be caught",
+        "cannot catch",
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("book").is_dir() {
+        eprintln!("SKIPPED documentation_never_recommends_panic_abort: book/ is not packaged");
+        return;
+    }
+    let mut files = vec![
+        root.join("README.md"),
+        root.join("LESSONS.md"),
+        root.join("CONTRIBUTING.md"),
+        root.join("SECURITY.md"),
+        root.join("examples/hello-ext/README.md"),
+    ];
+    let mut dirs = vec![root.join("book/src"), root.join("docs")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "md")
+                // The changelog mirror records what old releases said.
+                && path.file_name().is_some_and(|n| n != "changelog.md")
+            {
+                files.push(path);
+            }
+        }
+    }
+    let mut offenders = Vec::new();
+    for file in &files {
+        let text =
+            std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        for paragraph in text.split("\n\n") {
+            let lower = paragraph.to_lowercase();
+            let warns = NEGATIONS.iter().any(|n| lower.contains(n))
+                || lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "not");
+            if lower.contains("panic = \"abort\"") && !warns {
+                offenders.push(format!("{}:\n{paragraph}", file.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these paragraphs mention panic = \"abort\" without warning against it:\n\n{}",
+        offenders.join("\n\n")
+    );
+}
+
 /// The same check for the profile `generate_scaffold` writes, so the generator
 /// and the validator cannot drift apart either.
 #[test]
