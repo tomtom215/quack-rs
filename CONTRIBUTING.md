@@ -380,6 +380,7 @@ quack-rs/
 │   ├── table/
 │   │   ├── bind_data.rs               # Type-safe bind data management for table functions
 │   │   ├── builder.rs                 # Builder for registering `DuckDB` table functions
+│   │   ├── cstr.rs                    # Panic-free `&str` → `CString` conversion for the callback info wrappers
 │   │   ├── info.rs                    # Ergonomic wrappers around `DuckDB` callback info handles
 │   │   ├── init_data.rs               # Type-safe init data management for table functions
 │   │   ├── mod.rs                     # Builder for registering `DuckDB` table functions
