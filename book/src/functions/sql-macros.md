@@ -33,7 +33,7 @@ A scalar macro wraps a SQL expression. Think of it as a parameterized SQL alias:
 # }
 # fn query_i64(con: duckdb_connection, sql: &str) -> i64 {
 #     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
-#     let chunk = result.next_chunk().unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
 #     unsafe { chunk.reader(0).read_i64(0) }
 # }
 use quack_rs::sql_macro::SqlMacro;
@@ -94,7 +94,7 @@ A table macro wraps a SQL query that returns rows:
 # }
 # fn query_i64(con: duckdb_connection, sql: &str) -> i64 {
 #     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
-#     let chunk = result.next_chunk().unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
 #     unsafe { chunk.reader(0).read_i64(0) }
 # }
 # fn register(con: duckdb_connection) -> Result<(), ExtensionError> {

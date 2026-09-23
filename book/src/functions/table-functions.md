@@ -288,7 +288,7 @@ unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chu
 # }
 # let sum = |sql: &str| -> i64 {
 #     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
-#     let chunk = result.next_chunk().unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
 #     unsafe { chunk.reader(0).read_i64(0) }
 # };
 # assert_eq!(sum("SELECT sum(value)::BIGINT FROM generate_series_ext(5)"), 10);
