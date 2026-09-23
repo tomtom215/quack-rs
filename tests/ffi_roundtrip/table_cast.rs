@@ -1311,3 +1311,145 @@ mod cast_without_message {
         );
     }
 }
+
+/// A typed table function with one BIGINT column `v` that emits `value` once.
+fn one_row_function(name: &str, value: i64) -> TableFunctionBuilder {
+    TableFunctionBuilder::new(name)
+        .with_state::<bool, _>(|bind| {
+            bind.add_result_column("v", TypeId::BigInt);
+            Ok(false)
+        })
+        .scan(move |done, chunk| {
+            if *done {
+                // SAFETY: end of stream.
+                unsafe { chunk.set_size(0) };
+            } else {
+                *done = true;
+                // SAFETY: column 0 is BIGINT and row 0 is in range.
+                unsafe {
+                    chunk.writer(0).write_i64(0, value);
+                    chunk.set_size(1);
+                }
+            }
+            Ok(())
+        })
+        .build()
+        .expect("build one_row_function")
+}
+
+/// TBL-7: registering a second table function under a taken name returned
+/// `Ok` and was silently dropped (`ALTER_ON_CONFLICT` + `AddEntry` returns
+/// `nullptr` for table functions), so the first function kept answering —
+/// including when the "taken name" was a built-in such as `range`.
+#[test]
+fn registering_a_taken_table_function_name_is_an_error() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe { one_row_function("tc_taken", 1).register(fx.con()) }.expect("first");
+    // SAFETY: `con` is open.
+    let err = unsafe { one_row_function("tc_taken", 2).register(fx.con()) }
+        .expect_err("a second registration under the same name must fail");
+    assert!(err.as_str().contains("already exists"), "{err}");
+    // The first registration still answers.
+    assert_eq!(
+        fx.scalar("SELECT v FROM tc_taken()", |r, i| unsafe { r.read_i64(i) }),
+        Some(1)
+    );
+    // Names are case-insensitive, and built-ins count.
+    for taken in ["TC_TAKEN", "range", "read_csv"] {
+        // SAFETY: `con` is open.
+        let err = unsafe { one_row_function(taken, 3).register(fx.con()) }
+            .expect_err("a taken name must fail");
+        assert!(err.as_str().contains("already exists"), "{taken}: {err}");
+    }
+    assert_eq!(
+        fx.scalar("SELECT count(*) FROM range(5)", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(5)
+    );
+}
+
+/// TBL-7: the same silent drop for copy functions — a second `tc_fmt`, or a
+/// format named `csv`, returned `Ok` and was never called.
+#[cfg(feature = "duckdb-1-5")]
+mod taken_copy_function_name {
+    use super::Fixture;
+    use quack_rs::copy_function::CopyFunctionBuilder;
+
+    quack_rs::copy_bind_callback!(tc_copy_bind, |_info| {});
+    quack_rs::copy_sink_callback!(tc_copy_sink, |_info, _chunk| {});
+    quack_rs::copy_finalize_callback!(tc_copy_finalize, |_info| {});
+
+    fn register(fx: &Fixture, name: &str) -> Result<(), quack_rs::error::ExtensionError> {
+        // SAFETY: `con` is open; the callbacks match their signatures.
+        unsafe {
+            CopyFunctionBuilder::try_new(name)?
+                .bind(tc_copy_bind)
+                .sink(tc_copy_sink)
+                .finalize(tc_copy_finalize)
+                .register(fx.con())
+        }
+    }
+
+    #[test]
+    fn registering_a_taken_copy_function_name_is_an_error() {
+        let fx = Fixture::open();
+        register(&fx, "tc_fmt").expect("first registration");
+        for taken in ["tc_fmt", "TC_FMT", "csv", "parquet"] {
+            let err = register(&fx, taken).expect_err("a taken format name must fail");
+            assert!(err.as_str().contains("already exists"), "{taken}: {err}");
+        }
+    }
+}
+
+/// TBL-7, the premise of refusing a taken name: table functions registered
+/// through the C API live in the in-memory system catalog and never reach a
+/// database file, so the next session starts without them and the extension
+/// can register them again.
+#[test]
+fn a_registered_table_function_does_not_persist_into_a_database_file() {
+    let _dispatch = quack_rs::testing::InMemoryDb::open().expect("dispatch table");
+    let path =
+        std::env::temp_dir().join(format!("quack_rs_tc_persist_{}.duckdb", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let c_path = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("no NUL");
+    let count_registered = |con: libduckdb_sys::duckdb_connection| {
+        // SAFETY: `con` is open.
+        let mut result = unsafe {
+            query(
+                con,
+                "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'tc_persist'",
+            )
+        }
+        .expect("query");
+        let chunk = result.next_chunk().expect("a row");
+        // SAFETY: one BIGINT row.
+        unsafe { chunk.reader(0).read_i64(0) }
+    };
+    for session in 0..2 {
+        let mut db: libduckdb_sys::duckdb_database = std::ptr::null_mut();
+        let mut con: libduckdb_sys::duckdb_connection = std::ptr::null_mut();
+        // SAFETY: standard open/connect of a file database; closed below.
+        unsafe {
+            assert_eq!(libduckdb_sys::duckdb_open(c_path.as_ptr(), &raw mut db), 0);
+            assert_eq!(libduckdb_sys::duckdb_connect(db, &raw mut con), 0);
+        }
+        assert_eq!(
+            count_registered(con),
+            0,
+            "session {session} starts without it"
+        );
+        // SAFETY: `con` is open.
+        unsafe { one_row_function("tc_persist", 1).register(con) }
+            .unwrap_or_else(|e| panic!("session {session}: {e}"));
+        assert_eq!(count_registered(con), 1);
+        // SAFETY: both handles were opened above and are closed once.
+        unsafe {
+            libduckdb_sys::duckdb_disconnect(&raw mut con);
+            libduckdb_sys::duckdb_close(&raw mut db);
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("duckdb.wal"));
+}

@@ -104,6 +104,34 @@ for i in 0..bind.result_column_count() {
 # }
 ```
 
+## Registering a format name twice
+
+`duckdb_register_copy_function` drops a copy function whose name already exists —
+your earlier registration, another extension's, or a built-in format such as `csv`
+— and still reports success. `register` checks first and returns an error. There is
+no catalog view of copy functions, so the check asks the binder: it runs
+`COPY (SELECT <missing column>) TO '' (FORMAT '<name>')`, where a *binder* error
+means the format resolved and a *catalog* error means it did not. Nothing is written
+and no copy callback runs; a format name owned by an autoloadable extension
+(`parquet`, `json`) may be autoloaded by that lookup, exactly as the same `COPY`
+typed by a user would. Copy functions registered through the C API are never
+persisted, so reloading into a database file does not trip the check.
+
+## Options
+
+`CopyBindInfo::options()` returns the `COPY … TO` options as one `STRUCT` value.
+How DuckDB 1.5.5 builds it:
+
+- Option names are **upper-cased**: `compression 'zstd'` arrives as `COMPRESSION`.
+- With no options besides `FORMAT`, the value is SQL `NULL`, not an empty `STRUCT`
+  — check `is_sql_null()` first.
+- An option given without a value (`HEADER`) is a `NULL` field.
+- Several values (`LST (1, 2)`) arrive as a `LIST`, or an unnamed `STRUCT` when
+  their types differ.
+- An explicit `NULL` value is rejected by the binder before your callback runs.
+- Field order follows DuckDB's internal hash map, not the statement — look fields
+  up by name.
+
 ## Threads
 
 The data pointers are untyped, so the compiler cannot check this for you:

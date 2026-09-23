@@ -25,15 +25,22 @@ use std::fmt;
 ///
 /// The C API reports registration failure as a bare `DuckDBError` with no
 /// reason attached — there is no `duckdb_..._error` for it — so the message
-/// quack-rs can produce is only as useful as the list of causes it names. There
-/// are three, and a name collision with a `DuckDB` built-in is by far the most
-/// common: `list_sum`, `array_sum` and friends already exist, and the failure
-/// looks identical to a type error.
+/// quack-rs can produce is only as useful as the list of causes it names.
+///
+/// What a name collision does depends on the kind of function. A scalar or
+/// aggregate registration under an existing name is merged in as a new
+/// overload, and *fails* only when an overload with the same parameter types
+/// already exists (`list_sum`, `array_sum` and friends make that common). A
+/// table or copy function under an existing name does **not** fail at all —
+/// `DuckDB` drops it and reports success — which is why those builders check
+/// for the name before registering, and why this hint does not name
+/// collision as a cause for them.
 pub(crate) const REGISTRATION_FAILURE_HINT: &str =
-    "the C API reports no reason, and there are only three. The name may already \
-     be taken — DuckDB built-ins like `list_sum` and `array_sum` collide silently, \
-     so check `SELECT * FROM duckdb_functions() WHERE function_name = '<name>'`. \
-     A parameter or return type may be invalid. Or a required callback was never set.";
+    "the C API reports no reason. The usual causes: for a scalar or aggregate function, \
+     an overload with the same parameter types already exists under this name — DuckDB \
+     built-ins like `list_sum` and `array_sum` are easy to collide with, so check \
+     `SELECT * FROM duckdb_functions() WHERE function_name = '<name>'`; a parameter or \
+     return type is invalid; or a required callback was never set.";
 
 /// An error that can occur during `DuckDB` extension initialization or registration.
 ///

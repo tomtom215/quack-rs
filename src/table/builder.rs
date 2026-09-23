@@ -336,9 +336,30 @@ impl TableFunctionBuilder {
 
     /// Registers the table function on the given connection.
     ///
+    /// # A name can be registered once
+    ///
+    /// `duckdb_register_table_function` adds the function to the system
+    /// catalog with `ALTER_ON_CONFLICT`, and for a table function that means
+    /// "keep the existing entry": the new function is dropped and the call
+    /// still returns success (`DuckSchemaEntry::AddEntryInternal`,
+    /// `src/catalog/catalog_entry/duck_schema_entry.cpp`). The C API has no
+    /// table function *sets*, so there is no way to add an overload to a name
+    /// that exists — a second `register` under the same name, a name another
+    /// extension registered, or a built-in's name (`range`, `read_csv`) would
+    /// silently leave the old function answering. `register` therefore
+    /// checks `duckdb_functions()` first and refuses a name that is already a
+    /// table function or table macro in the system catalog (compared
+    /// case-insensitively, as `DuckDB` resolves names).
+    ///
+    /// Table functions registered through the C API live only in the
+    /// in-memory system catalog and are never written to a database file, so
+    /// a name found there is always a live conflict — not a leftover from an
+    /// earlier session that the next `LOAD` would trip over.
+    ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if:
+    /// - The name is already taken (see above), or the check cannot run.
     /// - The bind, init, or scan callback was not set.
     /// - `DuckDB` reports a registration failure.
     ///
@@ -346,6 +367,8 @@ impl TableFunctionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // SAFETY: forwarded from this method's own contract.
+        unsafe { refuse_taken_table_function_name(con, self.name()) }?;
         // SAFETY: forwarded from this method's own contract.
         let handle = unsafe { self.build_handle() }?;
 
@@ -499,6 +522,54 @@ impl TableFunctionBuilder {
             name: self.name,
             param_types: param_types_for_copy_from,
         })
+    }
+}
+
+/// Refuses `name` if the system catalog already holds a table function or
+/// table macro with that name (case-insensitively).
+///
+/// See "A name can be registered once" on [`TableFunctionBuilder::register`].
+///
+/// # Safety
+///
+/// `con` must be a valid, open `duckdb_connection`.
+unsafe fn refuse_taken_table_function_name(
+    con: duckdb_connection,
+    name: &str,
+) -> Result<(), ExtensionError> {
+    let context = |detail: String| {
+        ExtensionError::new(format!(
+            "table function '{name}': cannot check whether the name is taken: {detail}"
+        ))
+    };
+    let sql = "SELECT count(*) FROM duckdb_functions() \
+               WHERE database_name = 'system' AND schema_name = 'main' \
+               AND function_type IN ('table', 'table_macro') \
+               AND lower(function_name) = lower($1)";
+    // SAFETY: `con` is valid per this function's contract.
+    let statement =
+        unsafe { crate::query::prepare(con, sql) }.map_err(|e| context(e.to_string()))?;
+    statement
+        .bind_str(1, name)
+        .map_err(|e| context(e.to_string()))?;
+    let mut result = statement.execute().map_err(|e| context(e.to_string()))?;
+    let chunk = result
+        .next_chunk()
+        .ok_or_else(|| context("the check returned no rows".into()))?;
+    if chunk.size() != 1 || chunk.column_count() != 1 {
+        return Err(context("the check returned an unexpected shape".into()));
+    }
+    // SAFETY: one row, one BIGINT column; `count(*)` is never NULL.
+    let taken = unsafe { chunk.reader(0).read_i64(0) };
+    if taken == 0 {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "table function '{name}' already exists (a built-in, another extension's, or an \
+             earlier registration). DuckDB's C API cannot add overloads to an existing table \
+             function: it would drop this registration and still report success, leaving the \
+             existing function to answer. Choose a different name."
+        )))
     }
 }
 

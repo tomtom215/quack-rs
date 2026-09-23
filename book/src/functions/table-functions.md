@@ -282,9 +282,22 @@ In the bind callback, read the named parameter with
 query omits `step := …`, the returned `Value` wraps a null handle (`is_null()` is
 `true`), so use a defaulting accessor such as `as_i64_or(1)`.
 
+### Registering a name twice
+
+The C API has no table function *sets*: a second registration under a name that
+already exists — your own earlier one, another extension's, or a built-in such as
+`range` — is dropped by DuckDB while `duckdb_register_table_function` still
+reports success, and the old function keeps answering. `register` therefore checks
+`duckdb_functions()` first and returns an error naming the conflict. Table
+functions registered through the C API live in the in-memory system catalog and
+are never persisted, so reloading an extension into a database file never trips
+this check.
+
 ### Local init (per-thread state)
 
-For multi-threaded table functions, use `local_init` to allocate per-thread state:
+`local_init` allocates per-thread state for a scan that runs on several threads.
+It does **not** make the scan parallel by itself — that is
+`InitInfo::set_max_threads` (see [Thread control](#thread-control)):
 
 ```rust
 TableFunctionBuilder::new("gen_series_v2")
