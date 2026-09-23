@@ -444,6 +444,11 @@ macro_rules! aggregate_destroy_callback {
     };
 }
 
+/// The error a [`cast_callback!`][crate::cast_callback] function reports in a
+/// regular `CAST` when its body returns `false` without setting a message.
+pub const CAST_FAILED_WITHOUT_MESSAGE: &std::ffi::CStr =
+    c"cast function failed without reporting an error message";
+
 /// Generates a panic-safe `unsafe extern "C"` **cast** callback.
 ///
 /// Emits
@@ -460,7 +465,9 @@ macro_rules! aggregate_destroy_callback {
 /// a stale value.
 ///
 /// A body that returns `false` without panicking is passed through untouched;
-/// in `TRY_CAST` mode it must null its own failed rows.
+/// in `TRY_CAST` mode it must null its own failed rows. In a regular `CAST`, a
+/// body that returns `false` without setting a message fails the query with
+/// [`CAST_FAILED_WITHOUT_MESSAGE`] rather than an empty `Conversion Error: `.
 ///
 /// # Example
 ///
@@ -485,6 +492,25 @@ macro_rules! cast_callback {
             $input: ::libduckdb_sys::duckdb_vector,
             $output: ::libduckdb_sys::duckdb_vector,
         ) -> bool {
+            // SAFETY: `info` is the pointer DuckDB passed in.
+            let try_mode = unsafe {
+                ::libduckdb_sys::duckdb_cast_function_get_cast_mode($info)
+                    == ::libduckdb_sys::duckdb_cast_mode_DUCKDB_CAST_TRY
+            };
+            if !try_mode {
+                // A default for a body that returns `false` without a message:
+                // `set_error` only assigns the message (cast_function-c.cpp),
+                // so the body's own call replaces it, and DuckDB reads it only
+                // when the callback returns `false`.
+                // SAFETY: `info` is the pointer DuckDB passed in; the message
+                // is a static NUL-terminated string DuckDB copies.
+                unsafe {
+                    ::libduckdb_sys::duckdb_cast_function_set_error(
+                        $info,
+                        $crate::callback::CAST_FAILED_WITHOUT_MESSAGE.as_ptr(),
+                    );
+                }
+            }
             let outcome: ::std::result::Result<bool, _> =
                 ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             match outcome {
@@ -493,11 +519,6 @@ macro_rules! cast_callback {
                     let c_msg = $crate::callback::message_to_c_string(
                         &$crate::callback::take_panic_message(panic),
                     );
-                    // SAFETY: `info` is the pointer DuckDB passed in.
-                    let try_mode = unsafe {
-                        ::libduckdb_sys::duckdb_cast_function_get_cast_mode($info)
-                            == ::libduckdb_sys::duckdb_cast_mode_DUCKDB_CAST_TRY
-                    };
                     if try_mode {
                         // DuckDB ignores the return value of a TRY cast
                         // (execute_cast.cpp), so the rows must be nulled here.

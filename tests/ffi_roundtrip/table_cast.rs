@@ -1310,6 +1310,38 @@ mod cast_without_message {
             Some(true)
         );
     }
+
+    quack_rs::cast_callback!(tc_silent_false, |_info, _count, _input, _output| { false });
+
+    quack_rs::cast_callback!(tc_own_message, |info, _count, _input, _output| {
+        // SAFETY: `info` is the live cast info.
+        unsafe { CastFunctionInfo::new(info) }.set_error("tc_own_message failed");
+        false
+    });
+
+    /// TBL-24 remainder: a body that returns `false` without calling
+    /// `set_error` at all also surfaced as `Conversion Error: ` with no text.
+    /// A message the body does set must still win over the default.
+    #[test]
+    fn a_failed_cast_that_reports_nothing_still_says_something() {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open; the callbacks match `CastFn`.
+        unsafe {
+            CastFunctionBuilder::new(TypeId::Blob, TypeId::SmallInt)
+                .function(tc_silent_false)
+                .register(fx.con())
+                .expect("register");
+            CastFunctionBuilder::new(TypeId::Blob, TypeId::TinyInt)
+                .function(tc_own_message)
+                .register(fx.con())
+                .expect("register");
+        }
+        let err = super::error_of(&fx, "SELECT CAST('\\x01'::BLOB AS SMALLINT)");
+        assert!(err.contains("without reporting an error message"), "{err}");
+        let err = super::error_of(&fx, "SELECT CAST('\\x01'::BLOB AS TINYINT)");
+        assert!(err.contains("tc_own_message failed"), "{err}");
+        assert!(!err.contains("without reporting"), "{err}");
+    }
 }
 
 /// A typed table function with one BIGINT column `v` that emits `value` once.

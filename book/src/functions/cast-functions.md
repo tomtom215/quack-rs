@@ -142,8 +142,10 @@ the two modes:
 > then sets every row of the chunk to `NULL`, since nothing the body wrote can be
 > trusted.
 
-In `Normal` mode, always set a message before returning `false`: with none, DuckDB
-reports `Conversion Error: ` followed by nothing. An empty message passed to
+In `Normal` mode, set a message before returning `false`. A `cast_callback!` body
+that sets none fails the query with "cast function failed without reporting an
+error message"; a hand-written `extern "C"` callback that sets none makes DuckDB
+report `Conversion Error: ` followed by nothing. An empty message passed to
 `set_error` / `set_row_error` is replaced by a placeholder.
 
 ## Working example

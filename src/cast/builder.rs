@@ -173,9 +173,11 @@ impl CastFunctionInfo {
 /// - **`Normal`** (`CAST`): the query fails with a `Conversion Error`
 ///   carrying the message from [`CastFunctionInfo::set_error`] or
 ///   [`set_row_error`][CastFunctionInfo::set_row_error]. Set one before
-///   returning `false`: with none, `DuckDB` reports `Conversion Error: `
-///   followed by nothing, and quack-rs cannot see from outside the callback
-///   that no message was set.
+///   returning `false`. With none, a [`cast_callback!`][crate::cast_callback]
+///   function reports
+///   [`CAST_FAILED_WITHOUT_MESSAGE`][crate::callback::CAST_FAILED_WITHOUT_MESSAGE];
+///   a hand-written callback makes `DuckDB` report `Conversion Error: `
+///   followed by nothing.
 /// - **`Try`** (`TRY_CAST`): **nothing**. `DuckDB` discards the return value
 ///   (`src/execution/expression_executor/execute_cast.cpp` calls the bound
 ///   cast function and ignores what it returns; `CAPICastFunction` only
