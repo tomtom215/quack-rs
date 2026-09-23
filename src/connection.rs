@@ -64,6 +64,26 @@ use crate::table::TableFunctionBuilder;
 /// means the same code compiles and runs on `DuckDB` 1.4.x and 1.5.x without
 /// modification.
 ///
+/// # Why every method is `unsafe`
+///
+/// Each method's only safety requirement is that the implementor's underlying
+/// `duckdb_connection` is valid for the call. The builders carry no further
+/// caller obligation — whatever their callbacks need was promised when the
+/// builder was made (an `unsafe extern "C" fn`, an `unsafe` `extra_info` call),
+/// and a closure-built [`TypedScalarFunctionBuilder`] needs nothing at all.
+///
+/// For the [`Connection`] handed to your registration closure, that
+/// requirement always holds: quack-rs builds it from the handles `DuckDB` passed
+/// the entry point and only lends it to the closure, so it cannot outlive them.
+/// Calling these methods on that `&Connection` is therefore always sound.
+///
+/// They stay `unsafe` because `Registrar` is a *safe* trait: any type can
+/// implement it around any handle, so a safe method could not rely on the
+/// handle being valid. Making them safe would mean `unsafe trait Registrar`, a
+/// breaking change for every implementor (including test doubles like
+/// [`MockRegistrar`][crate::testing::MockRegistrar]) that buys nothing for the
+/// one implementation the entry point hands out.
+///
 /// # Example
 ///
 /// ```rust,no_run
