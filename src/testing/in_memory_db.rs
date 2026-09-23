@@ -108,6 +108,45 @@ extern "C" {
     ///
     /// Defined in `src/testing/bundled_api_init.cpp`, compiled by `build.rs`.
     fn quack_rs_create_api_v1() -> libduckdb_sys::duckdb_ext_api_v1;
+
+    /// `sizeof(duckdb_ext_api_v1)` in the C++ headers the shim was compiled
+    /// against.
+    fn quack_rs_api_v1_size() -> usize;
+
+    /// `DUCKDB_VERSION` from those headers, or `"unknown"`. A static string.
+    fn quack_rs_header_duckdb_version() -> *const std::os::raw::c_char;
+}
+
+/// Checks that the C++ headers compiled into the shim and the `libduckdb-sys`
+/// bindings agree on the size of `duckdb_ext_api_v1`.
+///
+/// `quack_rs_create_api_v1()` returns the struct by value into a buffer sized
+/// by the Rust bindings. With `bundled-test-prebuilt`, the headers come from
+/// whatever `DUCKDB_LIB_DIR` (or the `DUCKDB_DOWNLOAD_LIB` download) supplies,
+/// which nothing ties to the `libduckdb-sys` version Cargo resolved: larger
+/// headers overrun the buffer, smaller ones leave the last slots as stack
+/// garbage and shift nothing back into place. Either must stop the test run.
+fn check_api_struct_size(
+    header_bytes: usize,
+    bindings_bytes: usize,
+    header_version: &str,
+) -> Result<(), String> {
+    if header_bytes == bindings_bytes {
+        return Ok(());
+    }
+    let slot = core::mem::size_of::<*const core::ffi::c_void>();
+    Err(format!(
+        "quack-rs testing: the DuckDB headers compiled into the test shim (DuckDB \
+         {header_version}: duckdb_ext_api_v1 is {} slots) do not match the libduckdb-sys \
+         bindings Cargo resolved ({} slots). With `bundled-test-prebuilt`, DUCKDB_LIB_DIR (or \
+         the DUCKDB_DOWNLOAD_LIB download) must be the DuckDB release libduckdb-sys was \
+         generated for: run `cargo tree -i libduckdb-sys` (1.10505.x is DuckDB v1.5.5, 1.4.4 is \
+         v1.4.4) and point DUCKDB_LIB_DIR at that release, or pin libduckdb-sys to DuckDB \
+         {header_version}. Refusing to initialise the dispatch table: the struct is returned \
+         by value, so a size mismatch would corrupt memory.",
+        header_bytes / slot,
+        bindings_bytes / slot,
+    ))
 }
 
 /// Populates the `loadable-extension` dispatch table exactly once.
@@ -115,6 +154,30 @@ extern "C" {
 /// Uses `std::sync::Once` so it is safe to call from multiple threads and
 /// from multiple test cases; subsequent calls are no-ops.
 fn init_dispatch_table_once() {
+    // Checked before anything else, and remembered, so that every test in the
+    // run fails with the diagnostic rather than only the first one (a panic
+    // inside `INIT` would leave the rest with "Once instance has previously
+    // been poisoned").
+    static SIZE_CHECK: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    let size_check = SIZE_CHECK.get_or_init(|| {
+        // SAFETY: both are plain C++ functions with no preconditions; the
+        // version string is a static literal.
+        let (header_bytes, header_version) = unsafe {
+            (
+                quack_rs_api_v1_size(),
+                std::ffi::CStr::from_ptr(quack_rs_header_duckdb_version()).to_string_lossy(),
+            )
+        };
+        check_api_struct_size(
+            header_bytes,
+            core::mem::size_of::<libduckdb_sys::duckdb_ext_api_v1>(),
+            &header_version,
+        )
+    });
+    if let Err(message) = size_check {
+        panic!("{message}");
+    }
+
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         // SAFETY: quack_rs_create_api_v1 is a thin C++ wrapper around
@@ -357,5 +420,30 @@ mod tests {
         db.execute_batch(&macro_.to_sql()).unwrap();
         let result: i64 = db.query_one("SELECT triple(14)").unwrap();
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn the_shim_headers_match_the_bindings() {
+        // SAFETY: a plain C++ function with no preconditions.
+        let header_bytes = unsafe { quack_rs_api_v1_size() };
+        assert_eq!(
+            header_bytes,
+            core::mem::size_of::<libduckdb_sys::duckdb_ext_api_v1>()
+        );
+    }
+
+    #[test]
+    fn a_struct_size_mismatch_is_refused_with_both_versions_named() {
+        let slot = core::mem::size_of::<*const core::ffi::c_void>();
+        assert!(check_api_struct_size(546 * slot, 546 * slot, "v1.5.5").is_ok());
+        for (header, bindings) in [(545, 546), (546, 545), (459, 546)] {
+            let msg = check_api_struct_size(header * slot, bindings * slot, "v1.5.0")
+                .expect_err("a mismatch must be refused");
+            assert!(msg.contains(&format!("{header} slots")), "{msg}");
+            assert!(msg.contains(&format!("({bindings} slots)")), "{msg}");
+            assert!(msg.contains("DuckDB v1.5.0"), "{msg}");
+            assert!(msg.contains("DUCKDB_LIB_DIR"), "{msg}");
+            assert!(msg.contains("cargo tree -i libduckdb-sys"), "{msg}");
+        }
     }
 }

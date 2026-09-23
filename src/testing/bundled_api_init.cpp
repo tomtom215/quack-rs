@@ -23,6 +23,26 @@
 
 #include "duckdb.hpp"
 
+#include <cstddef>
+
 extern "C" duckdb_ext_api_v1 quack_rs_create_api_v1() {
     return CreateAPIv1();
+}
+
+// sizeof(duckdb_ext_api_v1) as these headers define it. The Rust side compares
+// it with the libduckdb-sys bindings *before* calling quack_rs_create_api_v1():
+// the struct is returned by value into a Rust-sized buffer, so headers from a
+// different DuckDB release would write past it or leave slots uninitialised.
+extern "C" size_t quack_rs_api_v1_size() {
+    return sizeof(duckdb_ext_api_v1);
+}
+
+// The DuckDB release these headers come from, for the mismatch diagnostic.
+// The release amalgamation defines DUCKDB_VERSION; a source tree may not.
+extern "C" const char *quack_rs_header_duckdb_version() {
+#ifdef DUCKDB_VERSION
+    return DUCKDB_VERSION;
+#else
+    return "unknown";
+#endif
 }
