@@ -68,8 +68,10 @@ pub(super) fn block_scalar(
     // non-blank lines with a space and turn each blank line into a break.
     let mut out = String::new();
     let mut previous_blank = true;
-    for (n, child) in children.iter().enumerate() {
-        if literal && n > 0 {
+    // Every literal line is preceded by a break; the one before the first line
+    // is removed by the final trim.
+    for child in children {
+        if literal {
             out.push('\n');
         }
         if child.is_blank() {
@@ -236,8 +238,7 @@ pub(super) fn split_key(text: &str) -> Option<(&str, &str)> {
     if starts_quoted(text) || text.starts_with(['-', '#', '[', '{']) {
         return None;
     }
-    let mut search = 0;
-    while let Some(pos) = text[search..].find(':').map(|p| p + search) {
+    for (pos, _) in text.match_indices(':') {
         let after = &text[pos + 1..];
         if after.is_empty() || after.starts_with([' ', '\t']) {
             let key = text[..pos].trim_end();
@@ -247,7 +248,6 @@ pub(super) fn split_key(text: &str) -> Option<(&str, &str)> {
             }
             return Some((key, after));
         }
-        search = pos + 1;
     }
     None
 }

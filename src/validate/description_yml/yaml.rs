@@ -184,10 +184,11 @@ fn parse_mapping(lines: &[Line<'_>], path: &str) -> Result<Vec<Entry>, String> {
         return Ok(entries);
     };
 
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        i += 1;
+    // Each pass consumes the key's line and then its value's lines, so the
+    // loop always advances and ends when the slice is used up.
+    let mut remaining = lines;
+    while let Some((line, after)) = remaining.split_first() {
+        remaining = after;
         if !line.is_content() {
             continue;
         }
@@ -211,27 +212,11 @@ fn parse_mapping(lines: &[Line<'_>], path: &str) -> Result<Vec<Entry>, String> {
             ));
         }
 
-        // The value's own lines: everything indented deeper, plus a sequence
-        // written level with its key (`key:\n- item`), which YAML allows.
         let seq_at_key_level = strip_comment(rest).is_empty();
-        let start = i;
-        while i < lines.len() {
-            let next = lines[i];
-            // A comment indented past the key may be block-scalar content, so
-            // it is kept; a blank line, or a comment at the key's level or
-            // shallower, belongs to the value only if more of the value
-            // follows it.
-            let take = if next.is_blank() || (next.is_comment() && next.indent <= field_indent) {
-                continues_after(&lines[i..], field_indent, seq_at_key_level)
-            } else {
-                belongs_to_value(&next, field_indent, seq_at_key_level)
-            };
-            if !take {
-                break;
-            }
-            i += 1;
-        }
-        let value = parse_value(rest, &lines[start..i], field_indent, line.number)?;
+        let (children, after_value) =
+            remaining.split_at(value_len(remaining, field_indent, seq_at_key_level));
+        remaining = after_value;
+        let value = parse_value(rest, children, field_indent, line.number)?;
         entries.push(Entry {
             key: key.to_string(),
             line: line.number,
@@ -239,6 +224,27 @@ fn parse_mapping(lines: &[Line<'_>], path: &str) -> Result<Vec<Entry>, String> {
         });
     }
     Ok(entries)
+}
+
+/// How many of `lines`, the lines after a key at `field_indent`, are the
+/// value's own: everything indented deeper, plus a sequence written level with
+/// its key (`key:\n- item`), which YAML allows.
+fn value_len(lines: &[Line<'_>], field_indent: usize, seq_at_key_level: bool) -> usize {
+    (0..lines.len())
+        .find(|&n| {
+            let next = &lines[n];
+            // A comment indented past the key may be block-scalar content, so
+            // it is kept; a blank line, or a comment at the key's level or
+            // shallower, belongs to the value only if more of the value
+            // follows it.
+            let take = if next.is_blank() || (next.is_comment() && next.indent <= field_indent) {
+                continues_after(&lines[n..], field_indent, seq_at_key_level)
+            } else {
+                belongs_to_value(next, field_indent, seq_at_key_level)
+            };
+            !take
+        })
+        .unwrap_or(lines.len())
 }
 
 /// Whether a line sits inside the value of a key at `field_indent`: indented
@@ -311,10 +317,10 @@ fn parse_value(
 /// A block sequence whose `- ` markers sit at `seq_indent`.
 fn parse_seq(lines: &[Line<'_>], seq_indent: usize) -> Result<Value, String> {
     let mut items = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        i += 1;
+    // As in `parse_mapping`, each pass consumes at least the item's own line.
+    let mut remaining = lines;
+    while let Some((line, after)) = remaining.split_first() {
+        remaining = after;
         if !line.is_content() {
             continue;
         }
@@ -324,15 +330,19 @@ fn parse_seq(lines: &[Line<'_>], seq_indent: usize) -> Result<Value, String> {
                 line.number, line.text
             ));
         }
-        let start = i;
-        while i < lines.len() && (lines[i].indent > seq_indent || !lines[i].is_content()) {
-            i += 1;
-        }
+        // The item runs up to the next content line at the marker's
+        // indentation or shallower; blank lines and comments never end it.
+        let len = remaining
+            .iter()
+            .position(|l| l.is_content() && l.indent <= seq_indent)
+            .unwrap_or(remaining.len());
+        let (children, after_item) = remaining.split_at(len);
+        remaining = after_item;
         let item = line.text[1..].trim_start();
         let value = if split_key(item).is_some() && !starts_quoted(item) {
             Value::Mapping
         } else {
-            parse_value(item, &lines[start..i], seq_indent, line.number)?
+            parse_value(item, children, seq_indent, line.number)?
         };
         items.push(value);
     }
