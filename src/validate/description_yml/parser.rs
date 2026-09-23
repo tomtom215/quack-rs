@@ -136,9 +136,9 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         warnings.push(format!("extension.license: {e}"));
     }
 
-    // `requires_toolchains` is optional. Of 43 published community extensions
-    // sampled, only 14 set it, and the community-extensions documentation does
-    // not list it as required.
+    // `requires_toolchains` is optional. Only 143 of the 346 published
+    // descriptors (community-extensions `5ae7df8`) set it, and the
+    // community-extensions documentation does not list it as required.
     let requires_toolchains = extension.semicolon_list("requires_toolchains", &mut warnings)?;
 
     let excluded_platforms = extension.semicolon_list("excluded_platforms", &mut warnings)?;
