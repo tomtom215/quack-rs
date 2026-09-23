@@ -67,6 +67,7 @@ pub mod platform;
 pub mod release_profile;
 pub mod semver;
 pub mod spdx;
+mod spdx_exceptions;
 
 pub use extension_name::validate_extension_name;
 pub use function_name::{validate_function_name, DUCKDB_RESERVED_KEYWORDS};

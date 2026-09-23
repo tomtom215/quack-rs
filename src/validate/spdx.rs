@@ -15,6 +15,11 @@
 
 use crate::error::ExtensionError;
 
+pub use super::spdx_exceptions::SPDX_LICENSE_EXCEPTIONS;
+
+/// How deeply parentheses may nest in a license expression.
+const MAX_NESTING: usize = 64;
+
 /// Commonly used SPDX license identifiers.
 ///
 /// This is a **curated shortlist, not the SPDX registry** — the registry has
@@ -88,19 +93,26 @@ pub const COMMON_SPDX_LICENSES: &[&str] = &[
 ///   specification);
 /// - a user-defined `LicenseRef-<idstring>` reference, which SPDX allows in
 ///   any expression;
+/// - either of those followed by `WITH <exception>`, e.g.
+///   `Apache-2.0 WITH LLVM-exception`, where the exception is one of
+///   [`SPDX_LICENSE_EXCEPTIONS`] (the whole SPDX exception registry) or a
+///   user-defined `AdditionRef-<idstring>` (SPDX 3.0). As in the SPDX grammar,
+///   `WITH` binds tightest and applies to a single license, not to a
+///   parenthesised expression;
 /// - a compound expression joining those with `AND` / `OR` and parentheses,
 ///   e.g. `MIT OR Apache-2.0` — the Rust ecosystem's default and what several
-///   published community extensions declare.
+///   published community extensions declare. Parentheses may nest up to 64
+///   deep.
 ///
-/// Not accepted: `WITH <exception>` (this crate keeps no exception list, and
-/// calling an unchecked exception valid would be a guess), lowercase
-/// operators, and identifiers outside the shortlist — the error for those
-/// says they may still be valid rather than claiming they do not exist.
+/// Not accepted: lowercase operators, and identifiers outside the shortlist —
+/// the error for those says they may still be valid rather than claiming they
+/// do not exist.
 ///
 /// # Errors
 ///
 /// Returns `ExtensionError` if the license is empty, is not a well-formed
-/// expression, or names an identifier not in the recognized list.
+/// expression, nests parentheses more than 64 deep, or names a license or
+/// exception identifier not in the recognized lists.
 ///
 /// # Example
 ///
@@ -111,6 +123,7 @@ pub const COMMON_SPDX_LICENSES: &[&str] = &[
 /// assert!(validate_spdx_license("Apache-2.0").is_ok());
 /// assert!(validate_spdx_license("BSD-3-Clause").is_ok());
 /// assert!(validate_spdx_license("MIT OR Apache-2.0").is_ok());
+/// assert!(validate_spdx_license("Apache-2.0 WITH LLVM-exception").is_ok());
 /// assert!(validate_spdx_license("FAKE-LICENSE").is_err());
 /// assert!(validate_spdx_license("MIT OR").is_err());
 /// assert!(validate_spdx_license("").is_err());
@@ -121,7 +134,10 @@ pub fn validate_spdx_license(license: &str) -> Result<(), ExtensionError> {
     }
 
     let tokens = tokenize(license);
-    let mut parser = ExprParser { rest: &tokens };
+    let mut parser = ExprParser {
+        rest: &tokens,
+        depth: 0,
+    };
     let unlisted = parser.expression().and_then(|unlisted| {
         parser.rest.first().map_or(Ok(unlisted), |extra| {
             Err(format!(
@@ -134,10 +150,18 @@ pub fn validate_spdx_license(license: &str) -> Result<(), ExtensionError> {
         // Deliberately not "is not a recognized SPDX identifier": this list is
         // a shortlist of ~40 out of 700+, so saying that would be wrong for
         // most valid identifiers.
-        Ok(Some(id)) => Err(ExtensionError::new(format!(
+        Ok(Some(Unlisted::License(id))) => Err(ExtensionError::new(format!(
             "license '{id}' is not in quack-rs's list of common SPDX identifiers. \
              It may still be valid — check https://spdx.org/licenses/. \
              Common choices: MIT, Apache-2.0, BSD-3-Clause, GPL-3.0-or-later, MPL-2.0"
+        ))),
+        // The exception list is the whole registry as of the version it was
+        // taken from, so only a newer addition can be valid and missing.
+        Ok(Some(Unlisted::Exception(id))) => Err(ExtensionError::new(format!(
+            "license exception '{id}' is not in the SPDX license-exception list quack-rs \
+             carries (SPDX license list 3.29.0). Check the spelling and case at \
+             https://spdx.org/licenses/exceptions-index.html; an exception added to SPDX \
+             since then may still be valid"
         ))),
         Err(msg) => Err(ExtensionError::new(format!(
             "{msg}; expected an SPDX identifier such as 'MIT' or an expression such as \
@@ -168,17 +192,31 @@ fn tokenize(expr: &str) -> Vec<&str> {
     tokens
 }
 
-/// A recursive-descent reader for the `AND` / `OR` subset of the SPDX
-/// license-expression grammar (`AND` binds tighter than `OR`).
+/// A well-formed identifier that is not in the list it was checked against.
+#[derive(Clone, Copy)]
+enum Unlisted<'a> {
+    /// Not in [`COMMON_SPDX_LICENSES`] and not a `LicenseRef-`.
+    License(&'a str),
+    /// Not in [`SPDX_LICENSE_EXCEPTIONS`] and not an `AdditionRef-`.
+    Exception(&'a str),
+}
+
+/// A recursive-descent reader for the SPDX license-expression grammar:
+/// `WITH` binds tightest, then `AND`, then `OR`.
 ///
-/// Each method returns the first identifier that is well-formed but not in
-/// [`COMMON_SPDX_LICENSES`] (`Ok(Some(..))`), or a syntax error message.
+/// Each method returns the first identifier that is well-formed but unlisted
+/// (`Ok(Some(..))`), or a syntax error message.
 ///
 /// The cursor is the unread tail of the token slice, and every read shortens
 /// it, so each loop pass consumes at least one token and parsing always ends.
 /// (An index cursor could be mutated into `pos -= 1` and loop forever.)
+///
+/// Recursion happens only at `(`, and `depth` caps it at [`MAX_NESTING`], so a
+/// hostile `((((…` is an error rather than a stack overflow — which aborts the
+/// process and cannot be caught.
 struct ExprParser<'a> {
     rest: &'a [&'a str],
+    depth: usize,
 }
 
 impl<'a> ExprParser<'a> {
@@ -193,7 +231,7 @@ impl<'a> ExprParser<'a> {
         }
     }
 
-    fn expression(&mut self) -> Result<Option<&'a str>, String> {
+    fn expression(&mut self) -> Result<Option<Unlisted<'a>>, String> {
         let mut unlisted = self.term()?;
         while self.eat("OR") {
             let next = self.term()?;
@@ -202,7 +240,7 @@ impl<'a> ExprParser<'a> {
         Ok(unlisted)
     }
 
-    fn term(&mut self) -> Result<Option<&'a str>, String> {
+    fn term(&mut self) -> Result<Option<Unlisted<'a>>, String> {
         let mut unlisted = self.atom()?;
         while self.eat("AND") {
             let next = self.atom()?;
@@ -211,14 +249,21 @@ impl<'a> ExprParser<'a> {
         Ok(unlisted)
     }
 
-    fn atom(&mut self) -> Result<Option<&'a str>, String> {
+    fn atom(&mut self) -> Result<Option<Unlisted<'a>>, String> {
         let Some((&token, tail)) = self.rest.split_first() else {
             return Err("license expression ends where an identifier was expected".into());
         };
         self.rest = tail;
         match token {
             "(" => {
+                if self.depth >= MAX_NESTING {
+                    return Err(format!(
+                        "license expression nests parentheses more than {MAX_NESTING} deep"
+                    ));
+                }
+                self.depth += 1;
                 let unlisted = self.expression()?;
+                self.depth -= 1;
                 if self.eat(")") {
                     Ok(unlisted)
                 } else {
@@ -228,15 +273,47 @@ impl<'a> ExprParser<'a> {
             ")" | "AND" | "OR" | "WITH" => {
                 Err(format!("'{token}' where a license identifier was expected"))
             }
-            id if COMMON_SPDX_LICENSES.contains(&id) || is_license_ref(id) => Ok(None),
-            id => Ok(Some(id)),
+            id => {
+                let license = (!COMMON_SPDX_LICENSES.contains(&id) && !is_license_ref(id))
+                    .then_some(Unlisted::License(id));
+                let exception = if self.eat("WITH") {
+                    self.exception()?
+                } else {
+                    None
+                };
+                Ok(license.or(exception))
+            }
+        }
+    }
+
+    /// The exception after `WITH`: a single identifier, never an expression.
+    fn exception(&mut self) -> Result<Option<Unlisted<'a>>, String> {
+        let Some((&token, tail)) = self.rest.split_first() else {
+            return Err("license expression ends where a license exception was expected".into());
+        };
+        self.rest = tail;
+        match token {
+            "(" | ")" | "AND" | "OR" | "WITH" => Err(format!(
+                "'{token}' where a license exception identifier was expected after 'WITH'"
+            )),
+            id if SPDX_LICENSE_EXCEPTIONS.contains(&id) || is_addition_ref(id) => Ok(None),
+            id => Ok(Some(Unlisted::Exception(id))),
         }
     }
 }
 
 /// `LicenseRef-<idstring>`, where `idstring` is letters, digits, `.` and `-`.
 fn is_license_ref(id: &str) -> bool {
-    id.strip_prefix("LicenseRef-").is_some_and(|rest| {
+    is_user_ref(id, "LicenseRef-")
+}
+
+/// `AdditionRef-<idstring>`: SPDX 3.0's user-defined license exception.
+fn is_addition_ref(id: &str) -> bool {
+    is_user_ref(id, "AdditionRef-")
+}
+
+fn is_user_ref(id: &str, prefix: &str) -> bool {
+    id.strip_prefix(prefix).is_some_and(|rest| {
         !rest.is_empty()
             && rest
                 .bytes()
@@ -307,6 +384,95 @@ mod tests {
         ] {
             assert!(validate_spdx_license(expr).is_err(), "{expr}");
         }
+    }
+
+    /// Regression: the recursive-descent reader recursed once per `(`, so a
+    /// licence field of a million `(` overflowed the stack and aborted the
+    /// process — reachable from `parse_description_yml` on untrusted input.
+    #[test]
+    fn deeply_nested_parentheses_are_an_error_not_a_stack_overflow() {
+        let started = std::time::Instant::now();
+        let err = validate_spdx_license(&"(".repeat(1_000_000)).unwrap_err();
+        assert!(err.as_str().contains("nests parentheses"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        let yml = format!(
+            "extension:\n  name: my_ext\n  description: d\n  language: Rust\n  build: cargo\n  \
+             license: \"{}\"\n  maintainers:\n    - a\nrepo:\n  github: a/b\n  ref: main\n",
+            "(".repeat(1_000_000)
+        );
+        let parsed = crate::validate::description_yml::parse_description_yml(&yml)
+            .expect("an unusable license is a warning, not a parse failure");
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|w| w.contains("nests parentheses")),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[test]
+    fn nesting_is_accepted_up_to_the_limit() {
+        let nested = |depth: usize| format!("{}MIT{}", "(".repeat(depth), ")".repeat(depth));
+        assert!(validate_spdx_license(&nested(MAX_NESTING)).is_ok());
+        assert!(validate_spdx_license(&nested(MAX_NESTING + 1)).is_err());
+    }
+
+    /// `WITH <exception>` is SPDX's license-exception syntax, e.g. the
+    /// `Apache-2.0 WITH LLVM-exception` that LLVM-derived code carries.
+    #[test]
+    fn with_exception_is_accepted() {
+        for expr in [
+            "Apache-2.0 WITH LLVM-exception",
+            "GPL-2.0-or-later WITH Classpath-exception-2.0",
+            "(MIT OR Apache-2.0 WITH LLVM-exception)",
+            "MIT OR Apache-2.0 WITH LLVM-exception AND ISC",
+            "LicenseRef-Mine WITH GCC-exception-3.1",
+            "GPL-3.0-or-later WITH AdditionRef-My.Exception-1",
+        ] {
+            assert!(validate_spdx_license(expr).is_ok(), "{expr}");
+        }
+    }
+
+    #[test]
+    fn malformed_with_is_rejected() {
+        for expr in [
+            "MIT WITH",
+            "WITH LLVM-exception",
+            "MIT WITH LLVM-exception WITH LLVM-exception",
+            "MIT WITH (LLVM-exception)",
+            "(MIT OR ISC) WITH LLVM-exception",
+            "MIT WITH MIT",
+            "MIT with LLVM-exception",
+            "MIT WITH AdditionRef-",
+        ] {
+            assert!(validate_spdx_license(expr).is_err(), "{expr}");
+        }
+    }
+
+    #[test]
+    fn unknown_exception_is_named_and_not_called_invalid() {
+        let err = validate_spdx_license("MIT WITH Made-Up-exception").unwrap_err();
+        assert!(err.as_str().contains("Made-Up-exception"), "{err}");
+        assert!(err.as_str().contains("exceptions-index"), "{err}");
+    }
+
+    #[test]
+    fn unlisted_license_with_a_real_exception_reports_the_license() {
+        let err = validate_spdx_license("CC0-1.0 WITH LLVM-exception").unwrap_err();
+        assert!(err.as_str().contains("'CC0-1.0'"), "{err}");
+        assert!(err.as_str().contains("may still be valid"), "{err}");
+    }
+
+    #[test]
+    fn exception_list_is_sorted_and_unique() {
+        let mut sorted = SPDX_LICENSE_EXCEPTIONS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(sorted.as_slice(), SPDX_LICENSE_EXCEPTIONS);
+        sorted.dedup();
+        assert_eq!(sorted.len(), SPDX_LICENSE_EXCEPTIONS.len());
     }
 
     #[test]
