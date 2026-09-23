@@ -49,7 +49,9 @@ use quack_rs::arrow::{data_chunk_to_arrow, to_arrow_schema};
 use quack_rs::query::QueryResult;
 
 # fn demo(result: &mut QueryResult) -> Result<(), Box<dyn std::error::Error>> {
-let options = result.arrow_options()?;
+// SAFETY: the connection that ran this query stays open while `options` is
+// in use — the options point at that connection's client context.
+let options = unsafe { result.arrow_options() }?;
 
 let columns: Vec<(String, quack_rs::types::LogicalType)> = (0..result.column_count())
     .filter_map(|i| Some((result.column_name(i)?, result.column_logical_type(i)?)))
@@ -68,6 +70,21 @@ while let Some(chunk) = result.next_chunk() {
 # Ok(())
 # }
 ```
+
+### `ArrowOptions` must not outlive its connection
+
+The options hold a raw pointer to the connection's client context, and the
+conversion functions dereference it. Used after the connection is closed they
+read freed memory. `ArrowOptions<'conn>` carries that lifetime:
+
+- `ArrowOptions::from_connection(&con)` is safe. It borrows the
+  `OwnedConnection`, so the compiler rejects a `drop(con)` while the options
+  are still in use.
+- `ArrowOptions::from_raw_connection(raw)` (for a raw `duckdb_connection`) and
+  `QueryResult::arrow_options()` / `ArrowOptions::from_result` are `unsafe`. A
+  `QueryResult` does not borrow the connection that ran it, so nothing checks
+  that the connection is still open. The caller must keep it open for as long
+  as the options are used.
 
 ## Importing an array
 

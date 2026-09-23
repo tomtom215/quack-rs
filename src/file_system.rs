@@ -32,6 +32,7 @@
 //! ```
 
 use std::ffi::CStr;
+use std::marker::PhantomData;
 use std::os::raw::c_void;
 
 use libduckdb_sys::{
@@ -150,22 +151,50 @@ impl Drop for FileOpenOptions {
 /// RAII wrapper for a `duckdb_file_system`.
 ///
 /// Automatically destroyed when dropped.
-pub struct FileSystem {
+///
+/// # Lifetime
+///
+/// `duckdb_client_context_get_file_system` does not hand out an owned file
+/// system: its wrapper holds a *reference* to the connection's client file
+/// system, which the connection's `ClientContext` owns and frees when the
+/// connection closes. Using the handle after that is a heap use-after-free, so
+/// a `FileSystem` borrows the [`ClientContext`] it came from for `'ctx`.
+///
+/// ```rust,compile_fail,E0505
+/// use quack_rs::client_context::ClientContext;
+/// use quack_rs::file_system::{FileOpenOptions, FileSystem};
+///
+/// fn demo(ctx: ClientContext) {
+///     let fs = FileSystem::from_client_context(&ctx).unwrap();
+///     drop(ctx); // error[E0505]: cannot move out of `ctx` because it is borrowed
+///     let _ = fs.open(c"data.csv", &FileOpenOptions::read_only());
+/// }
+/// ```
+///
+/// [`FileHandle`]s opened through it do not borrow it: an open handle stays
+/// valid after the connection closes, until the database itself is closed.
+pub struct FileSystem<'ctx> {
     fs: duckdb_file_system,
+    _context: PhantomData<&'ctx ClientContext>,
 }
 
-impl FileSystem {
+impl<'ctx> FileSystem<'ctx> {
     /// Obtains the file system associated with a [`ClientContext`].
+    ///
+    /// The result borrows `context`; see the type-level docs for why.
     ///
     /// Returns `None` if `DuckDB` does not provide one.
     #[must_use]
-    pub fn from_client_context(context: &ClientContext) -> Option<Self> {
+    pub fn from_client_context(context: &'ctx ClientContext) -> Option<Self> {
         // SAFETY: context.as_raw() is a valid duckdb_client_context.
         let fs = unsafe { duckdb_client_context_get_file_system(context.as_raw()) };
         if fs.is_null() {
             None
         } else {
-            Some(Self { fs })
+            Some(Self {
+                fs,
+                _context: PhantomData,
+            })
         }
     }
 
@@ -174,11 +203,16 @@ impl FileSystem {
     /// # Safety
     ///
     /// `fs` must be a valid, non-null `duckdb_file_system` handle that the caller
-    /// no longer manages.
+    /// no longer manages, and the connection whose client context it was
+    /// obtained from must stay open for all of `'ctx` — the handle refers to
+    /// that connection's file system, which is freed when it closes.
     #[inline]
     #[must_use]
     pub const unsafe fn from_raw(fs: duckdb_file_system) -> Self {
-        Self { fs }
+        Self {
+            fs,
+            _context: PhantomData,
+        }
     }
 
     /// Returns the raw handle.
@@ -218,7 +252,7 @@ impl FileSystem {
     }
 }
 
-impl Drop for FileSystem {
+impl Drop for FileSystem<'_> {
     fn drop(&mut self) {
         if !self.fs.is_null() {
             // SAFETY: self.fs is a valid handle that we own.
@@ -235,6 +269,13 @@ const CHUNK: usize = 64 * 1024;
 /// RAII wrapper for an open `duckdb_file_handle`.
 ///
 /// Automatically closed and destroyed when dropped.
+///
+/// A handle does not borrow the [`FileSystem`] that opened it and remains
+/// usable after that file system and its connection are gone. It does refer
+/// to the *database's* underlying file system, though: once the database is
+/// closed (`duckdb_close` on the last reference), every method is a
+/// use-after-free. Closing a database is an `unsafe` operation in quack-rs;
+/// its caller must drop outstanding `FileHandle`s first.
 pub struct FileHandle {
     handle: duckdb_file_handle,
 }
@@ -474,7 +515,13 @@ impl Drop for FileHandle {
     }
 }
 
-crate::debug_repr::impl_handle_debug!(FileOpenOptions.options, FileSystem.fs, FileHandle.handle);
+crate::debug_repr::impl_handle_debug!(FileOpenOptions.options, FileHandle.handle);
+
+impl core::fmt::Debug for FileSystem<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FileSystem").field("fs", &self.fs).finish()
+    }
+}
 
 #[cfg(test)]
 mod tests {

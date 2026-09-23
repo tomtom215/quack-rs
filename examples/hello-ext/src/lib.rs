@@ -265,7 +265,8 @@ unsafe extern "C" fn gs_bind(info: duckdb_bind_info) {
     unsafe {
         let bind_info = BindInfo::new(info);
         // Value is RAII — automatically destroyed when dropped.
-        let n = bind_info.get_parameter_value(0).as_i64();
+        // A NULL argument (or a handle DuckDB did not supply) yields 0 rows.
+        let n = bind_info.get_parameter_value(0).as_i64_or(0);
         let total = n.max(0);
         bind_info
             .add_result_column("value", TypeId::BigInt)
@@ -335,15 +336,14 @@ unsafe extern "C" fn gs_v2_bind(info: duckdb_bind_info) {
     unsafe {
         let bind_info = BindInfo::new(info);
         // Value is RAII — automatically destroyed when dropped.
-        let n = bind_info.get_parameter_value(0).as_i64();
+        // A NULL argument (or a handle DuckDB did not supply) yields 0 rows.
+        let n = bind_info.get_parameter_value(0).as_i64_or(0);
 
-        // Read named param "step" if provided, default to 1.
-        let step_val = bind_info.get_named_parameter_value("step");
-        let step = if step_val.is_null() {
-            1i64
-        } else {
-            let s = step_val.as_i64();
-            if s == 0 { 1 } else { s }
+        // Read named param "step" if provided, default to 1. `as_i64` is
+        // `None` when the parameter is absent or `step := NULL`.
+        let step = match bind_info.get_named_parameter_value("step").as_i64() {
+            Some(0) | None => 1i64,
+            Some(s) => s,
         };
 
         let total = n.max(0);

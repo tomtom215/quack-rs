@@ -307,9 +307,21 @@ impl QueryResult {
     ///
     /// Returns an [`ExtensionError`] when `DuckDB` returns null, which it does
     /// for a result with no internal data.
+    ///
+    /// # Safety
+    ///
+    /// The connection that ran this query must stay open for all of `'conn`:
+    /// the options point at its `ClientContext`, and a `QueryResult` does not
+    /// borrow its connection. See
+    /// [`ArrowOptions::from_result`][crate::arrow::ArrowOptions::from_result].
+    /// [`ArrowOptions::from_connection`][crate::arrow::ArrowOptions::from_connection]
+    /// is the safe alternative.
     #[cfg(feature = "duckdb-1-5-4")]
-    pub fn arrow_options(&self) -> Result<crate::arrow::ArrowOptions, ExtensionError> {
-        crate::arrow::ArrowOptions::from_result(self)
+    pub unsafe fn arrow_options<'conn>(
+        &self,
+    ) -> Result<crate::arrow::ArrowOptions<'conn>, ExtensionError> {
+        // SAFETY: forwarded verbatim from this function's contract.
+        unsafe { crate::arrow::ArrowOptions::from_result(self) }
     }
 
     /// Returns the raw `duckdb_result`.
@@ -661,7 +673,13 @@ impl PreparedStatement {
     ///
     /// # Errors
     ///
-    /// See [`bind_i64`][Self::bind_i64].
+    /// Returns an error, without calling `DuckDB`, when `width` is not in
+    /// `1..=38`, `scale > width`, or `unscaled` has more than `width` digits.
+    /// `duckdb_bind_decimal` validates none of these: a bad width or an
+    /// `unscaled` too wide for the physical type throws (aborting the
+    /// process), and for `width <= 18` it keeps only the low 64 bits of
+    /// `unscaled`, silently binding a different number. Otherwise see
+    /// [`bind_i64`][Self::bind_i64].
     pub fn bind_decimal(
         &self,
         index: usize,
@@ -669,12 +687,14 @@ impl PreparedStatement {
         scale: u8,
         unscaled: i128,
     ) -> Result<(), ExtensionError> {
+        crate::value::validate_decimal(width, scale, unscaled)?;
         let raw = libduckdb_sys::duckdb_decimal {
             width,
             scale,
             value: crate::value::hugeint_from_i128(unscaled),
         };
-        // SAFETY: `self.statement` is valid for this value's lifetime.
+        // SAFETY: `self.statement` is valid for this value's lifetime, and the
+        // decimal was validated above so `Value::DECIMAL` cannot throw.
         self.check(
             unsafe { libduckdb_sys::duckdb_bind_decimal(self.statement, index as idx_t, raw) },
             index,

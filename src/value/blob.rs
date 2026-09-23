@@ -37,14 +37,30 @@ impl Value {
     ///
     /// # Errors
     ///
-    /// Returns `ExtensionError` if the value handle is null, `duckdb_get_blob`
-    /// returns a null data pointer for a non-empty blob, or the blob size cannot
-    /// be represented by `usize` on the current platform.
+    /// Returns `ExtensionError` if the value handle is null, the value is SQL
+    /// `NULL`, its type is not `BLOB`, `duckdb_get_blob` returns a null data
+    /// pointer for a non-empty blob, or the blob size cannot be represented by
+    /// `usize` on the current platform.
+    ///
+    /// Only a `BLOB` is accepted. `duckdb_get_blob` casts anything else to
+    /// `BLOB` with a *throwing* cast — an `INTEGER`, or a `VARCHAR` with an
+    /// invalid `\x` escape, aborted the process — and it throws on SQL `NULL`
+    /// too. Read a `VARCHAR` with [`as_str`][Self::as_str].
     pub fn as_blob(&self) -> Result<Vec<u8>, ExtensionError> {
         if self.raw.is_null() {
             return Err(ExtensionError::new("Value is null"));
         }
-        // SAFETY: self.raw is a valid duckdb_value per constructor contract.
+        if self.is_sql_null() {
+            return Err(ExtensionError::new("Value is SQL NULL"));
+        }
+        if self.type_id() != Some(crate::types::TypeId::Blob) {
+            return Err(ExtensionError::new(format!(
+                "as_blob: value is {:?}, not BLOB",
+                self.type_id()
+            )));
+        }
+        // SAFETY: self.raw is a live, non-NULL BLOB, so duckdb_get_blob's
+        // cast is the identity and StringValue::Get cannot throw.
         let blob: duckdb_blob = unsafe { duckdb_get_blob(self.raw) };
         let size = match blob_size(&blob) {
             Ok(None) => return Ok(Vec::new()),
