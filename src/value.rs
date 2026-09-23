@@ -651,19 +651,21 @@ impl Value {
     /// **element** type, and passing `LogicalType::list(..)` instead makes
     /// `DuckDB` try to cast every element to a list and return null.
     ///
-    /// For `LIST<BIGINT>`, pass `LogicalType::new(TypeId::BigInt)`.
+    /// For `LIST<BIGINT>`, pass `LogicalType::new(TypeId::BigInt)`. A list of
+    /// lists is built the same way: for `BIGINT[][]`, pass
+    /// `LogicalType::list(TypeId::BigInt)` and `LIST` items.
     ///
     /// # Errors
     ///
     /// Returns an error when `duckdb_create_list_value` reports failure: an
     /// `ANY` or `INVALID` element type, or an item that will not cast to
-    /// `element_type`. Passing a `LIST` type is called out specifically, since
-    /// it is the mistake the header invites.
+    /// `element_type`. When the element type is itself a `LIST`, the error
+    /// also points out the likelier mistake — passing the list type with
+    /// scalar items — since it is the one the header invites.
     pub fn list_value(
         element_type: &crate::types::LogicalType,
         items: &[Self],
     ) -> Result<Self, ExtensionError> {
-        Self::reject_container_type(element_type, crate::types::TypeId::List, "list_value")?;
         let mut raws: Vec<duckdb_value> = items.iter().map(Self::as_raw).collect();
         // SAFETY: the count is passed explicitly and matches `raws`; every entry
         // is a live handle owned by `items`.
@@ -674,7 +676,13 @@ impl Value {
                 libduckdb_sys::idx_t::try_from(raws.len()).unwrap_or(libduckdb_sys::idx_t::MAX),
             )
         };
-        Self::checked(raw, "duckdb_create_list_value")
+        Self::checked_container(
+            raw,
+            element_type,
+            crate::types::TypeId::List,
+            "list_value",
+            "duckdb_create_list_value",
+        )
     }
 
     /// Creates an `ARRAY` (fixed-size list) value from its **element** type.
@@ -684,7 +692,8 @@ impl Value {
     /// `Value::ARRAY(const LogicalType &child_type, vector<Value>)`, which
     /// *derives* the array type as `ARRAY(child_type, values.size())`. The
     /// resulting array's size is therefore `items.len()`; there is nothing to
-    /// keep in sync.
+    /// keep in sync. An array of arrays takes an `ARRAY` element type and
+    /// `ARRAY` items.
     ///
     /// # Errors
     ///
@@ -695,7 +704,6 @@ impl Value {
         element_type: &crate::types::LogicalType,
         items: &[Self],
     ) -> Result<Self, ExtensionError> {
-        Self::reject_container_type(element_type, crate::types::TypeId::Array, "array_value")?;
         let mut raws: Vec<duckdb_value> = items.iter().map(Self::as_raw).collect();
         // SAFETY: as in `list_value`.
         let raw = unsafe {
@@ -705,35 +713,48 @@ impl Value {
                 libduckdb_sys::idx_t::try_from(raws.len()).unwrap_or(libduckdb_sys::idx_t::MAX),
             )
         };
-        Self::checked(raw, "duckdb_create_array_value")
+        Self::checked_container(
+            raw,
+            element_type,
+            crate::types::TypeId::Array,
+            "array_value",
+            "duckdb_create_array_value",
+        )
     }
 
-    /// Catches the "passed the container type instead of the element type"
-    /// mistake that `duckdb.h`'s contradictory `@param` text invites.
-    ///
-    /// `DuckDB` would report it as a bare null return after failing to cast
-    /// every element to a container.
-    fn reject_container_type(
+    /// Like [`checked`][Self::checked], but when `DuckDB` refused a container
+    /// whose element type is itself `container`, names the likelier cause:
+    /// the "passed the container type instead of the element type" mistake
+    /// that `duckdb.h`'s contradictory `@param` text invites. (A nested
+    /// element type with nested items is legitimate and succeeds.)
+    fn checked_container(
+        raw: duckdb_value,
         element_type: &crate::types::LogicalType,
         container: crate::types::TypeId,
         method: &str,
-    ) -> Result<(), ExtensionError> {
+        api_func: &'static str,
+    ) -> Result<Self, ExtensionError> {
+        if !raw.is_null() {
+            return Ok(Self { raw });
+        }
         // SAFETY: `element_type` is a live handle for the duration of the call.
         let id = unsafe {
             crate::types::TypeId::try_from_duckdb_type(libduckdb_sys::duckdb_get_type_id(
                 element_type.as_raw(),
             ))
         };
-        if id == Some(container) {
-            return Err(ExtensionError::new(format!(
-                "Value::{method} takes the *element* type, not the {} type: pass the type of \
-                 one item (duckdb.h's prose says \"child (element) type\" while its @param \
-                 line says \"the type of the {}\"; the implementation takes the element type)",
-                container.sql_name(),
-                container.sql_name().to_lowercase()
-            )));
+        if id != Some(container) {
+            return Self::checked(raw, api_func);
         }
-        Ok(())
+        Err(ExtensionError::new(format!(
+            "Value::{method} takes the *element* type, and {api_func} could not cast the items \
+             to the {sql} element type given. If you passed the {sql} type itself, pass the type \
+             of one item instead (duckdb.h's prose says \"child (element) type\" while its \
+             @param line says \"the type of the {lower}\"; the implementation takes the element \
+             type). For a {lower} of {lower}s, every item must itself be a {sql}.",
+            sql = container.sql_name(),
+            lower = container.sql_name().to_lowercase()
+        )))
     }
 
     /// Creates an `ENUM` value from its dictionary index.

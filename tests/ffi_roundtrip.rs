@@ -5660,3 +5660,6 @@ mod appender_rows;
 
 #[path = "ffi_roundtrip/query_stream.rs"]
 mod query_stream;
+
+#[path = "ffi_roundtrip/value_nested.rs"]
+mod value_nested;
