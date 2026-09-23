@@ -373,6 +373,7 @@ quack-rs/
 │   │   ├── typed_builder.rs           # The builder the closure-based scalar constructors return, and the one `extern "C"` trampoline they all share
 │   │   └── builder/
 │   │       ├── mod.rs                 # Builder for registering `DuckDB` scalar functions
+│   │       ├── overload.rs            # One overload within a [`ScalarFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` scalar function set (multiple overloads)
 │   │       ├── signature.rs           # Detecting overloads that declare the same argument types
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` scalar function
@@ -452,6 +453,7 @@ quack-rs/
 │   └── ffi_roundtrip/
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
+│       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions

@@ -814,7 +814,7 @@ fn identical_calls_share_bind_data_unless_the_function_is_volatile() {
     let run = |sql: &str| {
         let before = bind_counter::BINDS.load(Ordering::SeqCst);
         let mut result = fx.query(sql);
-        let chunk = result.next_chunk().expect("a chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("a chunk");
         // SAFETY: two valid BIGINT columns.
         let (a, b) = unsafe { (chunk.reader(0).read_i64(0), chunk.reader(1).read_i64(0)) };
         (a, b, bind_counter::BINDS.load(Ordering::SeqCst) - before)
