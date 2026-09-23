@@ -144,6 +144,12 @@ jobs:
             os: windows-latest
             toolchain: stable
             command: cargo test --all-targets --all-features
+          # `--all-targets` does not include doctests, and for an SDK the
+          # rustdoc examples are part of the product (CONTRIBUTING.md gate 2b).
+          - name: "doctest · Linux"
+            os: ubuntu-latest
+            toolchain: stable
+            command: cargo test --doc --features duckdb-1-5-4
           - name: "clippy"
             os: ubuntu-latest
             toolchain: stable

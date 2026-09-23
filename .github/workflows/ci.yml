@@ -4,7 +4,7 @@
 # Continuous integration — enforces all quality gates.
 #
 # Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
-#       clippy, clippy-beta, fmt, doc, msrv, bench-compile, example-check,
+#       clippy, clippy-beta, fmt, doc, msrv, dependency-floor, bench-compile, example-check,
 #       scaffold-compile, scaffold-e2e, symbol-check, extension-load,
 #       abi-table, abi-guard, abi-guard-layout, msrv-vs-duckdb-ci, publish-dry-run,
 #       security, osv-scan, nightly.
@@ -327,6 +327,37 @@ jobs:
       # sets. A bare `cargo check` here runs stable and tests nothing -- the
       # MSRV gate was inert. This matches `cargo +1.86.0 check` in CONTRIBUTING.
       - run: cargo +1.86.0 check
+
+  dependency-floor:
+    # Cargo.toml declares `duckdb` / `libduckdb-sys` `>=1.4.4, <2`, but every
+    # other job builds the newest release Cargo.lock pins. This one resolves the
+    # declared floor and runs the library tests there, so the lower bound is a
+    # tested claim rather than a hope.
+    #
+    # On stable, not 1.86.0: at the 1.4.4 floor the resolver picks `icu` 2.3
+    # crates (libduckdb-sys 1.4.4 -> reqwest -> url -> idna -> icu_normalizer),
+    # which need rustc 1.88, so `cargo +1.86.0` fails there before reaching
+    # quack-rs. The MSRV
+    # job above covers 1.86.0 with the locked dependencies; this covers the
+    # dependency floor with a current compiler.
+    name: Dependency floor (duckdb / libduckdb-sys 1.4.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Resolve the declared floor
+        run: |
+          set -euo pipefail
+          cargo update -p duckdb --precise 1.4.4
+          cargo update -p libduckdb-sys --precise 1.4.4
+          grep -A1 -E '^name = "(duckdb|libduckdb-sys)"$' Cargo.lock
+      - run: cargo test --lib
 
   bench-compile:
     name: Benchmark (compile check)
@@ -1183,7 +1214,38 @@ jobs:
           RUSTFLAGS: ""
         run: cargo install cargo-semver-checks --locked --version "0.50.0"
       - name: Check the public API against the last published release
-        run: cargo semver-checks check-release --features duckdb-1-5-4
+        # cargo-semver-checks derives what to enforce from the version bump.
+        # When the bump is itself breaking (a major bump, or a minor bump of a
+        # 0.x crate -- it prints "(major change)"), everything is allowed and it
+        # runs 0 checks; that is correct for a breaking release, and the next
+        # step lists what broke. For any other bump, "0 checks" means nothing
+        # was verified, so it fails here rather than passing silently.
+        run: |
+          set -euo pipefail
+          cargo semver-checks check-release --features duckdb-1-5-4 2>&1 | tee /tmp/semver.log
+          if grep -q "(major change)" /tmp/semver.log; then
+            echo "::notice::the version bump is breaking, so the published-baseline comparison enforces nothing; review the origin/main comparison for the changelog"
+          elif grep -qE "Checked \[[^]]*\] 0 checks" /tmp/semver.log; then
+            echo "::error::cargo-semver-checks ran 0 checks against the published baseline for a non-breaking version bump"
+            exit 1
+          fi
+      - name: List public API changes since origin/main (informational)
+        # Not a gate: 0.x releases may break, and the published-baseline step
+        # already decides pass/fail. `--release-type patch` makes every lint run
+        # whatever the two versions are, so each breaking change on this branch
+        # is listed -- in the log and the job summary -- for the CHANGELOG
+        # review. Needs the full history (`fetch-depth: 0` above).
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          cargo semver-checks check-release --baseline-rev origin/main --release-type patch \
+            --features duckdb-1-5-4 2>&1 | tee /tmp/semver-main.log
+          {
+            echo "### Public API changes since origin/main"
+            echo '```'
+            tail -n 200 /tmp/semver-main.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   fuzz:
     name: Fuzz (smoke)
