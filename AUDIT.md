@@ -489,12 +489,18 @@ if nobody wrote down that they were checked.
 
 - **Flat-vector reads are sound everywhere DuckDB hands an extension a vector.**
   quack-rs's readers index the data buffer directly, which is wrong for
-  constant and dictionary vectors. It never sees one:
+  constant and dictionary vectors. It never sees one for its *input data*:
   `CAPIScalarFunction` calls `input.Flatten()`, `CAPIAggregateUpdate` calls
-  `inputs[c].Flatten(count)` and `state.Flatten(count)`, the cast bridge calls
-  `input.Flatten(count)`, and the copy sink calls `input.Flatten()`. Verified in
-  the v1.5.4 sources. `vector::ops::slice` is now the one way an extension can
-  produce a non-flat vector for itself, and it says so loudly.
+  `inputs[c].Flatten(count)`, the cast bridge calls `input.Flatten(count)`, and
+  the copy sink calls `input.Flatten()`. `vector::ops::slice` is now the one way
+  an extension can produce a non-flat vector for itself, and it says so loudly.
+
+  > **Corrected September 2026.** This bullet originally also said
+  > `CAPIAggregateUpdate` calls `state.Flatten(count)`. It does not — only
+  > combine and finalize flatten the state vector — and the window-constant and
+  > sorted-aggregate executors pass a constant state vector with `count > 1`.
+  > That is Pitfall L11: every C API aggregate reads out of bounds under
+  > `agg(x) OVER ()` and `agg(x ORDER BY y)`. See section 7.
 - **The ABI layout table is right.** `STABLE_API_SLOT_COUNT = 357` and every row
   of `KNOWN_LAYOUTS` (408 / 428 / 459 / 545 / 546) re-derived independently from
   the release headers and matched exactly, including v1.5.5.
@@ -649,3 +655,143 @@ against a running database. What is left of 5.1 is either deprecated or niche.
 The remaining item that would most change the claim is a wasm32 test that
 actually runs (5.2); the one that will demand attention on someone else's
 schedule is 5.4.
+
+---
+
+## 7. Second audit, September 2026 (v0.17.0 → 0.18.0)
+
+Reviewed at `6455238` (v0.17.0 plus #121/#122) against **DuckDB 1.5.5**
+(prebuilt `libduckdb`, x86-64 Linux, `libduckdb-sys 1.10505.0`), with the DuckDB
+v1.5.5 source tree as the reference and the 1.4.4 and 1.5.0 CLIs and libraries
+for cross-version checks.
+
+### 7.1 Method
+
+Six independent audits — vector/chunk memory, scalar/aggregate/callback
+lifecycle, table/cast/copy/macro/catalog, values/queries/Arrow/types, tooling
+(ABI guard, `append_metadata`, validators, scaffold, CI, MSRV) and documentation
+— each required to cite the quack-rs line, the DuckDB source line that fixes the
+contract, and a probe against a real DuckDB wherever one could be written.
+Probes ran against the linked `libduckdb`, under valgrind where ownership was the
+question. Documentation was checked by extracting all 243 Rust blocks from the
+README and book and compiling them, and every hello-ext SQL check was run on
+three DuckDB releases.
+
+Findings are labelled by how they were established:
+
+- **VALIDATED** — reproduced by a program against a real DuckDB (or, for docs,
+  a compiler) before the fix, and shown fixed after.
+- **PROVEN** — derived from both sides' source; no program could trigger it.
+
+### 7.2 A DuckDB defect every C API aggregate inherits (Pitfall L11)
+
+`CAPIAggregateUpdate` flattens its input vectors but not the state vector; the
+C API registers no `simple_update`; and `WindowConstantAggregatorLocalState` and
+`SortedAggregateFunction` therefore call `update` with a **constant** state
+vector and `count > 1`. Every aggregate registered through the C API reads
+`states[1..]` out of bounds under `agg(x) OVER ()` (and other whole-partition
+frames) and `agg(x ORDER BY y)`.
+
+VALIDATED in plain C, with no quack-rs involved, against the official
+`libduckdb` 1.4.4, 1.5.0 and 1.5.5: the control `SELECT capi_sum(i)` returns
+4498500 and both shapes segfault; AddressSanitizer places the fault in the
+callback, called from `CAPIAggregateUpdate` ←
+`WindowConstantAggregatorLocalState::Sink` / `SortedAggregateFunction::Finalize`.
+Section 4's first bullet said the opposite and has been corrected.
+
+There is no extension-side fix: the callback cannot tell a constant vector from
+a flat one, and probing `states[1]` is itself the out-of-bounds read. The one-line
+upstream fix that suggests itself — `state.Flatten(count)` in
+`CAPIAggregateUpdate` — is also wrong: `WindowConstantAggregatorLocalState::Sink`
+caches `FlatVector::GetData(statep)` once and writes through it on every later
+iteration, and an in-place `Flatten` replaces that buffer. A report for DuckDB
+with a C reproducer has been drafted but not filed.
+
+### 7.3 Defects found and fixed
+
+Safe-API soundness (safe code could cause UB or a data race):
+
+| Defect | Evidence |
+|---|---|
+| `ScalarBindData<T>` / `ScalarLocalState<T>` had no `Send`/`Sync` bounds; DuckDB reads bind data from every executing thread | VALIDATED: one `Rc<Cell>` bind-data pointer used from 4 threads |
+| Typed scalar constructors returned a mutable `ScalarFunctionBuilder`; `.returns(Integer)` on an `i64` closure wrote 8-byte values into a 4-byte vector | VALIDATED: truncated results; overflow past row 1024 |
+| `ArrowOptions` outlived its connection (use-after-free in `data_chunk_to_arrow`); same class in `FileSystem` | VALIDATED under valgrind |
+| `SelectionVector::new` returned uninitialised indices through safe `as_slice`, and a wrapped allocation size let safe code index out of bounds | VALIDATED: stale `0xDEADBEEF`; SIGSEGV in a release build |
+| `decimal_to_f64` read past DuckDB's powers-of-ten tables for `scale > 38` | VALIDATED: `inf` / `NaN` at scale 40 / 60 |
+| `FfiBindData` / `FfiInitData` / replacement-scan data lacked thread bounds for data DuckDB shares across threads | PROVEN |
+
+Process aborts from ordinary input (a C++ exception unwinding into Rust):
+`Value::as_*` on SQL `NULL` (e.g. `f(n := NULL)`), `Value::decimal` /
+`bind_decimal` out of range, `date_to_days` on an invalid date,
+`timestamp_from_micros` on infinities, `SelectionVector::new` above the
+allocator limit, a config-option default that does not cast, catalog lookups for
+four entry types, and a panic payload whose `Drop` panics (all callback kinds,
+including the typed-table trampolines, which the first fix pass missed) — all
+VALIDATED. The entry points' NULL-`duckdb_database*` dereference is PROVEN only:
+nothing in a test can make DuckDB's `GetDatabase` fail.
+
+Wrong answers with no error, all VALIDATED: scalar bind data lost on expression
+copy (`sum` 90 instead of 132 under filter pushdown); NULL `STRUCT` rows keeping
+valid fields; typed table functions failing on the second `EXECUTE` of a prepared
+statement; typed projection pushdown returning the wrong column; `Value` getters
+casting the value in place; `Value::decimal` / `bind_decimal` silently keeping
+the low word; `ANY`-typed result columns silently dropped; duplicate overloads
+registering and then failing every call.
+
+Tooling, all VALIDATED: the mutation gate passed with a 100% score when
+cargo-mutants had tested nothing (exit 4); `parse_description_yml` rejected or
+misread 29 of the 346 published community `description.yml` files (now 346/346,
+field-for-field against PyYAML); the scaffold accepted hyphenated names and
+produced a project that cannot build; `append_metadata` took flags as values and
+stamped C API versions DuckDB refuses; the unstable scaffold could declare a
+DuckDB version its bindings were not built for, defeating the ABI guard; the
+published crate's own integration test did not compile; and the book told users
+`panic = "abort"` was required — the setting that disables every panic guard in
+the crate.
+
+Documentation: of 243 Rust blocks in the README and book, 140 failed to compile
+as extracted. Most are deliberate fragments; the ones a user would copy — the
+README quick start, the `running-sql` examples, `classify_extension_version`, a
+README assertion that panicked — are fixed and were recompiled.
+
+### 7.4 Verified correct
+
+- The ABI slot counts and `KNOWN_LAYOUTS` (re-derived again from the headers);
+  the ABI guard end to end (a 1.5.0-built binary refused by 1.5.5 and 1.4.4);
+  `build.rs` under cross-compilation.
+- The 512-byte footer is byte-identical to DuckDB's own tooling.
+- Error strings passed to `duckdb_*_set_error` are copied by DuckDB.
+- Aggregate `combine` / `finalize` ownership; segment-tree and `DISTINCT`
+  windows; parallel `GROUP BY` over 4M rows and 50k groups.
+- Leaks: every `Value` constructor and accessor, `LogicalType` accessors,
+  appender, result and prepared-statement paths — 0 bytes lost under valgrind.
+- `QueryResult` and `PreparedStatement` outliving their connection (they hold a
+  `shared_ptr<ClientContext>`).
+- Every integer / DECIMAL / temporal / interval / string layout in the vector
+  readers and writers.
+- MSRV 1.86.0; all 29 hello-ext SQL checks on DuckDB 1.4.4, 1.5.0 and 1.5.5.
+
+### 7.5 Open items
+
+1. **L11 upstream.** File the drafted DuckDB issue. Until it is fixed, aggregate
+   authors must tell their users to avoid the two query shapes.
+2. **Config-option defaults.** The pre-check uses SQL `TRY_CAST`, which sees
+   extension-registered casts; DuckDB's default-value cast does not. An extension
+   that registers a more permissive `VARCHAR → T` cast *before* the option could
+   still pass the check and abort. Documented on `register`.
+3. **`Value` getters.** The copy-and-cast design is PROVEN not to abort for a
+   cast that fails or succeeds non-NULL. A cast that *succeeds with a NULL*
+   would still make DuckDB's `GetValue` throw; none was found across the 31
+   value types the new test exercises against every getter, but that is testing,
+   not proof.
+4. **The book is not compiled in CI.** `docs.yml` runs `mdbook build`, never
+   `mdbook test`, which is how the non-compiling examples went unnoticed.
+   Compiling book blocks against the local crate needs a small harness (plain
+   `mdbook test` cannot link external crates).
+5. ~~The book changelog's relative links~~ — fixed in this pass:
+   `scripts/sync-book-changelog.py` rewrites repository-file links to GitHub
+   URLs, since the mirror lives in `book/src/reference/`.
+6. **`AddressSanitizer`** has passed on `main`; see section 7.6 for whether it
+   was made blocking in this pass.
+7. `src/value.rs` (~1,100 lines) and `src/aggregate/builder/set.rs` (~508) exceed
+   the 500-line guideline.

@@ -200,10 +200,10 @@ Selected modules include `proptest`-based tests for mathematical properties:
 
 The `hello-ext` example compiles as a `cdylib` and contains `#[cfg(test)]` unit
 tests for all pure-Rust logic (`count_words`, `first_word`, `parse_varchar_to_int`,
-aggregate state transitions). **Full end-to-end testing against a live DuckDB 1.4.4 or 1.5.0
-instance is required** — not left to consumers. This means building the `.so`,
-appending the extension metadata footer with `append_metadata`, and running all 19
-SQL tests via the DuckDB CLI. See the [Quality Gates](#quality-gates) section for
+aggregate state transitions). **Full end-to-end testing against a live DuckDB (1.4.4, 1.5.0
+and 1.5.5, as CI does) is required** — not left to consumers. This means building the `.so`,
+appending the extension metadata footer with `append_metadata`, and running the 29
+numbered SQL checks via the DuckDB CLI. See the [Quality Gates](#quality-gates) section for
 the exact commands and `examples/hello-ext/README.md` for the full test listing.
 
 ### Mutation testing
@@ -295,87 +295,155 @@ semantics should also be documented. Doc comments follow these conventions:
 ```
 quack-rs/
 ├── src/
-│   ├── lib.rs                     # Crate root; module declarations; DUCKDB_API_VERSION
-│   ├── entry_point.rs             # init_extension() / init_extension_v2() + entry_point! / entry_point_v2! macros
-│   ├── connection.rs              # Connection facade + Registrar trait (version-agnostic registration)
-│   ├── config.rs                  # DbConfig — RAII wrapper for duckdb_config
-│   ├── error.rs                   # ExtensionError, ExtResult<T>
-│   ├── interval.rs                # DuckInterval, interval_to_micros (checked + saturating)
-│   ├── prelude.rs                 # Convenience re-exports for extension authors
-│   ├── sql_macro.rs               # SQL macro registration (CREATE MACRO, no FFI)
+│   ├── abi.rs                         # `DuckDB` C Extension API ABI compatibility checking
+│   ├── appender.rs                    # Bulk data appending
+│   ├── arrow.rs                       # Arrow C Data Interface bridge (`DuckDB` 1.5.0+, `duckdb-1-5-4` feature)
+│   ├── callback.rs                    # Panic-safe callback wrapper macros for `DuckDB` extension callbacks
+│   ├── catalog.rs                     # Catalog entry lookup (`DuckDB` 1.5.0+)
+│   ├── chunk_writer.rs                # Auto-sizing chunk writer for table function scan callbacks
+│   ├── client_context.rs              # Client context access (`DuckDB` 1.5.0+)
+│   ├── config.rs                      # RAII wrapper for `DuckDB` database configuration
+│   ├── config_option.rs               # Extension-defined configuration options (`DuckDB` 1.5.0+)
+│   ├── connection.rs                  # [`Connection`] — version-agnostic extension registration facade
+│   ├── data_chunk.rs                  # Ergonomic wrapper around `DuckDB` data chunks
+│   ├── debug_repr.rs                  # Internal helpers for the crate's `Debug` implementations
+│   ├── entry_point.rs                 # Extension entry point helper
+│   ├── error.rs                       # Error types for `DuckDB` extension FFI error propagation
+│   ├── error_data.rs                  # Structured error data (`DuckDB` 1.5.0+)
+│   ├── expression.rs                  # Bound expressions (`DuckDB` 1.5.0+)
+│   ├── extra_info.rs                  # Ownership of a function's `extra_info` allocation until `DuckDB` takes it
+│   ├── file_system.rs                 # File system access (`DuckDB` 1.5.0+)
+│   ├── instance_cache.rs              # Database instance cache (`DuckDB` 1.5.0+)
+│   ├── interval.rs                    # `DuckDB` `INTERVAL` type conversion utilities
+│   ├── lib.rs                         # A production-grade Rust SDK for building `DuckDB` loadable extensions
+│   ├── prelude.rs                     # Convenience re-exports for the most commonly used `quack-rs` items
+│   ├── query.rs                       # Running SQL from inside an extension
+│   ├── secrets.rs                     # Credential handling for extensions
+│   ├── selection_vector.rs            # Selection vectors (`DuckDB` 1.5.0+)
+│   ├── sql_macro.rs                   # SQL macro registration for `DuckDB` extensions
+│   ├── table_description.rs           # Table description metadata
+│   ├── tls.rs                         # Type-erased TLS configuration provider for HTTP-capable extensions
+│   ├── value.rs                       # RAII wrapper around `DuckDB` values (`duckdb_value`)
+│   ├── warning.rs                     # Structured security warning API for extensions
 │   ├── aggregate/
-│   │   ├── mod.rs                 # Re-exports
-│   │   ├── builder/               # Builder types for aggregate function registration
-│   │   │   ├── mod.rs             # Module doc + re-exports
-│   │   │   ├── single.rs          # AggregateFunctionBuilder (single-signature)
-│   │   │   ├── set.rs             # AggregateFunctionSetBuilder, OverloadBuilder
-│   │   │   └── tests.rs           # Unit tests (14 tests)
-│   │   ├── callbacks.rs           # Type aliases for the 6 callback signatures
-│   │   └── state.rs               # AggregateState trait, FfiState<T>
-│   ├── scalar/
-│   │   ├── mod.rs                 # Re-exports
-│   │   └── builder/               # Builder types for scalar function registration
-│   │       ├── mod.rs             # Module doc + re-exports
-│   │       ├── single.rs          # ScalarFn type alias, ScalarFunctionBuilder
-│   │       ├── set.rs             # ScalarFunctionSetBuilder, ScalarOverloadBuilder
-│   │       └── tests.rs           # Unit tests (13 tests)
-│   ├── catalog.rs                 # Catalog access helpers (requires `duckdb-1-5`)
+│   │   ├── callbacks.rs               # Type aliases for the five required `DuckDB` aggregate callback signatures
+│   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for aggregate function callbacks
+│   │   ├── mod.rs                     # Builders for registering `DuckDB` aggregate functions
+│   │   ├── state.rs                   # Generic `FfiState<T>` wrapper for safe aggregate state management
+│   │   └── builder/
+│   │       ├── mod.rs                 # Builder types for registering `DuckDB` aggregate functions
+│   │       ├── overload.rs            # One overload within an [`AggregateFunctionSetBuilder`]
+│   │       ├── set.rs                 # Builder for registering a `DuckDB` aggregate function set (multiple overloads)
+│   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` aggregate function
+│   │       └── tests.rs               # Unit tests (23 tests)
+│   ├── bin/
+│   │   └── append_metadata/
+│   │       ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
+│   │       ├── footer.rs              # The 512-byte `DuckDB` extension footer, and the optional 22-byte WebAssembly custom-section header that precedes it
+│   │       ├── main.rs                # Append a DuckDB extension metadata block to a compiled .so / .dylib / .dll file,
+│   │       └── tests.rs               # Unit tests (31 tests)
+│   ├── callback/
+│   │   └── payload.rs                 # Disposing of a caught panic payload without re-entering the unwinder
 │   ├── cast/
-│   │   ├── mod.rs                 # Re-exports
-│   │   └── builder.rs             # CastFunctionBuilder, CastFunctionInfo, CastMode
-│   ├── client_context.rs          # ClientContext wrapper (requires `duckdb-1-5`)
-│   ├── config_option.rs           # ConfigOption registration (requires `duckdb-1-5`)
+│   │   ├── builder.rs                 # Builder for registering custom `DuckDB` cast functions
+│   │   └── mod.rs                     # Builder for registering `DuckDB` custom cast functions
 │   ├── copy_function/
-│   │   ├── mod.rs                 # CopyFunctionBuilder (requires `duckdb-1-5`)
-│   │   └── info.rs                # CopyBindInfo, CopySinkInfo, CopyGlobalInitInfo, CopyFinalizeInfo
-│   ├── appender.rs                # Appender — bulk row insertion (requires `duckdb-1-5`)
-│   ├── error_data.rs              # ErrorData, DuckDbErrorType — structured errors (requires `duckdb-1-5`)
-│   ├── expression.rs              # Expression — bound expr inspection/folding (requires `duckdb-1-5`)
-│   ├── file_system.rs             # FileSystem, FileHandle — DuckDB virtual file system (requires `duckdb-1-5`)
-│   ├── instance_cache.rs          # InstanceCache — shared DB instance cache (requires `duckdb-1-5`)
-│   ├── selection_vector.rs        # SelectionVector — zero-copy row-index vectors (requires `duckdb-1-5`)
+│   │   ├── info.rs                    # Callback info wrappers for copy function callbacks
+│   │   └── mod.rs                     # Copy function registration (`DuckDB` 1.5.0+)
+│   ├── datetime/
+│   │   ├── checks.rs                  # Pure-Rust mirrors of the checks `DuckDB` makes before it throws
+│   │   ├── mod.rs                     # Calendar conversions for `DuckDB`'s temporal types
+│   │   └── tests.rs                   # Unit tests (18 tests)
+│   ├── query/
+│   │   └── cstr.rs                    # The two C-string conversions the `query` module runs everything through
 │   ├── replacement_scan/
-│   │   └── mod.rs                 # ReplacementScanBuilder — SELECT * FROM 'file.xyz' patterns
-│   ├── types/
-│   │   ├── mod.rs
-│   │   ├── type_id.rs             # TypeId enum (all DuckDB column types)
-│   │   └── logical_type.rs        # LogicalType — RAII wrapper for duckdb_logical_type
-│   ├── vector/
-│   │   ├── mod.rs
-│   │   ├── reader.rs              # VectorReader — typed reads from a DuckDB data chunk
-│   │   ├── writer.rs              # VectorWriter — typed writes to a DuckDB result vector
-│   │   ├── validity.rs            # ValidityBitmap — NULL flag management
-│   │   └── string.rs              # DuckStringView, read_duck_string (16-byte string format)
-│   ├── validate/
-│   │   ├── mod.rs                 # Extension compliance validators + re-exports
-│   │   ├── description_yml/       # Parse and validate description.yml metadata
-│   │   │   ├── mod.rs             # Module doc + re-exports
-│   │   │   ├── model.rs           # DescriptionYml struct (11 fields)
-│   │   │   ├── parser.rs          # parse_description_yml, parse_kv, strip_inline_comment
-│   │   │   ├── validator.rs       # validate_description_yml_str, validate_rust_extension
-│   │   │   └── tests.rs           # Unit tests (20 tests)
-│   │   ├── extension_name.rs      # Extension name validation (^[a-z][a-z0-9_-]*$)
-│   │   ├── function_name.rs       # SQL function name validation
-│   │   ├── platform.rs            # DuckDB build platform validation
-│   │   ├── release_profile.rs     # Cargo release profile validation
-│   │   ├── semver.rs              # Semantic versioning + extension version tiers
-│   │   └── spdx.rs                # SPDX license identifier validation
+│   │   └── mod.rs                     # Builder for registering `DuckDB` replacement scans
 │   ├── scaffold/
-│   │   ├── mod.rs                 # ScaffoldConfig, GeneratedFile, generate_scaffold
-│   │   ├── templates.rs           # Template generators for all 11 scaffold files (pub(super))
-│   │   └── tests.rs               # Unit tests (29 tests)
-│   ├── table_description.rs       # TableDescription wrapper (requires `duckdb-1-5`)
+│   │   ├── mod.rs                     # Project scaffolding for `DuckDB` Rust extensions
+│   │   ├── templates.rs               # Template generators for scaffold file content
+│   │   ├── tests.rs                   # Unit tests (46 tests)
+│   │   └── tests_generated.rs         # Unit tests (6 tests)
+│   ├── scalar/
+│   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks
+│   │   ├── mod.rs                     # Builder for registering `DuckDB` scalar functions
+│   │   ├── state.rs                   # Typed bind data and per-thread local state for scalar functions (`DuckDB` 1.5.0+)
+│   │   ├── typed.rs                   # Scalar functions written as ordinary Rust closures
+│   │   ├── typed_builder.rs           # The builder the closure-based scalar constructors return, and the one `extern "C"` trampoline they all share
+│   │   └── builder/
+│   │       ├── mod.rs                 # Builder for registering `DuckDB` scalar functions
+│   │       ├── set.rs                 # Builder for registering a `DuckDB` scalar function set (multiple overloads)
+│   │       ├── signature.rs           # Detecting overloads that declare the same argument types
+│   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` scalar function
+│   │       └── tests.rs               # Unit tests (16 tests)
 │   ├── table/
-│   │   ├── mod.rs                 # Re-exports
-│   │   ├── builder.rs             # TableFunctionBuilder, type aliases (BindFn, InitFn, ScanFn)
-│   │   ├── info.rs                # BindInfo, InitInfo, FunctionInfo — callback info wrappers
-│   │   ├── bind_data.rs           # FfiBindData<T> — type-safe bind-phase data
-│   │   └── init_data.rs           # FfiInitData<T>, FfiLocalInitData<T>
-│   └── testing/
-│       ├── mod.rs
-│       └── harness.rs             # AggregateTestHarness<S> — unit-test aggregate logic
+│   │   ├── bind_data.rs               # Type-safe bind data management for table functions
+│   │   ├── builder.rs                 # Builder for registering `DuckDB` table functions
+│   │   ├── info.rs                    # Ergonomic wrappers around `DuckDB` callback info handles
+│   │   ├── init_data.rs               # Type-safe init data management for table functions
+│   │   ├── mod.rs                     # Builder for registering `DuckDB` table functions
+│   │   ├── type_check.rs              # Detects logical types that `DuckDB` refuses without saying so
+│   │   ├── typed.rs                   # Closure-based table functions with typed scan state
+│   │   └── typed/
+│   │       └── trampolines.rs         # `extern "C"` trampolines behind [`TypedTableFunctionBuilder`][super::TypedTableFunctionBuilder]
+│   ├── testing/
+│   │   ├── bundled_api_init.cpp       # Compiled only when the `bundled-test` Cargo feature is active
+│   │   ├── harness.rs                 # [`AggregateTestHarness`] — test aggregate logic without `DuckDB`
+│   │   ├── in_memory_db.rs            # In-memory `DuckDB` helper for integration tests
+│   │   ├── mock_registrar.rs          # [`MockRegistrar`] — a [`Registrar`] implementation for testing
+│   │   ├── mock_vector.rs             # In-memory mock types for `DuckDB` vectors
+│   │   └── mod.rs                     # Test utilities for `DuckDB` extension development
+│   ├── types/
+│   │   ├── logical_type.rs            # RAII wrapper for `duckdb_logical_type`
+│   │   ├── mod.rs                     # `DuckDB` type system wrappers
+│   │   ├── null_handling.rs           # NULL propagation behaviour for `DuckDB` functions
+│   │   └── type_id.rs                 # Ergonomic enum of all `DuckDB` column types
+│   ├── validate/
+│   │   ├── extension_name.rs          # Extension name validation per `DuckDB` community extension rules
+│   │   ├── function_name.rs           # SQL function name validation for `DuckDB` extensions
+│   │   ├── mod.rs                     # Validation utilities for `DuckDB` community extension compliance
+│   │   ├── platform.rs                # `DuckDB` build platform validation
+│   │   ├── release_profile.rs         # Release profile validation for `DuckDB` loadable extensions
+│   │   ├── semver.rs                  # Semantic versioning validation for `DuckDB` community extensions
+│   │   ├── spdx.rs                    # SPDX license identifier validation for `DuckDB` community extensions
+│   │   └── description_yml/
+│   │       ├── mod.rs                 # Validation of `DuckDB` community extension `description.yml` files
+│   │       ├── model.rs               # A validated representation of a `DuckDB` community extension `description.yml`
+│   │       ├── parser.rs              # Parses and validates a `description.yml` string
+│   │       ├── tests.rs               # Unit tests (34 tests)
+│   │       ├── tests_corpus.rs        # Unit tests (5 tests)
+│   │       ├── tests_yaml.rs          # Unit tests (16 tests)
+│   │       ├── validator.rs           # Validates a `description.yml` string and returns `Ok(())` if it passes all checks
+│   │       ├── yaml.rs                # A reader for the subset of YAML that `description.yml` files use
+│   │       └── yaml/
+│   │           └── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
+│   ├── value/
+│   │   ├── blob.rs                    # `Value::as_blob` — `BLOB` extraction
+│   │   ├── checks.rs                  # Pure-Rust preconditions checked before a `Value` call reaches `DuckDB`
+│   │   ├── defaults.rs                # The defaulting accessors — `Value::as_*_or`
+│   │   ├── getters.rs                 # The typed scalar accessors — `Value::as_i64`, `as_timestamp`, `as_decimal`, …
+│   │   └── hugeint.rs                 # Conversions between Rust's 128-bit integers and `DuckDB`'s split-word `HUGEINT` / `UHUGEINT` records
+│   └── vector/
+│       ├── complex.rs                 # Complex type vector operations: STRUCT fields, LIST elements, MAP entries
+│       ├── list_builder.rs            # Safe construction of `LIST` and `MAP` output vectors
+│       ├── mod.rs                     # Safe helpers for reading from and writing to `DuckDB` data vectors
+│       ├── nested_null.rs             # The child validity masks a NULL in a nested vector must also clear
+│       ├── ops.rs                     # Whole-vector operations (`DuckDB` 1.5.0+)
+│       ├── reader.rs                  # Safe typed reading from `DuckDB` data vectors
+│       ├── string.rs                  # `DuckDB` `VARCHAR` and `BLOB` (`duckdb_string_t`) reading utilities
+│       ├── struct_reader.rs           # Batched, typed reader for STRUCT input vectors
+│       ├── struct_writer.rs           # Batched, typed writer for STRUCT output vectors
+│       ├── uuid.rs                    # Converting between a `UUID`'s textual bits and `DuckDB`'s vector storage
+│       ├── validity.rs                # Validity bitmap helpers for `DuckDB` NULL tracking
+│       └── writer.rs                  # Safe typed writing to `DuckDB` result vectors
 ├── tests/
-│   └── integration_test.rs        # Cross-module pure-Rust integration tests
+│   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
+│   ├── integration_test.rs            # Integration tests for `quack-rs`
+│   └── ffi_roundtrip/
+│       ├── scalar_agg.rs              # End-to-end tests (8 tests)
+│       ├── table_cast.rs              # End-to-end tests (12 tests)
+│       ├── tooling.rs                 # End-to-end tests (2 tests)
+│       ├── value_query.rs             # End-to-end tests (13 tests)
+│       └── vector_dt.rs               # End-to-end tests (6 tests)
 ├── benches/
 │   └── interval_bench.rs          # Criterion benchmarks for interval conversion
 ├── examples/
@@ -384,7 +452,7 @@ quack-rs/
 │       └── src/lib.rs
 ├── book/                          # mdBook documentation source
 ├── .github/workflows/
-│   ├── ci.yml                     # CI: check, test, clippy, fmt, doc, msrv, bench-compile, nightly
+│   ├── ci.yml                     # CI: every quality gate (one job each; see workflows/README.md)
 │   ├── release.yml                # Release pipeline: CI gate, package, publish
 │   ├── docs.yml                   # mdBook build & deploy to GitHub Pages
 │   ├── coverage.yml               # Test coverage (cargo-llvm-cov → Codecov)

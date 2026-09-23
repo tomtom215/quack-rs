@@ -76,6 +76,11 @@ exclude_globs = [
     # and cargo-mutants still follows the mod statements in an excluded file.
     "src/value.rs",             # Value: 130 duckdb_get_* / duckdb_create_* wrappers
     "src/query.rs",             # QueryResult/PreparedStatement/Connection: FFI wrappers
+    # Same rationale, added with the September 2026 audit fixes. Their pure
+    # logic lives in siblings that stay in the gate: src/value/checks.rs (the
+    # DECIMAL range check and the scalar-cast allow-list).
+    "src/value/getters.rs",     # Value::as_*: each copies the value and calls duckdb_get_*
+    "src/vector/nested_null.rs",# walks a vector's type and child masks through the C API
 ]
 
 # Skip mutants whose full name matches, regardless of which file they are in.

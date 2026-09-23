@@ -293,7 +293,13 @@ append_metadata target/release/libmy_extension.so \
 > **Pitfall P2**: The `--duckdb-version` flag must be `v1.2.0` (the C API version),
 > **not** the DuckDB release version (`v1.4.4` or `v1.5.0`). DuckDB 1.4.x and 1.5.x
 > both use C API version `v1.2.0`. Use the `DUCKDB_API_VERSION` constant from
-> `quack_rs` to avoid hard-coding the wrong value.
+> `quack_rs` to avoid hard-coding the wrong value. `append_metadata` refuses a
+> `C_STRUCT` stamp above `v1.2.0`, which DuckDB would reject at `LOAD`.
+>
+> `--platform` defaults to the host's DuckDB platform name. Re-stamping a file that
+> already carries a footer is an error unless you pass `--replace`, and `--wasm`
+> writes the WebAssembly custom-section header DuckDB-Wasm expects. See
+> `append_metadata --help`.
 
 ---
 
@@ -492,7 +498,7 @@ validate_rust_extension(&desc)?;
 
 | Field | Rule |
 |-------|------|
-| `extension.name` | `^[a-z][a-z0-9_-]*$`, max 64 chars |
+| `extension.name` | `^[a-z][a-z0-9_]*$`, max 64 chars |
 | `extension.version` | Any of `[A-Za-z0-9._+-]`, up to 64 chars — DuckDB specifies no format, and 11 of 43 published extensions use a date-based build id |
 | `extension.license` | Recognized SPDX identifier |
 | `extension.excluded_platforms` | Semicolon-separated list of known DuckDB platforms |
@@ -540,8 +546,11 @@ Validate before you submit:
 ```rust
 use quack_rs::validate::{validate_extension_name, validate_function_name};
 
-// Extension names: lowercase alphanumeric, hyphens and underscores allowed
+// Extension names: lowercase letters, digits and underscores. No hyphens: DuckDB
+// looks up the entry point as `<name>_init_c_api`, which no C or Rust symbol can
+// spell with a hyphen.
 assert!(validate_extension_name("my_analytics").is_ok());
+assert!(validate_extension_name("my-analytics").is_err()); // hyphen rejected
 assert!(validate_extension_name("MyExt").is_err());       // uppercase rejected
 assert!(validate_extension_name("my ext").is_err());      // spaces rejected
 assert!(validate_extension_name("").is_err());             // empty rejected
@@ -838,8 +847,9 @@ A comprehensive extension that exercises **every feature** in `quack-rs`: scalar
 table, cast, replacement scan, and SQL macro functions — plus complex types (STRUCT, LIST, MAP),
 `entry_point_v2!`/`Connection`/`Registrar`, aggregate sets, scalar sets with per-overload NULL
 handling, `DuckInterval`, `ValidityBitmap`, `named_param`, `local_init`, `implicit_cost`,
-`extra_info`, and all `VectorReader`/`VectorWriter` type variants. All 39 live SQL tests pass
-against both DuckDB 1.4.4 and 1.5.0.
+`extra_info`, and all `VectorReader`/`VectorWriter` type variants. Its 29 numbered SQL checks
+(31 statements, listed in `examples/hello-ext/README.md`) return their expected results on
+DuckDB 1.4.4, 1.5.0 and 1.5.5.
 
 ### Testing aggregate logic without DuckDB
 

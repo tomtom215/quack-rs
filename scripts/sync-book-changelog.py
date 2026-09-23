@@ -7,9 +7,14 @@ it in sync by hand did not work: before this script existed the mirror was
 ~19 KB behind, and the published 0.16.0 entry was missing an entire
 "Portability and feature-combination breakage" subsection.
 
-The single deliberate transformation is the release-heading separator: the root
-uses an ASCII hyphen (`## [0.17.0] - 2026-08-21`, Keep a Changelog's form) and
-the book uses an em dash.
+Two deliberate transformations:
+
+- The release-heading separator: the root uses an ASCII hyphen
+  (`## [0.17.0] - 2026-08-21`, Keep a Changelog's form) and the book uses an em
+  dash.
+- Links to repository files (`[..](src/table/mod.rs)`) resolve from the
+  repository root, where CHANGELOG.md lives, but not from
+  `book/src/reference/`. They are rewritten to GitHub URLs.
 
 Usage:
     scripts/sync-book-changelog.py            # rewrite the book page
@@ -44,13 +49,29 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 HEADING = re.compile(r"^(## \[[^\]]+\]) - (\d{4}-\d{2}-\d{2})$", re.MULTILINE)
 
 
+# `](src/cast/)` -> `](https://github.com/.../tree/main/src/cast/)`. Only
+# targets that start with a top-level repository path; URLs and `#anchors`
+# are untouched.
+REPO = "https://github.com/tomtom215/quack-rs"
+REPO_LINK = re.compile(
+    r"\]\(((?:src|tests|scripts|examples|benches|fuzz|docs|book|\.github)/[^)\s]*"
+    r"|[A-Z][A-Z_]*\.md)\)"
+)
+
+
+def _repo_url(match: re.Match[str]) -> str:
+    target = match.group(1)
+    kind = "tree" if target.endswith("/") else "blob"
+    return f"]({REPO}/{kind}/main/{target})"
+
+
 def render() -> str:
     src = SRC.read_text(encoding="utf-8")
     try:
         body = src[src.index("## [") :]
     except ValueError:
         sys.exit(f"{SRC}: no '## [' release heading found")
-    return PREAMBLE + HEADING.sub(r"\1 — \2", body)
+    return PREAMBLE + REPO_LINK.sub(_repo_url, HEADING.sub(r"\1 — \2", body))
 
 
 def main() -> int:

@@ -806,7 +806,8 @@ or use `quack_rs::scaffold::generate_scaffold` to auto-generate all project file
 - Extension names must be globally unique across the entire DuckDB community extensions ecosystem
 - Check existing names at https://community-extensions.duckdb.org/ before choosing
 - Use vendor prefixing to avoid collisions (e.g., `myorg_analytics` instead of `analytics`)
-- Names must match `^[a-z][a-z0-9_-]*$` and not exceed 64 characters
+- Names must match `^[a-z][a-z0-9_]*$` and not exceed 64 characters (no hyphens: DuckDB
+  looks up the entry point as `<name>_init_c_api`, which cannot contain one)
 - The `[lib] name` in `Cargo.toml` MUST match the extension name (Pitfall P1)
 
 ### Platform Targets

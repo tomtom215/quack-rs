@@ -29,7 +29,8 @@ or copy-paste starting point for your own extension.
 All functions use `entry_point_v2!` with `Connection`/`Registrar` for type-safe
 registration.
 
-All **39 live SQL tests** pass against both **DuckDB 1.4.4** and **DuckDB 1.5.0**.
+All **29 numbered SQL checks** (31 statements, listed under "Load in DuckDB CLI" below)
+return their expected results on **DuckDB 1.4.4, 1.5.0 and 1.5.5**.
 
 ```sql
 -- Aggregate: count words across rows
@@ -164,7 +165,7 @@ duckdb -unsigned
 SET allow_extensions_metadata_mismatch=true;
 LOAD 'hello_ext.duckdb_extension';
 
--- All 29 tests verified against DuckDB 1.4.4 and DuckDB 1.5.0:
+-- 29 numbered checks (31 statements), verified against DuckDB 1.4.4, 1.5.0 and 1.5.5:
 
 -- T01: word_count aggregate
 SELECT word_count(sentence) AS wc FROM (
@@ -211,7 +212,7 @@ SELECT make_kv_map('hello', 42);                                     -- {hello=4
 
 -- T18–T19: gen_series_v2 with named_param + local_init
 SELECT COUNT(*) FROM gen_series_v2(5);                               -- 5
-SELECT * FROM gen_series_v2(3, step := 10);                          -- 0, 10, 20
+SELECT * FROM gen_series_v2(3, step := 10);  -- (value, step_used): (0,10), (10,10), (20,10)
 
 -- T20: add_interval (DuckInterval read/write)
 SELECT add_interval(INTERVAL '1 day', 1000000);                      -- 1 day 00:00:01

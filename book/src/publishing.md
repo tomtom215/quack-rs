@@ -119,7 +119,8 @@ validate_excluded_platforms_str("wasm_mvp;wasm_eh")?;
 
 Extension names must satisfy **all** of the following:
 
-- Match `^[a-z][a-z0-9_-]*$` (lowercase, digits, hyphens, underscores)
+- Match `^[a-z][a-z0-9_]*$` (lowercase, digits, underscores — no hyphens, because DuckDB
+  looks up the entry point as `<name>_init_c_api`)
 - Not exceed 64 characters
 - Be **globally unique** across the entire DuckDB community extensions ecosystem
 

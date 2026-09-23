@@ -86,7 +86,7 @@ fn main() {
 ## Name validation
 
 Extension names must satisfy all of:
-- Match `^[a-z][a-z0-9_-]*$`
+- Match `^[a-z][a-z0-9_]*$` (no hyphens: the entry point is `<name>_init_c_api`)
 - Not exceed 64 characters
 - Be globally unique on [community-extensions.duckdb.org](https://community-extensions.duckdb.org/)
 
