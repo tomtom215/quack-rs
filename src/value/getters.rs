@@ -48,7 +48,8 @@ use libduckdb_sys::{
     duckdb_get_uint64, duckdb_get_uint8, duckdb_get_uuid, duckdb_get_value_type, duckdb_value,
 };
 
-use super::checks::{cast_guard, is_scalar_cast_source, temporal_in_range, time_tz_in_range};
+use super::checks::is_scalar_cast_source;
+use super::temporal_checks::{cast_guard, temporal_in_range, time_tz_in_range};
 use super::{hugeint_to_i128, uhugeint_to_u128, Value};
 use crate::types::TypeId;
 

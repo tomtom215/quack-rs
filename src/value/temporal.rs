@@ -32,7 +32,7 @@ use libduckdb_sys::{
 #[cfg(feature = "duckdb-1-5")]
 use libduckdb_sys::{duckdb_create_time_ns, duckdb_time_ns};
 
-use super::checks::{temporal_in_range, time_tz_in_range};
+use super::temporal_checks::{temporal_in_range, time_tz_in_range};
 use super::Value;
 use crate::error::ExtensionError;
 use crate::types::TypeId;
