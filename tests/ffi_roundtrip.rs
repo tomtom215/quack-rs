@@ -2558,6 +2558,25 @@ fn the_name_validator_accepts_every_name_duckdb_does() {
                 );
                 continue;
             }
+            // Reserved keywords are rejected on purpose (`SELECT order(1)` is a
+            // parser error). DuckDB 1.5.5 ships exactly one such name, `show`,
+            // and it is a PRAGMA function, invoked as `PRAGMA show(...)` —
+            // not something a scalar/table/aggregate builder registers.
+            if quack_rs::validate::DUCKDB_RESERVED_KEYWORDS
+                .contains(&name.to_ascii_lowercase().as_str())
+            {
+                assert!(validate_function_name(&name).is_err(), "{name:?}");
+                let kind = fx.scalar(
+                    &format!(
+                        "SELECT string_agg(DISTINCT function_type, ',') FROM duckdb_functions() \
+                         WHERE function_name = '{name}'"
+                    ),
+                    // SAFETY: row 0 of a VARCHAR column, checked valid by `scalar`.
+                    |r, i| unsafe { r.read_str(i).to_owned() },
+                );
+                assert_eq!(kind.as_deref(), Some("pragma"), "{name:?}");
+                continue;
+            }
             checked += 1;
             assert!(
                 validate_function_name(&name).is_ok(),
@@ -5487,3 +5506,6 @@ mod table_cast;
 
 #[path = "ffi_roundtrip/value_query.rs"]
 mod value_query;
+
+#[path = "ffi_roundtrip/tooling.rs"]
+mod tooling;

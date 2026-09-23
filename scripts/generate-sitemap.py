@@ -3,14 +3,25 @@
 # Copyright 2026 Tom F.
 #
 # Generates sitemap.xml from book/src/SUMMARY.md.
-# Run from repo root: python3 scripts/generate-sitemap.py
+#
+# Usage:
+#   scripts/generate-sitemap.py            # rewrite book/src/sitemap.xml
+#   scripts/generate-sitemap.py --check    # exit 1 if the committed file is stale
+#   scripts/generate-sitemap.py --output PATH
+#
+# Paths resolve from the repository root, so it runs from any directory. The
+# committed sitemap is what the published book serves; without `--check` in
+# CI it silently fell 14 pages behind SUMMARY.md.
 
+import argparse
 import re
+import sys
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 SITE_URL = "https://quack-rs.com"
-SUMMARY = Path("book/src/SUMMARY.md")
-OUTPUT = Path("book/src/sitemap.xml")
+SUMMARY = REPO_ROOT / "book" / "src" / "SUMMARY.md"
+OUTPUT = REPO_ROOT / "book" / "src" / "sitemap.xml"
 
 # Priority tiers based on path depth and importance
 PRIORITY_OVERRIDES = {
@@ -53,8 +64,8 @@ def parse_summary(text: str) -> list[str]:
     return paths
 
 
-def main() -> None:
-    summary_text = SUMMARY.read_text()
+def render(summary_text: str) -> tuple[str, int]:
+    """The sitemap for `summary_text`, and how many URLs it lists."""
     md_paths = parse_summary(summary_text)
 
     lines = [
@@ -77,10 +88,38 @@ def main() -> None:
 
     lines.append("</urlset>")
     lines.append("")
+    return "\n".join(lines), len(md_paths)
 
-    OUTPUT.write_text("\n".join(lines))
-    print(f"Generated {OUTPUT} with {len(md_paths)} URLs")
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate the book's sitemap.xml.")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="do not write; exit 1 if the output file differs from what would be generated",
+    )
+    parser.add_argument("--output", type=Path, default=OUTPUT, help=f"default: {OUTPUT}")
+    args = parser.parse_args()
+
+    expected, count = render(SUMMARY.read_text(encoding="utf-8"))
+    if args.check:
+        current = args.output.read_text(encoding="utf-8") if args.output.exists() else ""
+        if current == expected:
+            print(f"{args.output} is up to date ({count} URLs)")
+            return 0
+        have = set(re.findall(r"<loc>(.*?)</loc>", current))
+        want = set(re.findall(r"<loc>(.*?)</loc>", expected))
+        print(f"{args.output} is stale: run scripts/generate-sitemap.py")
+        for url in sorted(want - have):
+            print(f"  missing: {url}")
+        for url in sorted(have - want):
+            print(f"  extra:   {url}")
+        return 1
+
+    args.output.write_text(expected, encoding="utf-8")
+    print(f"Generated {args.output} with {count} URLs")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

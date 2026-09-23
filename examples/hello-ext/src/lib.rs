@@ -462,7 +462,31 @@ unsafe extern "C" fn varchar_to_int(
 //
 // Demonstrates CastFunctionBuilder::implicit_cost and extra_info.
 // The extra_info stores a rounding mode flag (0 = truncate, 1 = round).
+//
+// Registering this cast replaces DuckDB's built-in DOUBLE -> BIGINT, so it must
+// keep that cast's contract: NaN, +/-inf and values outside BIGINT's range are
+// errors (NULL under TRY_CAST), never a saturated or zeroed number. It differs
+// from the built-in only in rounding halves away from zero (2.5 -> 3, where
+// DuckDB rounds half to even: 2.5 -> 2).
 // ============================================================================
+
+/// Converts `v` to BIGINT, rounding half away from zero when `round` is set
+/// and truncating otherwise; `None` for NaN, infinities and anything outside
+/// `i64`'s range.
+///
+/// A bare `as i64` saturates (`1e19` became 9223372036854775807) and maps NaN
+/// to 0, both silently.
+pub fn double_to_i64(v: f64, round: bool) -> Option<i64> {
+    let whole = if round { v.round() } else { v.trunc() };
+    // -2^63 is exactly representable and in range; 2^63 is the first value
+    // past i64::MAX. NaN fails both comparisons.
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0; // 2^63
+    if whole >= -LIMIT && whole < LIMIT {
+        Some(whole as i64)
+    } else {
+        None
+    }
+}
 
 unsafe extern "C" fn double_to_bigint(
     info: duckdb_function_info,
@@ -488,8 +512,19 @@ unsafe extern "C" fn double_to_bigint(
             continue;
         }
         let v = unsafe { reader.read_f64(row) };
-        let result = if round { v.round() as i64 } else { v as i64 };
-        unsafe { writer.write_i64(row, result) };
+        match double_to_i64(v, round) {
+            Some(result) => unsafe { writer.write_i64(row, result) },
+            None => {
+                let msg = format!("cannot cast {v} to BIGINT: out of range");
+                if cast_info.cast_mode() == CastMode::Try {
+                    unsafe { writer.set_null(row) };
+                    unsafe { cast_info.set_row_error(&msg, row as idx_t, output) };
+                } else {
+                    cast_info.set_error(&msg);
+                    return false;
+                }
+            }
+        }
     }
     true
 }
@@ -1249,6 +1284,49 @@ mod tests {
 
         assert_eq!(batch_count, 3);
         assert_eq!(last_value,  24);
+    }
+
+    // ── double_to_i64 (DOUBLE -> BIGINT cast) ────────────────────────────────
+
+    #[test]
+    fn double_to_i64_rounds_or_truncates() {
+        assert_eq!(double_to_i64(3.7, true), Some(4));
+        assert_eq!(double_to_i64(3.7, false), Some(3));
+        assert_eq!(double_to_i64(-3.7, false), Some(-3));
+        assert_eq!(double_to_i64(2.5, true), Some(3)); // half away from zero
+        assert_eq!(double_to_i64(-2.5, true), Some(-3));
+    }
+
+    /// `v.round() as i64` saturated and zeroed these instead of failing, so
+    /// `TRY_CAST(1e19::DOUBLE AS BIGINT)` returned 9223372036854775807.
+    #[test]
+    fn double_to_i64_rejects_nan_infinity_and_out_of_range() {
+        for v in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e19,
+            -1e19,
+            9.223_372_036_854_776e18,
+        ] {
+            assert_eq!(double_to_i64(v, true), None, "{v}");
+            assert_eq!(double_to_i64(v, false), None, "{v}");
+        }
+    }
+
+    #[test]
+    fn double_to_i64_accepts_the_exact_bounds() {
+        // -2^63 is representable; the largest double below 2^63 is 2^63 - 1024.
+        assert_eq!(
+            double_to_i64(-9_223_372_036_854_775_808.0, false),
+            Some(i64::MIN)
+        );
+        assert_eq!(
+            double_to_i64(9_223_372_036_854_774_784.0, false),
+            Some(9_223_372_036_854_774_784)
+        );
+        // Rounds into range from just outside it.
+        assert_eq!(double_to_i64(-0.4, true), Some(0));
     }
 
     // ── parse_varchar_to_int ─────────────────────────────────────────────────

@@ -24,12 +24,18 @@ use crate::error::ExtensionError;
 /// Every platform identifier [`validate_platform`] recognises.
 ///
 /// This is [`DUCKDB_CI_PLATFORMS`] — the architectures the community-extension
-/// CI builds — plus two kinds of name that appear in real, accepted
-/// `description.yml` files and are therefore not errors:
+/// CI builds — plus names that appear in real, accepted `description.yml`
+/// files and are therefore not errors:
 ///
-/// - **`windows_amd64_rtools`**, the R-tools Windows build (`DuckDBPlatform()`
-///   emits it under `DUCKDB_PLATFORM_RTOOLS`). It is not in the distribution
-///   matrix, but 14 of the 43 published extensions sampled exclude it.
+/// - **`windows_amd64_rtools`**, the name older `DuckDB` releases gave the
+///   R-tools Windows build. `DuckDBPlatform()` in v1.5.5's
+///   `duckdb/common/platform.hpp` maps `DUCKDB_PLATFORM_RTOOLS` to the
+///   `_mingw` suffix instead, so current builds report `windows_amd64_mingw`;
+///   the old name is not in the distribution matrix either, but 14 of the 43
+///   published extensions sampled still exclude it.
+/// - **`windows_arm64_mingw`**, which v1.5.5's `DuckDBPlatform()` produces for
+///   a MinGW build on arm64 (`_mingw` postfix on the `arm64` arch). Not in the
+///   distribution matrix; two published extensions exclude it.
 /// - **The group names** in [`DUCKDB_PLATFORM_GROUPS`] — `linux`, `osx`,
 ///   `wasm`, `windows` — which are the top-level keys of
 ///   `distribution_matrix.json` and appear in at least one published
@@ -38,10 +44,7 @@ use crate::error::ExtensionError;
 /// An extension must either build for all of the non-opt-in CI platforms or
 /// declare the ones it cannot in `extension.excluded_platforms`.
 ///
-/// `linux_amd64_gcc4` is **not** here. `DuckDB` retired the legacy CXX ABI
-/// target: `DuckDBPlatform()` in `duckdb/common/platform.hpp` now raises a
-/// compile error for it rather than emitting a `_gcc4` suffix, and it is absent
-/// from the distribution matrix. Excluding it is a no-op.
+/// `linux_amd64_gcc4` is **not** here — see [`DUCKDB_RETIRED_PLATFORMS`].
 pub const DUCKDB_PLATFORMS: &[&str] = &[
     "linux",
     "linux_amd64",
@@ -60,6 +63,7 @@ pub const DUCKDB_PLATFORMS: &[&str] = &[
     "windows_amd64_mingw",
     "windows_amd64_rtools",
     "windows_arm64",
+    "windows_arm64_mingw",
 ];
 
 /// The platforms the community-extension CI actually builds.
@@ -81,6 +85,18 @@ pub const DUCKDB_CI_PLATFORMS: &[&str] = &[
     "windows_amd64_mingw",
     "windows_arm64",
 ];
+
+/// Platforms `DuckDB` no longer builds, which [`validate_excluded_platforms`]
+/// nevertheless accepts.
+///
+/// `linux_amd64_gcc4` was the legacy-CXX-ABI Linux target. `DuckDB` retired it:
+/// `DuckDBPlatform()` in `duckdb/common/platform.hpp` now raises a compile
+/// error for that ABI rather than emitting a `_gcc4` suffix, and it is absent
+/// from the distribution matrix. Excluding it is therefore a no-op — and three
+/// published extensions still do, so rejecting it would reject files the
+/// community build accepts. [`validate_platform`] still rejects it, since
+/// nothing can *target* it.
+pub const DUCKDB_RETIRED_PLATFORMS: &[&str] = &["linux_amd64_gcc4"];
 
 /// The group names `distribution_matrix.json` organises its architectures
 /// under, which appear in real `excluded_platforms` fields as a shorthand for
@@ -145,7 +161,7 @@ pub fn validate_platform(platform: &str) -> Result<(), ExtensionError> {
     if platform == "linux_amd64_gcc4" {
         return Err(ExtensionError::new(
             "platform 'linux_amd64_gcc4' no longer exists; DuckDB retired the legacy \
-             CXX ABI target and no longer builds it. Remove it from excluded_platforms.",
+             CXX ABI target and no longer builds it (excluding it is a harmless no-op).",
         ));
     }
     Err(ExtensionError::new(format!(
@@ -156,8 +172,9 @@ pub fn validate_platform(platform: &str) -> Result<(), ExtensionError> {
 
 /// Validates a list of excluded platform identifiers.
 ///
-/// Each platform must be a known `DuckDB` build target. Duplicates are flagged
-/// as an error.
+/// Each platform must be a known `DuckDB` build target or one of
+/// [`DUCKDB_RETIRED_PLATFORMS`] (excluding a platform that is no longer built
+/// is a harmless no-op). Duplicates are flagged as an error.
 ///
 /// # Errors
 ///
@@ -181,7 +198,9 @@ pub fn validate_excluded_platforms(platforms: &[&str]) -> Result<(), ExtensionEr
         if platform.is_empty() {
             continue;
         }
-        validate_platform(platform)?;
+        if !DUCKDB_RETIRED_PLATFORMS.contains(&platform) {
+            validate_platform(platform)?;
+        }
         if !seen.insert(platform) {
             return Err(ExtensionError::new(format!(
                 "duplicate excluded platform: '{platform}'"
@@ -285,6 +304,27 @@ mod tests {
     #[test]
     fn validate_excluded_platforms_invalid() {
         assert!(validate_excluded_platforms(&["invalid"]).is_err());
+    }
+
+    /// `DuckDBPlatform()` in v1.5.5 emits `windows_arm64_mingw` (MinGW on
+    /// arm64), and two published extensions exclude it.
+    #[test]
+    fn windows_arm64_mingw_is_a_platform() {
+        assert!(validate_platform("windows_arm64_mingw").is_ok());
+        assert!(validate_excluded_platforms(&["windows_arm64_mingw"]).is_ok());
+    }
+
+    /// Excluding a platform that is no longer built is a no-op, not an error:
+    /// three published extensions still list `linux_amd64_gcc4`.
+    #[test]
+    fn a_retired_platform_may_be_excluded() {
+        assert!(validate_excluded_platforms(&["linux_amd64_gcc4", "wasm_mvp"]).is_ok());
+        assert!(
+            crate::validate::validate_excluded_platforms_str("wasm_mvp;linux_amd64_gcc4;").is_ok()
+        );
+        // ...but it is still not a platform anyone can target.
+        assert!(validate_platform("linux_amd64_gcc4").is_err());
+        assert!(validate_excluded_platforms(&["linux_amd64_gcc4", "linux_amd64_gcc4"]).is_err());
     }
 
     #[test]

@@ -12,8 +12,10 @@
 //!
 //! # What is validated
 //!
-//! - **Extension name**: Must be lowercase alphanumeric with hyphens/underscores only
-//! - **Function name**: Letters, digits and underscores — anything needing quotes in SQL is rejected
+//! - **Extension name**: A lowercase letter, then lowercase letters, digits and underscores
+//!   (no hyphens: `DuckDB` derives the `<name>_init_c_api` symbol from it)
+//! - **Function name**: Letters, digits and underscores, and not a reserved SQL keyword —
+//!   anything needing quotes in SQL is rejected
 //! - **Semantic versioning**: `validate_semver` for strict semver; extension
 //!   versions are checked far more loosely, because `DuckDB` specifies no format
 //! - **SPDX license**: Must be a recognized SPDX license identifier
@@ -67,10 +69,10 @@ pub mod semver;
 pub mod spdx;
 
 pub use extension_name::validate_extension_name;
-pub use function_name::validate_function_name;
+pub use function_name::{validate_function_name, DUCKDB_RESERVED_KEYWORDS};
 pub use platform::{
     is_opt_in_platform, validate_excluded_platforms, validate_platform, DUCKDB_CI_PLATFORMS,
-    DUCKDB_OPT_IN_PLATFORMS, DUCKDB_PLATFORMS, DUCKDB_PLATFORM_GROUPS,
+    DUCKDB_OPT_IN_PLATFORMS, DUCKDB_PLATFORMS, DUCKDB_PLATFORM_GROUPS, DUCKDB_RETIRED_PLATFORMS,
 };
 pub use release_profile::{validate_release_profile, ReleaseProfileCheck};
 pub use semver::{validate_extension_version, validate_semver};

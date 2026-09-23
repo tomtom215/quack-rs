@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+docs:
+  extended_description: For more information regarding usage, see the [documentation](https://example.com/docs).
+extension:
+  build: cmake
+  description: "Provides probabilistic data structures -\
+    including quotient and XOR filters - for fast approximate set\
+    \ membership testing with no \"false\" negatives."
+  excluded_platforms: wasm_mvp;wasm_eh;wasm_threads
+  language: C++
+  license: MIT
+  maintainers:
+  - rustyconover
+  name: filters
+  requires_toolchains: rust;python3
+  version: '2025120401'
+repo:
+  github: example/duckdb-filters
+  ref: 6e2eb0f
