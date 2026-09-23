@@ -8,7 +8,7 @@ copy-pasting templates.
 
 ## What it generates
 
-```
+```text
 my_extension/
 ├── Cargo.toml                          # cdylib crate, pinned deps, release profile
 ├── Makefile                            # delegates to cargo + extension-ci-tools

@@ -56,7 +56,7 @@ In a new repository, add the build tooling submodule once with
 
 This generates:
 
-```
+```text
 my_extension/
 ├── Cargo.toml
 ├── Makefile
@@ -117,10 +117,13 @@ use quack_rs::validate::{
     validate_excluded_platforms_str,
 };
 
+# fn main() -> Result<(), quack_rs::error::ExtensionError> {
 validate_extension_name("my_extension")?;
 validate_extension_version("0.1.0")?;
 validate_spdx_license("MIT")?;
 validate_excluded_platforms_str("wasm_mvp;wasm_eh")?;
+# Ok(())
+# }
 ```
 
 ---
@@ -137,7 +140,7 @@ Extension names must satisfy **all** of the following:
 Check existing names at [community-extensions.duckdb.org](https://community-extensions.duckdb.org/)
 before choosing. Use vendor-prefixed names to avoid collisions:
 
-```
+```text
 myorg_analytics   ✓
 analytics         ✗  (likely taken or too generic)
 ```
@@ -163,6 +166,7 @@ Use `validate_extension_version` to accept all three formats, and
 ```rust
 use quack_rs::validate::semver::{classify_extension_version, ExtensionStability};
 
+# fn main() -> Result<(), quack_rs::error::ExtensionError> {
 // Returns the tier and the version string it classified.
 let (stability, _version) = classify_extension_version("0.1.0")?;
 match stability {
@@ -170,6 +174,8 @@ match stability {
     ExtensionStability::PreRelease => println!("0.y.z"),
     ExtensionStability::Stable => println!("x.y.z, x>0"),
 }
+# Ok(())
+# }
 ```
 
 ---
@@ -228,8 +234,8 @@ Validate individual platform names with `validate_platform`:
 
 ```rust
 use quack_rs::validate::validate_platform;
-validate_platform("linux_amd64")?;  // Ok
-validate_platform("invalid")?;       // Err
+assert!(validate_platform("linux_amd64").is_ok());
+assert!(validate_platform("invalid").is_err());
 ```
 
 ---
@@ -273,8 +279,9 @@ correctly configured:
 use quack_rs::validate::validate_release_profile;
 
 // Pass all four release profile settings from your Cargo.toml
-validate_release_profile("unwind", "true", "3", "1")?;  // Ok
-validate_release_profile("abort", "true", "3", "1")?;   // Err — see below
+assert!(validate_release_profile("unwind", "true", "3", "1").is_ok());
+// Err — see below
+assert!(validate_release_profile("abort", "true", "3", "1").is_err());
 ```
 
 `panic` must be `"unwind"`. quack-rs wraps every `extern "C"` entry point in

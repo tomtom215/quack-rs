@@ -89,13 +89,14 @@ If any registration call fails, `?` returns the error from `register`, which
 ## Error reporting to DuckDB
 
 `init_extension` converts `ExtensionError` to a `CString` for the DuckDB error callback
-(abridged from `src/error.rs`; the fallback is elided, so this does not compile as shown):
+with `to_c_string`. A C string cannot hold a NUL byte, so each one is replaced with
+`?` and the rest of the message is kept:
 
-```rust,ignore
-pub fn to_c_string(&self) -> CString {
-    // Truncates at the first null byte if message contains one
-    CString::new(self.message.as_bytes()).unwrap_or_else(...)
-}
+```rust
+use quack_rs::error::ExtensionError;
+
+let err = ExtensionError::new("bad\0input");
+assert_eq!(err.to_c_string().to_str(), Ok("bad?input"));
 ```
 
 DuckDB surfaces this string to the user as the extension load error.
