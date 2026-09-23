@@ -7,6 +7,7 @@ use libduckdb_sys::{duckdb_blob, duckdb_free, duckdb_get_blob};
 
 use super::Value;
 use crate::error::ExtensionError;
+use crate::types::TypeId;
 
 fn blob_size(blob: &duckdb_blob) -> Result<Option<usize>, ExtensionError> {
     if blob.data.is_null() {
@@ -19,6 +20,19 @@ fn blob_size(blob: &duckdb_blob) -> Result<Option<usize>, ExtensionError> {
     usize::try_from(blob.size)
         .map(Some)
         .map_err(|_| ExtensionError::new("duckdb_get_blob returned an unsupported blob size"))
+}
+
+/// Refuses every type but `BLOB`: `duckdb_get_blob` casts anything else with a
+/// throwing cast. `id` is the value's type, `None` if `DuckDB` reported one
+/// this build does not name.
+fn require_blob(id: Option<TypeId>) -> Result<(), ExtensionError> {
+    if id == Some(TypeId::Blob) {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "as_blob: value is {id:?}, not BLOB"
+        )))
+    }
 }
 
 #[mutants::skip] // DuckDB allocator effects are not observable from safe Rust tests.
@@ -53,12 +67,7 @@ impl Value {
         if self.is_sql_null() {
             return Err(ExtensionError::new("Value is SQL NULL"));
         }
-        if self.type_id() != Some(crate::types::TypeId::Blob) {
-            return Err(ExtensionError::new(format!(
-                "as_blob: value is {:?}, not BLOB",
-                self.type_id()
-            )));
-        }
+        require_blob(self.type_id())?;
         // SAFETY: self.raw is a live, non-NULL BLOB, so duckdb_get_blob's
         // cast is the identity and StringValue::Get cannot throw.
         let blob: duckdb_blob = unsafe { duckdb_get_blob(self.raw) };
@@ -102,6 +111,16 @@ mod tests {
             size: 1,
         };
         assert!(blob_size(&blob).is_err());
+    }
+
+    #[test]
+    fn only_a_blob_type_is_accepted() {
+        assert!(require_blob(Some(TypeId::Blob)).is_ok());
+        let err = require_blob(Some(TypeId::Varchar)).expect_err("VARCHAR is not BLOB");
+        assert_eq!(err.as_str(), "as_blob: value is Some(Varchar), not BLOB");
+        assert!(require_blob(Some(TypeId::Integer)).is_err());
+        let err = require_blob(None).expect_err("an unnamed type is not BLOB");
+        assert_eq!(err.as_str(), "as_blob: value is None, not BLOB");
     }
 
     #[test]

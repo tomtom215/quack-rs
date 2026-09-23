@@ -156,6 +156,10 @@ mod tests {
         assert!(!is_valid_date(date(2026, 1, 0)));
         assert!(!is_valid_date(date(2026, 1, 32)));
         assert!(!is_valid_date(date(2026, 1, -5)));
+        // The inclusive ends of each field range: December and the 1st exist.
+        assert!(is_valid_date(date(2026, 12, 1)));
+        assert!(is_valid_date(date(2026, 12, 31)));
+        assert!(is_valid_date(date(2026, 1, 1)));
     }
 
     #[test]
@@ -181,6 +185,17 @@ mod tests {
         assert!(!is_valid_date(date(5_881_580, 8, 1)));
         assert!(!is_valid_date(date(5_881_581, 1, 1)));
         assert!(!is_valid_date(date(i32::MAX, 1, 1)));
+    }
+
+    #[test]
+    fn timestamp_days_floors_toward_negative_infinity() {
+        assert_eq!(timestamp_days(0), 0);
+        assert_eq!(timestamp_days(1), 0);
+        assert_eq!(timestamp_days(MICROS_PER_DAY - 1), 0);
+        assert_eq!(timestamp_days(MICROS_PER_DAY), 1);
+        assert_eq!(timestamp_days(-1), -1);
+        assert_eq!(timestamp_days(-MICROS_PER_DAY), -1);
+        assert_eq!(timestamp_days(-MICROS_PER_DAY - 1), -2);
     }
 
     #[test]
@@ -229,6 +244,13 @@ mod tests {
             micros: 999_999,
         };
         assert_eq!(time_micros(t), MICROS_PER_DAY - 1);
+    }
+
+    #[test]
+    fn time_tz_max_offset_is_duckdbs_plus_15_59_59() {
+        // `dtime_tz_t::MAX_OFFSET` in DuckDB 1.5: 15h 59m 59s, in seconds.
+        assert_eq!(TIME_TZ_MAX_OFFSET_SECONDS, 57_599);
+        assert_eq!(TIME_TZ_MAX_OFFSET_SECONDS, 15 * 3_600 + 59 * 60 + 59);
     }
 
     #[test]

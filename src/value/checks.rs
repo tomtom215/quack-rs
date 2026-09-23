@@ -145,4 +145,43 @@ mod tests {
         assert!(!is_scalar_cast_source(TypeId::Array));
         assert!(!is_scalar_cast_source(TypeId::Union));
     }
+
+    #[test]
+    fn every_listed_scalar_is_a_cast_source() {
+        for id in [
+            TypeId::Boolean,
+            TypeId::TinyInt,
+            TypeId::SmallInt,
+            TypeId::Integer,
+            TypeId::BigInt,
+            TypeId::UTinyInt,
+            TypeId::USmallInt,
+            TypeId::UInteger,
+            TypeId::UBigInt,
+            TypeId::HugeInt,
+            TypeId::UHugeInt,
+            TypeId::Float,
+            TypeId::Double,
+            TypeId::Decimal,
+            TypeId::Varchar,
+            TypeId::Date,
+            TypeId::Time,
+            TypeId::TimeTz,
+            TypeId::Timestamp,
+            TypeId::TimestampTz,
+            TypeId::TimestampS,
+            TypeId::TimestampMs,
+            TypeId::TimestampNs,
+            TypeId::Interval,
+            TypeId::Uuid,
+        ] {
+            assert!(is_scalar_cast_source(id), "{id:?}");
+        }
+    }
+
+    #[cfg(feature = "duckdb-1-5")]
+    #[test]
+    fn time_ns_is_a_cast_source() {
+        assert!(is_scalar_cast_source(TypeId::TimeNs));
+    }
 }

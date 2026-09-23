@@ -111,6 +111,27 @@ exclude_globs = [
 #
 # Only `Debug` is listed. Display impls in this crate render error messages that
 # tests assert on, so their mutants are killed and belong in the gate.
+#
+# The two `src/abi.rs` entries are mutants that are *equivalent* in every
+# mutation build, so no test can kill them there:
+#
+# - `uses_unstable_api` is `cfg!(feature = duckdb-1-5)`. Every mutation run
+#   enables duckdb-1-5-4 (above, and on the workflow command line), which
+#   implies duckdb-1-5, so the function returns `true` in every mutated build
+#   and the `-> true` mutant is the same program. Its `-> false` mutant stays in
+#   the gate and is killed; `abi::tests::unstable_api_flag_tracks_the_feature`
+#   kills `-> true` in the default-feature `cargo test --lib`.
+# - `built_against_version` returns `None` whenever QUACK_RS_TARGET_DUCKDB_VERSION
+#   was unset at build time (build.rs then emits no QUACK_RS_BUILT_AGAINST_DUCKDB,
+#   so `option_env!` is `None`). The crate's own unit test
+#   `declared_version_is_none_unless_it_parses` requires exactly that build, so
+#   in any build where the suite passes the `-> None` mutant is the same
+#   program. The parsing it delegates to, `parse_declared_version`, stays in
+#   the gate, as do the `Some(..)` mutants of `built_against_version`, and
+#   `built_against_version_is_the_build_scripts_declaration` kills `-> None`
+#   in a build that does declare a version.
 exclude_re = [
     "impl [a-z:]*Debug for",    # Debug impls: rendering is not behaviour
+    "abi.rs.*replace uses_unstable_api -> bool with true",  # equivalent: see above
+    "abi.rs.*replace built_against_version -> Option<&'static str> with None",  # equivalent: see above
 ]

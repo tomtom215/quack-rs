@@ -295,4 +295,16 @@ mod tests {
         // SAFETY: the null case is explicitly handled.
         unsafe { TypedScalar::destroy(std::ptr::null_mut()) };
     }
+
+    #[test]
+    fn name_is_the_one_the_builder_was_created_with() {
+        // Built directly: `from_exec` checks each slot by creating a
+        // `LogicalType`, which needs a live DuckDB.
+        let builder = TypedScalarFunctionBuilder {
+            inner: ScalarFunctionBuilder::new("double_it"),
+        };
+        assert_eq!(builder.name(), "double_it");
+        // A stability change keeps the name.
+        assert_eq!(builder.volatile().name(), "double_it");
+    }
 }

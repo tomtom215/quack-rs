@@ -51,6 +51,22 @@ mod unit {
         let set: HashSet<Decimal> = [a, b, a].into_iter().collect();
         assert_eq!(set.len(), 2);
     }
+
+    #[test]
+    fn infinity_sentinels_have_duckdbs_exact_values() {
+        // `date_t::ninfinity()` / `timestamp_t::ninfinity()` are `-MAX`, one
+        // above `MIN`; the live test below checks DuckDB agrees. Pinned here
+        // too so the values are checked without a live engine.
+        assert_eq!(DATE_INFINITY_DAYS, 2_147_483_647);
+        assert_eq!(DATE_NEGATIVE_INFINITY_DAYS, -2_147_483_647);
+        assert_eq!(DATE_NEGATIVE_INFINITY_DAYS, i32::MIN + 1);
+        assert_eq!(TIMESTAMP_INFINITY_MICROS, 9_223_372_036_854_775_807);
+        assert_eq!(
+            TIMESTAMP_NEGATIVE_INFINITY_MICROS,
+            -9_223_372_036_854_775_807
+        );
+        assert_eq!(TIMESTAMP_NEGATIVE_INFINITY_MICROS, i64::MIN + 1);
+    }
 }
 
 /// Conversions checked against a live `DuckDB`.

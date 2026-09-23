@@ -363,7 +363,13 @@ pub unsafe fn engine_version() -> Option<String> {
 /// reports [`AbiCheck::DeclaredVersionMismatch`] if they disagree.
 #[must_use]
 pub fn built_against_version() -> Option<&'static str> {
-    let declared = option_env!("QUACK_RS_BUILT_AGAINST_DUCKDB")?;
+    parse_declared_version(option_env!("QUACK_RS_BUILT_AGAINST_DUCKDB"))
+}
+
+/// The declared build target, kept only if it is a well-formed `vX.Y.Z`: a
+/// malformed declaration must not short-circuit [`check`].
+fn parse_declared_version(declared: Option<&'static str>) -> Option<&'static str> {
+    let declared = declared?;
     parse_version(declared).map(|_| declared)
 }
 
@@ -786,6 +792,26 @@ mod tests {
         // Nothing is set in this crate's own build, so it must be absent rather
         // than a bogus value that would short-circuit the check.
         assert_eq!(built_against_version(), None);
+    }
+
+    #[test]
+    fn built_against_version_is_the_build_scripts_declaration() {
+        // Holds however the crate was built: the value is exactly what build.rs
+        // forwarded from QUACK_RS_TARGET_DUCKDB_VERSION, filtered for validity.
+        assert_eq!(
+            built_against_version(),
+            option_env!("QUACK_RS_BUILT_AGAINST_DUCKDB").filter(|v| parse_version(v).is_some())
+        );
+    }
+
+    #[test]
+    fn a_declared_version_is_kept_only_if_it_parses() {
+        assert_eq!(parse_declared_version(None), None);
+        assert_eq!(parse_declared_version(Some("v1.5.5")), Some("v1.5.5"));
+        assert_eq!(parse_declared_version(Some("1.4.4")), Some("1.4.4"));
+        assert_eq!(parse_declared_version(Some("v1.6.0-dev42")), None);
+        assert_eq!(parse_declared_version(Some("latest")), None);
+        assert_eq!(parse_declared_version(Some("")), None);
     }
 
     #[test]
