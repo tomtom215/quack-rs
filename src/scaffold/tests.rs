@@ -609,3 +609,38 @@ fn the_generated_workflow_sha_pins_every_action() {
     }
     assert!(checked >= 4, "expected several actions, found {checked}");
 }
+
+/// Regression: the scaffold pinned `dtolnay/rust-toolchain` to `631a55b`, a
+/// commit of the action's regenerated `stable` branch that no ref reaches any
+/// more (so it can be garbage-collected), and gave no `toolchain:` input —
+/// which the action's `master` requires. The pin must be a `master` commit and
+/// the toolchain explicit.
+#[test]
+fn the_generated_workflow_pins_rust_toolchain_to_master_with_an_explicit_toolchain() {
+    let files = generate_scaffold(&valid_config()).expect("scaffold");
+    let workflow = &files
+        .iter()
+        .find(|f| f.path == ".github/workflows/extension-ci.yml")
+        .expect("the CI workflow")
+        .content;
+    let lines: Vec<&str> = workflow.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains("uses: dtolnay/rust-toolchain@"))
+        .expect("a rust-toolchain step");
+    assert!(
+        lines[at].contains("dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0"),
+        "{}",
+        lines[at]
+    );
+    assert!(!workflow.contains("631a55b"), "{workflow}");
+    let step: Vec<&str> = lines[at + 1..]
+        .iter()
+        .take_while(|l| !l.trim_start().starts_with("- "))
+        .copied()
+        .collect();
+    assert!(
+        step.iter().any(|l| l.trim() == "toolchain: stable"),
+        "{step:?}"
+    );
+}

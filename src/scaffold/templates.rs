@@ -471,11 +471,13 @@ jobs:
         with:
           submodules: recursive
 
-      # Pinning this action's SHA does not pin your Rust version: the action
-      # reads the toolchain from rust-toolchain.toml or its `toolchain:` input
-      # at run time. You still get current stable.
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      # Pinned to a commit on the action's `master` branch (2026-09-03), whose
+      # `toolchain:` input is required. Pinning the action does not pin your
+      # Rust version: `toolchain: stable` installs the current stable release
+      # on every run.
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
