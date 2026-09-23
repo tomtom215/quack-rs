@@ -35,7 +35,7 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
 
     // Read something back.
     let mut result = unsafe { con.query("SELECT current_setting('threads')") }?;
-    if let Some(chunk) = result.next_chunk() {
+    if let Some(chunk) = result.next_chunk()? {
         // The reader must outlive the `&str` it hands out, so bind it first.
         let reader = unsafe { chunk.reader(0) };
         let threads = unsafe { reader.read_str(0) };
@@ -46,18 +46,27 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
 ```
 
 Results arrive a chunk at a time — at most `duckdb_vector_size()` rows each — so
-call `next_chunk` until it returns `None`:
+call `next_chunk` until it returns `Ok(None)`:
 
 ```rust,ignore
 let mut result = unsafe { con.query("SELECT i FROM range(10000) t(i)") }?;
 let mut total: i64 = 0;
-while let Some(chunk) = result.next_chunk() {
+while let Some(chunk) = result.next_chunk()? {
     let reader = unsafe { chunk.reader(0) };
     for row in 0..chunk.size() {
         total += unsafe { reader.read_i64(row) };
     }
 }
 ```
+
+`next_chunk` returns `Result<Option<_>>` because a result can stop early. A
+**streaming** result (`PreparedStatement::execute_streaming`) produces rows as
+it runs, so a runtime error part-way through — or another statement run on the
+same connection, which invalidates the stream — surfaces at `next_chunk`. The C
+API reports that the same way as the end of the rows (a null chunk); quack-rs
+reads the error DuckDB recorded and returns it, so a partial result cannot pass
+for a complete one. The `?` above is what keeps it from being silently
+truncated.
 
 ## Bind values, do not interpolate them
 

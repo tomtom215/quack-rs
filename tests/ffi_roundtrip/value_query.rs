@@ -26,7 +26,7 @@ fn owned_connection(fx: &Fixture) -> OwnedConnection {
 #[cfg(feature = "duckdb-1-5-4")]
 fn first_varchar(con: &OwnedConnection, sql: &str) -> String {
     let mut result = con.query(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: column 0 is VARCHAR and row 0 exists.
     unsafe { chunk.reader(0).read_str(0).to_owned() }
 }
@@ -342,7 +342,7 @@ fn bind_decimal_validates_width_scale_and_range() {
 
     st.bind_decimal(1, 18, 2, -12_345).expect("in range");
     let mut result = st.execute().expect("execute");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: column 0 is VARCHAR and row 0 exists.
     assert_eq!(unsafe { chunk.reader(0).read_str(0) }, "-123.45");
     drop(result);
@@ -350,7 +350,7 @@ fn bind_decimal_validates_width_scale_and_range() {
     st.bind_decimal(1, 38, 0, 10_i128.pow(37))
         .expect("in range");
     let mut result = st.execute().expect("execute");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: column 0 is VARCHAR and row 0 exists.
     assert_eq!(
         unsafe { chunk.reader(0).read_str(0) },
@@ -515,7 +515,7 @@ fn arrow_options_from_an_owned_connection_convert_a_chunk() {
     let con = owned_connection(&fx);
     let options = ArrowOptions::from_connection(&con).expect("arrow options");
     let mut result = con.query("SELECT 42::BIGINT AS a").expect("query");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     let mut array = data_chunk_to_arrow(&options, &chunk).expect("to arrow");
     assert_eq!(array.len(), 1);
     array.release();

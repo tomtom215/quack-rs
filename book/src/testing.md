@@ -277,7 +277,7 @@ fn triple_it_works() {
 
     // 4. Run SQL and assert on the answer.
     let mut result = unsafe { query(con, "SELECT triple_it(14)") }.unwrap();
-    let chunk = result.next_chunk().unwrap();
+    let chunk = result.next_chunk().unwrap().unwrap();
     assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 42);
 }
 ```

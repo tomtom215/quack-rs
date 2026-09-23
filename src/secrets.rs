@@ -170,7 +170,7 @@ pub unsafe fn list_duckdb_secrets(
     let mut result = unsafe { crate::query::query(connection, SQL) }?;
 
     let mut secrets = Vec::new();
-    while let Some(chunk) = result.next_chunk() {
+    while let Some(chunk) = result.next_chunk()? {
         for row in 0..chunk.size() {
             // SAFETY: the column types are fixed by the SELECT above, and `row`
             // is within the chunk.

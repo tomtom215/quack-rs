@@ -221,7 +221,7 @@ fn append_chunk_in_the_middle_of_a_row_is_refused() {
     let fx = Fixture::open();
     fx.query("CREATE TABLE ap_chunk (a INTEGER, b INTEGER)");
     let mut source = fx.query("SELECT 5::INTEGER AS a, 6::INTEGER AS b");
-    let chunk = source.next_chunk().expect("one chunk");
+    let chunk = source.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: `con` is open and the table exists.
     let appender = unsafe { Appender::new(fx.con(), None, c"ap_chunk") }.expect("create");
     appender

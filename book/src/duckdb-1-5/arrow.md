@@ -62,7 +62,7 @@ let pairs: Vec<(&str, &quack_rs::types::LogicalType)> =
 let schema = to_arrow_schema(&options, &pairs)?;
 assert_eq!(schema.format(), Some("+s")); // a record batch is a struct
 
-while let Some(chunk) = result.next_chunk() {
+while let Some(chunk) = result.next_chunk()? {
     let array = data_chunk_to_arrow(&options, &chunk)?;
     // hand `array` (plus `schema`) to any Arrow consumer
     let _ = array;

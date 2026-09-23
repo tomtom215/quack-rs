@@ -261,7 +261,7 @@ fn register_probe(fx: &Fixture) {
 fn sql_cast(con: &OwnedConnection, literal: &str, target: &str) -> Option<String> {
     let sql = format!("SELECT CAST(CAST({literal} AS {target}) AS VARCHAR)");
     let mut result = con.query(&sql).ok()?;
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: one VARCHAR column, one row.
     unsafe { chunk.reader(0).read_str(0).to_owned() }.into()
 }

@@ -51,7 +51,7 @@
 //! # unsafe fn demo(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
 //! // SAFETY: `con` is the connection DuckDB passed to the entry point.
 //! let mut result = unsafe { query::query(con, "SELECT 42 AS answer") }?;
-//! while let Some(chunk) = result.next_chunk() {
+//! while let Some(chunk) = result.next_chunk()? {
 //!     let reader = unsafe { chunk.reader(0) };
 //!     for row in 0..chunk.size() {
 //!         assert_eq!(unsafe { reader.read_i32(row) }, 42);
@@ -166,15 +166,34 @@ pub enum ResultKind {
     Invalid,
 }
 
-/// A materialised `duckdb_result`, destroyed on drop.
+/// A `duckdb_result` — materialised, or streaming when it came from
+/// [`PreparedStatement::execute_streaming`] — destroyed on drop.
 ///
 /// Iterate the rows with [`next_chunk`][Self::next_chunk] until it returns
-/// `None`.
+/// `Ok(None)`; an `Err` means the rows stopped early.
 pub struct QueryResult {
     result: duckdb_result,
+    fetch: FetchState,
+}
+
+/// Whether [`QueryResult::next_chunk`] may still call `duckdb_fetch_chunk`.
+#[derive(Debug)]
+enum FetchState {
+    Open,
+    /// `duckdb_fetch_chunk` returned null with no error recorded.
+    Ended,
+    /// It returned null and `DuckDB` recorded this error on the result.
+    Failed(String),
 }
 
 impl QueryResult {
+    const fn new(result: duckdb_result) -> Self {
+        Self {
+            result,
+            fetch: FetchState::Open,
+        }
+    }
+
     /// Number of columns in the result.
     #[must_use]
     pub fn column_count(&self) -> usize {
@@ -220,20 +239,55 @@ impl QueryResult {
         unsafe { duckdb_rows_changed(&raw mut result) }
     }
 
-    /// Fetches the next chunk of rows, or `None` once the result is exhausted.
+    /// Fetches the next chunk of rows: `Ok(None)` once every row has been
+    /// read, `Err` if the rows stopped early.
     ///
-    /// Chunks hold at most `duckdb_vector_size()` rows; call this repeatedly.
-    #[must_use]
-    pub fn next_chunk(&mut self) -> Option<OwnedDataChunk> {
+    /// Chunks hold at most `duckdb_vector_size()` rows; call this repeatedly:
+    ///
+    /// ```rust,no_run
+    /// # fn demo(mut result: quack_rs::query::QueryResult) -> Result<(), quack_rs::error::ExtensionError> {
+    /// while let Some(chunk) = result.next_chunk()? {
+    ///     // ... read chunk.size() rows ...
+    /// #   let _ = chunk;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// `duckdb_fetch_chunk` returns null both at the end of the rows and when
+    /// fetching fails, recording the failure on the result. On a **streaming**
+    /// result that happens when execution fails part-way (a runtime error in
+    /// the query, an interrupt) or when another statement has run on the same
+    /// connection, which invalidates the stream. This returns that error — with
+    /// `DuckDB`'s message — instead of reporting a clean end after a partial
+    /// result. Once it has returned `Ok(None)` or an error it keeps returning
+    /// the same thing without calling `DuckDB` again.
+    pub fn next_chunk(&mut self) -> Result<Option<OwnedDataChunk>, ExtensionError> {
+        match &self.fetch {
+            FetchState::Open => {}
+            FetchState::Ended => return Ok(None),
+            FetchState::Failed(message) => return Err(ExtensionError::new(message.clone())),
+        }
         // SAFETY: `duckdb_fetch_chunk` takes the result by value (it reads the
         // internal pointer) and returns a chunk the caller owns, or null when
-        // there are no more rows.
+        // there are no more rows or fetching failed.
         let chunk = unsafe { duckdb_fetch_chunk(self.result) };
-        if chunk.is_null() {
-            return None;
+        if !chunk.is_null() {
+            // SAFETY: `chunk` is non-null and owned by us from here on.
+            return Ok(Some(unsafe { OwnedDataChunk::from_raw(chunk) }));
         }
-        // SAFETY: `chunk` is non-null and owned by us from here on.
-        Some(unsafe { OwnedDataChunk::from_raw(chunk) })
+        // `duckdb_fetch_chunk` catches a failed `Fetch` and records it with
+        // `QueryResult::SetError`; a clean end records nothing.
+        // SAFETY: `self.result` is a live result owned by this value.
+        let error = unsafe { c_str_to_owned(duckdb_result_error(&raw mut self.result)) };
+        self.fetch = error.map_or(FetchState::Ended, |message| {
+            FetchState::Failed(format!(
+                "the result ended early: fetching the next chunk failed: {message}"
+            ))
+        });
+        self.next_chunk()
     }
 
     /// Returns the full [`LogicalType`][crate::types::LogicalType] of column
@@ -365,7 +419,7 @@ pub unsafe fn query(con: duckdb_connection, sql: &str) -> Result<QueryResult, Ex
     // SAFETY: `con` is valid per the caller's contract; `c_sql` outlives the call.
     let state = unsafe { duckdb_query(con, c_sql.as_ptr(), &raw mut result) };
     if state == DuckDBSuccess {
-        return Ok(QueryResult { result });
+        return Ok(QueryResult::new(result));
     }
     // SAFETY: even on failure DuckDB populated `result`, so the error message is
     // readable and the result must still be destroyed.
@@ -857,12 +911,14 @@ impl PreparedStatement {
     /// readable; a streaming result produces chunks on demand, which is what an
     /// extension scanning a large table wants.
     /// [`QueryResult::next_chunk`] drives both — `duckdb_fetch_chunk` is the
-    /// documented way to read either — so the only difference at the call site
-    /// is memory.
+    /// documented way to read either. The difference at the call site is
+    /// memory, and *when errors arrive*: a runtime error part-way through the
+    /// query surfaces from `next_chunk`, after the rows before it.
     ///
     /// `DuckDB` may still materialise (see
     /// [`QueryResult::is_streaming`]), and a streaming result must be consumed
-    /// before another statement runs on the same connection.
+    /// before another statement runs on the same connection: running one
+    /// invalidates the stream, and the next `next_chunk` returns an error.
     ///
     /// Requires `duckdb-1-5`: `duckdb_execute_prepared_streaming` sits in the
     /// unstable region of the C API struct.
@@ -880,7 +936,7 @@ impl PreparedStatement {
             libduckdb_sys::duckdb_execute_prepared_streaming(self.statement, &raw mut result)
         };
         if state == DuckDBSuccess {
-            return Ok(QueryResult { result });
+            return Ok(QueryResult::new(result));
         }
         // SAFETY: on failure DuckDB still populates the error slot; the result
         // must be destroyed either way.
@@ -918,7 +974,7 @@ impl PreparedStatement {
         // SAFETY: `self.statement` is valid for this value's lifetime.
         let state = unsafe { duckdb_execute_prepared(self.statement, &raw mut result) };
         if state == DuckDBSuccess {
-            return Ok(QueryResult { result });
+            return Ok(QueryResult::new(result));
         }
         // SAFETY: DuckDB populated `result` even on failure.
         let message = unsafe { c_str_to_owned(duckdb_result_error(&raw mut result)) }
@@ -1302,7 +1358,7 @@ mod live_tests {
         assert_eq!(result.column_name(2), None);
         assert_eq!(result.column_type(2), None);
 
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         assert_eq!(chunk.size(), 1);
         // SAFETY: column 0 is INTEGER, column 1 is VARCHAR, row 0 exists.
         unsafe {
@@ -1310,7 +1366,7 @@ mod live_tests {
             assert_eq!(chunk.reader(1).read_str(0), "hi");
         }
         drop(chunk);
-        assert!(result.next_chunk().is_none());
+        assert!(result.next_chunk().expect("fetch").is_none());
 
         drop(result);
         unsafe { close_raw(db, con) };
@@ -1357,7 +1413,7 @@ mod live_tests {
 
         let mut seen: u64 = 0;
         let mut chunks = 0;
-        while let Some(chunk) = result.next_chunk() {
+        while let Some(chunk) = result.next_chunk().expect("fetch") {
             chunks += 1;
             for row in 0..chunk.size() {
                 // SAFETY: `range()` yields BIGINT, and `row` is in bounds.
@@ -1385,7 +1441,7 @@ mod live_tests {
         stmt.bind_i64(1, 20).expect("bind 1");
         stmt.bind_i64(2, 22).expect("bind 2");
         let mut result = stmt.execute().expect("execute");
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         // SAFETY: the expression yields BIGINT and row 0 exists.
         assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 42);
 
@@ -1405,7 +1461,7 @@ mod live_tests {
             stmt.clear_bindings().expect("clear");
             stmt.bind_i64(1, input).expect("bind");
             let mut result = stmt.execute().expect("execute");
-            let chunk = result.next_chunk().expect("one chunk");
+            let chunk = result.next_chunk().expect("fetch").expect("one chunk");
             // SAFETY: the expression yields BIGINT and row 0 exists.
             assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, input * 2);
         }
@@ -1427,7 +1483,7 @@ mod live_tests {
         drop(stmt);
 
         let mut result = unsafe { query(con, "SELECT s FROM t") }.expect("select");
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         assert_eq!(chunk.size(), 1);
         // SAFETY: column 0 is VARCHAR and row 0 exists.
         assert_eq!(
@@ -1451,7 +1507,7 @@ mod live_tests {
         assert_eq!(stmt.parameter_index("nope"), None);
         stmt.bind_i64(index, 5).expect("bind");
         let mut result = stmt.execute().expect("execute");
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         // SAFETY: the expression yields BIGINT and row 0 exists.
         assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 5);
 
@@ -1485,7 +1541,7 @@ mod live_tests {
         drop(stmt);
 
         let mut result = unsafe { query(con, "SELECT b, n FROM t") }.expect("select");
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         // SAFETY: column 0 is BLOB, column 1 is INTEGER, row 0 exists.
         unsafe {
             assert_eq!(chunk.reader(0).read_blob(0), &[0x00, 0xFF, 0x80]);
@@ -1521,7 +1577,7 @@ mod live_tests {
         con.execute("INSERT INTO t VALUES (1), (2)")
             .expect("insert");
         let mut result = con.query("SELECT count(*) FROM t").expect("count");
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         // SAFETY: count(*) yields BIGINT and row 0 exists.
         assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 2);
     }
