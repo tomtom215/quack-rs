@@ -1755,6 +1755,73 @@ fn list_builder_writes_correct_offsets_across_growth() {
     }
 }
 
+quack_rs::scalar_callback!(make_limited_list, |_info, input, output| {
+    // Like `make_range_list`, but through a builder capped at 100 elements.
+    use quack_rs::vector::ListBuilder;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut builder = unsafe { ListBuilder::new(output) }.with_element_limit(100);
+    for row in 0..chunk.size() {
+        let n = unsafe { reader.read_i64(row) }.max(0) as usize;
+        unsafe {
+            builder.push_row(row, n, |writer, base| {
+                for i in 0..n {
+                    writer.write_i64(base + i, i as i64);
+                }
+            });
+        }
+    }
+    unsafe { builder.finish() };
+});
+
+/// Regression: once a row exceeded the builder's limit, it and every later row
+/// of the chunk were left without a list entry. `DuckDB` reuses output vectors
+/// across chunks, so those rows kept the previous chunk's `{offset, length}`
+/// and came back as valid lists the callback never wrote. They must be NULL.
+#[test]
+fn list_builder_rows_past_the_limit_are_null_not_stale() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("make_limited_list")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::list(TypeId::BigInt))
+            .function(make_limited_list)
+            .register(fx.con())
+            .expect("register make_limited_list");
+    }
+
+    // Chunk 1 (rows 0..2048) asks for 0 or 1 element per row: 1024 in total,
+    // over the limit of 100, so rows from the 101st non-empty one on must be
+    // NULL. Chunk 2 (rows 2048..4096) starts with a 1000-element request,
+    // which overflows immediately, so the whole chunk must be NULL — before
+    // the fix it reported chunk 1's leftover entries as valid lists.
+    let mut result = fx.query(
+        "SELECT count(*) FILTER (WHERE l IS NULL AND i >= 2048),
+                count(*) FILTER (WHERE l IS NOT NULL AND i >= 2048),
+                count(*) FILTER (WHERE l IS NOT NULL AND i < 2048),
+                count(*) FILTER (WHERE l IS NOT NULL AND l <> [x for x in range(len(l))])
+         FROM (SELECT i, make_limited_list(CASE WHEN i = 2048 THEN 1000 ELSE i % 2 END) AS l
+               FROM range(4096) t(i))",
+    );
+    let chunk = result.next_chunk().expect("one chunk");
+    // SAFETY: four BIGINT columns, row 0 exists.
+    unsafe {
+        assert_eq!(
+            chunk.reader(0).read_i64(0),
+            2048,
+            "chunk 2 must be all NULL"
+        );
+        assert_eq!(chunk.reader(1).read_i64(0), 0, "no stale lists in chunk 2");
+        // Rows 0..=200 of chunk 1 hold 100 one-element and 101 empty lists
+        // (201 rows); row 201 would be the 101st element.
+        assert_eq!(chunk.reader(2).read_i64(0), 201);
+        assert_eq!(chunk.reader(3).read_i64(0), 0, "every valid list is 0..len");
+    }
+}
+
 quack_rs::scalar_callback!(make_index_map, |_info, input, output| {
     // Builds MAP(VARCHAR, BIGINT) = { 'k0': 0, 'k1': 1, ... } for each input n.
     use quack_rs::vector::ListBuilder;

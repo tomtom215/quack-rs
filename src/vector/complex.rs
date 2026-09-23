@@ -184,7 +184,9 @@ impl ListVector {
     ///   [`MAX_LIST_CHILD_CAPACITY`][crate::vector::MAX_LIST_CHILD_CAPACITY]
     ///   (`2^37`). Above it `DuckDB` throws an `OutOfRangeException`
     ///   (`VectorListBuffer::Reserve`), which the C API does not catch, so the
-    ///   process aborts.
+    ///   process aborts. Below it, a reservation the allocator cannot satisfy
+    ///   aborts the same way, so a capacity derived from input data should be
+    ///   bounded to what fits in memory.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
         // SAFETY: caller guarantees vector is valid.
