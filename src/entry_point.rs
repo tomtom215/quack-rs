@@ -66,6 +66,8 @@
 //! }
 //! ```
 
+use std::io::Write as _;
+
 use libduckdb_sys::{
     duckdb_connect, duckdb_connection, duckdb_disconnect, duckdb_extension_access,
     duckdb_extension_info, duckdb_rs_extension_api_init, DuckDBSuccess,
@@ -661,8 +663,13 @@ unsafe fn enforce_abi_policy(
     // — so reporting a *warning* that way would abort the load and make `Warn`
     // indistinguishable from `Strict`. The C extension API has no non-fatal
     // diagnostic channel, so stderr is the honest one.
+    //
+    // `eprintln!` panics when the write fails (a closed pipe, a full disk),
+    // and this runs under the C entry point, outside the registration
+    // closure's `catch_unwind`: a panic here would abort the host process.
+    // A lost warning is the right trade.
     let _ = (info, access);
-    eprintln!("quack-rs warning: {message}");
+    let _ = writeln!(std::io::stderr(), "quack-rs warning: {message}");
     Ok(())
 }
 
