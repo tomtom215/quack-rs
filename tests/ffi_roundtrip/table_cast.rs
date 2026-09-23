@@ -580,3 +580,35 @@ fn a_typed_table_panic_payload_whose_drop_panics_becomes_a_sql_error() {
     // SAFETY: `con` is open.
     assert!(unsafe { query(fx.con(), "SELECT 1") }.is_ok());
 }
+
+// ─── Third audit (table area) regressions ────────────────────────────────────
+
+/// TBL-1: `ClientContext::config_option` on a setting whose value is `NULL`
+/// aborted the process — `duckdb_get_varchar` throws on a `NULL` value from
+/// inside the C API (probes t08 and t29: "Rust cannot catch foreign
+/// exceptions"). It is now `None`.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn reading_a_null_config_option_is_none_not_an_abort() {
+    use quack_rs::client_context::ClientContext;
+    use quack_rs::config_option::ConfigOptionBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe {
+        ConfigOptionBuilder::try_new("tc_nullable")
+            .expect("name")
+            .option_type(TypeId::BigInt)
+            .default_value("5")
+            .expect("default")
+            .register(fx.con())
+    }
+    .expect("register");
+    // SAFETY: `con` is open for the rest of the test.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    assert_eq!(ctx.config_option(c"tc_nullable").as_deref(), Some("5"));
+    fx.query("SET tc_nullable = NULL");
+    assert_eq!(ctx.config_option(c"tc_nullable"), None);
+    // A built-in setting that is NULL until set.
+    assert_eq!(ctx.config_option(c"enable_profiling"), None);
+}

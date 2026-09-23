@@ -21,11 +21,12 @@ use libduckdb_sys::{
     duckdb_client_context, duckdb_client_context_get_catalog,
     duckdb_client_context_get_config_option, duckdb_client_context_get_connection_id,
     duckdb_config_option_scope, duckdb_connection, duckdb_connection_get_client_context,
-    duckdb_destroy_client_context, duckdb_destroy_value, duckdb_get_varchar, duckdb_value,
+    duckdb_destroy_client_context,
 };
 
 use crate::catalog::Catalog;
 use crate::error::ExtensionError;
+use crate::value::Value;
 
 /// RAII wrapper for a `duckdb_client_context`.
 ///
@@ -113,9 +114,15 @@ impl ClientContext {
         }
     }
 
-    /// Retrieves a configuration option value by name.
+    /// Retrieves a configuration option value by name, rendered as text.
     ///
-    /// Returns the value as a string, or `None` if the option does not exist.
+    /// Returns `None` when the option does not exist **or its value is SQL
+    /// `NULL`** — the two are not distinguished. Several built-in settings are
+    /// `NULL` until set (`enable_profiling`, for one), and so is an extension
+    /// option after `SET my_option = NULL`. `DuckDB`'s `duckdb_get_varchar`
+    /// throws on a `NULL` value from inside the C API, which used to abort the
+    /// process; this checks `duckdb_is_null_value` first. A value that is not
+    /// valid UTF-8 is also `None`.
     ///
     /// # Do not use this to probe for a setting that may not exist
     ///
@@ -147,37 +154,18 @@ impl ClientContext {
     pub fn config_option(&self, name: &CStr) -> Option<String> {
         let mut scope: duckdb_config_option_scope = 0;
         // SAFETY: self.ctx is valid.
-        let val: duckdb_value = unsafe {
+        let raw = unsafe {
             duckdb_client_context_get_config_option(self.ctx, name.as_ptr(), &raw mut scope)
         };
-        if val.is_null() {
+        if raw.is_null() {
             return None;
         }
-        // SAFETY: val is a valid duckdb_value.
-        let c_str = unsafe { duckdb_get_varchar(val) };
-        let result = if c_str.is_null() {
-            None
-        } else {
-            // SAFETY: c_str is a valid null-terminated string.
-            unsafe { CStr::from_ptr(c_str) }
-                .to_str()
-                .ok()
-                .map(String::from)
-        };
-        if !c_str.is_null() {
-            // SAFETY: `duckdb_get_varchar` returns a `char *` DuckDB allocated
-            // (`duckdb_malloc` + `memcpy`), so this owns it and must free it.
-            unsafe {
-                libduckdb_sys::duckdb_free(c_str.cast::<core::ffi::c_void>());
-            }
-        }
-        let mut val_mut = val;
-        // SAFETY: `val` came from `duckdb_client_context_get_config_option`,
-        // which returns an owned `duckdb_value`; it is not used afterwards.
-        unsafe {
-            duckdb_destroy_value(&raw mut val_mut);
-        }
-        result
+        // SAFETY: `duckdb_client_context_get_config_option` returns an owned
+        // `duckdb_value`; `Value` destroys it on drop.
+        let value = unsafe { Value::from_raw(raw) };
+        // `Value::as_str` checks `duckdb_is_null_value` before calling
+        // `duckdb_get_varchar`, which would throw (and abort) on SQL NULL.
+        value.as_str().ok()
     }
 
     /// Returns the connection ID associated with this client context.
@@ -248,15 +236,41 @@ mod tests {
     }
 
     #[test]
-    fn connection_id_returns_nonzero() {
+    fn connection_id_distinguishes_connections_and_is_stable() {
         let (db, con) = open_raw_connection();
+        let mut con2: duckdb_connection = core::ptr::null_mut();
+        // SAFETY: `db` is open.
+        let rc = unsafe { libduckdb_sys::duckdb_connect(db, &raw mut con2) };
+        assert_eq!(rc, libduckdb_sys::DuckDBSuccess);
 
+        // SAFETY: both connections are open.
+        let ctx = unsafe { ClientContext::from_connection(con) }.unwrap();
+        // SAFETY: as above.
+        let ctx_again = unsafe { ClientContext::from_connection(con) }.unwrap();
+        // SAFETY: as above.
+        let ctx2 = unsafe { ClientContext::from_connection(con2) }.unwrap();
+        assert_eq!(ctx.connection_id(), ctx_again.connection_id());
+        assert_ne!(ctx.connection_id(), ctx2.connection_id());
+
+        drop((ctx, ctx_again, ctx2));
+        // SAFETY: valid handles, closed once.
+        unsafe {
+            libduckdb_sys::duckdb_disconnect(&raw mut con2);
+            close_raw_connection(con, db);
+        }
+    }
+
+    /// Before the fix this aborted the process: `enable_profiling` is `NULL`
+    /// until set, and `duckdb_get_varchar` throws on a `NULL` value from
+    /// inside the C API ("Rust cannot catch foreign exceptions").
+    #[test]
+    fn config_option_of_a_null_setting_is_none_not_an_abort() {
+        let (db, con) = open_raw_connection();
         // SAFETY: con is a valid open connection.
         let ctx = unsafe { ClientContext::from_connection(con) }.unwrap();
-        // Connection IDs are assigned sequentially starting from a positive value.
-        // We just verify the call doesn't crash and returns something.
-        let _id = ctx.connection_id();
-
+        assert_eq!(ctx.config_option(c"enable_profiling"), None);
+        // A non-NULL setting still reads.
+        assert!(ctx.config_option(c"threads").is_some());
         drop(ctx);
         // SAFETY: valid handles.
         unsafe { close_raw_connection(con, db) };
@@ -282,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_returns_some_for_default() {
+    fn catalog_is_found_by_name_inside_a_transaction() {
         let (db, con) = open_raw_connection();
 
         // Start a transaction so we have an active transaction context.
@@ -295,11 +309,13 @@ mod tests {
         // SAFETY: con is a valid open connection.
         let ctx = unsafe { ClientContext::from_connection(con) }.unwrap();
 
-        // Empty name = default catalog. Must be called within a transaction.
+        // An empty name is rejected outright (`strlen(name) == 0` returns
+        // early); an in-memory database's catalog is called `memory`.
         // SAFETY: within an active transaction.
-        let catalog = unsafe { ctx.catalog(c"") };
-        // Note: catalog lookup may or may not succeed depending on DuckDB version
-        // internals. We just verify the call doesn't crash.
+        assert!(unsafe { ctx.catalog(c"") }.is_none());
+        // SAFETY: within an active transaction.
+        let catalog = unsafe { ctx.catalog(c"memory") }.expect("the memory catalog");
+        assert_eq!(catalog.type_name(), Some("duckdb"));
         drop(catalog);
 
         drop(ctx);
