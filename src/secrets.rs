@@ -224,8 +224,12 @@ fn parse_scope_array(rendered: &str) -> Vec<String> {
 ///
 /// # Security
 ///
-/// - [`Debug`] output redacts all field values (shows keys only).
-/// - [`Drop`] zeroizes all field values before deallocation.
+/// - [`Debug`] output redacts every field value and the scope; it shows the
+///   name, type, provider and field keys.
+/// - [`Drop`] zeroizes every field value and key, the provider and the scope
+///   before deallocation, and [`with_field`][Self::with_field],
+///   [`with_provider`][Self::with_provider] and
+///   [`with_scope`][Self::with_scope] zeroize whatever they replace.
 /// - [`Clone`] is supported but creates a second copy of sensitive data in
 ///   memory — use sparingly and drop clones promptly.
 /// - `PartialEq` / `Eq` are intentionally **not** implemented to prevent
@@ -299,24 +303,42 @@ impl SecretEntry {
         self.fields.keys().map(String::as_str).collect()
     }
 
-    /// Sets the provider for this secret entry.
+    /// Sets the provider for this secret entry. A provider set earlier is
+    /// zeroized before its buffer is freed.
     #[must_use]
     pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        zeroize_string(&mut self.provider);
         self.provider = provider.into();
         self
     }
 
-    /// Sets the scope for this secret entry.
+    /// Sets the scope for this secret entry. A scope set earlier is zeroized
+    /// before its buffer is freed.
     #[must_use]
     pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        zeroize_string(&mut self.scope);
         self.scope = scope.into();
         self
     }
 
     /// Adds a key-value field to this secret entry.
+    ///
+    /// Setting a key that is already present replaces its value; the old
+    /// value is zeroized before its buffer is freed, and so is the duplicate
+    /// key.
     #[must_use]
     pub fn with_field(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.fields.insert(key.into(), value.into());
+        let mut key = key.into();
+        let value = value.into();
+        if let Some(existing) = self.fields.get_mut(&key) {
+            // `HashMap::insert` would hand back the old value and drop it
+            // unzeroized, and drop the new, unused key the same way.
+            zeroize_string(existing);
+            *existing = value;
+            zeroize_string(&mut key);
+        } else {
+            self.fields.insert(key, value);
+        }
         self
     }
 
@@ -411,10 +433,13 @@ impl Clone for SecretEntry {
 }
 
 impl fmt::Debug for SecretEntry {
-    /// Formats the secret entry with field values redacted.
+    /// Formats the secret entry with field values and the scope redacted.
     ///
-    /// Only field keys are shown; all values are replaced with `"[REDACTED]"`.
-    /// Use [`get_field`][SecretEntry::get_field] to access actual values in code.
+    /// Field keys are shown; every value, and the scope (a bucket or URL
+    /// prefix is itself sensitive context, which is why `Drop` zeroizes it),
+    /// is replaced with `"[REDACTED]"`. Use
+    /// [`get_field`][SecretEntry::get_field] and [`scope`][SecretEntry::scope]
+    /// to read them in code.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let redacted_fields: HashMap<&str, &str> = self
             .fields
@@ -426,7 +451,14 @@ impl fmt::Debug for SecretEntry {
             .field("name", &self.name)
             .field("secret_type", &self.secret_type)
             .field("provider", &self.provider)
-            .field("scope", &self.scope)
+            .field(
+                "scope",
+                &if self.scope.is_empty() {
+                    ""
+                } else {
+                    "[REDACTED]"
+                },
+            )
             .field("fields", &redacted_fields)
             .finish()
     }
@@ -604,6 +636,37 @@ mod tests {
             debug_output.contains("[REDACTED]"),
             "Debug should show [REDACTED] for values"
         );
+    }
+
+    #[test]
+    fn debug_redacts_the_scope_that_drop_treats_as_sensitive() {
+        let entry = SecretEntry::new("n", "s3")
+            .with_provider("config")
+            .with_scope("s3://private-bucket/");
+        let debug = format!("{entry:?}");
+        assert!(!debug.contains("private-bucket"), "{debug}");
+        assert!(debug.contains("scope: \"[REDACTED]\""), "{debug}");
+        assert!(debug.contains("config"), "the provider is shown: {debug}");
+        // An unset scope is not dressed up as a redacted one.
+        let bare = format!("{:?}", SecretEntry::new("n", "s3"));
+        assert!(bare.contains("scope: \"\""), "{bare}");
+    }
+
+    #[test]
+    fn replacing_a_field_provider_or_scope_keeps_only_the_new_value() {
+        let entry = SecretEntry::new("n", "t")
+            .with_field("token", "old")
+            .with_field("token", "new")
+            .with_field("other", "x")
+            .with_provider("p1")
+            .with_provider("p2")
+            .with_scope("s1")
+            .with_scope("s2");
+        assert_eq!(entry.get_field("token"), Some("new"));
+        assert_eq!(entry.get_field("other"), Some("x"));
+        assert_eq!(entry.field_count(), 2);
+        assert_eq!(entry.provider(), "p2");
+        assert_eq!(entry.scope(), "s2");
     }
 
     #[test]
