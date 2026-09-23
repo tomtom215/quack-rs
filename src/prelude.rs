@@ -28,6 +28,7 @@
 //! | [`init_extension_v2`] | `entry_point` module |
 //! | `entry_point!` | `entry_point` module (macro) |
 //! | `entry_point_v2!` | `entry_point` module (macro) |
+//! | [`AbiPolicy`] | `abi` module |
 //! | [`Connection`] | `connection` module |
 //! | [`Registrar`] | `connection` module |
 //! | [`CastFn`] | `cast` module |
@@ -44,7 +45,9 @@
 //! | [`ScalarFunctionInfo`] | `scalar` module |
 //! | [`ScalarFunctionSetBuilder`] | `scalar` module |
 //! | [`ScalarOverloadBuilder`] | `scalar` module |
+//! | [`TypedScalarFunctionBuilder`] | `scalar` module |
 //! | [`TableFunctionBuilder`] | `table` module |
+//! | [`TypedTableFunctionBuilder`] | `table` module |
 //! | [`BindInfo`] | `table` module |
 //! | [`InitInfo`] | `table` module |
 //! | [`FunctionInfo`] | `table` module |
@@ -59,6 +62,7 @@
 //! | [`Value`] | `value` module |
 //! | [`VectorReader`] | `vector` module |
 //! | [`VectorWriter`] | `vector` module |
+//! | [`ListBuilder`] | `vector` module |
 //! | [`ValidityBitmap`] | `vector::validity` module |
 //! | [`ArrayVector`] | `vector::complex` module |
 //! | [`StructReader`] | `vector::struct_reader` module |
@@ -71,6 +75,8 @@
 //! | [`NullHandling`] | `types` module |
 //! | [`DuckInterval`] | `interval` module |
 //! | [`interval_to_micros`] | `interval` module |
+//! | [`Date`] / [`Time`] / [`TimeTz`] / [`Timestamp`] | `datetime` module |
+//! | [`OwnedConnection`] / [`OwnedDataChunk`] / [`PreparedStatement`] / [`QueryResult`] | `query` module |
 //! | [`ExtensionError`] | `error` module |
 //! | [`ExtResult`] | `error` module |
 //! | [`SecretEntry`] | `secrets` module |
@@ -88,6 +94,9 @@
 //!
 //! | Item | From |
 //! |------|------|
+//! | `ScalarBindInfo` / `ScalarInitInfo` | `scalar` module |
+//! | `ScalarBindData` / `ScalarLocalState` | `scalar` module |
+//! | `CopyFunctionBuilder` and its callback types: `CopyBindFn` / `CopyBindInfo`, `CopyGlobalInitFn` / `CopyGlobalInitInfo`, `CopySinkFn` / `CopySinkInfo`, `CopyFinalizeFn` / `CopyFinalizeInfo` | `copy_function` module |
 //! | `ErrorData` / `DuckDbErrorType` | `error_data` module |
 //! | `Expression` | `expression` module |
 //! | `FileSystem` / `FileHandle` / `FileOpenOptions` / `FileFlag` | `file_system` module |
@@ -150,7 +159,7 @@ pub use crate::aggregate::{
 
 // Scalar functions
 #[cfg(feature = "duckdb-1-5")]
-pub use crate::scalar::{ScalarBindInfo, ScalarInitInfo};
+pub use crate::scalar::{ScalarBindData, ScalarBindInfo, ScalarInitInfo, ScalarLocalState};
 pub use crate::scalar::{
     ScalarFunctionBuilder, ScalarFunctionInfo, ScalarFunctionSetBuilder, ScalarOverloadBuilder,
     TypedScalarFunctionBuilder,
@@ -238,3 +247,39 @@ pub use crate::DUCKDB_API_VERSION;
 // (`crate::entry_point` also names the module; this re-exports both, which is
 // harmless: the macro and module namespaces are separate.)
 pub use crate::{entry_point, entry_point_v2};
+
+#[cfg(test)]
+mod tests {
+    /// Every name this module re-exports appears in one of the tables in the
+    /// module documentation, so the tables cannot drift from the code again.
+    #[test]
+    fn the_module_docs_list_every_re_export() {
+        let source = include_str!("prelude.rs");
+        let (docs, code) = source
+            .split_once("// Entry point")
+            .expect("the re-exports start at the entry-point section");
+        let code = code.split("#[cfg(test)]").next().unwrap_or(code);
+        let mut missing = Vec::new();
+        for item in code.split("pub use ").skip(1) {
+            let item = item.split(';').next().unwrap_or("");
+            let names = item.rsplit("::").next().unwrap_or(item);
+            for name in names
+                .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace())
+                .split(',')
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+            {
+                let listed = docs.contains(&format!("[`{name}`]"))
+                    || docs.contains(&format!("`{name}`"))
+                    || docs.contains(&format!("`{name}!`"));
+                if !listed {
+                    missing.push(name.to_owned());
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "not listed in the prelude docs: {missing:?}"
+        );
+    }
+}
