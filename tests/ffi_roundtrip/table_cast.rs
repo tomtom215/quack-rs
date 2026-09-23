@@ -527,3 +527,56 @@ fn catalog_lookup_of_a_non_schema_entry_type_returns_none() {
     drop(catalog);
     fx.query("COMMIT");
 }
+
+// ─── Typed table functions contain a panic payload whose `Drop` panics ──────
+
+/// A panic payload whose own destructor panics.
+struct TablePayloadBomb;
+impl Drop for TablePayloadBomb {
+    fn drop(&mut self) {
+        panic!("table panic payload destructor deliberately exploded");
+    }
+}
+
+/// The typed table trampolines copied the panic message out of the caught
+/// payload and then dropped the payload at the end of the `if let`, inside the
+/// `extern "C" fn` and outside any guard. A payload whose `Drop` panics
+/// therefore aborted the process (`panic_cannot_unwind`) instead of failing the
+/// query — the same defect the callback macros had, in the one set of
+/// trampolines that does not go through them. Covers bind and scan.
+#[test]
+fn a_typed_table_panic_payload_whose_drop_panics_becomes_a_sql_error() {
+    let fx = Fixture::open();
+    let bind_bomb = TableFunctionBuilder::new("tc_bind_bomb")
+        .with_state::<u8, _>(|_bind| std::panic::panic_any(TablePayloadBomb))
+        .scan(|_state, _chunk| Ok(()))
+        .build()
+        .expect("build tc_bind_bomb");
+    let scan_bomb = TableFunctionBuilder::new("tc_scan_bomb")
+        .with_state::<u8, _>(|bind| {
+            bind.add_result_column("x", TypeId::BigInt);
+            Ok(0)
+        })
+        .scan(|_state, _chunk| std::panic::panic_any(TablePayloadBomb))
+        .build()
+        .expect("build tc_scan_bomb");
+    // SAFETY: `con` is open.
+    unsafe {
+        bind_bomb.register(fx.con()).expect("register tc_bind_bomb");
+        scan_bomb.register(fx.con()).expect("register tc_scan_bomb");
+    }
+
+    for sql in [
+        "SELECT * FROM tc_bind_bomb()",
+        "SELECT * FROM tc_scan_bomb()",
+    ] {
+        // SAFETY: `con` is open.
+        let err =
+            unsafe { query(fx.con(), sql) }.expect_err("the panic must surface as a SQL error");
+        assert!(err.as_str().contains("panicked"), "{sql}: {err}");
+    }
+
+    // The connection survives both.
+    // SAFETY: `con` is open.
+    assert!(unsafe { query(fx.con(), "SELECT 1") }.is_ok());
+}

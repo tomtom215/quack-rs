@@ -31,6 +31,15 @@ use crate::error::ExtensionError;
 ///
 /// Provides access to the connection's catalog, configuration, and file system.
 /// Automatically destroyed when dropped.
+///
+/// # Lifetime
+///
+/// The handle does **not** keep the connection alive. `DuckDB`'s
+/// `CClientContextWrapper` holds a plain reference to the `ClientContext` the
+/// connection owns (`src/include/duckdb/main/capi/capi_internal.hpp`), so a
+/// `ClientContext` — and a [`FileSystem`][crate::file_system::FileSystem]
+/// borrowed from it — must not be used after that connection is closed.
+/// Every constructor is `unsafe` and states this in its `# Safety` section.
 pub struct ClientContext {
     ctx: duckdb_client_context,
 }
@@ -44,7 +53,9 @@ impl ClientContext {
     ///
     /// # Safety
     ///
-    /// `con` must be a valid, open `duckdb_connection`.
+    /// `con` must be a valid, open `duckdb_connection`, and must stay open for
+    /// as long as the returned context (or anything borrowed from it) is used
+    /// — see [Lifetime](Self#lifetime).
     pub unsafe fn from_connection(con: duckdb_connection) -> Result<Self, ExtensionError> {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();
         // SAFETY: con is valid per caller's contract.
@@ -61,7 +72,9 @@ impl ClientContext {
     ///
     /// # Safety
     ///
-    /// `ctx` must be a valid, non-null `duckdb_client_context`.
+    /// `ctx` must be a valid, non-null `duckdb_client_context` that nothing
+    /// else destroys, and the connection it belongs to must stay open for as
+    /// long as the returned value is used — see [Lifetime](Self#lifetime).
     pub const unsafe fn from_raw(ctx: duckdb_client_context) -> Self {
         Self { ctx }
     }

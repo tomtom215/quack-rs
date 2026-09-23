@@ -92,6 +92,18 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     )
 }
 
+/// Copies the message out of a caught panic payload, then disposes of the
+/// payload without letting a panicking `Drop` escape.
+///
+/// The payload is user data: `panic_any` can carry any type, including one whose
+/// destructor panics. Dropped at the end of the trampoline, that second panic
+/// would unwind out of an `extern "C" fn` and abort the process.
+fn contain_payload(payload: Box<dyn std::any::Any + Send>) -> String {
+    let message = panic_message(&*payload);
+    crate::callback::drop_panic_payload(payload);
+    message
+}
+
 /// Bind trampoline monomorphised per state type `S`.
 ///
 /// # Safety
@@ -123,9 +135,10 @@ unsafe extern "C" fn typed_bind_trampoline<S: Send + 'static>(info: duckdb_bind_
     }));
 
     if let Err(payload) = outcome {
+        let message = contain_payload(payload);
         // SAFETY: `info` is valid.
         let bind_info = unsafe { BindInfo::new(info) };
-        bind_info.set_error(&panic_message(&*payload));
+        bind_info.set_error(&message);
     }
 }
 
@@ -169,9 +182,10 @@ unsafe extern "C" fn typed_init_trampoline<S: Send + 'static>(info: duckdb_init_
     }));
 
     if let Err(payload) = outcome {
+        let message = contain_payload(payload);
         // SAFETY: `info` is valid.
         let init_info = unsafe { InitInfo::new(info) };
-        init_info.set_error(&panic_message(&*payload));
+        init_info.set_error(&message);
     }
 }
 
@@ -222,9 +236,10 @@ unsafe extern "C" fn typed_scan_trampoline<S: Send + 'static>(
     }));
 
     if let Err(payload) = outcome {
+        let message = contain_payload(payload);
         // SAFETY: `info` is valid.
         let fninfo = unsafe { FunctionInfo::new(info) };
-        fninfo.set_error(&panic_message(&*payload));
+        fninfo.set_error(&message);
         // SAFETY: `output` is valid.
         unsafe { duckdb_data_chunk_set_size(output, 0) };
     }

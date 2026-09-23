@@ -357,7 +357,10 @@ impl BindInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     #[cfg(feature = "duckdb-1-5")]
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();

@@ -159,7 +159,10 @@ impl CopyBindInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         // SAFETY: self.info is a valid copy-bind-info handle per this fn's contract.
         let ctx = unsafe { duckdb_copy_function_bind_get_client_context(self.info) };
@@ -277,7 +280,10 @@ impl CopyGlobalInitInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         // SAFETY: self.info is a valid copy-global-init-info handle per this fn's contract.
         let ctx = unsafe { duckdb_copy_function_global_init_get_client_context(self.info) };
@@ -365,7 +371,10 @@ impl CopySinkInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         // SAFETY: self.info is a valid copy-sink-info handle per this fn's contract.
         let ctx = unsafe { duckdb_copy_function_sink_get_client_context(self.info) };
@@ -453,7 +462,10 @@ impl CopyFinalizeInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         // SAFETY: self.info is a valid copy-finalize-info handle per this fn's contract.
         let ctx = unsafe { duckdb_copy_function_finalize_get_client_context(self.info) };

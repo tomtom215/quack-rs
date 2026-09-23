@@ -368,7 +368,10 @@ impl ScalarBindInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();
         // SAFETY: self.info is a valid bind-info handle per this fn's contract;
@@ -480,7 +483,10 @@ impl ScalarInitInfo {
     ///
     /// # Safety
     ///
-    /// The inner handle must be valid (requires `DuckDB` runtime).
+    /// The inner handle must be valid (requires `DuckDB` runtime), and the
+    /// returned context must not be used after the connection running this
+    /// query is closed — see
+    /// [`ClientContext`](crate::client_context::ClientContext#lifetime).
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();
         // SAFETY: self.info is a valid init-info handle per this fn's contract;
