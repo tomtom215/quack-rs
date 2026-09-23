@@ -691,7 +691,7 @@ unsafe fn report_error(
     // SAFETY: access is non-null per the check above and valid per caller's contract.
     if let Some(set_error) = unsafe { (*access).set_error } {
         // Replace, not truncate at, an interior NUL: the same rule as every
-        // other `set_error` path (`ExtensionError::to_c_string` truncates).
+        // other error path (`ExtensionError::to_c_string` included).
         let c_msg = crate::callback::message_to_c_string(error.as_str());
         // SAFETY: c_msg is a valid CString; info is valid.
         unsafe { set_error(info, c_msg.as_ptr()) };

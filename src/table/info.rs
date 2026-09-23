@@ -28,8 +28,8 @@ use crate::value::Value;
 /// The message the table function wrappers report in place of an empty one.
 ///
 /// [`BindInfo::set_error`], [`InitInfo::set_error`] and
-/// [`FunctionInfo::set_error`] substitute it for `""` (or a message that is
-/// empty after truncation at an interior NUL): `DuckDB` would otherwise report
+/// [`FunctionInfo::set_error`] substitute it for `""` (an interior NUL is
+/// replaced by `?`, so no other message is empty): `DuckDB` would otherwise report
 /// `Binder Error: ` followed by nothing, and the user would learn only that
 /// something failed.
 pub const EMPTY_ERROR_PLACEHOLDER: &str = "table function reported an error without a message";

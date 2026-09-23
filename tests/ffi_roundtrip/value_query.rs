@@ -384,6 +384,20 @@ fn error_data_reports_sequence_and_autoload_types() {
     }
 }
 
+/// `ErrorData::new` replaces an interior NUL like every other error path in
+/// the crate (`callback::message_to_c_string`); it used to truncate there,
+/// dropping the rest of the message.
+#[test]
+fn error_data_keeps_the_text_after_an_interior_nul() {
+    use quack_rs::error_data::{DuckDbErrorType, ErrorData};
+
+    let _fx = Fixture::open();
+    let err = ErrorData::new(DuckDbErrorType::InvalidInput, "bad\0input\0here");
+    assert_eq!(err.message().as_deref(), Some("bad?input?here"));
+    let err = ErrorData::new(DuckDbErrorType::InvalidInput, "\0leading");
+    assert_eq!(err.message().as_deref(), Some("?leading"));
+}
+
 // ── Finding 9: DbConfig::set accepts unknown names ──────────────────────────
 
 #[cfg(feature = "duckdb-1-5")]

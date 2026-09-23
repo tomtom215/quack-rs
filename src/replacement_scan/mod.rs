@@ -209,8 +209,7 @@ impl ReplacementScanInfo {
     /// An interior null byte in `message` is replaced by `?`.
     ///
     /// `DuckDB` only raises the error when the stored message is non-empty, so
-    /// an empty message (or one that is empty after truncation, such as
-    /// `"\0..."`) would be silently ignored and the query would fall through
+    /// an empty message would be silently ignored and the query would fall through
     /// to "table does not exist". It is replaced with
     /// [`EMPTY_ERROR_PLACEHOLDER`][Self::EMPTY_ERROR_PLACEHOLDER] instead.
     #[mutants::skip] // FFI call requires DuckDB runtime; `error_cstring` is unit-tested
