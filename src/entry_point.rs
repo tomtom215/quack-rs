@@ -682,7 +682,9 @@ unsafe fn report_error(
     }
     // SAFETY: access is non-null per the check above and valid per caller's contract.
     if let Some(set_error) = unsafe { (*access).set_error } {
-        let c_msg = error.to_c_string();
+        // Replace, not truncate at, an interior NUL: the same rule as every
+        // other `set_error` path (`ExtensionError::to_c_string` truncates).
+        let c_msg = crate::callback::message_to_c_string(error.as_str());
         // SAFETY: c_msg is a valid CString; info is valid.
         unsafe { set_error(info, c_msg.as_ptr()) };
     }
@@ -826,6 +828,41 @@ mod tests {
             get_database,
             get_api: Some(no_api),
         }
+    }
+
+    /// The message the capturing `set_error` below last received.
+    static REPORTED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    unsafe extern "C" fn capture_error(_: duckdb_extension_info, msg: *const c_char) {
+        // SAFETY: `report_error` passes a live NUL-terminated string.
+        let text = unsafe { std::ffi::CStr::from_ptr(msg) }
+            .to_string_lossy()
+            .into_owned();
+        if let Ok(mut slot) = REPORTED.lock() {
+            *slot = Some(text);
+        }
+    }
+
+    /// A NUL inside an error message is replaced, not truncated at: the same
+    /// rule as every other `set_error` path in the crate
+    /// (`callback::message_to_c_string`), so the text after it survives.
+    #[test]
+    fn an_init_error_with_an_interior_nul_keeps_its_tail() {
+        let access = duckdb_extension_access {
+            set_error: Some(capture_error),
+            get_database: Some(null_database),
+            get_api: Some(no_api),
+        };
+        // SAFETY: `access` is a valid struct; `info` is never dereferenced.
+        unsafe {
+            super::report_error(
+                core::ptr::null_mut(),
+                &raw const access,
+                &crate::error::ExtensionError::new("bad config\0: key `x` missing"),
+            );
+        }
+        let reported = REPORTED.lock().ok().and_then(|mut s| s.take());
+        assert_eq!(reported.as_deref(), Some("bad config?: key `x` missing"));
     }
 
     #[test]

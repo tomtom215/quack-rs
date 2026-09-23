@@ -642,3 +642,104 @@ fn an_aggregate_overloads_extra_info_reaches_its_callbacks_and_is_freed_once() {
         4
     );
 }
+
+// ─── Error messages with an interior NUL ────────────────────────────────────
+
+mod nul_errors {
+    use quack_rs::aggregate::AggregateFunctionInfo;
+    use quack_rs::scalar::ScalarFunctionInfo;
+
+    quack_rs::scalar_callback!(scalar_fails, |info, _input, _output| {
+        // SAFETY: DuckDB passes a valid function info.
+        unsafe { ScalarFunctionInfo::new(info) }.set_error("scalar head\0scalar tail");
+    });
+
+    quack_rs::aggregate_finalize_callback!(agg_fails, |info, _source, _result, _count, _offset| {
+        // SAFETY: DuckDB passes a valid function info.
+        unsafe { AggregateFunctionInfo::new(info) }.set_error("agg head\0agg tail");
+    });
+
+    #[cfg(feature = "duckdb-1-5")]
+    pub unsafe extern "C" fn bind_fails(info: libduckdb_sys::duckdb_bind_info) {
+        // SAFETY: DuckDB passes a valid bind info.
+        unsafe { quack_rs::scalar::ScalarBindInfo::new(info) }.set_error("bind head\0bind tail");
+    }
+
+    #[cfg(feature = "duckdb-1-5")]
+    pub unsafe extern "C" fn init_fails(info: libduckdb_sys::duckdb_init_info) {
+        // SAFETY: DuckDB passes a valid init info.
+        unsafe { quack_rs::scalar::ScalarInitInfo::new(info) }.set_error("init head\0init tail");
+    }
+}
+
+fn query_error(fx: &Fixture, sql: &str) -> String {
+    // SAFETY: `con` is open.
+    match unsafe { quack_rs::query::query(fx.con(), sql) } {
+        Ok(_) => panic!("{sql} should have failed"),
+        Err(e) => e.as_str().to_owned(),
+    }
+}
+
+/// Every `set_error` wrapper replaces an interior NUL with `?` and keeps the
+/// rest of the message, like the callback macros' panic path
+/// (`callback::message_to_c_string`). They used to truncate at the NUL,
+/// silently dropping everything after it.
+#[test]
+fn set_error_keeps_the_text_after_an_interior_nul() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("nul_scalar")
+            .expect("valid name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .function(nul_errors::scalar_fails)
+            .register(fx.con())
+            .expect("register nul_scalar");
+        AggregateFunctionBuilder::try_new("nul_agg")
+            .expect("valid name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(FfiState::<RowCounts>::size_callback)
+            .init(FfiState::<RowCounts>::init_callback)
+            .update(row_counts_update)
+            .combine(row_counts_combine)
+            .finalize(nul_errors::agg_fails)
+            .destructor(FfiState::<RowCounts>::destroy_callback)
+            .register(fx.con())
+            .expect("register nul_agg");
+    }
+    let err = query_error(&fx, "SELECT nul_scalar(i::BIGINT) FROM range(3) t(i)");
+    assert!(err.contains("scalar head?scalar tail"), "{err}");
+    let err = query_error(&fx, "SELECT nul_agg(i::BIGINT) FROM range(3) t(i)");
+    assert!(err.contains("agg head?agg tail"), "{err}");
+
+    #[cfg(feature = "duckdb-1-5")]
+    {
+        // SAFETY: `con` is open; every callback matches its declared signature.
+        unsafe {
+            ScalarFunctionBuilder::try_new("nul_bind")
+                .expect("valid name")
+                .param(TypeId::BigInt)
+                .returns(TypeId::BigInt)
+                .bind(nul_errors::bind_fails)
+                .function(nul_errors::scalar_fails)
+                .register(fx.con())
+                .expect("register nul_bind");
+            ScalarFunctionBuilder::try_new("nul_init")
+                .expect("valid name")
+                .param(TypeId::BigInt)
+                .returns(TypeId::BigInt)
+                .init(nul_errors::init_fails)
+                .function(nul_errors::scalar_fails)
+                .register(fx.con())
+                .expect("register nul_init");
+        }
+        let err = query_error(&fx, "SELECT nul_bind(i::BIGINT) FROM range(3) t(i)");
+        assert!(err.contains("bind head?bind tail"), "{err}");
+        let err = query_error(&fx, "SELECT nul_init(i::BIGINT) FROM range(3) t(i)");
+        assert!(err.contains("init head?init tail"), "{err}");
+    }
+}
