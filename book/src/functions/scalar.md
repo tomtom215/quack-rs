@@ -208,9 +208,13 @@ and `f(BIGINT, BIGINT...)` may share a set.
 
 ## NULL Handling
 
-By default, DuckDB returns NULL if any argument is NULL — your function callback is
-never called for those rows. If you need to handle NULLs explicitly (e.g., for a
-`COALESCE`-like function), set `SpecialNullHandling`:
+Your callback receives NULL rows whatever the setting: under the default,
+`DefaultNullHandling`, it *promises* NULL-in-NULL-out and must write the NULLs
+itself — call `chunk.propagate_nulls(&mut writer)` at the end, or use the typed
+`map1` / `map2` constructors, which do it for you
+([Pitfall L8](../reference/pitfalls.md#l8-default_null_handling-does-not-propagate-nulls-for-scalar-functions),
+[NULL handling](null-handling.md)). A function that means to return non-NULL for
+NULL input (e.g., a `COALESCE`-like function) sets `SpecialNullHandling`:
 
 ```rust
 use quack_rs::types::NullHandling;

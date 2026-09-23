@@ -274,10 +274,13 @@ impl ScalarFunctionBuilder {
 
     /// Sets the NULL handling behaviour for this function.
     ///
-    /// By default, `DuckDB` returns NULL if any argument is NULL
-    /// ([`DefaultNullHandling`][NullHandling::DefaultNullHandling]).
-    /// Set to [`SpecialNullHandling`][NullHandling::SpecialNullHandling] to receive
-    /// NULL values in your callback and handle them yourself.
+    /// Under either setting the callback receives NULL rows. With the default,
+    /// [`DefaultNullHandling`][NullHandling::DefaultNullHandling], the callback
+    /// **promises** NULL-in-NULL-out and must keep that promise itself —
+    /// `DuckDB` does not write NULL for it (pitfall L8; see [`NullHandling`] and
+    /// [`DataChunk::propagate_nulls`][crate::data_chunk::DataChunk::propagate_nulls]).
+    /// [`SpecialNullHandling`][NullHandling::SpecialNullHandling] declares that
+    /// it may return non-NULL for NULL input.
     pub const fn null_handling(mut self, handling: NullHandling) -> Self {
         self.null_handling = handling;
         self
