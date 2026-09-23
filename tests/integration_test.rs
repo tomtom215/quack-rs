@@ -519,9 +519,11 @@ fn sql_macro_error_mentions_bad_param_name() {
 // ---------------------------------------------------------------------------
 
 /// Generates scaffold files, writes them to a temp directory with a path-dep
-/// on the local quack-rs crate, and runs `cargo check` to verify the generated
-/// code actually compiles.  This catches template regressions (like broken
-/// macro paths) that unit tests can't detect.
+/// on the local quack-rs crate, and runs the generated project's own
+/// `cargo test --lib`: the code must compile, and the unit test the scaffold
+/// ships must run and pass. This catches template regressions (like broken
+/// macro paths) that unit tests can't detect — and a scaffold whose tests are
+/// vacuous (it used to generate zero).
 #[test]
 fn scaffold_generated_code_compiles() {
     use quack_rs::scaffold::{generate_scaffold, ScaffoldConfig};
@@ -602,21 +604,32 @@ fn scaffold_generated_code_compiles() {
         }
     }
 
-    // Run cargo check on the generated project
+    // Build and run the generated project's unit tests.
     let output = Command::new("cargo")
-        .args(["check", "--lib"])
+        .args(["test", "--lib"])
         .current_dir(&tmp)
         .output()
-        .expect("failed to run cargo check");
+        .expect("failed to run cargo test");
 
     // Clean up before asserting so we don't leave temp dirs on failure
     let _ = fs::remove_dir_all(&tmp);
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
-        "Scaffold-generated code failed to compile!\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
+        "Scaffold-generated code failed to compile or its tests failed!\nstdout:\n{}\nstderr:\n{}",
+        stdout,
         String::from_utf8_lossy(&output.stderr),
+    );
+    let passed: usize = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("test result: ok. "))
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        passed > 0,
+        "the generated project's `cargo test` ran no tests:\n{stdout}"
     );
 }
 

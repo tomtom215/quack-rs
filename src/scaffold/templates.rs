@@ -195,7 +195,7 @@ check_duckdb_pin:
 
 pub(super) fn generate_lib_rs(config: &ScaffoldConfig) -> String {
     format!(
-        r#"{description}
+        r##"{description}
 //!
 //! A DuckDB extension built with [quack-rs](https://github.com/tomtom215/quack-rs).
 
@@ -205,6 +205,15 @@ use quack_rs::prelude::*;
 // Example: a simple SQL macro. Replace with your own functions.
 // ---------------------------------------------------------------------------
 
+/// The example function: `{name}_hello(name)` greets `name`.
+fn hello_macro() -> Result<SqlMacro, ExtensionError> {{
+    SqlMacro::scalar(
+        "{name}_hello",
+        &["name"],
+        "concat('Hello from {name}! ', name)",
+    )
+}}
+
 /// Registers all extension functions on the given connection.
 fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {{
     // Example: register a scalar SQL macro (no unsafe callbacks needed).
@@ -213,12 +222,7 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
     // SAFETY: `con` is the connection quack-rs opened for this entry point and
     // is valid for the duration of this function.
     unsafe {{
-        SqlMacro::scalar(
-            "{name}_hello",
-            &["name"],
-            "concat('Hello from {name}! ', name)",
-        )?
-        .register(con)?;
+        hello_macro()?.register(con)?;
     }}
     Ok(())
 }}
@@ -228,7 +232,24 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
 // ---------------------------------------------------------------------------
 
 quack_rs::entry_point!({name}_init_c_api, register);
-"#,
+
+// Unit tests run under plain `cargo test`: building a function definition
+// needs no DuckDB. Calling into DuckDB does, so behaviour against a real engine
+// is tested in test/sql/{name}.test (SQLLogicTest, run by `make test`).
+#[cfg(test)]
+mod tests {{
+    use super::*;
+
+    #[test]
+    fn hello_macro_renders_the_expected_sql() -> Result<(), ExtensionError> {{
+        assert_eq!(
+            hello_macro()?.to_sql(),
+            r#"CREATE OR REPLACE MACRO "{name}_hello"("name") AS (concat('Hello from {name}! ', name))"#
+        );
+        Ok(())
+    }}
+}}
+"##,
         description = doc_comment_lines(&config.description),
         name = config.name,
     )
@@ -370,25 +391,25 @@ pub(super) fn generate_sqllogictest(config: &ScaffoldConfig) -> String {
          # Verify the extension loads without error\n\
          require {name}\n\
          \n\
-         # ---- Replace the examples below with your actual function tests ----\n\
+         # The example function registered in src/lib.rs.\n\
+         query T\n\
+         SELECT {name}_hello('world');\n\
+         ----\n\
+         Hello from {name}! world\n\
          \n\
-         # Example: test a scalar function that returns a VARCHAR\n\
-         # query T\n\
-         # SELECT {name}_hello('world');\n\
-         # ----\n\
-         # Hello from {name}! world\n\
+         # One row per input row.\n\
+         query T\n\
+         SELECT {name}_hello(x) FROM (VALUES ('a'), ('b')) t(x) ORDER BY x;\n\
+         ----\n\
+         Hello from {name}! a\n\
+         Hello from {name}! b\n\
          \n\
-         # Example: test an aggregate function\n\
+         # ---- Add a test like these for each function you add. ----\n\
+         # For example, an aggregate you register as {name}_count:\n\
          # query I\n\
          # SELECT {name}_count(col) FROM (VALUES (1), (2), (3)) t(col);\n\
          # ----\n\
          # 3\n\
-         \n\
-         # Example: NULL handling\n\
-         # query I\n\
-         # SELECT {name}_count(col) FROM (VALUES (NULL), (1)) t(col);\n\
-         # ----\n\
-         # 1\n\
          "
     )
 }
