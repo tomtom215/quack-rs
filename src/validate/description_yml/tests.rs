@@ -745,3 +745,38 @@ fn ref_next_is_parsed_and_does_not_shadow_ref() {
     assert_eq!(desc.git_ref, "e5ed59b6ccf915c65e17eb6286b9a64f3ab09f59");
     assert_eq!(desc.git_ref_next, "");
 }
+
+/// Setting both spellings is ambiguous, so it is an error rather than one of
+/// them silently winning.
+#[test]
+fn license_and_licence_together_are_rejected() {
+    let yml = valid_yml().replace(
+        "  license: MIT\n",
+        "  license: MIT\n  licence: Apache-2.0\n",
+    );
+    let err = parse_description_yml(&yml).unwrap_err();
+    assert!(err.as_str().contains("both"), "{}", err.as_str());
+    assert!(
+        err.as_str().contains("extension.licence"),
+        "{}",
+        err.as_str()
+    );
+}
+
+/// An empty list entry (`-`, `- ""`, `- '  '`) is skipped, not an error and
+/// not an empty name.
+#[test]
+fn empty_list_entries_are_skipped() {
+    let yml = valid_yml()
+        .replace(
+            "    - Jane Doe\n",
+            "    - Jane Doe\n    -\n    - \"\"\n    - '  '\n",
+        )
+        .replace(
+            "  maintainers:\n",
+            "  excluded_platforms:\n    - osx_amd64\n    -\n  maintainers:\n",
+        );
+    let desc = parse_description_yml(&yml).unwrap();
+    assert_eq!(desc.maintainers, vec!["Jane Doe"]);
+    assert_eq!(desc.excluded_platforms, "osx_amd64");
+}
