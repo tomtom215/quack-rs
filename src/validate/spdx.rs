@@ -121,12 +121,9 @@ pub fn validate_spdx_license(license: &str) -> Result<(), ExtensionError> {
     }
 
     let tokens = tokenize(license);
-    let mut parser = ExprParser {
-        tokens: &tokens,
-        pos: 0,
-    };
+    let mut parser = ExprParser { rest: &tokens };
     let unlisted = parser.expression().and_then(|unlisted| {
-        tokens.get(parser.pos).map_or(Ok(unlisted), |extra| {
+        parser.rest.first().map_or(Ok(unlisted), |extra| {
             Err(format!(
                 "unexpected '{extra}' in license expression '{license}'"
             ))
@@ -176,16 +173,29 @@ fn tokenize(expr: &str) -> Vec<&str> {
 ///
 /// Each method returns the first identifier that is well-formed but not in
 /// [`COMMON_SPDX_LICENSES`] (`Ok(Some(..))`), or a syntax error message.
+///
+/// The cursor is the unread tail of the token slice, and every read shortens
+/// it, so each loop pass consumes at least one token and parsing always ends.
+/// (An index cursor could be mutated into `pos -= 1` and loop forever.)
 struct ExprParser<'a> {
-    tokens: &'a [&'a str],
-    pos: usize,
+    rest: &'a [&'a str],
 }
 
 impl<'a> ExprParser<'a> {
+    /// Consumes the next token if it is `expected`.
+    fn eat(&mut self, expected: &str) -> bool {
+        match self.rest.split_first() {
+            Some((&token, tail)) if token == expected => {
+                self.rest = tail;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn expression(&mut self) -> Result<Option<&'a str>, String> {
         let mut unlisted = self.term()?;
-        while self.tokens.get(self.pos) == Some(&"OR") {
-            self.pos += 1;
+        while self.eat("OR") {
             let next = self.term()?;
             unlisted = unlisted.or(next);
         }
@@ -194,8 +204,7 @@ impl<'a> ExprParser<'a> {
 
     fn term(&mut self) -> Result<Option<&'a str>, String> {
         let mut unlisted = self.atom()?;
-        while self.tokens.get(self.pos) == Some(&"AND") {
-            self.pos += 1;
+        while self.eat("AND") {
             let next = self.atom()?;
             unlisted = unlisted.or(next);
         }
@@ -203,15 +212,14 @@ impl<'a> ExprParser<'a> {
     }
 
     fn atom(&mut self) -> Result<Option<&'a str>, String> {
-        let Some(&token) = self.tokens.get(self.pos) else {
+        let Some((&token, tail)) = self.rest.split_first() else {
             return Err("license expression ends where an identifier was expected".into());
         };
-        self.pos += 1;
+        self.rest = tail;
         match token {
             "(" => {
                 let unlisted = self.expression()?;
-                if self.tokens.get(self.pos) == Some(&")") {
-                    self.pos += 1;
+                if self.eat(")") {
                     Ok(unlisted)
                 } else {
                     Err("unbalanced '(' in license expression".into())

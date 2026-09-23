@@ -795,3 +795,45 @@ README assertion that panicked — are fixed and were recompiled.
    `main` (84 tests) and locally over the merged 125-test suite, no suppressions.
 7. `src/value.rs` (~1,100 lines) and `src/aggregate/builder/set.rs` (~508) exceed
    the 500-line guideline.
+
+### 7.6 How this pass was verified
+
+- **Tests, against DuckDB 1.5.5:** 771 library tests (with `duckdb-1-5-4`), 125
+  end-to-end tests in `tests/ffi_roundtrip`, 66 integration tests, 31
+  `append_metadata` tests, 193 doctests; clippy `-D warnings` under default,
+  `duckdb-1-5-4`, `bundled-test-prebuilt` and
+  `bundled-test-prebuilt,duckdb-1-5-4`; rustdoc `-D warnings`; MSRV 1.86.0.
+- **Sanitizers, locally with CI's exact flags:** Miri over the library (731
+  tests at the time, exit 0, leak check on), LeakSanitizer and
+  AddressSanitizer over the 125 end-to-end tests, all clean. The
+  AddressSanitizer job was made blocking on that evidence and its green run on
+  `main`.
+- **hello-ext:** all 29 numbered README checks (31 statements) on DuckDB 1.4.4,
+  1.5.0 and 1.5.5 — 31/31 on each; three of them now return different results
+  without `LOAD`, so they cannot pass vacuously.
+- **Mutation testing,** the exact invocation CI's incremental job would run on a
+  PR from this branch (every changed `src` file, config exclusions re-applied,
+  `--features duckdb-1-5-4 --lib`): 893 mutants, **0 missed**, 763 caught, 128
+  unviable, and 2 timeouts — both in the SPDX expression parser's index
+  cursor, which was then rewritten as a consuming slice cursor (34 mutants,
+  34 caught).
+
+**The mutation-testing configuration itself was broken** (found while doing
+the above): cargo-mutants reads `.cargo/mutants.toml`, not the root
+`mutants.toml`, so no job had ever read the exclusions, features or timeouts;
+the file also held two keys cargo-mutants 27.1.0 rejects; and once it was
+read, its `examine_globs` overrode `--file`. All three are fixed.
+
+Two mutants are excluded with a written equivalence argument (in
+`.cargo/mutants.toml`), and two were removed rather than killed —
+`child_bad` became an `unsafe fn` (it reads an arbitrary raw handle through
+FFI, so it should have been), and `Owned`'s hand-written `Drop` now delegates to
+`LogicalType`'s. Their leak-shaped mutants are only observable with a live
+engine and are covered by the end-to-end suite, not by mutation testing.
+
+One process error is recorded so it is not repeated: the first mutation run
+set `CARGO_TARGET_DIR`, which makes cargo-mutants' parallel jobs share one
+target directory and test each other's binaries. It reported a mutant that
+replaced `validate_extension_name` with `Ok(())` as surviving the tests that
+assert it rejects hyphens — impossible, and how the problem was noticed. That
+run was discarded.
