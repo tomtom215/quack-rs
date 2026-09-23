@@ -13,7 +13,7 @@ the wrong slot.
 
 | Region | Slots | Guarantee |
 |--------|-------|-----------|
-| Stable | `0 .. 357` | Frozen since DuckDB v1.2.0 — same functions, same order, in every release through v1.5.5 |
+| Stable | `0 .. 357` | Frozen since DuckDB v1.2.0 — same slots, same order, same signatures in every release through v1.5.5 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
 | Unstable | `357 ..` | DuckDB **inserts** new entries in the middle, shifting every later slot |
 
 The stable prefix is what makes "build once, load anywhere" possible. The

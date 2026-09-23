@@ -73,12 +73,14 @@ unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: i
 
 ## L3: No panic across FFI boundaries
 
-**Status**: Made impossible by `init_extension` and `panic = "abort"`.
+**Status**: Made impossible by `init_extension` and the callback guards (which require `panic = "unwind"`).
 
 **Symptom**: Extension causes DuckDB to crash or behave unpredictably.
 
-**Root cause**: `panic!()` and `.unwrap()` in `unsafe extern "C"` functions is
-undefined behavior. Panics cannot unwind across FFI boundaries in Rust.
+**Root cause**: a panic cannot unwind out of an `extern "C"` function. Since
+Rust 1.81 the runtime aborts the process when one tries (before 1.81 it was
+undefined behaviour), so an uncaught `panic!()` or `.unwrap()` in a callback
+takes down the user's whole DuckDB session.
 
 **Fix**: Use `Result` and `?` inside `init_extension`. Never use `unwrap()` in
 FFI callbacks. `FfiState::with_state_mut` returns `Option`, not `Result`, so
@@ -91,12 +93,13 @@ if let Some(st) = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) } {
 }
 
 // Dangerous — never do this in an FFI callback
-let st = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) }.unwrap(); // UB if None
+let st = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) }.unwrap(); // panics if None
 ```
 
-The scaffold-generated `Cargo.toml` sets `panic = "abort"` in the release
-profile, which terminates the process instead of unwinding — still bad, but not
-undefined behavior.
+quack-rs's callback macros and typed builders catch a panic and report it as a
+SQL error. That requires `panic = "unwind"` in the release profile, which is
+what the scaffold generates and what `validate_release_profile` insists on:
+under `panic = "abort"` nothing can be caught.
 
 ---
 
@@ -519,11 +522,11 @@ it at compiled-in offsets. The struct has two regions:
 
 | Region | Slots | Guarantee |
 |--------|-------|-----------|
-| Stable | 0–356 | Frozen since v1.2.0 — identical names and order in every release through v1.5.5 |
+| Stable | 0–356 | Frozen since v1.2.0 — same slots, order and signatures in every release through v1.5.5 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
 | Unstable | 357+ | `DuckDB` **inserts** entries in the middle, shifting every later slot |
 
 `duckdb_appender_clear` landed at slot 410 in v1.5.0 and
-`duckdb_geometry_type_get_crs` in the middle of v1.5.3's tail; each insertion
+`duckdb_geometry_type_get_crs` in the middle of v1.5.2's tail; each insertion
 moves everything after it. An extension compiled against one layout and loaded
 by another calls the wrong function through the right offset.
 

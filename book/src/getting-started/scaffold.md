@@ -119,14 +119,16 @@ Some extensions cannot be built for all platforms (e.g., extensions that depend 
 platform-specific system libraries, or WASM environments that lack threading).
 
 ```rust
-ScaffoldConfig {
+use quack_rs::scaffold::ScaffoldConfig;
+
+let config = ScaffoldConfig {
     excluded_platforms: vec![
         "wasm_mvp".to_string(),
         "wasm_eh".to_string(),
         "wasm_threads".to_string(),
     ],
-    // ...
-}
+    ..ScaffoldConfig::default()
+};
 ```
 
 Validate individual platform names with `quack_rs::validate::validate_platform`, or a

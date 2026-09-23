@@ -69,7 +69,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 | NULL output | Silent corruption if `ensure_validity_writable` skipped | `VectorWriter::set_null` calls it automatically |
 | LogicalType memory | Leak if not freed | `LogicalType` implements `Drop` |
 | Aggregate combine | Config fields lost on segment-tree merges | Testable with `AggregateTestHarness` |
-| FFI panics | Process abort or undefined behavior | `init_extension` never panics; `scalar_callback!` / `table_scan_callback!` catch panics |
+| FFI panics | Process abort (Rust ≥ 1.81) | `init_extension` never panics; `scalar_callback!` / `table_scan_callback!` catch panics |
 | Table functions | ~100 lines of raw bind/init/scan callbacks | `TableFunctionBuilder` 5-method chain, or `TypedTableFunctionBuilder<S>` with two safe Rust closures |
 | Replacement scans | Undocumented vtable + manual string allocation | `ReplacementScanBuilder` 4-method chain |
 | Complex types (STRUCT/LIST/MAP/ARRAY) | Manual offset arithmetic over child vectors | `StructVector`, `ListVector`, `MapVector`, `ArrayVector` helpers |
@@ -128,8 +128,8 @@ libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
 > **DuckDB compatibility**: `quack-rs` supports DuckDB **1.4.x and 1.5.x**.
-> Both releases expose the same C API version (`v1.2.0`), confirmed by E2E tests
-> against DuckDB 1.4.4 and DuckDB 1.5.0. The upper bound `<2` prevents silent
+> Every release in that range exposes the same C API version (`v1.2.0`); CI loads
+> the example extension into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest release. The upper bound `<2` prevents silent
 > adoption of a future major release that may change the C API. When the C API
 > version changes, `quack-rs` will need to be updated and re-released.
 
@@ -422,7 +422,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 |----|------|---------|-------------------|
 | **L1** | COMBINE config propagation | Aggregate returns wrong results under parallelism | Testable with `AggregateTestHarness` |
 | **L2** | Double-free in destroy | Heap corruption / SIGABRT | `FfiState<T>::destroy_callback` nulls pointer after free |
-| **L3** | Panic across FFI | Process abort / UB | `init_extension` propagates `Result` and runs the registration closure under `catch_unwind`; a wrapper macro does the same for every callback kind — scalar, table bind/init/scan, aggregate update/combine/finalize/destroy, cast and replacement scan — routing the panic message to that kind's `set_error`. Requires `panic = "unwind"`, which the scaffold generates |
+| **L3** | Panic across FFI | Process abort | `init_extension` propagates `Result` and runs the registration closure under `catch_unwind`; a wrapper macro does the same for every callback kind — scalar, table bind/init/scan, aggregate update/combine/finalize/destroy, cast and replacement scan — routing the panic message to that kind's `set_error`. Requires `panic = "unwind"`, which the scaffold generates |
 | **L4** | Missing `ensure_validity_writable` | Segfault / silent NULL corruption | `VectorWriter::set_null` calls it automatically |
 | **L5** | Boolean undefined behavior | Non-deterministic bool semantics | `VectorReader::read_bool` reads `u8 != 0` |
 | **L6** | Function set name on each member | Silent registration failure | `AggregateFunctionSetBuilder` and `ScalarFunctionSetBuilder` set name on every member |
@@ -535,7 +535,8 @@ assert!(validate_extension_name("").is_err());             // empty rejected
 // fine — DuckDB itself ships `formatReadableSize`)
 assert!(validate_function_name("word_count").is_ok());
 assert!(validate_function_name("word-count").is_err());    // hyphens not allowed in SQL
-assert!(validate_function_name("WordCount").is_err());     // uppercase rejected
+assert!(validate_function_name("WordCount").is_ok());      // mixed case allowed
+assert!(validate_function_name("1word").is_err());         // must start with a letter or _
 ```
 
 ### Platform targets
@@ -751,13 +752,15 @@ The documentation convention is:
   those blocks are required syntax rather than new assertions.
 
 ```rust
-// Extension author code: no unsafe required
+// Extension author code: one `unsafe`, at the one place a caller has to vouch
+// for something — that `con` is a live connection.
 fn register(con: duckdb_connection) -> ExtResult<()> {
-    AggregateFunctionBuilder::try_new("word_count")?
+    let builder = AggregateFunctionBuilder::try_new("word_count")?
         .param(TypeId::Varchar)
-        .returns(TypeId::BigInt)
+        .returns(TypeId::BigInt);
         // ... callbacks (which are unsafe extern "C" fns) ...
-        .register(con)          // unsafe is inside the SDK
+    // SAFETY: `con` is the live connection DuckDB passed to the entry point.
+    unsafe { builder.register(con) }
 }
 ```
 
@@ -780,9 +783,11 @@ to match.
 
 **ADR-3: No Panics Across FFI**
 
-The Rust reference is explicit: unwinding across an FFI boundary is undefined behavior.
-`quack-rs` enforces this architecturally: every FFI boundary in the SDK is wrapped by
-`init_extension`, which converts `Result::Err` into a DuckDB error report via `set_error`.
+A panic cannot unwind out of an `extern "C"` function: since Rust 1.81 the runtime aborts
+the process (before 1.81 it was undefined behavior). `quack-rs` enforces this
+architecturally: `init_extension` converts `Result::Err` into a DuckDB error report via
+`set_error`, and every callback kind runs under `catch_unwind`, reporting a panic as a SQL
+error — which requires `panic = "unwind"` in the release profile.
 No `unwrap()`, `expect()`, or `panic!()` appears in any code path reachable from a DuckDB
 callback.
 

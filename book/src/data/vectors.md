@@ -31,7 +31,7 @@ Chunk sizes vary. Always loop from `0..reader.row_count()`, never assume a fixed
 
 ### NULL check
 
-```rust
+```rust,ignore
 if unsafe { !reader.is_valid(row) } {
     // row is NULL — skip or propagate NULL to output
     unsafe { writer.set_null(row) };

@@ -150,9 +150,11 @@ Use `validate_extension_version` to accept all three formats, and
 `classify_extension_version` to determine the stability tier:
 
 ```rust
-use quack_rs::validate::semver::classify_extension_version;
+use quack_rs::validate::semver::{classify_extension_version, ExtensionStability};
 
-match classify_extension_version("0.1.0")? {
+// Returns the tier and the version string it classified.
+let (stability, _version) = classify_extension_version("0.1.0")?;
+match stability {
     ExtensionStability::Unstable => println!("git hash"),
     ExtensionStability::PreRelease => println!("0.y.z"),
     ExtensionStability::Stable => println!("x.y.z, x>0"),
@@ -199,14 +201,16 @@ If your extension cannot be built for a platform (e.g., it uses a
 platform-specific system library), add it to `excluded_platforms`:
 
 ```rust
-ScaffoldConfig {
+use quack_rs::scaffold::ScaffoldConfig;
+
+let config = ScaffoldConfig {
     excluded_platforms: vec![
         "wasm_mvp".to_string(),
         "wasm_eh".to_string(),
         "wasm_threads".to_string(),
     ],
-    // ...
-}
+    ..ScaffoldConfig::default()
+};
 ```
 
 Validate individual platform names with `validate_platform`:
@@ -236,7 +240,7 @@ quack-rs = "0.13"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]
-panic = "abort"              # Required — no stack unwinding in FFI
+panic = "unwind"             # Required — "abort" disables quack-rs's panic guards
 opt-level = 3
 lto = "thin"
 strip = "symbols"
@@ -338,7 +342,8 @@ of your pinned `libduckdb-sys`.
 
 Community extensions are not vetted for security by the DuckDB team:
 
-- Never panic across FFI boundaries (`panic = "abort"` enforces this)
+- Never let a panic escape an FFI boundary: quack-rs's callbacks catch panics and
+  report them as SQL errors, which requires `panic = "unwind"`
 - Validate user inputs at system boundaries (extension entry point is the boundary)
 - Do not include secrets, API keys, or credentials in your binary
 - Dynamic SQL in SQL macros must not construct queries from unsanitized user data

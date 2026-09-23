@@ -124,7 +124,7 @@ you need the decision inline.
 
 ## `NullHandling` enum
 
-```rust
+```rust,ignore
 use quack_rs::types::NullHandling;
 
 // Default: the function promises NULL in -> NULL out.

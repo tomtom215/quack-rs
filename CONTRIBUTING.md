@@ -168,14 +168,27 @@ pure-Rust logic that does not require a live DuckDB instance.
 **Constraint**: `libduckdb-sys` with `features = ["loadable-extension"]` makes
 every DuckDB C API function go through lazy `AtomicPtr` dispatch. These pointers
 are only initialized when `duckdb_rs_extension_api_init` is called from within a
-real DuckDB extension load. Calling any DuckDB API function in a unit test will
-panic. Move such tests to integration tests or example-extension tests.
+real DuckDB extension load — or by `testing::InMemoryDb::open()` under the
+`bundled-test` / `bundled-test-prebuilt` features. Without one of those, calling
+any DuckDB API function in a unit test panics ("DuckDB API not initialized").
+Put such tests in `tests/ffi_roundtrip.rs` (below).
 
 ### Integration tests (`tests/integration_test.rs`)
 
 Pure-Rust tests that cross module boundaries — e.g., testing `interval` with
 `AggregateTestHarness`, or verifying `FfiState` lifecycle across module boundaries.
-These still cannot call `duckdb_*` functions, for the same reason as unit tests.
+These do not call `duckdb_*` functions.
+
+### End-to-end tests (`tests/ffi_roundtrip.rs` and `tests/ffi_roundtrip/`)
+
+Every test here opens a real in-memory DuckDB through `InMemoryDb`, registers a
+function built with quack-rs, runs SQL and checks the answer. Requires
+`--features bundled-test-prebuilt,duckdb-1-5-4` (with `DUCKDB_LIB_DIR` or
+`DUCKDB_DOWNLOAD_LIB=1`) or `bundled-test`. CI's LeakSanitizer and
+AddressSanitizer jobs run exactly this target (`--test ffi_roundtrip`), so new
+end-to-end tests belong in it — as a submodule declared with
+`#[path = "ffi_roundtrip/<name>.rs"] mod <name>;` when the root file would
+otherwise grow further.
 
 ### Property-based tests
 

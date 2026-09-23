@@ -246,12 +246,14 @@ internal `Rc<RefCell<InnerConnection>>` layout. This is fragile and causes
 SEGFAULTs when the layout changes between `duckdb` crate versions.
 `init_extension` uses the correct C API entry sequence directly.
 
-### Why is `panic = "abort"` required?
+### Why must the release profile use `panic = "unwind"`?
 
-Panics cannot unwind across FFI boundaries in Rust. A panic in an
-`unsafe extern "C"` callback is undefined behavior. `panic = "abort"` converts
-panics to process termination, which is still bad but not undefined behavior.
-Always use `Result` and `?` in your callbacks instead.
+quack-rs wraps every callback and entry point in `catch_unwind` and reports a
+panic as an ordinary SQL error. `catch_unwind` cannot catch anything under
+`panic = "abort"`: the process terminates at the panic site, taking the user's
+DuckDB session with it. `validate_release_profile` rejects `abort` for this
+reason. Returning `Result` and using `?` is still the right style — the guards
+are a safety net, not a substitute.
 
 ### Can I use async Rust in my extension?
 
