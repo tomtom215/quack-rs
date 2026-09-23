@@ -27,20 +27,27 @@ use std::fmt;
 /// reason attached — there is no `duckdb_..._error` for it — so the message
 /// quack-rs can produce is only as useful as the list of causes it names.
 ///
-/// What a name collision does depends on the kind of function. A scalar or
-/// aggregate registration under an existing name is merged in as a new
-/// overload, and *fails* only when an overload with the same parameter types
-/// already exists (`list_sum`, `array_sum` and friends make that common). A
-/// table or copy function under an existing name does **not** fail at all —
-/// `DuckDB` drops it and reports success — which is why those builders check
-/// for the name before registering, and why this hint does not name
-/// collision as a cause for them.
+/// What a name collision does depends on the kind of function, and only the
+/// cases `DuckDB` itself refuses end up here (checked on `DuckDB` 1.5.5):
+///
+/// - an **aggregate** cannot reuse any existing function or macro name —
+///   built-in or not, including its own earlier registration (e.g. on a
+///   retried `LOAD`): an aggregate catalog entry cannot be altered;
+/// - a **scalar** cannot take an aggregate's or a macro's name (the built-in
+///   `list_sum` is a macro).
+///
+/// A scalar over an existing scalar signature does not fail in `DuckDB` — it
+/// silently replaces it — so the scalar builders check for that themselves
+/// before registering. A table or copy function under an existing name does not
+/// fail either (`DuckDB` drops it and reports success); those builders also
+/// check first. Neither case reaches this hint.
 pub(crate) const REGISTRATION_FAILURE_HINT: &str =
-    "the C API reports no reason. The usual causes: for a scalar or aggregate function, \
-     an overload with the same parameter types already exists under this name — DuckDB \
-     built-ins like `list_sum` and `array_sum` are easy to collide with, so check \
-     `SELECT * FROM duckdb_functions() WHERE function_name = '<name>'`; a parameter or \
-     return type is invalid; or a required callback was never set.";
+    "the C API reports no reason. The usual cause is a name DuckDB will not merge: an \
+     aggregate cannot reuse any existing function or macro name (including its own earlier \
+     registration, e.g. on a retried LOAD), and a scalar cannot take an aggregate's or a \
+     macro's name (the built-in `list_sum` is a macro) — check `SELECT function_name, \
+     function_type FROM duckdb_functions() WHERE function_name = '<name>'`. Otherwise a \
+     parameter or return type is invalid, or a required callback was never set.";
 
 /// An error that can occur during `DuckDB` extension initialization or registration.
 ///
@@ -106,8 +113,10 @@ impl ExtensionError {
 
     /// Converts this error into a `CString` suitable for passing to `set_error`.
     ///
-    /// If the message contains a null byte (which is valid in a Rust `String` but
-    /// not in a C string), the message is truncated at the first null byte.
+    /// A null byte in the message (valid in a Rust `String`, not in a C
+    /// string) is replaced by `?`, as on every error path in this crate
+    /// ([`message_to_c_string`][crate::callback::message_to_c_string]), so the
+    /// text after it is not lost.
     ///
     /// # Example
     ///
@@ -115,26 +124,13 @@ impl ExtensionError {
     /// use quack_rs::error::ExtensionError;
     ///
     /// let err = ExtensionError::new("oops");
-    /// let cstr = err.to_c_string();
-    /// assert_eq!(cstr.to_str().unwrap(), "oops");
+    /// assert_eq!(err.to_c_string().to_str().unwrap(), "oops");
+    /// let err = ExtensionError::new("a\0b");
+    /// assert_eq!(err.to_c_string().to_str().unwrap(), "a?b");
     /// ```
     #[must_use]
     pub fn to_c_string(&self) -> CString {
-        CString::new(self.message.as_bytes()).unwrap_or_else(|_| {
-            // Truncate at the first null byte to produce a valid C string.
-            // No panic: if CString::new fails again (logically impossible since
-            // we truncate at the first null byte), fall back to a generic message.
-            let pos = self
-                .message
-                .bytes()
-                .position(|b| b == 0)
-                .unwrap_or(self.message.len());
-            CString::new(&self.message.as_bytes()[..pos]).unwrap_or_else(|_| {
-                // Defensive fallback — should never be reached.
-                CString::new("extension error (message contained null bytes)")
-                    .unwrap_or_else(|_| CString::default())
-            })
-        })
+        crate::callback::message_to_c_string(&self.message)
     }
 
     /// Returns the error message as a string slice.
@@ -264,10 +260,10 @@ mod tests {
 
     #[test]
     fn to_c_string_with_null_byte() {
-        // A message with an embedded null byte should be truncated at the null
+        // An embedded null byte is replaced, keeping the rest of the message.
         let err = ExtensionError::new("before\0after");
         let cstr = err.to_c_string();
-        assert_eq!(cstr.to_str().unwrap(), "before");
+        assert_eq!(cstr.to_str().unwrap(), "before?after");
     }
 
     #[test]
@@ -346,17 +342,16 @@ mod tests {
 
     #[test]
     fn to_c_string_leading_null_byte() {
-        // A message starting with null should truncate to empty string
         let err = ExtensionError::new("\0trailing");
         let cstr = err.to_c_string();
-        assert_eq!(cstr.to_str().unwrap(), "");
+        assert_eq!(cstr.to_str().unwrap(), "?trailing");
     }
 
     #[test]
     fn to_c_string_multiple_null_bytes() {
         let err = ExtensionError::new("first\0second\0third");
         let cstr = err.to_c_string();
-        assert_eq!(cstr.to_str().unwrap(), "first");
+        assert_eq!(cstr.to_str().unwrap(), "first?second?third");
     }
 
     #[test]

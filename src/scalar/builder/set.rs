@@ -130,23 +130,30 @@ impl ScalarFunctionSetBuilder {
     ///   so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ; a varargs type counts
     ///   as part of the signature). `DuckDB` itself would accept such a set and
     ///   then fail every call with "Could not choose a best candidate function".
+    /// - An overload's name and parameter types match a scalar function that
+    ///   already exists (see "Name collisions").
     /// - `DuckDB` reports registration failure.
     ///
     /// # Name collisions
     ///
     /// `DuckDB` registers scalar functions with `ALTER_ON_CONFLICT`
     /// (`duckdb_register_scalar_function_set` in `scalar_function-c.cpp`), so a
-    /// **scalar** function that already has this name — built-in or not — does
-    /// not make registration fail. Each overload with a new signature is added;
-    /// one whose signature is identical to an existing one (same parameter
-    /// types, return type and varargs) **silently replaces it**, for every
-    /// connection to the database (`FunctionSet::MergeFunctionSet` with
-    /// `override = true`).
-    /// Registering `abs(BIGINT) -> BIGINT` replaces the built-in `abs` for
-    /// `BIGINT`. Registration fails when the name belongs to an aggregate
-    /// function or a macro (such as the built-in `list_sum`). Check
-    /// `duckdb_functions()` first if replacing an existing function would be
-    /// wrong.
+    /// **scalar** function that already has this name — built-in or not — never
+    /// makes `DuckDB` refuse the registration. A new signature is added as an
+    /// overload. One with the same parameter types as an existing overload
+    /// either **silently replaces it** for every connection to the database
+    /// (same return type: `FunctionSet::MergeFunctionSet` with
+    /// `override = true`) or makes every call ambiguous ("Could not choose a
+    /// best candidate function", different return type). Registering
+    /// `abs(BIGINT)` would change the built-in `abs` for `BIGINT`.
+    ///
+    /// quack-rs therefore refuses an overload, naming its index, before registering, when
+    /// `duckdb_functions()` already lists a scalar with this name and the same
+    /// parameter and varargs types. The check covers every parameter type
+    /// except `STRUCT`, `UNION`, `ENUM` and the `SQLNULL` / literal pseudo-types;
+    /// a signature containing one of those
+    /// is registered unchecked. `DuckDB` itself refuses a name that belongs to
+    /// an aggregate function or a macro (such as the built-in `list_sum`).
     ///
     /// # Safety
     ///
@@ -187,6 +194,18 @@ impl ScalarFunctionSetBuilder {
         // SAFETY: every logical parameter is a live `LogicalType` owned by this
         // builder, and the caller's contract means the C API is initialised.
         unsafe { reject_duplicate_overloads(&self.name.to_string_lossy(), &signatures)? };
+        for (i, signature) in signatures.iter().enumerate() {
+            // SAFETY: `con` is valid per this function's contract; the
+            // logical parameters are live, as above.
+            unsafe {
+                super::collision::refuse_replacing_a_scalar(
+                    con,
+                    &self.name.to_string_lossy(),
+                    &format!("overload {i}"),
+                    signature,
+                )?;
+            }
+        }
 
         // SAFETY: Creates a new scalar function set handle.
         let mut set = unsafe { duckdb_create_scalar_function_set(self.name.as_ptr()) };

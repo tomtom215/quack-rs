@@ -12,10 +12,12 @@
 
 use std::ffi::CString;
 
-/// Converts a `&str` to a `CString` without panicking.
+/// Converts an identifier (a column, parameter or function name) to a
+/// `CString` without panicking.
 ///
 /// If the string contains an interior NUL byte it is truncated at the first
-/// one. This runs inside `extern "C"` callbacks, where a panic would abort the
+/// one. Error *messages* go through [`error_cstring`] instead, which keeps the
+/// whole text. This runs inside `extern "C"` callbacks, where a panic would abort the
 /// process, so `CString::new(..).expect(..)` is not an option.
 pub fn str_to_cstring(s: &str) -> CString {
     let end = s.bytes().position(|b| b == 0).unwrap_or(s.len());
@@ -25,19 +27,22 @@ pub fn str_to_cstring(s: &str) -> CString {
 }
 
 /// Converts an error message, substituting `placeholder` when the message is
-/// empty — or empty after truncation at an interior NUL.
+/// empty.
+///
+/// An interior NUL is replaced by `?`
+/// ([`message_to_c_string`][crate::callback::message_to_c_string]), the same
+/// as every other error path in the crate, so no part of the message is lost.
 ///
 /// `DuckDB` reports an empty message verbatim (`Binder Error: ` followed by
 /// nothing), and some error channels ignore it altogether, so an error the
 /// author forgot to describe would otherwise reach the user as no information
 /// at all.
 pub fn error_cstring(message: &str, placeholder: &str) -> CString {
-    let c_msg = str_to_cstring(message);
-    if c_msg.as_bytes().is_empty() {
-        str_to_cstring(placeholder)
+    crate::callback::message_to_c_string(if message.is_empty() {
+        placeholder
     } else {
-        c_msg
-    }
+        message
+    })
 }
 
 #[cfg(test)]
@@ -60,7 +65,7 @@ mod tests {
     fn error_cstring_replaces_only_an_empty_message() {
         assert_eq!(error_cstring("boom", "ph").as_bytes(), b"boom");
         assert_eq!(error_cstring("", "ph").as_bytes(), b"ph");
-        assert_eq!(error_cstring("\0hidden", "ph").as_bytes(), b"ph");
-        assert_eq!(error_cstring("x\0y", "ph").as_bytes(), b"x");
+        assert_eq!(error_cstring("\0hidden", "ph").as_bytes(), b"?hidden");
+        assert_eq!(error_cstring("x\0y", "ph").as_bytes(), b"x?y");
     }
 }

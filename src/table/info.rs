@@ -289,7 +289,7 @@ impl BindInfo {
     ///
     /// After calling this, `DuckDB` will abort query parsing and report the error.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`.
     /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
@@ -479,7 +479,7 @@ impl InitInfo {
 
     /// Reports an error from the init callback.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`.
     /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
@@ -527,7 +527,7 @@ impl FunctionInfo {
     ///
     /// `DuckDB` will abort the query and propagate this as a SQL error.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`.
     /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {

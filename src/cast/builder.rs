@@ -108,8 +108,7 @@ impl CastFunctionInfo {
     /// `NULL` because of it: use [`set_row_error`][Self::set_row_error] for
     /// every failed row instead.
     ///
-    /// If `message` contains an interior null byte it is truncated at that
-    /// point. An empty message is replaced by
+    /// An interior null byte in `message` is replaced by `?`. An empty message is replaced by
     /// [`EMPTY_ERROR_PLACEHOLDER`][Self::EMPTY_ERROR_PLACEHOLDER].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
@@ -129,8 +128,7 @@ impl CastFunctionInfo {
     /// only way a row becomes `NULL`; in [`CastMode::Normal`] the message is
     /// what the query fails with once the callback returns `false`.
     ///
-    /// If `message` contains an interior null byte it is truncated at that
-    /// point. An empty message is replaced by
+    /// An interior null byte in `message` is replaced by `?`. An empty message is replaced by
     /// [`EMPTY_ERROR_PLACEHOLDER`][Self::EMPTY_ERROR_PLACEHOLDER].
     ///
     /// # Safety

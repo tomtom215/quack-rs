@@ -29,7 +29,9 @@ use libduckdb_sys::{
     duckdb_copy_function_sink_info, duckdb_copy_function_sink_set_error, duckdb_delete_callback_t,
 };
 
-use crate::table::cstr::str_to_cstring;
+/// What `set_error` reports when it is given an empty message: `DuckDB` would
+/// otherwise show the error type followed by nothing.
+pub const EMPTY_ERROR_PLACEHOLDER: &str = "copy function reported an error without a message";
 use crate::types::LogicalType;
 
 // ── CopyBindInfo ─────────────────────────────────────────────────────────────
@@ -167,10 +169,11 @@ impl CopyBindInfo {
 
     /// Reports a fatal error, causing `DuckDB` to abort the current query.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`, and an empty
+    /// message by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_copy_function_bind_set_error(self.info, c_msg.as_ptr());
@@ -291,10 +294,11 @@ impl CopyGlobalInitInfo {
 
     /// Reports a fatal error, causing `DuckDB` to abort the current query.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`, and an empty
+    /// message by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_copy_function_global_init_set_error(self.info, c_msg.as_ptr());
@@ -382,10 +386,11 @@ impl CopySinkInfo {
 
     /// Reports a fatal error, causing `DuckDB` to abort the current query.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`, and an empty
+    /// message by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_copy_function_sink_set_error(self.info, c_msg.as_ptr());
@@ -473,10 +478,11 @@ impl CopyFinalizeInfo {
 
     /// Reports a fatal error, causing `DuckDB` to abort the current query.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`, and an empty
+    /// message by [`EMPTY_ERROR_PLACEHOLDER`].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_copy_function_finalize_set_error(self.info, c_msg.as_ptr());

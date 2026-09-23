@@ -307,6 +307,32 @@ impl ScalarFunctionBuilder {
         self
     }
 
+    /// Refuses the registration if a scalar with this name and signature
+    /// already exists; see "Name collisions" on [`register`][Self::register].
+    ///
+    /// # Safety
+    ///
+    /// `con` must be a valid, open `duckdb_connection`.
+    unsafe fn refuse_existing_signature(
+        &self,
+        con: duckdb_connection,
+    ) -> Result<(), ExtensionError> {
+        let mut signature = super::signature::merged_params(&self.params, &self.logical_params);
+        if let Some(ref varargs) = self.varargs {
+            signature.push(super::signature::ParamRef::Varargs(varargs));
+        }
+        // SAFETY: `con` is valid per this function's contract, and every
+        // logical parameter is a live handle owned by this builder.
+        unsafe {
+            super::collision::refuse_replacing_a_scalar(
+                con,
+                &self.name.to_string_lossy(),
+                "scalar function",
+                &signature,
+            )
+        }
+    }
+
     /// Registers the scalar function on the given connection.
     ///
     /// # Errors
@@ -314,22 +340,30 @@ impl ScalarFunctionBuilder {
     /// Returns `ExtensionError` if:
     /// - The return type was not set.
     /// - The function callback was not set.
+    /// - A scalar function with this name and parameter types already exists
+    ///   (see "Name collisions").
     /// - `DuckDB` reports a registration failure.
     ///
     /// # Name collisions
     ///
     /// `DuckDB` registers scalar functions with `ALTER_ON_CONFLICT`
     /// (`duckdb_register_scalar_function_set` in `scalar_function-c.cpp`), so a
-    /// **scalar** function that already has this name — built-in or not — does
-    /// not make registration fail. A new signature is added as an overload; a
-    /// signature identical to an existing one (same parameter types, return
-    /// type and varargs) **silently replaces it**, for every connection to the
-    /// database (`FunctionSet::MergeFunctionSet` with `override = true`).
-    /// Registering `abs(BIGINT) -> BIGINT` replaces the built-in `abs` for
-    /// `BIGINT`. Registration fails when the name belongs to an aggregate
-    /// function or a macro (such as the built-in `list_sum`). Check
-    /// `duckdb_functions()` first if replacing an existing function would be
-    /// wrong.
+    /// **scalar** function that already has this name — built-in or not — never
+    /// makes `DuckDB` refuse the registration. A new signature is added as an
+    /// overload. One with the same parameter types as an existing overload
+    /// either **silently replaces it** for every connection to the database
+    /// (same return type: `FunctionSet::MergeFunctionSet` with
+    /// `override = true`) or makes every call ambiguous ("Could not choose a
+    /// best candidate function", different return type). Registering
+    /// `abs(BIGINT)` would change the built-in `abs` for `BIGINT`.
+    ///
+    /// quack-rs therefore refuses, before registering, when
+    /// `duckdb_functions()` already lists a scalar with this name and the same
+    /// parameter and varargs types. The check covers every parameter type
+    /// except `STRUCT`, `UNION`, `ENUM` and the `SQLNULL` / literal pseudo-types;
+    /// a signature containing one of those
+    /// is registered unchecked. `DuckDB` itself refuses a name that belongs to
+    /// an aggregate function or a macro (such as the built-in `list_sum`).
     ///
     /// # Safety
     ///
@@ -344,18 +378,23 @@ impl ScalarFunctionBuilder {
         if let Some(id) = self.return_type {
             LogicalType::check_slot(id, "scalar function return type")?;
         }
-        // Resolve return type: prefer explicit LogicalType over TypeId.
-        let ret_lt = if let Some(lt) = self.return_logical {
-            lt
-        } else if let Some(id) = self.return_type {
-            LogicalType::for_slot(id, "scalar function return type")?
-        } else {
+        if self.return_logical.is_none() && self.return_type.is_none() {
             return Err(ExtensionError::new("return type not set"));
-        };
-
+        }
         let function = self
             .function
             .ok_or_else(|| ExtensionError::new("function callback not set"))?;
+
+        // SAFETY: `con` is valid per this function's contract.
+        unsafe { self.refuse_existing_signature(con)? };
+
+        // Resolve return type: prefer explicit LogicalType over TypeId. One of
+        // the two is set, checked above.
+        let ret_lt = match (self.return_logical, self.return_type) {
+            (Some(lt), _) => lt,
+            (None, Some(id)) => LogicalType::for_slot(id, "scalar function return type")?,
+            (None, None) => return Err(ExtensionError::new("return type not set")),
+        };
 
         // SAFETY: duckdb_create_scalar_function allocates a new function handle.
         let mut func = unsafe { duckdb_create_scalar_function() };

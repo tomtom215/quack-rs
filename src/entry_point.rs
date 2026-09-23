@@ -33,8 +33,9 @@
 //! `LOAD` fails — but the functions registered before the failure **stay
 //! registered** and callable for the life of the database, while `DuckDB`
 //! does not list the extension as loaded. Retrying the `LOAD` in the same
-//! process then fails at the first aggregate it re-registers, because an
-//! aggregate name cannot be registered twice (a scalar is silently replaced).
+//! process then fails at the first function it re-registers: `DuckDB`
+//! refuses an aggregate name registered twice, and quack-rs refuses a scalar
+//! signature that already exists.
 //!
 //! So do every fallible thing that does not register — reading
 //! configuration, validating settings, building lookup tables — **before**

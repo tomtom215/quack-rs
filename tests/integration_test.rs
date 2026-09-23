@@ -312,12 +312,12 @@ fn extension_error_to_c_string_no_null() {
 }
 
 #[test]
-fn extension_error_truncates_at_null_byte() {
+fn extension_error_keeps_the_text_after_a_null_byte() {
     use quack_rs::error::ExtensionError;
 
     let err = ExtensionError::new("before\0after");
     let c = err.to_c_string();
-    assert_eq!(c.to_str().unwrap(), "before");
+    assert_eq!(c.to_str().unwrap(), "before?after");
 }
 
 #[test]

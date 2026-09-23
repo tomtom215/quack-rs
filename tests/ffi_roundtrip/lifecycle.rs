@@ -298,10 +298,14 @@ fn a_composite_scalar_value_is_rejected_at_registration_naming_the_slot() {
 /// The collision rules documented on `ScalarFunctionBuilder::register` and
 /// `AggregateFunctionBuilder::register`. `DuckDB` registers both with
 /// `ALTER_ON_CONFLICT`; a scalar merges into an existing scalar entry with
-/// `override = true`, and an aggregate cannot be altered at all.
+/// `override = true`, silently replacing an identical signature (a built-in
+/// included), so quack-rs refuses that case before registering. An aggregate
+/// cannot be altered at all, so `DuckDB` itself refuses it.
 #[test]
-fn scalar_collisions_replace_silently_and_aggregate_collisions_fail() {
-    use quack_rs::scalar::ScalarFunctionBuilder;
+fn scalar_and_aggregate_name_collisions_are_refused() {
+    use quack_rs::scalar::{
+        ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder,
+    };
 
     let fx = Fixture::open();
     // SAFETY (all `register` calls below): `con` is open.
@@ -311,14 +315,48 @@ fn scalar_collisions_replace_silently_and_aggregate_collisions_fail() {
             .register(fx.con())
     };
 
-    // Same name and signature twice: no error, and the second one wins.
+    // Same name and signature twice: refused; the first registration stays.
     register_scalar("twice_scalar", 1).expect("first registration");
-    register_scalar("twice_scalar", 100).expect("an identical signature is not an error");
-    assert_eq!(i64_at(&fx, "SELECT twice_scalar(1::BIGINT)"), Some(101));
+    let err = register_scalar("twice_scalar", 100).expect_err("identical signature");
+    assert!(
+        err.as_str().contains("twice_scalar(BIGINT) already exists"),
+        "{err}"
+    );
+    assert_eq!(i64_at(&fx, "SELECT twice_scalar(1::BIGINT)"), Some(2));
 
-    // The same for a built-in: `abs(BIGINT) -> BIGINT` is replaced.
-    register_scalar("abs", 1000).expect("replacing a built-in is not an error");
-    assert_eq!(i64_at(&fx, "SELECT abs(-5::BIGINT)"), Some(995));
+    // A built-in: before the check, this silently replaced `abs(BIGINT)`
+    // for every query (`abs(-5::BIGINT)` returned 995).
+    assert!(
+        register_scalar("abs", 1000).is_err(),
+        "abs(BIGINT) is a built-in"
+    );
+    assert_eq!(i64_at(&fx, "SELECT abs(-5::BIGINT)"), Some(5));
+
+    // A new overload of an existing name is still fine: abs(BIGINT, BIGINT)
+    // does not exist.
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::map2("abs", |a: i64, b: i64| a - b)
+            .expect("valid name")
+            .register(fx.con())
+            .expect("a new signature is a new overload");
+    }
+    assert_eq!(i64_at(&fx, "SELECT abs(7::BIGINT, 2::BIGINT)"), Some(5));
+
+    // Sets are checked per overload, and the error names the overload.
+    // SAFETY: `con` is open.
+    let set_err = unsafe {
+        ScalarFunctionSetBuilder::new("upper")
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .param(TypeId::Varchar)
+                    .returns(TypeId::Varchar)
+                    .function(overload_fns::tick),
+            )
+            .register(fx.con())
+    }
+    .expect_err("upper(VARCHAR) is a built-in");
+    assert!(set_err.as_str().contains("overload 0"), "{set_err}");
 
     // A scalar cannot take an aggregate's name.
     assert!(register_scalar("sum", 1).is_err(), "sum is an aggregate");
@@ -352,6 +390,125 @@ fn scalar_collisions_replace_silently_and_aggregate_collisions_fail() {
     assert_eq!(
         i64_at(&fx, "SELECT twice_agg(i::BIGINT) FROM range(4) t(i)"),
         Some(4)
+    );
+}
+
+/// The collision check renders each parameter type the way `duckdb_functions()`
+/// prints it and asks whether that exact signature exists. A rendering that
+/// differs from `DuckDB`'s by one character would make the check pass silently,
+/// so every rendered type is held to the real thing: register a probe taking
+/// it, then register the same signature again, which must be refused.
+#[test]
+fn every_rendered_parameter_type_matches_duckdbs_own_spelling() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+    use quack_rs::types::LogicalType;
+
+    type Make = Box<dyn Fn() -> LogicalType>;
+    let fx = Fixture::open();
+    let mut ids = vec![
+        TypeId::Boolean,
+        TypeId::TinyInt,
+        TypeId::SmallInt,
+        TypeId::Integer,
+        TypeId::BigInt,
+        TypeId::UTinyInt,
+        TypeId::USmallInt,
+        TypeId::UInteger,
+        TypeId::UBigInt,
+        TypeId::HugeInt,
+        TypeId::UHugeInt,
+        TypeId::Float,
+        TypeId::Double,
+        TypeId::Timestamp,
+        TypeId::TimestampTz,
+        TypeId::TimestampS,
+        TypeId::TimestampMs,
+        TypeId::TimestampNs,
+        TypeId::Date,
+        TypeId::Time,
+        TypeId::TimeTz,
+        TypeId::TimeNs,
+        TypeId::Interval,
+        TypeId::Varchar,
+        TypeId::Blob,
+        TypeId::Uuid,
+        TypeId::Bit,
+        TypeId::Varint,
+        TypeId::Any,
+    ];
+    #[cfg(feature = "duckdb-1-5-3")]
+    ids.extend([TypeId::Geometry, TypeId::Variant]);
+    let mut cases: Vec<(String, Make)> = ids
+        .into_iter()
+        .map(|id| {
+            (
+                id.sql_name().to_owned(),
+                Box::new(move || LogicalType::new(id)) as Make,
+            )
+        })
+        .collect();
+    cases.push((
+        "DECIMAL(18,3)".into(),
+        Box::new(|| LogicalType::decimal(18, 3)),
+    ));
+    cases.push((
+        "INTEGER[]".into(),
+        Box::new(|| LogicalType::list(TypeId::Integer)),
+    ));
+    cases.push((
+        "INTEGER[3]".into(),
+        Box::new(|| LogicalType::array(TypeId::Integer, 3)),
+    ));
+    cases.push((
+        "MAP(VARCHAR, INTEGER)".into(),
+        Box::new(|| LogicalType::map(TypeId::Varchar, TypeId::Integer)),
+    ));
+    cases.push((
+        "DECIMAL(4,1)[][2]".into(),
+        Box::new(|| {
+            LogicalType::array_from_logical(
+                &LogicalType::list_from_logical(&LogicalType::decimal(4, 1)),
+                2,
+            )
+        }),
+    ));
+
+    let mut undetected = Vec::new();
+    for (i, (label, make)) in cases.iter().enumerate() {
+        let name = format!("render_probe_{i}");
+        // SAFETY: `con` is open; the callback is never invoked.
+        let register = || unsafe {
+            ScalarFunctionBuilder::try_new(&name)
+                .expect("valid name")
+                .param_logical(make())
+                .returns(TypeId::BigInt)
+                .function(overload_fns::tick)
+                .register(fx.con())
+        };
+        register().unwrap_or_else(|e| panic!("first registration of ({label}): {e}"));
+        if register().is_ok() {
+            undetected.push(label.clone());
+        }
+    }
+    // Varargs are part of the signature too.
+    // SAFETY: `con` is open; the callback is never invoked.
+    let varargs = || unsafe {
+        ScalarFunctionBuilder::try_new("render_probe_varargs")
+            .expect("valid name")
+            .param(TypeId::Varchar)
+            .varargs(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .function(overload_fns::tick)
+            .register(fx.con())
+    };
+    varargs().expect("first registration");
+    if varargs().is_ok() {
+        undetected.push("VARCHAR, BIGINT...".into());
+    }
+    assert!(
+        undetected.is_empty(),
+        "re-registering these signatures was not refused, so their rendering differs from \
+         duckdb_functions(): {undetected:?}"
     );
 }
 

@@ -372,6 +372,7 @@ quack-rs/
 │   │   ├── typed.rs                   # Scalar functions written as ordinary Rust closures
 │   │   ├── typed_builder.rs           # The builder the closure-based scalar constructors return, and the one `extern "C"` trampoline they all share
 │   │   └── builder/
+│   │       ├── collision.rs           # Refusing a scalar signature that would silently replace an existing one
 │   │       ├── mod.rs                 # Builder for registering `DuckDB` scalar functions
 │   │       ├── overload.rs            # One overload within a [`ScalarFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` scalar function set (multiple overloads)

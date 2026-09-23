@@ -206,7 +206,7 @@ impl ReplacementScanInfo {
 
     /// Reports an error, causing `DuckDB` to abort this replacement scan attempt.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`.
     ///
     /// `DuckDB` only raises the error when the stored message is non-empty, so
     /// an empty message (or one that is empty after truncation, such as
@@ -341,14 +341,14 @@ mod tests {
     }
 
     /// `DuckDB` ignores an empty replacement-scan error, so an empty message —
-    /// or one a leading NUL truncates to empty — must be replaced.
+    /// must be replaced; a NUL inside a message is kept as `?`.
     #[test]
     fn error_cstring_is_never_empty() {
         let placeholder = ReplacementScanInfo::EMPTY_ERROR_PLACEHOLDER;
         assert_eq!(super::error_cstring("").to_str().unwrap(), placeholder);
         assert_eq!(
             super::error_cstring("\0hidden").to_str().unwrap(),
-            placeholder
+            "?hidden"
         );
         assert_eq!(super::error_cstring("boom").to_str().unwrap(), "boom");
     }
