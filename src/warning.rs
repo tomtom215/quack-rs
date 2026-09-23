@@ -32,12 +32,14 @@
 //! ```
 
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Severity level for extension warnings.
 ///
-/// Mirrors common security advisory severity levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Mirrors common security advisory severity levels, and orders by them:
+/// `Info < Low < Medium < High < Critical`, so `severity >= High` selects the
+/// warnings that need attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WarningSeverity {
     /// Informational — no security impact, but worth noting.
     Info,
@@ -104,7 +106,9 @@ impl fmt::Display for ExtensionWarning {
 /// # Thread safety
 ///
 /// `WarningCollector` uses a [`Mutex`] internally and is safe to share across
-/// threads via `Arc<WarningCollector>`.
+/// threads via `Arc<WarningCollector>`. A panic on another thread while it held
+/// the lock does not lose warnings: every operation is a single `Vec` call, so
+/// the list is intact, and the collector keeps using it.
 pub struct WarningCollector {
     warnings: Mutex<Vec<ExtensionWarning>>,
 }
@@ -118,17 +122,22 @@ impl WarningCollector {
         }
     }
 
+    /// Locks the list, recovering it if a panic poisoned the lock: each
+    /// critical section below is one `Vec` operation, which leaves the `Vec`
+    /// valid even if it panics, so there is nothing to repair.
+    fn lock(&self) -> MutexGuard<'_, Vec<ExtensionWarning>> {
+        self.warnings.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Emits a warning, adding it to the collector.
     pub fn emit(&self, warning: ExtensionWarning) {
-        if let Ok(mut warnings) = self.warnings.lock() {
-            warnings.push(warning);
-        }
+        self.lock().push(warning);
     }
 
     /// Returns the number of warnings currently collected.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.warnings.lock().map_or(0, |w| w.len())
+        self.lock().len()
     }
 
     /// Returns `true` if no warnings have been collected.
@@ -140,24 +149,17 @@ impl WarningCollector {
     /// Returns a snapshot of all collected warnings without clearing them.
     #[must_use]
     pub fn snapshot(&self) -> Vec<ExtensionWarning> {
-        self.warnings
-            .lock()
-            .map_or_else(|_| Vec::new(), |w| w.clone())
+        self.lock().clone()
     }
 
     /// Drains all collected warnings, returning them and leaving the collector empty.
     pub fn drain(&self) -> Vec<ExtensionWarning> {
-        self.warnings
-            .lock()
-            .map(|mut w| std::mem::take(&mut *w))
-            .unwrap_or_default()
+        std::mem::take(&mut *self.lock())
     }
 
     /// Clears all collected warnings.
     pub fn clear(&self) {
-        if let Ok(mut warnings) = self.warnings.lock() {
-            warnings.clear();
-        }
+        self.lock().clear();
     }
 }
 
@@ -167,20 +169,30 @@ impl Default for WarningCollector {
     }
 }
 
-// SAFETY: WarningCollector uses Mutex internally for thread safety.
-// Mutex<Vec<ExtensionWarning>> is Send+Sync when ExtensionWarning is Send,
-// which it is (String + &'static str + Copy types).
+// `WarningCollector` is `Send + Sync` automatically: `Mutex<T>` is both when
+// `T: Send`, and `ExtensionWarning` holds only `String`, `&'static str` and
+// `Copy` fields. No `unsafe impl` is involved; this pins the property.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<WarningCollector>();
+};
 
 impl core::fmt::Debug for WarningCollector {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // `try_lock`, not `lock`: printing a value must never block, and must
         // not deadlock when the caller is already inside `emit`.
-        match self.warnings.try_lock() {
+        // A poisoned lock still guards an intact list (see `lock`).
+        let guard = match self.warnings.try_lock() {
+            Ok(guard) => Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => Err(()),
+        };
+        match guard {
             Ok(warnings) => f
                 .debug_struct("WarningCollector")
                 .field("warnings", &*warnings)
                 .finish(),
-            Err(_) => f
+            Err(()) => f
                 .debug_struct("WarningCollector")
                 .field("warnings", &"<locked>")
                 .finish(),
@@ -191,6 +203,51 @@ impl core::fmt::Debug for WarningCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn warning(code: &'static str, severity: WarningSeverity) -> ExtensionWarning {
+        ExtensionWarning {
+            code,
+            severity,
+            message: String::new(),
+            cwe: None,
+        }
+    }
+
+    /// A panic while the lock is held poisons it. The `Vec` behind it is
+    /// still whole (every critical section is a single `Vec` operation), so
+    /// the collector must keep working rather than drop warnings.
+    #[test]
+    fn a_poisoned_lock_does_not_lose_warnings() {
+        let c = WarningCollector::new();
+        c.emit(warning("BEFORE", WarningSeverity::Low));
+        let poisoner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = c.warnings.lock();
+            panic!("poison the collector's lock");
+        }));
+        assert!(poisoner.is_err());
+        assert!(c.warnings.is_poisoned());
+
+        c.emit(warning("AFTER", WarningSeverity::High));
+        assert!(format!("{c:?}").contains("AFTER"), "Debug reads through it");
+        assert_eq!(c.len(), 2);
+        assert!(!c.is_empty());
+        let codes: Vec<_> = c.snapshot().iter().map(|w| w.code).collect();
+        assert_eq!(codes, ["BEFORE", "AFTER"]);
+        assert_eq!(c.drain().len(), 2);
+        c.emit(warning("AGAIN", WarningSeverity::Info));
+        c.clear();
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn severities_order_from_info_to_critical() {
+        use WarningSeverity::{Critical, High, Info, Low, Medium};
+        assert!(Info < Low && Low < Medium && Medium < High && High < Critical);
+        let mut shuffled = [High, Info, Critical, Low, Medium];
+        shuffled.sort();
+        assert_eq!(shuffled, [Info, Low, Medium, High, Critical]);
+        assert_eq!([Low, Critical, Medium].iter().max(), Some(&Critical));
+    }
 
     #[test]
     fn severity_display() {
