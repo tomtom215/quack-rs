@@ -25,7 +25,6 @@ use libduckdb_sys::{
     DUCKDB_TYPE_DUCKDB_TYPE_UTINYINT, DUCKDB_TYPE_DUCKDB_TYPE_UUID,
     DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR,
 };
-#[cfg(feature = "duckdb-1-5")]
 use libduckdb_sys::{
     DUCKDB_TYPE_DUCKDB_TYPE_ANY, DUCKDB_TYPE_DUCKDB_TYPE_BIGNUM,
     DUCKDB_TYPE_DUCKDB_TYPE_INTEGER_LITERAL, DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL,
@@ -117,37 +116,32 @@ pub enum TypeId {
     UHugeInt,
     /// `ARRAY` — fixed-length array
     Array,
-    /// `TIME_NS` — time of day with nanosecond precision (`DuckDB` 1.5.0+)
-    #[cfg(feature = "duckdb-1-5")]
+    /// `TIME_NS` — time of day with nanosecond precision (`DuckDB` 1.4.0+)
     TimeNs,
-    /// `ANY` — wildcard type for function signatures (`DuckDB` 1.5.0+)
+    /// `ANY` — wildcard type for function signatures
     ///
     /// Used in function overload resolution to accept any input type.
     /// Not a concrete column type — typically used only in builder APIs.
-    #[cfg(feature = "duckdb-1-5")]
     Any,
-    /// `VARINT` — variable-length integer (`DuckDB` 1.5.0+)
+    /// `BIGNUM` — arbitrary-precision integer (called `VARINT` before `DuckDB`
+    /// 1.4.0, and still accepted under that name)
     ///
     /// Arbitrary-precision integer stored as a variable-length encoding.
     /// Maps to `DUCKDB_TYPE_BIGNUM` in the C API.
-    #[cfg(feature = "duckdb-1-5")]
     Varint,
-    /// `SQLNULL` — explicit SQL NULL type (`DuckDB` 1.5.0+)
+    /// `SQLNULL` — explicit SQL NULL type
     ///
     /// Represents the type of a bare `NULL` literal before type resolution.
-    #[cfg(feature = "duckdb-1-5")]
     SqlNull,
-    /// `INTEGER_LITERAL` — integer literal type used during overload resolution (`DuckDB` 1.5.0+)
+    /// `INTEGER_LITERAL` — integer literal type used during overload resolution
     ///
     /// Internal type representing an unresolved integer literal in SQL. Not a
     /// concrete column type — used by `DuckDB`'s type resolution system.
-    #[cfg(feature = "duckdb-1-5")]
     IntegerLiteral,
-    /// `STRING_LITERAL` — string literal type used during overload resolution (`DuckDB` 1.5.0+)
+    /// `STRING_LITERAL` — string literal type used during overload resolution
     ///
     /// Internal type representing an unresolved string literal in SQL. Not a
     /// concrete column type — used by `DuckDB`'s type resolution system.
-    #[cfg(feature = "duckdb-1-5")]
     StringLiteral,
     /// `GEOMETRY` — spatial geometry value (`DuckDB` 1.5.x; requires `duckdb-1-5-3`)
     ///
@@ -212,17 +206,11 @@ impl TypeId {
             Self::TimeTz => DUCKDB_TYPE_DUCKDB_TYPE_TIME_TZ,
             Self::UHugeInt => DUCKDB_TYPE_DUCKDB_TYPE_UHUGEINT,
             Self::Array => DUCKDB_TYPE_DUCKDB_TYPE_ARRAY,
-            #[cfg(feature = "duckdb-1-5")]
             Self::TimeNs => DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS,
-            #[cfg(feature = "duckdb-1-5")]
             Self::Any => DUCKDB_TYPE_DUCKDB_TYPE_ANY,
-            #[cfg(feature = "duckdb-1-5")]
             Self::Varint => DUCKDB_TYPE_DUCKDB_TYPE_BIGNUM,
-            #[cfg(feature = "duckdb-1-5")]
             Self::SqlNull => DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL,
-            #[cfg(feature = "duckdb-1-5")]
             Self::IntegerLiteral => DUCKDB_TYPE_DUCKDB_TYPE_INTEGER_LITERAL,
-            #[cfg(feature = "duckdb-1-5")]
             Self::StringLiteral => DUCKDB_TYPE_DUCKDB_TYPE_STRING_LITERAL,
             #[cfg(feature = "duckdb-1-5-3")]
             Self::Geometry => DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY,
@@ -331,9 +319,8 @@ impl TypeId {
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_ARRAY {
             Some(Self::Array)
         } else {
-            // DuckDB 1.5.0+ type-enum values (feature-gated). Kept in a nested
-            // block because `#[cfg]` cannot be attached to an `else if` arm.
-            #[cfg(feature = "duckdb-1-5")]
+            // Type-enum values `DuckDB` added after the core set. All six are
+            // defined in libduckdb-sys 1.4.4, this crate's floor.
             {
                 if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS {
                     return Some(Self::TimeNs);
@@ -503,17 +490,11 @@ impl TypeId {
             Self::TimeTz => "TIMETZ",
             Self::UHugeInt => "UHUGEINT",
             Self::Array => "ARRAY",
-            #[cfg(feature = "duckdb-1-5")]
             Self::TimeNs => "TIME_NS",
-            #[cfg(feature = "duckdb-1-5")]
             Self::Any => "ANY",
-            #[cfg(feature = "duckdb-1-5")]
-            Self::Varint => "VARINT",
-            #[cfg(feature = "duckdb-1-5")]
+            Self::Varint => "BIGNUM",
             Self::SqlNull => "SQLNULL",
-            #[cfg(feature = "duckdb-1-5")]
             Self::IntegerLiteral => "INTEGER_LITERAL",
-            #[cfg(feature = "duckdb-1-5")]
             Self::StringLiteral => "STRING_LITERAL",
             #[cfg(feature = "duckdb-1-5-3")]
             Self::Geometry => "GEOMETRY",
@@ -624,17 +605,11 @@ mod tests {
             TypeId::TimeTz,
             TypeId::UHugeInt,
             TypeId::Array,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::TimeNs,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::Any,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::Varint,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::SqlNull,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::IntegerLiteral,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::StringLiteral,
             #[cfg(feature = "duckdb-1-5-3")]
             TypeId::Geometry,
@@ -695,9 +670,8 @@ mod tests {
         assert!(s.contains("Interval"));
     }
 
-    // ---- DuckDB 1.5.0+ variant tests ----
+    // ---- Type ids added after the original set (all present from DuckDB 1.4.0) ----
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
     fn time_ns_maps_to_correct_duckdb_type() {
         assert_eq!(
@@ -706,13 +680,11 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
     fn any_maps_to_correct_duckdb_type() {
         assert_eq!(TypeId::Any.to_duckdb_type(), DUCKDB_TYPE_DUCKDB_TYPE_ANY);
     }
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
     fn varint_maps_to_correct_duckdb_type() {
         assert_eq!(
@@ -721,7 +693,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
     fn sql_null_maps_to_correct_duckdb_type() {
         assert_eq!(
@@ -730,31 +701,28 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
-    fn duckdb_1_5_variants_sql_names() {
+    fn later_type_id_variants_sql_names() {
         assert_eq!(TypeId::TimeNs.sql_name(), "TIME_NS");
         assert_eq!(TypeId::Any.sql_name(), "ANY");
-        assert_eq!(TypeId::Varint.sql_name(), "VARINT");
+        assert_eq!(TypeId::Varint.sql_name(), "BIGNUM");
         assert_eq!(TypeId::SqlNull.sql_name(), "SQLNULL");
         assert_eq!(TypeId::IntegerLiteral.sql_name(), "INTEGER_LITERAL");
         assert_eq!(TypeId::StringLiteral.sql_name(), "STRING_LITERAL");
     }
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
-    fn duckdb_1_5_variants_display_matches_sql_name() {
+    fn later_type_id_variants_display_matches_sql_name() {
         assert_eq!(format!("{}", TypeId::TimeNs), "TIME_NS");
         assert_eq!(format!("{}", TypeId::Any), "ANY");
-        assert_eq!(format!("{}", TypeId::Varint), "VARINT");
+        assert_eq!(format!("{}", TypeId::Varint), "BIGNUM");
         assert_eq!(format!("{}", TypeId::SqlNull), "SQLNULL");
         assert_eq!(format!("{}", TypeId::IntegerLiteral), "INTEGER_LITERAL");
         assert_eq!(format!("{}", TypeId::StringLiteral), "STRING_LITERAL");
     }
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
-    fn duckdb_1_5_variants_hash_eq() {
+    fn later_type_id_variants_hash_eq() {
         use std::collections::HashSet;
         let mut set = HashSet::new();
         set.insert(TypeId::TimeNs);
@@ -772,7 +740,6 @@ mod tests {
         assert!(set.contains(&TypeId::StringLiteral));
     }
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
     fn integer_literal_maps_to_correct_duckdb_type() {
         assert_eq!(
@@ -781,7 +748,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "duckdb-1-5")]
     #[test]
     fn string_literal_maps_to_correct_duckdb_type() {
         assert_eq!(
@@ -826,19 +792,13 @@ mod tests {
             TypeId::TimeTz,
             TypeId::UHugeInt,
             TypeId::Array,
-            // DuckDB 1.5.0+ variants: from_duckdb_type must handle these too
+            // Later type ids: from_duckdb_type must handle these too
             // (previously it panicked on them — see the panic-gap fix).
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::TimeNs,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::Any,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::Varint,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::SqlNull,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::IntegerLiteral,
-            #[cfg(feature = "duckdb-1-5")]
             TypeId::StringLiteral,
             #[cfg(feature = "duckdb-1-5-3")]
             TypeId::Geometry,

@@ -43,12 +43,12 @@ from `libduckdb-sys` and provides safe, named variants.
 | `TypeId::TimeTz` | `TIMETZ` | `DUCKDB_TYPE_TIME_TZ` | timezone-aware time |
 | `TypeId::UHugeInt` | `UHUGEINT` | `DUCKDB_TYPE_UHUGEINT` | 128-bit unsigned |
 | `TypeId::Array` | `ARRAY` | `DUCKDB_TYPE_ARRAY` | fixed-length array |
-| `TypeId::TimeNs` | `TIME_NS` | `DUCKDB_TYPE_TIME_NS` | nanosecond-precision time (`duckdb-1-5`) |
-| `TypeId::Any` | `ANY` | `DUCKDB_TYPE_ANY` | wildcard for function signatures (`duckdb-1-5`) |
-| `TypeId::Varint` | `VARINT` | `DUCKDB_TYPE_BIGNUM` | variable-length integer (`duckdb-1-5`) |
-| `TypeId::SqlNull` | `SQLNULL` | `DUCKDB_TYPE_SQLNULL` | explicit SQL NULL type (`duckdb-1-5`) |
-| `TypeId::IntegerLiteral` | `INTEGER_LITERAL` | `DUCKDB_TYPE_INTEGER_LITERAL` | unresolved integer literal (`duckdb-1-5`) |
-| `TypeId::StringLiteral` | `STRING_LITERAL` | `DUCKDB_TYPE_STRING_LITERAL` | unresolved string literal (`duckdb-1-5`) |
+| `TypeId::TimeNs` | `TIME_NS` | `DUCKDB_TYPE_TIME_NS` | nanosecond-precision time |
+| `TypeId::Any` | `ANY` | `DUCKDB_TYPE_ANY` | wildcard for function signatures |
+| `TypeId::Varint` | `BIGNUM` | `DUCKDB_TYPE_BIGNUM` | arbitrary-precision integer (`VARINT` before DuckDB 1.4) |
+| `TypeId::SqlNull` | `SQLNULL` | `DUCKDB_TYPE_SQLNULL` | explicit SQL NULL type |
+| `TypeId::IntegerLiteral` | `INTEGER_LITERAL` | `DUCKDB_TYPE_INTEGER_LITERAL` | unresolved integer literal |
+| `TypeId::StringLiteral` | `STRING_LITERAL` | `DUCKDB_TYPE_STRING_LITERAL` | unresolved string literal |
 | `TypeId::Geometry` | `GEOMETRY` | `DUCKDB_TYPE_GEOMETRY` | spatial geometry value (`duckdb-1-5-3`) |
 | `TypeId::Variant` | `VARIANT` | `DUCKDB_TYPE_VARIANT` | self-describing nested value, e.g. Iceberg v3 (`duckdb-1-5-3`) |
 
@@ -77,9 +77,10 @@ let raw: libduckdb_sys::DUCKDB_TYPE = TypeId::BigInt.to_duckdb_type();
 ### `from_duckdb_type(raw) → TypeId`
 
 Converts a raw `DUCKDB_TYPE` constant back into a `TypeId`. Recognizes every
-variant available in the active feature set, including the `duckdb-1-5` values
-(`TIME_NS`, `ANY`, `VARINT`, `SQLNULL`, `INTEGER_LITERAL`, `STRING_LITERAL`) and
-the `duckdb-1-5-3` values (`GEOMETRY`, `VARIANT`) when those features are enabled.
+variant available in the active feature set, including `TIME_NS`, `ANY`,
+`BIGNUM`, `SQLNULL`, `INTEGER_LITERAL` and `STRING_LITERAL` (no feature needed:
+all six exist in every DuckDB this crate supports) and the `duckdb-1-5-3`
+values (`GEOMETRY`, `VARIANT`) when that feature is enabled.
 Panics if the value does not correspond to any variant available in the current
 feature configuration.
 

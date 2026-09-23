@@ -803,12 +803,31 @@ impl LogicalType {
 
     /// Returns the [`TypeId`] of this logical type.
     ///
+    /// # Panics
+    ///
+    /// Panics if `DuckDB` reports a type this build of quack-rs has no variant
+    /// for — for example `GEOMETRY` or `VARIANT` without the `duckdb-1-5-3`
+    /// feature, or a type added by a newer `DuckDB`. Inside a callback, where
+    /// the type comes from the query, prefer
+    /// [`try_get_type_id`][Self::try_get_type_id].
+    ///
     /// # Safety
     ///
     /// The inner handle must be valid (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn get_type_id(&self) -> TypeId {
         TypeId::from_duckdb_type(unsafe { duckdb_get_type_id(self.inner) })
+    }
+
+    /// Returns the [`TypeId`] of this logical type, or `None` if this build of
+    /// quack-rs has no variant for it (see [`get_type_id`][Self::get_type_id]).
+    ///
+    /// # Safety
+    ///
+    /// The inner handle must be valid (requires `DuckDB` runtime).
+    #[must_use]
+    pub unsafe fn try_get_type_id(&self) -> Option<TypeId> {
+        TypeId::try_from_duckdb_type(unsafe { duckdb_get_type_id(self.inner) })
     }
 
     /// Returns the alias of this logical type, or `None` if no alias is set.
@@ -1330,6 +1349,35 @@ mod live_tests {
             panic!("try_enum_type must reject an interior NUL");
         };
         assert!(err.to_string().contains("null byte"), "{err}");
+    }
+
+    /// Regression: these six type ids exist in every `DuckDB` this crate
+    /// supports (all are in libduckdb-sys 1.4.4), but their `TypeId` variants
+    /// were gated behind `duckdb-1-5`. Without that feature, `get_type_id` on a
+    /// `TIME_NS` or `BIGNUM` column — which `DuckDB` 1.4.4 produces — panicked.
+    #[test]
+    fn type_ids_from_duckdb_1_4_resolve_without_any_feature() {
+        use libduckdb_sys::{
+            duckdb_create_logical_type, DUCKDB_TYPE_DUCKDB_TYPE_ANY,
+            DUCKDB_TYPE_DUCKDB_TYPE_BIGNUM, DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL,
+            DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS,
+        };
+        let _db = crate::testing::InMemoryDb::open().expect("open in-memory DuckDB");
+        for (raw, want) in [
+            (DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS, TypeId::TimeNs),
+            (DUCKDB_TYPE_DUCKDB_TYPE_BIGNUM, TypeId::Varint),
+            (DUCKDB_TYPE_DUCKDB_TYPE_ANY, TypeId::Any),
+            (DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL, TypeId::SqlNull),
+        ] {
+            // SAFETY: a valid DUCKDB_TYPE for a non-composite type; the handle
+            // is owned by the returned `LogicalType`.
+            let ty = unsafe { LogicalType::from_raw(duckdb_create_logical_type(raw)) };
+            // SAFETY: `ty` wraps a valid logical type.
+            unsafe {
+                assert_eq!(ty.try_get_type_id(), Some(want));
+                assert_eq!(ty.get_type_id(), want);
+            }
+        }
     }
 
     #[test]

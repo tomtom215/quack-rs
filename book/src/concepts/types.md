@@ -46,12 +46,12 @@ TypeId::Uuid
 TypeId::Union
 TypeId::Bit
 TypeId::Array
-TypeId::TimeNs      // duckdb-1-5
-TypeId::Any              // duckdb-1-5
-TypeId::Varint           // duckdb-1-5
-TypeId::SqlNull          // duckdb-1-5
-TypeId::IntegerLiteral   // duckdb-1-5
-TypeId::StringLiteral    // duckdb-1-5
+TypeId::TimeNs
+TypeId::Any
+TypeId::Varint           // SQL name BIGNUM (VARINT before DuckDB 1.4)
+TypeId::SqlNull
+TypeId::IntegerLiteral
+TypeId::StringLiteral
 TypeId::Geometry         // duckdb-1-5-3
 TypeId::Variant          // duckdb-1-5-3
 ```

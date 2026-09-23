@@ -101,8 +101,6 @@ _duckdb-testing = ["dep:duckdb"]
 ##
 ## Requires `libduckdb-sys >= 1.10500.0` (DuckDB 1.5.0+) to be resolved by Cargo.
 ## Enables wrappers for new C Extension API surfaces:
-## - `TypeId::TimeNs` column type
-## - `TypeId::Any`, `TypeId::Varint`, `TypeId::SqlNull`, `TypeId::IntegerLiteral`, `TypeId::StringLiteral` column types
 ## - Scalar function bind/init lifecycle and local state
 ## - Config option registration (extension-defined settings)
 ## - Copy function support (custom `COPY TO` handlers)
