@@ -156,7 +156,7 @@ mod tests {
 
     /// Every payload in a chain shorter than the bound is dropped, not leaked:
     /// before, the payload raised by the first panicking `Drop` was
-    /// `mem::forget`-ed unconditionally, which LeakSanitizer and Miri report.
+    /// `mem::forget`-ed unconditionally, which `LeakSanitizer` and Miri report.
     #[test]
     fn a_chain_of_panicking_payload_drops_is_freed_to_the_end() {
         let depth = super::MAX_NESTED_PAYLOAD_DROPS - 2;

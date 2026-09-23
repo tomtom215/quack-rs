@@ -64,7 +64,7 @@
 
 mod payload;
 
-pub use payload::{drop_panic_payload, take_panic_message};
+pub use payload::{drop_panic_payload, take_panic_message, MAX_NESTED_PAYLOAD_DROPS};
 
 /// Generates a panic-safe `unsafe extern "C"` scalar function callback.
 ///
