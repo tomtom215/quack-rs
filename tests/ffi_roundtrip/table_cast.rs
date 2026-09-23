@@ -671,3 +671,161 @@ fn reading_a_null_config_option_is_none_not_an_abort() {
     // A built-in setting that is NULL until set.
     assert_eq!(ctx.config_option(c"enable_profiling"), None);
 }
+
+/// TBL-3: a default that SQL `TRY_CAST` accepts but `DuckDB`'s built-in
+/// `DefaultCastAs` does not — a `TIMESTAMPTZ` with a zone name, which only
+/// ICU's cast understands — passed quack-rs's old check and then aborted
+/// inside `duckdb_config_option_set_default_value` (probe t09). The default is
+/// now converted by SQL and handed over already typed, so it registers, and
+/// every supported type stores exactly what `TRY_CAST` produces.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_config_option_default_is_converted_by_sql_not_inside_the_c_api() {
+    use quack_rs::config_option::ConfigOptionBuilder;
+
+    let fx = Fixture::open();
+    assert_eq!(
+        fx.scalar(
+            "SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'",
+            |r, i| unsafe { r.read_bool(i) }
+        ),
+        Some(true),
+        "this regression needs ICU's VARCHAR -> TIMESTAMPTZ cast"
+    );
+    for (i, (ty, default)) in [
+        (TypeId::TimestampTz, "2020-01-01 10:00:00 America/New_York"),
+        (TypeId::Boolean, "true"),
+        (TypeId::TinyInt, "-7"),
+        (TypeId::SmallInt, "300"),
+        (TypeId::Integer, "-70000"),
+        (TypeId::BigInt, "42"),
+        (TypeId::UTinyInt, "250"),
+        (TypeId::USmallInt, "65000"),
+        (TypeId::UInteger, "4000000000"),
+        (TypeId::UBigInt, "18446744073709551615"),
+        (TypeId::HugeInt, "-170141183460469231731687303715884105728"),
+        (TypeId::UHugeInt, "340282366920938463463374607431768211455"),
+        (TypeId::Float, "1.5"),
+        (TypeId::Double, "1e308"),
+        (TypeId::Date, "2024-02-29"),
+        (TypeId::Time, "12:34:56.789"),
+        (TypeId::TimeTz, "12:34:56+02"),
+        (TypeId::Timestamp, "2024-02-29 12:34:56.123456"),
+        (TypeId::TimestampS, "2024-02-29 12:34:56"),
+        (TypeId::TimestampMs, "2024-02-29 12:34:56.123"),
+        (TypeId::TimestampNs, "2024-02-29 12:34:56.123456789"),
+        (TypeId::Interval, "1 year 2 days 3 hours"),
+        (TypeId::Varchar, "plain text"),
+        (TypeId::Varchar, ""),
+        (TypeId::Blob, "\\xAA\\x00b"),
+        (TypeId::Uuid, "11111111-2222-3333-4444-555555555555"),
+        (TypeId::Bit, "0101100111"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("tc_typed_default_{i}");
+        // SAFETY: `con` is open.
+        unsafe {
+            ConfigOptionBuilder::try_new(&name)
+                .expect("name")
+                .option_type(ty)
+                .default_value(default)
+                .expect("default")
+                .register(fx.con())
+        }
+        .unwrap_or_else(|e| panic!("{ty:?} default {default:?}: {e}"));
+        let expected = fx.scalar(
+            &format!(
+                "SELECT TRY_CAST('{}' AS {})::VARCHAR",
+                default.replace('\'', "''"),
+                ty.sql_name()
+            ),
+            |r, i| unsafe { r.read_str(i).to_owned() },
+        );
+        let stored = fx.scalar(
+            &format!("SELECT current_setting('{name}')::VARCHAR"),
+            |r, i| unsafe { r.read_str(i).to_owned() },
+        );
+        assert!(expected.is_some(), "{ty:?}: {default:?} must convert");
+        assert_eq!(stored, expected, "{ty:?} default {default:?}");
+        let same_type = fx.scalar(
+            &format!(
+                "SELECT typeof(current_setting('{name}')) = typeof(TRY_CAST(NULL AS {}))",
+                ty.sql_name()
+            ),
+            |r, i| unsafe { r.read_bool(i) },
+        );
+        assert_eq!(
+            same_type,
+            Some(true),
+            "{ty:?}: the setting keeps the option's type"
+        );
+    }
+}
+
+/// TBL-14: an extension option could take the name of a built-in setting
+/// (`threads`), shadowing it for `current_setting`.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_config_option_may_not_take_a_built_in_settings_name() {
+    use quack_rs::config_option::ConfigOptionBuilder;
+
+    let fx = Fixture::open();
+    for name in ["threads", "THREADS", "worker_threads"] {
+        // SAFETY: `con` is open.
+        let err = unsafe {
+            ConfigOptionBuilder::try_new(name)
+                .expect("name")
+                .option_type(TypeId::BigInt)
+                .default_value("1")
+                .expect("default")
+                .register(fx.con())
+        }
+        .expect_err("a built-in setting's name must be refused");
+        assert!(err.as_str().contains("already exists"), "{name}: {err}");
+    }
+    assert!(fx
+        .scalar("SELECT current_setting('threads')", |r, i| unsafe {
+            r.read_i64(i)
+        })
+        .is_some_and(|n| n >= 1));
+}
+
+/// TBL-23: an option with no default reads as "unrecognized configuration
+/// parameter", and `ANY` / `SQLNULL` options failed with a parser or catalog
+/// error from quack-rs's own cast check.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn config_options_without_a_default_or_with_a_pseudo_type_are_refused_clearly() {
+    use quack_rs::config_option::ConfigOptionBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    let err = unsafe {
+        ConfigOptionBuilder::try_new("tc_no_default")
+            .expect("name")
+            .option_type(TypeId::BigInt)
+            .register(fx.con())
+    }
+    .expect_err("an option without a default must be refused");
+    assert!(err.as_str().contains("no default value"), "{err}");
+
+    for ty in [TypeId::Any, TypeId::SqlNull] {
+        // SAFETY: `con` is open.
+        let err = unsafe {
+            ConfigOptionBuilder::try_new("tc_pseudo")
+                .expect("name")
+                .option_type(ty)
+                .default_value("1")
+                .expect("default")
+                .register(fx.con())
+        }
+        .expect_err("a pseudo-type option must be refused");
+        assert!(
+            err.as_str()
+                .contains("cannot be the type of a config option"),
+            "{ty:?}: {err}"
+        );
+    }
+}

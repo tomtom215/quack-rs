@@ -32,12 +32,13 @@ use libduckdb_sys::{
     duckdb_config_option_set_default_scope, duckdb_config_option_set_default_value,
     duckdb_config_option_set_description, duckdb_config_option_set_name,
     duckdb_config_option_set_type, duckdb_connection, duckdb_create_config_option,
-    duckdb_create_varchar, duckdb_destroy_config_option, duckdb_destroy_value,
-    duckdb_register_config_option, DuckDBSuccess,
+    duckdb_destroy_config_option, duckdb_register_config_option, DuckDBSuccess,
 };
 
 use crate::error::ExtensionError;
 use crate::types::{LogicalType, TypeId};
+use crate::value::Value;
+use crate::vector::VectorReader;
 
 /// Scope in which a configuration option takes effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,8 +122,10 @@ impl ConfigOptionBuilder {
 
     /// Sets the default value as a string representation.
     ///
-    /// The string is cast to the option's type at [`register`][Self::register]
-    /// time, which checks first that the cast succeeds.
+    /// The string is converted to the option's type at
+    /// [`register`][Self::register] time, with the same SQL cast `SET` uses;
+    /// a string that does not convert is an error there. Every option needs a
+    /// default — see [`register`][Self::register].
     ///
     /// # Errors
     ///
@@ -143,41 +146,80 @@ impl ConfigOptionBuilder {
 
     /// Registers this config option with `DuckDB`.
     ///
-    /// # Default values are checked first
+    /// # The default is converted by SQL, never inside the C API
     ///
-    /// `duckdb_config_option_set_default_value` casts the default string to
-    /// the option type with a *throwing* cast and no `try`/`catch`, so a
-    /// default such as `"abc"` for a `BIGINT` option would abort the process
-    /// ("Rust cannot catch foreign exceptions"). Unless the type is
-    /// `VARCHAR` (no cast), `register` therefore first runs
-    /// `SELECT TRY_CAST($1::VARCHAR AS <type>) IS NOT NULL` on `con`, with the
-    /// default bound as a parameter, and returns an error if the cast fails.
+    /// `duckdb_config_option_set_default_value` converts a default whose type
+    /// differs from the option's with `Value::DefaultCastAs` — a *throwing*
+    /// cast with no `try`/`catch` around it — so a string default that does
+    /// not convert would abort the process ("Rust cannot catch foreign
+    /// exceptions"). Worse, `DefaultCastAs` uses only the built-in casts while
+    /// SQL uses the connection's, so a string one accepts can still make the
+    /// other throw: with ICU loaded, `'2020-01-01 10:00:00 America/New_York'`
+    /// is a valid `TIMESTAMPTZ` in SQL and an abort in `DefaultCastAs`.
     ///
-    /// One gap remains: SQL `TRY_CAST` uses the connection's cast functions,
-    /// including casts extensions have registered, while `DuckDB`'s default-value
-    /// cast uses only the built-in ones. If your extension registers a
-    /// `VARCHAR` → option-type cast that accepts strings the built-in cast
-    /// rejects, register the config option **before** that cast, or use a
-    /// default the built-in cast accepts.
+    /// `register` therefore converts the default itself, by running
+    /// `SELECT TRY_CAST($1::VARCHAR AS <type>)` on `con` with the default bound
+    /// as a parameter, and hands `DuckDB` a value that **already has the
+    /// option's type**. `duckdb_config_option_set_default_value` stores such a
+    /// value as-is (it only casts when `coption->type != cvalue->type()`,
+    /// `src/main/capi/config_options-c.cpp`), so no cast can run inside the C
+    /// API. The stored default is exactly what `TRY_CAST('<default>' AS <type>)`
+    /// produces in SQL on `con`.
+    ///
+    /// Option types whose values the C API cannot construct from a query
+    /// result (`BIGNUM`, `GEOMETRY`, `VARIANT`, ...) are refused rather than
+    /// sent down the throwing path.
     ///
     /// # Errors
     ///
-    /// Returns `ExtensionError` if the option type was not set, if the default
-    /// value does not cast to the option type (or the check itself cannot run
-    /// on `con`), or if registration fails.
+    /// Returns `ExtensionError`, before anything is registered, if:
+    ///
+    /// - the option type was not set, or is a pseudo-type (`ANY`, `SQLNULL`,
+    ///   the literal types) that no setting can have;
+    /// - no default value was set. `DuckDB` treats an extension option
+    ///   without a default as unset: `current_setting` reports it as an
+    ///   "unrecognized configuration parameter" until someone `SET`s it, and
+    ///   [`ClientContext::config_option`][crate::client_context::ClientContext::config_option]
+    ///   on it takes the path a debug build of `DuckDB` asserts on;
+    /// - the name is already a setting — built-in (`threads`), an alias of
+    ///   one (`worker_threads`), or another extension's. Names are compared
+    ///   case-insensitively, as `DuckDB` resolves them. `DuckDB` itself only
+    ///   refuses a name another *extension option* has, and silently lets an
+    ///   extension option shadow a built-in one for `current_setting`;
+    /// - the default does not convert to the option type (or the conversion
+    ///   query cannot run on `con`), or the type cannot carry a default;
+    /// - `duckdb_register_config_option` fails.
     ///
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        let name = self.name.to_string_lossy();
         let type_id = self
             .option_type
             .ok_or_else(|| ExtensionError::new("config option type not set"))?;
-        let lt = LogicalType::for_slot(type_id, "config option type")?;
-        if let Some(ref val) = self.default_value {
-            // SAFETY: `con` is valid per this function's contract.
-            unsafe { check_default_casts(con, &self.name, type_id, val) }?;
+        if matches!(
+            type_id,
+            TypeId::Any | TypeId::SqlNull | TypeId::IntegerLiteral | TypeId::StringLiteral
+        ) {
+            return Err(ExtensionError::new(format!(
+                "config option '{name}': {} cannot be the type of a config option; it is a \
+                 pseudo-type that no value is stored as. Use a concrete type such as VARCHAR.",
+                type_id.sql_name()
+            )));
         }
+        let Some(ref default) = self.default_value else {
+            return Err(ExtensionError::new(format!(
+                "config option '{name}' has no default value. DuckDB treats an extension option \
+                 without one as unset: current_setting('{name}') fails with \"unrecognized \
+                 configuration parameter\" until it is SET. Call default_value(...)."
+            )));
+        };
+        let lt = LogicalType::for_slot(type_id, "config option type")?;
+        // SAFETY: `con` is valid per this function's contract.
+        unsafe { refuse_existing_setting(con, &name) }?;
+        // SAFETY: `con` is valid per this function's contract.
+        let default = unsafe { typed_default(con, &name, type_id, default) }?;
 
         // SAFETY: duckdb_create_config_option allocates a new handle.
         let option: duckdb_config_option = unsafe { duckdb_create_config_option() };
@@ -196,18 +238,11 @@ impl ConfigOptionBuilder {
             }
         }
 
-        if let Some(ref val) = self.default_value {
-            // SAFETY: duckdb_create_varchar allocates a duckdb_value.
-            let dv = unsafe { duckdb_create_varchar(val.as_ptr()) };
-            // SAFETY: option and dv are valid.
-            unsafe {
-                duckdb_config_option_set_default_value(option, dv);
-            }
-            // SAFETY: dv was created by duckdb_create_varchar.
-            let mut dv_mut = dv;
-            unsafe {
-                duckdb_destroy_value(&raw mut dv_mut);
-            }
+        // SAFETY: option and the value are valid. The value already has the
+        // option's type, so DuckDB copies it without casting (no throw
+        // possible); `default` still owns it and destroys it on drop.
+        unsafe {
+            duckdb_config_option_set_default_value(option, default.as_raw());
         }
 
         // SAFETY: con is valid per caller's contract, option is fully configured.
@@ -223,45 +258,86 @@ impl ConfigOptionBuilder {
             Ok(())
         } else {
             Err(ExtensionError::new(format!(
-                "duckdb_register_config_option failed for '{}'",
-                self.name.to_string_lossy()
+                "duckdb_register_config_option failed for '{name}'"
             )))
         }
     }
 }
 
-/// Verifies that `default` casts to `type_id`, using `DuckDB`'s own
-/// non-throwing `TRY_CAST`, before the throwing cast inside
-/// `duckdb_config_option_set_default_value` can abort the process.
+/// Refuses `name` if `duckdb_settings()` already lists it, as a setting or as
+/// an alias of one, compared case-insensitively.
 ///
 /// # Safety
 ///
 /// `con` must be a valid, open `duckdb_connection`.
-unsafe fn check_default_casts(
+unsafe fn refuse_existing_setting(
     con: duckdb_connection,
-    name: &CString,
+    name: &str,
+) -> Result<(), ExtensionError> {
+    let context = |detail: String| {
+        ExtensionError::new(format!(
+            "config option '{name}': cannot check whether the name is taken: {detail}"
+        ))
+    };
+    // `aliases` is a VARCHAR[] column; unnesting it avoids lambda syntax,
+    // whose spelling DuckDB has been changing.
+    let sql = "SELECT (SELECT count(*) FROM duckdb_settings() WHERE lower(name) = lower($1)) \
+               + (SELECT count(*) FROM (SELECT unnest(aliases) AS alias FROM duckdb_settings()) \
+                  WHERE lower(alias) = lower($1))";
+    // SAFETY: `con` is valid per this function's contract.
+    let statement =
+        unsafe { crate::query::prepare(con, sql) }.map_err(|e| context(e.to_string()))?;
+    statement
+        .bind_str(1, name)
+        .map_err(|e| context(e.to_string()))?;
+    let mut result = statement.execute().map_err(|e| context(e.to_string()))?;
+    let chunk = result
+        .next_chunk()
+        .ok_or_else(|| context("the check returned no rows".into()))?;
+    if chunk.size() != 1 || chunk.column_count() != 1 {
+        return Err(context("the check returned an unexpected shape".into()));
+    }
+    // SAFETY: one row, one BIGINT column; a sum of two counts is never NULL.
+    let taken = unsafe { chunk.reader(0).read_i64(0) };
+    if taken == 0 {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "config option '{name}' already exists: DuckDB already has a setting (or setting \
+             alias) with this name — see `SELECT * FROM duckdb_settings()`. Registering it would \
+             fail, or silently shadow the built-in setting in current_setting(). Choose a name \
+             prefixed with your extension's name."
+        )))
+    }
+}
+
+/// Converts `default` to a value of type `type_id` with SQL
+/// `TRY_CAST($1::VARCHAR AS <type>)` and rebuilds the result as a
+/// `duckdb_value` of exactly that type.
+///
+/// This is what keeps `duckdb_config_option_set_default_value` from running
+/// its throwing `DefaultCastAs`: that call only casts when the value's type
+/// differs from the option's.
+///
+/// # Safety
+///
+/// `con` must be a valid, open `duckdb_connection`.
+unsafe fn typed_default(
+    con: duckdb_connection,
+    name: &str,
     type_id: TypeId,
     default: &CString,
-) -> Result<(), ExtensionError> {
-    if type_id == TypeId::Varchar {
-        // A VARCHAR default is stored as-is; there is no cast to fail.
-        return Ok(());
-    }
-    let name = name.to_string_lossy();
+) -> Result<Value, ExtensionError> {
     let default = default
         .to_str()
         .map_err(|_| ExtensionError::new("config option default value is not valid UTF-8"))?;
     let context = |detail: String| {
         ExtensionError::new(format!(
-            "config option '{name}': cannot validate default value {default:?} for type {}: \
-             {detail}",
+            "config option '{name}': cannot convert default value {default:?} to {}: {detail}",
             type_id.sql_name()
         ))
     };
-    let sql = format!(
-        "SELECT TRY_CAST($1::VARCHAR AS {}) IS NOT NULL",
-        type_id.sql_name()
-    );
+    let sql = format!("SELECT TRY_CAST($1::VARCHAR AS {})", type_id.sql_name());
     // SAFETY: `con` is valid per this function's contract.
     let statement =
         unsafe { crate::query::prepare(con, &sql) }.map_err(|e| context(e.to_string()))?;
@@ -271,21 +347,83 @@ unsafe fn check_default_casts(
     let mut result = statement.execute().map_err(|e| context(e.to_string()))?;
     let chunk = result
         .next_chunk()
-        .ok_or_else(|| context("the check returned no rows".into()))?;
+        .ok_or_else(|| context("the conversion returned no rows".into()))?;
     if chunk.size() != 1 || chunk.column_count() != 1 {
-        return Err(context("the check returned an unexpected shape".into()));
+        return Err(context(
+            "the conversion returned an unexpected shape".into(),
+        ));
     }
-    // SAFETY: the chunk has exactly one BOOLEAN column and one row;
-    // `IS NOT NULL` is never NULL.
-    let casts = unsafe { chunk.reader(0).read_bool(0) };
-    if casts {
-        Ok(())
-    } else {
-        Err(ExtensionError::new(format!(
+    // SAFETY: the chunk has one column and one row.
+    let reader = unsafe { chunk.reader(0) };
+    // SAFETY: row 0 exists.
+    if !unsafe { reader.is_valid(0) } {
+        return Err(ExtensionError::new(format!(
             "config option '{name}': default value {default:?} cannot be cast to {}",
             type_id.sql_name()
-        )))
+        )));
     }
+    // SAFETY: row 0 exists, is valid, and the column has type `type_id`.
+    unsafe { value_of_type(&reader, type_id) }.ok_or_else(|| {
+        ExtensionError::new(format!(
+            "config option '{name}': a default value of type {} is not supported; the C API \
+             cannot build one without a cast that may abort the process. Use a VARCHAR option \
+             and parse it yourself.",
+            type_id.sql_name()
+        ))
+    })
+}
+
+/// Reads row 0 of `reader` as a [`Value`] of type `type_id`, or `None` for a
+/// type the C API has no direct constructor for.
+///
+/// # Safety
+///
+/// Row 0 must exist, be valid, and hold a value of type `type_id`.
+unsafe fn value_of_type(reader: &VectorReader, type_id: TypeId) -> Option<Value> {
+    // SAFETY (every arm): row 0 exists and the physical layout matches
+    // `type_id`, per this function's contract.
+    let value = unsafe {
+        match type_id {
+            TypeId::Boolean => Value::boolean(reader.read_bool(0)),
+            TypeId::TinyInt => Value::tinyint(reader.read_i8(0)),
+            TypeId::SmallInt => Value::smallint(reader.read_i16(0)),
+            TypeId::Integer => Value::integer(reader.read_i32(0)),
+            TypeId::BigInt => Value::bigint(reader.read_i64(0)),
+            TypeId::UTinyInt => Value::utinyint(reader.read_u8(0)),
+            TypeId::USmallInt => Value::usmallint(reader.read_u16(0)),
+            TypeId::UInteger => Value::uinteger(reader.read_u32(0)),
+            TypeId::UBigInt => Value::ubigint(reader.read_u64(0)),
+            TypeId::HugeInt => Value::hugeint(reader.read_i128(0)),
+            TypeId::UHugeInt => Value::uhugeint(reader.read_u128(0)),
+            TypeId::Float => Value::float(reader.read_f32(0)),
+            TypeId::Double => Value::double(reader.read_f64(0)),
+            TypeId::Date => Value::date(reader.read_date(0)),
+            TypeId::Time => Value::time(reader.read_time(0)),
+            TypeId::TimeNs => Value::time_ns(reader.read_i64(0)),
+            TypeId::TimeTz => Value::time_tz(reader.read_time_tz(0)),
+            TypeId::Timestamp => Value::timestamp(reader.read_timestamp(0)),
+            TypeId::TimestampS => Value::timestamp_s(reader.read_timestamp_s(0)),
+            TypeId::TimestampMs => Value::timestamp_ms(reader.read_timestamp_ms(0)),
+            TypeId::TimestampNs => Value::timestamp_ns(reader.read_timestamp_ns(0)),
+            TypeId::TimestampTz => Value::timestamp_tz(reader.read_timestamp_tz(0)),
+            TypeId::Interval => Value::interval(reader.read_interval(0)),
+            TypeId::Varchar => Value::varchar(reader.read_str(0)),
+            TypeId::Blob => Value::blob(reader.read_blob(0)),
+            TypeId::Uuid => Value::uuid(reader.read_uuid(0)),
+            TypeId::Bit => {
+                // A BIT vector stores the same bytes `Value::BIT` takes: the
+                // padding byte followed by the bits.
+                let bytes = reader.read_blob(0);
+                let raw = libduckdb_sys::duckdb_create_bit(libduckdb_sys::duckdb_bit {
+                    data: bytes.as_ptr().cast_mut(),
+                    size: libduckdb_sys::idx_t::try_from(bytes.len()).ok()?,
+                });
+                Value::from_raw(raw)
+            }
+            _ => return None,
+        }
+    };
+    Some(value)
 }
 
 #[cfg(test)]
@@ -331,8 +469,7 @@ mod tests {
         let builder = ConfigOptionBuilder::try_new("threshold")
             .unwrap()
             .option_type(TypeId::BigInt);
-        // Verifies fluent chaining compiles and doesn't panic.
-        assert_eq!(builder.name(), "threshold");
+        assert_eq!(builder.option_type, Some(TypeId::BigInt));
     }
 
     #[test]
@@ -341,7 +478,11 @@ mod tests {
             .unwrap()
             .description("max threshold")
             .unwrap();
-        assert_eq!(builder.name(), "threshold");
+        assert_eq!(
+            builder.description.as_deref(),
+            Some(c"max threshold"),
+            "the description must be stored"
+        );
     }
 
     #[test]
@@ -350,16 +491,52 @@ mod tests {
             .unwrap()
             .default_value("100")
             .unwrap();
-        assert_eq!(builder.name(), "limit");
+        assert_eq!(builder.default_value.as_deref(), Some(c"100"));
     }
 
     #[test]
     fn scope_default_is_global() {
-        // ConfigOptionScope defaults to Global in the builder.
         let builder = ConfigOptionBuilder::try_new("opt").unwrap();
-        // We can't read the scope directly, but we can verify the
-        // ConfigOptionScope enum works correctly.
-        assert_eq!(builder.name(), "opt");
+        assert_eq!(builder.scope, ConfigOptionScope::Global);
+        let builder = builder.scope(ConfigOptionScope::Session);
+        assert_eq!(builder.scope, ConfigOptionScope::Session);
+    }
+
+    /// The pseudo-type and missing-default checks run before `con` is used,
+    /// so a null connection is never dereferenced.
+    #[test]
+    fn pseudo_types_and_missing_defaults_are_refused_before_duckdb_is_called() {
+        for ty in [
+            TypeId::Any,
+            TypeId::SqlNull,
+            TypeId::IntegerLiteral,
+            TypeId::StringLiteral,
+        ] {
+            // SAFETY: `register` returns before using `con`.
+            let err = unsafe {
+                ConfigOptionBuilder::try_new("opt")
+                    .unwrap()
+                    .option_type(ty)
+                    .default_value("1")
+                    .unwrap()
+                    .register(std::ptr::null_mut())
+            }
+            .expect_err("a pseudo-type must be refused");
+            assert!(
+                err.as_str()
+                    .contains("cannot be the type of a config option"),
+                "{ty:?}: {err}"
+            );
+        }
+        // SAFETY: `register` returns before using `con`.
+        let err = unsafe {
+            ConfigOptionBuilder::try_new("opt")
+                .unwrap()
+                .option_type(TypeId::BigInt)
+                .register(std::ptr::null_mut())
+        }
+        .expect_err("an option without a default must be refused");
+        assert!(err.as_str().contains("no default value"), "{err}");
     }
 
     #[test]
@@ -388,15 +565,19 @@ mod tests {
     }
 
     #[test]
-    fn full_builder_chain_compiles() {
-        // Verify the full fluent builder chain works without panicking.
-        let _builder = ConfigOptionBuilder::try_new("my_ext_threshold")
+    fn full_builder_chain_stores_every_field() {
+        let builder = ConfigOptionBuilder::try_new("my_ext_threshold")
             .unwrap()
             .description("Maximum threshold")
             .unwrap()
             .option_type(TypeId::BigInt)
             .default_value("100")
             .unwrap()
-            .scope(ConfigOptionScope::Global);
+            .scope(ConfigOptionScope::Local);
+        assert_eq!(builder.name(), "my_ext_threshold");
+        assert_eq!(builder.description.as_deref(), Some(c"Maximum threshold"));
+        assert_eq!(builder.option_type, Some(TypeId::BigInt));
+        assert_eq!(builder.default_value.as_deref(), Some(c"100"));
+        assert_eq!(builder.scope, ConfigOptionScope::Local);
     }
 }
