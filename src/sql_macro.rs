@@ -30,8 +30,10 @@
 //!         SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))")?
 //!             .register(con)?;
 //!
-//!         // Table macro: active_rows(tbl) — returns filtered rows
-//!         SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM tbl WHERE active = true")?
+//!         // Table macro: active_rows(tbl) — returns filtered rows. A table
+//!         // parameter is read through `query_table`: a bare `FROM tbl` makes
+//!         // DuckDB look for a table named `tbl` at registration, and fail.
+//!         SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM query_table(tbl) WHERE active = true")?
 //!             .register(con)?;
 //!     }
 //!     Ok(())
@@ -105,7 +107,7 @@ pub enum MacroBody {
 
     /// A SQL query — generates `AS TABLE query`.
     ///
-    /// Example: `"SELECT * FROM tbl WHERE active = true"`
+    /// Example: `"SELECT * FROM query_table(tbl) WHERE active = true"`
     Table(String),
 }
 
@@ -184,7 +186,9 @@ impl SqlMacro {
     /// let m = SqlMacro::table(
     ///     "active_rows",
     ///     &["tbl"],
-    ///     "SELECT * FROM tbl WHERE active = true",
+    ///     // Read a table parameter through `query_table`; a bare `FROM tbl`
+    ///     // is resolved when the macro is created, and fails.
+    ///     "SELECT * FROM query_table(tbl) WHERE active = true",
     /// )?;
     /// # Ok::<_, quack_rs::error::ExtensionError>(())
     /// ```
@@ -471,12 +475,12 @@ mod tests {
         let m = SqlMacro::table(
             "active_rows",
             &["tbl"],
-            "SELECT * FROM tbl WHERE active = true",
+            "SELECT * FROM query_table(tbl) WHERE active = true",
         )
         .unwrap();
         assert_eq!(
             m.to_sql(),
-            r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM tbl WHERE active = true"#
+            r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM query_table(tbl) WHERE active = true"#
         );
     }
 

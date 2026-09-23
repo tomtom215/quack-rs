@@ -318,7 +318,7 @@ mod tests {
         });
 
         let h2 = AggregateTestHarness::<CountConfig>::new();
-        // h2 is zero-initialized (simulates a fresh state created by DuckDB)
+        // h2 holds `CountConfig::default()`, like a target DuckDB creates with `state_init`
 
         let mut target = h2;
         target.combine(&h1, |src, tgt| {

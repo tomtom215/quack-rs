@@ -14,10 +14,11 @@ will hit every one of these problems. This SDK makes most of them impossible.
 
 **Symptom**: Aggregate function returns wrong results. No error, no crash.
 
-**Root cause**: DuckDB's segment tree creates fresh zero-initialized target states via `state_init`,
-then calls `combine` to merge source states into them. If your `combine` only propagates data
-fields (e.g., `count`, `sum`) but forgets configuration fields (e.g., `window_size`, `mode`),
-the configuration will be zero at finalize time, silently corrupting results.
+**Root cause**: DuckDB's segment tree creates fresh target states with `state_init` (for
+`FfiState<T>`, `T::default()`), then calls `combine` to merge source states into them. If your
+`combine` only propagates data fields (e.g., `count`, `sum`) but forgets configuration fields
+(e.g., `window_size`, `mode`), the configuration is still at its default at finalize time,
+silently corrupting results.
 
 **Fix**:
 ```rust

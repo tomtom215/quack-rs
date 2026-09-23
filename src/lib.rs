@@ -127,11 +127,12 @@
 //!
 //! ## Pitfall L1: COMBINE must propagate config fields
 //!
-//! `DuckDB`'s segment tree creates fresh zero-initialized target states via
-//! `state_init`, then calls `combine` to merge source into them. This means
-//! your `combine` callback MUST copy ALL configuration fields from source to
-//! target — not just accumulated data. Any field that defaults to zero will
-//! be wrong at finalize time, producing silently incorrect results.
+//! `DuckDB`'s segment tree creates fresh target states with `state_init` —
+//! `T::default()` for an [`FfiState<T>`][aggregate::state::FfiState] — and then
+//! calls `combine` to merge source states into them. So your `combine` callback
+//! MUST copy ALL configuration fields from source to target, not just
+//! accumulated data: a field left at its `Default` value will be wrong at
+//! finalize time, producing silently incorrect results.
 //!
 //! See [`aggregate::callbacks::CombineFn`] for details.
 
