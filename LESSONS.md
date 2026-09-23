@@ -188,9 +188,9 @@ SELECT always_999(NULL::BIGINT);  -- NULL, because of constant folding
 - `map1_opt` / `map2_opt`, and `NullHandling::SpecialNullHandling`, are for
   functions that genuinely mean to see NULLs.
 
-**Aggregates are different.** DuckDB's aggregate executor really does filter NULL
-rows before `update` under `DEFAULT_NULL_HANDLING`; this lesson is specific to
-scalar functions.
+**Aggregates are no different**: `update` receives NULL rows under either
+setting too — see L12. (Until September 2026 this paragraph said the opposite;
+it was never checked, and it was wrong.)
 
 Pinned by `default_null_handling_does_not_propagate_nulls_for_scalar_functions`
 in `tests/ffi_roundtrip.rs`, so a future DuckDB that changes this shows up as a
@@ -347,6 +347,41 @@ and reading `states[1]` to find out is itself the out-of-bounds read. Until
 in those two query shapes. Frames that are not whole-partition (`ROWS BETWEEN 5
 PRECEDING AND CURRENT ROW`, segment-tree windows) and `DISTINCT` windows were
 checked and work.
+
+---
+
+## L12: Aggregate `update` receives NULL rows under `DEFAULT_NULL_HANDLING`
+
+**Status**: Documented on `NullHandling`, `UpdateFn` and both aggregate builders'
+`null_handling`. Pinned by
+`aggregate_update_receives_null_rows_under_either_null_handling` in
+`tests/ffi_roundtrip/lifecycle.rs`.
+
+**Symptom**: An aggregate that reads every row — `state.sum += reader.read_i64(row)`
+— returns a wrong answer, with no error, as soon as its input column contains a
+NULL. The value read for a NULL row is whatever the data buffer happens to hold.
+
+**Root cause**: quack-rs used to document (in `NullHandling`, the builders and
+the book) that DuckDB's aggregate executor filters NULL rows out before
+`update` unless `SpecialNullHandling` is set. It does not. `CAPIAggregateUpdate`
+(`src/main/capi/aggregate_function-c.cpp`) flattens each input vector and
+passes the whole chunk, validity and all. For an aggregate the setting is
+read in one place, `BoundAggregateExpression::PropagatesNullValues`, which only
+the correlated-subquery decorrelator (`flatten_dependent_join.cpp`) consults to
+pick an `INNER` or `LEFT` join; the aggregate `VerifyNullHandling` check is
+compiled only under `#ifdef DEBUG`. Checked against DuckDB 1.5.5: `update` saw
+every NULL row, ungrouped and under `GROUP BY`, under both settings, and no
+correlated subquery tried answered differently under the two.
+
+**Fix**: in `update`, skip rows where `VectorReader::is_valid(row)` is false,
+whatever the null handling. Use `SpecialNullHandling` to declare that the
+aggregate returns non-NULL for NULL input; it does not change which rows arrive.
+
+A related trap under either setting: in a correlated subquery,
+`(SELECT my_count(x) FROM t2 WHERE t2.k = t1.k)` is NULL, not `my_count` of an
+empty input, for an outer row with no match. DuckDB rewrites that NULL to 0 only
+for its own `count`. Wrap the subquery in `coalesce(..., 0)` if it matters.
+Pinned by `a_count_like_aggregate_in_a_correlated_subquery_is_null_for_an_unmatched_row`.
 
 ---
 

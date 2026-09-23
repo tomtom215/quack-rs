@@ -88,7 +88,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **23 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **24 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```text
@@ -107,6 +107,8 @@ L10 Scalar bind data is lost when DuckDB copies the expression →
     ScalarBindData::set registers the copy callback
 L11 C API aggregates crash under agg(x) OVER () and agg(x ORDER BY y) →
     a DuckDB defect; documented, not preventable from an extension
+L12 Aggregate update receives NULL rows under DEFAULT_NULL_HANDLING →
+    skip rows where is_valid is false; documented on NullHandling
 
 P1  Library name must match [lib] name in Cargo.toml exactly
 P2  C API version ("v1.2.0") ≠ DuckDB release version ("v1.4.4" / "v1.5.0")
@@ -446,6 +448,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L9** | `duckdb_data_chunk_from_arrow` claims the array on failure | A double release after a failed conversion, or a leak after a zero-column one | `arrow::data_chunk_from_arrow` takes the array by value |
 | **L10** | Scalar bind data dropped when `DuckDB` copies the expression | Bind data reads as null for some queries (e.g. a filter pushed through a projection) — a wrong answer, not a crash | `ScalarBindData::set` registers a copy callback; raw API: `ScalarBindInfo::set_bind_data_copy` |
 | **L11** | C API aggregates under `agg(x) OVER ()` / `agg(x ORDER BY y)` | Segfault or memory corruption in `update` | A `DuckDB` defect (`CAPIAggregateUpdate` does not flatten the state vector), reported as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109); documented, cannot be prevented from an extension |
+| **L12** | Aggregate `update` receives NULL rows under `DEFAULT_NULL_HANDLING` | A wrong answer when the input has NULLs: `update` reads whatever the NULL slot holds | Skip rows where `is_valid` is false in `update`, whatever the null handling; documented on `NullHandling` and the aggregate builders |
 
 ### Practical Pitfalls (P)
 
