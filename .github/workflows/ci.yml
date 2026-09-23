@@ -254,6 +254,10 @@ jobs:
       # entry, so it is generated now and checked here.
       - name: Book changelog is in sync with CHANGELOG.md
         run: scripts/sync-book-changelog.py --check
+      # The committed sitemap is generated from book/src/SUMMARY.md; nothing
+      # checked it, and it fell 14 pages behind.
+      - name: Book sitemap is in sync with SUMMARY.md
+        run: python3 scripts/generate-sitemap.py --check
       # An invalid workflow file does not fail loudly: GitHub records a run
       # with zero jobs and the workflow silently stops running. That is how the
       # mutation gate stopped executing on PRs -- a shell comment inside a
@@ -601,8 +605,12 @@ jobs:
           import re, pathlib
           p = pathlib.Path("/tmp/scaffolded/Cargo.toml")
           s = p.read_text()
-          s = re.sub(r'quack-rs = \{ version = "[^"]+" \}',
-                     'quack-rs = { path = "%s" }' % pathlib.Path.cwd(), s)
+          # `subn` + assert: if the template's dependency line ever changes
+          # shape, a bare `sub` matches nothing and the job silently builds
+          # the PUBLISHED crate instead of this working copy.
+          s, n = re.subn(r'quack-rs = \{ version = "[^"]+" \}',
+                         'quack-rs = { path = "%s" }' % pathlib.Path.cwd(), s)
+          assert n == 1, f"expected exactly one quack-rs dependency line, rewrote {n}"
           p.write_text(s)
           PY
           (cd /tmp/scaffolded && cargo build --release)
@@ -1046,7 +1054,15 @@ jobs:
         run: |
           set -euo pipefail
           # `+nightly` is not optional -- see the note in the `nightly` job.
-          for target in $(cargo +nightly fuzz list --fuzz-dir fuzz); do
+          # Captured first, then checked: `set -e` does not see a failure
+          # inside a `for ... in $(...)` word list, so a broken `fuzz list`
+          # (or one that printed nothing) used to run zero targets and pass.
+          TARGETS=$(cargo +nightly fuzz list --fuzz-dir fuzz)
+          if [ -z "$TARGETS" ]; then
+            echo "::error::cargo fuzz list printed no targets"
+            exit 1
+          fi
+          for target in $TARGETS; do
             echo "::group::$target"
             # Seed from the committed inputs. `fuzz/corpus` is generated and
             # gitignored: keeping a growing corpus in the history would add a

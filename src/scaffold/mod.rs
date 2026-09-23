@@ -49,6 +49,8 @@ mod templates;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_generated;
 
 use crate::error::ExtensionError;
 use crate::validate::{validate_extension_name, validate_spdx_license};
@@ -81,7 +83,10 @@ pub struct ScaffoldConfig {
     ///   version is at least this.
     /// - `true` → an exact **`DuckDB` release**, e.g. `"v1.5.5"`. The extension
     ///   is stamped `C_STRUCT_UNSTABLE` and `DuckDB` refuses to load it into any
-    ///   other release.
+    ///   other release. The generated `Cargo.toml` then pins `libduckdb-sys`
+    ///   to that release's bindings (`~1.10505.0` for v1.5.5), the `Makefile`
+    ///   tests against it (`DUCKDB_TEST_VERSION`) and refuses to build when the
+    ///   resolved bindings and `TARGET_DUCKDB_VERSION` disagree.
     ///
     /// Defaults to [`DUCKDB_API_VERSION`][crate::DUCKDB_API_VERSION].
     pub target_duckdb_version: String,
@@ -192,7 +197,44 @@ fn validate_target_duckdb_version(config: &ScaffoldConfig) -> Result<(), Extensi
         )));
     }
 
+    if config.use_unstable_c_api {
+        libduckdb_sys_requirement(version)?;
+    }
+
     Ok(())
+}
+
+/// The `libduckdb-sys` version requirement that compiles against exactly the
+/// `DuckDB` release `target` (`vX.Y.Z`), for a `C_STRUCT_UNSTABLE` build.
+///
+/// `libduckdb-sys` numbers its releases after the `DuckDB` release whose
+/// headers it ships. From `DuckDB` 1.5.0 the scheme is
+/// `1.(10000 + 100·minor + patch).N` — 1.10505.0 is `DuckDB` v1.5.5 — where `N`
+/// is the bindings crate's own patch release, so `~1.10505.0` admits binding
+/// fixes but never another `DuckDB` release. On the 1.4 line the crate version
+/// *is* the `DuckDB` version, so the pin is exact. This is the inverse of the
+/// mapping in `scripts/duckdb-version-from-lock.sh`.
+///
+/// # Errors
+///
+/// A release neither scheme can express, or one older than the 1.4.4 floor
+/// quack-rs itself requires.
+fn libduckdb_sys_requirement(target: &str) -> Result<String, ExtensionError> {
+    let numbers: Vec<u32> = target
+        .trim_start_matches('v')
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| ExtensionError::new(format!("malformed DuckDB version {target:?}")))?;
+    match numbers.as_slice() {
+        [1, minor @ 5..=99, patch @ 0..=99] => Ok(format!("~1.{}.0", 10_000 + minor * 100 + patch)),
+        [1, 4, patch] if *patch >= 4 => Ok(format!("=1.4.{patch}")),
+        _ => Err(ExtensionError::new(format!(
+            "cannot pin libduckdb-sys to DuckDB {target}: libduckdb-sys encodes DuckDB \
+             1.Y.Z (Y >= 5) as 1.(10000 + 100*Y + Z) and ships 1.4.x as-is, and quack-rs \
+             needs at least 1.4.4; no libduckdb-sys release is known to match {target}"
+        ))),
+    }
 }
 
 /// Generates the complete set of project files for a new `DuckDB` Rust extension.
@@ -202,15 +244,21 @@ fn validate_target_duckdb_version(config: &ScaffoldConfig) -> Result<(), Extensi
 ///
 /// # Errors
 ///
-/// Returns [`ExtensionError`] if the extension name, license, or version is invalid.
+/// Returns [`ExtensionError`] if the extension name, license, version,
+/// excluded platforms or target `DuckDB` version is invalid — including a
+/// hyphenated name, which `DuckDB` could never load (see
+/// [`validate_extension_name`]).
 pub fn generate_scaffold(config: &ScaffoldConfig) -> Result<Vec<GeneratedFile>, ExtensionError> {
     validate_extension_name(&config.name)?;
     crate::validate::validate_extension_version(&config.version)?;
     validate_spdx_license(&config.license)?;
 
-    for platform in &config.excluded_platforms {
-        crate::validate::validate_platform(platform)?;
-    }
+    let excluded: Vec<&str> = config
+        .excluded_platforms
+        .iter()
+        .map(String::as_str)
+        .collect();
+    crate::validate::validate_excluded_platforms(&excluded)?;
 
     validate_target_duckdb_version(config)?;
 

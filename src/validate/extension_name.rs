@@ -5,9 +5,20 @@
 
 //! Extension name validation per `DuckDB` community extension rules.
 //!
-//! `DuckDB` community extensions must have names matching `^[a-z0-9_-]+$` —
-//! lowercase letters, digits, hyphens, and underscores only. No uppercase,
-//! no spaces, no special characters.
+//! An extension name must match `^[a-z][a-z0-9_]*$` — a lowercase letter
+//! followed by lowercase letters, digits and underscores.
+//!
+//! # Why no hyphens
+//!
+//! The name is not just a label. The community build names the binary
+//! `<name>.duckdb_extension`, and `DuckDB`'s loader (`TryInitialLoad` and
+//! `LoadExternalExtension` in `src/main/extension/extension_load.cpp`, v1.5.5)
+//! takes the file's base name, lowercases it, and looks up the entry point
+//! `<base name>_init_c_api` in the library. A hyphen would have to appear in
+//! that C symbol, which neither C nor Rust can define — so a hyphenated
+//! extension can never load, and the scaffold would generate
+//! `entry_point!(my-ext_init_c_api, …)`, which does not even compile. None of
+//! the 346 published community extensions uses a hyphen.
 //!
 //! # Reference
 //!
@@ -20,8 +31,10 @@ use crate::error::ExtensionError;
 /// # Rules
 ///
 /// - Must not be empty
-/// - Must contain only lowercase ASCII letters (`a-z`), digits (`0-9`),
-///   hyphens (`-`), or underscores (`_`)
+/// - Must contain only lowercase ASCII letters (`a-z`), digits (`0-9`), or
+///   underscores (`_`) — **no hyphens**: `DuckDB` derives the entry-point
+///   symbol `<name>_init_c_api` from the name (see the [module
+///   docs][crate::validate::extension_name])
 /// - Must start with a letter
 /// - Must not exceed 64 characters
 ///
@@ -35,7 +48,8 @@ use crate::error::ExtensionError;
 /// use quack_rs::validate::validate_extension_name;
 ///
 /// assert!(validate_extension_name("my_extension").is_ok());
-/// assert!(validate_extension_name("my-ext-2").is_ok());
+/// assert!(validate_extension_name("my_ext_2").is_ok());
+/// assert!(validate_extension_name("my-ext").is_err()); // no C symbol can hold '-'
 /// assert!(validate_extension_name("").is_err());
 /// assert!(validate_extension_name("MyExtension").is_err());
 /// assert!(validate_extension_name("my extension").is_err());
@@ -61,10 +75,18 @@ pub fn validate_extension_name(name: &str) -> Result<(), ExtensionError> {
     }
 
     for (i, ch) in name.chars().enumerate() {
-        if !matches!(ch, 'a'..='z' | '0'..='9' | '-' | '_') {
+        if ch == '-' {
+            return Err(ExtensionError::new(format!(
+                "extension name must not contain '-' (position {i}): DuckDB loads the \
+                 extension by calling `<name>_init_c_api`, and no C or Rust symbol can \
+                 contain a hyphen; use '_' instead ('{}')",
+                name.replace('-', "_")
+            )));
+        }
+        if !matches!(ch, 'a'..='z' | '0'..='9' | '_') {
             return Err(ExtensionError::new(format!(
                 "extension name contains invalid character '{ch}' at position {i}; \
-                 only lowercase letters, digits, hyphens, and underscores are allowed"
+                 only lowercase letters, digits, and underscores are allowed"
             )));
         }
     }
@@ -86,9 +108,16 @@ mod tests {
         assert!(validate_extension_name("my_extension").is_ok());
     }
 
+    /// `DuckDB` looks up the entry point as `<file base name>_init_c_api`, and
+    /// the community build names the file after `extension.name`, so a hyphen
+    /// would require a symbol no C or Rust compiler can emit.
     #[test]
-    fn valid_with_hyphen() {
-        assert!(validate_extension_name("my-extension").is_ok());
+    fn hyphen_rejected() {
+        for name in ["my-extension", "my-ext_v2", "a-"] {
+            let err = validate_extension_name(name).unwrap_err();
+            assert!(err.as_str().contains("'-'"), "{name}: {err}");
+            assert!(err.as_str().contains("_init_c_api"), "{name}: {err}");
+        }
     }
 
     #[test]
@@ -98,7 +127,7 @@ mod tests {
 
     #[test]
     fn valid_mixed() {
-        assert!(validate_extension_name("my-ext_v2").is_ok());
+        assert!(validate_extension_name("my_ext_v2").is_ok());
     }
 
     #[test]

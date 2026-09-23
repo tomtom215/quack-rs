@@ -1021,7 +1021,23 @@ fn release_profile_value(manifest: &str, key: &str) -> Option<String> {
 fn the_example_obeys_the_crates_own_release_profile_rules() {
     use quack_rs::validate::validate_release_profile;
 
-    let manifest = include_str!("../examples/hello-ext/Cargo.toml");
+    // Read at run time, not with `include_str!`: `examples/` is excluded from
+    // the published package, so a compile-time include made `cargo test` of
+    // the downloaded crate fail to build at all. The skip is taken only when
+    // the whole directory is missing — in the repository, a moved or renamed
+    // manifest is still a failure.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("examples").is_dir() {
+        eprintln!(
+            "SKIPPED the_example_obeys_the_crates_own_release_profile_rules: examples/ is not \
+             part of the packaged crate"
+        );
+        return;
+    }
+    let path = root.join("examples/hello-ext/Cargo.toml");
+    let manifest =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let manifest = manifest.as_str();
     let panic = release_profile_value(manifest, "panic")
         .expect("the example must state its panic strategy explicitly");
     let lto = release_profile_value(manifest, "lto").unwrap_or_default();

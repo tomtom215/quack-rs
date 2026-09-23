@@ -4,12 +4,14 @@
 // and encouraging more Rust development!
 
 use crate::error::ExtensionError;
+use crate::validate::platform::DUCKDB_RETIRED_PLATFORMS;
 use crate::validate::{
     validate_excluded_platforms_str, validate_extension_name, validate_extension_version,
     validate_spdx_license,
 };
 
 use super::model::DescriptionYml;
+use super::yaml::{read_sections, Entry, Section, Value};
 
 /// Parses and validates a `description.yml` string.
 ///
@@ -19,14 +21,18 @@ use super::model::DescriptionYml;
 ///
 /// - `extension.name` — must pass [`validate_extension_name`]
 /// - `extension.description` — non-empty
-/// - `extension.version` — must pass [`validate_extension_version`]
-/// - `extension.language` — non-empty
-/// - `extension.license` — must pass [`validate_spdx_license`]
-/// - `extension.requires_toolchains` — non-empty
-/// - `extension.excluded_platforms` — if present, must pass [`validate_excluded_platforms_str`]
-/// - `extension.maintainers` — at least one entry
+/// - `extension.version` — optional; if present, must pass [`validate_extension_version`]
+/// - `extension.language`, `extension.build` — non-empty
+/// - `extension.license` — non-empty (`licence:` is accepted, with a warning).
+///   A value [`validate_spdx_license`] does not accept is a **warning**, not an
+///   error: the community build does not read the field, and published
+///   extensions use `BSL 1.1`, `GPL-3.0` and free text
+/// - `extension.excluded_platforms` — if present, must pass
+///   [`validate_excluded_platforms_str`]; a YAML list is validated too, and warned about
+/// - `extension.maintainers` — at least one name
 /// - `repo.github` — non-empty and must contain `/`
 /// - `repo.ref` — non-empty
+/// - no key may appear twice in a section
 ///
 /// # Errors
 ///
@@ -34,10 +40,14 @@ use super::model::DescriptionYml;
 ///
 /// # Note on parsing
 ///
-/// This function uses a simple line-by-line key-value parser. It does not require
-/// a YAML library dependency and handles the exact subset of YAML used by
-/// `DuckDB` community extension `description.yml` files. Full YAML parsing is
-/// intentionally out of scope to keep `quack-rs` dependency-free.
+/// quack-rs has no YAML dependency, so this reads the subset of YAML that
+/// `description.yml` files use with a small hand-written reader. It respects
+/// indentation (a nested mapping's keys are not the section's), quotes (a `#`
+/// inside them is not a comment), block and flow sequences, block scalars and
+/// multi-line plain scalars, and a leading byte-order mark. Anchors, aliases,
+/// tags and nested flow collections are reported as unsupported rather than
+/// misread. Only `extension:` and `repo:` are parsed; `docs:` and any other
+/// section is free-form and skipped.
 ///
 /// # Example
 ///
@@ -62,192 +72,101 @@ use super::model::DescriptionYml;
 ///
 /// let desc = parse_description_yml(yml).unwrap();
 /// assert_eq!(desc.name, "my_ext");
+/// assert_eq!(desc.version.as_deref(), Some("0.1.0"));
 /// assert_eq!(desc.license, "MIT");
 /// assert_eq!(desc.github, "janedoe/duckdb-my-ext");
 /// assert_eq!(desc.maintainers, vec!["Jane Doe"]);
+/// assert!(desc.warnings.is_empty());
 /// ```
 ///
 /// [`validate_extension_name`]: crate::validate::validate_extension_name
 /// [`validate_extension_version`]: crate::validate::validate_extension_version
 /// [`validate_spdx_license`]: crate::validate::validate_spdx_license
 /// [`validate_excluded_platforms_str`]: crate::validate::validate_excluded_platforms_str
-// Parsing a YAML subset with ~10 fields and ~10 validations is inherently verbose.
-// Splitting into multiple functions would require passing 10+ locals between them,
-// which reduces readability. The complexity is line-count, not cognitive.
-#[allow(clippy::too_many_lines)]
 pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionError> {
-    let mut fields = Fields::default();
-    let mut maintainers: Vec<String> = Vec::new();
+    let sections = read_sections(content, &["extension", "repo"])
+        .map_err(|e| ExtensionError::new(format!("description.yml: {e}")))?;
+    let extension = Fields::new(&sections, "extension");
+    let repo = Fields::new(&sections, "repo");
+    let mut warnings = Vec::new();
 
-    // The document is scanned section by section rather than line by line.
-    // `docs.extended_description` is free-form prose in 42 of the 43 published
-    // extensions sampled, and a flat scan treats any `version:` or `license:`
-    // line inside that prose as a real field — silently overwriting the
-    // extension's own metadata.
-    let mut section = Section::Other;
-    let mut in_maintainers = false;
-    // Set while reading the body of a `key: |` / `key: >` block scalar.
-    let mut block: Option<BlockScalar> = None;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        let indent = indent_of(line);
-
-        // Inside a block scalar every line is data, however much it looks like
-        // a mapping. It ends at the first non-blank line indented no further
-        // than the key that introduced it.
-        if let Some(open) = &mut block {
-            if trimmed.is_empty() || indent > open.key_indent {
-                open.lines.push(trimmed.to_string());
-                continue;
-            }
-        }
-        // A block scalar is a perfectly good way to write a long description;
-        // discarding it would report the field as missing.
-        if let Some(finished) = block.take() {
-            let (key, value) = finished.into_pair();
-            fields.set(&key, value);
-        }
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // A key at column zero opens a new top-level section.
-        if indent == 0 {
-            section = Section::of(trimmed);
-            in_maintainers = false;
-            continue;
-        }
-
-        if !matches!(section, Section::Extension | Section::Repo) {
-            continue;
-        }
-
-        // Maintainer list items: "    - Jane Doe"
-        if in_maintainers {
-            if let Some(item) = trimmed.strip_prefix('-') {
-                let name_val = strip_inline_comment(item.trim());
-                let name_val = unquote(name_val).unwrap_or(name_val);
-                if !name_val.is_empty() {
-                    maintainers.push(name_val.to_string());
-                }
-                continue;
-            }
-            // Any non-list line ends the sequence.
-            in_maintainers = false;
-        }
-
-        if let Some(open) = BlockScalar::opening(trimmed, indent) {
-            block = Some(open);
-            continue;
-        }
-
-        let keys: &[&str] = if section == Section::Repo {
-            // `ref_next` first: `parse_kv` matches on the `"key:"` prefix, and
-            // trying `"ref:"` against `ref_next: abc` correctly fails, but
-            // ordering it first keeps that from being a subtlety to re-derive.
-            &["github", "ref_next", "ref"]
-        } else {
-            &Fields::EXTENSION_KEYS
-        };
-        if let Some((key, value)) = keys
-            .iter()
-            .find_map(|key| parse_kv(trimmed, &format!("{key}:")).map(|v| (*key, v)))
-        {
-            fields.set(key, value.to_string());
-        } else if section == Section::Extension && trimmed == "maintainers:" {
-            in_maintainers = true;
-        }
-    }
-
-    // A block scalar that runs to the end of the file never hits the closing
-    // branch above.
-    if let Some(finished) = block {
-        let (key, value) = finished.into_pair();
-        fields.set(&key, value);
-    }
-
-    let Fields {
-        name,
-        description,
-        version,
-        language,
-        build,
-        license,
-        requires_toolchains,
-        excluded_platforms,
-        github,
-        git_ref,
-        git_ref_next,
-    } = fields;
-
-    // --- Validate all fields ---
-
+    let name = extension.scalar("name")?;
     if name.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'extension.name'",
-        ));
+        return Err(missing("extension.name"));
     }
     validate_extension_name(&name)
         .map_err(|e| ExtensionError::new(format!("description.yml: extension.name: {e}")))?;
 
-    if description.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'extension.description'",
-        ));
-    }
+    let description = extension.required("description")?;
 
-    if version.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'extension.version'",
-        ));
-    }
-    validate_extension_version(&version)
-        .map_err(|e| ExtensionError::new(format!("description.yml: extension.version: {e}")))?;
+    let version = extension.scalar("version")?;
+    let version = if version.is_empty() {
+        None
+    } else {
+        validate_extension_version(&version)
+            .map_err(|e| ExtensionError::new(format!("description.yml: extension.version: {e}")))?;
+        Some(version)
+    };
 
-    if language.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'extension.language'",
-        ));
-    }
+    let language = extension.required("language")?;
+    let build = extension.required("build")?;
 
-    if build.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'extension.build'",
-        ));
-    }
-
+    let license = match (extension.get("license"), extension.get("licence")) {
+        (Some(first), Some(second)) => {
+            return Err(ExtensionError::new(format!(
+                "description.yml: both 'extension.license' (line {}) and \
+                 'extension.licence' (line {}) are set",
+                first.line, second.line
+            )))
+        }
+        (None, Some(_)) => {
+            warnings.push(
+                "'extension.licence' is the British spelling; DuckDB's documentation and \
+                 tooling use 'license'"
+                    .to_string(),
+            );
+            extension.scalar("licence")?
+        }
+        _ => extension.scalar("license")?,
+    };
     if license.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'extension.license'",
-        ));
+        return Err(missing("extension.license"));
     }
-    validate_spdx_license(&license)
-        .map_err(|e| ExtensionError::new(format!("description.yml: extension.license: {e}")))?;
+    if let Err(e) = validate_spdx_license(&license) {
+        warnings.push(format!("extension.license: {e}"));
+    }
 
     // `requires_toolchains` is optional. Of 43 published community extensions
     // sampled, only 14 set it, and the community-extensions documentation does
     // not list it as required.
+    let requires_toolchains = extension.semicolon_list("requires_toolchains", &mut warnings)?;
 
-    if !excluded_platforms.is_empty() {
-        validate_excluded_platforms_str(&excluded_platforms).map_err(|e| {
-            ExtensionError::new(format!(
-                "description.yml: extension.excluded_platforms: {e}"
-            ))
-        })?;
+    let excluded_platforms = extension.semicolon_list("excluded_platforms", &mut warnings)?;
+    validate_excluded_platforms_str(&excluded_platforms).map_err(|e| {
+        ExtensionError::new(format!(
+            "description.yml: extension.excluded_platforms: {e}"
+        ))
+    })?;
+    for retired in excluded_platforms
+        .split(';')
+        .filter(|p| DUCKDB_RETIRED_PLATFORMS.contains(p))
+    {
+        warnings.push(format!(
+            "extension.excluded_platforms: '{retired}' is no longer built by DuckDB, so \
+             excluding it has no effect"
+        ));
     }
 
+    let maintainers = extension.maintainers(&mut warnings)?;
     if maintainers.is_empty() {
         return Err(ExtensionError::new(
             "description.yml: 'extension.maintainers' must list at least one maintainer",
         ));
     }
 
+    let github = repo.scalar("github")?;
     if github.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'repo.github'",
-        ));
+        return Err(missing("repo.github"));
     }
     if !github.contains('/') {
         return Err(ExtensionError::new(format!(
@@ -255,11 +174,11 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         )));
     }
 
+    let git_ref = repo.scalar("ref")?;
     if git_ref.is_empty() {
-        return Err(ExtensionError::new(
-            "description.yml: missing required field 'repo.ref'",
-        ));
+        return Err(missing("repo.ref"));
     }
+    let git_ref_next = repo.scalar("ref_next")?;
 
     Ok(DescriptionYml {
         name,
@@ -274,175 +193,133 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         github,
         git_ref,
         git_ref_next,
+        warnings,
     })
 }
 
-/// The scalar fields the parser collects, so the block-scalar path and the
-/// inline path assign through one place instead of two parallel `match`es.
-#[derive(Default)]
-struct Fields {
-    name: String,
-    description: String,
-    version: String,
-    language: String,
-    build: String,
-    license: String,
-    requires_toolchains: String,
-    excluded_platforms: String,
-    github: String,
-    git_ref: String,
-    git_ref_next: String,
+fn missing(field: &str) -> ExtensionError {
+    ExtensionError::new(format!("description.yml: missing required field '{field}'"))
 }
 
-impl Fields {
-    /// Keys read from the `extension:` section, in the order they are tried.
-    const EXTENSION_KEYS: [&'static str; 8] = [
-        "name",
-        "description",
-        "version",
-        "language",
-        "build",
-        "license",
-        "requires_toolchains",
-        "excluded_platforms",
-    ];
+/// The entries of one section, with typed accessors that name the field in
+/// every error.
+struct Fields<'a> {
+    section: &'static str,
+    entries: &'a [Entry],
+}
 
-    /// Stores `value` under `key`; unknown keys are ignored, which is how
-    /// `andium`, `vcpkg_commit` and the rest of the optional metadata real
-    /// files carry are tolerated.
-    fn set(&mut self, key: &str, value: String) {
-        match key {
-            "name" => self.name = value,
-            "description" => self.description = value,
-            "version" => self.version = value,
-            "language" => self.language = value,
-            "build" => self.build = value,
-            "license" => self.license = value,
-            "requires_toolchains" => self.requires_toolchains = value,
-            "excluded_platforms" => self.excluded_platforms = value,
-            "github" => self.github = value,
-            "ref" => self.git_ref = value,
-            "ref_next" => self.git_ref_next = value,
-            _ => {}
+impl<'a> Fields<'a> {
+    fn new(sections: &'a [Section], section: &'static str) -> Self {
+        let entries = sections
+            .iter()
+            .find(|s| s.name == section)
+            .map_or(&[][..], |s| s.entries.as_slice());
+        Self { section, entries }
+    }
+
+    fn get(&self, key: &str) -> Option<&'a Entry> {
+        self.entries.iter().find(|e| e.key == key)
+    }
+
+    /// A single-valued field; `""` when absent or empty.
+    fn scalar(&self, key: &str) -> Result<String, ExtensionError> {
+        match self.get(key).map(|e| (&e.value, e.line)) {
+            None | Some((Value::Null, _)) => Ok(String::new()),
+            Some((Value::Scalar(s), _)) => Ok(s.trim().to_string()),
+            Some((_, line)) => Err(ExtensionError::new(format!(
+                "description.yml: line {line}: '{}.{key}' must be a single value, not a list \
+                 or mapping",
+                self.section
+            ))),
         }
     }
-}
 
-/// Which top-level block of the document the scanner is inside.
-///
-/// Only `extension:` and `repo:` carry fields worth reading; everything else —
-/// `docs:` above all — is prose that must not be mistaken for metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Section {
-    Extension,
-    Repo,
-    Other,
-}
+    /// A single-valued field that must be present and non-empty.
+    fn required(&self, key: &str) -> Result<String, ExtensionError> {
+        let value = self.scalar(key)?;
+        if value.is_empty() {
+            return Err(missing(&format!("{}.{key}", self.section)));
+        }
+        Ok(value)
+    }
 
-impl Section {
-    /// Classifies a column-zero line such as `extension:` or `docs:`.
-    fn of(line: &str) -> Self {
-        match line.split(':').next().map(str::trim) {
-            Some("extension") => Self::Extension,
-            Some("repo") => Self::Repo,
-            _ => Self::Other,
+    /// A `;`-separated field. A YAML list is accepted and joined with `;`, with
+    /// a warning: `scripts/build.py` in `duckdb/community-extensions` writes the
+    /// value into the build environment as-is, so a list arrives as its Python
+    /// `repr` (`['a', 'b']`), which `extension-ci-tools` then splits on `;` —
+    /// and matches nothing.
+    fn semicolon_list(
+        &self,
+        key: &str,
+        warnings: &mut Vec<String>,
+    ) -> Result<String, ExtensionError> {
+        let Some(Entry {
+            value: Value::Seq(items),
+            line,
+            ..
+        }) = self.get(key)
+        else {
+            return self.scalar(key);
+        };
+        let mut joined = Vec::with_capacity(items.len());
+        for item in items {
+            match item {
+                Value::Scalar(s) => joined.push(s.trim().to_string()),
+                Value::Null => {}
+                _ => {
+                    return Err(ExtensionError::new(format!(
+                        "description.yml: line {line}: '{}.{key}' entries must be plain values",
+                        self.section
+                    )))
+                }
+            }
+        }
+        let joined = joined.join(";");
+        warnings.push(format!(
+            "{}.{key} is a YAML list; the community build copies the value into its \
+             environment as-is, so a list arrives as Python's ['a', 'b'] rather than the \
+             ';'-separated string it splits — write \"{joined}\"",
+            self.section
+        ));
+        Ok(joined)
+    }
+
+    /// `maintainers`: a list of names. A lone name is accepted with a warning.
+    fn maintainers(&self, warnings: &mut Vec<String>) -> Result<Vec<String>, ExtensionError> {
+        let Some(entry) = self.get("maintainers") else {
+            return Ok(Vec::new());
+        };
+        match &entry.value {
+            Value::Null => Ok(Vec::new()),
+            Value::Scalar(name) => {
+                warnings.push(format!(
+                    "extension.maintainers should be a list; read '{name}' as its only entry"
+                ));
+                Ok(vec![name.trim().to_string()])
+            }
+            Value::Seq(items) => {
+                let mut names = Vec::with_capacity(items.len());
+                for item in items {
+                    match item {
+                        Value::Scalar(name) if !name.trim().is_empty() => {
+                            names.push(name.trim().to_string());
+                        }
+                        Value::Scalar(_) | Value::Null => {}
+                        _ => {
+                            return Err(ExtensionError::new(format!(
+                                "description.yml: line {}: 'extension.maintainers' entries must \
+                                 be names, not lists or mappings",
+                                entry.line
+                            )))
+                        }
+                    }
+                }
+                Ok(names)
+            }
+            Value::Mapping => Err(ExtensionError::new(format!(
+                "description.yml: line {}: 'extension.maintainers' must be a list of names",
+                entry.line
+            ))),
         }
     }
-}
-
-/// Number of leading whitespace characters on `line`.
-///
-/// YAML forbids tabs for indentation, so counting characters rather than
-/// columns is exact for any well-formed document.
-fn indent_of(line: &str) -> usize {
-    line.len() - line.trim_start().len()
-}
-
-/// A `key: |` / `key: >` block scalar being read.
-struct BlockScalar {
-    /// The mapping key the block belongs to, e.g. `description`.
-    key: String,
-    /// Indentation of that key, which the body must exceed.
-    key_indent: usize,
-    /// `true` for `|` (literal, newlines kept), `false` for `>` (folded).
-    literal: bool,
-    /// Body lines, already trimmed.
-    lines: Vec<String>,
-}
-
-impl BlockScalar {
-    /// Recognises a mapping key introducing a block scalar — `key: |`,
-    /// `key: >`, and the `-` / `+` / explicit-indent variants.
-    fn opening(line: &str, indent: usize) -> Option<Self> {
-        let (key, value) = line.split_once(':')?;
-        let value = value.trim();
-        let rest = value.strip_prefix(['|', '>'])?;
-        // A chomping indicator and/or an explicit indentation digit may follow;
-        // anything else means this was a plain scalar that happened to start
-        // with one of those characters.
-        if !rest.chars().all(|c| matches!(c, '-' | '+' | '0'..='9')) {
-            return None;
-        }
-        Some(Self {
-            key: key.trim().to_string(),
-            key_indent: indent,
-            literal: value.starts_with('|'),
-            lines: Vec::new(),
-        })
-    }
-
-    /// Consumes the block, returning its key and joined value.
-    ///
-    /// Literal blocks keep their line breaks; folded blocks become one line, as
-    /// YAML specifies. Both are trimmed, so a chomping indicator changes
-    /// nothing here.
-    fn into_pair(self) -> (String, String) {
-        let separator = if self.literal { "\n" } else { " " };
-        (self.key, self.lines.join(separator).trim().to_string())
-    }
-}
-
-/// Parses a `key: value` line. Returns the value if the key matches, with
-/// surrounding YAML quotes removed and any inline comment stripped.
-///
-/// Quotes are removed rather than preserved: real `description.yml` files quote
-/// `version`, `requires_toolchains`, `excluded_platforms`, `github` and `ref`
-/// freely, and no caller wants `'2025120401'` when the value is `2025120401`.
-/// Inside quotes an inline comment is not a comment, so it is left alone.
-pub(super) fn parse_kv<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    line.strip_prefix(key).map(|v| {
-        let v = v.trim();
-        if let Some(inner) = unquote(v) {
-            return inner;
-        }
-        // Strip inline comment: "value # comment" → "value"
-        v.find(" #").map_or(v, |pos| v[..pos].trim_end())
-    })
-}
-
-/// Returns the contents of a YAML single- or double-quoted scalar.
-///
-/// `None` when `value` is not quoted. Deliberately not `trim_matches('"')`,
-/// which would also eat unbalanced and repeated quotes — `"a"` and `""a""` and
-/// `a"` are three different things.
-pub(super) fn unquote(value: &str) -> Option<&str> {
-    let bytes = value.as_bytes();
-    if bytes.len() < 2 {
-        return None;
-    }
-    let first = *bytes.first()?;
-    if (first == b'"' || first == b'\'') && *bytes.last()? == first {
-        return value.get(1..value.len() - 1);
-    }
-    None
-}
-
-/// Strips an inline YAML comment from a value string.
-///
-/// Returns the portion before ` #` (space-hash), trimmed. If no inline comment
-/// is found, returns the input unchanged.
-pub(super) fn strip_inline_comment(value: &str) -> &str {
-    value
-        .find(" #")
-        .map_or(value, |pos| value[..pos].trim_end())
 }

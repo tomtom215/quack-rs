@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT
+extension:
+  name: measures
+  description: Measure-aware SQL for DuckDB
+  version: 0.7.0
+  language: C++
+  build: cmake
+  license: MIT OR Apache-2.0
+  requires_toolchains: "rust"
+  excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads;linux_amd64_gcc4;windows_amd64_rtools;windows_amd64_mingw;windows_arm64_mingw"
+  maintainers:
+    - someone
+
+repo:
+  github: example/measures
+  ref: f19d73fa93f2601cfa81ca3ebad841dffcc5f609
+  ref_next: 0123456789abcdef0123456789abcdef01234567

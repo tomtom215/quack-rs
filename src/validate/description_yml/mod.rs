@@ -38,12 +38,12 @@
 //! |-------|----------|-------|
 //! | `extension.name` | Yes | Must pass [`validate_extension_name`] |
 //! | `extension.description` | Yes | Non-empty |
-//! | `extension.version` | Yes | Must pass [`validate_extension_version`] |
+//! | `extension.version` | No | If present, must pass [`validate_extension_version`]; the community build never reads it |
 //! | `extension.language` | Yes | Must be `"Rust"` for Rust extensions |
 //! | `extension.build` | Yes | Must be `"cargo"` for Rust extensions |
-//! | `extension.license` | Yes | Must pass [`validate_spdx_license`] |
+//! | `extension.license` | Yes | Non-empty (`licence` accepted); a value [`validate_spdx_license`] rejects is a warning in [`DescriptionYml::warnings`] |
 //! | `extension.requires_toolchains` | No | Semi-colon list; [`validate_rust_extension`] additionally requires `"rust"` |
-//! | `extension.excluded_platforms` | No | Must pass [`validate_excluded_platforms_str`] |
+//! | `extension.excluded_platforms` | No | Must pass [`validate_excluded_platforms_str`]; a YAML list is accepted with a warning |
 //! | `extension.maintainers` | Yes | At least one maintainer |
 //! | `repo.github` | Yes | Non-empty `owner/repo` format |
 //! | `repo.ref` | Yes | Non-empty git ref (branch, tag, or commit) |
@@ -87,6 +87,7 @@
 mod model;
 mod parser;
 mod validator;
+mod yaml;
 
 pub use model::DescriptionYml;
 pub use parser::parse_description_yml;
@@ -94,3 +95,7 @@ pub use validator::{validate_description_yml_str, validate_rust_extension};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_corpus;
+#[cfg(test)]
+mod tests_yaml;

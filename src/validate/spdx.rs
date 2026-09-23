@@ -6,8 +6,8 @@
 //! SPDX license identifier validation for `DuckDB` community extensions.
 //!
 //! Extensions must declare a recognized open-source license. This module
-//! validates that the `extension.license` field contains a commonly used
-//! SPDX identifier.
+//! validates that the `extension.license` field is a commonly used SPDX
+//! identifier, or an SPDX `AND` / `OR` expression over such identifiers.
 //!
 //! # Reference
 //!
@@ -79,14 +79,28 @@ pub const COMMON_SPDX_LICENSES: &[&str] = &[
     "Zlib",
 ];
 
-/// Validates that a license string is a recognized SPDX identifier.
+/// Validates that a license string is a recognized SPDX identifier, or an
+/// SPDX license expression built from them.
 ///
-/// Checks against the [`COMMON_SPDX_LICENSES`] list. The comparison is
-/// case-sensitive per the SPDX specification.
+/// Accepted:
+///
+/// - any identifier in [`COMMON_SPDX_LICENSES`] (case-sensitive, per the SPDX
+///   specification);
+/// - a user-defined `LicenseRef-<idstring>` reference, which SPDX allows in
+///   any expression;
+/// - a compound expression joining those with `AND` / `OR` and parentheses,
+///   e.g. `MIT OR Apache-2.0` — the Rust ecosystem's default and what several
+///   published community extensions declare.
+///
+/// Not accepted: `WITH <exception>` (this crate keeps no exception list, and
+/// calling an unchecked exception valid would be a guess), lowercase
+/// operators, and identifiers outside the shortlist — the error for those
+/// says they may still be valid rather than claiming they do not exist.
 ///
 /// # Errors
 ///
-/// Returns `ExtensionError` if the license is empty or not in the recognized list.
+/// Returns `ExtensionError` if the license is empty, is not a well-formed
+/// expression, or names an identifier not in the recognized list.
 ///
 /// # Example
 ///
@@ -96,26 +110,130 @@ pub const COMMON_SPDX_LICENSES: &[&str] = &[
 /// assert!(validate_spdx_license("MIT").is_ok());
 /// assert!(validate_spdx_license("Apache-2.0").is_ok());
 /// assert!(validate_spdx_license("BSD-3-Clause").is_ok());
+/// assert!(validate_spdx_license("MIT OR Apache-2.0").is_ok());
 /// assert!(validate_spdx_license("FAKE-LICENSE").is_err());
+/// assert!(validate_spdx_license("MIT OR").is_err());
 /// assert!(validate_spdx_license("").is_err());
 /// ```
 pub fn validate_spdx_license(license: &str) -> Result<(), ExtensionError> {
-    if license.is_empty() {
+    if license.trim().is_empty() {
         return Err(ExtensionError::new("license identifier must not be empty"));
     }
 
-    if COMMON_SPDX_LICENSES.contains(&license) {
-        Ok(())
-    } else {
+    let tokens = tokenize(license);
+    let mut parser = ExprParser {
+        tokens: &tokens,
+        pos: 0,
+    };
+    let unlisted = parser.expression().and_then(|unlisted| {
+        tokens.get(parser.pos).map_or(Ok(unlisted), |extra| {
+            Err(format!(
+                "unexpected '{extra}' in license expression '{license}'"
+            ))
+        })
+    });
+    match unlisted {
+        Ok(None) => Ok(()),
         // Deliberately not "is not a recognized SPDX identifier": this list is
         // a shortlist of ~40 out of 700+, so saying that would be wrong for
         // most valid identifiers.
-        Err(ExtensionError::new(format!(
-            "license '{license}' is not in quack-rs's list of common SPDX identifiers. \
+        Ok(Some(id)) => Err(ExtensionError::new(format!(
+            "license '{id}' is not in quack-rs's list of common SPDX identifiers. \
              It may still be valid — check https://spdx.org/licenses/. \
              Common choices: MIT, Apache-2.0, BSD-3-Clause, GPL-3.0-or-later, MPL-2.0"
-        )))
+        ))),
+        Err(msg) => Err(ExtensionError::new(format!(
+            "{msg}; expected an SPDX identifier such as 'MIT' or an expression such as \
+             'MIT OR Apache-2.0' — see https://spdx.org/licenses/"
+        ))),
     }
+}
+
+/// Splits an SPDX expression into identifiers, operators and parentheses.
+fn tokenize(expr: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, ch) in expr.char_indices() {
+        if ch.is_whitespace() || ch == '(' || ch == ')' {
+            if let Some(s) = start.take() {
+                tokens.push(&expr[s..i]);
+            }
+            if !ch.is_whitespace() {
+                tokens.push(&expr[i..=i]);
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(s) = start {
+        tokens.push(&expr[s..]);
+    }
+    tokens
+}
+
+/// A recursive-descent reader for the `AND` / `OR` subset of the SPDX
+/// license-expression grammar (`AND` binds tighter than `OR`).
+///
+/// Each method returns the first identifier that is well-formed but not in
+/// [`COMMON_SPDX_LICENSES`] (`Ok(Some(..))`), or a syntax error message.
+struct ExprParser<'a> {
+    tokens: &'a [&'a str],
+    pos: usize,
+}
+
+impl<'a> ExprParser<'a> {
+    fn expression(&mut self) -> Result<Option<&'a str>, String> {
+        let mut unlisted = self.term()?;
+        while self.tokens.get(self.pos) == Some(&"OR") {
+            self.pos += 1;
+            let next = self.term()?;
+            unlisted = unlisted.or(next);
+        }
+        Ok(unlisted)
+    }
+
+    fn term(&mut self) -> Result<Option<&'a str>, String> {
+        let mut unlisted = self.atom()?;
+        while self.tokens.get(self.pos) == Some(&"AND") {
+            self.pos += 1;
+            let next = self.atom()?;
+            unlisted = unlisted.or(next);
+        }
+        Ok(unlisted)
+    }
+
+    fn atom(&mut self) -> Result<Option<&'a str>, String> {
+        let Some(&token) = self.tokens.get(self.pos) else {
+            return Err("license expression ends where an identifier was expected".into());
+        };
+        self.pos += 1;
+        match token {
+            "(" => {
+                let unlisted = self.expression()?;
+                if self.tokens.get(self.pos) == Some(&")") {
+                    self.pos += 1;
+                    Ok(unlisted)
+                } else {
+                    Err("unbalanced '(' in license expression".into())
+                }
+            }
+            ")" | "AND" | "OR" | "WITH" => {
+                Err(format!("'{token}' where a license identifier was expected"))
+            }
+            id if COMMON_SPDX_LICENSES.contains(&id) || is_license_ref(id) => Ok(None),
+            id => Ok(Some(id)),
+        }
+    }
+}
+
+/// `LicenseRef-<idstring>`, where `idstring` is letters, digits, `.` and `-`.
+fn is_license_ref(id: &str) -> bool {
+    id.strip_prefix("LicenseRef-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    })
 }
 
 #[cfg(test)]
@@ -146,6 +264,41 @@ mod tests {
     #[test]
     fn unlicense_accepted() {
         assert!(validate_spdx_license("Unlicense").is_ok());
+    }
+
+    /// `MIT OR Apache-2.0` is the Rust ecosystem's default licence and is
+    /// what four published community extensions declare; the validator's own
+    /// module notes said expressions were fine, but it rejected them.
+    #[test]
+    fn expressions_of_listed_identifiers_are_accepted() {
+        for expr in [
+            "MIT OR Apache-2.0",
+            "(MIT OR Apache-2.0)",
+            "Apache-2.0 AND MIT",
+            "MIT OR (Apache-2.0 AND BSD-3-Clause)",
+            "LicenseRef-Proprietary",
+            "MIT OR LicenseRef-My.Terms-2",
+        ] {
+            assert!(validate_spdx_license(expr).is_ok(), "{expr}");
+        }
+    }
+
+    #[test]
+    fn malformed_or_unlisted_expressions_are_rejected() {
+        for expr in [
+            "MIT OR",
+            "OR MIT",
+            "MIT Apache-2.0",
+            "(MIT OR Apache-2.0",
+            "MIT OR Apache-2.0)",
+            "MIT or Apache-2.0",
+            "MIT OR CC0-1.0",
+            "()",
+            "LicenseRef-",
+            "BSL 1.1",
+        ] {
+            assert!(validate_spdx_license(expr).is_err(), "{expr}");
+        }
     }
 
     #[test]

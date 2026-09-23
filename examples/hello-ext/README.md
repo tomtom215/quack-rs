@@ -68,8 +68,8 @@ SELECT * FROM seq_n(5);                    -- → 1..5
 -- Table function with named param + local init
 SELECT * FROM gen_series_v2(3, step := 10); -- → 0, 10, 20
 
--- Cast with implicit cost + extra_info
-SELECT 3.7::BIGINT;                        -- → 4 (rounded)
+-- Cast with implicit cost + extra_info (rounds half away from zero)
+SELECT 2.5::DOUBLE::BIGINT;                -- → 3 (built-in DuckDB gives 2)
 
 -- INTERVAL
 SELECT add_interval(INTERVAL '1 day', 1000000); -- → 1 day 00:00:01
@@ -177,9 +177,12 @@ SELECT first_word('hello world');                                    -- hello
 SELECT COUNT(*) FROM generate_series_ext(5);                         -- 5
 SELECT COUNT(*) FROM generate_series_ext(0);                         -- 0
 
--- T05–T06: CAST / TRY_CAST
-SELECT CAST('42' AS INTEGER);                                        -- 42
-SELECT TRY_CAST('bad' AS INTEGER);                                   -- NULL
+-- T05–T06: CAST / TRY_CAST (VARCHAR → INTEGER)
+-- These replace DuckDB's built-in cast, and only accept plain integers, so
+-- the inputs are ones the built-in accepts: without LOAD, T05 returns 3 and
+-- T06 returns 100000.
+SELECT CAST('3.14' AS INTEGER);            -- Conversion Error: cannot cast "3.14" to INTEGER
+SELECT TRY_CAST('1e5' AS INTEGER);                                   -- NULL
 
 -- T07–T08: sum_list with param_logical
 SELECT sum_list([1, 2, 3]);                                          -- 6
@@ -226,8 +229,13 @@ SELECT all_types_echo(NULL::BOOLEAN, 1::TINYINT, 2::SMALLINT, 3, 4::BIGINT,
 SELECT * FROM read_hello('world');                                   -- Hello, world!
 SELECT * FROM 'hello:DuckDB';                                       -- Hello, DuckDB!
 
--- T25: DOUBLE→BIGINT cast with implicit_cost + extra_info
-SELECT 3.7::BIGINT;                                                  -- 4
+-- T25: DOUBLE→BIGINT cast with implicit_cost + extra_info (round half away
+-- from zero; DuckDB's built-in rounds half to even, so without LOAD this is 2).
+-- `2.5` alone would be a DECIMAL literal and never reach this cast.
+SELECT 2.5::DOUBLE::BIGINT;                                          -- 3
+-- T25b: out of range / NaN is an error, NULL under TRY_CAST — as built-in.
+SELECT TRY_CAST(1e19::DOUBLE AS BIGINT);                             -- NULL
+SELECT TRY_CAST('nan'::DOUBLE AS BIGINT);                            -- NULL
 
 -- T26–T28: NULL edge cases
 SELECT sum_list(NULL::BIGINT[]);                                     -- NULL

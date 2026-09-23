@@ -74,64 +74,12 @@ jobs:
 
       - name: Generate report
         if: always()
-        run: |
-          count() { if [ -f "$1" ]; then grep -c . "$1" 2>/dev/null || echo 0; else echo 0; fi; }
-
-          CAUGHT=$(count mutants.out/caught.txt)
-          MISSED=$(count mutants.out/missed.txt)
-          UNVIABLE=$(count mutants.out/unviable.txt)
-          TIMEOUT=$(count mutants.out/timeout.txt)
-          TOTAL=$((CAUGHT + MISSED))
-
-          if [ "$TOTAL" -gt 0 ]; then
-            SCORE=$(( (CAUGHT * 100) / TOTAL ))
-          else
-            SCORE=100
-          fi
-
-          {
-            echo "# Mutation Testing Report"
-            echo ""
-            echo "## Score: ${SCORE}%"
-            echo ""
-            echo "| Outcome | Count |"
-            echo "|---------|------:|"
-            echo "| Caught | ${CAUGHT} |"
-            echo "| Missed | ${MISSED} |"
-            echo "| Timeout | ${TIMEOUT} |"
-            echo "| Unviable | ${UNVIABLE} |"
-            echo ""
-
-            if [ "$MISSED" -gt 0 ]; then
-              echo "## Surviving Mutants"
-              echo ""
-              echo '```'
-              cat mutants.out/missed.txt
-              echo '```'
-              echo ""
-            fi
-
-            if [ "$TIMEOUT" -gt 0 ]; then
-              echo "## Timed-Out Mutants"
-              echo ""
-              echo '```'
-              cat mutants.out/timeout.txt
-              echo '```'
-              echo ""
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo " MUTATION SCORE: ${SCORE}%"
-          echo " Caught: ${CAUGHT}  Missed: ${MISSED}  Timeout: ${TIMEOUT}  Unviable: ${UNVIABLE}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          if [ "$MISSED" -gt 0 ]; then
-            echo ""
-            echo "::error::${MISSED} mutant(s) survived — add tests to cover these gaps"
-            exit 1
-          fi
+        env:
+          # The gate reads cargo-mutants' exit code, not just the outcome
+          # files: a run whose tests already fail in the UNMUTATED tree (exit 4)
+          # writes four empty files, which used to score "100%" and pass.
+          MUTANTS_EXIT: ${{ steps.mutants.outputs.exit_code }}
+        run: scripts/mutants-report.sh full mutants.out
 
       - name: Upload report
         if: always()
@@ -182,7 +130,7 @@ jobs:
           # `skip=true` branch below, not abort here.
           FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD" -- 'src/' \
             | grep '\.rs$' | sort -u || true)
-          FILE_COUNT=$(printf '%s\n' "$FILES" | grep -c . 2>/dev/null || echo 0)
+          FILE_COUNT=$(printf '%s\n' "$FILES" | grep -c . || true)
 
           if [ -z "$FILES" ] || [ "$FILE_COUNT" -eq 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -276,68 +224,11 @@ jobs:
 
       - name: Generate mutation report
         if: always() && steps.changed.outputs.skip == 'false'
-        run: |
-          count() { if [ -f "$1" ]; then grep -c . "$1" 2>/dev/null || echo 0; else echo 0; fi; }
-
-          CAUGHT=$(count mutants.out/caught.txt)
-          MISSED=$(count mutants.out/missed.txt)
-          UNVIABLE=$(count mutants.out/unviable.txt)
-          TIMEOUT=$(count mutants.out/timeout.txt)
-          TOTAL=$((CAUGHT + MISSED))
-
-          if [ "$TOTAL" -gt 0 ]; then
-            SCORE=$(( (CAUGHT * 100) / TOTAL ))
-          else
-            SCORE=100
-          fi
-
-          {
-            echo "# Mutation Testing Report (incremental)"
-            echo ""
-            echo "Only files changed in this PR were mutated."
-            echo ""
-            echo "## Score: ${SCORE}%"
-            echo ""
-            echo "| Outcome | Count | Meaning |"
-            echo "|---------|------:|---------|"
-            echo "| Caught | ${CAUGHT} | Test suite detected the mutation |"
-            echo "| Missed | ${MISSED} | **Test gap** — a real bug here would go undetected |"
-            echo "| Timeout | ${TIMEOUT} | Mutant caused tests to hang (killed after limit) |"
-            echo "| Unviable | ${UNVIABLE} | Mutation caused a compile error (not a test gap) |"
-            echo ""
-
-            if [ "$MISSED" -gt 0 ]; then
-              echo "## Surviving Mutants"
-              echo ""
-              echo '```'
-              cat mutants.out/missed.txt
-              echo '```'
-              echo ""
-              echo "## How to Reproduce Locally"
-              echo ""
-              echo '```bash'
-              echo "cargo install cargo-mutants"
-              echo "cargo mutants --file <path-to-file>"
-              echo '```'
-              echo ""
-            fi
-
-            if [ "$MISSED" -eq 0 ] && [ "$TIMEOUT" -eq 0 ]; then
-              echo "All mutants in changed files were caught. No test gaps found."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo " MUTATION SCORE: ${SCORE}%"
-          echo " Caught: ${CAUGHT}  Missed: ${MISSED}  Timeout: ${TIMEOUT}  Unviable: ${UNVIABLE}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          if [ "$MISSED" -gt 0 ]; then
-            echo ""
-            echo "::error::${MISSED} mutant(s) survived in changed files"
-            exit 1
-          fi
+        env:
+          # See the full-sweep job: exit codes other than 0/2/3, and a run that
+          # generated mutants but tested none, fail the gate.
+          MUTANTS_EXIT: ${{ steps.mutants.outputs.exit_code }}
+        run: scripts/mutants-report.sh incremental mutants.out
 
       - name: Upload mutation report
         if: always() && steps.changed.outputs.skip == 'false'
