@@ -11,7 +11,7 @@
 //!
 //! | `DuckDB` C API | quack-rs |
 //! |---|---|
-//! | `duckdb_connection_get_arrow_options` | [`ArrowOptions::from_connection`] |
+//! | `duckdb_connection_get_arrow_options` | [`ArrowOptions::from_connection`], [`ArrowOptions::from_raw_connection`] |
 //! | `duckdb_result_get_arrow_options` | [`ArrowOptions::from_result`] |
 //! | `duckdb_destroy_arrow_options` | [`ArrowOptions`]'s `Drop` |
 //! | `duckdb_to_arrow_schema` | [`to_arrow_schema`] |
@@ -103,8 +103,8 @@
 //! #     con: libduckdb_sys::duckdb_connection,
 //! #     chunk: &quack_rs::data_chunk::DataChunk,
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! // SAFETY: `con` is a live DuckDB connection.
-//! let options = unsafe { ArrowOptions::from_connection(con) }?;
+//! // SAFETY: `con` is a live DuckDB connection that outlives `options`.
+//! let options = unsafe { ArrowOptions::from_raw_connection(con) }?;
 //!
 //! let id = LogicalType::new(TypeId::Integer);
 //! let mut schema = to_arrow_schema(&options, &[("id", &id)])?;
@@ -148,6 +148,7 @@
 //! [Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
 
 use std::ffi::{CStr, CString};
+use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
 use std::ptr;
@@ -163,7 +164,7 @@ use libduckdb_sys::{
 use crate::data_chunk::DataChunk;
 use crate::error::ExtensionError;
 use crate::error_data::{DuckDbErrorType, ErrorData};
-use crate::query::{OwnedDataChunk, QueryResult};
+use crate::query::{OwnedConnection, OwnedDataChunk, QueryResult};
 use crate::types::LogicalType;
 
 /// The Arrow C Data Interface `ArrowSchema` ABI record, re-exported from
@@ -203,24 +204,68 @@ const _: () = assert!(
 /// [`to_arrow_schema`] and [`data_chunk_to_arrow`] require one.
 ///
 /// Destroyed on drop (`duckdb_destroy_arrow_options`).
-pub struct ArrowOptions {
+///
+/// # Lifetime
+///
+/// The handle is a copy of the connection's `ClientProperties`, and that
+/// struct keeps a **raw pointer to the connection's `ClientContext`**, which
+/// the conversion functions dereference (`DBConfig::GetConfig(context)`). Once
+/// the connection closes, every use is a heap use-after-free. So the options
+/// borrow the connection for `'conn`:
+///
+/// ```rust,compile_fail,E0505
+/// use quack_rs::arrow::{data_chunk_to_arrow, ArrowOptions};
+/// use quack_rs::query::OwnedConnection;
+///
+/// fn demo(con: OwnedConnection, chunk: &quack_rs::data_chunk::DataChunk) {
+///     let options = ArrowOptions::from_connection(&con).unwrap();
+///     drop(con); // error[E0505]: cannot move out of `con` because it is borrowed
+///     let _ = data_chunk_to_arrow(&options, chunk);
+/// }
+/// ```
+///
+/// Options read from a [`QueryResult`] point at the connection that ran the
+/// query, which a `QueryResult` does not borrow, so
+/// [`from_result`][Self::from_result] is `unsafe`.
+pub struct ArrowOptions<'conn> {
     raw: duckdb_arrow_options,
+    _conn: PhantomData<&'conn OwnedConnection>,
 }
 
-impl ArrowOptions {
-    /// Reads the Arrow options of a connection.
+impl<'conn> ArrowOptions<'conn> {
+    /// Reads the Arrow options of a connection, borrowing it for as long as
+    /// the options live.
     ///
     /// # Errors
     ///
     /// `duckdb_connection_get_arrow_options` has no error channel: it writes
-    /// null when the connection is null or the allocation throws. That is
-    /// reported here as an [`ExtensionError`].
+    /// null when the allocation throws. That is reported here as an
+    /// [`ExtensionError`].
+    #[mutants::skip] // FFI wrapper — needs a live DuckDB connection
+    pub fn from_connection(connection: &'conn OwnedConnection) -> Result<Self, ExtensionError> {
+        // SAFETY: `connection` is open, and the borrow keeps it open for all of
+        // 'conn, which is as long as the returned options can be used.
+        unsafe { Self::from_raw_connection(connection.as_raw()) }
+    }
+
+    /// Reads the Arrow options of a raw connection — for extension code that
+    /// holds a `duckdb_connection` rather than an [`OwnedConnection`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtensionError`] when the connection is null or `DuckDB`
+    /// cannot allocate the options (it writes null in both cases).
     ///
     /// # Safety
     ///
-    /// `connection` must be a live `duckdb_connection`.
+    /// `connection` must be a live `duckdb_connection`, and it must not be
+    /// disconnected for all of `'conn` (the caller picks `'conn`; choose one no
+    /// longer than the connection stays open). See the type-level
+    /// [lifetime](Self#lifetime) docs.
     #[mutants::skip] // FFI wrapper — needs a live DuckDB connection
-    pub unsafe fn from_connection(connection: duckdb_connection) -> Result<Self, ExtensionError> {
+    pub unsafe fn from_raw_connection(
+        connection: duckdb_connection,
+    ) -> Result<Self, ExtensionError> {
         let mut raw: duckdb_arrow_options = ptr::null_mut();
         // SAFETY: `connection` is live per this function's contract and `raw` is
         // a valid out-parameter.
@@ -231,7 +276,10 @@ impl ArrowOptions {
                  DuckDB could not allocate its client properties",
             ));
         }
-        Ok(Self { raw })
+        Ok(Self {
+            raw,
+            _conn: PhantomData,
+        })
     }
 
     /// Reads the Arrow options a result was produced with.
@@ -244,8 +292,16 @@ impl ArrowOptions {
     ///
     /// Returns an [`ExtensionError`] when `DuckDB` returns null, which it does
     /// for a result with no internal data.
+    ///
+    /// # Safety
+    ///
+    /// The connection that ran the query producing `result` must stay open for
+    /// all of `'conn`. The captured client properties point at that
+    /// connection's `ClientContext`, and a [`QueryResult`] can outlive its
+    /// connection, so nothing checks this. See the type-level
+    /// [lifetime](Self#lifetime) docs.
     #[mutants::skip] // FFI wrapper — needs a live DuckDB result
-    pub fn from_result(result: &QueryResult) -> Result<Self, ExtensionError> {
+    pub unsafe fn from_result(result: &QueryResult) -> Result<Self, ExtensionError> {
         // `duckdb_result_get_arrow_options` takes a `duckdb_result *` but only
         // reads `internal_data`, so a copy of the POD struct is enough — the
         // same pattern every accessor in `crate::query` uses.
@@ -258,7 +314,10 @@ impl ArrowOptions {
                 "duckdb_result_get_arrow_options returned null: the result carries no data",
             ));
         }
-        Ok(Self { raw })
+        Ok(Self {
+            raw,
+            _conn: PhantomData,
+        })
     }
 
     /// Takes ownership of a raw `duckdb_arrow_options`.
@@ -266,11 +325,15 @@ impl ArrowOptions {
     /// # Safety
     ///
     /// `raw` must be a non-null handle the caller is responsible for
-    /// destroying, and nobody else may destroy it.
+    /// destroying, and nobody else may destroy it. The connection it was read
+    /// from must stay open for all of `'conn`.
     #[inline]
     #[must_use]
     pub const unsafe fn from_raw(raw: duckdb_arrow_options) -> Self {
-        Self { raw }
+        Self {
+            raw,
+            _conn: PhantomData,
+        }
     }
 
     /// The raw handle, still owned by this value.
@@ -282,7 +345,8 @@ impl ArrowOptions {
 
     /// Relinquishes ownership, returning the raw handle.
     ///
-    /// The caller becomes responsible for `duckdb_destroy_arrow_options`.
+    /// The caller becomes responsible for `duckdb_destroy_arrow_options`, and
+    /// for not using the handle after the connection closes.
     #[inline]
     #[must_use]
     pub const fn into_raw(self) -> duckdb_arrow_options {
@@ -292,19 +356,19 @@ impl ArrowOptions {
     }
 }
 
-impl Drop for ArrowOptions {
+impl Drop for ArrowOptions<'_> {
     #[mutants::skip] // frees a DuckDB handle; nothing observable without a runtime
     fn drop(&mut self) {
         if self.raw.is_null() {
             return;
         }
         // SAFETY: `self.raw` was owned by this value and is destroyed once;
-        // DuckDB nulls it.
+        // DuckDB nulls it. Destruction does not touch the client context.
         unsafe { duckdb_destroy_arrow_options(&raw mut self.raw) };
     }
 }
 
-impl core::fmt::Debug for ArrowOptions {
+impl core::fmt::Debug for ArrowOptions<'_> {
     #[mutants::skip] // Debug rendering is not a behavioural contract
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ArrowOptions")
@@ -767,7 +831,7 @@ impl core::fmt::Debug for ArrowConvertedSchema {
 /// - Whatever `DuckDB` reports for a type it cannot render as Arrow.
 #[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub fn to_arrow_schema(
-    options: &ArrowOptions,
+    options: &ArrowOptions<'_>,
     columns: &[(&str, &LogicalType)],
 ) -> Result<ArrowSchema, ErrorData> {
     let column_count = idx_t::try_from(columns.len()).map_err(|_| {
@@ -833,7 +897,7 @@ pub fn to_arrow_schema(
 /// Whatever `DuckDB` reports for a type it cannot render as Arrow.
 #[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub fn data_chunk_to_arrow(
-    options: &ArrowOptions,
+    options: &ArrowOptions<'_>,
     chunk: &DataChunk,
 ) -> Result<ArrowArray, ErrorData> {
     let mut out = RawArrowArray::empty();

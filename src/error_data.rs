@@ -145,7 +145,23 @@ pub enum DuckDbErrorType {
     Http,
     /// A required extension is missing.
     MissingExtension,
+    /// An extension could not be autoloaded (`DUCKDB_ERROR_AUTOLOAD`, 40).
+    Autoload,
+    /// A sequence error, e.g. `nextval` past the sequence's maximum
+    /// (`DUCKDB_ERROR_SEQUENCE`, 41).
+    Sequence,
+    /// An invalid database configuration
+    /// (`DUCKDB_INVALID_CONFIGURATION`, 42).
+    InvalidConfiguration,
 }
+
+// `duckdb.h` (v1.5.5) numbers these 40, 41 and 42. They are spelled as
+// literals rather than the `libduckdb_sys` constants so the crate does not
+// depend on which bindings version declares them; the values are part of the
+// stable C ABI.
+const DUCKDB_ERROR_AUTOLOAD: duckdb_error_type = 40;
+const DUCKDB_ERROR_SEQUENCE: duckdb_error_type = 41;
+const DUCKDB_INVALID_CONFIGURATION: duckdb_error_type = 42;
 
 impl DuckDbErrorType {
     /// Converts to the `DuckDB` C API constant.
@@ -192,6 +208,9 @@ impl DuckDbErrorType {
             Self::Dependency => duckdb_error_type_DUCKDB_ERROR_DEPENDENCY,
             Self::Http => duckdb_error_type_DUCKDB_ERROR_HTTP,
             Self::MissingExtension => duckdb_error_type_DUCKDB_ERROR_MISSING_EXTENSION,
+            Self::Autoload => DUCKDB_ERROR_AUTOLOAD,
+            Self::Sequence => DUCKDB_ERROR_SEQUENCE,
+            Self::InvalidConfiguration => DUCKDB_INVALID_CONFIGURATION,
         }
     }
 
@@ -243,6 +262,9 @@ impl DuckDbErrorType {
             x if x == duckdb_error_type_DUCKDB_ERROR_DEPENDENCY => Self::Dependency,
             x if x == duckdb_error_type_DUCKDB_ERROR_HTTP => Self::Http,
             x if x == duckdb_error_type_DUCKDB_ERROR_MISSING_EXTENSION => Self::MissingExtension,
+            DUCKDB_ERROR_AUTOLOAD => Self::Autoload,
+            DUCKDB_ERROR_SEQUENCE => Self::Sequence,
+            DUCKDB_INVALID_CONFIGURATION => Self::InvalidConfiguration,
             _ => Self::Invalid,
         }
     }
@@ -291,6 +313,9 @@ impl DuckDbErrorType {
             Self::Dependency => "dependency",
             Self::Http => "HTTP",
             Self::MissingExtension => "missing extension",
+            Self::Autoload => "autoload",
+            Self::Sequence => "sequence",
+            Self::InvalidConfiguration => "invalid configuration",
         }
     }
 }
@@ -488,7 +513,7 @@ pub fn check_valid_utf8(bytes: &[u8]) -> Result<(), ErrorData> {
 mod tests {
     use super::*;
 
-    const ALL_VARIANTS: [DuckDbErrorType; 40] = [
+    const ALL_VARIANTS: [DuckDbErrorType; 43] = [
         DuckDbErrorType::Invalid,
         DuckDbErrorType::OutOfRange,
         DuckDbErrorType::Conversion,
@@ -529,7 +554,23 @@ mod tests {
         DuckDbErrorType::Dependency,
         DuckDbErrorType::Http,
         DuckDbErrorType::MissingExtension,
+        DuckDbErrorType::Autoload,
+        DuckDbErrorType::Sequence,
+        DuckDbErrorType::InvalidConfiguration,
     ];
+
+    #[test]
+    fn error_types_past_missing_extension_are_recognised() {
+        // duckdb.h v1.5.5 numbers these 40, 41 and 42; they used to fall into
+        // the `_ => Invalid` arm.
+        assert_eq!(DuckDbErrorType::from_raw(40), DuckDbErrorType::Autoload);
+        assert_eq!(DuckDbErrorType::from_raw(41), DuckDbErrorType::Sequence);
+        assert_eq!(
+            DuckDbErrorType::from_raw(42),
+            DuckDbErrorType::InvalidConfiguration
+        );
+        assert_eq!(DuckDbErrorType::from_raw(43), DuckDbErrorType::Invalid);
+    }
 
     #[test]
     fn error_type_round_trip_all_variants() {

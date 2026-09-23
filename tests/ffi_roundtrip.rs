@@ -2390,7 +2390,7 @@ fn every_uuid_accessor_agrees_on_which_128_bits_it_means() {
 
     // `Value` agrees with the vector accessors.
     let value = Value::uuid(bits);
-    assert_eq!(value.as_uuid(), bits);
+    assert_eq!(value.as_uuid(), Some(bits));
     #[cfg(feature = "duckdb-1-5")]
     assert_eq!(
         value.display_string().as_deref(),
@@ -2420,7 +2420,7 @@ fn every_uuid_accessor_agrees_on_which_128_bits_it_means() {
         (u128::MAX, "ffffffff-ffff-ffff-ffff-ffffffffffff"),
         (1u128 << 127, "80000000-0000-0000-0000-000000000000"),
     ] {
-        assert_eq!(Value::uuid(bits).as_uuid(), bits);
+        assert_eq!(Value::uuid(bits).as_uuid(), Some(bits));
         assert_eq!(uuid_from_storage(uuid_to_storage(bits)), bits);
         // `display_string` is a 1.5 addition; without it, ask SQL directly.
         assert_eq!(
@@ -2992,7 +2992,7 @@ unsafe extern "C" fn scaled_bind(info: libduckdb_sys::duckdb_bind_info) {
             }
             // SAFETY: inside a bind callback, so the context is live.
             let ctx = unsafe { bind.get_client_context() };
-            expr.fold(&ctx).ok().map(|v| v.as_i64())
+            expr.fold(&ctx).ok().and_then(|v| v.as_i64())
         })
         .unwrap_or(1);
 
@@ -3784,7 +3784,7 @@ fn composite_value_constructors_build_values_duckdb_accepts() {
     let enum_ty = LogicalType::enum_type(&["red", "green", "blue"]);
     let green = Value::enum_value(&enum_ty, 1).expect("build an ENUM value");
     assert_eq!(round_trip_value(&fx, &green), "green");
-    assert_eq!(green.as_enum_index(), 1);
+    assert_eq!(green.as_enum_index(), Some(1));
 
     // A short field slice must be refused rather than passed on:
     // `duckdb_create_struct_value` takes no count and reads one value per field
@@ -4704,7 +4704,7 @@ unsafe extern "C" fn typed_bind(info: libduckdb_sys::duckdb_bind_info) {
             }
             // SAFETY: inside a bind callback, so the context is live.
             let ctx = unsafe { bind.get_client_context() };
-            expr.fold(&ctx).ok().map(|v| v.as_i64())
+            expr.fold(&ctx).ok().and_then(|v| v.as_i64())
         })
         .unwrap_or(1);
     ScalarBindData::set(&bind, Factor(factor));
@@ -4857,7 +4857,8 @@ mod arrow_interop {
         let cols = columns(&result);
         assert_eq!(cols.len(), 3);
 
-        let options = result.arrow_options().expect("result arrow options");
+        // SAFETY: the fixture's connection ran this query and outlives the options.
+        let options = unsafe { result.arrow_options() }.expect("result arrow options");
         let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
 
         let chunk = result.next_chunk().expect("one chunk");
@@ -4905,7 +4906,8 @@ mod arrow_interop {
         let fx = Fixture::open();
         let result = fx.query("SELECT 1::INTEGER AS id, 2::BIGINT AS big, 'x' AS label");
         let cols = columns(&result);
-        let options = result.arrow_options().expect("arrow options");
+        // SAFETY: the fixture's connection ran this query and outlives the options.
+        let options = unsafe { result.arrow_options() }.expect("arrow options");
         let schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
 
         assert!(!schema.is_released());
@@ -4939,7 +4941,8 @@ mod arrow_interop {
         let fx = Fixture::open();
         let mut result = fx.query("SELECT 42::INTEGER AS answer");
         let cols = columns(&result);
-        let options = result.arrow_options().expect("arrow options");
+        // SAFETY: the fixture's connection ran this query and outlives the options.
+        let options = unsafe { result.arrow_options() }.expect("arrow options");
         let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
         let chunk = result.next_chunk().expect("one chunk");
         let mut array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
@@ -4959,7 +4962,8 @@ mod arrow_interop {
     fn arrow_options_are_available_from_a_connection_as_well_as_a_result() {
         let fx = Fixture::open();
         // SAFETY: `fx.con()` is open for the fixture's lifetime.
-        let from_con = unsafe { ArrowOptions::from_connection(fx.con()) }.expect("from_connection");
+        let from_con =
+            unsafe { ArrowOptions::from_raw_connection(fx.con()) }.expect("from_connection");
         assert!(!from_con.as_raw().is_null());
 
         let id = LogicalType::new(TypeId::Integer);
@@ -4974,7 +4978,7 @@ mod arrow_interop {
         let _fx = Fixture::open();
         // SAFETY: a null connection is exactly the case DuckDB reports by
         // writing null to the out-parameter.
-        let err = unsafe { ArrowOptions::from_connection(std::ptr::null_mut()) }
+        let err = unsafe { ArrowOptions::from_raw_connection(std::ptr::null_mut()) }
             .expect_err("a null connection has no arrow options");
         assert!(err.to_string().contains("null"), "{err}");
     }
@@ -4983,7 +4987,8 @@ mod arrow_interop {
     fn to_arrow_schema_rejects_a_name_with_an_interior_nul() {
         let fx = Fixture::open();
         // SAFETY: `fx.con()` is open for the fixture's lifetime.
-        let options = unsafe { ArrowOptions::from_connection(fx.con()) }.expect("arrow options");
+        let options =
+            unsafe { ArrowOptions::from_raw_connection(fx.con()) }.expect("arrow options");
         let id = LogicalType::new(TypeId::Integer);
         let err = to_arrow_schema(&options, &[("bad\0name", &id)])
             .expect_err("DuckDB reads schema names as C strings");
@@ -5048,7 +5053,8 @@ mod arrow_interop {
         let fx = Fixture::open();
         let result = fx.query("SELECT 1::INTEGER AS id");
         let cols = columns(&result);
-        let options = result.arrow_options().expect("arrow options");
+        // SAFETY: the fixture's connection ran this query and outlives the options.
+        let options = unsafe { result.arrow_options() }.expect("arrow options");
         let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
         // SAFETY: `fx.con()` is open for the fixture's lifetime.
         let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
@@ -5070,7 +5076,8 @@ mod arrow_interop {
         // A two-column schema…
         let mut two = fx.query("SELECT 1::INTEGER AS a, 2::INTEGER AS b");
         let two_cols = columns(&two);
-        let options = two.arrow_options().expect("arrow options");
+        // SAFETY: the fixture's connection ran this query and outlives the options.
+        let options = unsafe { two.arrow_options() }.expect("arrow options");
         let mut schema = to_arrow_schema(&options, &as_pairs(&two_cols)).expect("to_arrow_schema");
         // SAFETY: `fx.con()` is open for the fixture's lifetime.
         let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
@@ -5096,7 +5103,8 @@ mod arrow_interop {
         let fx = Fixture::open();
         let result = fx.query("SELECT 1::INTEGER AS id");
         let cols = columns(&result);
-        let options = result.arrow_options().expect("arrow options");
+        // SAFETY: the fixture's connection ran this query and outlives the options.
+        let options = unsafe { result.arrow_options() }.expect("arrow options");
         let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
         // SAFETY: `fx.con()` is open for the fixture's lifetime.
         let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
@@ -5476,3 +5484,6 @@ mod scalar_agg;
 
 #[path = "ffi_roundtrip/table_cast.rs"]
 mod table_cast;
+
+#[path = "ffi_roundtrip/value_query.rs"]
+mod value_query;

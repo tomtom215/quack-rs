@@ -28,8 +28,12 @@
 //! ```
 
 mod blob;
+mod checks;
 mod defaults;
+mod getters;
 mod hugeint;
+
+pub(crate) use checks::validate_decimal;
 
 // Re-exported unqualified so the eight call sites across this module and
 // `query` keep their existing `crate::value::hugeint_from_i128` paths.
@@ -41,15 +45,8 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 
 #[cfg(feature = "duckdb-1-5")]
-use libduckdb_sys::{
-    duckdb_create_time_ns, duckdb_get_time_ns, duckdb_time_ns, duckdb_value_to_string,
-};
-use libduckdb_sys::{
-    duckdb_destroy_value, duckdb_free, duckdb_get_bool, duckdb_get_double, duckdb_get_float,
-    duckdb_get_hugeint, duckdb_get_int16, duckdb_get_int32, duckdb_get_int64, duckdb_get_int8,
-    duckdb_get_uint16, duckdb_get_uint32, duckdb_get_uint64, duckdb_get_uint8, duckdb_get_varchar,
-    duckdb_value,
-};
+use libduckdb_sys::{duckdb_create_time_ns, duckdb_time_ns, duckdb_value_to_string};
+use libduckdb_sys::{duckdb_destroy_value, duckdb_free, duckdb_get_varchar, duckdb_value};
 
 use crate::error::ExtensionError;
 
@@ -69,13 +66,18 @@ use crate::error::ExtensionError;
 /// # Extraction
 ///
 /// Use typed accessors to extract the underlying data:
-/// - [`as_str`][Value::as_str] — VARCHAR → `String`
-/// - [`as_blob`][Value::as_blob] — BLOB → `Vec<u8>`
-/// - [`as_i32`][Value::as_i32] — INTEGER → `i32`
-/// - [`as_i64`][Value::as_i64] — BIGINT → `i64`
-/// - [`as_f32`][Value::as_f32] — FLOAT → `f32`
-/// - [`as_f64`][Value::as_f64] — DOUBLE → `f64`
-/// - [`as_bool`][Value::as_bool] — BOOLEAN → `bool`
+/// - [`as_str`][Value::as_str] — any scalar rendered as text → `Result<String>`
+/// - [`as_blob`][Value::as_blob] — BLOB → `Result<Vec<u8>>`
+/// - [`as_i32`][Value::as_i32] — cast to INTEGER → `Option<i32>`
+/// - [`as_i64`][Value::as_i64] — cast to BIGINT → `Option<i64>`
+/// - [`as_f32`][Value::as_f32] — cast to FLOAT → `Option<f32>`
+/// - [`as_f64`][Value::as_f64] — cast to DOUBLE → `Option<f64>`
+/// - [`as_bool`][Value::as_bool] — cast to BOOLEAN → `Option<bool>`
+///
+/// No accessor calls into `DuckDB` for a null handle or a SQL `NULL` — the
+/// scalar getters return `None`, `as_str`/`as_blob` an error — and none
+/// modifies the value. The `as_*_or(default)` forms (e.g.
+/// [`as_i64_or`][Value::as_i64_or]) fold every `None` into a default.
 pub struct Value {
     raw: duckdb_value,
 }
@@ -113,10 +115,15 @@ impl Value {
     ///
     /// # Errors
     ///
-    /// Returns `ExtensionError` if the value is null or contains invalid UTF-8.
+    /// Returns `ExtensionError` if the handle is null, the value is SQL `NULL`
+    /// (`duckdb_get_varchar` would throw on it, aborting the process), or the
+    /// text is not valid UTF-8.
     pub fn as_str(&self) -> Result<String, ExtensionError> {
         if self.raw.is_null() {
             return Err(ExtensionError::new("Value is null"));
+        }
+        if self.is_sql_null() {
+            return Err(ExtensionError::new("Value is SQL NULL"));
         }
         // SAFETY: self.raw is a valid duckdb_value per constructor contract.
         let c_str: *mut c_char = unsafe { duckdb_get_varchar(self.raw) };
@@ -133,138 +140,6 @@ impl Value {
         result
     }
 
-    /// Extracts the value as an `i32` (INTEGER).
-    ///
-    /// `DuckDB` will attempt to cast the value to INTEGER. If the value is not
-    /// numeric, this returns 0.
-    #[inline]
-    #[must_use]
-    pub fn as_i32(&self) -> i32 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_int32(self.raw) }
-    }
-
-    /// Extracts the value as an `i64` (BIGINT).
-    ///
-    /// `DuckDB` will attempt to cast the value to BIGINT. If the value is not
-    /// numeric, this returns 0.
-    #[inline]
-    #[must_use]
-    pub fn as_i64(&self) -> i64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_int64(self.raw) }
-    }
-
-    /// Extracts the value as an `f32` (FLOAT).
-    ///
-    /// `DuckDB` will attempt to cast the value to FLOAT. If the value is not
-    /// numeric, this returns 0.0.
-    #[inline]
-    #[must_use]
-    pub fn as_f32(&self) -> f32 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_float(self.raw) }
-    }
-
-    /// Extracts the value as an `f64` (DOUBLE).
-    ///
-    /// `DuckDB` will attempt to cast the value to DOUBLE. If the value is not
-    /// numeric, this returns 0.0.
-    #[inline]
-    #[must_use]
-    pub fn as_f64(&self) -> f64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_double(self.raw) }
-    }
-
-    /// Extracts the value as a `bool` (BOOLEAN).
-    ///
-    /// `DuckDB` will attempt to cast the value to BOOLEAN. If the value is not
-    /// convertible, this returns `false`.
-    #[inline]
-    #[must_use]
-    pub fn as_bool(&self) -> bool {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_bool(self.raw) }
-    }
-
-    /// Extracts the value as an `i8` (TINYINT).
-    ///
-    /// `DuckDB` will attempt to cast the value to TINYINT. If the value is not
-    /// numeric, this returns 0.
-    #[inline]
-    #[must_use]
-    pub fn as_i8(&self) -> i8 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_int8(self.raw) }
-    }
-
-    /// Extracts the value as an `i16` (SMALLINT).
-    ///
-    /// `DuckDB` will attempt to cast the value to SMALLINT. If the value is not
-    /// numeric, this returns 0.
-    #[inline]
-    #[must_use]
-    pub fn as_i16(&self) -> i16 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_int16(self.raw) }
-    }
-
-    /// Extracts the value as a `u8` (UTINYINT).
-    ///
-    /// `DuckDB` will attempt to cast the value to UTINYINT. If the value is not
-    /// numeric, this returns 0.
-    #[inline]
-    #[must_use]
-    pub fn as_u8(&self) -> u8 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_uint8(self.raw) }
-    }
-
-    /// Extracts the value as a `u16` (USMALLINT).
-    ///
-    /// `DuckDB` will attempt to cast the value to USMALLINT. If the value is not
-    /// numeric, this returns 0.
-    #[inline]
-    #[must_use]
-    pub fn as_u16(&self) -> u16 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_uint16(self.raw) }
-    }
-
-    /// Extracts the value as a `u32` (UINTEGER).
-    ///
-    /// `DuckDB` will attempt to cast the value to UINTEGER. If the value is not
-    /// numeric, this returns 0.
-    #[inline]
-    #[must_use]
-    pub fn as_u32(&self) -> u32 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_uint32(self.raw) }
-    }
-
-    /// Extracts the value as a `u64` (UBIGINT).
-    ///
-    /// `DuckDB` will attempt to cast the value to UBIGINT. If the value is not
-    /// numeric, this returns 0.
-    #[inline]
-    #[must_use]
-    pub fn as_u64(&self) -> u64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_uint64(self.raw) }
-    }
-
-    /// Extracts the value as an `i128` (HUGEINT).
-    ///
-    /// `DuckDB` returns HUGEINT as `{ lower: u64, upper: i64 }`. This method
-    /// reconstructs the full `i128` value.
-    #[inline]
-    #[must_use]
-    pub fn as_i128(&self) -> i128 {
-        // SAFETY: self.raw is valid per constructor contract.
-        hugeint_to_i128(unsafe { duckdb_get_hugeint(self.raw) })
-    }
-
     /// Creates a `TIME_NS` value (time of day with nanosecond precision) from a
     /// raw nanosecond count (`DuckDB` 1.5.0+).
     ///
@@ -278,17 +153,6 @@ impl Value {
         // an owned duckdb_value.
         let raw = unsafe { duckdb_create_time_ns(duckdb_time_ns { nanos }) };
         Self { raw }
-    }
-
-    /// Extracts the value as a `TIME_NS` nanosecond count (`DuckDB` 1.5.0+).
-    ///
-    /// Returns 0 if the value is not a `TIME_NS`.
-    #[cfg(feature = "duckdb-1-5")]
-    #[inline]
-    #[must_use]
-    pub fn as_time_ns(&self) -> i64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { duckdb_get_time_ns(self.raw) }.nanos
     }
 
     /// Returns the **SQL literal** representation of this value, as `DuckDB`
@@ -328,136 +192,6 @@ impl Value {
         // SAFETY: c_str was allocated by DuckDB and must be freed with duckdb_free.
         unsafe { duckdb_free(c_str.cast()) };
         result
-    }
-
-    // ── Temporal, DECIMAL and UUID extraction ────────────────────────────
-    //
-    // A table function declared with `.named_param("since", TypeId::Timestamp)`
-    // hands the bind callback a `duckdb_value`, and until now the only way to
-    // read it was `as_str()` plus reparsing DuckDB's rendering. These are the
-    // `duckdb_get_*` counterparts, all in the stable prefix of the C API.
-
-    /// Extracts a `DATE` as days since 1970-01-01.
-    ///
-    /// Returns 0 if the value is not a `DATE`. Decode it with
-    /// [`datetime::date_from_days`][crate::datetime::date_from_days].
-    #[inline]
-    #[must_use]
-    pub fn as_date(&self) -> i32 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_date(self.raw) }.days
-    }
-
-    /// Extracts a `TIME` as microseconds since midnight.
-    ///
-    /// Returns 0 if the value is not a `TIME`.
-    #[inline]
-    #[must_use]
-    pub fn as_time(&self) -> i64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_time(self.raw) }.micros
-    }
-
-    /// Extracts a `TIMETZ` as `DuckDB`'s packed 64-bit representation.
-    ///
-    /// Decode it with
-    /// [`datetime::time_tz_from_bits`][crate::datetime::time_tz_from_bits].
-    #[inline]
-    #[must_use]
-    pub fn as_time_tz(&self) -> u64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_time_tz(self.raw) }.bits
-    }
-
-    /// Extracts a `TIMESTAMP` as microseconds since the epoch.
-    ///
-    /// Returns 0 if the value is not a `TIMESTAMP`.
-    #[inline]
-    #[must_use]
-    pub fn as_timestamp(&self) -> i64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_timestamp(self.raw) }.micros
-    }
-
-    /// Extracts a `TIMESTAMPTZ` as microseconds since the epoch, in UTC.
-    #[inline]
-    #[must_use]
-    pub fn as_timestamp_tz(&self) -> i64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_timestamp_tz(self.raw) }.micros
-    }
-
-    /// Extracts a `TIMESTAMP_S` as seconds since the epoch.
-    #[inline]
-    #[must_use]
-    pub fn as_timestamp_s(&self) -> i64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_timestamp_s(self.raw) }.seconds
-    }
-
-    /// Extracts a `TIMESTAMP_MS` as milliseconds since the epoch.
-    #[inline]
-    #[must_use]
-    pub fn as_timestamp_ms(&self) -> i64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_timestamp_ms(self.raw) }.millis
-    }
-
-    /// Extracts a `TIMESTAMP_NS` as nanoseconds since the epoch.
-    #[inline]
-    #[must_use]
-    pub fn as_timestamp_ns(&self) -> i64 {
-        // SAFETY: self.raw is valid per constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_timestamp_ns(self.raw) }.nanos
-    }
-
-    /// Extracts an `INTERVAL`.
-    #[inline]
-    #[must_use]
-    pub fn as_interval(&self) -> crate::interval::DuckInterval {
-        // SAFETY: self.raw is valid per constructor contract.
-        let raw = unsafe { libduckdb_sys::duckdb_get_interval(self.raw) };
-        crate::interval::DuckInterval {
-            months: raw.months,
-            days: raw.days,
-            micros: raw.micros,
-        }
-    }
-
-    /// Extracts a `UUID` as its **textual** 128 bits, matching
-    /// [`VectorReader::read_uuid`][crate::vector::VectorReader::read_uuid]
-    /// and [`uuid`][Self::uuid].
-    ///
-    /// `DuckDB` undoes its internal top-bit flip itself here, so this is the
-    /// value the UUID renders as — not the raw `HUGEINT` a `UUID` vector holds.
-    #[inline]
-    #[must_use]
-    pub fn as_uuid(&self) -> u128 {
-        // SAFETY: self.raw is valid per constructor contract.
-        uhugeint_to_u128(unsafe { libduckdb_sys::duckdb_get_uuid(self.raw) })
-    }
-
-    /// Extracts a `DECIMAL` as its width, scale and unscaled value.
-    ///
-    /// The represented number is `value / 10^scale`.
-    #[inline]
-    #[must_use]
-    pub fn as_decimal(&self) -> crate::datetime::Decimal {
-        // SAFETY: self.raw is valid per constructor contract.
-        let raw = unsafe { libduckdb_sys::duckdb_get_decimal(self.raw) };
-        crate::datetime::Decimal {
-            width: raw.width,
-            scale: raw.scale,
-            value: hugeint_to_i128(raw.value),
-        }
-    }
-
-    /// Extracts a `UHUGEINT` as a `u128`.
-    #[inline]
-    #[must_use]
-    pub fn as_u128(&self) -> u128 {
-        // SAFETY: self.raw is valid per constructor contract.
-        uhugeint_to_u128(unsafe { libduckdb_sys::duckdb_get_uhugeint(self.raw) })
     }
 
     // ── LIST / STRUCT / MAP extraction ───────────────────────────────────
@@ -967,12 +701,19 @@ impl Value {
     ///
     /// # Errors
     ///
-    /// `duckdb.h`: "The width must be between 1 and 38, and the scale must not
-    /// exceed the width" — otherwise `duckdb_create_decimal` returns null,
-    /// reported here as an error rather than a `Value` with a null handle.
+    /// - `width` is not in `1..=38`, or `scale > width`;
+    /// - `unscaled` has more than `width` digits (`|unscaled| >= 10^width`).
+    ///
+    /// All three are checked here, before `DuckDB` is called. For an
+    /// `unscaled` that does not fit the width's physical type,
+    /// `duckdb_create_decimal` throws (aborting the process); for one that
+    /// fits the physical type but not the width it stores a value the type
+    /// cannot hold; and one past `i64` with `width <= 18` kept only its low
+    /// 64 bits.
     pub fn decimal(width: u8, scale: u8, unscaled: i128) -> Result<Self, ExtensionError> {
-        // SAFETY: a plain by-value struct; DuckDB validates width/scale itself
-        // and reports a violation by returning null.
+        validate_decimal(width, scale, unscaled)?;
+        // SAFETY: a plain by-value struct, validated above so DuckDB's
+        // narrowing `NumericCast` cannot throw.
         let raw = unsafe {
             libduckdb_sys::duckdb_create_decimal(libduckdb_sys::duckdb_decimal {
                 width,
@@ -1195,21 +936,6 @@ impl Value {
         unsafe { libduckdb_sys::duckdb_is_null_value(self.raw) }
     }
 
-    /// Returns the dictionary index of an `ENUM` value.
-    ///
-    /// `duckdb.h`: "A `uint64_t`, or `MinValue<uint64>` if the value cannot be
-    /// converted" — i.e. `0` for a non-`ENUM` value, which is also a legitimate
-    /// index, so check [`type_id`][Self::type_id] first when the type is not
-    /// already known.
-    #[must_use]
-    pub fn as_enum_index(&self) -> u64 {
-        if self.raw.is_null() {
-            return 0;
-        }
-        // SAFETY: `self.raw` is a valid duckdb_value per the constructor contract.
-        unsafe { libduckdb_sys::duckdb_get_enum_value(self.raw) }
-    }
-
     /// Creates a `MAP` value from parallel key and value slices.
     ///
     /// Named `map` rather than `map_value` because
@@ -1279,12 +1005,10 @@ impl Value {
 
     /// Returns the [`TypeId`][crate::types::TypeId] this value actually holds.
     ///
-    /// Every `as_*` accessor *reinterprets* the value as a chosen physical
-    /// type without checking: reading a `VARCHAR` with
-    /// [`as_i64`][Self::as_i64] returns garbage rather than an error. This is
-    /// the check that makes those accessors safe to use on a value whose type
-    /// you did not choose — a named parameter, a bound constant, a config
-    /// option.
+    /// The casting `as_*` accessors follow SQL's `TRY_CAST` — a `VARCHAR`
+    /// `'42'` reads as `42` through [`as_i64`][Self::as_i64]. Check the type
+    /// first when a value whose type you did not choose — a named parameter,
+    /// a bound constant, a config option — must be of one particular type.
     ///
     /// Returns `None` for a null handle, and for a type id introduced by a
     /// newer `DuckDB` than this build of quack-rs knows.
@@ -1297,8 +1021,7 @@ impl Value {
     ///
     /// # fn demo(value: &Value) -> Option<i64> {
     /// match value.type_id()? {
-    ///     TypeId::BigInt => Some(value.as_i64()),
-    ///     TypeId::Integer => Some(i64::from(value.as_i32())),
+    ///     TypeId::BigInt | TypeId::Integer => value.as_i64(),
     ///     _ => None,
     /// }
     /// # }
@@ -1469,12 +1192,12 @@ mod live_tests {
             })
         }
         .expect("2026-08-18 is a valid date");
-        assert_eq!(Value::date(days).as_date(), days);
+        assert_eq!(Value::date(days).as_date(), Some(days));
 
         let micros = 1_700_000_000_000_000_i64;
-        assert_eq!(Value::timestamp(micros).as_timestamp(), micros);
-        assert_eq!(Value::bigint(i64::MIN).as_i64(), i64::MIN);
-        assert_eq!(Value::bigint(i64::MAX).as_i64(), i64::MAX);
+        assert_eq!(Value::timestamp(micros).as_timestamp(), Some(micros));
+        assert_eq!(Value::bigint(i64::MIN).as_i64(), Some(i64::MIN));
+        assert_eq!(Value::bigint(i64::MAX).as_i64(), Some(i64::MAX));
     }
 
     #[test]
@@ -1496,7 +1219,7 @@ mod live_tests {
         for bits in [0_u128, 1, u128::MAX, 1 << 127, (1 << 127) - 1] {
             assert_eq!(
                 Value::uuid(bits).as_uuid(),
-                bits,
+                Some(bits),
                 "round trip for {bits:#034x}"
             );
         }

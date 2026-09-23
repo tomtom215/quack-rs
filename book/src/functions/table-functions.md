@@ -210,8 +210,9 @@ integers `0 .. n-1`. See `examples/hello-ext/src/lib.rs` for the full source.
 // Bind: extract `n`, register one output column
 unsafe extern "C" fn gs_bind(info: duckdb_bind_info) {
     let bind_info = unsafe { BindInfo::new(info) };
-    // Value is RAII — automatically destroyed when dropped
-    let n = unsafe { bind_info.get_parameter_value(0) }.as_i64();
+    // Value is RAII — automatically destroyed when dropped.
+    // A NULL argument reads as the default rather than aborting.
+    let n = unsafe { bind_info.get_parameter_value(0) }.as_i64_or(0);
 
     bind_info.add_result_column("value", TypeId::BigInt);
     unsafe { FfiBindData::<GsBindData>::set(info, GsBindData { total: n }) };
