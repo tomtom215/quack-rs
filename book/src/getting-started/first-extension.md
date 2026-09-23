@@ -18,12 +18,23 @@ Full source: [`examples/hello-ext/src/lib.rs`](https://github.com/tomtom215/quac
 
 ```bash
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
+
+# DuckDB only loads files ending in `.duckdb_extension` that carry its
+# 512-byte metadata footer; a bare `.so` is refused. Append the footer:
+cargo run --bin append_metadata -- \
+    examples/hello-ext/target/release/libhello_ext.so \
+    hello_ext.duckdb_extension \
+    --abi-type C_STRUCT --extension-version v0.1.0 \
+    --duckdb-version v1.2.0 --platform linux_amd64
+
+# An unsigned local build needs -unsigned (it must be a startup flag).
+duckdb -unsigned
 ```
 
 Then in the DuckDB CLI:
 
 ```sql
-LOAD './examples/hello-ext/target/release/libhello_ext.so';
+LOAD './hello_ext.duckdb_extension';
 
 -- Aggregate: total words across all rows
 SELECT word_count(sentence) FROM (

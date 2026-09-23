@@ -406,9 +406,11 @@ In duckdb-behavioral, 435 unit tests passed while the extension had three critic
 2. 6 of 7 functions not registered (function set name bug)
 3. Wrong results from window_funnel (combine not propagating config)
 
-**Fix**: Always run E2E tests using the actual DuckDB CLI:
+**Fix**: Always run E2E tests using the actual DuckDB CLI, loading the
+packaged `.duckdb_extension` (DuckDB refuses a bare `.so`; append the metadata
+footer with `append_metadata`, and start the CLI with `-unsigned`):
 ```sql
-LOAD './libmy_extension.so';
+LOAD './my_extension.duckdb_extension';
 SELECT my_function(col) FROM ...;
 ```
 
