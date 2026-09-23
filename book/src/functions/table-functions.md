@@ -7,8 +7,8 @@ lifecycle callbacks: **bind**, **init**, and **scan**.
 `quack-rs` provides two layers for registering table functions:
 
 1. **`TypedTableFunctionBuilder<S>`** (recommended for new extensions) — closure-based
-   API that hides bind/init/scan trampolines behind two safe Rust closures and carries
-   a typed scan state from `bind` into `scan` for you.
+   API that hides bind/init/scan trampolines behind safe Rust closures and gives every
+   execution a fresh, typed scan state built from what `bind` produced.
 2. **`TableFunctionBuilder`** — the underlying raw builder used by `TypedTableFunctionBuilder`
    internally. Reach for it when you need fine-grained control: `local_init`-driven
    parallel scans, projection pushdown with column filtering, or callback shapes that
@@ -21,22 +21,30 @@ Both builders are backed by the helper types `BindInfo`, `InitInfo`, `FunctionIn
 
 | Phase | Callback | Called when | Typical work |
 |-------|----------|-------------|--------------|
-| **bind** | `bind_fn` | Query is planned | Extract parameters; register output columns; store config in bind data |
-| **init** | `init_fn` | Execution starts | Allocate per-scan state (cursor, row index, etc.) |
+| **bind** | `bind_fn` | Query is planned (once per plan) | Extract parameters; register output columns; store config in bind data |
+| **init** | `init_fn` | Each execution of the plan starts | Allocate per-scan state (cursor, row index, etc.) |
 | **scan** | `scan_fn` | Each output batch | Fill `duckdb_data_chunk` with rows; call `duckdb_data_chunk_set_size` |
 
 The scan callback is called repeatedly until it writes 0 rows in a batch, signalling
 end-of-results.
 
+> **Bind once, init many times.** DuckDB keeps the bind data for as long as the
+> bound plan lives and runs `init` against it on **every** execution: each
+> `EXECUTE` of a prepared statement, each iteration of a recursive CTE that
+> references the function. Treat bind data as immutable after bind and build
+> anything a scan consumes (cursors, open files) in `init`.
+
 ## Closure-based typed state (`with_state`)
 
 For the common "take parameters at bind, stream rows until exhausted" pattern,
 `TypedTableFunctionBuilder<S>` replaces all three callback trampolines with two
-closures:
+closures. With `with_state`, the state returned by `bind` is a **template**: every
+execution of the plan scans a fresh `clone()` of it, so `S` must be `Clone`.
 
 ```rust,no_run
 use quack_rs::prelude::*;
 
+#[derive(Clone)]
 struct State {
     remaining: u64,
 }
@@ -45,7 +53,7 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
     let builder = TableFunctionBuilder::new("count_down")
         .param(TypeId::BigInt)
         // 1. bind closure: declare the output schema, read parameters,
-        //    return the initial scan state.
+        //    return the template scan state (cloned for every execution).
         .with_state::<State, _>(|bind| {
             bind.add_result_column("n", TypeId::BigInt);
             let raw = unsafe { bind.get_parameter_value(0) };
@@ -68,24 +76,70 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
 }
 ```
 
+## Separate bind data and scan state (`with_bind_init`)
+
+When the scan state is expensive or impossible to clone (it owns a file handle,
+a large buffer, a connection), or the parameters and the cursor are naturally
+separate, use `with_bind_init`. `bind` returns immutable bind data `B`
+(`Send + Sync`); `init` builds a fresh scan state `S` from `&B` for every
+execution:
+
+```rust,no_run
+use quack_rs::prelude::*;
+
+struct Params { n: i64 }
+struct Cursor { next: i64, end: i64 }   // no Clone needed
+
+fn register(reg: &impl Registrar) -> ExtResult<()> {
+    let builder = TableFunctionBuilder::new("count_up")
+        .param(TypeId::BigInt)
+        .with_bind_init(
+            |bind| {
+                bind.add_result_column("n", TypeId::BigInt);
+                let n = unsafe { bind.get_parameter_value(0) }.as_i64_or(0);
+                Ok(Params { n })
+            },
+            |params: &Params| Ok(Cursor { next: 1, end: params.n }),
+        )
+        .scan(|cursor, chunk| {
+            if cursor.next > cursor.end {
+                unsafe { chunk.set_size(0) };
+                return Ok(());
+            }
+            unsafe {
+                chunk.writer(0).write_i64(0, cursor.next);
+                chunk.set_size(1);
+            }
+            cursor.next += 1;
+            Ok(())
+        })
+        .build()?;
+    unsafe { reg.register_table(builder) }
+}
+```
+
 ### What you get for free
 
 - **No hand-written `unsafe extern "C" fn` trampolines.** `TypedTableFunctionBuilder`
   generates them internally.
-- **Typed scan state.** The `bind` closure returns `S`; the `scan` closure receives
-  `&mut S`. State is moved from the bind phase into init data for you — no manual
-  `FfiBindData` / `FfiInitData` shuffling.
+- **Typed scan state.** The `scan` closure receives `&mut S`, freshly built for
+  each execution (a clone of the `with_state` template, or `init(&B)` for
+  `with_bind_init`) — no manual `FfiBindData` / `FfiInitData` shuffling, and a
+  prepared statement can be executed any number of times.
 - **Panic safety.** User closures run inside `catch_unwind`. Panics surface as
   `duckdb_bind/init/function_set_error`, and the scan forces chunk size to zero so
   the query terminates cleanly instead of unwinding across the FFI boundary.
-- **Error propagation.** Return `Err(ExtensionError::new("..."))` from either closure
+- **Error propagation.** Return `Err(ExtensionError::new("..."))` from any closure
   to report a SQL error to DuckDB.
 
 ### Trade-offs and threading
 
-- `S` must be `Send + 'static`. `Sync` is **not** required, so
-  `TypedTableFunctionBuilder` forces scans to run on a single worker by calling
-  `InitInfo::set_max_threads(1)` internally.
+- `S` must be `Send + 'static` (plus `Clone` for `with_state`). `Sync` is **not**
+  required, so `TypedTableFunctionBuilder` forces scans to run on a single worker by
+  calling `InitInfo::set_max_threads(1)` internally.
+- The typed builder does **not** offer projection pushdown: with pushdown on, the
+  scan's chunk holds only the projected columns and a closure written against the
+  declared schema would write the wrong column. Use the raw builder for pushdown.
 - Extensions that need multi-worker parallelism (`local_init` + thread-local buffers)
   should use the raw [`TableFunctionBuilder`](#builder-api) directly.
 - `TypedTableFunctionBuilder::build()` returns a fully configured
@@ -113,8 +167,10 @@ not on the builder itself.
 
 ### Bind data
 
-Bind data persists from the bind phase through all scan batches. Use
-`FfiBindData<T>` to allocate it safely:
+Bind data persists from the bind phase through all scan batches — and through every
+later execution of the same plan (see *Bind once, init many times* above), possibly
+read from several threads at once, so `FfiBindData::set` requires `T: Send + Sync`.
+Use `FfiBindData<T>` to allocate it safely:
 
 ```rust
 struct MyBindData {
@@ -132,7 +188,8 @@ it at the right time — no `Box::into_raw` / `Box::from_raw` needed.
 
 ### Init (scan) state
 
-Per-scan state (e.g., a current row index) uses `FfiInitData<T>`:
+Per-scan state (e.g., a current row index) uses `FfiInitData<T>` (`T: Send + Sync`,
+since concurrent scan threads share it):
 
 ```rust
 struct MyScanState {
@@ -211,7 +268,9 @@ TableFunctionBuilder::new("gen_series_v2")
 ```
 
 In the bind callback, read the named parameter with
-`duckdb_bind_get_named_parameter(info, c"step".as_ptr())`.
+`BindInfo::get_named_parameter_value("step")`. Named parameters are optional: if the
+query omits `step := …`, the returned `Value` wraps a null handle (`is_null()` is
+`true`), so use a defaulting accessor such as `as_i64_or(1)`.
 
 ### Local init (per-thread state)
 
@@ -233,7 +292,11 @@ The local init callback receives `duckdb_init_info` and can use
 ### Thread control
 
 Use `InitInfo::set_max_threads` in the global init callback to tell DuckDB how
-many threads can scan concurrently:
+many threads can scan concurrently. The default is 1. Above 1, DuckDB calls the
+scan from that many threads **at the same time whether or not `local_init` is
+set** — and all of them share the one global init data and bind data. Do not use
+`FfiInitData::get_mut` then; keep shared mutable state behind a `Mutex` or
+atomics and read it with `FfiInitData::get`:
 
 ```rust
 unsafe extern "C" fn gs_v2_init(info: duckdb_init_info) {
@@ -286,8 +349,8 @@ TableFunctionBuilder::new("read_data")
 
 | Method | Description |
 |--------|-------------|
-| `add_result_column(name, TypeId)` | Declares an output column |
-| `add_result_column_with_type(name, &LogicalType)` | Output column with complex type |
+| `add_result_column(name, TypeId)` | Declares an output column (a type DuckDB would silently drop, like `ANY`, is a bind error instead) |
+| `add_result_column_with_type(name, &LogicalType)` | Output column with complex type (same check, including nested `ANY`/`INVALID`) |
 | `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer |
 | `set_error(message)` | Report a bind-time error |
 | `parameter_count()` | Number of positional parameters |
@@ -304,7 +367,7 @@ TableFunctionBuilder::new("read_data")
 |--------|-------------|
 | `projected_column_count()` | Number of projected columns (with pushdown) |
 | `projected_column_index(idx)` | Output column index at projection position |
-| `set_max_threads(n)` | Maximum parallel scan threads |
+| `set_max_threads(n)` | Maximum concurrent scan threads (default 1; shared global state above 1) |
 | `set_error(message)` | Report an init-time error |
 | `get_extra_info()` | Returns the extra-info pointer set on the function |
 

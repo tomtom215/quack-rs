@@ -35,11 +35,11 @@
 //! # Two layers: raw vs. typed
 //!
 //! - Reach for [`TypedTableFunctionBuilder`] first.
-//!   It hides the bind/init/scan trampolines behind two safe Rust closures, carries a
-//!   typed scan state from `bind` into `scan`, and catches panics via `catch_unwind`.
+//!   It hides the bind/init/scan trampolines behind safe Rust closures, gives every
+//!   execution a fresh typed scan state built from what `bind` produced, and catches panics via `catch_unwind`.
 //!   See the [`typed`] module for the full API and an end-to-end example.
 //! - Drop down to [`TableFunctionBuilder`] when you need raw control:
-//!   projection pushdown with column filtering, `local_init`-driven parallel scans,
+//!   projection pushdown (the typed builder does not offer it), `local_init`-driven parallel scans,
 //!   or any callback shape that doesn't fit the "produce state in bind, mutate it in
 //!   scan" model.
 //!
@@ -98,6 +98,7 @@ pub mod bind_data;
 pub mod builder;
 pub mod info;
 pub mod init_data;
+pub(crate) mod type_check;
 pub mod typed;
 
 pub use bind_data::FfiBindData;

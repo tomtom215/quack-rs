@@ -14,14 +14,27 @@
 //!
 //! The raw [`TableFunctionBuilder`] API requires authors to write three
 //! hand-rolled `unsafe extern "C" fn` callbacks and manually shuttle state
-//! through [`FfiBindData`] / [`FfiInitData`]. For extensions that merely need
+//! through [`FfiBindData`][crate::table::FfiBindData] /
+//! [`FfiInitData`][crate::table::FfiInitData]. For extensions that merely need
 //! "take some parameters at bind, stream rows until exhausted", that ceremony
 //! is largely accidental complexity. [`TypedTableFunctionBuilder`] collapses
-//! that to two closures:
+//! it to closures.
+//!
+//! # Two entry points
+//!
+//! | Constructor | Bind produces | Each execution starts from |
+//! |---|---|---|
+//! | [`TableFunctionBuilder::with_state`] | a template `S: Clone` | a clone of the template |
+//! | [`TableFunctionBuilder::with_bind_init`] | immutable bind data `B` | `init(&B)` |
+//!
+//! Use `with_state` when the scan state is cheap to clone. Use
+//! `with_bind_init` when it is not (it holds a file handle, a large buffer, a
+//! connection), or when the parameters and the cursor are naturally separate.
 //!
 //! ```rust,no_run
 //! use quack_rs::prelude::*;
 //!
+//! #[derive(Clone)]
 //! struct State { remaining: u64 }
 //!
 //! fn register(reg: &impl Registrar) -> ExtResult<()> {
@@ -51,9 +64,15 @@
 //!
 //! # Design
 //!
-//! - The `bind` closure runs exactly once per query. It receives a
-//!   [`BindInfo`], declares the output schema, reads parameters, and returns
-//!   the initial state `S`.
+//! - The `bind` closure runs **once per bind** — once per query plan, not once
+//!   per execution. It receives a [`BindInfo`], declares the output schema,
+//!   and reads parameters.
+//! - `DuckDB` keeps that one bind result for the lifetime of the plan and runs
+//!   `init` against it **every time the plan executes**: each `EXECUTE` of a
+//!   prepared statement, each iteration of a recursive CTE that references the
+//!   function, and so on. The builder therefore never *moves* state out of the
+//!   bind result; each execution gets a fresh `S` (a clone of the template, or
+//!   the result of your `init` closure).
 //! - The `scan` closure runs repeatedly until it sets the output chunk size
 //!   to zero. It receives `&mut S` and a [`DataChunk`] for output.
 //! - Panics in user closures are caught via `std::panic::catch_unwind`; the
@@ -64,29 +83,51 @@
 //!
 //! Because `S` is only required to be `Send + 'static` (not `Sync`), the typed
 //! builder forces scans to execute on a single worker via
-//! [`InitInfo::set_max_threads`] with `1`. Extensions that want true multi-worker
-//! parallelism should continue to use the raw [`TableFunctionBuilder`] API and
-//! split state across `local_init`.
+//! [`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads] with
+//! `1`. Extensions that want true multi-worker parallelism should continue to
+//! use the raw [`TableFunctionBuilder`] API and split state across
+//! `local_init`.
+//!
+//! # No projection pushdown
+//!
+//! The typed builder does not offer `projection_pushdown`. With pushdown on,
+//! `DuckDB` hands the scan a chunk holding only the *projected* columns, in
+//! projection order, so `chunk.writer(0)` is no longer "the first declared
+//! column" — and the scan closure has no way to learn the mapping. A scan
+//! written against the declared schema would then write column `a`'s values
+//! into column `b`. Use the raw [`TableFunctionBuilder`] with
+//! [`InitInfo::projected_column_index`][crate::table::InitInfo::projected_column_index]
+//! when you need pushdown.
+//!
+//! ```rust,compile_fail
+//! use quack_rs::prelude::*;
+//!
+//! // Does not compile: the typed builder has no `projection_pushdown`.
+//! let _ = TableFunctionBuilder::new("two_cols")
+//!     .with_state(|_bind| Ok(0_u8))
+//!     .projection_pushdown(true);
+//! ```
 
-use std::os::raw::c_void;
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Mutex;
-
-use libduckdb_sys::{
-    duckdb_bind_info, duckdb_data_chunk, duckdb_data_chunk_set_size, duckdb_function_info,
-    duckdb_init_info,
-};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::data_chunk::DataChunk;
 use crate::error::ExtensionError;
-use crate::table::bind_data::FfiBindData;
 use crate::table::builder::TableFunctionBuilder;
-use crate::table::info::{BindInfo, FunctionInfo, InitInfo};
-use crate::table::init_data::FfiInitData;
+use crate::table::info::BindInfo;
 use crate::types::{LogicalType, TypeId};
 
-/// Boxed bind closure signature stored inside [`TypedCallbacks`].
-type BindClosure<S> = dyn Fn(&BindInfo) -> Result<S, ExtensionError> + Send + Sync + 'static;
+mod trampolines;
+
+/// Produces a fresh scan state for one execution of a bound plan.
+///
+/// Stored as the table function's bind data. `DuckDB` may call `init` for the
+/// same bind data from any worker thread, hence `Send + Sync`.
+type StateFactory<S> = dyn Fn() -> Result<S, ExtensionError> + Send + Sync + 'static;
+
+/// Boxed bind closure signature stored inside [`TypedCallbacks`]: declares the
+/// schema, then returns the factory every later `init` draws its state from.
+type BindClosure<S> =
+    dyn Fn(&BindInfo) -> Result<Box<StateFactory<S>>, ExtensionError> + Send + Sync + 'static;
 
 /// Boxed scan closure signature stored inside [`TypedCallbacks`].
 type ScanClosure<S> =
@@ -99,30 +140,10 @@ struct TypedCallbacks<S: Send + 'static> {
     scan: Box<ScanClosure<S>>,
 }
 
-impl<S: Send + 'static> TypedCallbacks<S> {
-    /// `extra_info` destructor passed to `DuckDB`.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must have been produced by [`Box::into_raw`] on a
-    /// `Box<TypedCallbacks<S>>` created by [`TypedTableFunctionBuilder::build`].
-    /// `DuckDB` calls this exactly once when the table function is dropped.
-    unsafe extern "C" fn destroy_extra(ptr: *mut c_void) {
-        if ptr.is_null() {
-            return;
-        }
-        // SAFETY: ptr was produced by Box::into_raw in `build`. The boxed
-        // closures capture user data whose `Drop` may panic, and this is an
-        // `extern "C"` boundary with no error channel, so contain the unwind.
-        drop(crate::callback::catch_ffi_panic(|| unsafe {
-            drop(Box::from_raw(ptr.cast::<Self>()));
-        }));
-    }
-}
-
 /// Closure-based builder for table functions with a typed, mutable scan state.
 ///
-/// Obtain one via [`TableFunctionBuilder::with_state`]. Set a scan closure with
+/// Obtain one via [`TableFunctionBuilder::with_state`] or
+/// [`TableFunctionBuilder::with_bind_init`]. Set a scan closure with
 /// [`scan`][Self::scan] and finish with [`build`][Self::build] to recover a
 /// fully-configured [`TableFunctionBuilder`] that can be passed to any
 /// [`Registrar`][crate::connection::Registrar].
@@ -138,28 +159,125 @@ pub struct TypedTableFunctionBuilder<S: Send + 'static> {
 }
 
 impl TableFunctionBuilder {
-    /// Switches this builder into closure-based "typed state" mode.
+    /// Switches this builder into closure-based "typed state" mode, with the
+    /// scan state cloned from a template for every execution.
     ///
-    /// The supplied `bind` closure runs once per query invocation. It must:
+    /// The supplied `bind` closure runs once per bind (see the
+    /// [module docs][crate::table::typed] for what that means for prepared
+    /// statements). It must:
     ///
     /// - Declare the output schema via
     ///   [`BindInfo::add_result_column`][crate::table::BindInfo::add_result_column].
     /// - Read parameters (positional or named) from the [`BindInfo`].
-    /// - Return the initial scan state `S` on success, or an
+    /// - Return the *template* scan state `S` on success, or an
     ///   [`ExtensionError`] on failure. Errors are propagated to `DuckDB` via
     ///   `duckdb_bind_set_error`.
+    ///
+    /// Every execution of the bound plan starts from `template.clone()`, so a
+    /// prepared statement executed twice scans the same rows twice. If `S` is
+    /// expensive or impossible to clone, use
+    /// [`with_bind_init`][Self::with_bind_init] instead.
     ///
     /// Continue building the function by calling [`scan`][TypedTableFunctionBuilder::scan].
     ///
     /// See the [module-level docs][crate::table::typed] for an end-to-end example.
     pub fn with_state<S, F>(self, bind: F) -> TypedTableFunctionBuilder<S>
     where
-        S: Send + 'static,
+        S: Clone + Send + 'static,
         F: Fn(&BindInfo) -> Result<S, ExtensionError> + Send + Sync + 'static,
     {
+        let bind: Box<BindClosure<S>> = Box::new(move |info| {
+            // `S` is `Send` but not necessarily `Sync`, and `init` may run on
+            // any thread, so the template sits behind a `Mutex`. `clone` takes
+            // `&S`, so a panic inside it cannot leave the template half
+            // modified: recovering from poison is sound.
+            let template = Mutex::new(bind(info)?);
+            let factory: Box<StateFactory<S>> = Box::new(move || {
+                Ok(template
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone())
+            });
+            Ok(factory)
+        });
         TypedTableFunctionBuilder {
             inner: self,
-            bind: Some(Box::new(bind)),
+            bind: Some(bind),
+            scan: None,
+        }
+    }
+
+    /// Switches this builder into closure-based "typed state" mode, with
+    /// immutable bind data `B` and a fresh scan state `S` built from it for
+    /// every execution.
+    ///
+    /// - `bind` runs once per bind: declare the output schema with
+    ///   [`BindInfo::add_result_column`][crate::table::BindInfo::add_result_column],
+    ///   read parameters, and return the bind data `B`.
+    /// - `init` runs once per *execution* of the bound plan — every `EXECUTE`
+    ///   of a prepared statement, every re-scan inside a recursive CTE — and
+    ///   builds the scan state `S` from `&B`. This is where to open files or
+    ///   reset cursors.
+    ///
+    /// `B` must be `Send + Sync` because `DuckDB` may run `init` for the same
+    /// bind data on any worker thread. `S` need only be `Send`: scans are
+    /// serialised (see the [module docs][crate::table::typed]).
+    ///
+    /// Errors from either closure are reported to `DuckDB` (`bind` as a binder
+    /// error, `init` as an invalid-input error).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::prelude::*;
+    ///
+    /// struct Params { n: i64 }
+    /// struct Cursor { next: i64, end: i64 }
+    ///
+    /// fn register(reg: &impl Registrar) -> ExtResult<()> {
+    ///     let builder = TableFunctionBuilder::new("count_up")
+    ///         .param(TypeId::BigInt)
+    ///         .with_bind_init(
+    ///             |bind| {
+    ///                 bind.add_result_column("n", TypeId::BigInt);
+    ///                 let n = unsafe { bind.get_parameter_value(0) }.as_i64_or(0);
+    ///                 Ok(Params { n })
+    ///             },
+    ///             |params: &Params| Ok(Cursor { next: 1, end: params.n }),
+    ///         )
+    ///         .scan(|cursor, chunk| {
+    ///             if cursor.next > cursor.end {
+    ///                 unsafe { chunk.set_size(0) };
+    ///                 return Ok(());
+    ///             }
+    ///             unsafe {
+    ///                 chunk.writer(0).write_i64(0, cursor.next);
+    ///                 chunk.set_size(1);
+    ///             }
+    ///             cursor.next += 1;
+    ///             Ok(())
+    ///         })
+    ///         .build()?;
+    ///     unsafe { reg.register_table(builder) }
+    /// }
+    /// ```
+    pub fn with_bind_init<B, S, FB, FI>(self, bind: FB, init: FI) -> TypedTableFunctionBuilder<S>
+    where
+        B: Send + Sync + 'static,
+        S: Send + 'static,
+        FB: Fn(&BindInfo) -> Result<B, ExtensionError> + Send + Sync + 'static,
+        FI: Fn(&B) -> Result<S, ExtensionError> + Send + Sync + 'static,
+    {
+        let init = Arc::new(init);
+        let bind: Box<BindClosure<S>> = Box::new(move |info| {
+            let bound = bind(info)?;
+            let init = Arc::clone(&init);
+            let factory: Box<StateFactory<S>> = Box::new(move || init(&bound));
+            Ok(factory)
+        });
+        TypedTableFunctionBuilder {
+            inner: self,
+            bind: Some(bind),
             scan: None,
         }
     }
@@ -168,11 +286,14 @@ impl TableFunctionBuilder {
 impl<S: Send + 'static> TypedTableFunctionBuilder<S> {
     /// Sets the scan closure.
     ///
-    /// The closure receives a mutable reference to the scan state produced by
-    /// the `bind` closure, plus a [`DataChunk`] for the output chunk. It must
+    /// The closure receives a mutable reference to the scan state for the
+    /// current execution, plus a [`DataChunk`] for the output chunk. It must
     /// fill the chunk with zero or more output rows and set the chunk size via
     /// [`DataChunk::set_size`] or a [`ChunkWriter`][crate::chunk_writer::ChunkWriter].
     /// Returning with chunk size zero signals end-of-stream to `DuckDB`.
+    ///
+    /// Column `i` of the chunk is the `i`-th column declared in `bind`: the
+    /// typed builder never enables projection pushdown.
     ///
     /// Errors are reported through `duckdb_function_set_error` and terminate
     /// the scan.
@@ -215,13 +336,6 @@ impl<S: Send + 'static> TypedTableFunctionBuilder<S> {
         self
     }
 
-    /// Enables or disables projection pushdown.
-    /// Delegates to [`TableFunctionBuilder::projection_pushdown`].
-    pub fn projection_pushdown(mut self, enable: bool) -> Self {
-        self.inner = self.inner.projection_pushdown(enable);
-        self
-    }
-
     /// Finalises the typed builder into a raw [`TableFunctionBuilder`] ready
     /// for registration.
     ///
@@ -229,18 +343,14 @@ impl<S: Send + 'static> TypedTableFunctionBuilder<S> {
     /// to closure trampolines, and stores the user closures in `extra_info`
     /// for the lifetime of the registered function.
     ///
+    /// The closures are owned by the returned builder's `extra_info`: they are
+    /// handed to `DuckDB` on successful registration, and freed when the
+    /// builder is dropped otherwise — an unregistered builder does not leak.
+    ///
     /// # Errors
     ///
     /// Returns an error if [`scan`][Self::scan] was never called. The bind
-    /// closure is always set at construction time via
-    /// [`TableFunctionBuilder::with_state`].
-    ///
-    /// # Leak note
-    ///
-    /// On success, the returned builder owns a heap allocation that `DuckDB`
-    /// will free via the registered `extra_info` destructor when registration
-    /// succeeds. If the returned builder is dropped without being registered,
-    /// the allocation leaks (one-shot leak per unused builder; not UB).
+    /// closure is always set at construction time.
     pub fn build(self) -> Result<TableFunctionBuilder, ExtensionError> {
         let bind = self
             .bind
@@ -248,183 +358,10 @@ impl<S: Send + 'static> TypedTableFunctionBuilder<S> {
         let scan = self
             .scan
             .ok_or_else(|| ExtensionError::new("typed table function: scan closure not set"))?;
-
-        let cbs = Box::new(TypedCallbacks::<S> { bind, scan });
-        let raw = Box::into_raw(cbs).cast::<c_void>();
-
-        // SAFETY: `raw` is a freshly-allocated, non-null pointer to a
-        // `TypedCallbacks<S>`. `destroy_extra` drops the same type.
-        let builder = unsafe {
-            self.inner
-                .bind(typed_bind_trampoline::<S>)
-                .init(typed_init_trampoline::<S>)
-                .scan(typed_scan_trampoline::<S>)
-                .extra_info(raw, TypedCallbacks::<S>::destroy_extra)
-        };
-        Ok(builder)
-    }
-}
-
-/// Extracts a human-readable message from a `catch_unwind` panic payload.
-///
-/// The payload text is included: `DuckDB`'s `set_error` takes an ordinary
-/// `&str`, so there is no reason to discard the one piece of information that
-/// tells the user *which* assertion or `unwrap` failed.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload.downcast_ref::<&'static str>().map_or_else(
-        || {
-            payload.downcast_ref::<String>().map_or_else(
-                || {
-                    String::from(
-                        "quack-rs: typed table function closure panicked (unknown payload)",
-                    )
-                },
-                |s| format!("quack-rs: typed table function closure panicked: {s}"),
-            )
-        },
-        |s| format!("quack-rs: typed table function closure panicked: {s}"),
-    )
-}
-
-/// Bind trampoline monomorphised per state type `S`.
-///
-/// # Safety
-///
-/// Invoked by `DuckDB` during query parsing. `info` is a valid `duckdb_bind_info`.
-unsafe extern "C" fn typed_bind_trampoline<S: Send + 'static>(info: duckdb_bind_info) {
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: DuckDB guarantees `info` is valid for the duration of the bind callback.
-        let bind_info = unsafe { BindInfo::new(info) };
-        // SAFETY: extra_info was set by `build()` to a `Box<TypedCallbacks<S>>`.
-        let raw = unsafe { bind_info.get_extra_info() };
-        if raw.is_null() {
-            bind_info.set_error("quack-rs: typed table function missing extra_info");
-            return;
-        }
-        // SAFETY: `raw` originated from `Box::into_raw(Box::new(TypedCallbacks::<S>))`
-        // in `build()`. It remains valid until DuckDB invokes `destroy_extra`.
-        let cbs = unsafe { &*raw.cast::<TypedCallbacks<S>>() };
-
-        match (cbs.bind)(&bind_info) {
-            Ok(state) => {
-                // SAFETY: `info` is valid; this is the bind callback's single
-                // opportunity to set bind data. We wrap the state in a
-                // Mutex<Option<_>> so the init trampoline can take it out.
-                unsafe {
-                    FfiBindData::<Mutex<Option<S>>>::set(info, Mutex::new(Some(state)));
-                }
-            }
-            Err(e) => bind_info.set_error(e.as_str()),
-        }
-    }));
-
-    if let Err(payload) = outcome {
-        // SAFETY: `info` is valid.
-        let bind_info = unsafe { BindInfo::new(info) };
-        bind_info.set_error(&panic_message(&*payload));
-    }
-}
-
-/// Init trampoline monomorphised per state type `S`.
-///
-/// Moves the state produced during `bind` into the init-data slot so the
-/// scan trampoline can read `&mut S`.
-///
-/// # Safety
-///
-/// Invoked by `DuckDB` once per query. `info` is a valid `duckdb_init_info`.
-unsafe extern "C" fn typed_init_trampoline<S: Send + 'static>(info: duckdb_init_info) {
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: `info` is valid for the duration of this callback.
-        let init_info = unsafe { InitInfo::new(info) };
-
-        // SAFETY: bind_data was set by `typed_bind_trampoline` as a
-        // `Mutex<Option<S>>`. It remains alive until query teardown.
-        let bind_state = unsafe { FfiBindData::<Mutex<Option<S>>>::get_from_init(info) };
-
-        let Some(cell) = bind_state else {
-            init_info.set_error("quack-rs: typed table function missing bind state");
-            return;
-        };
-
-        let taken = if let Ok(mut guard) = cell.lock() {
-            guard.take()
-        } else {
-            init_info.set_error("quack-rs: typed table function bind-state mutex poisoned");
-            return;
-        };
-
-        let Some(state) = taken else {
-            init_info.set_error("quack-rs: typed table function bind state already consumed");
-            return;
-        };
-
-        // SAFETY: `info` is valid; `FfiInitData::set` boxes the state and
-        // registers a drop-on-destroy callback with DuckDB.
-        unsafe {
-            FfiInitData::<S>::set(info, state);
-        }
-
-        // `S` is only `Send`, not `Sync`, so we cannot safely share it across
-        // parallel scan workers. Force serial scans.
-        init_info.set_max_threads(1);
-    }));
-
-    if let Err(payload) = outcome {
-        // SAFETY: `info` is valid.
-        let init_info = unsafe { InitInfo::new(info) };
-        init_info.set_error(&panic_message(&*payload));
-    }
-}
-
-/// Scan trampoline monomorphised per state type `S`.
-///
-/// # Safety
-///
-/// Invoked by `DuckDB` repeatedly until the chunk size is set to zero.
-unsafe extern "C" fn typed_scan_trampoline<S: Send + 'static>(
-    info: duckdb_function_info,
-    output: duckdb_data_chunk,
-) {
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: `info` is valid per DuckDB contract.
-        let fninfo = unsafe { FunctionInfo::new(info) };
-        // SAFETY: extra_info was set by `build()`.
-        let raw = unsafe { fninfo.get_extra_info() };
-        if raw.is_null() {
-            fninfo.set_error("quack-rs: typed table function missing extra_info");
-            // SAFETY: `output` is a valid data chunk.
-            unsafe { duckdb_data_chunk_set_size(output, 0) };
-            return;
-        }
-        // SAFETY: same provenance as the bind trampoline.
-        let cbs = unsafe { &*raw.cast::<TypedCallbacks<S>>() };
-
-        // SAFETY: init_data was set by `typed_init_trampoline`; the scan
-        // runs serialised (set_max_threads(1)), so no aliasing &mut exists.
-        let state = unsafe { FfiInitData::<S>::get_mut(info) };
-        let Some(state) = state else {
-            fninfo.set_error("quack-rs: typed table function missing scan state");
-            // SAFETY: `output` is valid.
-            unsafe { duckdb_data_chunk_set_size(output, 0) };
-            return;
-        };
-
-        // SAFETY: `output` is a valid data chunk provided by DuckDB.
-        let chunk = unsafe { DataChunk::from_raw(output) };
-        if let Err(e) = (cbs.scan)(state, &chunk) {
-            fninfo.set_error(e.as_str());
-            // SAFETY: `output` is valid.
-            unsafe { duckdb_data_chunk_set_size(output, 0) };
-        }
-    }));
-
-    if let Err(payload) = outcome {
-        // SAFETY: `info` is valid.
-        let fninfo = unsafe { FunctionInfo::new(info) };
-        fninfo.set_error(&panic_message(&*payload));
-        // SAFETY: `output` is valid.
-        unsafe { duckdb_data_chunk_set_size(output, 0) };
+        Ok(trampolines::wire(
+            self.inner,
+            TypedCallbacks::<S> { bind, scan },
+        ))
     }
 }
 
@@ -443,7 +380,9 @@ impl<S: Send + 'static> core::fmt::Debug for TypedTableFunctionBuilder<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[derive(Clone)]
     struct DummyState {
         _rows: u64,
     }
@@ -452,6 +391,16 @@ mod tests {
     fn with_state_produces_typed_builder() {
         let typed = TableFunctionBuilder::new("demo")
             .with_state::<DummyState, _>(|_bind| Ok(DummyState { _rows: 10 }));
+        assert_eq!(typed.name(), "demo");
+        assert!(typed.bind.is_some());
+        assert!(typed.scan.is_none());
+    }
+
+    #[test]
+    fn with_bind_init_produces_typed_builder() {
+        struct NotClone;
+        let typed = TableFunctionBuilder::new("demo")
+            .with_bind_init(|_bind| Ok(3_u64), |_n: &u64| Ok(NotClone));
         assert_eq!(typed.name(), "demo");
         assert!(typed.bind.is_some());
         assert!(typed.scan.is_none());
@@ -482,37 +431,40 @@ mod tests {
         let typed = TableFunctionBuilder::new("demo")
             .with_state::<DummyState, _>(|_| Ok(DummyState { _rows: 0 }))
             .param(TypeId::Varchar)
-            .named_param("path", TypeId::Varchar)
-            .projection_pushdown(true);
+            .named_param("path", TypeId::Varchar);
         assert_eq!(typed.name(), "demo");
     }
 
+    /// The factories are what make repeated `init` calls against one bind
+    /// result work; exercise them without a live `DuckDB` by calling the
+    /// factory the bind closure would have stored.
     #[test]
-    fn destroy_extra_null_is_noop() {
-        // Must not panic.
-        unsafe {
-            TypedCallbacks::<DummyState>::destroy_extra(std::ptr::null_mut());
-        }
+    fn with_state_factory_hands_out_independent_clones() {
+        // SAFETY: a null bind info is never dereferenced by this closure.
+        let info = unsafe { BindInfo::new(std::ptr::null_mut()) };
+        let typed = TableFunctionBuilder::new("demo").with_state(|_| Ok(vec![1_u8, 2]));
+        let factory = (typed.bind.expect("bind set"))(&info).expect("bind ok");
+        let mut first = factory().expect("first");
+        first.push(3);
+        assert_eq!(first, vec![1, 2, 3]);
+        assert_eq!(factory().expect("second"), vec![1, 2]);
     }
 
     #[test]
-    fn destroy_extra_drops_box() {
-        let cbs: Box<TypedCallbacks<DummyState>> = Box::new(TypedCallbacks {
-            bind: Box::new(|_| Ok(DummyState { _rows: 0 })),
-            scan: Box::new(|_, _| Ok(())),
-        });
-        let raw = Box::into_raw(cbs).cast::<c_void>();
-        unsafe { TypedCallbacks::<DummyState>::destroy_extra(raw) };
-    }
-
-    #[test]
-    fn panic_message_classifies_known_payloads() {
-        let s: Box<dyn std::any::Any + Send> = Box::new("boom");
-        assert!(panic_message(&*s).contains("panicked"));
-        let s: Box<dyn std::any::Any + Send> = Box::new(String::from("boom"));
-        assert!(panic_message(&*s).contains("panicked"));
-        // Unknown payload falls through to the "unknown payload" branch.
-        let s: Box<dyn std::any::Any + Send> = Box::new(42_i32);
-        assert!(panic_message(&*s).contains("unknown payload"));
+    fn with_bind_init_runs_init_once_per_factory_call() {
+        static INITS: AtomicUsize = AtomicUsize::new(0);
+        // SAFETY: a null bind info is never dereferenced by this closure.
+        let info = unsafe { BindInfo::new(std::ptr::null_mut()) };
+        let typed = TableFunctionBuilder::new("demo").with_bind_init(
+            |_| Ok(5_i64),
+            |n: &i64| {
+                INITS.fetch_add(1, Ordering::SeqCst);
+                Ok(*n * 2)
+            },
+        );
+        let factory = (typed.bind.expect("bind set"))(&info).expect("bind ok");
+        assert_eq!(factory().expect("first"), 10);
+        assert_eq!(factory().expect("second"), 10);
+        assert_eq!(INITS.load(Ordering::SeqCst), 2);
     }
 }

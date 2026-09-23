@@ -104,6 +104,19 @@ for i in 0..bind.result_column_count() {
 # }
 ```
 
+## Threads
+
+The data pointers are untyped, so the compiler cannot check this for you:
+
+- `extra_info` lives as long as the database and is read from every connection's
+  thread — treat it as `T: Send + Sync`.
+- Bind data is shared by every sink call. `COPY … TO` with `PER_THREAD_OUTPUT` or
+  `PARTITION_BY` runs the sink on several threads **at once** — treat it as
+  `T: Send + Sync` and never mutate it without a lock.
+- Global state is one per output file: per thread with `PER_THREAD_OUTPUT`, per
+  partition with `PARTITION_BY` (reachable from more than one thread). Guard any
+  mutation with a `Mutex` unless you know neither option is in use.
+
 ## Callback signatures
 
 | Phase | Signature |

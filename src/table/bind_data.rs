@@ -55,7 +55,10 @@ use libduckdb_sys::{
 ///
 /// - [`set`][FfiBindData::set] — boxes `T` via `Box::into_raw`, registers
 ///   the pointer and the [`destroy`][FfiBindData::destroy] destructor with `DuckDB`.
-/// - `DuckDB` calls `destroy` when the query completes, which drops the `Box<T>`.
+/// - `DuckDB` calls `destroy` when the bound plan is discarded, which drops the
+///   `Box<T>`. That is not necessarily the end of the first query: a prepared
+///   statement binds once and reuses the bind data for every `EXECUTE`, so treat
+///   it as immutable after bind and build per-execution state in `init`.
 /// - Retrieval methods borrow the `T` for the duration of the callback.
 pub struct FfiBindData<T: 'static> {
     _marker: std::marker::PhantomData<T>,
@@ -67,11 +70,20 @@ impl<T: 'static> FfiBindData<T> {
     /// Call this inside your `bind` callback to save configuration that will
     /// be accessed in `init` and `scan` callbacks.
     ///
+    /// `T` must be `Send + Sync`. Bind data outlives the bind callback: a
+    /// prepared statement keeps it across executions, every `init` reads it,
+    /// and with [`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads]
+    /// above 1 several scan threads read it at once. It is dropped on whichever
+    /// thread tears the plan down.
+    ///
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_bind_info` provided by `DuckDB` in a bind callback.
     /// - Must be called at most once per bind invocation; calling twice leaks the first allocation.
-    pub unsafe fn set(info: duckdb_bind_info, data: T) {
+    pub unsafe fn set(info: duckdb_bind_info, data: T)
+    where
+        T: Send + Sync,
+    {
         let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
         // SAFETY: info is valid; raw is a non-null heap allocation owned by DuckDB after this call.
         unsafe {

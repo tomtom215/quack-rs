@@ -79,7 +79,12 @@ unsafe extern "C" fn my_scan_callback(
 | `add_i64_parameter(value)` | Add a BIGINT (i64) parameter (v0.11.0+) |
 | `add_bool_parameter(value)` | Add a BOOLEAN parameter (v0.11.0+) |
 | `add_parameter_raw(duckdb_value)` | Add any typed `duckdb_value` parameter (v0.11.0+) |
-| `set_error(message)` | Report an error (aborts this replacement scan) |
+| `set_error(message)` | Report an error (aborts this replacement scan). DuckDB ignores an empty message, so an empty one is replaced with a placeholder |
+
+Data passed to `ReplacementScanBuilder::register_with_data` must be `Send + Sync`:
+it lives in the database-wide configuration, is read by the callback from any
+connection's thread (concurrently), and is dropped by whichever thread closes the
+database. The raw `register` has the same requirement, stated in its `# Safety`.
 
 ## When to use replacement scans vs table functions
 

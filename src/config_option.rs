@@ -121,6 +121,9 @@ impl ConfigOptionBuilder {
 
     /// Sets the default value as a string representation.
     ///
+    /// The string is cast to the option's type at [`register`][Self::register]
+    /// time, which checks first that the cast succeeds.
+    ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if `value` contains a null byte.
@@ -140,10 +143,21 @@ impl ConfigOptionBuilder {
 
     /// Registers this config option with `DuckDB`.
     ///
+    /// # Default values are checked first
+    ///
+    /// `duckdb_config_option_set_default_value` casts the default string to
+    /// the option type with a *throwing* cast and no `try`/`catch`, so a
+    /// default such as `"abc"` for a `BIGINT` option would abort the process
+    /// ("Rust cannot catch foreign exceptions"). Unless the type is
+    /// `VARCHAR` (no cast), `register` therefore first runs
+    /// `SELECT TRY_CAST($1::VARCHAR AS <type>) IS NOT NULL` on `con`, with the
+    /// default bound as a parameter, and returns an error if the cast fails.
+    ///
     /// # Errors
     ///
-    /// Returns `ExtensionError` if the option type was not set or registration
-    /// fails.
+    /// Returns `ExtensionError` if the option type was not set, if the default
+    /// value does not cast to the option type (or the check itself cannot run
+    /// on `con`), or if registration fails.
     ///
     /// # Safety
     ///
@@ -153,6 +167,10 @@ impl ConfigOptionBuilder {
             .option_type
             .ok_or_else(|| ExtensionError::new("config option type not set"))?;
         let lt = LogicalType::for_slot(type_id, "config option type")?;
+        if let Some(ref val) = self.default_value {
+            // SAFETY: `con` is valid per this function's contract.
+            unsafe { check_default_casts(con, &self.name, type_id, val) }?;
+        }
 
         // SAFETY: duckdb_create_config_option allocates a new handle.
         let option: duckdb_config_option = unsafe { duckdb_create_config_option() };
@@ -202,6 +220,64 @@ impl ConfigOptionBuilder {
                 self.name.to_string_lossy()
             )))
         }
+    }
+}
+
+/// Verifies that `default` casts to `type_id`, using `DuckDB`'s own
+/// non-throwing `TRY_CAST`, before the throwing cast inside
+/// `duckdb_config_option_set_default_value` can abort the process.
+///
+/// # Safety
+///
+/// `con` must be a valid, open `duckdb_connection`.
+unsafe fn check_default_casts(
+    con: duckdb_connection,
+    name: &CString,
+    type_id: TypeId,
+    default: &CString,
+) -> Result<(), ExtensionError> {
+    if type_id == TypeId::Varchar {
+        // A VARCHAR default is stored as-is; there is no cast to fail.
+        return Ok(());
+    }
+    let name = name.to_string_lossy();
+    let default = default
+        .to_str()
+        .map_err(|_| ExtensionError::new("config option default value is not valid UTF-8"))?;
+    let context = |detail: String| {
+        ExtensionError::new(format!(
+            "config option '{name}': cannot validate default value {default:?} for type {}: \
+             {detail}",
+            type_id.sql_name()
+        ))
+    };
+    let sql = format!(
+        "SELECT TRY_CAST($1::VARCHAR AS {}) IS NOT NULL",
+        type_id.sql_name()
+    );
+    // SAFETY: `con` is valid per this function's contract.
+    let statement =
+        unsafe { crate::query::prepare(con, &sql) }.map_err(|e| context(e.to_string()))?;
+    statement
+        .bind_str(1, default)
+        .map_err(|e| context(e.to_string()))?;
+    let mut result = statement.execute().map_err(|e| context(e.to_string()))?;
+    let chunk = result
+        .next_chunk()
+        .ok_or_else(|| context("the check returned no rows".into()))?;
+    if chunk.size() != 1 || chunk.column_count() != 1 {
+        return Err(context("the check returned an unexpected shape".into()));
+    }
+    // SAFETY: the chunk has exactly one BOOLEAN column and one row;
+    // `IS NOT NULL` is never NULL.
+    let casts = unsafe { chunk.reader(0).read_bool(0) };
+    if casts {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "config option '{name}': default value {default:?} cannot be cast to {}",
+            type_id.sql_name()
+        )))
     }
 }
 

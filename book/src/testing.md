@@ -414,14 +414,14 @@ use quack_rs::sql_macro::SqlMacro;
 fn scalar_macro_sql() {
     let m = SqlMacro::scalar("double_it", &["x"], "x * 2").unwrap();
     assert_eq!(m.to_sql(),
-        "CREATE OR REPLACE MACRO double_it(x) AS (x * 2)");
+        r#"CREATE OR REPLACE MACRO "double_it"("x") AS (x * 2)"#);
 }
 
 #[test]
 fn table_macro_sql() {
     let m = SqlMacro::table("recent", &["n"], "SELECT * FROM events LIMIT n").unwrap();
     assert_eq!(m.to_sql(),
-        "CREATE OR REPLACE MACRO recent(n) AS TABLE SELECT * FROM events LIMIT n");
+        r#"CREATE OR REPLACE MACRO "recent"("n") AS TABLE SELECT * FROM events LIMIT n"#);
 }
 ```
 

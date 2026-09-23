@@ -111,6 +111,12 @@ unsafe {
 Inside the cast callback, retrieve the extra info with
 `CastFunctionInfo::get_extra_info()`.
 
+If `register` returns an error — a missing callback or type, or a source or target
+type that is or contains `ANY`/`INVALID`, which DuckDB refuses — the builder still
+owns the extra info and runs its destructor exactly once. These cases are checked
+in Rust before DuckDB is called because `duckdb_register_cast_function` rejects them
+*before* taking ownership of the pointer.
+
 ## TRY_CAST vs CAST
 
 Inside your callback, check [`CastFunctionInfo::cast_mode()`] to distinguish between

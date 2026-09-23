@@ -79,14 +79,32 @@ impl BindInfo {
     /// Call this once per output column in the order they will appear in the result.
     ///
     /// If `name` contains an interior null byte it is truncated at that point.
+    ///
+    /// # Rejected types
+    ///
+    /// A type that cannot be a result column is reported as a **bind error**
+    /// (via [`set_error`][Self::set_error]) naming the column, and the column
+    /// is not added:
+    ///
+    /// - `ANY` (and, through
+    ///   [`add_result_column_with_type`][Self::add_result_column_with_type],
+    ///   any type *containing* `ANY` or `INVALID`, such as `LIST(ANY)`).
+    ///   `duckdb_bind_add_result_column` would silently drop such a column,
+    ///   shifting the index of every column declared after it.
+    /// - A composite id (`List`, `Struct`, `Decimal`, ...) that needs its own
+    ///   [`LogicalType`] constructor; use `add_result_column_with_type`.
+    ///   (This used to panic.)
+    ///
+    /// The query then fails at bind time with that message, even if the bind
+    /// callback goes on to succeed.
     pub fn add_result_column(&self, name: &str, type_id: TypeId) -> &Self {
-        let c_name = str_to_cstring(name);
-        let lt = LogicalType::new(type_id);
-        // SAFETY: self.info is valid per constructor's contract.
-        unsafe {
-            duckdb_bind_add_result_column(self.info, c_name.as_ptr(), lt.as_raw());
+        match LogicalType::try_new(type_id) {
+            Ok(lt) => self.add_result_column_with_type(name, &lt),
+            Err(e) => {
+                self.set_error(&format!("add_result_column('{name}'): {e}"));
+                self
+            }
         }
-        self
     }
 
     /// Number of result columns `DuckDB` already knows this table function must
@@ -202,7 +220,19 @@ impl BindInfo {
     /// via `LogicalType::list`, `LogicalType::struct_type`, or `LogicalType::map`.
     ///
     /// If `name` contains an interior null byte it is truncated at that point.
+    ///
+    /// A type containing `ANY` or `INVALID` is reported as a bind error rather
+    /// than added; see "Rejected types" on
+    /// [`add_result_column`][Self::add_result_column].
     pub fn add_result_column_with_type(&self, name: &str, logical_type: &LogicalType) -> &Self {
+        // SAFETY: `logical_type` owns a live handle.
+        if unsafe { crate::table::type_check::contains_any_or_invalid(logical_type.as_raw()) } {
+            self.set_error(&format!(
+                "add_result_column('{name}'): a result column's type must not be or contain \
+                 ANY or INVALID; DuckDB would silently drop the column and shift every later one"
+            ));
+            return self;
+        }
         let c_name = str_to_cstring(name);
         // SAFETY: self.info is valid; logical_type.as_raw() is valid.
         unsafe {
@@ -288,6 +318,14 @@ impl BindInfo {
     ///
     /// The returned `Value` is RAII-managed — it will call `duckdb_destroy_value`
     /// on drop.
+    ///
+    /// # A parameter the caller did not supply
+    ///
+    /// Named parameters are optional in SQL. When the query does not pass
+    /// `name := ...`, `DuckDB` returns a null handle, and so does this: the
+    /// returned `Value` has [`is_null`][Value::is_null] `== true`. Test for
+    /// that, or read it with a defaulting accessor such as
+    /// [`as_i64_or`][Value::as_i64_or], before using a plain getter.
     ///
     /// # Safety
     ///
@@ -380,7 +418,13 @@ impl InitInfo {
 
     /// Sets the maximum number of threads for parallel scanning.
     ///
-    /// Only effective when `local_init` is also set on the table function.
+    /// The default is 1. Above 1, `DuckDB` may call the scan callback from up
+    /// to `n` threads **at the same time**, whether or not `local_init` is set
+    /// (`local_init` only gives each thread its own state; it is not what
+    /// enables parallelism). All of those calls share the one global init
+    /// data and the one bind data, so after raising this, the scan must not
+    /// use [`FfiInitData::get_mut`][crate::table::FfiInitData::get_mut]; keep
+    /// shared mutable state behind a `Mutex` or atomics instead.
     #[mutants::skip]
     pub fn set_max_threads(&self, n: u64) {
         // SAFETY: self.info is valid.

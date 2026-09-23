@@ -355,10 +355,13 @@ impl Connection {
     /// safe, ergonomic alternative to
     /// [`register_replacement_scan`][Self::register_replacement_scan].
     ///
+    /// `T` must be `Send + Sync`; see
+    /// [`ReplacementScanBuilder::register_with_data`].
+    ///
     /// # Safety
     ///
     /// The underlying `duckdb_database` must be valid.
-    pub unsafe fn register_replacement_scan_with_data<T: 'static>(
+    pub unsafe fn register_replacement_scan_with_data<T: Send + Sync + 'static>(
         &self,
         callback: ReplacementScanFn,
         data: T,

@@ -132,7 +132,7 @@ extension into an actual DuckDB process.
 
 ```rust
 let m = SqlMacro::scalar("triple", &["x"], "x * 3").unwrap();
-assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO triple(x) AS (x * 3)");
+assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "triple"("x") AS (x * 3)"#);
 ```
 
 For E2E testing, include the macro in your SQLLogicTest file:
