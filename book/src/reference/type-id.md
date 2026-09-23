@@ -96,6 +96,7 @@ assert_eq!(type_id, TypeId::BigInt);
 Returns the SQL type name as a static string.
 
 ```rust
+# use quack_rs::types::TypeId;
 assert_eq!(TypeId::BigInt.sql_name(), "BIGINT");
 assert_eq!(TypeId::Varchar.sql_name(), "VARCHAR");
 assert_eq!(TypeId::TimestampTz.sql_name(), "TIMESTAMPTZ");
@@ -106,8 +107,11 @@ assert_eq!(TypeId::TimestampTz.sql_name(), "TIMESTAMPTZ");
 `TypeId` implements `Display`, which outputs the SQL name:
 
 ```rust
+# use quack_rs::types::TypeId;
 println!("{}", TypeId::Interval);  // prints: INTERVAL
 let s = format!("{}", TypeId::UBigInt); // "UBIGINT"
+# assert_eq!(s, "UBIGINT");
+# assert_eq!(TypeId::Interval.to_string(), "INTERVAL");
 ```
 
 ---
@@ -132,13 +136,27 @@ variants as follows:
 | `Double` | `read_f64` | `write_f64` | `f64` |
 | `Varchar` | `read_str` | `write_varchar` | `&str` |
 | `Interval` | `read_interval` | `write_interval` | `DuckInterval` |
+| `HugeInt` | `read_i128` | `write_i128` | `i128` |
+| `UHugeInt` | `read_u128` | `write_u128` | `u128` |
+| `Blob` | `read_blob` | `write_blob` | `&[u8]` |
+| `Uuid` | `read_uuid` | `write_uuid` | `u128` (textual bits) |
+| `Date` | `read_date` | `write_date` | `i32` (days since epoch) |
+| `Time` | `read_time` | `write_time` | `i64` (µs since midnight) |
+| `TimeTz` | `read_time_tz` | `write_time_tz` | `u64` (packed) |
+| `Timestamp` | `read_timestamp` | `write_timestamp` | `i64` (µs since epoch) |
+| `TimestampTz` | `read_timestamp_tz` | `write_timestamp_tz` | `i64` (µs since epoch) |
+| `TimestampS` | `read_timestamp_s` | `write_timestamp_s` | `i64` (s since epoch) |
+| `TimestampMs` | `read_timestamp_ms` | `write_timestamp_ms` | `i64` (ms since epoch) |
+| `TimestampNs` | `read_timestamp_ns` | `write_timestamp_ns` | `i64` (ns since epoch) |
+| `Decimal` | `read_decimal(row, width)` | `write_decimal(row, width, v)` | `i128` (unscaled) |
 
-`HugeInt`, `Blob`, `List`, `Struct`, `Map`, `Uuid`, `Date`, `Time`, `Timestamp`,
-`TimestampTz`, `Decimal`, `TimestampS`, `TimestampMs`, `TimestampNs`, `Enum`,
-`Union`, `Bit`, `TimeTz`, `UHugeInt`, `Array`, `TimeNs`, `Any`, `Varint`, `SqlNull`,
-`IntegerLiteral`, `StringLiteral`, `Geometry`, `Variant` do not yet have dedicated
-read/write helpers. Access these via the raw data pointer from
-`duckdb_vector_get_data`.
+`List`, `Map`, `Struct` and `Array` are nested vectors: use the helpers in
+[Complex Types](../data/complex-types.md) (`ListVector`, `MapVector`,
+`StructVector`, `ArrayVector`, `StructReader` / `StructWriter`, `ListBuilder`).
+
+`Enum`, `Union`, `Bit`, `TimeNs`, `Any`, `Varint`, `SqlNull`, `IntegerLiteral`,
+`StringLiteral`, `Geometry` and `Variant` do not yet have dedicated read/write
+helpers. Access these via the raw data pointer from `duckdb_vector_get_data`.
 
 ---
 
@@ -165,11 +183,14 @@ add new variants without it being a breaking change. If you match on `TypeId`,
 include a wildcard arm:
 
 ```rust
+# use quack_rs::types::TypeId;
+# fn demo(type_id: TypeId) {
 match type_id {
     TypeId::BigInt => { /* ... */ }
     TypeId::Varchar => { /* ... */ }
     _ => { /* handle future types */ }
 }
+# }
 ```
 
 ---
@@ -179,7 +200,7 @@ match type_id {
 For types that require runtime parameters (such as `DECIMAL(p, s)` or
 parameterized `LIST`), use `quack_rs::types::LogicalType`:
 
-```rust
+```rust,no_run
 use quack_rs::types::{LogicalType, TypeId};
 
 let lt = LogicalType::new(TypeId::BigInt);

@@ -20,6 +20,22 @@ string and call `.register(con)`.
 A scalar macro wraps a SQL expression. Think of it as a parameterized SQL alias:
 
 ```rust
+# use libduckdb_sys::{duckdb_connection, DuckDBSuccess};
+# use quack_rs::error::ExtensionError;
+# fn live_connection() -> duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), DuckDBSuccess);
+#     }
+#     con
+# }
+# fn query_i64(con: duckdb_connection, sql: &str) -> i64 {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap();
+#     unsafe { chunk.reader(0).read_i64(0) }
+# }
 use quack_rs::sql_macro::SqlMacro;
 
 fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
@@ -42,6 +58,12 @@ fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
     }
     Ok(())
 }
+# let con = live_connection();
+# register(con).unwrap();
+# assert_eq!(query_i64(con, "SELECT clamp(9, 1, 5)::BIGINT"), 5);
+# assert_eq!(query_i64(con, "SELECT clamp(-3, 1, 5)::BIGINT"), 1);
+# assert_eq!(query_i64(con, "SELECT (pi() * 1000)::BIGINT"), 3142);
+# assert_eq!(query_i64(con, "SELECT count(*) FROM (SELECT safe_div(1, 0) AS v) WHERE v IS NULL"), 1);
 ```
 
 Use in DuckDB:
@@ -58,12 +80,30 @@ SELECT safe_div(revenue, orders) FROM monthly_stats;
 A table macro wraps a SQL query that returns rows:
 
 ```rust
+# use libduckdb_sys::{duckdb_connection, DuckDBSuccess};
+# use quack_rs::error::ExtensionError;
+# use quack_rs::sql_macro::SqlMacro;
+# fn live_connection() -> duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), DuckDBSuccess);
+#     }
+#     con
+# }
+# fn query_i64(con: duckdb_connection, sql: &str) -> i64 {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap();
+#     unsafe { chunk.reader(0).read_i64(0) }
+# }
+# fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 unsafe {
-    // active_users(tbl) → SELECT * FROM tbl WHERE active = true
+    // active_users(tbl) → SELECT * FROM query_table(tbl) WHERE active = true
     SqlMacro::table(
         "active_users",
         &["tbl"],
-        "SELECT * FROM tbl WHERE active = true",
+        "SELECT * FROM query_table(tbl) WHERE active = true",
     )?
     .register(con)?;
 
@@ -75,7 +115,20 @@ unsafe {
     )?
     .register(con)?;
 }
+# Ok(())
+# }
+# let con = live_connection();
+# unsafe { quack_rs::query::execute(con, "CREATE TABLE users AS SELECT * FROM (VALUES (1, true), (2, false), (3, true)) t(id, active)") }.unwrap();
+# unsafe { quack_rs::query::execute(con, "CREATE TABLE orders AS SELECT current_date - 3 AS order_date UNION ALL SELECT current_date - 30") }.unwrap();
+# register(con).unwrap();
+# assert_eq!(query_i64(con, "SELECT count(*) FROM recent_orders(7)"), 1);
+# assert_eq!(query_i64(con, "SELECT count(*) FROM active_users(users)"), 2);
 ```
+
+A table macro's body is bound when the macro is created, so every table it names
+directly (`orders` above) must already exist when `register` runs, or registration
+fails with a catalog error. To take a table as a parameter, read it through
+`query_table(tbl)`: a bare `FROM tbl` looks for a table literally named `tbl`.
 
 Use in DuckDB:
 
@@ -92,17 +145,19 @@ SELECT count(*) FROM recent_orders(7);
 Use it for logging, debugging, or assertions in tests:
 
 ```rust
+# use quack_rs::sql_macro::SqlMacro;
 let m = SqlMacro::scalar("add", &["a", "b"], "a + b")?;
 assert_eq!(
     m.to_sql(),
     r#"CREATE OR REPLACE MACRO "add"("a", "b") AS (a + b)"#
 );
 
-let t = SqlMacro::table("active_users", &["tbl"], "SELECT * FROM tbl WHERE active = true")?;
+let t = SqlMacro::table("active_users", &["tbl"], "SELECT * FROM query_table(tbl) WHERE active = true")?;
 assert_eq!(
     t.to_sql(),
-    r#"CREATE OR REPLACE MACRO "active_users"("tbl") AS TABLE SELECT * FROM tbl WHERE active = true"#
+    r#"CREATE OR REPLACE MACRO "active_users"("tbl") AS TABLE SELECT * FROM query_table(tbl) WHERE active = true"#
 );
+# Ok::<(), quack_rs::error::ExtensionError>(())
 ```
 
 ---
@@ -123,12 +178,14 @@ Case is not restricted — DuckDB identifiers are case-insensitive, so a macro
 registered as `MyMacro` is callable as `mymacro(...)` or `MYMACRO(...)`.
 
 ```rust
-SqlMacro::scalar("1f", &[], "1")       // ❌ Err — starts with a digit
-SqlMacro::scalar("my-macro", &[], "1") // ❌ Err — hyphen
-SqlMacro::scalar("f", &["a b"], "1")   // ❌ Err — space in param
-SqlMacro::scalar("MyMacro", &[], "1")  // ✅ Ok  — mixed case allowed
-SqlMacro::scalar("f", &["X"], "1")     // ✅ Ok  — mixed-case param allowed
-SqlMacro::scalar("f", &["_x"], "1")    // ✅ Ok  — underscore prefix allowed
+# use quack_rs::sql_macro::SqlMacro;
+assert!(SqlMacro::scalar("1f", &[], "1").is_err());       // ❌ starts with a digit
+assert!(SqlMacro::scalar("my-macro", &[], "1").is_err()); // ❌ hyphen
+assert!(SqlMacro::scalar("f", &["a b"], "1").is_err());   // ❌ space in param
+assert!(SqlMacro::scalar("f", &["order"], "1").is_err()); // ❌ reserved keyword as param
+assert!(SqlMacro::scalar("MyMacro", &[], "1").is_ok());   // ✅ mixed case allowed
+assert!(SqlMacro::scalar("f", &["X"], "1").is_ok());      // ✅ mixed-case param allowed
+assert!(SqlMacro::scalar("f", &["_x"], "1").is_ok());     // ✅ underscore prefix allowed
 ```
 
 ---

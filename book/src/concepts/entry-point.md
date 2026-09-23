@@ -39,7 +39,11 @@ entry_point_v2!(my_extension_init_c_api, |con| unsafe { register(con) });
 (The `register_*` arguments above are placeholders, so that block is not
 compilable as written.) The macro emits:
 
-```rust,ignore
+```rust
+# use libduckdb_sys::{duckdb_extension_access, duckdb_extension_info};
+# use quack_rs::connection::Connection;
+# use quack_rs::error::ExtensionError;
+# unsafe fn register(_con: &Connection) -> Result<(), ExtensionError> { Ok(()) }
 #[no_mangle]
 pub unsafe extern "C" fn my_extension_init_c_api(
     info: duckdb_extension_info,
@@ -99,6 +103,11 @@ If you need full control (e.g., multiple registration functions, conditional log
 ```rust
 use quack_rs::entry_point::init_extension;
 use libduckdb_sys::{duckdb_extension_info, duckdb_extension_access};
+# use libduckdb_sys::duckdb_connection;
+# use quack_rs::error::ExtensionError;
+# fn register_scalar_functions(_: duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
+# fn register_aggregate_functions(_: duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
+# fn register_sql_macros(_: duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
 
 #[no_mangle]
 pub unsafe extern "C" fn my_extension_init_c_api(

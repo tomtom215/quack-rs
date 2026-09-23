@@ -23,7 +23,9 @@ wraps them rather than reimplementing anything.
 
 ## Decomposing and composing
 
-```rust,ignore
+```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, writer: &mut VectorWriter, row: usize) {
 use quack_rs::datetime;
 
 // DATE -> calendar date
@@ -36,19 +38,26 @@ match unsafe { datetime::date_to_days(date) } {
     Some(days) => unsafe { writer.write_date(row, days) },
     None => unsafe { writer.set_null(row) },
 }
+# }
 ```
 
 `Time`, `TimeTz` and `Timestamp` work the same way:
 
-```rust,ignore
-let Some(ts) = unsafe { datetime::timestamp_from_micros(reader.read_timestamp(row)) } else {
+```rust
+# use quack_rs::datetime;
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, writer: &mut VectorWriter, rows: usize) {
+# for row in 0..rows {
+let Some(ts) = (unsafe { datetime::timestamp_from_micros(reader.read_timestamp(row)) }) else {
     // ±infinity (or the first ~4 hours of the i64 range): no calendar form.
     unsafe { writer.set_null(row) };
     continue;
 };
-assert_eq!(ts.time.micros % 1_000, 0);   // ts.date and ts.time are plain structs
+assert!((0..1_000_000).contains(&ts.time.micros));   // ts.date and ts.time are plain structs
 
 let micros = unsafe { datetime::timestamp_to_micros(ts) };   // Option<i64>
+# }
+# }
 ```
 
 ### Invalid input is `None`, not an abort
@@ -72,13 +81,17 @@ simply gives a `TIME` past midnight.
 `TIMETZ` is a packed 64-bit value, not a plain integer — build and read it
 through the helpers rather than by hand:
 
-```rust,ignore
+```rust
+# use quack_rs::datetime;
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, writer: &mut VectorWriter, row: usize) {
 let bits = unsafe { datetime::time_tz_bits(12 * 3_600 * 1_000_000, -5 * 3_600) }
     .expect("noon, UTC-5, is in range");
 unsafe { writer.write_time_tz(row, bits) };
 
 let decoded = unsafe { datetime::time_tz_from_bits(reader.read_time_tz(row)) };
 assert_eq!(decoded.offset_seconds, -5 * 3_600);
+# }
 ```
 
 ## Infinity
@@ -86,12 +99,16 @@ assert_eq!(decoded.offset_seconds, -5 * 3_600);
 DuckDB reserves two values of `DATE` and of `TIMESTAMP` for `infinity` and
 `-infinity`. Decomposing one into a calendar date is meaningless, so check first:
 
-```rust,ignore
+```rust
+# use quack_rs::datetime;
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, writer: &mut VectorWriter, row: usize) {
 let days = unsafe { reader.read_date(row) };
 if unsafe { datetime::is_finite_date(days) } {
     let date = unsafe { datetime::date_from_days(days) };
     // …
 }
+# }
 ```
 
 Note the exact values, which are easy to get wrong:
@@ -122,7 +139,10 @@ width has to travel with the value:
 `read_decimal` / `write_decimal` take the width and pick the right one. Get it
 from the column's `LogicalType`:
 
-```rust,ignore
+```rust
+# use libduckdb_sys::duckdb_vector;
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(vec: duckdb_vector, reader: &VectorReader, writer: &mut VectorWriter, row: usize) {
 let logical = unsafe { quack_rs::vector::vector_get_column_type(vec) };
 let width = unsafe { logical.decimal_width() };
 let scale = unsafe { logical.decimal_scale() };
@@ -130,6 +150,7 @@ let scale = unsafe { logical.decimal_scale() };
 let unscaled = unsafe { reader.read_decimal(row, width) };
 // The represented number is unscaled / 10^scale.
 unsafe { writer.write_decimal(row, width, unscaled * 2) };
+# }
 ```
 
 `datetime::f64_to_decimal` and `datetime::decimal_to_f64` convert through

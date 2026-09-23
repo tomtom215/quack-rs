@@ -104,6 +104,8 @@ Every `unsafe` block must have a `// SAFETY:` comment explaining:
 2. Why the operation is valid given that invariant
 
 ```rust
+# struct Ffi { inner: *mut u64 }
+# let ffi = Ffi { inner: Box::into_raw(Box::new(0_u64)) };
 // SAFETY: `states` is a valid array of `count` pointers, each initialized
 // by `init_callback`. We are the only owner of `inner` at this point.
 unsafe { drop(Box::from_raw(ffi.inner)) };
@@ -143,7 +145,7 @@ Every public item must have a doc comment. Follow these conventions:
 
 ## Repository structure
 
-```
+```text
 quack-rs/
 ├── src/
 │   ├── abi.rs                         # `DuckDB` C Extension API ABI compatibility checking

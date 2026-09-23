@@ -42,7 +42,10 @@ directions, the Arrow C Data Interface bridge, catalog access, `ErrorData`,
 `FileSystem`, `Expression`, `SelectionVector`, config options, table descriptions
 and the client context.
 
-```rust,ignore
+The book's own test build enables `duckdb-1-5`, so this block is compiled there
+but not run:
+
+```rust,no_run
 use quack_rs::abi;
 
 // false unless `duckdb-1-5` is enabled.
@@ -110,6 +113,9 @@ point applies it according to an [`AbiPolicy`]:
 | `Strict` (default) | Refuse to load, with a message naming both layouts and the fix |
 | `Warn` | Report through `set_error`, then load anyway |
 | `Trust` | Skip the check |
+
+The two lines below are alternatives: both define the same exported symbol, so
+they do not compile together.
 
 ```rust,ignore
 use quack_rs::abi::AbiPolicy;

@@ -8,6 +8,8 @@ quack-rs uses a single error type throughout: `ExtensionError`.
 
 ```rust
 use quack_rs::error::{ExtensionError, ExtResult};
+# let (name, code) = ("my_fn", 1);
+# let some_std_error = std::fmt::Error;
 
 // From a string literal
 let e = ExtensionError::from("something went wrong");
@@ -30,6 +32,11 @@ allocate runtime resources (e.g., tokio) during initialization — the `?`
 operator works directly without `.map_err()`:
 
 ```rust
+# use quack_rs::connection::Connection;
+# use quack_rs::error::ExtensionError;
+# // A stand-in with tokio's signature: `Runtime::new() -> std::io::Result<Runtime>`.
+# mod tokio { pub mod runtime { pub struct Runtime;
+#     impl Runtime { pub fn new() -> std::io::Result<Self> { Ok(Runtime) } } } }
 fn register_all(con: &Connection) -> Result<(), ExtensionError> {
     let _rt = tokio::runtime::Runtime::new()?; // ← io::Error → ExtensionError
     // ... register functions ...
@@ -44,6 +51,7 @@ fn register_all(con: &Connection) -> Result<(), ExtensionError> {
 A type alias for `Result<T, ExtensionError>`, used throughout the SDK:
 
 ```rust
+# use quack_rs::error::ExtensionError;
 pub type ExtResult<T> = Result<T, ExtensionError>;
 ```
 
@@ -54,6 +62,9 @@ pub type ExtResult<T> = Result<T, ExtensionError>;
 In your registration function:
 
 ```rust
+# use libduckdb_sys::{duckdb_connection, duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn my_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
 fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
     unsafe {
         ScalarFunctionBuilder::new("my_fn")
@@ -77,7 +88,8 @@ If any registration call fails, `?` returns the error from `register`, which
 
 ## Error reporting to DuckDB
 
-`init_extension` converts `ExtensionError` to a `CString` for the DuckDB error callback:
+`init_extension` converts `ExtensionError` to a `CString` for the DuckDB error callback
+(abridged from `src/error.rs`; the fallback is elided, so this does not compile as shown):
 
 ```rust,ignore
 pub fn to_c_string(&self) -> CString {
@@ -105,6 +117,14 @@ error-handling strategy.
 ### Safe patterns
 
 ```rust
+# use libduckdb_sys::duckdb_aggregate_state;
+# use quack_rs::aggregate::{AggregateState, FfiState};
+# use quack_rs::error::ExtensionError;
+# #[derive(Default)] struct MyState { count: u64 }
+# impl AggregateState for MyState {}
+# fn some_fallible_call() -> Result<u64, ExtensionError> { Ok(1) }
+# unsafe fn demo(state_ptr: duckdb_aggregate_state, maybe_count: Option<u64>)
+#     -> Result<(), ExtensionError> {
 // ✅ Use Option methods
 if let Some(s) = FfiState::<MyState>::with_state_mut(state_ptr) {
     s.count += 1;
@@ -118,6 +138,8 @@ let count = maybe_count.unwrap_or(0);
 
 // ❌ Never in FFI callbacks
 let s = FfiState::<MyState>::with_state_mut(state_ptr).unwrap(); // panics if None
+# Ok(())
+# }
 ```
 
 ### In `init_extension`

@@ -18,6 +18,8 @@ vectors without manual offset arithmetic.
 ### STRUCT
 
 ```rust
+# use libduckdb_sys::duckdb_vector;
+# fn demo(parent_vec: duckdb_vector, row_count: usize) {
 use quack_rs::vector::{VectorReader, complex::StructVector};
 
 // Inside a scan or finalize callback:
@@ -32,11 +34,14 @@ for row in 0..row_count {
         // process (x, y) …
     }
 }
+# }
 ```
 
 ### LIST
 
 ```rust
+# use libduckdb_sys::duckdb_vector;
+# fn demo(list_vec: duckdb_vector, row_count: usize) {
 use quack_rs::vector::{VectorReader, complex::ListVector};
 
 let total_elements = unsafe { ListVector::get_size(list_vec) };
@@ -52,6 +57,7 @@ for row in 0..row_count {
         }
     }
 }
+# }
 ```
 
 ### MAP
@@ -59,6 +65,8 @@ for row in 0..row_count {
 `MAP` is `LIST<STRUCT{key, value}>`. Access keys and values via the inner struct:
 
 ```rust
+# use libduckdb_sys::duckdb_vector;
+# fn demo(map_vec: duckdb_vector, row_count: usize) {
 use quack_rs::vector::{VectorReader, complex::MapVector};
 
 let total = unsafe { MapVector::total_entry_count(map_vec) };
@@ -74,6 +82,7 @@ for row in 0..row_count {
         // process (k, v) …
     }
 }
+# }
 ```
 
 ## Writing complex types (output vectors)
@@ -81,6 +90,8 @@ for row in 0..row_count {
 ### STRUCT
 
 ```rust
+# use libduckdb_sys::duckdb_vector;
+# fn demo(out_vec: duckdb_vector, batch_size: usize, x_values: &[f64], y_values: &[f64]) {
 use quack_rs::vector::{VectorWriter, complex::StructVector};
 
 let mut x_writer = unsafe { StructVector::field_writer(out_vec, 0) };
@@ -90,6 +101,7 @@ for row in 0..batch_size {
     unsafe { x_writer.write_f64(row, x_values[row]) };
     unsafe { y_writer.write_f64(row, y_values[row]) };
 }
+# }
 ```
 
 ### Nested complex types inside STRUCT (v0.11.0+)
@@ -98,6 +110,8 @@ When a STRUCT field is itself a LIST, MAP, or ARRAY, use `child_vector()` on
 `StructWriter` or `StructReader` to get the raw vector handle for complex operations:
 
 ```rust
+# use libduckdb_sys::duckdb_vector;
+# fn demo(struct_vec: duckdb_vector, row: usize) {
 use quack_rs::vector::{StructWriter, complex::ListVector};
 
 // STRUCT(name VARCHAR, services LIST<VARCHAR>, message VARCHAR)
@@ -116,6 +130,7 @@ unsafe { elem_writer.write_varchar(0, "a") };
 unsafe { elem_writer.write_varchar(1, "b") };
 unsafe { elem_writer.write_varchar(2, "c") };
 unsafe { ListVector::set_size(list_vec, 3) };
+# }
 ```
 
 ### LIST — recommended: `ListBuilder`
@@ -125,6 +140,8 @@ unsafe { ListVector::set_size(list_vec, 3) };
 every reserve:
 
 ```rust
+# use libduckdb_sys::duckdb_vector;
+# fn demo(list_vec: duckdb_vector, rows: &[Vec<i64>]) {
 use quack_rs::vector::ListBuilder;
 
 let mut builder = unsafe { ListBuilder::new(list_vec) };
@@ -138,6 +155,7 @@ for (row, elements) in rows.iter().enumerate() {
     }
 }
 unsafe { builder.finish() };
+# }
 ```
 
 > **Why the re-fetch matters.** `duckdb_list_vector_reserve` takes a *total*
@@ -153,6 +171,8 @@ child and one for the value child.
 ### LIST — manual
 
 ```rust
+# use libduckdb_sys::duckdb_vector;
+# fn demo(list_vec: duckdb_vector, rows: &[Vec<i64>]) {
 use quack_rs::vector::{VectorWriter, complex::ListVector};
 
 let total_elements: usize = rows.iter().map(|r| r.len()).sum();
@@ -168,6 +188,7 @@ for (row, elements) in rows.iter().enumerate() {
     offset += elements.len();
 }
 unsafe { ListVector::set_size(list_vec, total_elements) };
+# }
 ```
 
 ### MAP — manual
@@ -177,6 +198,8 @@ the two struct child vectors. Prefer `ListBuilder::push_map_row` unless you know
 the total pair count before writing:
 
 ```rust
+# use libduckdb_sys::duckdb_vector;
+# fn demo(map_vec: duckdb_vector, total_pairs: usize, all_pairs: &[Vec<(String, i64)>]) {
 use quack_rs::vector::{VectorWriter, complex::MapVector};
 
 unsafe { MapVector::reserve(map_vec, total_pairs) };
@@ -193,6 +216,7 @@ for (row, pairs) in all_pairs.iter().enumerate() {
     offset += pairs.len();
 }
 unsafe { MapVector::set_size(map_vec, total_pairs) };
+# }
 ```
 
 ## Constructing complex logical types

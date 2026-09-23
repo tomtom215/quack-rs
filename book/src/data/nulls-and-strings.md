@@ -10,6 +10,8 @@ NULL before reading, and reading VARCHAR values from DuckDB vectors.
 Every row in a DuckDB vector may be NULL. Always check validity before reading:
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, writer: &mut VectorWriter) {
 for row in 0..reader.row_count() {
     if unsafe { !reader.is_valid(row) } {
         // Propagate NULL to output
@@ -19,6 +21,7 @@ for row in 0..reader.row_count() {
     // Safe to read
     let value = unsafe { reader.read_str(row) };
 }
+# }
 ```
 
 **Reading from a NULL row returns garbage data** — the vector's data buffer is
@@ -28,7 +31,10 @@ bytes from the data buffer.
 ### Writing NULL
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(writer: &mut VectorWriter, row: usize) {
 unsafe { writer.set_null(row) };
+# }
 ```
 
 > **Pitfall L4**: `VectorWriter::set_null` calls `duckdb_vector_ensure_validity_writable`
@@ -43,7 +49,10 @@ unsafe { writer.set_null(row) };
 To mark a row as valid after a previous `set_null`:
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(writer: &mut VectorWriter, row: usize) {
 unsafe { writer.set_valid(row) };
+# }
 ```
 
 ---
@@ -53,7 +62,10 @@ unsafe { writer.set_valid(row) };
 Read VARCHAR columns with `VectorReader::read_str`:
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, row: usize) {
 let s: &str = unsafe { reader.read_str(row) };
+# }
 ```
 
 The returned `&str` borrows from the DuckDB vector — it must not outlive the
@@ -81,6 +93,8 @@ both formats transparently. You never need to inspect the raw struct.
 An empty string (`""`) and NULL are distinct values:
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, row: usize) {
 // NULL: is_valid returns false
 // Empty string: is_valid returns true, read_str returns ""
 if unsafe { !reader.is_valid(row) } {
@@ -91,12 +105,16 @@ if unsafe { !reader.is_valid(row) } {
         // This is an empty string, not NULL
     }
 }
+# }
 ```
 
 ### Writing VARCHAR
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(writer: &mut VectorWriter, row: usize, my_str: &str) {
 unsafe { writer.write_varchar(row, my_str) };  // &str
+# }
 ```
 
 `write_varchar` copies the string bytes into DuckDB's managed storage. The
@@ -108,7 +126,10 @@ unsafe { writer.write_varchar(row, my_str) };  // &str
 bytes. Use `read_blob` so the data is not interpreted as UTF-8:
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, row: usize) {
 let bytes: &[u8] = unsafe { reader.read_blob(row) };
+# }
 ```
 
 Like `read_str`, the returned slice borrows from the DuckDB vector and must not
@@ -119,6 +140,8 @@ outlive the callback.
 ## Complete NULL-safe VARCHAR pattern
 
 ```rust
+# use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# use quack_rs::vector::{VectorReader, VectorWriter};
 unsafe extern "C" fn my_scalar(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -148,17 +171,21 @@ inline/pointer distinction, `quack_rs::vector::string::DuckStringView` is
 available:
 
 ```rust
+# fn demo(data: *const u8, idx: usize) {
 use quack_rs::vector::string::{DuckStringView, DUCK_STRING_SIZE};
 
-// From raw 16-byte data (inside a vector callback)
+// From raw 16-byte data (inside a vector callback). `from_raw` is unsafe because it
+// follows the pointer of a string longer than 12 bytes; untrusted bytes go through
+// `DuckStringView::inline_from_bytes`, which refuses that format instead.
 let raw: &[u8; 16] = unsafe { &*data.add(idx * DUCK_STRING_SIZE).cast() };
-let view = DuckStringView::from_bytes(raw);
+let view = unsafe { DuckStringView::from_raw(raw) };
 
 println!("length: {}", view.len());
 println!("is_empty: {}", view.is_empty());
 if let Some(s) = view.as_str() {
     println!("content: {s}");
 }
+# }
 ```
 
 In practice, prefer `reader.read_str(row)` — `DuckStringView` is only needed

@@ -19,6 +19,10 @@ Unlike the other builders in quack-rs, `ReplacementScanBuilder` uses a single
 static call because the DuckDB C API takes all arguments at once:
 
 ```rust
+# use libduckdb_sys::{duckdb_database, duckdb_replacement_scan_info};
+# use std::os::raw::{c_char, c_void};
+# unsafe extern "C" fn my_scan_callback(_: duckdb_replacement_scan_info, _: *const c_char, _: *mut c_void) {}
+# fn demo(db: duckdb_database, my_state: String) {
 use quack_rs::replacement_scan::ReplacementScanBuilder;
 
 // Low-level: pass raw extra_data and an optional delete callback.
@@ -35,6 +39,7 @@ unsafe {
 unsafe {
     ReplacementScanBuilder::register_with_data(db, my_scan_callback, my_state);
 }
+# }
 ```
 
 > **Note:** Replacement scans are registered on a **database** handle
@@ -46,6 +51,7 @@ The raw callback receives `duckdb_replacement_scan_info`, but you can wrap it
 with `ReplacementScanInfo` for ergonomic, safe access:
 
 ```rust
+# use libduckdb_sys::duckdb_replacement_scan_info;
 use quack_rs::replacement_scan::ReplacementScanInfo;
 
 unsafe extern "C" fn my_scan_callback(

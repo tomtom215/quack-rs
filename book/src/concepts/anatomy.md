@@ -23,6 +23,9 @@ When DuckDB loads your extension, it:
 macro generates the required `#[no_mangle] extern "C"` symbol:
 
 ```rust
+# use quack_rs::entry_point;
+# use quack_rs::error::ExtensionError;
+# fn register(_con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
 entry_point!(my_extension_init_c_api, |con| register(con));
 // emits: #[no_mangle] pub unsafe extern "C" fn my_extension_init_c_api(...)
 ```
@@ -34,7 +37,7 @@ entry_point!(my_extension_init_c_api, |con| register(con));
 The symbol name **must** be `{extension_name}_init_c_api` — all lowercase, underscores only.
 If the symbol is missing or misnamed, DuckDB fails to load the extension.
 
-```
+```text
 Extension name: "word_count_ext"
 Required symbol: word_count_ext_init_c_api
 ```
@@ -49,7 +52,7 @@ visible at the call site — no hidden identifier manipulation at compile time.
 `libduckdb-sys` with `features = ["loadable-extension"]` changes how DuckDB API functions
 work fundamentally:
 
-```
+```text
 Without feature:  duckdb_query(...)  →  calls linked libduckdb directly
 With feature:     duckdb_query(...)  →  dispatches through an AtomicPtr table
 ```
@@ -58,10 +61,13 @@ The `AtomicPtr` table starts as null. DuckDB fills it in by calling
 `duckdb_rs_extension_api_init`. This means:
 
 - **Any call before `duckdb_rs_extension_api_init` panics** with `"DuckDB API not initialized"`
-- **In `cargo test`, you cannot call any `duckdb_*` function** — the table is never initialized
+- **In a plain `cargo test`, you cannot call any `duckdb_*` function** — no DuckDB host
+  process ever initializes the table
 
-This is why `quack-rs` uses `AggregateTestHarness` for testing: it simulates the aggregate
-lifecycle in pure Rust, with zero DuckDB API calls.
+This is why `quack-rs` offers `AggregateTestHarness` for testing: it simulates the aggregate
+lifecycle in pure Rust, with zero DuckDB API calls. For SQL-level tests, the
+`bundled-test` / `bundled-test-prebuilt` features link a real DuckDB and fill the table
+when `InMemoryDb::open()` runs (see [Testing Guide](../testing.md)).
 
 ---
 

@@ -8,7 +8,8 @@ quack-rs provides `TypeId` and `LogicalType` to bridge Rust types and DuckDB col
 
 `TypeId` is an ergonomic enum covering DuckDB's column types (the `GEOMETRY` and
 `VARIANT` types added in DuckDB 1.5.x are exposed behind the `duckdb-1-5-3`
-feature — see [Known Limitations](../reference/known-limitations.md)):
+feature — see [Known Limitations](../reference/known-limitations.md)). The list below
+names the variants; it is a listing, not compilable code:
 
 ```rust,ignore
 use quack_rs::types::TypeId;
@@ -61,6 +62,7 @@ TypeId::Variant          // duckdb-1-5-3
 ### SQL name
 
 ```rust
+# use quack_rs::types::TypeId;
 assert_eq!(TypeId::BigInt.sql_name(), "BIGINT");
 assert_eq!(TypeId::Varchar.sql_name(), "VARCHAR");
 assert_eq!(format!("{}", TypeId::Timestamp), "TIMESTAMP");
@@ -90,7 +92,7 @@ assert_eq!(type_id, TypeId::BigInt);
 `LogicalType` is a RAII wrapper around DuckDB's `duckdb_logical_type`. It is used internally
 by the function builders.
 
-```rust
+```rust,no_run
 use quack_rs::types::{LogicalType, TypeId};
 
 let lt = LogicalType::new(TypeId::Varchar);

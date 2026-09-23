@@ -52,6 +52,8 @@ source and a running database.
 **Yes, without any C++ wrapper code.** Use `quack_rs::sql_macro::SqlMacro`:
 
 ```rust
+# use libduckdb_sys::duckdb_connection;
+# fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 use quack_rs::sql_macro::SqlMacro;
 
 // Scalar macro
@@ -62,10 +64,14 @@ unsafe { m.register(con) }?;
 let m = SqlMacro::table("recent_events", &["n"],
     "SELECT * FROM events ORDER BY ts DESC LIMIT n")?;
 unsafe { m.register(con) }?;
+# Ok(())
+# }
 ```
 
 Register them inside your `init_extension` closure alongside aggregate and
-scalar functions. See [SQL Macros](functions/sql-macros.md).
+scalar functions. A table macro's body is bound when it is created, so the
+`events` table must already exist or `register` returns an error.
+See [SQL Macros](functions/sql-macros.md).
 
 ### Can I register multiple overloads of the same function?
 
@@ -83,6 +89,13 @@ Yes. The `init_extension` closure receives a `duckdb_connection` and can call
 as many `register_*` functions as needed:
 
 ```rust
+# use libduckdb_sys::{duckdb_connection, duckdb_extension_access, duckdb_extension_info};
+# use quack_rs::error::ExtensionError;
+# use quack_rs::sql_macro::SqlMacro;
+# use quack_rs::DUCKDB_API_VERSION;
+# unsafe fn register_word_count(_: duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
+# unsafe fn register_sentence_count(_: duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
+# unsafe fn demo(info: duckdb_extension_info, access: *const duckdb_extension_access) -> bool {
 quack_rs::entry_point::init_extension(info, access, DUCKDB_API_VERSION, |con| {
     unsafe { register_word_count(con) }?;
     unsafe { register_sentence_count(con) }?;
@@ -92,6 +105,7 @@ quack_rs::entry_point::init_extension(info, access, DUCKDB_API_VERSION, |con| {
     }
     Ok(())
 })
+# }
 ```
 
 ### Can I use the `duckdb` crate instead of `libduckdb-sys`?
@@ -102,13 +116,21 @@ separate copy. Use `libduckdb-sys` with the `loadable-extension` feature.
 
 ### Can I have a scalar function with no parameters?
 
-Yes. Pass an empty slice to `param`:
+Yes. Just do not call `param`:
 
 ```rust
-ScalarFunctionBuilder::new("current_quack")
-    .returns(TypeId::Varchar)
-    .function(quack_callback)
-    .register(con)?;
+# use libduckdb_sys::{duckdb_connection, duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn quack_callback(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+# fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
+unsafe {
+    ScalarFunctionBuilder::new("current_quack")
+        .returns(TypeId::Varchar)
+        .function(quack_callback)
+        .register(con)?;
+}
+# Ok(())
+# }
 ```
 
 ---
@@ -132,6 +154,7 @@ extension into an actual DuckDB process.
 `SqlMacro::to_sql()` is pure Rust and requires no DuckDB connection:
 
 ```rust
+# use quack_rs::sql_macro::SqlMacro;
 let m = SqlMacro::scalar("triple", &["x"], "x * 3").unwrap();
 assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "triple"("x") AS (x * 3)"#);
 ```

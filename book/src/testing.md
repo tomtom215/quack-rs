@@ -57,7 +57,7 @@ around it, and for the common shapes the typed constructors
 (`ScalarFunctionBuilder::map1`, `map1_str`, …) write that loop for you, NULL
 handling included.
 
-```rust
+```rust,test_harness
 // The logic: plain Rust, tested with plain `#[test]`s.
 fn shout(s: &str) -> String {
     s.to_uppercase()
@@ -135,7 +135,7 @@ assert!((0..3).all(|i| writer.is_written(i) || writer.is_null(i)));
 `MockRegistrar` implements the `Registrar` trait without calling any DuckDB C API.
 Use it to verify your registration function registers the right set of functions:
 
-```rust
+```rust,test_harness
 use quack_rs::connection::Registrar;
 use quack_rs::testing::MockRegistrar;
 use quack_rs::scalar::ScalarFunctionBuilder;
@@ -206,8 +206,7 @@ artifact, use `InMemoryDb::open_unsigned` instead of `open()` — the
 `allow_unsigned_extensions` config option is startup-only and can't be set
 via `SET` after the connection has opened.
 
-```rust,no_run
-# #[cfg(feature = "bundled-test")]
+```rust,test_harness
 use quack_rs::testing::InMemoryDb;
 use quack_rs::sql_macro::SqlMacro;
 
@@ -234,7 +233,7 @@ Opening an `InMemoryDb` also populates the `loadable-extension` dispatch table �
 for the whole process, not just that handle. After that the entire C API works,
 so you can register a real function and call it from SQL inside `cargo test`:
 
-```rust,ignore
+```rust,test_harness
 use libduckdb_sys::{duckdb_connection, DuckDBSuccess};
 use quack_rs::data_chunk::DataChunk;
 use quack_rs::query::query;
@@ -323,7 +322,7 @@ flowchart LR
 
 ### Basic usage
 
-```rust
+```rust,test_harness
 use quack_rs::testing::AggregateTestHarness;
 use quack_rs::aggregate::AggregateState;
 
@@ -345,7 +344,12 @@ fn test_sum() {
 
 For testing over a collection of inputs:
 
-```rust
+```rust,test_harness
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct WordCountState { count: usize }
+# impl AggregateState for WordCountState {}
+# fn count_words(s: &str) -> usize { s.split_whitespace().count() }
 #[test]
 fn test_word_count() {
     let result = AggregateTestHarness::<WordCountState>::aggregate(
@@ -362,7 +366,11 @@ DuckDB creates fresh zero-initialized target states and calls `combine` to merge
 into them. You MUST propagate ALL fields — including configuration fields —
 not just accumulated data. Test this explicitly:
 
-```rust
+```rust,test_harness
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct MyState { window_size: i64, count: i64 }
+# impl AggregateState for MyState {}
 #[test]
 fn combine_propagates_config() {
     let mut h1 = AggregateTestHarness::<MyState>::new();
@@ -388,6 +396,10 @@ fn combine_propagates_config() {
 ### Inspecting intermediate state
 
 ```rust
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct SumState { total: i64 }
+# impl AggregateState for SumState {}
 let mut h = AggregateTestHarness::<SumState>::new();
 h.update(|s| s.total += 5);
 assert_eq!(h.state().total, 5);   // borrow without consuming
@@ -398,6 +410,10 @@ assert_eq!(h.state().total, 8);
 ### Resetting
 
 ```rust
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct SumState { total: i64 }
+# impl AggregateState for SumState {}
 let mut h = AggregateTestHarness::<SumState>::new();
 h.update(|s| s.total = 999);
 h.reset();
@@ -407,8 +423,13 @@ assert_eq!(h.state().total, 0);  // back to S::default()
 ### Pre-populating state
 
 ```rust
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct MyState { window_size: i64, count: i64 }
+# impl AggregateState for MyState {}
 let initial = MyState { window_size: 3600, count: 0 };
 let h = AggregateTestHarness::with_state(initial);
+# assert_eq!(h.finalize().window_size, 3600);
 ```
 
 ---
@@ -417,7 +438,7 @@ let h = AggregateTestHarness::with_state(initial);
 
 Scalar logic is pure Rust — test it directly:
 
-```rust
+```rust,test_harness
 // From examples/hello-ext/src/lib.rs — scalar function logic
 pub fn first_word(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or("")
@@ -438,7 +459,7 @@ fn first_word_basic() {
 
 `SqlMacro::to_sql()` is pure Rust — no DuckDB connection needed:
 
-```rust
+```rust,test_harness
 use quack_rs::sql_macro::SqlMacro;
 
 #[test]
@@ -466,7 +487,7 @@ format runs SQL directly in DuckDB and verifies output line-by-line.
 
 ### File location
 
-```
+```text
 test/sql/my_extension.test
 ```
 
@@ -575,7 +596,8 @@ SELECT my_function('hello world');
 The `proptest` crate is well-suited for testing aggregate logic over arbitrary
 inputs:
 
-```rust
+```rust,test_harness
+# use quack_rs::interval::{interval_to_micros_saturating, DuckInterval};
 use proptest::prelude::*;
 
 proptest! {

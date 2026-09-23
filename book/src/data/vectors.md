@@ -11,11 +11,15 @@ typed access to these vectors.
 ### Construction
 
 ```rust
+# use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(input: duckdb_data_chunk, column_index: usize) {
 // In a scalar function callback:
 let reader = unsafe { VectorReader::new(input, column_index) };
 
 // In an aggregate update callback:
 let reader = unsafe { VectorReader::new(input, 0) };   // first column
+# }
 ```
 
 `VectorReader::new` takes the `duckdb_data_chunk` and a zero-based column index. The
@@ -24,19 +28,27 @@ reader borrows the chunk — it must not outlive the callback.
 ### Row count
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader) {
 let n = reader.row_count();   // number of rows in this chunk
+# }
 ```
 
 Chunk sizes vary. Always loop from `0..reader.row_count()`, never assume a fixed size.
 
 ### NULL check
 
-```rust,ignore
+```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, writer: &mut VectorWriter) {
+# for row in 0..reader.row_count() {
 if unsafe { !reader.is_valid(row) } {
     // row is NULL — skip or propagate NULL to output
     unsafe { writer.set_null(row) };
     continue;
 }
+# }
+# }
 ```
 
 **Always check `is_valid` before reading.** Reading from a NULL row returns garbage data.
@@ -44,6 +56,8 @@ if unsafe { !reader.is_valid(row) } {
 ### Reading values
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(reader: &VectorReader, row: usize) {
 let i: i8  = unsafe { reader.read_i8(row) };
 let i: i16 = unsafe { reader.read_i16(row) };
 let i: i32 = unsafe { reader.read_i32(row) };
@@ -64,6 +78,7 @@ let ts: i64 = unsafe { reader.read_timestamp(row) }; // microseconds since epoch
 let t: i64 = unsafe { reader.read_time(row) };       // microseconds since midnight
 let blob: &[u8] = unsafe { reader.read_blob(row) };  // binary data
 let uuid: u128 = unsafe { reader.read_uuid(row) };   // UUID's textual 128 bits
+# }
 ```
 
 ---
@@ -73,27 +88,36 @@ let uuid: u128 = unsafe { reader.read_uuid(row) };   // UUID's textual 128 bits
 ### Construction
 
 ```rust
+# use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(output: duckdb_vector, result: duckdb_vector) {
 // In a scalar function callback:
 let mut writer = unsafe { VectorWriter::new(output) };
 
 // In an aggregate finalize callback:
 let mut writer = unsafe { VectorWriter::new(result) };
+# }
 ```
 
 ### Writing values
 
 ```rust
-unsafe { writer.write_i8(row, value) };
-unsafe { writer.write_i16(row, value) };
-unsafe { writer.write_i32(row, value) };
-unsafe { writer.write_i64(row, value) };
-unsafe { writer.write_u8(row, value) };
-unsafe { writer.write_u16(row, value) };
-unsafe { writer.write_u32(row, value) };
-unsafe { writer.write_u64(row, value) };
-unsafe { writer.write_f32(row, value) };
-unsafe { writer.write_f64(row, value) };
-unsafe { writer.write_bool(row, value) };
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# use quack_rs::interval::DuckInterval;
+# fn demo(writer: &mut VectorWriter, row: usize, s: &str, interval: DuckInterval,
+#     days_since_epoch: i32, micros_since_epoch: i64, micros_since_midnight: i64,
+#     bytes: Vec<u8>, uuid_bits: u128) {
+unsafe { writer.write_i8(row, -8) };
+unsafe { writer.write_i16(row, -16) };
+unsafe { writer.write_i32(row, -32) };
+unsafe { writer.write_i64(row, -64) };
+unsafe { writer.write_u8(row, 8) };
+unsafe { writer.write_u16(row, 16) };
+unsafe { writer.write_u32(row, 32) };
+unsafe { writer.write_u64(row, 64) };
+unsafe { writer.write_f32(row, 3.5) };
+unsafe { writer.write_f64(row, 2.5) };
+unsafe { writer.write_bool(row, true) };
 unsafe { writer.write_varchar(row, s) };   // &str (also available as write_str)
 unsafe { writer.write_str(row, s) };       // alias for write_varchar
 unsafe { writer.write_interval(row, interval) };  // DuckInterval
@@ -104,6 +128,7 @@ unsafe { writer.write_timestamp(row, micros_since_epoch) };
 unsafe { writer.write_time(row, micros_since_midnight) };
 unsafe { writer.write_blob(row, &bytes) };
 unsafe { writer.write_uuid(row, uuid_bits) };        // UUID's textual 128 bits
+# }
 ```
 
 ### `UUID` is not stored as you'd expect
@@ -128,7 +153,10 @@ convert.
 ### Writing NULL
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(writer: &mut VectorWriter, row: usize) {
 unsafe { writer.set_null(row) };
+# }
 ```
 
 > **Pitfall L4**: `set_null` calls `duckdb_vector_ensure_validity_writable` automatically
@@ -154,7 +182,10 @@ stale field value. `StructWriter::set_row_null(row)` does the same from a
 To undo a previous `set_null` call and mark a row as valid again:
 
 ```rust
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn demo(writer: &mut VectorWriter, row: usize) {
 unsafe { writer.set_valid(row) };
+# }
 ```
 
 `set_valid` also calls `ensure_validity_writable` automatically.
@@ -167,6 +198,7 @@ unsafe { writer.set_valid(row) };
 vectors and metadata without raw FFI calls:
 
 ```rust
+# use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
 use quack_rs::data_chunk::DataChunk;
 
 unsafe extern "C" fn my_scan(info: duckdb_function_info, output: duckdb_data_chunk) {
@@ -198,6 +230,9 @@ instances for each field is verbose. `StructWriter` and `StructReader` pre-creat
 field writers/readers at construction:
 
 ```rust
+# use quack_rs::data_chunk::DataChunk;
+# struct Output { success: bool, data: String, count: i64, day: i32, payload: Vec<u8> }
+# fn demo(chunk: &DataChunk, row: usize, result: &Output) {
 // Writing a 5-field STRUCT output:
 let mut sw = unsafe { chunk.struct_writer(0, 5) };
 unsafe {
@@ -215,6 +250,7 @@ for row in 0..chunk.size() {
     let age = unsafe { sr.read_i32(row, 1) };
     let active = unsafe { sr.read_bool(row, 2) };
 }
+# }
 ```
 
 ---
@@ -225,6 +261,10 @@ for row in 0..chunk.size() {
 calls `set_size` on drop, preventing the common off-by-one bug:
 
 ```rust
+# use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# use quack_rs::data_chunk::DataChunk;
+# struct Item { name: String, value: i64 }
+# fn demo(output: duckdb_data_chunk, data: &[Item]) {
 let mut cw = unsafe { DataChunk::from_raw(output).into_chunk_writer() };
 while let Some(row) = cw.next_row() {
     unsafe { cw.writer(0).write_varchar(row, &data[row].name) };
@@ -232,6 +272,7 @@ while let Some(row) = cw.next_row() {
     if cw.is_full() { break; }
 }
 // set_size called automatically when `cw` is dropped
+# }
 ```
 
 ---
@@ -242,6 +283,8 @@ For advanced NULL handling beyond `VectorWriter::set_null`, use `ValidityBitmap`
 directly:
 
 ```rust
+# use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# fn demo(some_vector: duckdb_vector, row: usize) {
 use quack_rs::vector::ValidityBitmap;
 
 // Writing NULLs:
@@ -252,6 +295,7 @@ unsafe { bitmap.set_row_valid(row as u64) };     // mark as non-NULL
 // Reading NULLs:
 let bitmap = unsafe { ValidityBitmap::get_read_only(some_vector) };
 let is_valid = unsafe { bitmap.row_is_valid(row as u64) };
+# }
 ```
 
 `ValidityBitmap` is available in the prelude: `use quack_rs::prelude::*`.
@@ -263,6 +307,8 @@ let is_valid = unsafe { bitmap.row_is_valid(row as u64) };
 The `quack_rs::vector` module provides two utility functions:
 
 ```rust
+# use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# fn demo(some_vector: duckdb_vector) {
 use quack_rs::vector::{vector_size, vector_get_column_type};
 
 // Returns the default vector size used by DuckDB (typically 2048).
@@ -270,6 +316,7 @@ let size: u64 = vector_size();
 
 // Returns the LogicalType of a vector (unsafe — requires a valid duckdb_vector).
 let lt = unsafe { vector_get_column_type(some_vector) };
+# }
 ```
 
 ---
@@ -279,7 +326,7 @@ let lt = unsafe { vector_get_column_type(some_vector) };
 DuckDB stores vector data as flat arrays. `VectorReader` and `VectorWriter` compute
 element addresses as `base_ptr + row * stride`:
 
-```
+```text
 [value0][value1][value2]...[valueN]   ← typed array
 [validity bitmap]                      ← separate bit array, 1 bit per row
 ```
@@ -293,6 +340,9 @@ that follows a write path.
 ## Complete scalar function pattern
 
 ```rust
+# use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+# use quack_rs::vector::{VectorReader, VectorWriter};
+# fn transform(v: i64) -> i64 { v }
 unsafe extern "C" fn my_scalar(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
