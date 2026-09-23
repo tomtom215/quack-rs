@@ -236,7 +236,7 @@ name = "my_extension"       # Must match description.yml `name`
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-quack-rs = "0.13"
+quack-rs = "0.18"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]

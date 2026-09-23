@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release comes out of a second production-readiness audit (see `AUDIT.md`,
+"September 2026"). Each code defect below was either reproduced against a
+real DuckDB before it was fixed or, where nothing could trigger it, derived
+from DuckDB's source; `AUDIT.md` records which. Each code fix has a regression
+test; the trait-bound fixes are pinned by `compile_fail` doctests.
+Several fixes close holes in the *safe* API — places where safe code could
+cause undefined behaviour, a data race or a process abort — and those needed
+signature or trait-bound changes, so this is a breaking release (0.17 → 0.18).
+Each such entry is marked **Breaking:**.
+
 ### Added
+
+- `TableFunctionBuilder::with_bind_init(bind, init)`: immutable bind data
+  `B: Send + Sync` and a fresh scan state `S: Send` per execution, no `Clone`
+  needed.
+- `TypedScalarFunctionBuilder`; `Registrar::register_typed_scalar` (with a
+  default implementation, so existing `Registrar`s compile).
+- `StructWriter::set_row_null`.
+- `callback::drop_panic_payload` and `callback::take_panic_message`.
+- `selection_vector::MAX_LEN`; `datetime::is_valid_date`,
+  `MICROS_PER_DAY`, `TIME_TZ_MAX_OFFSET_SECONDS`, `DECIMAL_MAX_WIDTH`.
+- `CatalogEntryType::is_lookup_supported`;
+  `ReplacementScanInfo::EMPTY_ERROR_PLACEHOLDER`.
 
 - **Aggregate function sets support a different return type per overload**
   ([#121](https://github.com/tomtom215/quack-rs/issues/121)). `DuckDB` resolves
@@ -86,6 +108,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `ScalarFunctionBuilder::map1` / `map2` / `map1_str` / `map2_str` /
+  `map1_opt` / `map2_opt` return `Result<TypedScalarFunctionBuilder, _>`. It
+  offers `name()`, `volatile()` and `register(con)`; code that passes the result
+  to a `Registrar` calls the new `Registrar::register_typed_scalar`.
+- **Breaking:** `ScalarBindData<T>` requires `T: Send + Sync + 'static`, and
+  `ScalarBindData::set` additionally `T: Clone` (for the copy callback; wrap
+  other data in `Arc<T>`). `ScalarLocalState<T>` requires `T: Send + 'static`.
+- **Breaking:** `TableFunctionBuilder::with_state` requires `S: Clone + Send`:
+  the state `bind` returns is a template and every execution scans a fresh
+  clone. Use the new `with_bind_init` for state that cannot be cloned.
+- **Breaking:** `TypedTableFunctionBuilder::projection_pushdown` is removed —
+  the typed scan closure cannot learn the projection, so enabling it returned
+  the wrong columns. Use the raw `TableFunctionBuilder` for pushdown.
+- **Breaking:** `FfiBindData::set` / `FfiInitData::set` require `T: Send + Sync`,
+  `FfiLocalInitData::set` `T: Send`; `ReplacementScanBuilder::register_with_data`
+  and `Connection::register_replacement_scan_with_data` require `T: Send + Sync`.
+- **Breaking:** every scalar `Value` getter returns `Option<T>` (`as_i8` …
+  `as_u128`, `as_f32`, `as_f64`, `as_bool`, the date/time/timestamp family,
+  `as_interval`, `as_uuid`, `as_decimal`, `as_enum_index`): `None` for a null
+  handle, SQL `NULL`, a non-scalar value or a failed cast. A failed cast used to
+  return a sentinel (`T::MIN`, `NaN`) indistinguishable from a real value. The
+  `as_*_or(default)` forms keep their signatures and now cover all four cases.
+- **Breaking:** `Value::as_blob` accepts only a `BLOB` (DuckDB's cast of
+  anything else to `BLOB` could throw) and errors on SQL `NULL`;
+  `Value::as_str` errors on SQL `NULL`.
+- **Breaking:** `ArrowOptions<'conn>`: the safe
+  `from_connection(&'conn OwnedConnection)` replaces the old unsafe raw-handle
+  constructor, now `from_raw_connection`; `from_result` and
+  `QueryResult::arrow_options` are `unsafe`. `FileSystem<'ctx>` borrows its
+  `ClientContext`.
+- **Breaking:** `DuckDbErrorType` gains `Autoload`, `Sequence` and
+  `InvalidConfiguration` (40–42), which used to map to `Invalid`.
+- **Breaking:** `SelectionVector::new` returns `Result<Self, ExtensionError>`.
+- **Breaking:** `datetime::date_to_days`, `timestamp_from_micros`,
+  `timestamp_to_micros`, `time_tz_bits` and `decimal_to_f64` return `Option`.
+- **Breaking:** `VectorWriter::set_null` / `set_null_range` (and so
+  `DataChunk::propagate_nulls`) on a `STRUCT` or `ARRAY` vector also null the
+  row's fields / elements, recursively, as DuckDB's `FlatVector::SetNull` does.
+- **Breaking:** `SqlMacro::to_sql` emits double-quoted identifiers
+  (`CREATE OR REPLACE MACRO "add"("a", "b") AS (a + b)`). Calling the macro is
+  unchanged: DuckDB resolves quoted identifiers case-insensitively.
+- `ScalarFunctionBuilder::varargs`, `varargs_logical` and `volatile` no longer
+  require `duckdb-1-5`: both C functions are in the stable v1.2.0 API.
+- `Appender` is re-exported from the prelude without a feature, matching the
+  module, and `use quack_rs::prelude::*` now brings `entry_point!` /
+  `entry_point_v2!` into scope, as the prelude's own documentation said.
+
 - `AggregateFunctionSetBuilder::overloads` is unchanged, but the builder its
   closure receives is now named `AggregateOverloadBuilder`, for symmetry with
   `ScalarOverloadBuilder`. The old name remains as a deprecated type alias
@@ -98,6 +167,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeping both it and `set.rs` inside the 500-line guideline in
   `CONTRIBUTING.md`.
 ### Fixed
+
+- **Wrong answers, no error:**
+  - `ScalarBindData` lost its bind data whenever the optimizer copied the bound
+    expression (filter pushdown through a projection:
+    `SELECT sum(x) FROM (SELECT f(i) x FROM range(10) t(i)) WHERE x > 5` gave
+    90, not 132). `ScalarBindData::set` now registers a generated, panic-safe
+    copy callback (Pitfall L10).
+  - A NULL row of a `STRUCT` result kept its fields valid, so `(f(x)).a`
+    returned the stale field value instead of NULL.
+  - A typed table function failed the second time a plan ran
+    (`PREPARE … ; EXECUTE p; EXECUTE p;`, or a recursive CTE): `init` moved the
+    state out of bind data DuckDB reuses for every execution.
+  - `Value` getters cast the value in place: `Value::double(1.5).as_i32()` turned
+    the value into `DOUBLE 2.0`. Getters now read a private copy.
+  - `Value::decimal(4, 0, 2^70 + 7)` stored `7`, `DECIMAL(4,0)` accepted `10000`,
+    and `bind_decimal` kept only the low 64 bits for `width <= 18`.
+  - `BindInfo::add_result_column` with a type containing `ANY`/`INVALID` was
+    dropped by DuckDB, shifting every later column; it is now a bind error.
+  - `datetime::time_tz_bits` silently corrupted an out-of-range offset.
+- Duplicate overload signatures in a scalar or aggregate function set are
+  rejected at `register`, naming both overloads, instead of registering and then
+  failing every call with "Could not choose a best candidate function".
+- `Expression::fold` returns `Err` for a non-foldable expression instead of
+  `Ok` with a null-handle `Value`.
+- `CastFunctionBuilder::register` leaked `extra_info` when DuckDB rejected an
+  `ANY`/`INVALID` type; those are now rejected before anything is handed over.
+- `ReplacementScanInfo::set_error("")` was ignored by DuckDB, so the query fell
+  through to "table does not exist".
+- `SqlMacro` with a SQL keyword as a name or parameter produced a parser error.
+- Documentation that was false against the code or DuckDB: `set_max_threads`
+  (it does not need `local_init`); a second `ScalarBindData::set` /
+  `ScalarLocalState::set` leaks rather than drops the first value;
+  `DbConfig::set` accepts unknown option names; Pitfall L4 (a skipped
+  `ensure_validity_writable` silently drops the NULL rather than segfaulting);
+  the book's `panic = "abort"` advice (it must be `"unwind"`, which the crate
+  itself enforces); several README and book examples that did not compile; and
+  the stable ABI prefix, which is ABI-identical since v1.2.0 but not
+  byte-identical (two slots were renamed `varint` → `bignum` in v1.4.0).
+- `ClientContext`'s constructors now state that the context must not outlive its
+  connection: DuckDB's wrapper holds a reference, not an owner.
 
 - **Pitfall L10** (`LESSONS.md`, `book/src/reference/pitfalls.md`) — scalar bind
   data is dropped when `DuckDB` copies a bound expression. The book's pitfall
@@ -158,6 +267,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now carries a table generated from `ci.yml`, with the generator inline.
 
 ### Security
+
+- **Soundness: safe code could corrupt memory, race, or read freed memory.**
+  - `ScalarBindData<T>` / `ScalarLocalState<T>` had no `Send`/`Sync` bounds, but
+    DuckDB reads scalar bind data from every executing thread at once; a probe
+    stored an `Rc<Cell<_>>` and observed one bind-data pointer used from four
+    threads. **Breaking:** now `T: Send + Sync` / `T: Send`.
+  - The typed scalar constructors (`map1`, `map2`, …) returned a plain
+    `ScalarFunctionBuilder`, so safe `.returns(TypeId::Integer)` could redeclare
+    an `i64` closure's result as 4 bytes wide: wrong answers, and a heap overflow
+    past row 1024. **Breaking:** they return `TypedScalarFunctionBuilder`,
+    which cannot change the signature, and the trampoline re-checks each chunk's
+    vector types.
+  - `ArrowOptions` held a raw `ClientContext` pointer with no lifetime; after the
+    connection closed, `data_chunk_to_arrow` read freed memory (valgrind).
+    **Breaking:** `ArrowOptions<'conn>`. The same class, confirmed under
+    valgrind, in `FileSystem`: **Breaking:** `FileSystem<'ctx>`.
+  - `SelectionVector::new` exposed uninitialised memory through the safe
+    `as_slice()` (stale `0xDEADBEEF` observed), and a large length made DuckDB
+    compute a wrapped allocation size, so safe indexing segfaulted.
+    **Breaking:** it returns `Result`, rejects lengths above `MAX_LEN` before
+    DuckDB is called, and zeroes the buffer.
+  - `datetime::decimal_to_f64` read past DuckDB's powers-of-ten tables for
+    `scale > 38`.
+  - `FfiBindData`, `FfiInitData` and replacement-scan data are shared across
+    threads by DuckDB. **Breaking:** `FfiBindData::set` / `FfiInitData::set` /
+    `register_with_data` require `T: Send + Sync`, `FfiLocalInitData::set`
+    requires `T: Send`.
+- **Process aborts from ordinary input.** Each of these let a DuckDB C++
+  exception unwind into Rust ("Rust cannot catch foreign exceptions"), killing
+  the host process; each is now validated in Rust first and reported as an
+  error or `None`:
+  - every `Value::as_*` getter (and the `_or` forms) on a SQL `NULL` — e.g. a
+    table function called with `f(n := NULL)`; a null handle was dereferenced;
+  - `Value::decimal` / `PreparedStatement::bind_decimal` with an out-of-range
+    width, scale or unscaled value;
+  - `datetime::date_to_days` on an invalid date, `timestamp_from_micros` /
+    `timestamp_to_micros` on infinities and the far-negative range;
+  - `SelectionVector::new` above DuckDB's allocation limit;
+  - a config option whose default does not cast to its type;
+  - catalog lookups for `Schema`, `Database`, `PreparedStatement` and
+    `Invalid` entry types;
+  - a panic whose payload's own `Drop` panics (`panic_any(value)`), in every
+    callback macro, `catch_ffi_panic`, the typed scalar and typed table
+    trampolines and the entry point's registration guard;
+  - the entry points dereferenced a NULL `duckdb_database*` when DuckDB's
+    `get_database` failed.
+- **Documented, not fixable here: C API aggregates crash under
+  `agg(x) OVER ()` and `agg(x ORDER BY y)`.** DuckDB's `CAPIAggregateUpdate`
+  does not flatten the state vector, and the window-constant and
+  sorted-aggregate executors pass a one-element state array with `count > 1`,
+  so every aggregate registered through the C API — not only quack-rs's —
+  reads out of bounds. Reproduced in plain C against DuckDB 1.4.4, 1.5.0 and
+  1.5.5. Documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder`,
+  `FfiState`, the aggregate book pages and as Pitfall L11.
 
 - **The one active advisory suppression is gone, because the crate behind it
   is.** RUSTSEC-2026-0235 (`rkyv` 0.7.46) was suppressed in `osv-scanner.toml`,

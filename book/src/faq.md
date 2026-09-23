@@ -39,8 +39,9 @@ Rust **1.86.0** or later. This is enforced in `Cargo.toml` with
 
 Yes. It was extracted from
 [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a
-production DuckDB community extension. All 16 pitfalls it solves were discovered
-in production.
+production DuckDB community extension, where the first 16 of the pitfalls it now
+documents were discovered; the rest came from later audits against DuckDB's own
+source and a running database.
 
 ---
 

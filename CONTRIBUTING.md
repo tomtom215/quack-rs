@@ -392,7 +392,7 @@ quack-rs/
 │   ├── benchmarks.yml             # Criterion benchmark execution
 │   └── README.md                  # Workflow overview and quality gate summary
 ├── CONTRIBUTING.md                # This file
-├── LESSONS.md                     # The 16 DuckDB Rust FFI pitfalls, documented in full
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L11, P1–P12), documented in full
 └── README.md                      # Quick start, SDK overview, badge table
 ```
 

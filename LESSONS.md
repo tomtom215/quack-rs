@@ -317,6 +317,38 @@ it must not unwind. Wrap anything that can panic in
 
 ---
 
+## L11: C API aggregates crash under `agg(x) OVER ()` and `agg(x ORDER BY y)`
+
+**Status**: A `DuckDB` defect. Cannot be prevented or detected from an extension;
+documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` and
+`FfiState`.
+
+**Symptom**: An aggregate that works under `SELECT agg(x) FROM t` and `GROUP BY`
+segfaults (or corrupts memory, or returns a wrong answer) when used as a window
+over a whole-partition frame — `agg(x) OVER ()`, `OVER (PARTITION BY p)` — or as
+an ordered aggregate, `agg(x ORDER BY y)`.
+
+**Root cause**: `CAPIAggregateUpdate` (`src/main/capi/aggregate_function-c.cpp`)
+flattens the input vectors but not the state vector, then hands the callback
+`FlatVector::GetDataUnsafe(state)`. The C API registers no `simple_update`, so
+two executors fall back to calling `update` with a **constant** state vector and
+`count > 1`: `WindowConstantAggregatorLocalState` (`statep(Value::POINTER(0))`)
+and `SortedAggregateFunction` (`agg_state_vec.SetVectorType(CONSTANT_VECTOR)`).
+The callback reads `states[i]` for every row, as the C API contract says it
+may; only `states[0]` exists. Reproduced with a plain C aggregate (no quack-rs)
+against DuckDB 1.4.4, 1.5.0 and 1.5.5; AddressSanitizer places the fault in the
+callback, called from `CAPIAggregateUpdate`.
+
+**Fix**: none on the extension side — the callback receives a raw
+`duckdb_aggregate_state *` and cannot tell a constant vector from a flat one,
+and reading `states[1]` to find out is itself the out-of-bounds read. Until
+`DuckDB` fixes it, document for your users that the aggregate must not be used
+in those two query shapes. Frames that are not whole-partition (`ROWS BETWEEN 5
+PRECEDING AND CURRENT ROW`, segment-tree windows) and `DISTINCT` windows were
+checked and work.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured manually in `Cargo.toml`.

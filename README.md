@@ -88,7 +88,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **21 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **23 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```
@@ -101,6 +101,12 @@ L6  Function set name must be set on EACH member → Set builders enforce on eve
 L7  LogicalType memory leak → LogicalType implements Drop
 L8  DEFAULT_NULL_HANDLING does NOT propagate NULLs for scalar functions →
     map1/map2/map1_str/map2_str do it; DataChunk::propagate_nulls for raw callbacks
+L9  duckdb_data_chunk_from_arrow takes the array even when it fails →
+    arrow::data_chunk_from_arrow takes it by value
+L10 Scalar bind data is lost when DuckDB copies the expression →
+    ScalarBindData::set registers the copy callback
+L11 C API aggregates crash under agg(x) OVER () and agg(x ORDER BY y) →
+    a DuckDB defect; documented, not preventable from an extension
 
 P1  Library name must match [lib] name in Cargo.toml exactly
 P2  C API version ("v1.2.0") ≠ DuckDB release version ("v1.4.4" / "v1.5.0")
@@ -111,6 +117,9 @@ P6  Function registration can fail silently → builders check return values
 P7  DuckDB strings use 16-byte format with inline and pointer variants
 P8  INTERVAL is { months: i32, days: i32, micros: i64 } — not a single i64
 P9  loadable-extension dispatch table uninitialised in cargo test → InMemoryDb initialises it
+P10 The C API struct's unstable tail shifts between releases → abi::check at load
+P11 const char * returns are borrowed; freeing one corrupts the heap
+P12 duckdb_client_context_get_config_option aborts on a missing setting (debug builds)
 ```
 
 See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
@@ -123,7 +132,7 @@ See [`LESSONS.md`](./LESSONS.md) for full analysis of each pitfall.
 
 ```toml
 [dependencies]
-quack-rs = "0.13"
+quack-rs = "0.18"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
@@ -423,10 +432,14 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L1** | COMBINE config propagation | Aggregate returns wrong results under parallelism | Testable with `AggregateTestHarness` |
 | **L2** | Double-free in destroy | Heap corruption / SIGABRT | `FfiState<T>::destroy_callback` nulls pointer after free |
 | **L3** | Panic across FFI | Process abort | `init_extension` propagates `Result` and runs the registration closure under `catch_unwind`; a wrapper macro does the same for every callback kind — scalar, table bind/init/scan, aggregate update/combine/finalize/destroy, cast and replacement scan — routing the panic message to that kind's `set_error`. Requires `panic = "unwind"`, which the scaffold generates |
-| **L4** | Missing `ensure_validity_writable` | Segfault / silent NULL corruption | `VectorWriter::set_null` calls it automatically |
+| **L4** | Missing `ensure_validity_writable` | NULLs silently dropped (the mask pointer is NULL) | `VectorWriter::set_null` calls it automatically |
 | **L5** | Boolean undefined behavior | Non-deterministic bool semantics | `VectorReader::read_bool` reads `u8 != 0` |
 | **L6** | Function set name on each member | Silent registration failure | `AggregateFunctionSetBuilder` and `ScalarFunctionSetBuilder` set name on every member |
 | **L7** | `LogicalType` memory leak | RSS grows with each extension load | `LogicalType` implements `Drop` |
+| **L8** | `DEFAULT_NULL_HANDLING` does not propagate NULLs for scalars | Non-NULL results for NULL inputs, from column data only (literals are constant-folded) | `map1`/`map2` family propagate by construction; `DataChunk::propagate_nulls` for raw callbacks |
+| **L9** | `duckdb_data_chunk_from_arrow` claims the array on failure | A double release after a failed conversion, or a leak after a zero-column one | `arrow::data_chunk_from_arrow` takes the array by value |
+| **L10** | Scalar bind data dropped when `DuckDB` copies the expression | Bind data reads as null for some queries (e.g. a filter pushed through a projection) — a wrong answer, not a crash | `ScalarBindData::set` registers a copy callback; raw API: `ScalarBindInfo::set_bind_data_copy` |
+| **L11** | C API aggregates under `agg(x) OVER ()` / `agg(x ORDER BY y)` | Segfault or memory corruption in `update` | A `DuckDB` defect (`CAPIAggregateUpdate` does not flatten the state vector); documented, cannot be prevented from an extension |
 
 ### Practical Pitfalls (P)
 
@@ -442,6 +455,8 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **P8** | INTERVAL layout misunderstood | INTERVAL computed incorrectly | `DuckInterval` with `interval_to_micros` |
 | **P9** | `loadable-extension` dispatch table uninitialised in `cargo test` | `InMemoryDb::open()` panics with `"DuckDB API not initialized"` | `InMemoryDb::open()` calls `CreateAPIv1()` shim to populate dispatch table before opening connection — after which the *whole* C API works in `cargo test`, including registration (`tests/ffi_roundtrip.rs`) |
 | **P10** | `duckdb_ext_api_v1` unstable region shifts between releases | Heap corruption / `double free` on a DuckDB other than the build target — with no load-time warning | `abi::check()` compares the compiled-in layout against the running engine's; `AbiPolicy::Strict` (default) turns a mismatch into a `LOAD` error. `scripts/check-abi-table.py` keeps the layout table honest |
+| **P11** | `const char *` returns are borrowed | Heap corruption at an unrelated later allocation | `CopyGlobalInitInfo::get_file_path` fixed; every `duckdb_free` call site audited against DuckDB's implementation |
+| **P12** | `duckdb_client_context_get_config_option` on a missing setting | `SIGABRT` against debug `DuckDB` builds only | Documented on `ClientContext::config_option`; a `DuckDB` defect |
 
 ---
 

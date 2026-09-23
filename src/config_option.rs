@@ -153,6 +153,13 @@ impl ConfigOptionBuilder {
     /// `SELECT TRY_CAST($1::VARCHAR AS <type>) IS NOT NULL` on `con`, with the
     /// default bound as a parameter, and returns an error if the cast fails.
     ///
+    /// One gap remains: SQL `TRY_CAST` uses the connection's cast functions,
+    /// including casts extensions have registered, while `DuckDB`'s default-value
+    /// cast uses only the built-in ones. If your extension registers a
+    /// `VARCHAR` → option-type cast that accepts strings the built-in cast
+    /// rejects, register the config option **before** that cast, or use a
+    /// default the built-in cast accepts.
+    ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if the option type was not set, if the default
