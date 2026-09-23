@@ -531,18 +531,23 @@ impl VectorReader {
 mod tests {
     use super::*;
 
-    /// Verify that `VectorReader` handles the boolean-as-u8 pattern correctly.
+    /// Pitfall L5: `read_bool` must treat any non-zero byte as `true` rather
+    /// than reinterpret the byte as a Rust `bool` (UB for anything but 0/1).
+    /// The reader is built over a local buffer, so this calls the real
+    /// `read_bool` — and under Miri, would flag a `bool` transmute of `2`.
     #[test]
-    fn bool_read_u8_pattern() {
-        // Simulate a DuckDB BOOLEAN vector with a non-standard value (e.g., 2)
-        // to verify we use != 0 comparison rather than transmuting to bool.
+    fn read_bool_treats_every_non_zero_byte_as_true() {
         let data: [u8; 4] = [0, 1, 2, 255];
-
-        // Directly test the read_bool logic by checking values
-        // (We can't easily create a real VectorReader without DuckDB, so we test
-        // the underlying invariant: any non-zero byte is `true`.)
-        let as_bools: Vec<bool> = data.iter().map(|&b| b != 0).collect();
-        assert_eq!(as_bools, [false, true, true, true]);
+        let reader = VectorReader {
+            data: data.as_ptr(),
+            validity: std::ptr::null_mut(),
+            row_count: data.len(),
+        };
+        // SAFETY: every index is within `data`, which outlives `reader`.
+        let read: Vec<bool> = (0..data.len())
+            .map(|i| unsafe { reader.read_bool(i) })
+            .collect();
+        assert_eq!(read, [false, true, true, true]);
     }
 
     #[test]

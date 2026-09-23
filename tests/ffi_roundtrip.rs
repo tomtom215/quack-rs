@@ -768,9 +768,13 @@ macro_rules! decimal_echo {
     };
 }
 
+decimal_echo!(echo_decimal_1, 1);
 decimal_echo!(echo_decimal_4, 4);
+decimal_echo!(echo_decimal_5, 5);
 decimal_echo!(echo_decimal_9, 9);
+decimal_echo!(echo_decimal_10, 10);
 decimal_echo!(echo_decimal_18, 18);
+decimal_echo!(echo_decimal_19, 19);
 decimal_echo!(echo_decimal_38, 38);
 
 #[test]
@@ -811,6 +815,56 @@ fn decimals_round_trip_at_every_physical_width() {
             fx.scalar(&sql, |r, i| unsafe { r.read_str(i).to_owned() })
                 .as_deref(),
             Some(literal),
+            "{sql}"
+        );
+    }
+}
+
+/// Both sides of every storage boundary (1 | 4/5 | 9/10 | 18/19 | 38), at the
+/// largest and smallest value each width holds and at zero. A `<=` written as
+/// `<` in the width dispatch moves exactly one of these widths into the wrong
+/// integer size, which the four widths above cannot tell apart.
+#[test]
+fn decimals_round_trip_on_both_sides_of_every_storage_boundary() {
+    let fx = Fixture::open();
+    for (width, callback) in [
+        (1_u8, echo_decimal_1 as ScalarFn),
+        (4, echo_decimal_4),
+        (5, echo_decimal_5),
+        (9, echo_decimal_9),
+        (10, echo_decimal_10),
+        (18, echo_decimal_18),
+        (19, echo_decimal_19),
+        (38, echo_decimal_38),
+    ] {
+        let name = format!("decb{width}");
+        // SAFETY: `con` is open; the callback matches the declared signature.
+        unsafe {
+            ScalarFunctionBuilder::try_new(&name)
+                .expect("name")
+                .param_logical(LogicalType::decimal(width, 0))
+                .returns_logical(LogicalType::decimal(width, 0))
+                .function(callback)
+                .register(fx.con())
+                .unwrap_or_else(|e| panic!("register {name}: {e}"));
+        }
+        // The values sit in adjacent rows of one vector. Reading a row with too
+        // wide an integer picks up its neighbour's bytes, so with a single row
+        // (or a zero neighbour) a wrong threshold still reads the right value.
+        let max = "9".repeat(usize::from(width));
+        let want = [format!("-{max}"), max.clone(), "0".to_owned(), max.clone()];
+        let values = want
+            .iter()
+            .enumerate()
+            .map(|(i, v)| format!("({i}, {v}::DECIMAL({width},0))"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT string_agg({name}(v)::VARCHAR, ',' ORDER BY i) FROM (VALUES {values}) t(i, v)"
+        );
+        assert_eq!(
+            fx.scalar(&sql, |r, i| unsafe { r.read_str(i).to_owned() }),
+            Some(want.join(",")),
             "{sql}"
         );
     }

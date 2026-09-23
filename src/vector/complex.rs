@@ -439,7 +439,6 @@ impl ArrayVector {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use libduckdb_sys::duckdb_list_entry;
 
     #[test]
@@ -450,26 +449,5 @@ mod tests {
             16,
             "duckdb_list_entry should be {{ offset: u64, length: u64 }}"
         );
-    }
-
-    #[test]
-    fn set_and_get_list_entry() {
-        // Simulate the list parent vector data buffer (one row).
-        let mut data = duckdb_list_entry {
-            offset: 0,
-            length: 0,
-        };
-        let vec_ptr: duckdb_vector = std::ptr::addr_of_mut!(data).cast();
-
-        // Write entry for row 0: offset=5, length=3.
-        // We bypass the actual DuckDB call and test the pointer arithmetic directly.
-        let entry_ptr = std::ptr::addr_of_mut!(data);
-        unsafe {
-            (*entry_ptr).offset = 5;
-            (*entry_ptr).length = 3;
-        }
-        assert_eq!(data.offset, 5);
-        assert_eq!(data.length, 3);
-        let _ = vec_ptr; // suppress unused warning; no FFI call possible without runtime
     }
 }
