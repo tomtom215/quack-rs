@@ -293,6 +293,7 @@ unsafe fn refuse_existing_setting(
     let mut result = statement.execute().map_err(|e| context(e.to_string()))?;
     let chunk = result
         .next_chunk()
+        .map_err(|e| context(e.to_string()))?
         .ok_or_else(|| context("the check returned no rows".into()))?;
     if chunk.size() != 1 || chunk.column_count() != 1 {
         return Err(context("the check returned an unexpected shape".into()));
@@ -382,7 +383,10 @@ unsafe fn typed_default(
 /// Row 0 must exist, be valid, and hold a value of type `type_id`.
 unsafe fn value_of_type(reader: &VectorReader, type_id: TypeId) -> Option<Value> {
     // SAFETY (every arm): row 0 exists and the physical layout matches
-    // `type_id`, per this function's contract.
+    // `type_id`, per this function's contract. The temporal constructors
+    // validate their payload; a value DuckDB's own `TRY_CAST` produced is
+    // always in range, so their `Err` arm is unreachable here and `.ok()?`
+    // only satisfies the type.
     let value = unsafe {
         match type_id {
             TypeId::Boolean => Value::boolean(reader.read_bool(0)),
@@ -399,14 +403,14 @@ unsafe fn value_of_type(reader: &VectorReader, type_id: TypeId) -> Option<Value>
             TypeId::Float => Value::float(reader.read_f32(0)),
             TypeId::Double => Value::double(reader.read_f64(0)),
             TypeId::Date => Value::date(reader.read_date(0)),
-            TypeId::Time => Value::time(reader.read_time(0)),
-            TypeId::TimeNs => Value::time_ns(reader.read_i64(0)),
-            TypeId::TimeTz => Value::time_tz(reader.read_time_tz(0)),
-            TypeId::Timestamp => Value::timestamp(reader.read_timestamp(0)),
-            TypeId::TimestampS => Value::timestamp_s(reader.read_timestamp_s(0)),
-            TypeId::TimestampMs => Value::timestamp_ms(reader.read_timestamp_ms(0)),
-            TypeId::TimestampNs => Value::timestamp_ns(reader.read_timestamp_ns(0)),
-            TypeId::TimestampTz => Value::timestamp_tz(reader.read_timestamp_tz(0)),
+            TypeId::Time => Value::time(reader.read_time(0)).ok()?,
+            TypeId::TimeNs => Value::time_ns(reader.read_i64(0)).ok()?,
+            TypeId::TimeTz => Value::time_tz(reader.read_time_tz(0)).ok()?,
+            TypeId::Timestamp => Value::timestamp(reader.read_timestamp(0)).ok()?,
+            TypeId::TimestampS => Value::timestamp_s(reader.read_timestamp_s(0)).ok()?,
+            TypeId::TimestampMs => Value::timestamp_ms(reader.read_timestamp_ms(0)).ok()?,
+            TypeId::TimestampNs => Value::timestamp_ns(reader.read_timestamp_ns(0)).ok()?,
+            TypeId::TimestampTz => Value::timestamp_tz(reader.read_timestamp_tz(0)).ok()?,
             TypeId::Interval => Value::interval(reader.read_interval(0)),
             TypeId::Varchar => Value::varchar(reader.read_str(0)),
             TypeId::Blob => Value::blob(reader.read_blob(0)),

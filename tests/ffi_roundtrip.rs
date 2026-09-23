@@ -1863,7 +1863,7 @@ fn list_builder_rows_past_the_limit_are_null_not_stale() {
          FROM (SELECT i, make_limited_list(CASE WHEN i = 2048 THEN 1000 ELSE i % 2 END) AS l
                FROM range(4096) t(i))",
     );
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: four BIGINT columns, row 0 exists.
     unsafe {
         assert_eq!(

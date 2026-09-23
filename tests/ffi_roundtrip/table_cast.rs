@@ -1423,7 +1423,7 @@ fn a_registered_table_function_does_not_persist_into_a_database_file() {
             )
         }
         .expect("query");
-        let chunk = result.next_chunk().expect("a row");
+        let chunk = result.next_chunk().expect("fetch").expect("a row");
         // SAFETY: one BIGINT row.
         unsafe { chunk.reader(0).read_i64(0) }
     };

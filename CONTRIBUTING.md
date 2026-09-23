@@ -424,9 +424,14 @@ quack-rs/
 │   ├── value/
 │   │   ├── blob.rs                    # `Value::as_blob` — `BLOB` extraction
 │   │   ├── checks.rs                  # Pure-Rust preconditions checked before a `Value` call reaches `DuckDB`
+│   │   ├── composite.rs               # Composite constructors: `STRUCT`, `LIST`, `ARRAY`, `ENUM`, `MAP`, `UNION`
 │   │   ├── defaults.rs                # The defaulting accessors — `Value::as_*_or`
 │   │   ├── getters.rs                 # The typed scalar accessors — `Value::as_i64`, `as_timestamp`, `as_decimal`, …
-│   │   └── hugeint.rs                 # Conversions between Rust's 128-bit integers and `DuckDB`'s split-word `HUGEINT` / `UHUGEINT` records
+│   │   ├── hugeint.rs                 # Conversions between Rust's 128-bit integers and `DuckDB`'s split-word `HUGEINT` / `UHUGEINT` records
+│   │   ├── nested.rs                  # Reading nested values: `LIST` elements, `STRUCT` fields, `MAP` entries
+│   │   ├── scalars.rs                 # The non-temporal scalar constructors
+│   │   ├── temporal.rs                # Temporal constructors, validated against `DuckDB`'s ranges
+│   │   └── temporal_checks.rs         # Pure-Rust range checks for the temporal types, derived from `DuckDB`'s source
 │   └── vector/
 │       ├── complex.rs                 # Complex type vector operations: STRUCT fields, LIST elements, MAP entries
 │       ├── list_builder.rs            # Safe construction of `LIST` and `MAP` output vectors
@@ -443,12 +448,19 @@ quack-rs/
 ├── tests/
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
+│   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
-│       ├── scalar_agg.rs              # End-to-end tests
-│       ├── table_cast.rs              # End-to-end tests
-│       ├── tooling.rs                 # End-to-end tests
-│       ├── value_query.rs             # End-to-end tests
-│       └── vector_dt.rs               # End-to-end tests
+│       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
+│       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
+│       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
+│       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
+│       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
+│       ├── table_cast.rs              # Table function, cast, replacement scan, SQL macro and COPY regressions
+│       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
+│       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
+│       ├── value_temporal.rs          # Every `Value` getter against every temporal source type, at every edge
+│       └── vector_dt.rs               # NULLs in nested output vectors; selection vectors
 ├── benches/
 │   └── interval_bench.rs          # Criterion benchmarks for interval conversion
 ├── examples/

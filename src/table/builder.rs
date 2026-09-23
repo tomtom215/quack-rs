@@ -555,6 +555,7 @@ unsafe fn refuse_taken_table_function_name(
     let mut result = statement.execute().map_err(|e| context(e.to_string()))?;
     let chunk = result
         .next_chunk()
+        .map_err(|e| context(e.to_string()))?
         .ok_or_else(|| context("the check returned no rows".into()))?;
     if chunk.size() != 1 || chunk.column_count() != 1 {
         return Err(context("the check returned an unexpected shape".into()));
