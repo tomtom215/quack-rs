@@ -48,9 +48,20 @@ fn make_field_max_length_is_31_chars() {
     assert_eq!(f[31], 0);
 }
 
+/// DuckDB reads each field as 32 bytes and strips trailing NULs
+/// (`FilterZeroAtEnd`, extension_load.cpp), and extension-ci-tools pads to
+/// exactly 32 — so a 32-byte value needs no terminator and is accepted there.
 #[test]
-fn make_field_rejects_32_chars() {
+fn make_field_accepts_exactly_32_chars_without_a_terminator() {
     let s = "a".repeat(32);
+    let f = make_field(&s).unwrap();
+    assert_eq!(&f[..], s.as_bytes());
+    assert_eq!(field_text(&f, 0), s);
+}
+
+#[test]
+fn make_field_rejects_33_chars() {
+    let s = "a".repeat(33);
     assert!(make_field(&s).is_err());
 }
 
@@ -134,9 +145,46 @@ fn build_metadata_cpp_abi_type() {
 
 #[test]
 fn build_metadata_rejects_long_platform() {
-    // 32-char string exceeds the 31-char limit
-    let long = "a".repeat(32);
+    // 33 bytes do not fit in a 32-byte field
+    let long = "a".repeat(33);
     assert!(build_metadata("C_STRUCT", "v0.1.0", "v1.2.0", &long).is_err());
+}
+
+#[test]
+fn build_metadata_keeps_a_32_byte_field_intact() {
+    let version = "v1.2.3-".to_string() + &"x".repeat(25);
+    assert_eq!(version.len(), 32);
+    let m = build_metadata("C_STRUCT", &version, "v1.2.0", "linux_amd64").unwrap();
+    assert_eq!(field_text(&m, 4), version);
+    // The neighbouring fields are untouched.
+    assert_eq!(field_text(&m, 3), "C_STRUCT");
+    assert_eq!(field_text(&m, 5), "v1.2.0");
+}
+
+/// `--flag=value` is the other spelling every std-style CLI accepts; it used
+/// to be "unknown flag".
+#[test]
+fn flags_accept_the_equals_form() {
+    let a = parse_ok(
+        "in.so out.ext --abi-type=C_STRUCT_UNSTABLE --extension-version=v2.0.0 \
+         --duckdb-version=v1.5.5 --platform=linux_arm64",
+    );
+    assert_eq!(a.abi_type, "C_STRUCT_UNSTABLE");
+    assert_eq!(a.extension_version, "v2.0.0");
+    assert_eq!(a.duckdb_version, "v1.5.5");
+    assert_eq!(a.platform, "linux_arm64");
+    // Mixed forms work, and repetition is still caught across them.
+    let a = parse_ok("in.so out.ext --platform linux_amd64 --extension-version=v1.0.0");
+    assert_eq!(a.platform, "linux_amd64");
+    assert!(
+        parse_err("in.so out.ext --platform=linux_amd64 --platform linux_arm64")
+            .contains("more than once")
+    );
+    // An empty value is an error, not a default.
+    assert!(parse_err("in.so out.ext --platform=").contains("requires a value"));
+    // Switches take no value.
+    assert!(parse_err("in.so out.ext --dump=yes").contains("takes no value"));
+    assert!(parse_err("in.so out.ext --bogus=1").contains("unknown flag"));
 }
 
 // ── round-trip: write file then read back ─────────────────────────────────
