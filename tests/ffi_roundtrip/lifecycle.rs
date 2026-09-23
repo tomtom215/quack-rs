@@ -292,3 +292,65 @@ fn a_composite_scalar_value_is_rejected_at_registration_naming_the_slot() {
         Some(0)
     );
 }
+
+// ─── Name collisions ────────────────────────────────────────────────────────
+
+/// The collision rules documented on `ScalarFunctionBuilder::register` and
+/// `AggregateFunctionBuilder::register`. `DuckDB` registers both with
+/// `ALTER_ON_CONFLICT`; a scalar merges into an existing scalar entry with
+/// `override = true`, and an aggregate cannot be altered at all.
+#[test]
+fn scalar_collisions_replace_silently_and_aggregate_collisions_fail() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY (all `register` calls below): `con` is open.
+    let register_scalar = |name: &str, add: i64| unsafe {
+        ScalarFunctionBuilder::map1(name, move |x: i64| x + add)
+            .expect("valid name")
+            .register(fx.con())
+    };
+
+    // Same name and signature twice: no error, and the second one wins.
+    register_scalar("twice_scalar", 1).expect("first registration");
+    register_scalar("twice_scalar", 100).expect("an identical signature is not an error");
+    assert_eq!(i64_at(&fx, "SELECT twice_scalar(1::BIGINT)"), Some(101));
+
+    // The same for a built-in: `abs(BIGINT) -> BIGINT` is replaced.
+    register_scalar("abs", 1000).expect("replacing a built-in is not an error");
+    assert_eq!(i64_at(&fx, "SELECT abs(-5::BIGINT)"), Some(995));
+
+    // A scalar cannot take an aggregate's name.
+    assert!(register_scalar("sum", 1).is_err(), "sum is an aggregate");
+
+    // An aggregate cannot be registered twice, nor over a scalar's name.
+    register_row_counter(
+        &fx,
+        "twice_agg",
+        NullHandling::DefaultNullHandling,
+        valid_finalize,
+    );
+    let again = |name: &str| unsafe {
+        AggregateFunctionBuilder::try_new(name)
+            .expect("valid name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(FfiState::<RowCounts>::size_callback)
+            .init(FfiState::<RowCounts>::init_callback)
+            .update(row_counts_update)
+            .combine(row_counts_combine)
+            .finalize(valid_finalize)
+            .destructor(FfiState::<RowCounts>::destroy_callback)
+            .register(fx.con())
+    };
+    assert!(
+        again("twice_agg").is_err(),
+        "an aggregate name is taken once registered"
+    );
+    assert!(again("upper").is_err(), "upper is a scalar");
+    // The first registration is untouched.
+    assert_eq!(
+        i64_at(&fx, "SELECT twice_agg(i::BIGINT) FROM range(4) t(i)"),
+        Some(4)
+    );
+}

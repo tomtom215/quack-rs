@@ -262,8 +262,11 @@ impl TypedScalarFunctionBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `ExtensionError` if `DuckDB` reports a registration failure
-    /// (for example, a function with this name and signature already exists).
+    /// Returns `ExtensionError` if `DuckDB` reports a registration failure —
+    /// for example, the name belongs to an aggregate function or a macro.
+    /// An existing **scalar** function with the same name and signature is
+    /// *not* an error: it is silently replaced. See
+    /// [`ScalarFunctionBuilder::register`] for the collision rules.
     ///
     /// # Safety
     ///

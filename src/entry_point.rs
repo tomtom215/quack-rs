@@ -25,6 +25,22 @@
 //! `init_extension` uses `Result` for all error propagation and never calls
 //! `unwrap()` or `panic!()` inside an FFI callback.
 //!
+//! # Registration is not transactional
+//!
+//! Each `register` call commits to `DuckDB`'s catalog on its own; there is no
+//! enclosing transaction the entry point could roll back. If the registration
+//! closure registers some functions and then returns `Err` (or panics), the
+//! `LOAD` fails — but the functions registered before the failure **stay
+//! registered** and callable for the life of the database, while `DuckDB`
+//! does not list the extension as loaded. Retrying the `LOAD` in the same
+//! process then fails at the first aggregate it re-registers, because an
+//! aggregate name cannot be registered twice (a scalar is silently replaced).
+//!
+//! So do every fallible thing that does not register — reading
+//! configuration, validating settings, building lookup tables — **before**
+//! the first `register` call, and treat an error after it as leaving the
+//! database partially extended.
+//!
 //! # Usage
 //!
 //! Extension authors typically use the `entry_point!` macro,
@@ -92,6 +108,10 @@ use crate::error::ExtensionError;
 /// refuses to load when the running `DuckDB` does not provide the C API struct
 /// layout this extension was compiled against. See [`crate::abi`].
 ///
+/// Registration is **not transactional**: functions registered before the
+/// closure fails stay registered. See the
+/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
+///
 /// # Example
 ///
 /// ```rust,no_run
@@ -148,6 +168,10 @@ macro_rules! entry_point {
 /// - `$fn_name`: The exact symbol name `DuckDB` will call.
 /// - `$register`: A closure of type `fn(&Connection) -> Result<(), ExtensionError>`.
 ///
+/// Registration is **not transactional**: functions registered before the
+/// closure fails stay registered. See the
+/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
+///
 /// # Example
 ///
 /// ```rust,no_run
@@ -200,6 +224,10 @@ macro_rules! entry_point_v2 {
 /// 4. Calls `register(connection)`.
 /// 5. Disconnects with `duckdb_disconnect`.
 /// 6. On any error, reports via `access.set_error` and returns `false`.
+///
+/// Registration is **not transactional**: functions registered before the
+/// closure fails stay registered. See the
+/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
 ///
 /// # Return value
 ///
@@ -284,6 +312,10 @@ where
 ///
 /// Prefer this over [`init_extension`] for new extensions. The raw
 /// `duckdb_connection` entry point is retained for backward compatibility.
+///
+/// Registration is **not transactional**: functions registered before the
+/// closure fails stay registered. See the
+/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
 ///
 /// # Return value
 ///

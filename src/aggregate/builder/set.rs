@@ -292,6 +292,15 @@ impl AggregateFunctionSetBuilder {
     /// - Any overload is missing required callbacks.
     /// - `DuckDB` reports registration failure.
     ///
+    /// # Name collisions
+    ///
+    /// An aggregate can neither extend nor replace an existing catalog entry:
+    /// registration fails if the name is already taken by any scalar function,
+    /// aggregate function or macro, built-in or not — including an earlier
+    /// registration of this same aggregate. (`DuckDB` registers with
+    /// `ALTER_ON_CONFLICT`, and turning the create into an alter is not
+    /// implemented for aggregates: `CreateInfo::GetAlterInfo` throws.)
+    ///
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.

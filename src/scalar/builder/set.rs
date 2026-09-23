@@ -148,6 +148,22 @@ impl ScalarFunctionSetBuilder {
     /// - Any overload is missing a return type or function callback.
     /// - `DuckDB` reports registration failure.
     ///
+    /// # Name collisions
+    ///
+    /// `DuckDB` registers scalar functions with `ALTER_ON_CONFLICT`
+    /// (`duckdb_register_scalar_function_set` in `scalar_function-c.cpp`), so a
+    /// **scalar** function that already has this name — built-in or not — does
+    /// not make registration fail. Each overload with a new signature is added;
+    /// one whose signature is identical to an existing one (same parameter
+    /// types, return type and varargs) **silently replaces it**, for every
+    /// connection to the database (`FunctionSet::MergeFunctionSet` with
+    /// `override = true`).
+    /// Registering `abs(BIGINT) -> BIGINT` replaces the built-in `abs` for
+    /// `BIGINT`. Registration fails when the name belongs to an aggregate
+    /// function or a macro (such as the built-in `list_sum`). Check
+    /// `duckdb_functions()` first if replacing an existing function would be
+    /// wrong.
+    ///
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.
