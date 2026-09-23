@@ -155,6 +155,9 @@ mod tests {
         // SAFETY: duckdb_create_blob returns an owned value handle.
         let value = unsafe { Value::from_raw(raw) };
 
-        assert!(value.as_blob().expect("blob should be readable").is_empty());
+        assert_eq!(
+            value.as_blob().expect("blob should be readable"),
+            Vec::<u8>::new()
+        );
     }
 }

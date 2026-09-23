@@ -1911,7 +1911,7 @@ fn the_virtual_file_system_round_trips_a_file() {
         handle.read_to_end(&mut empty).expect("read_to_end at EOF"),
         0
     );
-    assert!(empty.is_empty());
+    assert_eq!(empty, Vec::<u8>::new());
 
     // Zero-length operations are no-ops, not errors.
     handle.read_exact(&mut []).expect("empty read_exact");
@@ -3296,7 +3296,7 @@ fn a_selection_vector_round_trips_its_indices() {
 
     // A zero-length vector must not hand out a dangling non-empty slice.
     let empty = SelectionVector::new(0).expect("allocate");
-    assert!(empty.as_slice().is_empty());
+    assert_eq!(empty.as_slice(), &[]);
 }
 
 /// The instance cache must hand back the *same* database for the same path.

@@ -1467,7 +1467,7 @@ mod live_tests {
         let (db, con) = unsafe { open_raw() };
 
         let err = unsafe { prepare(con, "SELECT FROM WHERE") }.expect_err("syntax error");
-        assert!(!err.as_str().is_empty());
+        assert_ne!(err.as_str(), "");
 
         unsafe { close_raw(db, con) };
     }
