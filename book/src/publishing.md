@@ -19,10 +19,14 @@ with quack-rs.
 ## Scaffolding a new project
 
 `quack_rs::scaffold::generate_scaffold` generates all required files from a
-single function call:
+single function call. It returns paths relative to the project root and writes
+nothing itself, so join them under the project directory — never write them
+relative to the current directory, which would overwrite its `Cargo.toml` and
+`src/lib.rs`:
 
-```rust
+```rust,no_run
 use quack_rs::scaffold::{ScaffoldConfig, generate_scaffold};
+use std::path::Path;
 
 let config = ScaffoldConfig {
     name: "my_extension".to_string(),
@@ -38,11 +42,17 @@ let config = ScaffoldConfig {
 };
 
 let files = generate_scaffold(&config).expect("scaffold failed");
+let root = Path::new(&config.name); // ./my_extension/
 for file in &files {
-    std::fs::create_dir_all(std::path::Path::new(&file.path).parent().unwrap()).unwrap();
-    std::fs::write(&file.path, &file.content).unwrap();
+    let path = root.join(&file.path);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, &file.content).unwrap();
 }
 ```
+
+In a new repository, add the build tooling submodule once with
+`git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools`
+(`git submodule update --init` does nothing until then — Pitfall P4).
 
 This generates:
 
@@ -247,7 +257,7 @@ lto = "thin"
 strip = "symbols"
 ```
 
-> **Pitfall ADR-1** — Do NOT use the `duckdb` crate's `bundled` feature. A
+> **ADR-4** (in `LESSONS.md`) — Do NOT use the `duckdb` crate's `bundled` feature. A
 > loadable extension must link against the DuckDB that loads it, not bundle
 > its own copy. `libduckdb-sys` with `loadable-extension` provides lazy function
 > pointers populated by DuckDB at load time.

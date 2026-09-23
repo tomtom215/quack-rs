@@ -14,12 +14,12 @@ my_extension/
 ├── Makefile                            # delegates to cargo + extension-ci-tools
 ├── extension_config.cmake              # required by extension-ci-tools
 ├── src/
-│   ├── lib.rs                          # entry point template
+│   ├── lib.rs                          # entry point, example function, unit test
 │   └── wasm_lib.rs                     # WASM staticlib shim
 ├── description.yml                     # community extension metadata
 ├── test/
 │   └── sql/
-│       └── my_extension.test           # SQLLogicTest skeleton
+│       └── my_extension.test           # SQLLogicTest for the example function
 ├── .github/
 │   └── workflows/
 │       └── extension-ci.yml            # cross-platform CI workflow
@@ -33,7 +33,12 @@ my_extension/
 
 ## Usage
 
-```rust
+`generate_scaffold` returns paths relative to the project root (`Cargo.toml`,
+`src/lib.rs`, ...) and writes nothing itself. Join them under the directory the
+project should live in — writing them relative to the current directory would
+overwrite whatever `Cargo.toml` and `src/lib.rs` are already there.
+
+```rust,no_run
 use quack_rs::scaffold::{ScaffoldConfig, generate_scaffold};
 use std::path::Path;
 
@@ -53,13 +58,15 @@ fn main() {
 
     let files = generate_scaffold(&config).expect("scaffold generation failed");
 
+    // Everything goes under ./my_extension/, never into the current directory.
+    let root = Path::new(&config.name);
     for file in &files {
-        let path = Path::new(&file.path);
+        let path = root.join(&file.path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
-        std::fs::write(path, &file.content).unwrap();
-        println!("created {}", file.path);
+        std::fs::write(&path, &file.content).unwrap();
+        println!("created {}", path.display());
     }
 }
 ```
@@ -71,13 +78,13 @@ fn main() {
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `String` | Extension name — must match `[lib] name` in Cargo.toml and `description.yml` |
-| `description` | `String` | One-line description for `description.yml` |
+| `description` | `String` | Description for `description.yml` and the `//!` docs of `src/lib.rs`. Quoted and escaped, so `:`, `#` and quotes are fine; must not be empty, padded with whitespace, or contain control characters other than newline and tab |
 | `version` | `String` | The extension's version — validated by `validate_extension_version` |
 | `license` | `String` | SPDX license identifier (e.g., `"MIT"`, `"Apache-2.0"`) |
-| `maintainer` | `String` | Your name or org, listed in `description.yml` |
-| `github_repo` | `String` | `"owner/repo"` format |
+| `maintainer` | `String` | Your name or org, listed in `description.yml` — one non-empty line |
+| `github_repo` | `String` | `"owner/repo"`, in the characters GitHub allows |
 | `excluded_platforms` | `Vec<String>` | Platforms to skip (e.g., `["wasm_mvp", "wasm_eh"]`) |
-| `git_ref` | `String` | `repo.ref` — **a commit hash**, not a branch. Defaults to `REF_PLACEHOLDER` so it cannot be submitted unset |
+| `git_ref` | `String` | `repo.ref` — **a commit hash** (or tag), not a branch. Defaults to `REF_PLACEHOLDER` so it cannot be submitted unset |
 | `target_duckdb_version` | `String` | Written as `TARGET_DUCKDB_VERSION` in the Makefile |
 | `use_unstable_c_api` | `bool` | Set when the extension enables `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4` |
 
@@ -103,13 +110,20 @@ if it violates the rules.
 cd my_extension
 git init
 git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
-git submodule update --init --recursive
 make configure
 make release
+make test
 ```
 
-Then add your function logic in `src/lib.rs`, write your SQLLogicTests in
-`test/sql/my_extension.test`, and push to GitHub — CI runs automatically.
+`git submodule add` is not optional in a new project: the scaffold writes
+`.gitmodules`, but `git submodule update --init` does nothing until the
+submodule has been added once (Pitfall P4). The generated `Makefile` stops with
+this command if the checkout is missing.
+
+`cargo test` runs the generated unit test and `make test` runs
+`test/sql/my_extension.test` against a real DuckDB. Replace the example
+function in `src/lib.rs` with your own, give each new function a test in both
+places, and push to GitHub — CI runs automatically.
 
 ---
 
