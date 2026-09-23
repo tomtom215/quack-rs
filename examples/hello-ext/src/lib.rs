@@ -1386,7 +1386,7 @@ mod tests {
     #[test]
     fn sql_macro_double_it() {
         let m = SqlMacro::scalar("double_it", &["x"], "x * 2").unwrap();
-        assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO double_it(x) AS (x * 2)");
+        assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "double_it"("x") AS (x * 2)"#);
     }
 
     #[test]
@@ -1394,7 +1394,7 @@ mod tests {
         let m = SqlMacro::table("seq_n", &["n"], "SELECT * FROM generate_series(1, n)").unwrap();
         assert_eq!(
             m.to_sql(),
-            "CREATE OR REPLACE MACRO seq_n(n) AS TABLE SELECT * FROM generate_series(1, n)"
+            r#"CREATE OR REPLACE MACRO "seq_n"("n") AS TABLE SELECT * FROM generate_series(1, n)"#
         );
     }
 

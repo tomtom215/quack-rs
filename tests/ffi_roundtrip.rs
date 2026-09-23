@@ -861,6 +861,7 @@ fn a_typed_table_function_streams_rows() {
 
     let fx = Fixture::open();
 
+    #[derive(Clone)]
     struct State {
         remaining: i64,
     }
@@ -2648,6 +2649,7 @@ fn a_replacement_scan_redirects_an_unknown_table() {
 
     let fx = Fixture::open();
 
+    #[derive(Clone)]
     struct State {
         next: i64,
         limit: i64,
@@ -3532,6 +3534,7 @@ fn a_panicking_aggregate_state_initialiser_becomes_a_sql_error() {
 fn a_panicking_bind_state_destructor_does_not_abort() {
     use quack_rs::table::{BindInfo, TableFunctionBuilder};
 
+    #[derive(Clone)]
     struct BindDropBomb;
     impl Drop for BindDropBomb {
         fn drop(&mut self) {
@@ -5151,6 +5154,7 @@ mod copy_from {
     use quack_rs::types::TypeId;
 
     /// Rows parsed at bind time, handed to the scan one chunk at a time.
+    #[derive(Clone)]
     struct Reader {
         rows: Vec<(i32, String)>,
         next: usize,
@@ -5461,3 +5465,5 @@ mod copy_from {
         assert!(err.as_str().contains("implements nothing"), "{err}");
     }
 }
+#[path = "ffi_roundtrip/table_cast.rs"]
+mod table_cast;

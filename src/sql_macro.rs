@@ -41,10 +41,17 @@
 //! # SQL injection safety
 //!
 //! Macro names and parameter names are validated against
-//! [`validate_function_name`]:
-//! only `[a-z][a-z0-9_]*` identifiers are accepted. These names are
-//! interpolated literally into the generated SQL (no quoting required
-//! because they are already restricted to safe characters).
+//! [`validate_function_name`]: an ASCII letter or underscore followed by ASCII
+//! letters, digits or underscores (`[A-Za-z_][A-Za-z0-9_]*`, at most 256
+//! characters). Mixed case is accepted.
+//!
+//! The generated SQL always emits them as **double-quoted identifiers**
+//! (`"name"`). The validated character set cannot contain `"`, so quoting
+//! needs no escaping, and it means a name that happens to be a SQL keyword
+//! (a parameter called `order`, say) still parses. Quoting does not make the
+//! name case-sensitive: `DuckDB` resolves identifiers case-insensitively
+//! whether or not they were quoted, so a macro registered as `MyMacro` is
+//! callable as `mymacro(...)` or `MYMACRO(...)`.
 //!
 //! The SQL body (`expression` / `query`) is your own extension code, not
 //! user-supplied input. **Never build macro bodies from untrusted runtime
@@ -88,7 +95,7 @@ pub enum MacroBody {
 /// use quack_rs::sql_macro::SqlMacro;
 ///
 /// let m = SqlMacro::scalar("add", &["a", "b"], "a + b").unwrap();
-/// assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO add(a, b) AS (a + b)");
+/// assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "add"("a", "b") AS (a + b)"#);
 /// ```
 #[derive(Debug, Clone)]
 pub struct SqlMacro {
@@ -170,6 +177,11 @@ impl SqlMacro {
 
     /// Returns the `CREATE OR REPLACE MACRO` SQL statement for this definition.
     ///
+    /// The macro name and parameter names are emitted as double-quoted
+    /// identifiers, so a name that is also a SQL keyword still parses; see
+    /// the [module docs][crate::sql_macro#sql-injection-safety]. The body is
+    /// emitted verbatim.
+    ///
     /// Useful for logging, testing, and inspection without a live connection.
     ///
     /// # Example
@@ -178,29 +190,32 @@ impl SqlMacro {
     /// use quack_rs::sql_macro::SqlMacro;
     ///
     /// let m = SqlMacro::scalar("add", &["a", "b"], "a + b").unwrap();
-    /// assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO add(a, b) AS (a + b)");
+    /// assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "add"("a", "b") AS (a + b)"#);
     ///
     /// let t = SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM tbl WHERE active = true").unwrap();
     /// assert_eq!(
     ///     t.to_sql(),
-    ///     "CREATE OR REPLACE MACRO active_rows(tbl) AS TABLE SELECT * FROM tbl WHERE active = true"
+    ///     r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM tbl WHERE active = true"#
     /// );
     /// ```
     #[must_use]
     pub fn to_sql(&self) -> String {
-        let params = self.params.join(", ");
+        // Validation (`validate_function_name`) guarantees no `"` in any
+        // identifier, so wrapping in quotes needs no escaping.
+        let quote = |ident: &str| format!("\"{ident}\"");
+        let name = quote(&self.name);
+        let params = self
+            .params
+            .iter()
+            .map(|p| quote(p))
+            .collect::<Vec<_>>()
+            .join(", ");
         match &self.body {
             MacroBody::Scalar(expr) => {
-                format!(
-                    "CREATE OR REPLACE MACRO {}({}) AS ({})",
-                    self.name, params, expr
-                )
+                format!("CREATE OR REPLACE MACRO {name}({params}) AS ({expr})")
             }
             MacroBody::Table(query) => {
-                format!(
-                    "CREATE OR REPLACE MACRO {}({}) AS TABLE {}",
-                    self.name, params, query
-                )
+                format!("CREATE OR REPLACE MACRO {name}({params}) AS TABLE {query}")
             }
         }
     }
@@ -243,7 +258,7 @@ impl SqlMacro {
 }
 
 /// Validates a macro name and all parameter names using the same rules as
-/// function names: `[a-z_][a-z0-9_]*`, max 256 chars.
+/// function names ([`validate_function_name`]).
 fn validate_name_and_params(
     name: &str,
     params: &[&str],
@@ -317,7 +332,7 @@ mod tests {
         let m = SqlMacro::scalar("pi", &[], "3.14159265358979").unwrap();
         assert_eq!(
             m.to_sql(),
-            "CREATE OR REPLACE MACRO pi() AS (3.14159265358979)"
+            r#"CREATE OR REPLACE MACRO "pi"() AS (3.14159265358979)"#
         );
     }
 
@@ -326,14 +341,17 @@ mod tests {
         let m = SqlMacro::scalar("double_it", &["x"], "x * 2").unwrap();
         assert_eq!(
             m.to_sql(),
-            "CREATE OR REPLACE MACRO double_it(x) AS (x * 2)"
+            r#"CREATE OR REPLACE MACRO "double_it"("x") AS (x * 2)"#
         );
     }
 
     #[test]
     fn scalar_multiple_params_to_sql() {
         let m = SqlMacro::scalar("add", &["a", "b"], "a + b").unwrap();
-        assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO add(a, b) AS (a + b)");
+        assert_eq!(
+            m.to_sql(),
+            r#"CREATE OR REPLACE MACRO "add"("a", "b") AS (a + b)"#
+        );
     }
 
     #[test]
@@ -342,7 +360,7 @@ mod tests {
             SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))").unwrap();
         assert_eq!(
             m.to_sql(),
-            "CREATE OR REPLACE MACRO clamp(x, lo, hi) AS (greatest(lo, least(hi, x)))"
+            r#"CREATE OR REPLACE MACRO "clamp"("x", "lo", "hi") AS (greatest(lo, least(hi, x)))"#
         );
     }
 
@@ -351,7 +369,7 @@ mod tests {
         let m = SqlMacro::table("all_data", &[], "SELECT 1 AS n").unwrap();
         assert_eq!(
             m.to_sql(),
-            "CREATE OR REPLACE MACRO all_data() AS TABLE SELECT 1 AS n"
+            r#"CREATE OR REPLACE MACRO "all_data"() AS TABLE SELECT 1 AS n"#
         );
     }
 
@@ -365,7 +383,18 @@ mod tests {
         .unwrap();
         assert_eq!(
             m.to_sql(),
-            "CREATE OR REPLACE MACRO active_rows(tbl) AS TABLE SELECT * FROM tbl WHERE active = true"
+            r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM tbl WHERE active = true"#
+        );
+    }
+
+    /// Identifiers are always quoted, so a keyword or mixed-case name reaches
+    /// `DuckDB` intact instead of as a parser error.
+    #[test]
+    fn identifiers_are_double_quoted() {
+        let m = SqlMacro::scalar("MyMacro", &["X", "_y"], "X + _y").unwrap();
+        assert_eq!(
+            m.to_sql(),
+            r#"CREATE OR REPLACE MACRO "MyMacro"("X", "_y") AS (X + _y)"#
         );
     }
 

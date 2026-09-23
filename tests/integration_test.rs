@@ -420,14 +420,17 @@ fn sql_macro_scalar_to_sql_no_params() {
     let m = SqlMacro::scalar("pi", &[], "3.14159265358979").unwrap();
     assert_eq!(
         m.to_sql(),
-        "CREATE OR REPLACE MACRO pi() AS (3.14159265358979)"
+        r#"CREATE OR REPLACE MACRO "pi"() AS (3.14159265358979)"#
     );
 }
 
 #[test]
 fn sql_macro_scalar_to_sql_multiple_params() {
     let m = SqlMacro::scalar("add", &["a", "b"], "a + b").unwrap();
-    assert_eq!(m.to_sql(), "CREATE OR REPLACE MACRO add(a, b) AS (a + b)");
+    assert_eq!(
+        m.to_sql(),
+        r#"CREATE OR REPLACE MACRO "add"("a", "b") AS (a + b)"#
+    );
 }
 
 #[test]
@@ -435,7 +438,7 @@ fn sql_macro_scalar_clamp_to_sql() {
     let m = SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))").unwrap();
     assert_eq!(
         m.to_sql(),
-        "CREATE OR REPLACE MACRO clamp(x, lo, hi) AS (greatest(lo, least(hi, x)))"
+        r#"CREATE OR REPLACE MACRO "clamp"("x", "lo", "hi") AS (greatest(lo, least(hi, x)))"#
     );
 }
 
@@ -449,7 +452,7 @@ fn sql_macro_table_to_sql() {
     .unwrap();
     assert_eq!(
         m.to_sql(),
-        "CREATE OR REPLACE MACRO active_rows(tbl) AS TABLE SELECT * FROM tbl WHERE active = true"
+        r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM tbl WHERE active = true"#
     );
 }
 
@@ -943,6 +946,7 @@ fn typed_table_function_builds_through_mock_registrar() {
     use quack_rs::table::TableFunctionBuilder;
     use quack_rs::testing::MockRegistrar;
 
+    #[derive(Clone)]
     struct State {
         #[allow(dead_code)]
         remaining: u64,
@@ -965,6 +969,7 @@ fn typed_table_function_builds_through_mock_registrar() {
 fn typed_table_function_requires_scan_closure() {
     use quack_rs::table::TableFunctionBuilder;
 
+    #[derive(Clone)]
     struct State;
     let typed = TableFunctionBuilder::new("needs_scan").with_state::<State, _>(|_bind| Ok(State));
 

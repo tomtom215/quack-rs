@@ -300,8 +300,23 @@ impl CastFunctionBuilder {
     /// # Errors
     ///
     /// Returns `ExtensionError` if:
-    /// - The function callback was not set.
+    /// - The function callback, source type or target type was not set.
+    /// - `con` is null.
+    /// - The source or target type is, or contains, `ANY` or `INVALID`
+    ///   (`DuckDB` refuses these).
     /// - `DuckDB` reports a registration failure.
+    ///
+    /// # `extra_info` ownership
+    ///
+    /// Every failure above is detected in Rust before `DuckDB` is called, so
+    /// the builder still owns any [`extra_info`][Self::extra_info] and frees
+    /// it (exactly once) when it is dropped. `duckdb_register_cast_function`
+    /// itself returns early for exactly those conditions *before* taking
+    /// ownership, which is why they are checked here first. The one remaining
+    /// failure — an exception inside `DuckDB` while installing the cast — is
+    /// ambiguous (it may or may not have taken ownership already), so the
+    /// allocation is left to `DuckDB` in that case: a possible leak, never a
+    /// double free.
     ///
     /// # Safety
     ///
@@ -317,11 +332,15 @@ impl CastFunctionBuilder {
         let function = self
             .function
             .ok_or_else(|| ExtensionError::new("cast function callback not set"))?;
+        if con.is_null() {
+            return Err(ExtensionError::new(
+                "cast function registration: connection is null",
+            ));
+        }
 
-        // SAFETY: allocates a new cast function handle.
-        let mut cast = unsafe { duckdb_create_cast_function() };
-
-        // Resolve source type: prefer explicit LogicalType over TypeId.
+        // Resolve source and target types: prefer explicit LogicalType over
+        // TypeId. Done before any DuckDB handle is created, so an early return
+        // leaks nothing.
         let src_lt = if let Some(lt) = self.source_logical {
             lt
         } else if let Some(id) = self.source {
@@ -329,12 +348,6 @@ impl CastFunctionBuilder {
         } else {
             return Err(ExtensionError::new("cast source type not set"));
         };
-        // SAFETY: cast and src_lt.as_raw() are valid.
-        unsafe {
-            duckdb_cast_function_set_source_type(cast, src_lt.as_raw());
-        }
-
-        // Resolve target type: prefer explicit LogicalType over TypeId.
         let tgt_lt = if let Some(lt) = self.target_logical {
             lt
         } else if let Some(id) = self.target {
@@ -342,8 +355,22 @@ impl CastFunctionBuilder {
         } else {
             return Err(ExtensionError::new("cast target type not set"));
         };
-        // SAFETY: cast and tgt_lt.as_raw() are valid.
+        for (lt, slot) in [(&src_lt, "source"), (&tgt_lt, "target")] {
+            // SAFETY: `lt` owns a live handle.
+            if unsafe { crate::table::type_check::contains_any_or_invalid(lt.as_raw()) } {
+                return Err(ExtensionError::new(format!(
+                    "cast function {slot} type must not be or contain ANY or INVALID; \
+                     DuckDB refuses to register such a cast"
+                )));
+            }
+        }
+
+        // SAFETY: allocates a new cast function handle.
+        let mut cast = unsafe { duckdb_create_cast_function() };
+
+        // SAFETY: cast and both type handles are valid; DuckDB copies the types.
         unsafe {
+            duckdb_cast_function_set_source_type(cast, src_lt.as_raw());
             duckdb_cast_function_set_target_type(cast, tgt_lt.as_raw());
         }
 
@@ -367,9 +394,12 @@ impl CastFunctionBuilder {
             // contract on extra_info().
             unsafe {
                 duckdb_cast_function_set_extra_info(cast, info.data(), info.destroy());
-                // DuckDB owns the allocation from here.
-                info.mark_transferred();
             }
+            // Every deterministic pre-ownership rejection in
+            // `duckdb_register_cast_function` (null handles, missing parts,
+            // ANY/INVALID types) was ruled out above, so from here DuckDB owns
+            // the allocation — see "extra_info ownership" in the docs.
+            info.mark_transferred();
         }
 
         // Register
