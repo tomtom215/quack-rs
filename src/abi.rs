@@ -743,7 +743,7 @@ mod tests {
         ));
     }
 
-    /// Regression: DuckDB v1.4.5 (459 slots) was missing from the table, so a
+    /// Regression: `DuckDB` v1.4.5 (459 slots) was missing from the table, so a
     /// 546-slot extension loaded into it was `UnknownEngineVersion` rather than
     /// a mismatch — and `AllowUnknownEngine` then let it load and segfault on
     /// its first unstable-region call. Every policy that refuses a verified
