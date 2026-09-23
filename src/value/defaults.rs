@@ -9,7 +9,7 @@
 //! failed cast — into a caller-chosen default. A null handle is refused before
 //! any `DuckDB` call, so the default path is reachable without a live engine.
 //! That is why they live here rather than in
-//! `value.rs`: `mutants.toml` excludes that file wholesale — every function
+//! `value.rs`: `.cargo/mutants.toml` excludes that file wholesale — every function
 //! left in it wraps a `DuckDB` C call the `--lib` mutation run cannot reach —
 //! and these fourteen can be, and are, killed by ordinary unit tests.
 

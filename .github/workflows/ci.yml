@@ -890,7 +890,7 @@ jobs:
         # `--features duckdb-1-5-4` matters: without it every `duckdb-1-5*`
         # module is cfg'd out, including `src/arrow.rs` -- the largest block of
         # pure-Rust `unsafe` in the crate, and exactly what Miri is here for.
-        # `mutants.toml` already sets the same features for the same reason.
+        # `.cargo/mutants.toml` already sets the same features for the same reason.
         run: cargo +nightly miri test --lib --features duckdb-1-5-4
 
   leak-check:

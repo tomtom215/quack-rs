@@ -481,7 +481,7 @@ pub fn double_to_i64(v: f64, round: bool) -> Option<i64> {
     // -2^63 is exactly representable and in range; 2^63 is the first value
     // past i64::MAX. NaN fails both comparisons.
     const LIMIT: f64 = 9_223_372_036_854_775_808.0; // 2^63
-    if whole >= -LIMIT && whole < LIMIT {
+    if (-LIMIT..LIMIT).contains(&whole) {
         Some(whole as i64)
     } else {
         None

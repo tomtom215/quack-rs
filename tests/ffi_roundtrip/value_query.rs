@@ -23,6 +23,7 @@ fn owned_connection(fx: &Fixture) -> OwnedConnection {
     unsafe { OwnedConnection::open(fx.db()) }.expect("connect")
 }
 
+#[cfg(feature = "duckdb-1-5-4")]
 fn first_varchar(con: &OwnedConnection, sql: &str) -> String {
     let mut result = con.query(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
     let chunk = result.next_chunk().expect("one chunk");
@@ -33,6 +34,8 @@ fn first_varchar(con: &OwnedConnection, sql: &str) -> String {
 /// Every scalar getter on `value`, as `Some(true)` if it produced a value.
 /// Calling each one is the point: none may abort or crash.
 fn all_scalar_getters(value: &Value) -> Vec<(&'static str, bool)> {
+    // `mut` is used only by the `duckdb-1-5` additions below.
+    #[cfg_attr(not(feature = "duckdb-1-5"), allow(unused_mut))]
     let mut out = vec![
         ("i8", value.as_i8().is_some()),
         ("i16", value.as_i16().is_some()),
@@ -210,6 +213,8 @@ fn every_getter_is_safe_on_every_value_type() {
     let enum_ty = LogicalType::enum_type(&["a", "b"]);
     let list_ty = LogicalType::new(TypeId::BigInt);
     let struct_ty = LogicalType::struct_type(&[("x", TypeId::BigInt)]);
+    // `mut` is used only by the `duckdb-1-5` additions below.
+    #[cfg_attr(not(feature = "duckdb-1-5"), allow(unused_mut))]
     let mut values = vec![
         Value::boolean(true),
         Value::tinyint(-1),

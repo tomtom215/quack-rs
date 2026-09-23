@@ -3,6 +3,14 @@
 #
 # Configuration for cargo-mutants — mutation testing for quack-rs.
 #
+# This file MUST live at `.cargo/mutants.toml`: that is the only place
+# cargo-mutants reads configuration from without `--config`. Until September
+# 2026 it sat at the repository root, where no job ever read it, and it also
+# carried two keys cargo-mutants 27.1.0 rejects outright (`cap_timeout`,
+# `jobs`), so pointing `--config` at it would have failed to parse. The
+# per-mutant timeout cap and the job count are passed on the command line by
+# `.github/workflows/mutants.yml` (`--timeout 120 --jobs 4`).
+#
 # Install:  cargo install cargo-mutants
 # Run:      cargo mutants
 # Docs:     https://mutants.rs/
@@ -15,13 +23,7 @@ timeout_multiplier = 3.0
 # Floor: no mutant gets less than 30s even if the baseline is very fast.
 minimum_test_timeout = 30
 
-# Hard cap: kill any mutant that runs longer than 120s.  Prevents infinite
-# loops and deadlocks from blocking CI.
-cap_timeout = 120
 
-# ── Parallelism ──────────────────────────────────────────────────────────────
-# Run mutants in parallel.  GitHub-hosted ubuntu-latest runners have 4 vCPUs.
-jobs = 4
 
 # ── Files to test ───────────────────────────────────────────────────────────
 # Test all library source files.

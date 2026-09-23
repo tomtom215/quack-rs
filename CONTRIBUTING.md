@@ -227,7 +227,8 @@ cargo mutants --file src/interval.rs
 cargo mutants --list
 ```
 
-Configuration is in `mutants.toml` at the repository root.
+Configuration is in `.cargo/mutants.toml` — the one place cargo-mutants reads it
+from without `--config`.
 
 ### Test naming convention
 

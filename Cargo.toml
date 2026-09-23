@@ -28,7 +28,7 @@ exclude = [
     "LESSONS.md",
     "clippy.toml",
     "codecov.yml",
-    "mutants.toml",
+    ".cargo/",
     "rust-toolchain.toml",
     "lsan-suppressions.txt",
 ]

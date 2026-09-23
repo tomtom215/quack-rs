@@ -163,26 +163,27 @@ jobs:
             [ -n "$f" ] && ARGS+=(--file "$f")
           done
 
-          # Re-apply mutants.toml `exclude_globs` as CLI `--exclude` flags.
+          # Re-apply .cargo/mutants.toml `exclude_globs` as CLI `--exclude` flags.
           # `--file` bypasses config excludes, so without this an edit to an
           # excluded module (test helper / FFI wrapper) gets mutated and reports
-          # unkillable "missed" mutants. mutants.toml stays the single source of
+          # unkillable "missed" mutants. .cargo/mutants.toml stays the single source of
           # truth; `--exclude` wins over `--file` for the same path.
           while IFS= read -r glob; do
             [ -n "$glob" ] && ARGS+=(--exclude "$glob")
-          done < <(sed -n '/^exclude_globs = \[/,/^]/p' mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
+          done < <(sed -n '/^exclude_globs = \[/,/^]/p' .cargo/mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
 
           # Same for `exclude_re`. cargo-mutants only *combines* a CLI
           # `--exclude-re` with the config file from 27.0.0 onwards; before
           # that the flag replaced the config list outright. This job passes
           # one below, so re-applying the config entries here keeps
-          # mutants.toml authoritative on either side of that change.
+          # .cargo/mutants.toml authoritative on either side of that change.
           while IFS= read -r re; do
             [ -n "$re" ] && ARGS+=(--exclude-re "$re")
-          done < <(sed -n '/^exclude_re = \[/,/^]/p' mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
+          done < <(sed -n '/^exclude_re = \[/,/^]/p' .cargo/mutants.toml | grep -oE '"[^"]+"' | tr -d '"')
 
-          # `--features duckdb-1-5-4` MUST be explicit: cargo-mutants does not
-          # apply mutants.toml `features` to this invocation, so without it the
+          # `--features duckdb-1-5-4` is explicit as well as in .cargo/mutants.toml:
+          # until the config moved there (Sept 2026) cargo-mutants never read it,
+          # and the flag keeps the job correct if it moves again. Without it the
           # duckdb-1-5-gated code (type_id's 1.5 type arms, the whole error_data
           # module, the arrow bridge) is cfg'd out — its mutations would be
           # inert and reported as false "missed".

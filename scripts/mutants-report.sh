@@ -144,7 +144,7 @@ fi
     echo ""
     for f in "${FAILURES[@]}"; do echo "- $f"; done
   elif [ "$GENERATED" -eq 0 ]; then
-    echo "No mutants were generated for the changed files (nothing mutable, or all excluded by mutants.toml)."
+    echo "No mutants were generated for the changed files (nothing mutable, or all excluded by .cargo/mutants.toml)."
   else
     echo "All ${TESTED} mutant(s) were caught or unviable. No test gaps found."
   fi

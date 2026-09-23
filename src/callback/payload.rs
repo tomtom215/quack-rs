@@ -22,10 +22,13 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Drops a caught panic payload, containing any panic its `Drop` raises.
 ///
-/// If dropping the payload panics, the *second* payload is leaked with
-/// [`std::mem::forget`] instead of being dropped: it too is user data whose
-/// `Drop` may panic, and there is no bound on how many layers deep that could go.
-/// Leaking one allocation is the price of never aborting.
+/// If dropping the payload panics, that second panic's payload is dropped the
+/// same way, and so on — a payload whose `Drop` panics usually panics with an
+/// ordinary message, whose own drop cannot panic, so the chain ends at once and
+/// nothing is leaked. Only after [`MAX_NESTED_PAYLOAD_DROPS`] consecutive
+/// panicking drops is the remaining payload leaked with [`std::mem::forget`]:
+/// the chain is user code with no inherent bound, and leaking one allocation is
+/// the price of never aborting.
 ///
 /// # Example
 ///
@@ -42,10 +45,19 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 /// quack_rs::callback::drop_panic_payload(payload);
 /// ```
 pub fn drop_panic_payload(payload: Box<dyn Any + Send>) {
-    if let Err(second) = catch_unwind(AssertUnwindSafe(move || drop(payload))) {
-        std::mem::forget(second);
+    let mut payload = payload;
+    for _ in 0..MAX_NESTED_PAYLOAD_DROPS {
+        match catch_unwind(AssertUnwindSafe(move || drop(payload))) {
+            Ok(()) => return,
+            Err(next) => payload = next,
+        }
     }
+    std::mem::forget(payload);
 }
+
+/// How many nested panicking payload drops [`drop_panic_payload`] unwinds
+/// through before it leaks what is left rather than keep going.
+pub const MAX_NESTED_PAYLOAD_DROPS: usize = 8;
 
 /// Extracts the panic message from a caught payload, then disposes of the
 /// payload with [`drop_panic_payload`].
@@ -124,6 +136,36 @@ mod tests {
     fn a_generated_destructor_contains_a_payload_whose_drop_panics() {
         // SAFETY: the body ignores both arguments.
         unsafe { bomb_destroy(std::ptr::null_mut(), 0) };
+    }
+
+    thread_local! {
+        static NESTED_DROPS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// A payload whose `Drop` panics with another `NestedBomb` one level
+    /// shallower, until level 0, whose `Drop` returns normally.
+    struct NestedBomb(usize);
+    impl Drop for NestedBomb {
+        fn drop(&mut self) {
+            NESTED_DROPS.with(|n| n.set(n.get() + 1));
+            if self.0 > 0 {
+                std::panic::panic_any(Self(self.0 - 1));
+            }
+        }
+    }
+
+    /// Every payload in a chain shorter than the bound is dropped, not leaked:
+    /// before, the payload raised by the first panicking `Drop` was
+    /// `mem::forget`-ed unconditionally, which LeakSanitizer and Miri report.
+    #[test]
+    fn a_chain_of_panicking_payload_drops_is_freed_to_the_end() {
+        let depth = super::MAX_NESTED_PAYLOAD_DROPS - 2;
+        let payload = std::panic::catch_unwind(|| std::panic::panic_any(NestedBomb(depth)))
+            .expect_err("panic_any must unwind");
+        let before = NESTED_DROPS.with(Cell::get);
+        drop_panic_payload(payload);
+        // Levels `depth, depth - 1, …, 0` each dropped exactly once.
+        assert_eq!(NESTED_DROPS.with(Cell::get), before + depth + 1);
     }
 
     #[test]

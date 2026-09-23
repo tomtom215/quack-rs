@@ -430,8 +430,12 @@ macro_rules! aggregate_destroy_callback {
             // is dropped rather than reported. Leaking beats aborting — and the
             // payload's own `Drop` is user code too, so it is dropped under a
             // second guard rather than here.
+            // `::<_, ()>`: a body that always panics has type `!`, and under
+            // the never-type fallback that would make this `if let`
+            // irrefutable (`irrefutable_let_patterns`, an error under
+            // `-D warnings` on nightly).
             if let ::std::result::Result::Err(panic) =
-                ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body))
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body))
             {
                 $crate::callback::drop_panic_payload(panic);
             }
