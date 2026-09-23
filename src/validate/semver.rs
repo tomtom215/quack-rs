@@ -5,8 +5,10 @@
 
 //! Semantic versioning validation for `DuckDB` community extensions.
 //!
-//! Extensions submitted to the `DuckDB` community repository must use
-//! valid semantic versioning for the `extension.version` field.
+//! [`validate_semver`] checks strict semantic versioning,
+//! [`validate_extension_version`] checks the (much looser) `extension.version`
+//! field of a community-extension `description.yml`, and
+//! [`classify_extension_version`] maps a version onto `DuckDB`'s stability tiers.
 //!
 //! # `DuckDB` Extension Versioning Scheme
 //!
@@ -15,8 +17,13 @@
 //! | Level | Format | Example | Meaning |
 //! |-------|--------|---------|---------|
 //! | **Unstable** | Short git hash | `690bfc5` | No stability guarantees |
-//! | **Pre-release** | `0.y.z` | `0.1.0` | Working toward stability, semver applies |
-//! | **Stable** | `x.y.z` (x>0) | `1.0.0` | Full semver, backwards-compatible API |
+//! | **Pre-release** | `v0.y.z` | `v0.1.0` | Working toward stability, semver applies |
+//! | **Stable** | `vx.y.z` (x>0) | `v1.0.0` | Full semver, backwards-compatible API |
+//!
+//! `DuckDB`'s page writes the semver tiers with a leading `v`, and the version
+//! extension-ci-tools stamps into a binary is the git tag at `HEAD`
+//! (conventionally `vX.Y.Z`) or else the short hash, so
+//! [`classify_extension_version`] accepts the `v` as optional.
 //!
 //! Use [`classify_extension_version`] to determine which tier a version falls into,
 //! or [`validate_extension_version`] to accept both semver and git-hash formats.
@@ -143,6 +150,14 @@ impl std::fmt::Display for ExtensionStability {
 /// - **Pre-release**: semver `0.y.z`
 /// - **Stable**: semver `x.y.z` where `x > 0`
 ///
+/// The semver forms may carry one leading `v` (`v0.1.0`, `v1.0.0`): `DuckDB`'s
+/// [versioning page](https://duckdb.org/docs/current/extensions/versioning_of_extensions.html)
+/// writes the tiers that way, and extension-ci-tools
+/// (`scripts/configure_helper.py`) stamps the git tag at `HEAD` — usually
+/// `vX.Y.Z` — as the extension version. `DuckDB` itself treats the version as
+/// an opaque string (`extension_load.cpp` only stores and compares it). The
+/// returned `&str` is the input, unchanged.
+///
 /// # Errors
 ///
 /// Returns `ExtensionError` if the version string is empty or does not match
@@ -159,6 +174,9 @@ impl std::fmt::Display for ExtensionStability {
 /// let (stability, _) = classify_extension_version("0.1.0").unwrap();
 /// assert_eq!(stability, ExtensionStability::PreRelease);
 ///
+/// let (stability, _) = classify_extension_version("v1.2.0").unwrap();
+/// assert_eq!(stability, ExtensionStability::Stable);
+///
 /// let (stability, _) = classify_extension_version("690bfc5").unwrap();
 /// assert_eq!(stability, ExtensionStability::Unstable);
 /// ```
@@ -169,10 +187,12 @@ pub fn classify_extension_version(
         return Err(ExtensionError::new("extension version must not be empty"));
     }
 
-    // Try semver first
+    // Try semver first, with at most one leading `v`. A git hash is lowercase
+    // hex, so it can never start with `v` and the two forms cannot collide.
     if version.contains('.') {
-        validate_semver(version)?;
-        let major = version.split('.').next().unwrap_or("0");
+        let semver = version.strip_prefix('v').unwrap_or(version);
+        validate_semver(semver)?;
+        let major = semver.split('.').next().unwrap_or("0");
         let stability = if major == "0" {
             ExtensionStability::PreRelease
         } else {
@@ -209,9 +229,12 @@ const MAX_VERSION_LEN: usize = 64;
 /// **This is deliberately permissive.** `DuckDB`'s community-extension
 /// documentation specifies no version format — it says only that the descriptor
 /// carries "the version of the extension" and points at existing extensions as
-/// examples. Of 43 published extensions sampled, 11 use a date-based build id
-/// (`2025120401`) that is neither semver nor a git hash. Rejecting those would
-/// mean this validator tells most real extensions they are invalid.
+/// examples. In the `duckdb/community-extensions` repository at commit
+/// `5ae7df8`, 334 of the 346 `description.yml` files declare a version,
+/// and 42 of those are a date-based build id — 41 `YYYYMMDDNN` like
+/// `2025120401`, one `YYYYMMDD` — which is neither semver nor a git hash (one
+/// more is the four-part `0.1.5.5`). Rejecting those would tell one published
+/// extension in eight that its descriptor is invalid.
 ///
 /// So this checks only what would actually break: an empty version, one longer
 /// than 64 characters, or one containing anything outside
@@ -234,7 +257,7 @@ const MAX_VERSION_LEN: usize = 64;
 /// assert!(validate_extension_version("1.0.0").is_ok());
 /// assert!(validate_extension_version("0.1.0").is_ok());
 /// assert!(validate_extension_version("690bfc5").is_ok());
-/// // Used by 11 of 43 published community extensions.
+/// // A date-based build id, as 42 published community extensions use.
 /// assert!(validate_extension_version("2025120401").is_ok());
 ///
 /// assert!(validate_extension_version("").is_err());
@@ -443,6 +466,27 @@ mod tests {
         assert_eq!(stability, ExtensionStability::Unstable);
     }
 
+    /// `DuckDB`'s versioning page writes the tiers as `v0.y.z` / `vx.y.z` and
+    /// its examples as `v0.1.0` / `v1.0.0`; extension-ci-tools and the
+    /// community build stamp the git tag, which is conventionally `vX.Y.Z`.
+    #[test]
+    fn classify_accepts_a_leading_v() {
+        for (version, expected) in [
+            ("v0.1.0", ExtensionStability::PreRelease),
+            ("v1.0.0", ExtensionStability::Stable),
+            ("v13.11.0-rc.1", ExtensionStability::Stable),
+        ] {
+            let (stability, returned) = classify_extension_version(version).unwrap();
+            assert_eq!(stability, expected, "{version}");
+            assert_eq!(returned, version, "the input is returned unchanged");
+        }
+        for version in [
+            "v", "v1", "v1.0", "vv1.0.0", "V1.0.0", "v01.0.0", "v690bfc5",
+        ] {
+            assert!(classify_extension_version(version).is_err(), "{version}");
+        }
+    }
+
     #[test]
     fn classify_empty_rejected() {
         assert!(classify_extension_version("").is_err());
@@ -504,7 +548,9 @@ mod tests {
             "1.0.0",
             "0.1.0",
             "690bfc5",
-            "2025120401", // 11 of 43 sampled extensions
+            "2025120401", // date-based: 42 of 334 versioned corpus descriptors
+            "20260707",   // the one YYYYMMDD form in the corpus
+            "0.1.5.5",    // four-part, also published
             "0.1.0-alpha+build.1",
             "v2.6.1",
             &"a".repeat(64),
