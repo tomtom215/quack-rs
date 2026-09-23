@@ -149,7 +149,7 @@ fn invalid_version_rejected() {
     config.version = "2025120401".to_string();
     assert!(
         generate_scaffold(&config).is_ok(),
-        "a date-based build id is used by 11 of 43 published extensions"
+        "a date-based build id is used by 42 published extensions"
     );
 }
 
@@ -543,9 +543,9 @@ fn ci_workflow_builds_before_testing_and_uses_real_actions() {
 }
 
 /// The generated `description.yml` must not pin a branch: `DuckDB`'s
-/// documentation says `ref` is "the hash of the latest commit", and 41 of 43
-/// published extensions pin a full hash (the other two pin a tag; none uses a
-/// branch).
+/// documentation says `ref` is "the hash of the latest commit", and 327 of the
+/// 346 published extensions pin a full hash (the other 19 pin a tag; none uses
+/// a branch).
 #[test]
 fn generated_description_does_not_pin_a_branch() {
     let files = generate_scaffold(&valid_config()).expect("scaffold");
@@ -560,8 +560,8 @@ fn generated_description_does_not_pin_a_branch() {
     );
     assert!(yml.contains(&format!("ref: {}", crate::scaffold::REF_PLACEHOLDER)));
     assert!(yml.contains("Must be a commit hash"));
-    // Every published extension has a docs: section; it is what renders on the
-    // community-extensions documentation site.
+    // 332 of 346 published extensions have a docs: section; it is what renders
+    // on the community-extensions documentation site.
     assert!(yml.contains("docs:"), "{yml}");
     assert!(yml.contains("hello_world:"), "{yml}");
 

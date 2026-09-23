@@ -45,10 +45,13 @@
 //! assert!(files.iter().any(|f| f.path == "description.yml"));
 //! ```
 
+mod escape;
 mod templates;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_escaping;
 #[cfg(test)]
 mod tests_generated;
 
@@ -60,15 +63,23 @@ use crate::validate::{validate_extension_name, validate_spdx_license};
 pub struct ScaffoldConfig {
     /// Extension name (must pass [`validate_extension_name`]).
     pub name: String,
-    /// One-line description of the extension.
+    /// Short description of the extension.
+    ///
+    /// Free text: YAML punctuation such as `: ` or ` #`, quotes, backslashes
+    /// and non-ASCII text are quoted and escaped in `description.yml`, and each
+    /// line becomes a `//!` line in `src/lib.rs`. It must not be empty, start
+    /// or end with whitespace, or contain control characters other than
+    /// newline and tab (or Unicode bidirectional controls).
     pub description: String,
     /// Initial version (semver, e.g., `"0.1.0"`).
     pub version: String,
     /// SPDX license identifier (must pass [`validate_spdx_license`]).
     pub license: String,
-    /// Primary maintainer name.
+    /// Primary maintainer name: a single non-empty line, quoted and escaped in
+    /// `description.yml` like [`description`][Self::description].
     pub maintainer: String,
-    /// GitHub repository path (e.g., `"myorg/duckdb-my-ext"`).
+    /// GitHub repository path (e.g., `"myorg/duckdb-my-ext"`): `owner/repo`,
+    /// in the characters GitHub allows.
     pub github_repo: String,
     /// Platforms to exclude from CI builds (e.g., `["wasm_mvp", "wasm_eh"]`).
     pub excluded_platforms: Vec<String>,
@@ -107,9 +118,11 @@ pub struct ScaffoldConfig {
     /// documentation is explicit — "Provide the hash of the latest commit on
     /// the branch targeting stable as `ref`" — because the repository builds
     /// exactly this revision and signs the result, so a moving reference would
-    /// make the build unreproducible. Of 43 published extensions sampled, 41
-    /// pin a full 40-character hash and the remaining two pin a tag; none uses
-    /// a branch.
+    /// make the build unreproducible. Of the 346 `description.yml` files in
+    /// `duckdb/community-extensions` at commit `5ae7df8`, 327 pin a full
+    /// 40-character hash and 19 pin a tag (15 as `vX.Y.Z`, four as
+    /// `refs/tags/vX.Y.Z`); none uses a branch. Letters, digits, `-`, `_`, `.`
+    /// and `/` only.
     ///
     /// Defaults to [`REF_PLACEHOLDER`], which is deliberately not a valid
     /// revision so it cannot be submitted by accident.
@@ -204,6 +217,87 @@ fn validate_target_duckdb_version(config: &ScaffoldConfig) -> Result<(), Extensi
     Ok(())
 }
 
+/// Checks a free-text field (`description`, `maintainer`) before it is written
+/// into `description.yml` and, for the description, a `//!` doc comment.
+///
+/// Punctuation that means something to YAML (`: `, ` #`, quotes, backslashes)
+/// is fine — the templates quote and escape it. What is refused is what no
+/// escaping makes right: an empty value; leading or trailing whitespace, which
+/// `description.yml` readers trim; control characters (a bare carriage return
+/// is a hard error in a Rust doc comment); Unicode bidirectional controls,
+/// which rustc denies in comments (`text_direction_codepoint_in_comment`); and,
+/// in a single-line field, any line break.
+fn validate_free_text(field: &str, text: &str, multi_line: bool) -> Result<(), ExtensionError> {
+    if text.trim().is_empty() {
+        return Err(ExtensionError::new(format!("{field} must not be empty")));
+    }
+    if text.trim() != text {
+        return Err(ExtensionError::new(format!(
+            "{field} must not start or end with whitespace: {text:?}"
+        )));
+    }
+    let line_break = |c: char| matches!(c, '\n' | '\u{2028}' | '\u{2029}');
+    if let Some(bad) = text.chars().find(|&c| {
+        (c.is_control() && c != '\t' && !(multi_line && c == '\n'))
+            || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            || (!multi_line && line_break(c))
+    }) {
+        return Err(ExtensionError::new(format!(
+            "{field} contains the character {bad:?}, which cannot be written into the \
+             generated files{}",
+            if multi_line {
+                ""
+            } else {
+                "; it must be a single line"
+            }
+        )));
+    }
+    Ok(())
+}
+
+/// `owner/repo`, in the characters GitHub allows: the value is written into
+/// `description.yml` and into a URL in `extension_config.cmake`.
+fn validate_github_repo(repo: &str) -> Result<(), ExtensionError> {
+    let valid = repo.split_once('/').is_some_and(|(owner, name)| {
+        !owner.is_empty()
+            && !owner.starts_with('-')
+            && owner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !name.is_empty()
+            && name != "."
+            && name != ".."
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "github_repo must be 'owner/repo' (letters, digits, '-', and '_' / '.' in the \
+             repository name), got {repo:?}"
+        )))
+    }
+}
+
+/// A commit hash or tag — anything else is not a revision `repo.ref` can name.
+fn validate_git_ref(git_ref: &str) -> Result<(), ExtensionError> {
+    let valid = !git_ref.is_empty()
+        && !git_ref.starts_with('-')
+        && git_ref
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'));
+    if valid {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "git_ref must be a commit hash or tag (letters, digits, '-', '_', '.', '/'), \
+             got {git_ref:?}"
+        )))
+    }
+}
+
 /// The `libduckdb-sys` version requirement that compiles against exactly the
 /// `DuckDB` release `target` (`vX.Y.Z`), for a `C_STRUCT_UNSTABLE` build.
 ///
@@ -245,13 +339,17 @@ fn libduckdb_sys_requirement(target: &str) -> Result<String, ExtensionError> {
 /// # Errors
 ///
 /// Returns [`ExtensionError`] if the extension name, license, version,
-/// excluded platforms or target `DuckDB` version is invalid — including a
-/// hyphenated name, which `DuckDB` could never load (see
-/// [`validate_extension_name`]).
+/// description, maintainer, GitHub repository, git ref, excluded platforms or
+/// target `DuckDB` version is invalid — including a hyphenated name, which
+/// `DuckDB` could never load (see [`validate_extension_name`]).
 pub fn generate_scaffold(config: &ScaffoldConfig) -> Result<Vec<GeneratedFile>, ExtensionError> {
     validate_extension_name(&config.name)?;
     crate::validate::validate_extension_version(&config.version)?;
     validate_spdx_license(&config.license)?;
+    validate_free_text("description", &config.description, true)?;
+    validate_free_text("maintainer", &config.maintainer, false)?;
+    validate_github_repo(&config.github_repo)?;
+    validate_git_ref(&config.git_ref)?;
 
     let excluded: Vec<&str> = config
         .excluded_platforms

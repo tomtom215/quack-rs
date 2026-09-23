@@ -530,7 +530,12 @@ fn scaffold_generated_code_compiles() {
 
     let config = ScaffoldConfig {
         name: "test_ext".to_string(),
-        description: "Scaffold compile test".to_string(),
+        // Deliberately awkward: a multi-line description used to leave every
+        // line after the first outside the `//!` comment, where it failed to
+        // compile. Quotes, a backslash and non-ASCII text ride along.
+        description: "Scaffold compile test: \"quoted\", C:\\path \u{2014} caf\u{e9}\n\
+                      second line # not a comment"
+            .to_string(),
         version: "0.1.0".to_string(),
         license: "MIT".to_string(),
         maintainer: "CI".to_string(),

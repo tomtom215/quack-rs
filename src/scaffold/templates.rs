@@ -10,6 +10,7 @@
 //! [`generate_scaffold`][super::generate_scaffold] and are not part of
 //! the public API.
 
+use super::escape::{doc_comment_lines, yaml_quoted};
 use super::ScaffoldConfig;
 
 /// The `quack-rs` version requirement written into generated `Cargo.toml`
@@ -194,7 +195,7 @@ check_duckdb_pin:
 
 pub(super) fn generate_lib_rs(config: &ScaffoldConfig) -> String {
     format!(
-        r#"//! {description}
+        r#"{description}
 //!
 //! A DuckDB extension built with [quack-rs](https://github.com/tomtom215/quack-rs).
 
@@ -228,7 +229,7 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
 
 quack_rs::entry_point!({name}_init_c_api, register);
 "#,
-        description = config.description,
+        description = doc_comment_lines(&config.description),
         name = config.name,
     )
 }
@@ -247,8 +248,10 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
   requires_toolchains: rust;python3
 ",
         name = config.name,
-        description = config.description,
-        version = config.version,
+        // Quoted: `description` is free text, and a version such as
+        // `2025120401` or `1.0` would otherwise be read as a number.
+        description = yaml_quoted(&config.description),
+        version = yaml_quoted(&config.version),
         license = config.license,
     );
 
@@ -258,7 +261,7 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
     }
 
     let _ = writeln!(yml, "  maintainers:");
-    let _ = writeln!(yml, "    - {}", config.maintainer);
+    let _ = writeln!(yml, "    - {}", yaml_quoted(&config.maintainer));
 
     let _ = writeln!(yml);
     let _ = writeln!(yml, "repo:");
@@ -278,16 +281,20 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
         "  #                    # used while a new DuckDB release is being prepared."
     );
 
-    // Every one of the 43 published extensions sampled has a `docs:` section;
-    // it is what renders on the community-extensions documentation site.
+    // 332 of the 346 published descriptors (community-extensions `5ae7df8`)
+    // have a `docs:` section; it is what renders on the community-extensions
+    // documentation site.
     let _ = writeln!(yml);
     let _ = writeln!(yml, "docs:");
     let _ = writeln!(yml, "  hello_world: |");
     // Must call something `generate_lib_rs` registers: this is the example the
     // community-extensions site shows users to copy.
     let _ = writeln!(yml, "    SELECT {}_hello('world');", config.name);
-    let _ = writeln!(yml, "  extended_description: |");
-    let _ = writeln!(yml, "    {}", config.description);
+    let _ = writeln!(
+        yml,
+        "  extended_description: {}",
+        yaml_quoted(&config.description)
+    );
 
     yml
 }
