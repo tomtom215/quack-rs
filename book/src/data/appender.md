@@ -113,6 +113,36 @@ if let Err(err) = appender.flush() {
 # }
 ```
 
+## A row that fails half-way loses the batch
+
+DuckDB counts the values of the current row and cannot take one back. If a
+`row` closure fails *after* its first value went in, the half-written row can
+be neither finished nor dropped, and DuckDB's `close` then returns success
+while writing **nothing** — every row buffered since the last flush is gone.
+
+quack-rs does not let that pass silently. The appender becomes *poisoned*:
+every later `row`, append, `end_row`, `flush` and `close` returns an error
+saying how many buffered rows were not written. With `duckdb-1-5`, `clear()`
+discards them and makes the appender usable again; without it, create a new
+appender. `close()` with a row that was started but not ended is an error
+too (finish the row and close again).
+
+A value that fails as the *first* of its row loses nothing, and when you
+append by hand you can retry a rejected value in the same column. If losing a
+batch is not acceptable, `flush()` at the points you can afford to go back to.
+
+After a successful `close()` the appender refuses all further work.
+
+## Row order and schema changes
+
+- Row-at-a-time rows wait in their own buffer until 2,048 accumulate, while
+  `append_chunk` adds its rows to the table-bound buffer directly, so a chunk
+  lands **ahead of** rows appended before it that are still buffered. Flush
+  first if insertion order matters.
+- Buffered rows are written by column **position** at flush time. If another
+  connection drops a column and adds one in between, a value lands in the new
+  column with no error.
+
 ## API
 
 | Method | Description |
@@ -134,7 +164,7 @@ if let Err(err) = appender.flush() {
 | `flush()` / `close()` | Flush buffered rows / flush and close |
 | `error_message()` | Message from the last failed operation |
 | `append_default_to_chunk(&chunk, col, row)` ¹ | Write a column's `DEFAULT` into a chunk cell |
-| `clear()` ¹ | Discard buffered, unflushed rows |
+| `clear()` ¹ | Discard buffered, unflushed rows (and un-poison the appender) |
 | `error_data()` ¹ | Structured [`ErrorData`] from the last failed operation |
 
 > ¹ Requires the `duckdb-1-5` feature flag.

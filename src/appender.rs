@@ -48,6 +48,45 @@
 //! possible to obtain the specific error message". Call
 //! [`close`][Appender::close] explicitly whenever the outcome matters.
 //!
+//! ## A row that fails half-way
+//!
+//! `DuckDB` counts the values of the current row and has no way to take one
+//! back: `end_row` wants every column, `flush` wants none, and its `Close`
+//! flushes only in those two states — in any other it returns *success* and
+//! writes nothing. A [`row`][Appender::row] whose closure fails after its first
+//! value therefore leaves a half-written row that cannot be completed or
+//! dropped, and with it **every row buffered since the last flush is lost**
+//! (`DuckDB` also flushes on its own each time 204,800 rows accumulate; rows
+//! before that are safe).
+//!
+//! quack-rs tracks the row itself so that this is never silent:
+//!
+//! - the appender becomes *poisoned*: every later append, `row`, `end_row`,
+//!   `flush` and `close` returns an error that says how many buffered rows
+//!   were not written;
+//! - `close` with a row started but not ended (by `row` or by hand) is an
+//!   error rather than a silent no-op;
+//! - with `duckdb-1-5`, `clear` discards the buffered rows and the half row
+//!   and makes the appender usable again. Without it, a poisoned appender
+//!   stays poisoned.
+//!
+//! A value that fails as the *first* of its row loses nothing (`DuckDB` has
+//! not counted it), and one that fails later in a row appended by hand can be
+//! retried — only an abandoned row poisons. If losing buffered rows is not
+//! acceptable, [`flush`][Appender::flush] at the points you can afford to
+//! lose work back to.
+//!
+//! After a successful [`close`][Appender::close] the appender refuses further
+//! work; `DuckDB` itself would accept appends and write them at the next
+//! flush.
+//!
+//! ## Schema changes while rows are buffered
+//!
+//! Buffered rows are written by column *position* when they are flushed. If
+//! another connection drops a column and adds one in between, a buffered
+//! value lands in the new column (cast to its type) with no error. Flush
+//! before a concurrent `ALTER TABLE` if that matters.
+//!
 //! # Feature flags
 //!
 //! The appender is available **without** any feature flag: `DuckDB` has kept
@@ -61,6 +100,7 @@
 //!
 //! That gate also picks the error type — see [`AppendError`].
 
+use std::cell::Cell;
 use std::ffi::CStr;
 
 use libduckdb_sys::{
@@ -128,7 +168,25 @@ fn opt_ptr(s: Option<&CStr>) -> *const std::os::raw::c_char {
 /// See the [module docs][crate::appender] for the two append styles and the
 /// buffering rules that decide when an error appears.
 pub struct Appender {
-    appender: duckdb_appender,
+    handle: duckdb_appender,
+    /// Values appended to the current row: a mirror of `DuckDB`'s
+    /// `BaseAppender::column`, which advances only on a successful append.
+    column: Cell<u64>,
+    /// Rows ended or appended as chunks since the last flush this wrapper
+    /// performed — what a poisoned appender loses.
+    buffered: Cell<u64>,
+    lifecycle: Cell<Lifecycle>,
+}
+
+/// Where an [`Appender`] is in its life, as far as quack-rs can tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lifecycle {
+    Open,
+    /// A `row` was abandoned after some of its values went in; see the module
+    /// docs.
+    Poisoned,
+    /// `close` succeeded.
+    Closed,
 }
 
 impl Appender {
@@ -159,7 +217,7 @@ impl Appender {
         // fail, precisely so the error is readable, so this must be constructed
         // either way — and it must be dropped on the error path, which is what
         // returning it inside `Err` via `last_error` arranges.
-        let appender = Self { appender: raw };
+        let appender = Self::wrap(raw);
         if state == DuckDBSuccess {
             Ok(appender)
         } else {
@@ -195,7 +253,7 @@ impl Appender {
                 &raw mut raw,
             )
         };
-        let appender = Self { appender: raw };
+        let appender = Self::wrap(raw);
         if state == DuckDBSuccess {
             Ok(appender)
         } else {
@@ -212,17 +270,17 @@ impl Appender {
     /// table's width.
     #[must_use]
     pub fn column_count(&self) -> u64 {
-        // SAFETY: self.appender is valid; DuckDB returns 0 for a null or
+        // SAFETY: self.handle is valid; DuckDB returns 0 for a null or
         // uninitialised appender.
-        unsafe { duckdb_appender_column_count(self.appender) }
+        unsafe { duckdb_appender_column_count(self.handle) }
     }
 
     /// Type of active column `index`, or `None` if the index is out of range.
     #[must_use]
     pub fn column_type(&self, index: u64) -> Option<LogicalType> {
-        // SAFETY: self.appender is valid; DuckDB bounds-checks `index` and
+        // SAFETY: self.handle is valid; DuckDB bounds-checks `index` and
         // returns null when it is out of range.
-        let raw = unsafe { duckdb_appender_column_type(self.appender, index as idx_t) };
+        let raw = unsafe { duckdb_appender_column_type(self.handle, index as idx_t) };
         if raw.is_null() {
             None
         } else {
@@ -241,10 +299,11 @@ impl Appender {
     /// Returns an [`AppendError`] if the column does not exist, or if the
     /// implicit flush fails.
     pub fn add_column(&self, name: &CStr) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid and `name` is a NUL-terminated string
+        self.usable()?;
+        // SAFETY: self.handle is valid and `name` is a NUL-terminated string
         // that outlives the call.
-        let state = unsafe { duckdb_appender_add_column(self.appender, name.as_ptr()) };
-        self.check(state)
+        let state = unsafe { duckdb_appender_add_column(self.handle, name.as_ptr()) };
+        self.flushed(state)
     }
 
     /// Resets the active column list so every table column is expected again.
@@ -255,9 +314,10 @@ impl Appender {
     ///
     /// Returns an [`AppendError`] if the implicit flush fails.
     pub fn clear_columns(&self) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        let state = unsafe { duckdb_appender_clear_columns(self.appender) };
-        self.check(state)
+        self.usable()?;
+        // SAFETY: self.handle is valid.
+        let state = unsafe { duckdb_appender_clear_columns(self.handle) };
+        self.flushed(state)
     }
 
     // ── Row-at-a-time appends ───────────────────────────────────────────
@@ -265,20 +325,36 @@ impl Appender {
     /// Appends one row, calling [`end_row`][Self::end_row] afterwards.
     ///
     /// The closure appends one value per active column. `end_row` runs only if
-    /// the closure succeeded, so a failed append does not leave a half-written
-    /// row behind.
+    /// the closure succeeded.
+    ///
+    /// If the closure (or `end_row`) fails after the row's first value went
+    /// in, `DuckDB` is left holding a half-written row it can neither finish
+    /// nor drop, and every row buffered since the last flush is lost. The
+    /// appender is then *poisoned*: see the [module docs][crate::appender].
     ///
     /// # Errors
     ///
     /// Returns whatever the closure returned, or the [`AppendError`] from
     /// `end_row` — most often "call to `EndRow` before all columns have been
-    /// appended to".
+    /// appended to". Also an error, before the closure runs, when the appender
+    /// is closed or poisoned, or when a row appended by hand is still open.
     pub fn row<F>(&self, append: F) -> Result<(), AppendError>
     where
         F: FnOnce(&Self) -> Result<(), AppendError>,
     {
-        append(self)?;
-        self.end_row()
+        self.usable()?;
+        if self.column.get() != 0 {
+            return Err(append_error(&format!(
+                "row: a row appended by hand is still open ({} value(s) without end_row); \
+                 finish it before starting another",
+                self.column.get()
+            )));
+        }
+        let result = append(self).and_then(|()| self.end_row());
+        if result.is_err() && self.column.get() != 0 {
+            self.lifecycle.set(Lifecycle::Poisoned);
+        }
+        result
     }
 
     /// Finishes the current row.
@@ -286,11 +362,16 @@ impl Appender {
     /// # Errors
     ///
     /// Returns an [`AppendError`] if fewer values were appended than the
-    /// appender has active columns.
+    /// appender has active columns (append the rest and call it again), or if
+    /// the appender is closed or poisoned.
     pub fn end_row(&self) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        let state = unsafe { duckdb_appender_end_row(self.appender) };
-        self.check(state)
+        self.usable()?;
+        // SAFETY: self.handle is valid.
+        let state = unsafe { duckdb_appender_end_row(self.handle) };
+        self.check(state)?;
+        self.column.set(0);
+        self.buffered.set(self.buffered.get().saturating_add(1));
+        Ok(())
     }
 
     /// Appends SQL `NULL` to the current row, whatever the column's type.
@@ -299,8 +380,8 @@ impl Appender {
     ///
     /// Returns an [`AppendError`] if the append fails.
     pub fn append_null(&self) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        self.check(unsafe { duckdb_append_null(self.appender) })
+        // SAFETY: self.handle is valid.
+        self.append_one(|| unsafe { duckdb_append_null(self.handle) })
     }
 
     /// Appends the column's `DEFAULT` value to the current row.
@@ -310,8 +391,8 @@ impl Appender {
     /// Returns an [`AppendError`] if the column has no default, or the append
     /// fails.
     pub fn append_default(&self) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        self.check(unsafe { duckdb_append_default(self.appender) })
+        // SAFETY: self.handle is valid.
+        self.append_one(|| unsafe { duckdb_append_default(self.handle) })
     }
 
     /// Appends a `VARCHAR`.
@@ -339,6 +420,7 @@ impl Appender {
     }
 
     fn append_bytes_as(&self, value: &[u8], varchar: bool) -> Result<(), AppendError> {
+        self.usable()?;
         if varchar {
             if value.len() > MAX_VARCHAR_LEN {
                 return Err(append_error(&format!(
@@ -346,26 +428,26 @@ impl Appender {
                     value.len()
                 )));
             }
-            // SAFETY: self.appender is valid; the pointer/length pair describes
+            // SAFETY: self.handle is valid; the pointer/length pair describes
             // `value`, which outlives the call.
             let state = unsafe {
                 duckdb_append_varchar_length(
-                    self.appender,
+                    self.handle,
                     value.as_ptr().cast::<std::os::raw::c_char>(),
                     value.len() as idx_t,
                 )
             };
-            return self.check(state);
+            return self.record_append(state);
         }
         // SAFETY: as above; DuckDB copies the bytes into a BLOB value.
         let state = unsafe {
             duckdb_append_blob(
-                self.appender,
+                self.handle,
                 value.as_ptr().cast::<std::os::raw::c_void>(),
                 value.len() as idx_t,
             )
         };
-        self.check(state)
+        self.record_append(state)
     }
 
     /// Appends a `DATE` as days since 1970-01-01.
@@ -374,8 +456,8 @@ impl Appender {
     ///
     /// Returns an [`AppendError`] if the append fails.
     pub fn append_date(&self, days: i32) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        self.check(unsafe { duckdb_append_date(self.appender, duckdb_date { days }) })
+        // SAFETY: self.handle is valid.
+        self.append_one(|| unsafe { duckdb_append_date(self.handle, duckdb_date { days }) })
     }
 
     /// Appends a `TIME` as microseconds since midnight.
@@ -384,8 +466,8 @@ impl Appender {
     ///
     /// Returns an [`AppendError`] if the append fails.
     pub fn append_time(&self, micros: i64) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        self.check(unsafe { duckdb_append_time(self.appender, duckdb_time { micros }) })
+        // SAFETY: self.handle is valid.
+        self.append_one(|| unsafe { duckdb_append_time(self.handle, duckdb_time { micros }) })
     }
 
     /// Appends a `TIMESTAMP` as microseconds since the epoch.
@@ -394,8 +476,10 @@ impl Appender {
     ///
     /// Returns an [`AppendError`] if the append fails.
     pub fn append_timestamp(&self, micros: i64) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        self.check(unsafe { duckdb_append_timestamp(self.appender, duckdb_timestamp { micros }) })
+        // SAFETY: self.handle is valid.
+        self.append_one(|| unsafe {
+            duckdb_append_timestamp(self.handle, duckdb_timestamp { micros })
+        })
     }
 
     /// Appends an `INTERVAL`.
@@ -409,8 +493,8 @@ impl Appender {
             days: value.days,
             micros: value.micros,
         };
-        // SAFETY: self.appender is valid.
-        self.check(unsafe { duckdb_append_interval(self.appender, raw) })
+        // SAFETY: self.handle is valid.
+        self.append_one(|| unsafe { duckdb_append_interval(self.handle, raw) })
     }
 
     /// Appends an arbitrary [`Value`], letting `DuckDB` cast it to the column's
@@ -424,12 +508,13 @@ impl Appender {
     /// Returns an [`AppendError`] if `value` holds a null handle — which
     /// `duckdb_append_value` would dereference — or if the append fails.
     pub fn append_value(&self, value: &Value) -> Result<(), AppendError> {
+        self.usable()?;
         if value.as_raw().is_null() {
             // duckdb_append_value dereferences its argument with no null check.
             return Err(append_error("cannot append a null duckdb_value handle"));
         }
-        // SAFETY: self.appender is valid and value.as_raw() is non-null.
-        self.check(unsafe { duckdb_append_value(self.appender, value.as_raw()) })
+        // SAFETY: self.handle is valid and value.as_raw() is non-null.
+        self.record_append(unsafe { duckdb_append_value(self.handle, value.as_raw()) })
     }
 
     // ── Chunk appends ───────────────────────────────────────────────────
@@ -439,13 +524,35 @@ impl Appender {
     /// The chunk's column types must match the appender's active columns; see
     /// [`column_type`][Self::column_type] to discover them.
     ///
+    /// **Order:** `DuckDB` keeps row-at-a-time rows in a separate buffer until
+    /// 2,048 of them accumulate, and adds a chunk to the table-bound buffer
+    /// directly, so a chunk lands *ahead of* rows appended before it that are
+    /// still buffered. [`flush`][Self::flush] first if insertion order
+    /// matters.
+    ///
     /// # Errors
     ///
-    /// Returns an [`AppendError`] if the append fails.
+    /// Returns an [`AppendError`] if the append fails, if the appender is
+    /// closed or poisoned, or — without calling `DuckDB` — in the middle of a
+    /// row appended by hand: when the chunk tips `DuckDB`'s buffer over its
+    /// automatic-flush threshold, that flush fails on the open row *after* the
+    /// chunk has been buffered, so an error would be reported for rows that
+    /// were in fact kept.
     pub fn append_chunk(&self, chunk: &DataChunk) -> Result<(), AppendError> {
-        // SAFETY: self.appender and chunk.as_raw() are valid.
-        let state = unsafe { duckdb_append_data_chunk(self.appender, chunk.as_raw()) };
-        self.check(state)
+        self.usable()?;
+        if self.column.get() != 0 {
+            return Err(append_error(&format!(
+                "append_chunk: a row is in progress ({} value(s) without end_row); finish it \
+                 first",
+                self.column.get()
+            )));
+        }
+        // SAFETY: self.handle and chunk.as_raw() are valid.
+        let state = unsafe { duckdb_append_data_chunk(self.handle, chunk.as_raw()) };
+        self.check(state)?;
+        let rows = u64::try_from(chunk.size()).unwrap_or(u64::MAX);
+        self.buffered.set(self.buffered.get().saturating_add(rows));
+        Ok(())
     }
 
     /// Writes the table column `col`'s `DEFAULT` value into row `row` of
@@ -464,9 +571,9 @@ impl Appender {
         col: u64,
         row: u64,
     ) -> Result<(), AppendError> {
-        // SAFETY: self.appender and chunk.as_raw() are valid.
+        // SAFETY: self.handle and chunk.as_raw() are valid.
         let state =
-            unsafe { duckdb_append_default_to_chunk(self.appender, chunk.as_raw(), col, row) };
+            unsafe { duckdb_append_default_to_chunk(self.handle, chunk.as_raw(), col, row) };
         self.check(state)
     }
 
@@ -478,37 +585,66 @@ impl Appender {
     ///
     /// Returns an [`AppendError`] if the flush fails — a constraint violation,
     /// typically. On failure every buffered row is invalidated; with
-    /// `duckdb-1-5` they can be discarded with `clear`.
+    /// `duckdb-1-5` they can be discarded with `clear`. Also an error when the
+    /// appender is closed or poisoned, or a row is in progress.
     pub fn flush(&self) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        let state = unsafe { duckdb_appender_flush(self.appender) };
-        self.check(state)
+        self.usable()?;
+        // SAFETY: self.handle is valid.
+        let state = unsafe { duckdb_appender_flush(self.handle) };
+        self.flushed(state)
     }
 
-    /// Flushes and closes the appender. No further rows may be appended.
+    /// Flushes and closes the appender. Every later append, `row`, `end_row`,
+    /// `flush` and `append_chunk` returns an error; closing again is a no-op.
     ///
     /// # Errors
     ///
-    /// Returns an [`AppendError`] if the final flush fails.
+    /// Returns an [`AppendError`] if the final flush fails (the appender then
+    /// stays open, so the buffered rows can be discarded with `clear` under
+    /// `duckdb-1-5`), and — instead of `DuckDB`'s silent success — when a row
+    /// is unfinished or the appender is poisoned: `DuckDB`'s `Close` writes
+    /// nothing in that state, so the error says how many buffered rows were
+    /// not written. An unfinished row appended by hand can still be completed
+    /// and the appender closed again.
     pub fn close(&self) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        let state = unsafe { duckdb_appender_close(self.appender) };
-        self.check(state)
+        match self.lifecycle.get() {
+            Lifecycle::Closed => return Ok(()),
+            Lifecycle::Poisoned => return Err(self.lost_rows_error("close")),
+            Lifecycle::Open if self.column.get() != 0 => {
+                return Err(self.lost_rows_error("close"));
+            }
+            Lifecycle::Open => {}
+        }
+        // SAFETY: self.handle is valid.
+        let state = unsafe { duckdb_appender_close(self.handle) };
+        self.flushed(state)?;
+        self.lifecycle.set(Lifecycle::Closed);
+        Ok(())
     }
 
-    /// Discards all buffered, unflushed rows.
+    /// Discards all buffered, unflushed rows, and any half-written row.
     ///
     /// Useful for recovering after a [`flush`][Self::flush] error without
-    /// re-appending the rows that were already committed.
+    /// re-appending the rows that were already committed, and the only way
+    /// to make a poisoned appender (see the [module docs][crate::appender])
+    /// usable again. It does not reopen a closed one.
     ///
     /// # Errors
     ///
     /// Returns an [`AppendError`] if the appender state is invalid.
     #[cfg(feature = "duckdb-1-5")]
     pub fn clear(&self) -> Result<(), AppendError> {
-        // SAFETY: self.appender is valid.
-        let state = unsafe { duckdb_appender_clear(self.appender) };
-        self.check(state)
+        // SAFETY: self.handle is valid.
+        let state = unsafe { duckdb_appender_clear(self.handle) };
+        self.check(state)?;
+        // `BaseAppender::Clear` resets the chunk, the buffered collection and
+        // the column counter.
+        self.column.set(0);
+        self.buffered.set(0);
+        if self.lifecycle.get() == Lifecycle::Poisoned {
+            self.lifecycle.set(Lifecycle::Open);
+        }
+        Ok(())
     }
 
     // ── Errors ──────────────────────────────────────────────────────────
@@ -517,9 +653,9 @@ impl Appender {
     #[cfg(feature = "duckdb-1-5")]
     #[must_use]
     pub fn error_data(&self) -> ErrorData {
-        // SAFETY: self.appender may be null (a failed create); DuckDB handles
+        // SAFETY: self.handle may be null (a failed create); DuckDB handles
         // that and returns an owned, empty error data handle.
-        let raw = unsafe { libduckdb_sys::duckdb_appender_error_data(self.appender) };
+        let raw = unsafe { libduckdb_sys::duckdb_appender_error_data(self.handle) };
         // SAFETY: raw is an owned duckdb_error_data (possibly null).
         unsafe { ErrorData::from_raw(raw) }
     }
@@ -530,13 +666,13 @@ impl Appender {
     /// `error_data` (`duckdb-1-5`), which also carries the error category.
     #[must_use]
     pub fn error_message(&self) -> Option<String> {
-        if self.appender.is_null() {
+        if self.handle.is_null() {
             return None;
         }
-        // SAFETY: self.appender is non-null; DuckDB returns null when there is
+        // SAFETY: self.handle is non-null; DuckDB returns null when there is
         // no error, and otherwise a string it owns until the appender is
         // destroyed — so it is copied out here rather than borrowed.
-        let ptr = unsafe { duckdb_appender_error(self.appender) };
+        let ptr = unsafe { duckdb_appender_error(self.handle) };
         if ptr.is_null() {
             return None;
         }
@@ -552,7 +688,7 @@ impl Appender {
     #[inline]
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_appender {
-        self.appender
+        self.handle
     }
 
     /// Reads whichever error channel this build has.
@@ -578,6 +714,76 @@ impl Appender {
         } else {
             Err(self.last_error())
         }
+    }
+
+    // ── Row and lifecycle tracking ──────────────────────────────────────
+
+    /// Wraps a handle from `duckdb_appender_create*` in a fresh, open state.
+    const fn wrap(handle: duckdb_appender) -> Self {
+        Self {
+            handle,
+            column: Cell::new(0),
+            buffered: Cell::new(0),
+            lifecycle: Cell::new(Lifecycle::Open),
+        }
+    }
+
+    /// `Ok` while the appender is open; the reason otherwise.
+    fn usable(&self) -> Result<(), AppendError> {
+        match self.lifecycle.get() {
+            Lifecycle::Open => Ok(()),
+            Lifecycle::Closed => Err(append_error(
+                "the appender is closed; create a new one to append more rows",
+            )),
+            Lifecycle::Poisoned => Err(self.lost_rows_error("append")),
+        }
+    }
+
+    /// Runs one value append if the appender is open, and counts it.
+    fn append_one(&self, append: impl FnOnce() -> duckdb_state) -> Result<(), AppendError> {
+        self.usable()?;
+        self.record_append(append())
+    }
+
+    /// Counts a value append that `DuckDB` accepted. A rejected value leaves
+    /// `DuckDB`'s column counter where it was (every append path throws before
+    /// advancing it), so the same column can be tried again.
+    fn record_append(&self, state: duckdb_state) -> Result<(), AppendError> {
+        self.check(state)?;
+        self.column.set(self.column.get().saturating_add(1));
+        Ok(())
+    }
+
+    /// Records the outcome of an operation that flushes on success.
+    fn flushed(&self, state: duckdb_state) -> Result<(), AppendError> {
+        self.check(state)?;
+        self.buffered.set(0);
+        Ok(())
+    }
+
+    /// The error for rows `DuckDB` will not write: a poisoned appender, or
+    /// `close` with an unfinished row.
+    fn lost_rows_error(&self, operation: &str) -> AppendError {
+        let rows = self.buffered.get();
+        let values = self.column.get();
+        if self.lifecycle.get() != Lifecycle::Poisoned {
+            return append_error(&format!(
+                "{operation}: the current row is unfinished ({values} value(s) without \
+                 end_row), and DuckDB writes nothing while it is: up to {rows} row(s) buffered \
+                 since the last flush are lost if the appender is dropped now; end the row and \
+                 close again"
+            ));
+        }
+        let recovery = if cfg!(feature = "duckdb-1-5") {
+            "; `clear` discards them and makes the appender usable again"
+        } else {
+            ""
+        };
+        append_error(&format!(
+            "{operation}: the appender is poisoned: up to {rows} row(s) buffered since the last \
+             flush were not written, because a row failed after {values} of its values were \
+             appended and DuckDB can neither finish nor drop a half-written row{recovery}"
+        ))
     }
 }
 
@@ -607,8 +813,8 @@ macro_rules! append_scalar {
                 ///
                 /// Returns an [`AppendError`] if the append fails.
                 pub fn $name(&self, value: $ty) -> Result<(), AppendError> {
-                    // SAFETY: self.appender is valid.
-                    self.check(unsafe { libduckdb_sys::$c_fn(self.appender, value) })
+                    // SAFETY: self.handle is valid.
+                    self.append_one(|| unsafe { libduckdb_sys::$c_fn(self.handle, value) })
                 }
             )*
         }
@@ -653,8 +859,8 @@ impl Appender {
             #[allow(clippy::cast_possible_truncation)]
             upper: (value >> 64) as i64,
         };
-        // SAFETY: self.appender is valid.
-        self.check(unsafe { duckdb_append_hugeint(self.appender, raw) })
+        // SAFETY: self.handle is valid.
+        self.append_one(|| unsafe { duckdb_append_hugeint(self.handle, raw) })
     }
 
     /// Appends a `UHUGEINT`.
@@ -669,21 +875,21 @@ impl Appender {
             #[allow(clippy::cast_possible_truncation)]
             upper: (value >> 64) as u64,
         };
-        // SAFETY: self.appender is valid.
-        self.check(unsafe { duckdb_append_uhugeint(self.appender, raw) })
+        // SAFETY: self.handle is valid.
+        self.append_one(|| unsafe { duckdb_append_uhugeint(self.handle, raw) })
     }
 }
 
 impl Drop for Appender {
     fn drop(&mut self) {
-        if !self.appender.is_null() {
-            // SAFETY: self.appender is a valid handle that we own. Destroy
+        if !self.handle.is_null() {
+            // SAFETY: self.handle is a valid handle that we own. Destroy
             // closes (and so flushes) it first; the state is intentionally
             // ignored here — `close` beforehand is how a final flush error is
             // observed, because destruction also frees the error message.
-            unsafe { duckdb_appender_destroy(&raw mut self.appender) };
+            unsafe { duckdb_appender_destroy(&raw mut self.handle) };
         }
     }
 }
 
-crate::debug_repr::impl_handle_debug!(Appender.appender);
+crate::debug_repr::impl_handle_debug!(Appender.handle);

@@ -5651,3 +5651,6 @@ mod tooling;
 
 #[path = "ffi_roundtrip/value_temporal.rs"]
 mod value_temporal;
+
+#[path = "ffi_roundtrip/appender_rows.rs"]
+mod appender_rows;
