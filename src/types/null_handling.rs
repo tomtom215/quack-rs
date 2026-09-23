@@ -37,9 +37,32 @@
 /// function means to see NULLs and will not necessarily return NULL for them,
 /// which is what a `coalesce`-like or `is_null`-like function needs.
 ///
-/// **Aggregates are different.** `DuckDB`'s aggregate executor really does
-/// filter NULL rows out before `update` under `DefaultNullHandling`; the
-/// caveat above is specific to scalar functions.
+/// # Aggregates see NULL rows too
+///
+/// The same is true of aggregates: under **either** setting, `update` receives
+/// every row of the chunk, NULL rows included. `CAPIAggregateUpdate`
+/// (`src/main/capi/aggregate_function-c.cpp`) flattens each input vector and
+/// hands the whole chunk to the callback without looking at validity, and the
+/// aggregate executor applies no NULL filter of its own. An aggregate that must
+/// ignore NULLs checks
+/// [`VectorReader::is_valid`][crate::vector::VectorReader::is_valid] per row
+/// and skips the invalid ones; reading an invalid row's value reads whatever
+/// happens to be in the data buffer.
+///
+/// For an aggregate the setting is read in exactly one place:
+/// `BoundAggregateExpression::PropagatesNullValues`, which the correlated
+/// subquery decorrelator (`flatten_dependent_join.cpp`) consults to choose an
+/// `INNER` or `LEFT` join. No query tried against `DuckDB` 1.5.5 — correlated
+/// scalar subqueries with and without arithmetic or `coalesce` over the
+/// aggregate, `LATERAL`, and a correlated subquery in `WHERE` — gave a
+/// different answer under the two settings.
+///
+/// What *does* differ from an uncorrelated query, under both settings, is an
+/// outer row with no matching inner rows: the correlated subquery yields NULL
+/// without ever finalizing an empty state. `DuckDB` special-cases only its own
+/// `count` and `count(*)` to return 0 there, so a count-like aggregate that
+/// returns 0 for empty input returns NULL for such a row. Wrap the subquery in
+/// `coalesce(..., 0)` if that matters.
 ///
 /// # Example
 ///
@@ -66,15 +89,16 @@ pub enum NullHandling {
     /// **scalar** function it is a promise the callback must keep itself — see
     /// the type-level documentation, and
     /// [`DataChunk::propagate_nulls`][crate::data_chunk::DataChunk::propagate_nulls].
-    /// For an **aggregate**, `DuckDB` enforces it by filtering NULL rows before
-    /// `update`.
+    /// An **aggregate**'s `update` also receives NULL rows under this setting
+    /// and must skip them itself — see the type-level documentation.
     #[default]
     DefaultNullHandling,
     /// The function means to see NULLs and may return non-NULL for them.
     ///
     /// Registers `FunctionNullHandling::SPECIAL_HANDLING`, which suppresses
-    /// `DuckDB`'s debug-build assertion that NULL in implies NULL out, and stops
-    /// the aggregate executor from filtering NULL rows. The callback must check
+    /// `DuckDB`'s debug-build assertion that NULL in implies NULL out. It does
+    /// not change which rows a callback receives: scalar and aggregate
+    /// callbacks see NULL rows under either setting. The callback must check
     /// [`VectorReader::is_valid`][crate::vector::VectorReader::is_valid] itself.
     SpecialNullHandling,
 }

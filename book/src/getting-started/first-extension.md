@@ -324,10 +324,11 @@ Test aggregate state with `AggregateTestHarness`:
 ```rust
 #[test]
 fn word_count_null_rows_are_skipped() {
-    // NULL rows: the callback skips them (no update call)
+    // DuckDB passes NULL rows to `update`; the callback's `is_valid` check
+    // skips them, so they never reach the state.
     let mut h = AggregateTestHarness::<WordCountState>::new();
     h.update(|s| s.count += count_words("hello"));
-    // NULL row omitted — models callback skip
+    // NULL row omitted — models the callback's `is_valid` skip
     h.update(|s| s.count += count_words("world"));
     assert_eq!(h.finalize().count, 2);
 }

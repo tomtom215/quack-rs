@@ -129,7 +129,7 @@ use quack_rs::types::NullHandling;
 
 // Default: the function promises NULL in -> NULL out.
 // Scalar: you must keep that promise (see above).
-// Aggregate: DuckDB enforces it by filtering NULL rows before `update`.
+// Aggregate: `update` still receives NULL rows; skip them yourself.
 NullHandling::DefaultNullHandling
 
 // The function means to see NULLs and may return non-NULL for them.
@@ -140,9 +140,28 @@ NullHandling::SpecialNullHandling
 
 ## Aggregate functions
 
-Aggregates are the case where the default behaves as its name suggests: DuckDB's
-aggregate executor filters NULL rows out before calling `update`. Opt out when
-the aggregate needs to count or observe them:
+Aggregates behave like scalar functions here: under **either** setting,
+`update` receives every row of the chunk, NULL rows included. `CAPIAggregateUpdate`
+in DuckDB's `aggregate_function-c.cpp` flattens the inputs and passes the whole
+chunk through; nothing on the way filters by validity. An aggregate that ignores
+NULLs skips them itself:
+
+```rust,ignore
+for row in 0..chunk.size() {
+    if !unsafe { reader.is_valid(row) } {
+        continue; // a NULL row: its data slot holds no meaningful value
+    }
+    // ... accumulate reader.read_i64(row) into *states.add(row) ...
+}
+```
+
+`SpecialNullHandling` declares that the aggregate may return non-NULL for NULL
+input (a `count_with_nulls`, say). For an aggregate DuckDB reads the setting in
+one place only — the correlated-subquery decorrelator, to pick an `INNER` or
+`LEFT` join — and no query we tried (correlated scalar subqueries, with and
+without arithmetic or `coalesce` around the aggregate, `LATERAL`, a correlated
+subquery in `WHERE`) answered differently under the two settings on DuckDB 1.5.5.
+Set it anyway when it is true; it is what DuckDB expects.
 
 ```rust
 use quack_rs::aggregate::AggregateFunctionBuilder;
@@ -154,11 +173,23 @@ AggregateFunctionBuilder::new("count_with_nulls")
     .null_handling(NullHandling::SpecialNullHandling)
     .state_size(my_state_size)
     .init(my_init)
-    .update(my_update)   // now called for NULL rows too
+    .update(my_update)   // counts rows whose value is NULL, too
     .combine(my_combine)
     .finalize(my_finalize)
     .register(con)?;
 ```
+
+### Empty groups in a correlated subquery
+
+One difference from an uncorrelated query holds under both settings. In
+`SELECT (SELECT my_count(x) FROM t2 WHERE t2.k = t1.k) FROM t1`, an outer row
+with no matching `t2` rows gets NULL: the decorrelated plan joins the aggregate's
+groups back to the outer rows, and an outer row with no group never has an empty
+state finalized. DuckDB rewrites that NULL to 0 for its own `count` and
+`count(*)` only. A count-like aggregate of yours that returns 0 for empty input
+therefore returns NULL here; write `coalesce((SELECT ...), 0)` if the query needs
+0. (`SELECT my_count(x) FROM t2 WHERE false`, uncorrelated, does finalize an
+empty state and returns 0.)
 
 ---
 
@@ -168,7 +199,7 @@ AggregateFunctionBuilder::new("count_with_nulls")
 |----------|---------------|----------------|
 | Scalar function, NULL in → NULL out | `DefaultNullHandling` | **you** (`propagate_nulls`, or `map1`/`map2`) |
 | Scalar function that inspects NULLs (`COALESCE`-like, `IS_NULL`-like) | `SpecialNullHandling` | you |
-| Aggregate, ignore NULL rows | `DefaultNullHandling` (the default) | DuckDB |
+| Aggregate, ignore NULL rows | `DefaultNullHandling` (the default) | **you** (skip rows where `is_valid` is false) |
 | Aggregate that counts NULLs | `SpecialNullHandling` | you |
 
 If you don't call `.null_handling()`, `DefaultNullHandling` is used.

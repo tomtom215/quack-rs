@@ -91,6 +91,11 @@ pub type StateInitFn =
 /// Accumulates data from a chunk into the aggregate states.
 ///
 /// `states` is a pointer to an array of state pointers — one per group.
+///
+/// The chunk holds **every** input row, NULL rows included, whatever
+/// [`NullHandling`][crate::types::NullHandling] the aggregate was registered
+/// with: check [`VectorReader::is_valid`][crate::vector::VectorReader::is_valid]
+/// before reading a value.
 pub type UpdateFn = unsafe extern "C" fn(
     info: duckdb_function_info,
     input: duckdb_data_chunk,

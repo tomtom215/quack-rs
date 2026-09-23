@@ -5671,3 +5671,6 @@ mod arrow_import;
 
 #[path = "ffi_roundtrip/query_docs.rs"]
 mod query_docs;
+
+#[path = "ffi_roundtrip/lifecycle.rs"]
+mod lifecycle;
