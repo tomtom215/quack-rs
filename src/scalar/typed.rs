@@ -499,6 +499,34 @@ mod tests {
         assert_eq!(<Vec<u8> as ScalarOut>::type_id(), TypeId::Blob);
     }
 
+    /// Building a typed function touches no `DuckDB` API: the only `DuckDB`
+    /// work is in `register`. Before the third audit `from_exec` built a
+    /// `LogicalType` per slot to check it, so every constructor panicked in a
+    /// unit test (no dispatch table) and built handles nobody needed.
+    #[test]
+    fn every_typed_constructor_builds_without_a_live_duckdb() {
+        let built = [
+            ScalarFunctionBuilder::map1("m1", |x: i64| x * 2),
+            ScalarFunctionBuilder::map2("m2", |a: i32, b: f64| f64::from(a) + b),
+            ScalarFunctionBuilder::map1_opt("m1o", |x: Option<u8>| x.map(u16::from)),
+            ScalarFunctionBuilder::map2_opt("m2o", |a: Option<i128>, b: Option<bool>| {
+                a.filter(|_| b.unwrap_or(false))
+            }),
+            ScalarFunctionBuilder::map1_str("m1s", |s: &str| s.to_uppercase()),
+            ScalarFunctionBuilder::map2_str("m2s", |a: &str, b: &str| [a, b].concat().into_bytes()),
+        ];
+        let names: Vec<_> = built
+            .into_iter()
+            .map(|b| {
+                b.expect("builds with no DuckDB")
+                    .volatile()
+                    .name()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(names, ["m1", "m2", "m1o", "m2o", "m1s", "m2s"]);
+    }
+
     #[test]
     fn an_invalid_name_is_rejected_before_anything_is_allocated() {
         let err = ScalarFunctionBuilder::map1("has spaces", |x: i64| x)

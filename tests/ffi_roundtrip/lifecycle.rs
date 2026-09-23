@@ -249,3 +249,46 @@ fn a_count_like_aggregate_in_a_correlated_subquery_is_null_for_an_unmatched_row(
         vec![Some(1), Some(0), Some(0)]
     );
 }
+
+// ─── Typed scalar construction ──────────────────────────────────────────────
+
+/// A deliberately wrong out-of-crate `ScalarValue` naming a composite type.
+#[derive(Clone, Copy)]
+struct NotReallyDecimal(i64);
+
+// SAFETY: never read — registration must reject the signature before any
+// chunk reaches the closure. That rejection is what the test checks.
+unsafe impl quack_rs::scalar::ScalarValue for NotReallyDecimal {
+    fn type_id() -> TypeId {
+        TypeId::Decimal
+    }
+    unsafe fn read(reader: &quack_rs::vector::VectorReader, row: usize) -> Self {
+        // SAFETY: forwarded; unreachable in this test.
+        Self(unsafe { reader.read_i64(row) })
+    }
+}
+
+/// `map1` no longer validates slot types at build time (that needed a live
+/// `DuckDB` for no benefit); `register` still rejects a composite `TypeId`
+/// before allocating a `DuckDB` handle, naming the slot.
+#[test]
+fn a_composite_scalar_value_is_rejected_at_registration_naming_the_slot() {
+    use quack_rs::scalar::ScalarFunctionBuilder;
+
+    let fx = Fixture::open();
+    let builder = ScalarFunctionBuilder::map1("not_really_decimal", |d: NotReallyDecimal| d.0)
+        .expect("building makes no DuckDB call and cannot see the type");
+    // SAFETY: `con` is open.
+    let err = unsafe { builder.register(fx.con()) }.expect_err("DECIMAL needs width and scale");
+    let msg = err.as_str();
+    assert!(msg.contains("scalar function parameter 0"), "{msg}");
+    assert!(msg.contains("DECIMAL"), "{msg}");
+    // Nothing was registered.
+    assert_eq!(
+        i64_at(
+            &fx,
+            "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'not_really_decimal'"
+        ),
+        Some(0)
+    );
+}
