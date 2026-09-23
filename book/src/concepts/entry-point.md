@@ -13,7 +13,7 @@ The `entry_point_v2!` macro gives your closure a `&Connection` instead of a raw
 `duckdb_connection`. The `Connection` type implements the `Registrar` trait, which
 provides ergonomic methods for registering every function type:
 
-```rust
+```rust,ignore
 use quack_rs::entry_point_v2;
 use quack_rs::connection::{Connection, Registrar};
 use quack_rs::error::ExtensionError;
@@ -36,22 +36,26 @@ unsafe fn register(con: &Connection) -> Result<(), ExtensionError> {
 entry_point_v2!(my_extension_init_c_api, |con| unsafe { register(con) });
 ```
 
-This emits:
+(The `register_*` arguments above are placeholders, so that block is not
+compilable as written.) The macro emits:
 
-```rust
+```rust,ignore
 #[no_mangle]
 pub unsafe extern "C" fn my_extension_init_c_api(
     info: duckdb_extension_info,
     access: *const duckdb_extension_access,
 ) -> bool {
     unsafe {
-        quack_rs::entry_point::init_extension_v2(
+        quack_rs::entry_point::init_extension_v2_with_policy(
             info, access, quack_rs::DUCKDB_API_VERSION,
+            quack_rs::abi::AbiPolicy::Strict,
             |con| unsafe { register(con) },
         )
     }
 }
 ```
+
+`entry_point_v2!(name, policy, |con| ...)` passes a different `AbiPolicy`.
 
 Pass the **full symbol name** to the macro. The symbol `{name}_init_c_api` must match the
 `name` field in `description.yml` and the `[lib] name` in `Cargo.toml`.

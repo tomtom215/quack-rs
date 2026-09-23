@@ -101,7 +101,7 @@ access bind data, etc.
 | **Copy function finalize** | `CopyFinalizeInfo` | `duckdb-1-5` |
 
 All callback accessor functions are now wrapped, including `get_client_context`
-on all callback types (returns a [`ClientContext`][crate::client_context::ClientContext]).
+on all callback types (returns a `ClientContext`; see the `client_context` module).
 
 ## Complex type creation (resolved)
 

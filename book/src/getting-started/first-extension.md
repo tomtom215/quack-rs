@@ -1,7 +1,8 @@
 # Your First Extension
 
-This page walks through `hello-ext`, the complete reference example bundled with quack-rs.
-It registers **four functions** that together cover every major pattern:
+This page walks through `hello-ext`, the reference example bundled with quack-rs,
+focusing on four of the functions it registers — one of each major kind (the
+full list is in its [README](https://github.com/tomtom215/quack-rs/tree/main/examples/hello-ext)):
 
 | SQL | Kind | Signature |
 |-----|------|-----------|

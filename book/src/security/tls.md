@@ -5,7 +5,7 @@ calling REST APIs) need a way to inject TLS configuration — client certificate
 for mTLS, custom CA bundles, or restricted cipher suites.
 
 The [`tls`](https://docs.rs/quack-rs/latest/quack_rs/tls/index.html) module
-provides the [`TlsConfigProvider`] trait so that extensions can supply their TLS
+provides the [`TlsConfigProvider`](https://docs.rs/quack-rs/latest/quack_rs/tls/trait.TlsConfigProvider.html) trait so that extensions can supply their TLS
 setup through a uniform interface, regardless of which TLS library they use
 (`rustls`, `native-tls`, etc.).
 
