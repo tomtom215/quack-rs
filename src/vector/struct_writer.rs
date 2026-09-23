@@ -27,10 +27,9 @@
 //! // }
 //! ```
 //!
-//! # Estimated impact
-//!
-//! Eliminates ~120 raw `duckdb_struct_vector_get_child` calls across typical
-//! extensions, reducing unsafe surface area by ~30%.
+//! It fetches every field's child vector once, up front, so a loop writing
+//! `n` rows of `k` fields makes `k` `duckdb_struct_vector_get_child` calls
+//! instead of one per write.
 
 use libduckdb_sys::duckdb_vector;
 

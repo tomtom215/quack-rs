@@ -188,6 +188,9 @@ pub const TIMESTAMP_NEGATIVE_INFINITY_MICROS: i64 = -i64::MAX;
 ///
 /// Check [`is_finite_date`] first: `DuckDB` reserves extreme values for
 /// `infinity` / `-infinity`, which have no calendar representation.
+/// `duckdb_from_date` does not check for them — it cannot fail — so a
+/// sentinel decomposes into a date that looks real: `infinity` becomes
+/// 5881580-07-11, one day past the largest date `DuckDB` accepts.
 ///
 /// # Safety
 ///
@@ -233,6 +236,11 @@ pub unsafe fn is_finite_date(days: i32) -> bool {
 // ─── TIME ────────────────────────────────────────────────────────────────────
 
 /// Decomposes a `TIME` (microseconds since midnight) into a wall-clock time.
+///
+/// Like `DuckDB`, this does not range-check: a value outside
+/// `0..=86_400_000_000` decomposes arithmetically into out-of-range fields
+/// (`86_400_000_001` gives hour 24; `-1` gives `micros == -1`) rather than an
+/// error. It cannot throw.
 ///
 /// # Safety
 ///

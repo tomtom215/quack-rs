@@ -171,6 +171,29 @@ mod live_tests {
         assert!(!unsafe { is_finite_date(DATE_INFINITY_DAYS) });
     }
 
+    /// `duckdb_from_date` / `duckdb_from_time` do no validation and never
+    /// throw, so a sentinel or out-of-range input decomposes into fields
+    /// rather than failing. The documented consequences are pinned here —
+    /// notably that `infinity` becomes a *plausible* date one day past
+    /// `DuckDB`'s largest, so a caller must check `is_finite_date` first.
+    #[test]
+    fn decomposing_sentinels_and_out_of_range_values_is_arithmetic_not_an_error() {
+        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
+        // SAFETY: InMemoryDb::open() initialised the dispatch table.
+        unsafe {
+            let inf = date_from_days(DATE_INFINITY_DAYS);
+            assert_eq!((inf.year, inf.month, inf.day), (5_881_580, 7, 11));
+            let _ = date_from_days(DATE_NEGATIVE_INFINITY_DAYS);
+            let _ = date_from_days(i32::MIN);
+
+            let past_midnight = time_from_micros(86_400_000_001);
+            assert_eq!((past_midnight.hour, past_midnight.micros), (24, 1));
+            assert_eq!(time_from_micros(-1).micros, -1);
+            assert!(time_from_micros(i64::MIN).hour < 0);
+            let _ = time_from_micros(i64::MAX);
+        }
+    }
+
     #[test]
     fn time_round_trips_including_microsecond_precision() {
         let _db = InMemoryDb::open().expect("open in-memory DuckDB");
