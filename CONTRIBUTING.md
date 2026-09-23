@@ -361,9 +361,11 @@ quack-rs/
 │   ├── replacement_scan/
 │   │   └── mod.rs                     # Builder for registering `DuckDB` replacement scans
 │   ├── scaffold/
+│   │   ├── escape.rs                  # Quoting configured free text for YAML and Rust doc comments
 │   │   ├── mod.rs                     # Project scaffolding for `DuckDB` Rust extensions
 │   │   ├── templates.rs               # Template generators for scaffold file content
 │   │   ├── tests.rs                   # Unit tests
+│   │   ├── tests_escaping.rs          # Free text reaches the generated files intact
 │   │   └── tests_generated.rs         # Unit tests
 │   ├── scalar/
 │   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks
@@ -412,6 +414,7 @@ quack-rs/
 │   │   ├── release_profile.rs         # Release profile validation for `DuckDB` loadable extensions
 │   │   ├── semver.rs                  # Semantic versioning validation for `DuckDB` community extensions
 │   │   ├── spdx.rs                    # SPDX license identifier validation for `DuckDB` community extensions
+│   │   ├── spdx_exceptions.rs         # The SPDX license-exception identifiers accepted after `WITH`
 │   │   └── description_yml/
 │   │       ├── mod.rs                 # Validation of `DuckDB` community extension `description.yml` files
 │   │       ├── model.rs               # A validated representation of a `DuckDB` community extension `description.yml`

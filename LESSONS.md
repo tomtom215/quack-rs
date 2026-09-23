@@ -656,7 +656,7 @@ it at compiled-in offsets. The struct has two regions:
 |--------|-------------|------------|
 | v1.2.0 – v1.2.2 | 408 | baseline |
 | v1.3.0 – v1.3.2 | 428 | appended |
-| v1.4.0 – v1.4.4 | 459 | `duckdb_create_varint` renamed to `duckdb_create_bignum`; appended |
+| v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` renamed to `duckdb_create_bignum`; appended |
 | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
 | v1.5.2 – v1.5.5 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
 

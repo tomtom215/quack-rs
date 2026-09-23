@@ -3,11 +3,13 @@
 #
 # Continuous integration — enforces all quality gates.
 #
-# Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
-#       clippy, clippy-beta, fmt, doc, msrv, dependency-floor, bench-compile, example-check,
-#       scaffold-compile, scaffold-e2e, symbol-check, extension-load,
-#       abi-table, abi-guard, abi-guard-layout, msrv-vs-duckdb-ci, publish-dry-run,
-#       security, osv-scan, nightly.
+# Jobs: check, test, test-bundled, test-bundled-prebuilt, test-duckdb-1-5,
+#       wasm, clippy, clippy-beta, fmt, doc, msrv, dependency-floor,
+#       bench-compile, example-check, scaffold-compile, symbol-check,
+#       abi-table, platform-table, spdx-list, autoload-entries, book,
+#       msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
+#       abi-guard-layout, publish-dry-run, security, osv-scan, nightly, miri,
+#       leak-check, asan, semver, fuzz.
 #
 # `dtolnay/rust-toolchain` is pinned, in every workflow, to d103106 -- a commit
 # on the action's `master` branch (2026-09-03). The action's per-toolchain
@@ -146,6 +148,16 @@ jobs:
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
         run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
+      # Every Rust block in book/src and README.md, compiled as a doctest
+      # against this checkout (and run, unless marked `no_run`). Before this,
+      # no CI job compiled the book's examples. (`mdbook test -L target/...`
+      # is not a substitute: it passes no `--extern`, so under edition 2021
+      # every `use quack_rs::...` is unresolved.)
+      - name: Book and README code blocks
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: cargo test --doc --manifest-path book/doctest/Cargo.toml
       # `tests/ffi_roundtrip.rs` is `#![cfg(feature = "_duckdb-testing")]`, so
       # the plain `clippy` job compiles it away to nothing and never lints the
       # largest test file in the repo. Lint it where it is actually built.
@@ -524,6 +536,49 @@ jobs:
           fi
           exit "${status:-0}"
 
+  autoload-entries:
+    name: Catalog autoload names (vs every supported DuckDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # `catalog` refuses Type/Collation lookups of names that make DuckDB
+      # autoload an extension, because a failed autoload inside
+      # duckdb_catalog_get_entry aborts the process. The names are copied
+      # from DuckDB's extension_entries.hpp; this fails when a release adds
+      # one the list lacks.
+      - name: Verify src/catalog.rs covers every supported release
+        # Exit 2 is the documented "could not check" code (upstream
+        # unreachable) and must not be read as drift.
+        run: |
+          python3 scripts/check-autoload-entries.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
+
+  book:
+    name: Book builds (mdBook)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
+      # docs.yml builds the book only when main is pushed, so a broken page
+      # was found after merge. Same mdBook version as docs.yml.
+      - name: Install mdBook 0.4.40
+        env:
+          RUSTFLAGS: ""
+        run: cargo install mdbook --locked --version "0.4.40"
+      - run: mdbook build
+
   msrv-vs-duckdb-ci:
     name: MSRV vs DuckDB's extension CI
     runs-on: ubuntu-latest
@@ -639,6 +694,12 @@ jobs:
             exit 1
           }
           echo "Extension loaded and produced correct results"
+      - name: Every documented hello-ext check
+        # examples/hello-ext/README.md documents 31 statements and their
+        # results; this used to run two of them. The script runs all of
+        # examples/hello-ext/sql_checks.txt and also fails if the README's
+        # statements drift from that fixture.
+        run: python3 scripts/check-hello-ext.py --duckdb ./duckdb --extension /tmp/ext/hello_ext.duckdb_extension
 
   scaffold-e2e:
     name: Scaffold end-to-end (build, stamp, load, query)
