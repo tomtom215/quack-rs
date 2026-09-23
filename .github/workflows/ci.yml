@@ -6,7 +6,7 @@
 # Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
 #       clippy, clippy-beta, fmt, doc, msrv, bench-compile, example-check,
 #       scaffold-compile, scaffold-e2e, symbol-check, extension-load,
-#       abi-table, abi-guard, msrv-vs-duckdb-ci, publish-dry-run,
+#       abi-table, abi-guard, abi-guard-layout, msrv-vs-duckdb-ci, publish-dry-run,
 #       security, osv-scan, nightly.
 #
 # `dtolnay/rust-toolchain` is pinned, in every workflow, to d103106 -- a commit
@@ -693,7 +693,11 @@ jobs:
           cargo clippy --all-targets -- -D warnings
 
   abi-guard:
-    name: ABI guard rejects a cross-version unstable build
+    # What this job proves is narrow: a build whose QUACK_RS_TARGET_DUCKDB_VERSION
+    # contradicts its own bindings is refused (AbiCheck::DeclaredVersionMismatch),
+    # whatever DuckDB loads it. It never reaches the layout comparison itself --
+    # `abi-guard-layout` below is the job that exercises LayoutMismatch.
+    name: ABI guard refuses a build whose declared DuckDB version contradicts its bindings
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -813,6 +817,105 @@ jobs:
             cat /tmp/abi_fn.log
             exit 1
           fi
+
+  abi-guard-layout:
+    # The real failure the ABI guard exists for: a `duckdb-1-5` extension built
+    # the ordinary way -- no QUACK_RS_TARGET_DUCKDB_VERSION, against the
+    # libduckdb-sys this repository pins in Cargo.lock -- and stamped C_STRUCT,
+    # so DuckDB's own metadata check lets it into any release. Loaded into a
+    # DuckDB whose duckdb_ext_api_v1 has a different slot count it must be
+    # refused with the LayoutMismatch diagnostic and register nothing; loaded
+    # into the DuckDB its bindings came from it must work. The engines are
+    # pinned releases, not `latest`, so the expected verdict never shifts.
+    name: ABI guard refuses a real layout mismatch (and accepts the matching DuckDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build and stamp a duckdb-1-5 demo against the pinned bindings
+        run: |
+          set -euo pipefail
+          # Deliberately unset: this build declares nothing, like most do.
+          unset QUACK_RS_TARGET_DUCKDB_VERSION
+          sys=$(awk '/^name = "libduckdb-sys"$/ { getline; sub(/^version = "/, ""); sub(/"$/, ""); print; exit }' Cargo.lock)
+          echo "libduckdb-sys pinned in Cargo.lock: $sys (DuckDB $(scripts/duckdb-version-from-lock.sh))"
+          cargo build --release --bin append_metadata
+          mkdir -p /tmp/abi_layout/src
+          cat > /tmp/abi_layout/Cargo.toml <<EOF
+          [package]
+          name = "abi_layout"
+          version = "0.1.0"
+          edition = "2021"
+
+          [lib]
+          crate-type = ["cdylib"]
+
+          [dependencies]
+          quack-rs = { path = "$(pwd)", features = ["duckdb-1-5"] }
+          libduckdb-sys = { version = "=$sys", features = ["loadable-extension"] }
+
+          [profile.release]
+          opt-level = 1
+          panic = "unwind"
+
+          [workspace]
+          EOF
+          cat > /tmp/abi_layout/src/lib.rs <<'EOF'
+          use quack_rs::client_context::ClientContext;
+          use quack_rs::error::ExtensionError;
+          use quack_rs::prelude::*;
+
+          fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
+              // duckdb_connection_get_client_context lives past the stable prefix.
+              let ctx = unsafe { ClientContext::from_connection(con) }?;
+              let _ = ctx.connection_id();
+              unsafe { SqlMacro::scalar("abi_layout_ok", &["x"], "x + 1")?.register(con)? };
+              Ok(())
+          }
+
+          quack_rs::entry_point!(abi_layout_init_c_api, register);
+          EOF
+          (cd /tmp/abi_layout && cargo build --release)
+          ./target/release/append_metadata \
+            /tmp/abi_layout/target/release/libabi_layout.so \
+            /tmp/abi_layout/abi_layout.duckdb_extension \
+            --abi-type C_STRUCT --extension-version v0.1.0 \
+            --duckdb-version v1.2.0 --platform linux_amd64
+      - name: Refused by DuckDB v1.5.0 and v1.4.4, loaded by the matching release
+        run: |
+          set -euo pipefail
+          matching=$(scripts/duckdb-version-from-lock.sh)
+          probe() {  # <duckdb-version> <expected: refuse|load>
+            local v=$1 expect=$2 dir=/tmp/duckdb-$1
+            mkdir -p "$dir"
+            curl -fsSL "https://github.com/duckdb/duckdb/releases/download/$v/duckdb_cli-linux-amd64.zip" -o "$dir/cli.zip"
+            unzip -o -q "$dir/cli.zip" -d "$dir"
+            echo "--- $("$dir/duckdb" --version), expecting $expect ---"
+            "$dir/duckdb" -unsigned -csv -noheader \
+              -c "LOAD '/tmp/abi_layout/abi_layout.duckdb_extension'; SELECT abi_layout_ok(1);" \
+              > "$dir/out.log" 2>&1 || true
+            cat "$dir/out.log"
+            if [ "$expect" = refuse ]; then
+              # The LayoutMismatch arm of AbiCheck::error_message.
+              grep -q "DuckDB C extension API layout mismatch" "$dir/out.log" || {
+                echo "::error::DuckDB $v: expected the layout-mismatch refusal"; exit 1; }
+              if grep -qx '2' "$dir/out.log"; then
+                echo "::error::DuckDB $v: the refused extension still registered abi_layout_ok"; exit 1
+              fi
+            else
+              grep -qx '2' "$dir/out.log" || {
+                echo "::error::DuckDB $v: the extension should have loaded and answered 2"; exit 1; }
+            fi
+          }
+          probe v1.5.0 refuse
+          probe v1.4.4 refuse
+          probe "$matching" load
 
   publish-dry-run:
     name: Publish dry-run
