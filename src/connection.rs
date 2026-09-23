@@ -54,7 +54,7 @@ use crate::cast::CastFunctionBuilder;
 use crate::copy_function::CopyFunctionBuilder;
 use crate::error::ExtensionError;
 use crate::replacement_scan::{ReplacementScanBuilder, ReplacementScanFn};
-use crate::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder};
+use crate::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, TypedScalarFunctionBuilder};
 use crate::sql_macro::SqlMacro;
 use crate::table::TableFunctionBuilder;
 
@@ -90,6 +90,31 @@ pub trait Registrar {
     ///
     /// The underlying connection must be valid for the duration of this call.
     unsafe fn register_scalar(&self, builder: ScalarFunctionBuilder) -> Result<(), ExtensionError>;
+
+    /// Register a scalar function built from a Rust closure
+    /// ([`ScalarFunctionBuilder::map1`] and friends).
+    ///
+    /// The default implementation hands the underlying builder to
+    /// [`register_scalar`][Self::register_scalar], so existing implementations
+    /// (including [`MockRegistrar`][crate::testing::MockRegistrar]) need no
+    /// change. An implementation must register that builder as it receives it:
+    /// the closure's trampoline refuses to run, with a SQL error, if the
+    /// signature was edited on the way.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever [`register_scalar`][Self::register_scalar] returns.
+    ///
+    /// # Safety
+    ///
+    /// The underlying connection must be valid for the duration of this call.
+    unsafe fn register_typed_scalar(
+        &self,
+        builder: TypedScalarFunctionBuilder,
+    ) -> Result<(), ExtensionError> {
+        // SAFETY: forwarded from this method's own contract.
+        unsafe { self.register_scalar(builder.into_inner()) }
+    }
 
     /// Register a scalar function set (multiple overloads under one name).
     ///
@@ -348,6 +373,14 @@ impl Connection {
 impl Registrar for Connection {
     unsafe fn register_scalar(&self, builder: ScalarFunctionBuilder) -> Result<(), ExtensionError> {
         // SAFETY: self.con is valid per Connection invariant; caller upholds builder contract.
+        unsafe { builder.register(self.con) }
+    }
+
+    unsafe fn register_typed_scalar(
+        &self,
+        builder: TypedScalarFunctionBuilder,
+    ) -> Result<(), ExtensionError> {
+        // SAFETY: self.con is valid per Connection invariant.
         unsafe { builder.register(self.con) }
     }
 

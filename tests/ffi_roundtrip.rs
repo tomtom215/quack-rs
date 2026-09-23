@@ -4664,7 +4664,10 @@ mod typed_scalar_state {
     pub static BIND_DROPS: AtomicUsize = AtomicUsize::new(0);
     pub static STATE_DROPS: AtomicUsize = AtomicUsize::new(0);
 
-    /// Folded once at bind time; explodes when dropped.
+    /// Folded once at bind time; explodes when dropped. `Clone` because
+    /// `ScalarBindData::set` registers a copy callback (`DuckDB` copies bind
+    /// data whenever the optimizer duplicates the bound expression).
+    #[derive(Clone)]
     pub struct Factor(pub i64);
     impl Drop for Factor {
         fn drop(&mut self) {
@@ -5463,3 +5466,6 @@ mod copy_from {
 }
 #[path = "ffi_roundtrip/vector_dt.rs"]
 mod vector_dt;
+
+#[path = "ffi_roundtrip/scalar_agg.rs"]
+mod scalar_agg;

@@ -153,6 +153,7 @@ pub use crate::aggregate::{
 pub use crate::scalar::{ScalarBindInfo, ScalarInitInfo};
 pub use crate::scalar::{
     ScalarFunctionBuilder, ScalarFunctionInfo, ScalarFunctionSetBuilder, ScalarOverloadBuilder,
+    TypedScalarFunctionBuilder,
 };
 
 // Copy functions

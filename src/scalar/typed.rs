@@ -42,6 +42,13 @@
 //! - **Panics and errors.** The closure runs inside `catch_unwind`, and a panic
 //!   or an `Err` becomes a `DuckDB` error on that query rather than a process
 //!   abort or a wrong answer.
+//! - **A fixed signature.** They return a
+//!   [`TypedScalarFunctionBuilder`], not a [`ScalarFunctionBuilder`]: it has no
+//!   `returns` / `param` / `function` / `extra_info`, because redeclaring the
+//!   signature after the fact would make the closure read and write vectors of
+//!   the wrong width. Register it with
+//!   [`TypedScalarFunctionBuilder::register`] or
+//!   [`Registrar::register_typed_scalar`][crate::connection::Registrar::register_typed_scalar].
 //!
 //! # Cost
 //!
@@ -56,14 +63,10 @@
 //! when the function needs `STRUCT` / `LIST` / `MAP` arguments, variable arity,
 //! bind-time constant folding, or per-thread local state.
 
-use std::panic::AssertUnwindSafe;
-
-use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
-
-use crate::data_chunk::DataChunk;
 use crate::error::ExtensionError;
 use crate::scalar::builder::ScalarFunctionBuilder;
-use crate::types::{LogicalType, NullHandling, TypeId};
+use crate::scalar::typed_builder::TypedScalarFunctionBuilder;
+use crate::types::{NullHandling, TypeId};
 use crate::vector::{VectorReader, VectorWriter};
 
 /// A Rust type that maps 1:1 onto a `DuckDB` scalar column type.
@@ -184,106 +187,7 @@ unsafe impl ScalarOut for Vec<u8> {
     }
 }
 
-/// The per-chunk executor a typed closure is compiled into.
-///
-/// Boxed once at build time and reached through one indirect call per chunk;
-/// the row loop inside is monomorphic.
-type ChunkExec =
-    Box<dyn Fn(&DataChunk, &mut VectorWriter) -> Result<(), ExtensionError> + Send + Sync>;
-
-/// `extra_info` payload for a typed scalar function.
-struct TypedScalar {
-    exec: ChunkExec,
-}
-
-impl TypedScalar {
-    /// `extra_info` destructor.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must have come from `Box::into_raw` on a `Box<TypedScalar>`.
-    unsafe extern "C" fn destroy(ptr: *mut std::os::raw::c_void) {
-        if ptr.is_null() {
-            return;
-        }
-        // SAFETY: `ptr` came from `Box::into_raw` in `build`. The boxed closure
-        // captures user data whose `Drop` may panic, and this is an
-        // `extern "C"` boundary with no error channel, so contain the unwind.
-        drop(crate::callback::catch_ffi_panic(|| unsafe {
-            drop(Box::from_raw(ptr.cast::<Self>()));
-        }));
-    }
-}
-
-/// The single `extern "C"` callback every typed scalar function shares.
-///
-/// # Safety
-///
-/// Invoked by `DuckDB` with its own valid handles.
-unsafe extern "C" fn typed_trampoline(
-    info: duckdb_function_info,
-    input: duckdb_data_chunk,
-    output: duckdb_vector,
-) {
-    // SAFETY: `info` is the handle DuckDB passed in.
-    let fninfo = unsafe { crate::scalar::ScalarFunctionInfo::new(info) };
-
-    let outcome = crate::callback::catch_ffi_panic(AssertUnwindSafe(|| {
-        // SAFETY: `extra_info` was set by `from_exec` to a `Box<TypedScalar>`
-        // that DuckDB keeps alive until it calls `TypedScalar::destroy`.
-        let raw = unsafe { fninfo.get_extra_info() };
-        if raw.is_null() {
-            return Err(ExtensionError::new(
-                "quack-rs: typed scalar function lost its extra_info",
-            ));
-        }
-        // SAFETY: same provenance as above; shared access only.
-        let typed = unsafe { &*raw.cast::<TypedScalar>() };
-        // SAFETY: `input` and `output` are valid for this call.
-        let chunk = unsafe { DataChunk::from_raw(input) };
-        // SAFETY: as above.
-        let mut writer = unsafe { VectorWriter::from_vector(output) };
-        (typed.exec)(&chunk, &mut writer)
-    }));
-
-    match outcome {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => fninfo.set_error(e.as_str()),
-        Err(message) => {
-            fninfo.set_error(&format!("quack-rs: scalar closure panicked: {message}"));
-        }
-    }
-}
-
 impl ScalarFunctionBuilder {
-    /// Builds a scalar function from a per-chunk executor.
-    ///
-    /// The public `map*` constructors are thin wrappers over this.
-    fn from_exec(
-        name: &str,
-        params: &[TypeId],
-        ret: TypeId,
-        null_handling: NullHandling,
-        exec: ChunkExec,
-    ) -> Result<Self, ExtensionError> {
-        let mut builder = Self::try_new(name)?;
-        for (i, id) in params.iter().enumerate() {
-            LogicalType::check_slot(*id, &format!("scalar function parameter {i}"))?;
-            builder = builder.param(*id);
-        }
-        LogicalType::check_slot(ret, "scalar function return type")?;
-        builder = builder.returns(ret).null_handling(null_handling);
-
-        let raw = Box::into_raw(Box::new(TypedScalar { exec })).cast::<std::os::raw::c_void>();
-        // SAFETY: `raw` is a live `Box<TypedScalar>` and `TypedScalar::destroy`
-        // is the matching destructor; DuckDB owns it from here.
-        Ok(unsafe {
-            builder
-                .function(typed_trampoline)
-                .extra_info(raw, Some(TypedScalar::destroy))
-        })
-    }
-
     /// A unary scalar function from a safe closure, with SQL NULL propagation.
     ///
     /// Parameter and return types come from the closure's signature. A row whose
@@ -304,13 +208,13 @@ impl ScalarFunctionBuilder {
     /// unsafe { ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?.register(con) }
     /// # }
     /// ```
-    pub fn map1<A, R, F>(name: &str, f: F) -> Result<Self, ExtensionError>
+    pub fn map1<A, R, F>(name: &str, f: F) -> Result<TypedScalarFunctionBuilder, ExtensionError>
     where
         A: ScalarValue,
         R: ScalarOut,
         F: Fn(A) -> R + Send + Sync + 'static,
     {
-        Self::from_exec(
+        TypedScalarFunctionBuilder::from_exec(
             name,
             &[A::type_id()],
             R::type_id(),
@@ -352,14 +256,14 @@ impl ScalarFunctionBuilder {
     // *either* argument is NULL, reading from a real column rather than a
     // constant-folded literal.
     #[mutants::skip]
-    pub fn map2<A, B, R, F>(name: &str, f: F) -> Result<Self, ExtensionError>
+    pub fn map2<A, B, R, F>(name: &str, f: F) -> Result<TypedScalarFunctionBuilder, ExtensionError>
     where
         A: ScalarValue,
         B: ScalarValue,
         R: ScalarOut,
         F: Fn(A, B) -> R + Send + Sync + 'static,
     {
-        Self::from_exec(
+        TypedScalarFunctionBuilder::from_exec(
             name,
             &[A::type_id(), B::type_id()],
             R::type_id(),
@@ -396,13 +300,13 @@ impl ScalarFunctionBuilder {
     /// # Errors
     ///
     /// Returns an error if `name` is not a valid SQL identifier.
-    pub fn map1_opt<A, R, F>(name: &str, f: F) -> Result<Self, ExtensionError>
+    pub fn map1_opt<A, R, F>(name: &str, f: F) -> Result<TypedScalarFunctionBuilder, ExtensionError>
     where
         A: ScalarValue,
         R: ScalarOut,
         F: Fn(Option<A>) -> Option<R> + Send + Sync + 'static,
     {
-        Self::from_exec(
+        TypedScalarFunctionBuilder::from_exec(
             name,
             &[A::type_id()],
             R::type_id(),
@@ -433,14 +337,17 @@ impl ScalarFunctionBuilder {
     /// # Errors
     ///
     /// Returns an error if `name` is not a valid SQL identifier.
-    pub fn map2_opt<A, B, R, F>(name: &str, f: F) -> Result<Self, ExtensionError>
+    pub fn map2_opt<A, B, R, F>(
+        name: &str,
+        f: F,
+    ) -> Result<TypedScalarFunctionBuilder, ExtensionError>
     where
         A: ScalarValue,
         B: ScalarValue,
         R: ScalarOut,
         F: Fn(Option<A>, Option<B>) -> Option<R> + Send + Sync + 'static,
     {
-        Self::from_exec(
+        TypedScalarFunctionBuilder::from_exec(
             name,
             &[A::type_id(), B::type_id()],
             R::type_id(),
@@ -497,12 +404,12 @@ impl ScalarFunctionBuilder {
     /// }
     /// # }
     /// ```
-    pub fn map1_str<R, F>(name: &str, f: F) -> Result<Self, ExtensionError>
+    pub fn map1_str<R, F>(name: &str, f: F) -> Result<TypedScalarFunctionBuilder, ExtensionError>
     where
         R: ScalarOut,
         F: for<'a> Fn(&'a str) -> R + Send + Sync + 'static,
     {
-        Self::from_exec(
+        TypedScalarFunctionBuilder::from_exec(
             name,
             &[TypeId::Varchar],
             R::type_id(),
@@ -546,12 +453,12 @@ impl ScalarFunctionBuilder {
     // *either* argument is NULL, reading from a real column rather than a
     // constant-folded literal.
     #[mutants::skip]
-    pub fn map2_str<R, F>(name: &str, f: F) -> Result<Self, ExtensionError>
+    pub fn map2_str<R, F>(name: &str, f: F) -> Result<TypedScalarFunctionBuilder, ExtensionError>
     where
         R: ScalarOut,
         F: for<'a, 'b> Fn(&'a str, &'b str) -> R + Send + Sync + 'static,
     {
-        Self::from_exec(
+        TypedScalarFunctionBuilder::from_exec(
             name,
             &[TypeId::Varchar, TypeId::Varchar],
             R::type_id(),
@@ -597,11 +504,5 @@ mod tests {
         let err = ScalarFunctionBuilder::map1("has spaces", |x: i64| x)
             .expect_err("a name with a space is not a SQL identifier");
         assert_ne!(err.as_str(), "");
-    }
-
-    #[test]
-    fn destroy_tolerates_a_null_pointer() {
-        // SAFETY: the null case is explicitly handled.
-        unsafe { TypedScalar::destroy(std::ptr::null_mut()) };
     }
 }

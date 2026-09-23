@@ -9,6 +9,7 @@
 //! per row. This is the most common function type in `DuckDB` extensions.
 
 mod set;
+pub(crate) mod signature;
 mod single;
 
 #[cfg(test)]
