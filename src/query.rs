@@ -165,6 +165,9 @@ impl QueryResult {
 /// `con` must be a valid, open `duckdb_connection`.
 pub unsafe fn query(con: duckdb_connection, sql: &str) -> Result<QueryResult, ExtensionError> {
     let c_sql = to_c_sql(sql)?;
+    // SAFETY: `duckdb_result` is a `#[repr(C)]` struct of three `idx_t`
+    // integers and three raw pointers; all-zero bits are a valid value of each
+    // (null pointers included). DuckDB overwrites it as an out-parameter.
     let mut result: duckdb_result = unsafe { std::mem::zeroed() };
     // SAFETY: `con` is valid per the caller's contract; `c_sql` outlives the call.
     let state = unsafe { duckdb_query(con, c_sql.as_ptr(), &raw mut result) };

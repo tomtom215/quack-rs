@@ -86,6 +86,9 @@ impl PreparedStatement {
     /// fails.
     #[cfg(feature = "duckdb-1-5")]
     pub fn execute_streaming(&self) -> Result<QueryResult, ExtensionError> {
+        // SAFETY: `duckdb_result` is a `#[repr(C)]` struct of three `idx_t`
+        // integers and three raw pointers; all-zero bits are a valid value of each
+        // (null pointers included). DuckDB overwrites it as an out-parameter.
         let mut result: duckdb_result = unsafe { std::mem::zeroed() };
         // SAFETY: `self.statement` is valid for this value's lifetime;
         // `result` is a fresh out-parameter DuckDB fills in.
