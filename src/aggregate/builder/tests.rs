@@ -415,25 +415,55 @@ fn an_aggregate_overloads_extra_info_is_freed_once_when_the_set_is_rejected() {
     assert_eq!(FREED.load(Ordering::SeqCst), 3);
 }
 
+/// `ffi_state::<T>()` installs a size, init and destroy callback that all
+/// describe `T`: checked by running them, since Rust does not promise that
+/// two uses of a function's address compare equal (Miri makes them differ).
 #[test]
 fn ffi_state_installs_all_three_state_callbacks_for_one_type() {
     use crate::aggregate::callbacks::{DestroyFn, StateInitFn, StateSizeFn};
     use crate::aggregate::{AggregateState, FfiState};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
     #[derive(Default)]
-    struct Wide(#[allow(dead_code, reason = "only its size matters")] [u64; 8]);
+    struct Wide([u64; 8]);
+    impl Drop for Wide {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     impl AggregateState for Wide {}
 
-    let size = FfiState::<Wide>::size_callback as StateSizeFn as usize;
-    let init = FfiState::<Wide>::init_callback as StateInitFn as usize;
-    let destroy = FfiState::<Wide>::destroy_callback as DestroyFn as usize;
+    let run = |size: Option<StateSizeFn>, init: Option<StateInitFn>, destroy: Option<DestroyFn>| {
+        let (size, init, destroy) = (
+            size.expect("size"),
+            init.expect("init"),
+            destroy.expect("destroy"),
+        );
+        // SAFETY: `FfiState`'s size callback does not read its argument.
+        let bytes = unsafe { size(std::ptr::null_mut()) };
+        assert_eq!(bytes as usize, FfiState::<Wide>::size());
+        let word = std::mem::size_of::<usize>();
+        let mut buffer = vec![0_usize; FfiState::<Wide>::size().div_ceil(word)];
+        let mut state: libduckdb_sys::duckdb_aggregate_state = buffer.as_mut_ptr().cast();
+        // SAFETY: `state` is `size()` writable, word-aligned bytes, and
+        // `Wide::default` does not panic, so `info` is never read.
+        unsafe { init(std::ptr::null_mut(), state) };
+        // SAFETY: `state` was just initialised by an `FfiState` callback.
+        let wide = unsafe { FfiState::<Wide>::with_state(state) }.expect("a Wide was built");
+        assert_eq!(wide.0, [0; 8]);
+        let before = DROPS.load(Ordering::SeqCst);
+        // SAFETY: one initialised state of `size()` word-aligned bytes.
+        unsafe { destroy(&raw mut state, 1) };
+        assert_eq!(
+            DROPS.load(Ordering::SeqCst),
+            before + 1,
+            "the Wide was dropped"
+        );
+    };
 
     let single = AggregateFunctionBuilder::new("f").ffi_state::<Wide>();
-    assert_eq!(single.state_size.map(|f| f as usize), Some(size));
-    assert_eq!(single.init.map(|f| f as usize), Some(init));
-    assert_eq!(single.destructor.map(|f| f as usize), Some(destroy));
-
+    run(single.state_size, single.init, single.destructor);
     let overload = AggregateOverloadBuilder::new().ffi_state::<Wide>();
-    assert_eq!(overload.state_size.map(|f| f as usize), Some(size));
-    assert_eq!(overload.init.map(|f| f as usize), Some(init));
-    assert_eq!(overload.destructor.map(|f| f as usize), Some(destroy));
+    run(overload.state_size, overload.init, overload.destructor);
 }
