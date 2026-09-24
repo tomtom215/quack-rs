@@ -408,8 +408,9 @@ the 0.17.0 notes about aggregates and NULL rows (see Fixed).
   `StringLiteral` no longer require `duckdb-1-5`. All six exist in DuckDB 1.4.4,
   this crate's floor, and 1.4.4 produces `TIME_NS` and `BIGNUM` columns, so with
   default features `LogicalType::get_type_id` panicked on those columns.
-  `TypeId::Varint.sql_name()` now returns `"BIGNUM"`, DuckDB's name for the type
-  since 1.4; both names parse.
+- **Breaking:** `TypeId::Varint.sql_name()` returns `"BIGNUM"`, DuckDB's name
+  for the type since 1.4, instead of `"VARINT"`. Both names parse as SQL, but
+  code that compares the returned string sees a different value.
 - `SecretEntry`'s `Debug` output shows `[REDACTED]` for a non-empty scope: the
   scope (a bucket or URL prefix) is zeroized on drop as sensitive, but `Debug`
   printed it.
