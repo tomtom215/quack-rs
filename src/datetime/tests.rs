@@ -171,13 +171,12 @@ mod live_tests {
         assert!(!unsafe { is_finite_date(DATE_INFINITY_DAYS) });
     }
 
-    /// `duckdb_from_date` / `duckdb_from_time` do no validation and never
-    /// throw, so a sentinel or out-of-range input decomposes into fields
-    /// rather than failing. The documented consequences are pinned here —
-    /// notably that `infinity` becomes a *plausible* date one day past
+    /// `duckdb_from_date` does no validation and never throws, so a sentinel
+    /// decomposes into fields rather than failing. The documented consequence
+    /// is pinned here: `infinity` becomes a *plausible* date one day past
     /// `DuckDB`'s largest, so a caller must check `is_finite_date` first.
     #[test]
-    fn decomposing_sentinels_and_out_of_range_values_is_arithmetic_not_an_error() {
+    fn decomposing_a_date_sentinel_is_arithmetic_not_an_error() {
         let _db = InMemoryDb::open().expect("open in-memory DuckDB");
         // SAFETY: InMemoryDb::open() initialised the dispatch table.
         unsafe {
@@ -185,12 +184,34 @@ mod live_tests {
             assert_eq!((inf.year, inf.month, inf.day), (5_881_580, 7, 11));
             let _ = date_from_days(DATE_NEGATIVE_INFINITY_DAYS);
             let _ = date_from_days(i32::MIN);
+        }
+    }
 
-            let past_midnight = time_from_micros(86_400_000_001);
-            assert_eq!((past_midnight.hour, past_midnight.micros), (24, 1));
-            assert_eq!(time_from_micros(-1).micros, -1);
-            assert!(time_from_micros(i64::MIN).hour < 0);
-            let _ = time_from_micros(i64::MAX);
+    /// `Time::Convert` asserts that the fields it produces are a valid time,
+    /// so these inputs aborted a `DuckDB` built with assertions (the
+    /// `bundled-test` feature builds one); a release build returned
+    /// out-of-range fields instead.
+    #[test]
+    fn an_out_of_range_time_is_none_not_an_abort() {
+        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
+        // SAFETY: InMemoryDb::open() initialised the dispatch table.
+        unsafe {
+            for bad in [-1, MICROS_PER_DAY + 1, i64::MIN, i64::MAX] {
+                assert_eq!(time_from_micros(bad), None, "{bad}");
+            }
+            let midnight = time_from_micros(MICROS_PER_DAY).expect("24:00:00");
+            assert_eq!((midnight.hour, midnight.min, midnight.micros), (24, 0, 0));
+
+            // The 40-bit time field of a TIMETZ, one microsecond past a day
+            // and at its maximum; the offset field is a valid +00:00.
+            let offset_zero = u64::try_from(TIME_TZ_MAX_OFFSET_SECONDS).unwrap();
+            for micros in [MICROS_PER_DAY.unsigned_abs() + 1, (1 << 40) - 1] {
+                assert_eq!(time_tz_from_bits((micros << 24) | offset_zero), None);
+            }
+            // An offset field past +-15:59:59 is not one `time_tz_bits` makes.
+            assert_eq!(time_tz_from_bits(0x00FF_FFFF), None);
+            let bits = time_tz_bits(MICROS_PER_DAY, 0).expect("in range");
+            assert_eq!(time_tz_from_bits(bits).expect("in range").time.hour, 24);
         }
     }
 
@@ -199,11 +220,11 @@ mod live_tests {
         let _db = InMemoryDb::open().expect("open in-memory DuckDB");
         for micros in [0_i64, 1, 999_999, 1_000_000, 86_399_999_999] {
             // SAFETY: InMemoryDb::open() initialised the dispatch table.
-            let time = unsafe { time_from_micros(micros) };
+            let time = unsafe { time_from_micros(micros) }.expect("in range");
             assert_eq!(unsafe { time_to_micros(time) }, micros, "for {micros} us");
         }
         // SAFETY: dispatch table initialised above.
-        let end_of_day = unsafe { time_from_micros(86_399_999_999) };
+        let end_of_day = unsafe { time_from_micros(86_399_999_999) }.expect("in range");
         assert_eq!(
             end_of_day,
             Time {
@@ -235,7 +256,7 @@ mod live_tests {
         // SAFETY: InMemoryDb::open() initialised the dispatch table.
         unsafe {
             let bits = time_tz_bits(12 * 3_600 * 1_000_000, -5 * 3_600).expect("in range");
-            let decoded = time_tz_from_bits(bits);
+            let decoded = time_tz_from_bits(bits).expect("in range");
             assert_eq!(decoded.time.hour, 12);
             assert_eq!(decoded.offset_seconds, -5 * 3_600);
         }
@@ -392,7 +413,7 @@ mod live_tests {
                 (0, -TIME_TZ_MAX_OFFSET_SECONDS),
             ] {
                 let bits = time_tz_bits(micros, offset).expect("in range");
-                let decoded = time_tz_from_bits(bits);
+                let decoded = time_tz_from_bits(bits).expect("in range");
                 assert_eq!(decoded.offset_seconds, offset);
                 assert_eq!(time_to_micros(decoded.time), micros);
             }

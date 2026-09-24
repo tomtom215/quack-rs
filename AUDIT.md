@@ -958,7 +958,7 @@ Panics and contract gaps:
 | `read_duck_blob` did not require the vector to outlive an inline blob | CONTRACT |
 | `FfiInitData` / `FfiLocalInitData` / `FfiBindData` getters did not require `T` to be the type `set` stored (`set::<u8>`, `get_mut::<[u64; 64]>` wrote 512 bytes through a 1-byte allocation) | CONTRACT |
 
-Found by the final verification sweep, not by the area audits:
+Found by the final verification sweep and by CI, not by the area audits:
 
 | Finding | Evidence |
 |---|---|
@@ -966,6 +966,8 @@ Found by the final verification sweep, not by the area audits:
 | Two new tests leaked (an `FfiState` aggregate failing in `finalize`; Arrow records built with `Box::leak`), which would have failed CI's blocking LeakSanitizer job | VALIDATED: 280 bytes, then 16 bytes (6 of 6 runs); clean in 3 of 3 runs after |
 | A new SPDX test (a million nested parentheses) cannot finish under Miri; the PyYAML test spawns a process Miri cannot | VALIDATED: over 30 minutes on one test; both now scaled or skipped under Miri only |
 | The incremental mutation gate would have failed: 63 mutants survived in files this branch changed, 28 of them in code split out of `value.rs`, whose exclusion did not follow it | VALIDATED; now 0 missed (8.6). Survivors in pure logic are killed by new unit tests; FFI-bound ones are excluded with a reason, and 4 that had no end-to-end test now have one |
+| This pass's own test pinned `time_from_micros(-1)` and three other out-of-range inputs as harmless arithmetic, which holds only for a release DuckDB: `Time::Convert` ends in `D_ASSERT(IsValidTime)`, so a DuckDB built with assertions aborted. CI's source-built jobs (`bundled-test` on three OSes, coverage) caught it; no local run had built DuckDB from source | VALIDATED (SIGABRT at `time.cpp:326`, locally and in CI); `time_from_micros` and `time_tz_from_bits` now return `None` outside `00:00:00`–`24:00:00` (**breaking**) |
+| Two end-to-end tests could not run against a source-built DuckDB, which no local run had tried: the temporal sweep's SQL oracle ran `CAST(<infinite TIMESTAMP_MS> AS DATE)` (and `TIME`), on which DuckDB 1.5.5 itself fails `D_ASSERT(IsFinite)` in `Timestamp::FromEpochMs` (a release build answers with a Conversion Error), and the config-option test required ICU, which libduckdb-sys's `cc` build does not compile in | VALIDATED (gdb backtrace into `sql_cast`; the 1.5.5 CLI's error for all four casts). Neither is a quack-rs defect: the oracle pins the release answer (`None`) for exactly those pairs, and without ICU the zoned default is asserted to be refused rather than registered |
 
 Tooling, all VALIDATED: the ABI table lacked DuckDB v1.4.5; `validate_spdx_license`
 overflowed the stack on deep nesting and rejected `WITH` exceptions; `vX.Y.Z`
@@ -1035,6 +1037,12 @@ and aggregate bind data, and a sixth reports the aggregate states a failed
 searched for duplicates. The drafts, reproducers and a status table are in
 `docs/upstream-duckdb-reports.md`.
 
+Not drafted: in DuckDB 1.5.5, `CastTimestampMsToDate` and `CastTimestampMsToTime`
+pass an infinite value to `Timestamp::FromEpochMs`, whose `D_ASSERT` aborts a
+debug build from plain SQL (8.2). `main` at `30c64e17` casts through `TryCast`
+instead and no longer calls `FromEpochMs` outside the infinity-guarded C API
+converter (derived from source; not built).
+
 ### 8.6 How this pass was verified
 
 All at `fcebab5` against DuckDB 1.5.5 unless stated, x86-64 Linux:
@@ -1061,3 +1069,11 @@ All at `fcebab5` against DuckDB 1.5.5 unless stated, x86-64 Linux:
   (116 changed `src` files, config exclusions re-applied, `--features
   duckdb-1-5-4 --lib`): 994 mutants, **0 missed**, 745 caught, 249 unviable,
   0 timeouts. No mutant log contains the `rustc` probe failure of 8.4.
+- **DuckDB built from source, assertions on,** after the `time_from_micros`
+  fix (8.2), with CI's two commands: `cargo test --all-targets --features
+  bundled-test` passes 816 library, 34 `append_metadata`, 119 end-to-end,
+  70 integration and 1 `secret_zeroize` test; `--all-features` (the coverage
+  job) passes 915, 34, 187, 70 and 1. The unfixed code aborts the first of
+  these at `time.cpp:326`, in the test named in 8.2. CI's mutation invocation
+  on the two files that fix changed: 128 mutants, 124 caught, 4 unviable,
+  **0 missed**.

@@ -585,8 +585,9 @@ Fixed).
 - **Breaking:** `DuckDbErrorType` gains `Autoload`, `Sequence` and
   `InvalidConfiguration` (40–42), which used to map to `Invalid`.
 - **Breaking:** `SelectionVector::new` returns `Result<Self, ExtensionError>`.
-- **Breaking:** `datetime::date_to_days`, `timestamp_from_micros`,
-  `timestamp_to_micros`, `time_tz_bits` and `decimal_to_f64` return `Option`.
+- **Breaking:** `datetime::date_to_days`, `time_from_micros`,
+  `time_tz_from_bits`, `timestamp_from_micros`, `timestamp_to_micros`,
+  `time_tz_bits` and `decimal_to_f64` return `Option`.
 - **Breaking:** `VectorWriter::set_null` / `set_null_range` (and so
   `DataChunk::propagate_nulls`) on a `STRUCT` or `ARRAY` vector also null the
   row's fields / elements, recursively, as DuckDB's `FlatVector::SetNull` does.
@@ -1020,8 +1021,8 @@ Fixed).
     is named by its position); `DbConfig::get_flag` returns the extension's
     name, not a description, for an extension setting; `check_valid_utf8`
     agrees with `std::str::from_utf8` rather than being stricter.
-  - Dates and intervals: `date_from_days` of `infinity` gives 5881580-07-11 and
-    `time_from_micros` is not range-checked; DuckDB's 30-day month applies to
+  - Dates and intervals: `date_from_days` of `infinity` gives 5881580-07-11;
+    DuckDB's 30-day month applies to
     interval comparison and `epoch_us`, not to interval arithmetic or `epoch`;
     `DuckInterval`'s `Eq` compares fields, so `1 month` differs from `30 days`
     here although SQL calls them equal.
@@ -1134,6 +1135,10 @@ Fixed).
     table function called with `f(n := NULL)`; a null handle was dereferenced;
   - `datetime::date_to_days` on an invalid date, `timestamp_from_micros` /
     `timestamp_to_micros` on infinities and the far-negative range;
+  - `datetime::time_from_micros` / `time_tz_from_bits` on a time outside
+    `00:00:00`–`24:00:00`, in a DuckDB built with assertions (a debug build,
+    as the `bundled-test` feature compiles), which fails `Time::Convert`'s
+    `D_ASSERT`; a release build returned out-of-range fields;
   - `SelectionVector::new` above DuckDB's allocation limit;
   - a config option whose default does not cast to its type;
   - catalog lookups for `Schema`, `Database`, `PreparedStatement` and

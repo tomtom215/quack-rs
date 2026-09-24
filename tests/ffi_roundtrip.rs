@@ -602,7 +602,7 @@ fn temporal_types_round_trip_and_agree_with_duckdb() {
         })
         .expect("not null");
     // SAFETY: the dispatch table is live for this fixture.
-    let decoded = unsafe { datetime::time_tz_from_bits(bits) };
+    let decoded = unsafe { datetime::time_tz_from_bits(bits) }.expect("in range");
     assert_eq!(decoded.time.hour, 12);
     assert_eq!(decoded.offset_seconds, 2 * 3_600);
 }

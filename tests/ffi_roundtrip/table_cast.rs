@@ -676,24 +676,45 @@ fn reading_a_null_config_option_is_none_not_an_abort() {
 /// `DefaultCastAs` does not — a `TIMESTAMPTZ` with a zone name, which only
 /// ICU's cast understands — passed quack-rs's old check and then aborted
 /// inside `duckdb_config_option_set_default_value` (probe t09). The default is
-/// now converted by SQL and handed over already typed, so it registers, and
-/// every supported type stores exactly what `TRY_CAST` produces.
+/// now converted by SQL and handed over already typed, so it registers (and
+/// without ICU, where SQL cannot read it either, is refused), and every
+/// supported type stores exactly what `TRY_CAST` produces.
 #[cfg(feature = "duckdb-1-5")]
 #[test]
 fn a_config_option_default_is_converted_by_sql_not_inside_the_c_api() {
     use quack_rs::config_option::ConfigOptionBuilder;
 
     let fx = Fixture::open();
-    assert_eq!(
-        fx.scalar(
-            "SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'",
-            |r, i| unsafe { r.read_bool(i) }
-        ),
-        Some(true),
-        "this regression needs ICU's VARCHAR -> TIMESTAMPTZ cast"
-    );
+    let icu = fx.scalar(
+        "SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'icu'",
+        |r, i| unsafe { r.read_bool(i) },
+    ) == Some(true);
+    // The prebuilt library has ICU compiled in. `bundled-test` compiles
+    // DuckDB with libduckdb-sys's `cc` build, which does not (its `icu`
+    // feature needs the `bundled-cmake` build).
+    if !cfg!(feature = "bundled-test") {
+        assert!(
+            icu,
+            "this regression needs ICU's VARCHAR -> TIMESTAMPTZ cast"
+        );
+    }
+    let zoned = "2020-01-01 10:00:00 America/New_York";
+    if !icu {
+        // Without ICU, SQL cannot read a zone name either, so `TRY_CAST` is
+        // NULL and the default is refused before the C API sees it.
+        // SAFETY: `con` is open.
+        let refused = unsafe {
+            ConfigOptionBuilder::try_new("tc_typed_default_zoned")
+                .expect("name")
+                .option_type(TypeId::TimestampTz)
+                .default_value(zoned)
+                .expect("default")
+                .register(fx.con())
+        };
+        assert!(refused.is_err(), "{zoned:?} without ICU");
+    }
     for (i, (ty, default)) in [
-        (TypeId::TimestampTz, "2020-01-01 10:00:00 America/New_York"),
+        (TypeId::TimestampTz, zoned),
         (TypeId::Boolean, "true"),
         (TypeId::TinyInt, "-7"),
         (TypeId::SmallInt, "300"),
@@ -723,6 +744,7 @@ fn a_config_option_default_is_converted_by_sql_not_inside_the_c_api() {
     ]
     .into_iter()
     .enumerate()
+    .filter(|&(_, (_, default))| icu || default != zoned)
     {
         let name = format!("tc_typed_default_{i}");
         // SAFETY: `con` is open.

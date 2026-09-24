@@ -306,7 +306,20 @@ fn every_getter_on_every_temporal_edge_matches_duckdb_and_never_aborts() {
                     if sql_type == "TIMESTAMPTZ" || *target == "TIMESTAMPTZ" {
                         continue;
                     }
-                    let want = sql_cast(&con, &literal, target);
+                    // DuckDB 1.5.5's own `CAST(<infinite TIMESTAMP_MS> AS DATE)`
+                    // (or `TIME`) calls `Timestamp::FromEpochMs`, whose
+                    // `D_ASSERT(IsFinite)` aborts a build with assertions (the
+                    // `bundled-test` feature compiles one). A release build
+                    // answers "Conversion Error: Could not convert
+                    // Timestamp(MS) to Timestamp(US)", so SQL's answer is `None`.
+                    let asserts_in_debug = sql_type == "TIMESTAMP_MS"
+                        && matches!(*target, "DATE" | "TIME")
+                        && literal.contains("infinity");
+                    let want = if asserts_in_debug {
+                        None
+                    } else {
+                        sql_cast(&con, &literal, target)
+                    };
                     assert_eq!(
                         got, &want,
                         "{literal} read as {target}: getter vs CAST in SQL"

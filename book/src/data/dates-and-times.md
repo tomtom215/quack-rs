@@ -72,8 +72,14 @@ first, using DuckDB's own conditions, and return `None` instead:
 | `date_to_days` | month not 1–12, day not in that month (leap years included), or the date is outside 5877642-06-25 BC – 5881580-07-10; `datetime::is_valid_date` is the same check |
 | `timestamp_from_micros` | the value is `±infinity`, or below `-106_751_991 * MICROS_PER_DAY` (which includes `i64::MIN`) |
 | `timestamp_to_micros` | the date is invalid, the result overflows `i64`, or it lands on `±infinity` |
+| `time_from_micros` | the value is outside `0..=MICROS_PER_DAY` (`00:00:00`–`24:00:00`) |
 | `time_tz_bits` | the time is outside `0..=MICROS_PER_DAY`, or the offset beyond ±15:59:59 (`TIME_TZ_MAX_OFFSET_SECONDS`) |
+| `time_tz_from_bits` | the bits decode to a time or offset that `time_tz_bits` would refuse |
 | `decimal_to_f64` | `width > 38` or `scale > width` |
+
+`time_from_micros` and `time_tz_from_bits` guard an assertion rather than an
+exception: a release build of DuckDB decomposes an out-of-range time into
+out-of-range fields, and a build with assertions enabled aborts.
 
 `time_to_micros` does no range check, exactly like DuckDB: an hour of 25
 simply gives a `TIME` past midnight.
@@ -89,7 +95,8 @@ let bits = unsafe { datetime::time_tz_bits(12 * 3_600 * 1_000_000, -5 * 3_600) }
     .expect("noon, UTC-5, is in range");
 unsafe { writer.write_time_tz(row, bits) };
 
-let decoded = unsafe { datetime::time_tz_from_bits(reader.read_time_tz(row)) };
+let decoded = unsafe { datetime::time_tz_from_bits(reader.read_time_tz(row)) }
+    .expect("DuckDB wrote a valid TIMETZ");
 assert_eq!(decoded.offset_seconds, -5 * 3_600);
 # }
 ```

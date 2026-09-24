@@ -82,6 +82,16 @@ pub(super) const fn time_micros(time: Time) -> i64 {
     micros * 1_000_000 + time.micros as i64
 }
 
+/// Returns `true` if `Time::Convert` accepts `micros`: `DuckDB`'s `TIME` range,
+/// `00:00:00`–`24:00:00` inclusive.
+///
+/// `Time::Convert` does no range check, but it ends in
+/// `D_ASSERT(Time::IsValidTime(..))`, which a `DuckDB` built with assertions
+/// (a debug build) turns into a process abort for every other value.
+pub(super) const fn time_decomposes(micros: i64) -> bool {
+    micros >= 0 && micros <= MICROS_PER_DAY
+}
+
 /// The day `Timestamp::GetDate` assigns a finite timestamp to (floor division).
 const fn timestamp_days(micros: i64) -> i64 {
     let negative = (micros < 0) as i64;
@@ -124,8 +134,7 @@ pub(super) const fn timestamp_from_parts(days: i32, time_micros: i64) -> Option<
 /// offset beyond ±[`TIME_TZ_MAX_OFFSET_SECONDS`] or a negative time corrupts
 /// the other field. `DuckDB`'s own `TIME` range is `00:00:00`–`24:00:00`.
 pub(super) const fn time_tz_encodable(micros: i64, offset_seconds: i32) -> bool {
-    micros >= 0
-        && micros <= MICROS_PER_DAY
+    time_decomposes(micros)
         && offset_seconds >= -TIME_TZ_MAX_OFFSET_SECONDS
         && offset_seconds <= TIME_TZ_MAX_OFFSET_SECONDS
 }
@@ -244,6 +253,51 @@ mod tests {
             micros: 999_999,
         };
         assert_eq!(time_micros(t), MICROS_PER_DAY - 1);
+    }
+
+    /// `Time::Convert` followed by `Time::IsValidTime`, transcribed from
+    /// `DuckDB` v1.5.5 (`src/common/types/time.cpp`). C++ integer division
+    /// truncates toward zero, as Rust's does.
+    fn duckdb_convert_is_valid(micros: i64) -> bool {
+        let mut time = micros;
+        let hour = time / 3_600_000_000;
+        time -= hour * 3_600_000_000;
+        let min = time / 60_000_000;
+        time -= min * 60_000_000;
+        let sec = time / 1_000_000;
+        time -= sec * 1_000_000;
+        let micros = time;
+        if !(0..24).contains(&hour) {
+            return hour == 24 && min == 0 && sec == 0 && micros == 0;
+        }
+        (0..60).contains(&min) && (0..=60).contains(&sec) && (0..=1_000_000).contains(&micros)
+    }
+
+    #[test]
+    fn time_decomposes_is_exactly_what_duckdb_asserts() {
+        let mut probes = vec![i64::MIN, i64::MIN + 1, i64::MAX, i64::MAX - 1];
+        for edge in [0, MICROS_PER_DAY, 3_600_000_000, 60_000_000, 1_000_000] {
+            for delta in -2..=2 {
+                probes.push(edge + delta);
+                probes.push(-edge + delta);
+            }
+        }
+        // Every hour boundary of the day and the one after it.
+        for hour in -1..=26 {
+            probes.push(hour * 3_600_000_000);
+            probes.push(hour * 3_600_000_000 - 1);
+        }
+        for micros in probes {
+            assert_eq!(
+                time_decomposes(micros),
+                duckdb_convert_is_valid(micros),
+                "{micros}"
+            );
+        }
+        assert!(time_decomposes(0));
+        assert!(time_decomposes(MICROS_PER_DAY));
+        assert!(!time_decomposes(-1));
+        assert!(!time_decomposes(MICROS_PER_DAY + 1));
     }
 
     #[test]
