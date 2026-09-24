@@ -133,6 +133,7 @@ impl<T: 'static> FfiBindData<T> {
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_init_info`.
+    /// - `T` must be the type passed to [`set`][Self::set] for this function.
     /// - No mutable reference to the same data must exist simultaneously.
     /// - The returned reference is valid for the duration of the init callback.
     pub unsafe fn get_from_init<'a>(info: duckdb_init_info) -> Option<&'a T> {
@@ -153,6 +154,7 @@ impl<T: 'static> FfiBindData<T> {
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_function_info` from a scan callback.
+    /// - `T` must be the type passed to [`set`][Self::set] for this function.
     /// - No mutable reference to the same data must exist simultaneously.
     /// - The returned reference is valid for the duration of the scan callback.
     pub unsafe fn get_from_function<'a>(info: duckdb_function_info) -> Option<&'a T> {
