@@ -89,3 +89,47 @@ fn a_row_past_duckdbs_byte_ceiling_is_null_not_an_abort() {
         );
     }
 }
+
+// One ordinary row starts the builder (which applies the child type's
+// ceiling), then the caller raises the limit, then a row past the ceiling.
+quack_rs::scalar_callback!(limit_raised_after_start, |_info, input, output| {
+    let chunk = unsafe { quack_rs::data_chunk::DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut builder = unsafe { ListBuilder::new(output) };
+    // SAFETY: row 0 is in the chunk (the query passes one row); the closure
+    // writes the one element it was given.
+    unsafe { builder.push_row(0, 1, |w, base| w.write_i64(base, 7)) };
+    builder = builder.with_element_limit(usize::MAX);
+    let n = unsafe { reader.read_i64(0) } as usize;
+    // SAFETY: as above; this row is past the limit, so the closure never runs.
+    unsafe { builder.push_row(0, n, |_, _| unreachable!("past the limit")) };
+    assert!(builder.overflowed());
+    unsafe { builder.finish() };
+});
+
+/// `with_element_limit` after the first row used to replace the child type's
+/// ceiling, which `start` applies once, with 2^37 elements: a `BIGINT` row of
+/// 2^34 + 1 then reached `duckdb_list_vector_reserve` and aborted the process.
+#[test]
+fn raising_the_limit_after_the_first_row_keeps_duckdbs_ceiling() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("limit_raised")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::list(TypeId::BigInt))
+            .function(limit_raised_after_start)
+            .register(fx.con())
+            .expect("register");
+    }
+    let sql = format!(
+        "SELECT (limit_raised({}) IS NULL)::VARCHAR",
+        (1_u64 << 34) + 1
+    );
+    assert_eq!(
+        fx.scalar(&sql, |r, i| unsafe { r.read_str(i).to_owned() })
+            .as_deref(),
+        Some("true")
+    );
+}

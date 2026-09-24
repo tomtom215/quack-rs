@@ -169,9 +169,9 @@ exclude_globs = [
 #   existing `max_capacity_matches_duckdbs_constant` catches it). The `<`
 #   mutant stays in the gate and is killed. `vector::ops::MAX_CAPACITY` is
 #   defined as this constant, so it has no separate mutants.
-# - `with_element_limit`'s `limit < MAX_CHILD_CAPACITY_USIZE` mutated to `<=`:
-#   the two differ only at `limit == MAX_CHILD_CAPACITY_USIZE`, where both arms
-#   store that same value.
+# - `with_element_limit`'s `limit < self.ceiling` mutated to `<=`: the two
+#   differ only at `limit == self.ceiling`, where both arms store that same
+#   value.
 # - `CastGuard::accepts`'s `(v < 0) as i64` mutated to `<=` (src/value/
 #   temporal_checks.rs, the `FiniteAndNanoDayFits` arm). The two differ only at
 #   `v == 0`, where the mutant computes day `(0 + 1) / NANOS_PER_DAY - 1 = -1`

@@ -284,9 +284,26 @@ pub struct ListBuilder {
     /// Most child elements this builder will reserve: [`MAX_LIST_CHILD_CAPACITY`]
     /// unless lowered with [`with_element_limit`][Self::with_element_limit].
     limit: usize,
+    /// `DuckDB`'s ceiling for the child's type, from [`start`][Self::start]
+    /// on ([`MAX_LIST_CHILD_CAPACITY`] before). Kept apart from `limit` so a
+    /// later `with_element_limit` cannot raise the limit past it.
+    ceiling: usize,
     /// Set when a requested capacity exceeded `limit`; the builder then writes
     /// every remaining row as NULL rather than letting `DuckDB` throw.
     overflowed: bool,
+}
+
+/// What to reserve for `capacity` elements under `limit` (with
+/// `capacity <= limit`): the next power of two, so that growing row by row
+/// reallocates a logarithmic number of times, capped at `limit`. When the
+/// power of two does not fit a `usize` (past 2^31 on a 32-bit target, where
+/// `next_power_of_two` would return 0 in a release build and the closure
+/// would then write past the child), the limit is the reservation.
+const fn reservation(capacity: usize, limit: usize) -> usize {
+    match capacity.checked_next_power_of_two() {
+        Some(p) if p < limit => p,
+        _ => limit,
+    }
 }
 
 impl ListBuilder {
@@ -314,6 +331,7 @@ impl ListBuilder {
             written: 0,
             reserved: 0,
             limit: MAX_CHILD_CAPACITY_USIZE,
+            ceiling: MAX_CHILD_CAPACITY_USIZE,
             overflowed: false,
         }
     }
@@ -336,10 +354,10 @@ impl ListBuilder {
     /// [`overflowed`][Self::overflowed] reports it.
     #[must_use]
     pub const fn with_element_limit(mut self, limit: usize) -> Self {
-        self.limit = if limit < MAX_CHILD_CAPACITY_USIZE {
+        self.limit = if limit < self.ceiling {
             limit
         } else {
-            MAX_CHILD_CAPACITY_USIZE
+            self.ceiling
         };
         self
     }
@@ -392,7 +410,7 @@ impl ListBuilder {
         if capacity > self.reserved {
             // Grow geometrically: each reserve that grows reallocates and copies
             // the whole child, so doing it once per row is quadratic.
-            let target = capacity.next_power_of_two().min(self.limit);
+            let target = reservation(capacity, self.limit);
             // SAFETY: `self.vector` is valid per this function's contract, and
             // `target` is within DuckDB's limit.
             unsafe { ListVector::reserve(self.vector, target) };
@@ -495,7 +513,8 @@ impl ListBuilder {
             self.written = existing;
             self.reserved = existing;
             // SAFETY: as above. DuckDB's ceiling depends on the child's type.
-            self.limit = self.limit.min(unsafe { max_child_capacity(self.vector) });
+            self.ceiling = unsafe { max_child_capacity(self.vector) };
+            self.limit = self.limit.min(self.ceiling);
             self.started = true;
         }
     }
@@ -542,8 +561,24 @@ impl ListBuilder {
 #[cfg(test)]
 mod tests {
     use super::{
-        capacity_for, element_bytes, ListBuilder, MAX_CHILD_CAPACITY_USIZE, MAX_LIST_CHILD_CAPACITY,
+        capacity_for, element_bytes, reservation, ListBuilder, MAX_CHILD_CAPACITY_USIZE,
+        MAX_LIST_CHILD_CAPACITY,
     };
+
+    #[test]
+    fn the_reservation_is_a_power_of_two_capped_at_the_limit_even_past_usize() {
+        assert_eq!(reservation(1, 100), 1);
+        assert_eq!(reservation(3, 100), 4);
+        assert_eq!(reservation(64, 100), 64);
+        assert_eq!(reservation(65, 100), 100);
+        assert_eq!(reservation(100, 100), 100);
+        // Past the largest power of two a `usize` holds: what a 32-bit target
+        // meets from 2^31 + 1. `next_power_of_two` overflows there (0 in a
+        // release build), which reserved nothing and let the closure write
+        // past the child.
+        let past = (usize::MAX >> 1) + 2;
+        assert_eq!(reservation(past, usize::MAX), usize::MAX);
+    }
     use crate::types::TypeId;
 
     #[test]

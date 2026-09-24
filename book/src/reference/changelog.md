@@ -895,6 +895,15 @@ in each section below.
   under `LIMIT 10` over 300,000 groups, 297,952 boxed `T`s leaked. A small
   `T` is now stored in `DuckDB`'s own state bytes, so it leaks nothing unless
   it owns heap memory itself.
+- **`ListBuilder::with_element_limit` called after the first row could
+  raise the limit past `DuckDB`'s ceiling** for the child type, which the
+  builder applies once, at the first row; a later row past the ceiling then
+  reached `duckdb_list_vector_reserve` and aborted the process (a `BIGINT`
+  row of 2^34 + 1 in `tests/ffi_roundtrip/list_limits.rs`). The ceiling is
+  kept apart and always applies. On a 32-bit target a row of more than 2^31
+  elements under a larger limit made the reservation 0 (`next_power_of_two`
+  overflowing) while the closure still wrote the row, past the child; the
+  reservation is now the limit there.
 - **`TableDescription::column_name`, `column_type` and `column_has_default`
   aborted the process for index `u64::MAX`** on `DuckDB` 1.5.0 to 1.5.5: the C
   API converts the index to an `optional_idx`, whose constructor throws for
