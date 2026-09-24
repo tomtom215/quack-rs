@@ -193,11 +193,18 @@ refuses one that holds such a value, at any nesting depth:
   hours) would wrap, because Arrow counts nanoseconds in an `i64` and DuckDB
   multiplies by 1000 unchecked: `INTERVAL 2562048 HOUR` would export as a
   negative interval.
-- A `UHUGEINT` of 2^127 or more would export as a negative
-  `decimal128(38, 0)` (`2^128 - 1` becomes `-1`).
+- A 39-digit `UHUGEINT` would export as a `decimal128(38, 0)` it does not
+  fit; from 2^127 it comes out negative (`2^128 - 1` becomes `-1`).
 - A 39-digit `HUGEINT` would export as a `decimal128(38, 0)` it does not fit,
   unless `arrow_lossless_conversion` is set (then it exports as a 16-byte
   fixed-size binary and is not refused).
+
+After the export, the array is also checked against the schema DuckDB
+declares for the chunk's types. Before 1.5.5, `BIGNUM` (and from 1.5.0
+`GEOMETRY`) exported under `arrow_output_version = '1.4'` are written as
+binary views while the schema says plain binary, which a consumer reads as
+offsets (`docs/upstream-duckdb-reports.md`, item 34); such an export is
+refused. Set `arrow_output_version = '1.0'` on those releases.
 
 ## Bridging to arrow-rs
 

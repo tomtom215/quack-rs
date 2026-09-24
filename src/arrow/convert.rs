@@ -147,7 +147,11 @@ pub fn data_chunk_to_arrow(
         return Err(err);
     }
     // SAFETY: DuckDB filled the record and installed its release callback.
-    Ok(unsafe { ArrowArray::from_raw(out) })
+    let array = unsafe { ArrowArray::from_raw(out) };
+    // SAFETY: `array` is what DuckDB just exported from `chunk` under
+    // `options`. On an error it is dropped here, which releases it.
+    unsafe { super::export_check::check_layout(options, chunk, &array) }?;
+    Ok(array)
 }
 
 /// Translates an Arrow schema into `DuckDB` type descriptors

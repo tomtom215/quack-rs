@@ -440,7 +440,7 @@ in each section below.
 - `LESSONS.md` and the book's pitfall catalogue gained L15 (`combine` must
   leave its source states unchanged) and L16 (a valid Arrow array is not
   always one `DuckDB` imports correctly): 28 documented pitfalls.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 33, and item 16 gained
+- `docs/upstream-duckdb-reports.md` gained items 20 to 34, and item 16 gained
   a `HUGEINT` reproducer.
 
 #### Fourth audit
@@ -913,6 +913,13 @@ in each section below.
   `decimal128(38, 0)` it does not fit. Each is now refused, at any nesting
   depth; a `HUGEINT` is accepted when `arrow_lossless_conversion` exports it
   as a 16-byte binary.
+- **`data_chunk_to_arrow` could return an array that contradicts its
+  schema.** Before 1.5.5, `BIGNUM` (and from 1.5.0 `GEOMETRY`) exported under
+  `arrow_output_version = '1.4'` are written as binary views while the
+  schema declares plain binary; a consumer reads the views as offsets, and
+  appending `DuckDB`'s own re-import of the batch crashed on 1.4.4 to 1.5.4
+  (item 34). The export is now checked against the declared schema and
+  refused on a mismatch.
 - **`data_chunk_from_arrow` imported valid Arrow arrays from the wrong rows,
   or read and wrote out of bounds.** `DuckDB` mishandles offsets below the
   top level: a struct inside an offset struct or list, a union's members, a

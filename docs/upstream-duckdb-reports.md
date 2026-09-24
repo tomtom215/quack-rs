@@ -44,6 +44,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 31 | Arrow dictionary with `null_count = -1` imports its NULL rows as values | C program, below | refused |
 | 32 | Arrow sparse union with nonzero `null_count` has its type ids read as a validity bitmap | C program, below | refused |
 | 33 | Arrow import of a `geoarrow.wkb` column of more than 2048 rows writes past a vector | C program, below | refused past 2048 rows |
+| 34 | Arrow export declares plain binary for BIGNUM/GEOMETRY but writes binary views under `arrow_output_version = '1.4'` | C program, below | such an export refused |
 
 ## Before filing
 
@@ -3564,3 +3565,108 @@ that `DuckDB` would convert as more than 2048 rows
 (`src/arrow/import_layout.rs`; `tests/ffi_roundtrip/arrow_layout.rs`, which
 crashed with SIGSEGV before the check). Extension types that other `DuckDB`
 extensions register may take the same path and are not known here.
+
+---
+
+## 34. Arrow export declares plain binary for `BIGNUM` and `GEOMETRY` but writes binary views
+
+Under `arrow_output_version = '1.4'` the appender writes non-`VARCHAR`
+binary data in the four-buffer binary-view layout, but before 1.5.5
+`duckdb_to_arrow_schema` declares `BIGNUM` (and, from 1.5.0, `GEOMETRY`,
+registered as `geoarrow.wkb`) as plain binary, format `z`, which has three
+buffers (`arrow_type_extension.cpp`, `PopulateSchema`; 1.5.5 declares `vz`).
+A consumer reads the view structs as offsets. `DuckDB`'s own import of the
+pair reports success; using the imported chunk crashes.
+
+Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5, x86_64
+Linux. Build: `gcc -I<libduckdb dir> item34.c -L<libduckdb dir> -lduckdb -o
+item34`; run `item34 bignum` and `item34 geometry` with
+`LD_LIBRARY_PATH=<libduckdb dir>`.
+
+```c
+// duckdb_data_chunk_to_arrow under arrow_output_version = '1.4': does the
+// array have the buffers the schema from duckdb_to_arrow_schema declares?
+// Plain binary ("z") has three buffers; a binary view ("vz") has four. The
+// exported pair is then imported back.
+// Usage: item34 bignum|geometry
+// Build: gcc -I<libduckdb dir> item34.c -L<libduckdb dir> -lduckdb -o item34
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    const char *q = argc > 1 && strcmp(argv[1], "geometry") == 0 ? "SELECT 'POINT (1 2)'::GEOMETRY"
+                                                                   : "SELECT 123456789012345678901234567890::BIGNUM";
+    printf("Built with DuckDB %s, %s\n", duckdb_library_version(), q);
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    duckdb_query(con, "SET arrow_output_version = '1.4'", NULL);
+    duckdb_result r;
+    if (duckdb_query(con, q, &r) != DuckDBSuccess) { printf("query: %s\n", duckdb_result_error(&r)); return 1; }
+    duckdb_data_chunk ch = duckdb_fetch_chunk(r);
+    duckdb_arrow_options opt; duckdb_connection_get_arrow_options(con, &opt);
+    duckdb_logical_type t = duckdb_column_logical_type(&r, 0);
+    const char *nm = "c";
+    struct ArrowSchema s = {0}; struct ArrowArray a = {0};
+    duckdb_error_data e = duckdb_to_arrow_schema(opt, &t, &nm, 1, (void *)&s);
+    if (e) { printf("schema: %s\n", duckdb_error_data_message(e)); return 1; }
+    e = duckdb_data_chunk_to_arrow(opt, ch, (void *)&a);
+    if (e) { printf("export: %s\n", duckdb_error_data_message(e)); return 1; }
+    printf("schema format %s, array n_buffers %lld\n", s.children[0]->format, (long long)a.children[0]->n_buffers);
+    duckdb_arrow_converted_schema conv;
+    e = duckdb_schema_from_arrow(con, (void *)&s, &conv);
+    if (e) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e)); return 1; }
+    printf("importing\n");
+    duckdb_data_chunk back = NULL;
+    e = duckdb_data_chunk_from_arrow(con, (void *)&a, conv, &back);
+    printf("import: %s\n", e ? duckdb_error_data_message(e) : "ok");
+    if (e) return 0;
+    duckdb_query(con, "CREATE TABLE rt AS SELECT * FROM (SELECT NULL::BIGNUM c) WHERE false", NULL);
+    duckdb_appender ap; duckdb_appender_create(con, NULL, "rt", &ap);
+    if (duckdb_append_data_chunk(ap, back) != DuckDBSuccess) { printf("append: %s\n", duckdb_appender_error(ap)); return 0; }
+    duckdb_appender_close(ap); duckdb_appender_destroy(&ap);
+    duckdb_result r2; duckdb_query(con, "SELECT c::VARCHAR FROM rt", &r2);
+    char *x = duckdb_value_varchar(&r2, 0, 0);
+    printf("round trip: %s\n", x ? x : "NULL");
+    return 0;
+}
+```
+
+Observed, `item34 bignum`. v1.4.4 to v1.5.4, identical apart from the
+version line, exit status 139 (SIGSEGV while appending):
+
+```text
+Built with DuckDB v1.5.4, SELECT 123456789012345678901234567890::BIGNUM
+schema format z, array n_buffers 4
+importing
+import: ok
+exit=139
+```
+
+v1.5.5:
+
+```text
+Built with DuckDB v1.5.5, SELECT 123456789012345678901234567890::BIGNUM
+schema format vz, array n_buffers 4
+importing
+import: ok
+round trip: 123456789012345678901234567890
+exit=0
+```
+
+`item34 geometry`, run before the round-trip lines were added (so it stops
+at the import): v1.5.0 to v1.5.4 declare `z` with four buffers and the import
+fails with `Invalid Input: Unsupported geometry type in WKB`; v1.5.5 declares
+`vz` and imports; 1.4.x has no `GEOMETRY` type.
+
+Expected: the declared format matching the buffers written.
+
+quack-rs mitigation: after the export, `data_chunk_to_arrow` compares every
+plain binary or UTF-8 node's buffer count with the schema `DuckDB` declares
+for the chunk's types and refuses the array on a mismatch
+(`src/arrow/export_check.rs`; `tests/ffi_roundtrip/arrow_export.rs`, which
+failed on a 1.5.4 engine before the check).

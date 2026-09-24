@@ -28,7 +28,7 @@ use libduckdb_sys::{
     duckdb_vector_get_data, duckdb_vector_get_validity, idx_t,
 };
 
-use super::{to_arrow_schema, ArrowOptions};
+use super::{to_arrow_schema, ArrowOptions, ArrowSchema, RawArrowArray};
 use crate::data_chunk::DataChunk;
 use crate::error_data::{DuckDbErrorType, ErrorData};
 use crate::selection_vector::SelectionVector;
@@ -326,9 +326,152 @@ pub(super) fn check_chunk(options: &ArrowOptions<'_>, chunk: &DataChunk) -> Resu
     Ok(())
 }
 
+/// Buffers a node of Arrow `format` must have, when the format fixes it and
+/// `DuckDB` has been seen to write another count: plain (non-view) binary and
+/// UTF-8, which have validity, offsets and data.
+fn expected_buffers(format: &str) -> Option<i64> {
+    matches!(format, "z" | "Z" | "u" | "U").then_some(3)
+}
+
+/// The first node of `array` whose buffer count contradicts the format its
+/// `schema` declares, as a path of child indices.
+///
+/// # Safety
+///
+/// `array` must be a valid Arrow array whose tree mirrors `schema`'s (the
+/// same node counts, child for child), as `DuckDB` exports them.
+unsafe fn layout_mismatch(schema: &ArrowSchema, array: &RawArrowArray) -> Option<String> {
+    let format = schema.format().unwrap_or("");
+    if let Some(want) = expected_buffers(format) {
+        if array.n_buffers != want {
+            return Some(format!(
+                "format {format:?} declares {want} buffers, the array has {}",
+                array.n_buffers
+            ));
+        }
+    }
+    let children = usize::try_from(array.n_children).unwrap_or(0);
+    for i in 0..children.min(schema.child_count()) {
+        let (Some(child_schema), false) = (schema.child(i), array.children.is_null()) else {
+            continue;
+        };
+        // SAFETY: `i < n_children` and a valid array's children are live.
+        let Some(child) = (unsafe { (*array.children.add(i)).as_ref() }) else {
+            continue;
+        };
+        // SAFETY: the child mirrors `child_schema` as its parent mirrors `schema`.
+        if let Some(found) = unsafe { layout_mismatch(child_schema, child) } {
+            return Some(format!("child {i}: {found}"));
+        }
+    }
+    // SAFETY: a valid array's dictionary is null or live, and mirrors the
+    // schema's.
+    if let (Some(values), Some(dict)) = (schema.dictionary(), unsafe { array.dictionary.as_ref() })
+    {
+        // SAFETY: as above.
+        return unsafe { layout_mismatch(values, dict) }
+            .map(|found| format!("dictionary: {found}"));
+    }
+    None
+}
+
+/// Checks `array`, just exported from `chunk` under `options`, against the
+/// schema `DuckDB` declares for the chunk's types: before 1.5.5, `BIGNUM` (and
+/// from 1.5.0 `GEOMETRY`) under `arrow_output_version = '1.4'` were written as
+/// binary views (four buffers) while the schema declared plain binary (three),
+/// which an importer reads as offsets (`docs/upstream-duckdb-reports.md`,
+/// item 34).
+///
+/// # Safety
+///
+/// `array` must be what `duckdb_data_chunk_to_arrow` produced from `chunk`
+/// under `options`.
+pub(super) unsafe fn check_layout(
+    options: &ArrowOptions<'_>,
+    chunk: &DataChunk,
+    array: &super::ArrowArray,
+) -> Result<(), ErrorData> {
+    let types: Vec<LogicalType> = (0..chunk.column_count())
+        .map(|column| {
+            // SAFETY: `column` is in range; the returned type is owned.
+            unsafe { LogicalType::from_raw(duckdb_vector_get_column_type(chunk.vector(column))) }
+        })
+        .collect();
+    let names: Vec<String> = (0..types.len()).map(|i| format!("c{i}")).collect();
+    let columns: Vec<(&str, &LogicalType)> =
+        names.iter().map(String::as_str).zip(types.iter()).collect();
+    let schema = to_arrow_schema(options, &columns)?;
+    // SAFETY: `array.as_ptr()` is live for `array`'s lifetime.
+    let raw = unsafe { &*array.as_ptr() };
+    // SAFETY: DuckDB exported `raw` from these types, so it mirrors `schema`.
+    unsafe { layout_mismatch(&schema, raw) }.map_or(Ok(()), |found| {
+        Err(ErrorData::new(
+            DuckDbErrorType::InvalidInput,
+            &format!(
+                "data_chunk_to_arrow: the exported array contradicts its declared schema ({found}). \
+                 DuckDB before 1.5.5 writes BIGNUM and GEOMETRY as binary views under \
+                 arrow_output_version = '1.4' while declaring plain binary \
+                 (docs/upstream-duckdb-reports.md, item 34); set arrow_output_version = '1.0' \
+                 or upgrade DuckDB"
+            ),
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    unsafe extern "C" fn keep_schema(schema: *mut crate::arrow::RawArrowSchema) {
+        // SAFETY: called with a live record; this test owns everything it
+        // points at.
+        unsafe { (*schema).release = None };
+    }
+
+    /// A struct schema with one child of `format`, and a struct array whose
+    /// child has `buffers` buffers; `layout_mismatch`'s verdict on the pair.
+    fn mismatch(format: &str, buffers: i64) -> Option<String> {
+        use crate::arrow::RawArrowSchema;
+        let formats = [
+            std::ffi::CString::new("+s").expect("no NUL"),
+            std::ffi::CString::new(format).expect("no NUL"),
+        ];
+        let mut child_schema = RawArrowSchema::empty();
+        child_schema.format = formats[1].as_ptr();
+        child_schema.release = Some(keep_schema);
+        let mut schema_children = [std::ptr::from_mut(&mut child_schema)];
+        let mut root = RawArrowSchema::empty();
+        root.format = formats[0].as_ptr();
+        root.n_children = 1;
+        root.children = schema_children.as_mut_ptr();
+        root.release = Some(keep_schema);
+        // SAFETY: `root` and everything it points at outlive `schema`, and
+        // `keep_schema` frees nothing.
+        let schema = unsafe { ArrowSchema::from_raw(root) };
+
+        let mut child = RawArrowArray::empty();
+        child.n_buffers = buffers;
+        let mut array_children = [std::ptr::from_mut(&mut child)];
+        let mut array = RawArrowArray::empty();
+        array.n_children = 1;
+        array.children = array_children.as_mut_ptr();
+        // SAFETY: `array` mirrors `schema` and its child pointer is live.
+        unsafe { layout_mismatch(&schema, &array) }
+    }
+
+    #[test]
+    fn an_array_whose_buffer_count_contradicts_its_declared_format_is_found() {
+        assert_eq!(mismatch("z", 3), None);
+        assert_eq!(mismatch("u", 3), None);
+        assert_eq!(mismatch("vz", 4), None);
+        assert_eq!(mismatch("i", 2), None);
+        let found = mismatch("z", 4).expect("BIGNUM before 1.5.5");
+        assert!(
+            found.contains("child 0") && found.contains("3 buffers"),
+            "{found}"
+        );
+        assert!(mismatch("U", 2).is_some());
+    }
 
     #[test]
     fn an_interval_exports_exactly_while_its_nanoseconds_fit_an_i64() {

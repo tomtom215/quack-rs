@@ -111,3 +111,37 @@ fn a_uhugeint_with_more_than_38_digits_is_refused() {
     )
     .expect("38 digits fit");
 }
+
+/// Before 1.5.5, `BIGNUM` (and from 1.5.0 `GEOMETRY`) exported under
+/// `arrow_output_version = '1.4'` wrote the four-buffer binary-view layout
+/// while `to_arrow_schema` declared plain binary (`z`, three buffers), so an
+/// importer reads the view structs as offsets: `DuckDB`'s own import of the
+/// batch reported success, and appending the result crashed (SIGSEGV on
+/// 1.4.4 to 1.5.4, upstream item 34). Such an export is refused; 1.5.5
+/// declares `vz` and it succeeds.
+#[test]
+fn an_export_whose_buffers_contradict_its_declared_format_is_refused() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    con.execute("SET arrow_output_version = '1.4'")
+        .expect("set");
+    let version = {
+        let mut result = con.query("SELECT version()").expect("version");
+        let chunk = result.next_chunk().expect("fetch").expect("one row");
+        // SAFETY: one VARCHAR row, never NULL.
+        unsafe { chunk.reader(0).read_str(0) }.to_owned()
+    };
+    let fixed = quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 5));
+    for sql in [
+        "SELECT 12345::BIGNUM AS v",
+        "SELECT 'POINT (1 2)'::GEOMETRY AS v",
+    ] {
+        let result = export(&con, sql);
+        if fixed {
+            result.unwrap_or_else(|e| panic!("{version}: {sql}: {e}"));
+        } else {
+            let message = result.expect_err(sql);
+            assert!(message.contains("item 34"), "{version}: {sql}: {message}");
+        }
+    }
+}
