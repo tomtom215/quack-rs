@@ -35,6 +35,22 @@
 //! `panic = "abort"`, which silently disables everything in this module. Keep
 //! extension crates on `panic = "unwind"` — the quack-rs scaffold generates that.
 //!
+//! # The body returns `()`
+//!
+//! A body is the closure `catch_unwind` runs, and its value is discarded. So
+//! every body except `cast_callback!`'s (which returns the cast's `bool`) must
+//! have type `()`: a body that used `?` would otherwise compile, and the error
+//! it returned would be dropped without being reported.
+//!
+//! ```rust,compile_fail,E0308
+//! quack_rs::scalar_callback!(parse_or_drop, |info, input, output| {
+//!     let _n: i64 = "not a number".parse()?; // dropped, not reported
+//!     Ok::<(), std::num::ParseIntError>(())
+//! });
+//! ```
+//!
+//! Report such an error with the callback's `set_error` instead.
+//!
 //! # Example: Scalar callback
 //!
 //! ```rust,no_run
@@ -115,7 +131,8 @@ macro_rules! scalar_callback {
             $input: ::libduckdb_sys::duckdb_data_chunk,
             $output: ::libduckdb_sys::duckdb_vector,
         ) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in; `c_msg` outlives the call.
@@ -170,7 +187,8 @@ macro_rules! table_scan_callback {
             $info: ::libduckdb_sys::duckdb_function_info,
             $output: ::libduckdb_sys::duckdb_data_chunk,
         ) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` and `output` are the pointers DuckDB passed in.
@@ -216,7 +234,8 @@ macro_rules! table_bind_callback {
         /// Called by DuckDB. `info` is provided by the DuckDB runtime.
         #[allow(unused_unsafe)]
         pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_bind_info) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
@@ -260,7 +279,8 @@ macro_rules! table_init_callback {
         /// Called by DuckDB. `info` is provided by the DuckDB runtime.
         #[allow(unused_unsafe)]
         pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_init_info) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
@@ -301,7 +321,8 @@ macro_rules! scalar_bind_callback {
         /// Called by DuckDB. `info` is provided by the DuckDB runtime.
         #[allow(unused_unsafe)]
         pub unsafe extern "C" fn $name($info: $crate::scalar::RawScalarBindInfo) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the scalar bind info DuckDB passed in.
@@ -341,7 +362,8 @@ macro_rules! scalar_init_callback {
         /// Called by DuckDB. `info` is provided by the DuckDB runtime.
         #[allow(unused_unsafe)]
         pub unsafe extern "C" fn $name($info: $crate::scalar::RawScalarInitInfo) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the scalar init info DuckDB passed in.
@@ -383,7 +405,8 @@ macro_rules! aggregate_update_callback {
             $input: ::libduckdb_sys::duckdb_data_chunk,
             $states: *mut ::libduckdb_sys::duckdb_aggregate_state,
         ) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
@@ -429,7 +452,8 @@ macro_rules! aggregate_combine_callback {
             $target: *mut ::libduckdb_sys::duckdb_aggregate_state,
             $count: ::libduckdb_sys::idx_t,
         ) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
@@ -471,7 +495,8 @@ macro_rules! aggregate_finalize_callback {
             $count: ::libduckdb_sys::idx_t,
             $offset: ::libduckdb_sys::idx_t,
         ) {
-            let outcome = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let outcome =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = outcome {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
@@ -657,7 +682,8 @@ macro_rules! replacement_scan_callback {
             $table_name: *const ::std::os::raw::c_char,
             $data: *mut ::std::os::raw::c_void,
         ) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
@@ -766,7 +792,8 @@ macro_rules! __copy_callback_impl {
         /// Called by DuckDB. All parameters are provided by the DuckDB runtime.
         #[allow(unused_unsafe)]
         pub unsafe extern "C" fn $name($info: ::libduckdb_sys::$info_ty) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let ::std::result::Result::Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
@@ -807,7 +834,8 @@ macro_rules! copy_sink_callback {
             $info: ::libduckdb_sys::duckdb_copy_function_sink_info,
             $chunk: ::libduckdb_sys::duckdb_data_chunk,
         ) {
-            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            let result =
+                ::std::panic::catch_unwind::<_, ()>(::std::panic::AssertUnwindSafe(|| $body));
             if let ::std::result::Result::Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.

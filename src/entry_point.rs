@@ -145,13 +145,14 @@ macro_rules! entry_point {
             info: ::libduckdb_sys::duckdb_extension_info,
             access: *const ::libduckdb_sys::duckdb_extension_access,
         ) -> bool {
+            // The arguments are evaluated inside the entry point's panic guard.
             unsafe {
-                $crate::entry_point::init_extension_with_policy(
+                $crate::entry_point::__entry_point(
                     info,
                     access,
                     $crate::DUCKDB_API_VERSION,
-                    $policy,
-                    $register,
+                    || $policy,
+                    || $register,
                 )
             }
         }
@@ -203,13 +204,14 @@ macro_rules! entry_point_v2 {
             info: ::libduckdb_sys::duckdb_extension_info,
             access: *const ::libduckdb_sys::duckdb_extension_access,
         ) -> bool {
+            // The arguments are evaluated inside the entry point's panic guard.
             unsafe {
-                $crate::entry_point::init_extension_v2_with_policy(
+                $crate::entry_point::__entry_point_v2(
                     info,
                     access,
                     $crate::DUCKDB_API_VERSION,
-                    $policy,
-                    $register,
+                    || $policy,
+                    || $register,
                 )
             }
         }
@@ -616,6 +618,88 @@ unsafe fn database_from_access(
 /// Note that `catch_unwind` cannot catch anything when the extension is built
 /// with `panic = "abort"`. quack-rs's scaffold therefore generates
 /// `panic = "unwind"` for extension crates.
+/// Evaluates an entry-point macro's `$policy` and `$register` arguments, with
+/// a panic in either turned into an error rather than unwinding out of the
+/// generated `extern "C"` function.
+fn evaluate_arguments<P, R, F>(policy: P, register: R) -> Result<(AbiPolicy, F), ExtensionError>
+where
+    P: FnOnce() -> AbiPolicy,
+    R: FnOnce() -> F,
+{
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (policy(), register()))).map_err(
+        |panic| {
+            ExtensionError::new(format!(
+                "evaluating the entry point's arguments panicked: {}",
+                crate::callback::take_panic_message(panic)
+            ))
+        },
+    )
+}
+
+/// What [`entry_point!`] expands to: [`init_extension_with_policy`], with the
+/// macro's arguments evaluated under the panic guard. Not public API.
+///
+/// # Safety
+///
+/// Same invariants as [`init_extension`].
+#[doc(hidden)]
+pub unsafe fn __entry_point<P, R, F>(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    api_version: &str,
+    policy: P,
+    register: R,
+) -> bool
+where
+    P: FnOnce() -> AbiPolicy,
+    R: FnOnce() -> F,
+    F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
+{
+    match evaluate_arguments(policy, register) {
+        // SAFETY: forwarded from this function's own contract.
+        Ok((policy, register)) => unsafe {
+            init_extension_with_policy(info, access, api_version, policy, register)
+        },
+        Err(e) => {
+            // SAFETY: `access` is null or valid per the caller's contract.
+            unsafe { report_error(info, access, &e) };
+            false
+        }
+    }
+}
+
+/// What [`entry_point_v2!`] expands to: [`init_extension_v2_with_policy`],
+/// with the macro's arguments evaluated under the panic guard. Not public API.
+///
+/// # Safety
+///
+/// Same invariants as [`init_extension_v2`].
+#[doc(hidden)]
+pub unsafe fn __entry_point_v2<P, R, F>(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    api_version: &str,
+    policy: P,
+    register: R,
+) -> bool
+where
+    P: FnOnce() -> AbiPolicy,
+    R: FnOnce() -> F,
+    F: FnOnce(&Connection) -> Result<(), ExtensionError>,
+{
+    match evaluate_arguments(policy, register) {
+        // SAFETY: forwarded from this function's own contract.
+        Ok((policy, register)) => unsafe {
+            init_extension_v2_with_policy(info, access, api_version, policy, register)
+        },
+        Err(e) => {
+            // SAFETY: `access` is null or valid per the caller's contract.
+            unsafe { report_error(info, access, &e) };
+            false
+        }
+    }
+}
+
 fn catch_registration_panic<F>(register: F) -> Result<(), ExtensionError>
 where
     F: FnOnce() -> Result<(), ExtensionError>,
@@ -768,8 +852,8 @@ mod tests {
     // tests/integration_test.rs. Unit tests here verify pure-Rust logic.
 
     use super::{
-        catch_registration_panic, database_from_access, init_extension_internal, policy_verdict,
-        AbiPolicy, AbiVerdict,
+        catch_registration_panic, database_from_access, evaluate_arguments,
+        init_extension_internal, policy_verdict, AbiPolicy, AbiVerdict,
     };
     use crate::error::ExtensionError;
 
@@ -1079,5 +1163,21 @@ mod tests {
         let err = catch_registration_panic(|| std::panic::panic_any(PayloadBomb))
             .expect_err("panic must become an error");
         assert!(err.as_str().contains("registration panicked"), "{err}");
+    }
+
+    #[test]
+    fn a_panicking_entry_point_argument_is_an_error_naming_the_panic() {
+        let (policy, register) =
+            evaluate_arguments(|| AbiPolicy::Trust, || 7).expect("no panic, no error");
+        assert_eq!((policy, register), (AbiPolicy::Trust, 7));
+        let err = evaluate_arguments(|| AbiPolicy::Strict, || -> u8 { panic!("bad register") })
+            .expect_err("a panic is an error");
+        assert_eq!(
+            err.as_str(),
+            "evaluating the entry point's arguments panicked: bad register"
+        );
+        let err = evaluate_arguments(|| -> AbiPolicy { panic!("bad policy") }, || 0)
+            .expect_err("a panic is an error");
+        assert!(err.as_str().ends_with("bad policy"), "{err}");
     }
 }

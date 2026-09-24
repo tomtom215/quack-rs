@@ -443,6 +443,11 @@ in each section below.
   schema's shape (see Fixed).
 - `data_chunk_to_arrow` refuses a chunk holding a value `DuckDB` would export
   as a different value (see Fixed).
+- **Breaking: a callback macro's body must have type `()`** (except
+  `cast_callback!`'s, which returns the cast's `bool`). The body runs inside
+  `catch_unwind`, and its value was discarded: a body that used `?` compiled,
+  and the error it returned was dropped without being reported. It is now a
+  type error; report the error through the callback's `set_error`.
 - **Breaking: catalog lookups are refused in a catalog `DuckDB` does not
   implement itself.** For a catalog a storage extension attaches,
   `duckdb_catalog_get_entry` starts that extension's transaction and runs its
@@ -1041,6 +1046,11 @@ in each section below.
   and ARRAY element vector below that child, down to the next `LIST` or `MAP`:
   `DuckDB` 1.5.5 reallocates all of their data and validity buffers
   (`tests/ffi_roundtrip/nested_reserve.rs` measures which move).
+- **`entry_point!` and `entry_point_v2!` aborted the process when an
+  argument expression panicked.** `$policy` and `$register` were evaluated in
+  the generated `extern "C"` function before the panic guard ("panic in a
+  function that cannot unwind"); they are now evaluated under it, and the
+  load fails with the panic's message.
 - **A typed table function used as a `COPY … FROM` reader could invalidate
   the database.** Its bind declares columns, and under `COPY … FROM`
   `DuckDB` appends each to the `INSERT`'s own expected types, so every chunk
