@@ -681,7 +681,7 @@ extension's `init_c_api` entry-point.
 The `bundled-test` feature adds `duckdb = { features = ["bundled"] }` as a dependency.
 `duckdb` in turn depends on `libduckdb-sys`.  Cargo's **feature-unification** rule merges
 features across all uses of the same crate, so the single `libduckdb-sys` that ends up in
-the test binary carries *both* `loadable-extension` AND `bundled-full`.
+the test binary carries *both* `loadable-extension` AND `bundled`.
 
 In this combined configuration the bundled DuckDB static library is linked into the binary,
 but `loadable-extension` still intercepts every call through the uninitialized dispatch

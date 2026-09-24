@@ -208,6 +208,12 @@ fn init_dispatch_table_once() {
         }
         TL_API_PTR.with(|cell| cell.set(api_ptr));
 
+        /// Returns the API pointer stored in `TL_API_PTR`.
+        ///
+        /// # Safety
+        ///
+        /// None: both arguments are ignored. It is `unsafe` only because the
+        /// `get_api` slot takes an `unsafe extern "C" fn`.
         unsafe extern "C" fn get_api_fn(
             _info: libduckdb_sys::duckdb_extension_info,
             _version: *const std::os::raw::c_char,

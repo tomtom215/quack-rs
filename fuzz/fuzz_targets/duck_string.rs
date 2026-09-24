@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community
+// and encouraging more Rust development!
 //! Fuzzes the `duckdb_string_t` decoder over arbitrary 16-byte inputs.
 //!
 //! `DuckStringView::inline_from_bytes` is the safe constructor: it takes 16

@@ -267,8 +267,9 @@ unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: i
 }
 ```
 
-`destroy_callback` calls `Box::from_raw` for each state and then nulls the pointer,
-preventing double-free. See [Pitfall L2](../reference/pitfalls.md#l2-state-destroy-double-free).
+`destroy_callback` drops the `T` in each state (freeing its box, if the state is
+too large to be stored inline) and clears the state's tag first, so a second call
+on the same state is a no-op. See [Pitfall L2](../reference/pitfalls.md#l2-state-destroy-double-free).
 
 ---
 

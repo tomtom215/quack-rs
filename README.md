@@ -791,7 +791,8 @@ within those callbacks.
 
 The documentation convention is:
 
-- Every `unsafe fn` states what the caller must guarantee under `# Safety`.
+- Every `unsafe fn` states what the caller must guarantee under `# Safety`; a
+  trait's `unsafe` methods state it once, on the trait.
 - Every `unsafe` block **inside a safe function** carries a `// SAFETY:` comment —
   there the crate, not the caller, is asserting the invariant.
 - Every `unsafe` block inside an `unsafe fn` carries one too, naming the clause of
@@ -850,9 +851,9 @@ inside a callback is caught there like any other.
 
 `quack-rs` uses four layers of tests:
 
-### 1. Unit tests (in every source file)
+### 1. Unit tests (alongside the code)
 
-Each module contains `#[cfg(test)]` unit tests that verify pure-Rust behavior without
+Most modules contain `#[cfg(test)]` unit tests that verify pure-Rust behavior without
 a DuckDB runtime. These test state machine correctness, builder field storage, validation
 logic, and the `description.yml` parser.
 

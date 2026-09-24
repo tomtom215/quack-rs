@@ -672,7 +672,7 @@ Regular `cargo test` (no feature) does not exercise this code path, so CI can
 miss it entirely.
 
 **Root cause**: Cargo's feature-unification merges `loadable-extension` (from
-the main `libduckdb-sys` dependency) and `bundled-full` (pulled in by the
+the main `libduckdb-sys` dependency) and `bundled` (pulled in by the
 `duckdb` crate's `features = ["bundled"]`) into a single `libduckdb-sys` build
 with **both features active**. In `loadable-extension` mode every DuckDB C API
 call is routed through an `AtomicPtr<fn>` dispatch table, which is normally
@@ -704,8 +704,10 @@ during development and code review.
 
 3. `InMemoryDb::open()` — calls `init_dispatch_table_once()` before opening
    the connection. That function calls `quack_rs_create_api_v1()` once and
-   feeds the result through `duckdb_rs_extension_api_init`, populating all 459
-   `AtomicPtr` slots in the dispatch table. A `std::sync::Once` guard makes it
+   feeds the result through `duckdb_rs_extension_api_init`, populating every
+   `AtomicPtr` slot in the dispatch table, one per field of `duckdb_ext_api_v1`
+   (546 with the 1.5.2 – 1.5.5 bindings, 459 with 1.4.x; see the table in
+   [ABI Compatibility](../concepts/abi.md)). A `std::sync::Once` guard makes it
    safe to call from any number of threads and test cases.
 
 4. CI `test-bundled` job — runs
@@ -716,7 +718,7 @@ during development and code review.
 identically in both the public `duckdb_extension.h` (used by `libduckdb-sys`
 bindgen) and the internal `extension_api.hpp` (used by `CreateAPIv1()`). Both
 include the `DUCKDB_EXTENSION_API_VERSION_UNSTABLE` fields. `CreateAPIv1()` sets
-all 459 fields. The Rust and C++ structs are produced from the same DuckDB
+every field. The Rust and C++ structs are produced from the same DuckDB
 release and therefore stay in sync.
 
 **Risk table** (using DuckDB's internal C++ API):

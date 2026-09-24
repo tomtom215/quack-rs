@@ -318,6 +318,12 @@ impl ReplacementScanBuilder {
         // PITFALL L3: `T::drop` is arbitrary user code and `DuckDB` calls this
         // through an `extern "C"` pointer with no error channel, where an
         // unwind is a process abort. Contain it.
+        /// Drops the boxed `T` `DuckDB` hands back when it removes the scan.
+        ///
+        /// # Safety
+        ///
+        /// `ptr` must be null or the `Box<T>` pointer registered with it, not
+        /// yet freed (`DuckDB` calls this once, with the registered pointer).
         unsafe extern "C" fn drop_box<T>(ptr: *mut c_void) {
             if !ptr.is_null() {
                 // SAFETY: `ptr` came from `Box::into_raw` just below.

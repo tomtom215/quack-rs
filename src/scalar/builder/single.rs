@@ -280,9 +280,10 @@ impl ScalarFunctionBuilder {
     /// Sets a bind callback for this scalar function (`DuckDB` 1.5.0+).
     ///
     /// The bind callback is invoked once during query planning. It can inspect
-    /// the function arguments and store per-query data via
-    /// `duckdb_scalar_function_bind_set_bind_data`. This data can later be
-    /// retrieved during execution via `duckdb_scalar_function_get_bind_data`.
+    /// the function arguments and store per-query data with
+    /// `ScalarBindInfo::set_bind_data` (`duckdb_scalar_function_set_bind_data`).
+    /// This data can later be retrieved during execution with
+    /// `ScalarFunctionInfo::get_bind_data` (`duckdb_scalar_function_get_bind_data`).
     ///
     /// Guard it against panics with
     /// [`scalar_bind_callback!`](crate::scalar_bind_callback), **not**

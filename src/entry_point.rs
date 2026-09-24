@@ -146,6 +146,8 @@ macro_rules! entry_point {
             access: *const ::libduckdb_sys::duckdb_extension_access,
         ) -> bool {
             // The arguments are evaluated inside the entry point's panic guard.
+            // SAFETY: `info` and `access` are the pointers DuckDB passed to this
+            // entry point, valid for the call, which is the helper's contract.
             unsafe {
                 $crate::entry_point::__entry_point(
                     info,
@@ -205,6 +207,8 @@ macro_rules! entry_point_v2 {
             access: *const ::libduckdb_sys::duckdb_extension_access,
         ) -> bool {
             // The arguments are evaluated inside the entry point's panic guard.
+            // SAFETY: `info` and `access` are the pointers DuckDB passed to this
+            // entry point, valid for the call, which is the helper's contract.
             unsafe {
                 $crate::entry_point::__entry_point_v2(
                     info,

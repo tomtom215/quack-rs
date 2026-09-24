@@ -199,6 +199,11 @@ pub type DestroyFn = unsafe extern "C" fn(states: *mut duckdb_aggregate_state, c
 /// every later row of the chunk re-reads row 0 (Pitfall L13). Any destructor
 /// takes the aggregate off that path. A no-op cannot fail, touches no state
 /// and cannot unwind.
+///
+/// # Safety
+///
+/// None: it reads neither argument. It is `unsafe` only because `DuckDB`'s
+/// destructor slot takes an `unsafe extern "C" fn`.
 pub(crate) const unsafe extern "C" fn no_op_destroy(
     _states: *mut duckdb_aggregate_state,
     _count: idx_t,

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community
+// and encouraging more Rust development!
 //! Fuzzes the hand-rolled `description.yml` parser and validator.
 //!
 //! An extension author runs this over a file from a repository, and the

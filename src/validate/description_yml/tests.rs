@@ -590,8 +590,9 @@ fn single_quoted_date_versions_parse() {
     assert_eq!(desc.maintainers, vec!["rustyconover".to_string()]);
 }
 
-/// Observed in `chsql`, `substrait`, `magic` and eleven others: a quoted
-/// `excluded_platforms` with a trailing semicolon, and `windows_amd64_rtools`,
+/// Observed in `chsql`, `dns`, `sshfs` and ten others (13 descriptors at
+/// community-extensions `5ae7df8`): a quoted `excluded_platforms` with a
+/// trailing semicolon, and `windows_amd64_rtools`,
 /// which is not in the distribution matrix but is excluded by 84 of the 346
 /// published descriptors (community-extensions `5ae7df8`).
 #[test]

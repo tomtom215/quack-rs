@@ -69,7 +69,9 @@ cargo build --release --manifest-path examples/hello-ext/Cargo.toml
 
 ```rust
 // SPDX-License-Identifier: MIT
-// Copyright 2026 Tom F. <tomf@tomtomtech.net> (https://github.com/tomtom215)
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community
+// and encouraging more Rust development!
 ```
 
 Markdown / TOML / YAML files use the appropriate comment syntax.
@@ -164,7 +166,7 @@ Coverage and mutation testing run in separate workflows.
 
 ### Unit tests
 
-Unit tests live in `#[cfg(test)]` modules within each source file. They test
+Unit tests live in `#[cfg(test)]` modules alongside the code. They test
 pure-Rust logic that does not require a live DuckDB instance.
 
 **Constraint**: `libduckdb-sys` with `features = ["loadable-extension"]` makes

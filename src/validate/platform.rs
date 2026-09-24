@@ -31,11 +31,12 @@ use crate::error::ExtensionError;
 ///   R-tools Windows build. `DuckDBPlatform()` in v1.5.5's
 ///   `duckdb/common/platform.hpp` maps `DUCKDB_PLATFORM_RTOOLS` to the
 ///   `_mingw` suffix instead, so current builds report `windows_amd64_mingw`;
-///   the old name is not in the distribution matrix either, but 14 of the 43
-///   published extensions sampled still exclude it.
+///   the old name is not in the distribution matrix either, but 84 of the 346
+///   extensions in `duckdb/community-extensions` (commit `5ae7df8`,
+///   2026-09-23) still exclude it.
 /// - **`windows_arm64_mingw`**, which v1.5.5's `DuckDBPlatform()` produces for
 ///   a MinGW build on arm64 (`_mingw` postfix on the `arm64` arch). Not in the
-///   distribution matrix; two published extensions exclude it.
+///   distribution matrix; three of those 346 extensions exclude it.
 /// - **The group names** in [`DUCKDB_PLATFORM_GROUPS`] — `linux`, `osx`,
 ///   `wasm`, `windows` — which are the top-level keys of
 ///   `distribution_matrix.json` and appear in at least one published

@@ -164,15 +164,17 @@ assert_eq!(
 
 ## Name and parameter validation
 
-Macro names and parameter names are validated with
+Macro names are validated with
 [`validate_function_name`](https://docs.rs/quack-rs/latest/quack_rs/validate/function_name/fn.validate_function_name.html),
-the same rules as function names:
+the same rules as function names, and parameter names with
+[`validate_parameter_name`](https://docs.rs/quack-rs/latest/quack_rs/validate/function_name/fn.validate_parameter_name.html):
 - Start with an ASCII letter or underscore, then ASCII letters, digits or underscores
 - Not exceed 256 characters
 - No null bytes
-- Not a DuckDB reserved keyword (`order`, `select`, ...) — for parameters too: the
-  body could only refer to such a parameter as `"order"`, so it is refused with a
-  message that says "parameter name"
+- Not a DuckDB keyword that cannot be used in that position unquoted. For a
+  macro name that is a keyword it cannot be *called* by (`order`, `coalesce`);
+  for a parameter, one the body cannot *refer* to it by (`order`, `left`). The
+  two lists differ: a parameter may be called `columns`, which a macro may not.
 
 Case is not restricted — DuckDB identifiers are case-insensitive, so a macro
 registered as `MyMacro` is callable as `mymacro(...)` or `MYMACRO(...)`.
@@ -183,6 +185,9 @@ assert!(SqlMacro::scalar("1f", &[], "1").is_err());       // ❌ starts with a d
 assert!(SqlMacro::scalar("my-macro", &[], "1").is_err()); // ❌ hyphen
 assert!(SqlMacro::scalar("f", &["a b"], "1").is_err());   // ❌ space in param
 assert!(SqlMacro::scalar("f", &["order"], "1").is_err()); // ❌ reserved keyword as param
+assert!(SqlMacro::scalar("f", &["left"], "1").is_err());  // ❌ a body cannot refer to it
+assert!(SqlMacro::scalar("columns", &[], "1").is_err());  // ❌ cannot be called as a macro
+assert!(SqlMacro::scalar("f", &["columns"], "1").is_ok()); // ✅ fine as a parameter
 assert!(SqlMacro::scalar("MyMacro", &[], "1").is_ok());   // ✅ mixed case allowed
 assert!(SqlMacro::scalar("f", &["X"], "1").is_ok());      // ✅ mixed-case param allowed
 assert!(SqlMacro::scalar("f", &["_x"], "1").is_ok());     // ✅ underscore prefix allowed

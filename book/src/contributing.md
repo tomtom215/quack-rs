@@ -65,14 +65,16 @@ These same checks run in CI on every push and pull request.
 
 ### Unit tests
 
-Unit tests live in `#[cfg(test)]` modules within each source file. They test
+Unit tests live in `#[cfg(test)]` modules alongside the code. They test
 pure-Rust logic that does not require a live DuckDB instance.
 
 **Important constraint**: `libduckdb-sys` with `features = ["loadable-extension"]`
 makes all DuckDB C API functions go through lazy `AtomicPtr` dispatch. These
 pointers are only populated when `duckdb_rs_extension_api_init` is called from
-within a real DuckDB extension load. Calling any `duckdb_*` function in a unit
-test will panic. Move such tests to integration tests or example-extension tests.
+within a real DuckDB extension load — or by `testing::InMemoryDb::open()` under
+the `bundled-test` / `bundled-test-prebuilt` features. Without one of those,
+calling any `duckdb_*` function in a unit test panics ("DuckDB API not
+initialized"). Put such tests in `tests/ffi_roundtrip.rs`.
 
 ### Integration tests
 

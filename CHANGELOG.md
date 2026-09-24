@@ -286,7 +286,7 @@ in each section below.
   entry was missing its entire "Portability and feature-combination breakage"
   subsection. The only deliberate difference, an em dash in release headings,
   is applied by the script.
-- `timeout-minutes` on every `ci.yml` job (35 at this release). The default is
+- `timeout-minutes` on every `ci.yml` job (36 at this release). The default is
   360 per job, so a hang in `test-bundled` (which compiles DuckDB from C++
   source) or
   `leak-check` (`-Zbuild-std`) burned six hours of runner time.
@@ -557,7 +557,7 @@ in each section below.
   round-trips anything that fits in 64 bits, so nothing in the suite noticed.
   Also `TypeId::composite_constructor_hint`'s per-variant arms,
   `LogicalType::check_slot`'s rejection path, `composite_message`,
-  `LogicalTypeError::api_func`, `secrets::parse_scope_array`, the `arrow`
+  `LogicalTypeError::api_func`, the `arrow`
   accessors against a populated record rather than only an empty one, and
   `map2_str`'s NULL propagation when just one argument is NULL.
 
@@ -1602,7 +1602,7 @@ in each section below.
   repository default. Both now take `contents: read`.
 - `mutants.yml` interpolated a PR-derived file list straight into a `run:`
   block, where `$(...)` expands before bash parses the script. Moved to `env:`.
-- `persist-credentials: false` on all 47 `actions/checkout` steps.
+- `persist-credentials: false` on all 48 `actions/checkout` steps.
 
 - **Soundness, third pass: more ways safe code, or a malformed input, could
   corrupt or read freed memory.**

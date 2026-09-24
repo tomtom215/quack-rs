@@ -222,7 +222,9 @@ unsafe extern "C" fn wc_state_destroy(
 }
 ```
 
-`destroy_callback` calls `Box::from_raw` and nulls each pointer, preventing double-free.
+`destroy_callback` drops the `T` in each state (and its box, if the state is too
+large to be stored inline), clearing the state's tag first so a second call is a
+no-op.
 
 ---
 
