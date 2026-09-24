@@ -21,7 +21,7 @@
 //!
 //! # Limitation: builders with `LogicalType` fields
 //!
-//! Builders that contain [`LogicalType`][crate::types::LogicalType] values (e.g.,
+//! Builders that contain [`LogicalType`] values (e.g.,
 //! created with `.returns_logical(...)` or `.param_logical(...)`) cannot be used
 //! with `MockRegistrar` in `loadable-extension` test mode. `LogicalType`'s `Drop`
 //! implementation calls `duckdb_destroy_logical_type`, which panics when the

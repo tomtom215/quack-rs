@@ -212,7 +212,7 @@ macro_rules! table_scan_callback {
 /// table function's info struct, which is much larger than a scalar
 /// function's: used on a scalar function, it wrote past the scalar bind info
 /// (SIGSEGV in testing). A scalar callback takes a
-/// [`RawScalarBindInfo`](crate::scalar::RawScalarBindInfo), so the compiler
+/// `RawScalarBindInfo` (feature `duckdb-1-5`), so the compiler
 /// refuses this macro's output there. Use `scalar_bind_callback!` (feature
 /// `duckdb-1-5`) for scalar functions.
 ///
@@ -257,7 +257,7 @@ macro_rules! table_bind_callback {
 /// table function's info struct, which is much larger than a scalar
 /// function's: used on a scalar function, it wrote past the scalar init info
 /// (SIGSEGV in testing). A scalar callback takes a
-/// [`RawScalarInitInfo`](crate::scalar::RawScalarInitInfo), so the compiler
+/// `RawScalarInitInfo` (feature `duckdb-1-5`), so the compiler
 /// refuses this macro's output there. Use `scalar_init_callback!` (feature
 /// `duckdb-1-5`) for scalar functions.
 ///

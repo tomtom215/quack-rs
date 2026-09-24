@@ -339,7 +339,10 @@ pub unsafe fn reference_value(vector: duckdb_vector, value: &Value) {
 /// Makes `to` reference `from`'s data instead of its own.
 ///
 /// `duckdb.h`: "Changes `to_vector` to reference `from_vector`. After, the
-/// vectors share ownership of the data." No payload is copied.
+/// vectors share ownership of the data." No payload is copied. That ownership
+/// does not always reach the bytes: a column other than the first of a chunk
+/// from `arrow::data_chunk_from_arrow` (`duckdb-1-5-4`) points
+/// into Arrow buffers that only column 0 keeps alive.
 ///
 /// # Safety
 ///

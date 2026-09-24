@@ -114,7 +114,7 @@ impl BindInfo {
     /// callback goes on to succeed.
     ///
     /// Do not call this in the bind of a `COPY … FROM` reader (see
-    /// [`CopyFunctionBuilder::copy_from`][crate::copy_function::CopyFunctionBuilder::copy_from]):
+    /// `CopyFunctionBuilder::copy_from`, `duckdb-1-5`):
     /// there the target table fixes the columns, and a declared one widens
     /// every chunk the `INSERT` receives past the table.
     pub fn add_result_column(&self, name: &str, type_id: TypeId) -> &Self {

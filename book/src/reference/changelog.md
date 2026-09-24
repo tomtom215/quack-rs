@@ -492,6 +492,10 @@ in each section below.
   bind sets the bind data itself. `ReplacementScanBuilder::register` says
   `DuckDB` calls `delete_callback` even when `extra_data` is null, unlike its
   other destructor slots (a new test observes the call).
+- `data_chunk_from_arrow` says which column holds its claim on the Arrow
+  array: `DuckDB` gives `release` to column 0 alone, so a vector made to
+  reference another column (`reference_vector`) does not keep the producer's
+  buffers alive (a new test observes both cases).
 - `OwnedConnection`'s `Send` justification said `DuckDB` forbids concurrent
   use of one connection; it serialises it. The comment now gives the real
   reasons, and a test queries and drops a connection on another thread.

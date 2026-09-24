@@ -230,6 +230,13 @@ pub unsafe fn schema_from_arrow(
 /// into fresh flat vectors before this function returns. Run-end-encoded
 /// children are expanded by `DuckDB` itself.
 ///
+/// The claim is held by the chunk's **first** column: `DuckDB` copies the
+/// record into every column's state but nulls `release` after the first, so
+/// the producer's buffers are released when column 0's vector is. A vector
+/// made to reference another column
+/// ([`reference_vector`][crate::vector::ops::reference_vector]) does not keep
+/// them alive; its contract already requires the chunk to outlive it.
+///
 /// # Errors
 ///
 /// [`DuckDbErrorType::InvalidInput`], checked here because `DuckDB` does not
