@@ -392,8 +392,127 @@ pub fn record_registered(
 
 #[cfg(test)]
 mod tests {
-    use super::id_string;
+    use std::cell::RefCell;
+
+    use super::{id_string, record_registered, ExistingScalars, Rendered};
     use crate::types::TypeId;
+
+    fn sig(fixed: &[&str], varargs: Option<&str>) -> Rendered {
+        Rendered {
+            fixed: fixed.iter().map(|&t| t.to_owned()).collect(),
+            varargs: varargs.map(str::to_owned),
+        }
+    }
+
+    /// An identical signature is refused as a replacement, a merely
+    /// overlapping one as an ambiguity, and a disjoint one is accepted. Names
+    /// match case-insensitively, as `DuckDB`'s catalog does, and both
+    /// signatures are shown in `DuckDB`'s own notation.
+    #[test]
+    fn check_tells_a_duplicate_from_an_overlap_from_a_new_signature() {
+        let mut existing = ExistingScalars::default();
+        existing.record("Greet", sig(&["BIGINT", "VARCHAR"], None));
+        existing.record("greet", sig(&["DOUBLE"], Some("VARCHAR")));
+
+        let err = existing
+            .check("GREET", "overload 1", &sig(&["BIGINT", "VARCHAR"], None))
+            .expect_err("an identical signature");
+        assert!(
+            err.as_str().starts_with(
+                "scalar function 'GREET' (overload 1): a scalar function GREET(BIGINT, VARCHAR) \
+                 already exists"
+            ),
+            "{err}"
+        );
+
+        let err = existing
+            .check(
+                "greet",
+                "scalar function",
+                &sig(&["DOUBLE", "VARCHAR"], None),
+            )
+            .expect_err("DOUBLE, VARCHAR... accepts (DOUBLE, VARCHAR)");
+        assert!(
+            err.as_str().contains(
+                "greet(DOUBLE, VARCHAR) accepts the same arguments as the existing \
+                 greet(DOUBLE, VARCHAR...)"
+            ),
+            "{err}"
+        );
+
+        assert!(existing
+            .check("greet", "scalar function", &sig(&["BOOLEAN"], None))
+            .is_ok());
+        assert!(existing
+            .check(
+                "other",
+                "scalar function",
+                &sig(&["BIGINT", "VARCHAR"], None)
+            )
+            .is_ok());
+    }
+
+    /// A varargs-only signature renders without a leading separator.
+    #[test]
+    fn a_varargs_only_signature_renders_without_a_leading_comma() {
+        assert_eq!(super::display(&sig(&[], Some("ANY"))), "ANY...");
+        assert_eq!(super::display(&sig(&["INTEGER"], None)), "INTEGER");
+        assert_eq!(super::display(&sig(&[], None)), "");
+    }
+
+    /// Before `DuckDB` 1.5.0 any listed name is refused, with the reason;
+    /// an unlisted name is still accepted.
+    #[test]
+    fn an_engine_that_cannot_overload_refuses_every_existing_name() {
+        let mut existing = ExistingScalars {
+            refuses_existing_names: true,
+            ..ExistingScalars::default()
+        };
+        existing.record("greet", sig(&["BIGINT"], None));
+        let err = existing
+            .check("greet", "scalar function", &sig(&["BOOLEAN"], None))
+            .expect_err("the name exists");
+        assert!(
+            err.as_str()
+                .contains("DuckDB before v1.5.0 cannot add an overload"),
+            "{err}"
+        );
+        assert!(existing
+            .check("fresh", "scalar function", &sig(&["BOOLEAN"], None))
+            .is_ok());
+    }
+
+    /// A loaded snapshot learns each registered signature; an unloaded one
+    /// stays unloaded, so the next check lists the catalog itself.
+    #[test]
+    fn record_registered_updates_only_a_loaded_snapshot() {
+        let loaded = RefCell::new(Some(ExistingScalars::default()));
+        record_registered(
+            Some(&loaded),
+            "greet",
+            vec![
+                ("overload 0".to_owned(), Some(sig(&["BIGINT"], None))),
+                ("overload 1".to_owned(), None),
+            ],
+        );
+        let snapshot = loaded.borrow();
+        let existing = snapshot.as_ref().expect("still loaded");
+        assert!(existing
+            .check("greet", "scalar function", &sig(&["BIGINT"], None))
+            .is_err());
+        assert!(existing
+            .check("greet", "scalar function", &sig(&["BOOLEAN"], None))
+            .is_ok());
+
+        let unloaded = RefCell::new(None);
+        record_registered(
+            Some(&unloaded),
+            "greet",
+            vec![("overload 0".to_owned(), Some(sig(&["BIGINT"], None)))],
+        );
+        assert!(unloaded.borrow().is_none());
+        record_registered(None, "greet", Vec::new());
+    }
 
     #[test]
     fn ids_render_as_duckdb_prints_them() {

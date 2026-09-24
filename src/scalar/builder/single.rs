@@ -618,3 +618,33 @@ impl core::fmt::Debug for ScalarFunctionBuilder {
         s.finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::collision::Rendered;
+    use super::ScalarFunctionBuilder;
+    use crate::types::TypeId;
+
+    /// Signatures given as `TypeId`s render with no `DuckDB` call, in the
+    /// notation `duckdb_functions()` prints, labelled for the error message.
+    #[test]
+    fn a_type_id_signature_renders_as_the_catalog_prints_it() {
+        let builder = ScalarFunctionBuilder::new("f")
+            .param(TypeId::BigInt)
+            .param(TypeId::TimestampTz)
+            .varargs(TypeId::Varchar);
+        assert_eq!(
+            builder.rendered_signature(),
+            vec![(
+                String::from("scalar function"),
+                Some(Rendered {
+                    fixed: vec![
+                        String::from("BIGINT"),
+                        String::from("TIMESTAMP WITH TIME ZONE")
+                    ],
+                    varargs: Some(String::from("VARCHAR")),
+                })
+            )]
+        );
+    }
+}
