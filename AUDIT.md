@@ -1228,6 +1228,23 @@ the pinned 1.5.5. Pitfall L14.
 - A Stacked Borrows violation Miri found in one of this pass's own new
   `FfiState` unit tests (test code only): the tag is now written through the
   pointer the destructor uses, not the local.
+- `description.yml`'s "text after a comment" error named the line the value
+  started on, not the comment's (VALIDATED; the regression test fails on the
+  old code with "line 2" for a comment on line 3).
+- 72 mutants the library tests did not kill (9.6), all in code this pass
+  added or changed. 55 were pure logic tested only end to end or not at all:
+  the `FfiState` tag (`^` vs `|` was indistinguishable for two stack slots
+  16 bytes apart), the collision check, `refuse_any_return`,
+  `rendered_signature`, a set-level return type, `render_guard`'s type
+  predicates, `is_plain` and the YAML 1.1 matcher (its 231,758-string
+  comparison with `PyYAML` ran outside the suite). 53 now fail a unit test;
+  the decimal and array-size checks moved into pure functions for it. The
+  other two went with the code: `is_time_ns`'s cfg'd-out twin (no build
+  that runs it was mutated) is one function, and `parse_value`'s arm for a
+  plain value on the next line, identical to its recursion once the line
+  fix above was in, is gone. Of the 17 that need a live `DuckDB`, run end to
+  end, one survived: no test rendered a temporal `NULL`, which the mutant
+  refused. One now does.
 - Documentation corrections listed in 9.4.
 
 ### 9.3 Not changed, deliberately
