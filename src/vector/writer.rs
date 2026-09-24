@@ -70,8 +70,10 @@ struct NullState {
     /// The writable validity bitmap.
     ///
     /// `duckdb_vector_ensure_validity_writable` allocates the mask on first use
-    /// and is a no-op afterwards, and the resulting pointer is stable for the
-    /// vector's lifetime. Caching it turns "two FFI calls per NULL" into "two
+    /// and is a no-op afterwards, and the resulting pointer is stable until the
+    /// vector's buffers are reallocated — which only a `reserve` on the parent
+    /// of a `LIST`/`MAP` child does, and which `from_vector`'s contract rules
+    /// out while the writer is in use. Caching it turns "two FFI calls per NULL" into "two
     /// FFI calls per vector", which matters when a column is mostly NULL: a full
     /// 2048-row vector went from 4096 calls to 2.
     validity: *mut u64,
@@ -109,7 +111,10 @@ impl VectorWriter {
     /// # Safety
     ///
     /// `vector` must be a valid, writable `duckdb_vector`. The vector must not be
-    /// destroyed while this writer is live.
+    /// destroyed while this writer is live. If `vector` is the child of a `LIST`
+    /// or `MAP` vector, the writer must not be used after that parent is grown
+    /// with a `reserve`: growing reallocates the child's data and validity
+    /// buffers, and the writer caches pointers to both.
     pub unsafe fn from_vector(vector: duckdb_vector) -> Self {
         // SAFETY: caller guarantees vector is valid.
         let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
@@ -361,7 +366,10 @@ impl VectorWriter {
     /// Writes a `TIMESTAMP` value at row `idx` as microseconds since the Unix epoch.
     ///
     /// `DuckDB` stores TIMESTAMP as an 8-byte `i64`. This is a semantic alias for
-    /// [`write_i64`][Self::write_i64].
+    /// [`write_i64`][Self::write_i64]. The value is not range-checked: one below
+    /// `DuckDB`'s earliest timestamp (other than `-infinity`, `-i64::MAX`) makes
+    /// every later cast or rendering of the row fail with "Date out of range in
+    /// timestamp conversion". The same holds for the other timestamp writers.
     ///
     /// # Safety
     ///
@@ -382,6 +390,11 @@ impl VectorWriter {
     ///
     /// - `idx` must be within the vector's capacity.
     /// - The vector must have `TIME` type.
+    /// - `micros_since_midnight` must be in `0..=86_400_000_000` (`00:00:00`
+    ///   to `24:00:00`). `DuckDB` does not check a `TIME` it reads back: when
+    ///   it renders one, `i64::MIN` crashes the process (a segfault in
+    ///   `Time::Convert`, checked on 1.5.5), `i64::MAX` raises an internal
+    ///   error, and `-1` renders as `00:00:00.00000/`.
     #[inline]
     pub const unsafe fn write_time(&mut self, idx: usize, micros_since_midnight: i64) {
         // SAFETY: TIME is stored as i64.
@@ -586,7 +599,9 @@ impl VectorWriter {
     ///
     /// `bits` is `DuckDB`'s packed representation; build one with
     /// [`datetime::time_tz_bits`][crate::datetime::time_tz_bits] rather than
-    /// assembling it by hand.
+    /// assembling it by hand. `DuckDB` does not check it: an encoding with a
+    /// time past `24:00:00` or an offset past `±15:59:59` renders as garbage
+    /// (`u64::MAX` as `b}:25:11.627775-4644:20:16`).
     ///
     /// # Safety
     ///
@@ -633,8 +648,7 @@ impl VectorWriter {
     /// recursively; for an `ARRAY` vector of size `n`, child rows
     /// `idx * n .. idx * n + n`. See the
     /// [module docs](crate::vector::writer#nulls-in-nested-vectors).
-    /// [`set_valid`][Self::set_valid] does not undo that: after it, write
-    /// the fields again and mark them valid.
+    /// [`set_valid`][Self::set_valid] undoes all of it.
     ///
     /// # Pitfall L4: `ensure_validity_writable`
     ///
@@ -711,7 +725,8 @@ impl VectorWriter {
     /// (writes through which are silently ignored) until
     /// `duckdb_vector_ensure_validity_writable` has allocated the mask. This
     /// does both, then caches the result — `EnsureWritable` is a no-op after the
-    /// first call and the pointer is stable for the vector's lifetime.
+    /// first call and the pointer is stable until the vector's buffers are
+    /// reallocated (see the `validity` field of `NullState`).
     ///
     /// # Safety
     ///
@@ -737,6 +752,14 @@ impl VectorWriter {
     /// Use this to undo a previous [`set_null`][Self::set_null] call for a row,
     /// or to explicitly mark a row as valid after writing its value.
     ///
+    /// If the row is NULL, this also marks valid everything
+    /// [`set_null`][Self::set_null] marked NULL below it — every field of a
+    /// `STRUCT` row and every element of an `ARRAY` row, recursively — so
+    /// that values written there afterwards are read. Write any field or
+    /// element NULLs *after* this call. If the row is already valid, nothing
+    /// below it is touched, so marking a row valid after writing its fields
+    /// keeps any field NULLs.
+    ///
     /// Like [`set_null`][Self::set_null], this calls `ensure_validity_writable`
     /// before modifying the validity bitmap.
     ///
@@ -746,9 +769,39 @@ impl VectorWriter {
     pub unsafe fn set_valid(&mut self, idx: usize) {
         // SAFETY: self.vector is valid per constructor's contract.
         let validity = unsafe { self.writable_validity() };
+        // SAFETY: validity is initialized and idx is in bounds per caller's contract.
+        let was_null =
+            !unsafe { libduckdb_sys::duckdb_validity_row_is_valid(validity, idx as idx_t) };
         // SAFETY: validity is now initialized and idx is in bounds per caller's contract.
         unsafe {
             duckdb_validity_set_row_valid(validity, idx as idx_t);
+        }
+        if was_null {
+            // SAFETY: self.vector is valid; idx is in bounds per caller's contract.
+            unsafe { self.restore_nested(idx..idx + 1) };
+        }
+    }
+
+    /// Marks `rows` valid in every STRUCT field / ARRAY element below this
+    /// vector: the inverse of [`clear_nested`][Self::clear_nested].
+    ///
+    /// # Safety
+    ///
+    /// As for [`clear_nested`][Self::clear_nested].
+    unsafe fn restore_nested(&mut self, rows: core::ops::Range<usize>) {
+        let vector = self.vector;
+        // Every caller resolved the validity mask first, so this is `Some`.
+        let Some(state) = self.nulls.as_deref_mut() else {
+            return;
+        };
+        let targets = state
+            .nested
+            // SAFETY: `vector` is valid, flat and writable per this function's
+            // contract.
+            .get_or_insert_with(|| unsafe { nested_null::resolve(vector) });
+        for target in targets.iter() {
+            // SAFETY: `rows` is in bounds per this function's contract.
+            unsafe { target.restore(rows.clone()) };
         }
     }
 

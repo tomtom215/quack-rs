@@ -83,7 +83,7 @@ The full catalog is documented in the [Pitfall Reference](reference/pitfalls.md)
 - **SQL macros** — register `CREATE MACRO` statements without any FFI callbacks
 - **Testable state** — `AggregateTestHarness<T>` tests aggregate logic without a live DuckDB
 - **Scaffold generator** — produces a submission-ready community extension project from code
-- **24 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptoms and fixes
+- **26 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptoms and fixes
 
 ---
 

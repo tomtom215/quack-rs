@@ -23,14 +23,34 @@ signature or trait-bound changes, so this is a breaking release; it follows
 0.17.0 was prepared but never published; its changes are included here, and
 the entries below describe the change from 0.16.0.
 
-A third pass followed before anything was published; `AUDIT.md` does not
-cover it. It fixed further defects, reproducing them against a real DuckDB
-wherever that was possible, added CI gates that compile the Rust examples in
-the book and the README and check the book's links, and corrected the
-documentation's claim that an aggregate's `update` never sees NULL rows (see
-Fixed).
+A third pass followed before anything was published (`AUDIT.md` section 8).
+It fixed further defects, reproducing them against a real DuckDB wherever that
+was possible, added CI gates that compile the Rust examples in the book and the
+README and check the book's links, and corrected the documentation's claim that
+an aggregate's `update` never sees NULL rows (see Fixed).
+
+A fourth pass followed that (`AUDIT.md` section 9). It fixed process aborts,
+out-of-bounds reads and writes, and wrong answers. Each was reproduced against
+a real DuckDB before it was fixed, and its regression test was shown failing
+without the fix; `AUDIT.md` names the DuckDB versions per finding. The pass
+also documented thirteen DuckDB defects in `docs/upstream-duckdb-reports.md`, each
+with a plain-C reproducer. Its entries are grouped under **Fourth audit** in
+each section below.
 
 ### Added
+
+#### Fourth audit
+
+- `scalar_bind_callback!` / `scalar_init_callback!` (`duckdb-1-5`).
+- `validate_parameter_name`, `DUCKDB_UNCALLABLE_KEYWORDS`,
+  `DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS`.
+- `value::UNRENDERABLE`, `callback::EMPTY_PANIC_PLACEHOLDER`,
+  `callback::panic_c_message`, `CopyGlobalInitInfo::get_file_path_bytes`.
+- CI: `test-older-engines` runs the suite against DuckDB 1.4.4 (default
+  features) and 1.5.0 (`duckdb-1-5`), the oldest release each can load into;
+  every engine-specific defect below went unnoticed without it. A weekly
+  scheduled run; the scaffold job runs the generated project's `make configure release
+  test`; `check-abi-table.py` fingerprints whole signatures, not names.
 
 - **Scalar functions as safe Rust closures.** `ScalarFunctionBuilder::map1` /
   `map2` / `map1_str` / `map2_str` / `map1_opt` / `map2_opt` take an ordinary
@@ -61,7 +81,7 @@ Fixed).
   refuse a payload DuckDB cannot render (see the `Value::time_ns` /
   `Value::timestamp` entry under Changed).
 
-- **`PreparedStatement` gained the remaining 18 typed binds** and `bind_value`,
+- **`PreparedStatement` gained 16 more typed binds** and `bind_value`,
   the escape hatch for every composite type. `bind_decimal` validates like
   `Value::decimal`: `duckdb_bind_decimal` checks nothing, and for
   `width <= 18` keeps only the low 64 bits of the unscaled value.
@@ -228,9 +248,10 @@ Fixed).
   the mutation gate is structurally silent about them. That is a property of
   the gate, not evidence the setters work.
 
-- **An AddressSanitizer job** (`ci.yml`, informational until it has a green
-  run). `leak-check` answers "did we forget a destructor"; ASAN answers "did we
-  write outside an allocation, or use one after free" — the class behind the two
+- **An AddressSanitizer job** (`ci.yml`; blocking — it was informational
+  until its first green run). `leak-check` answers "did we forget a
+  destructor"; ASAN answers "did we write outside an allocation, or use one
+  after free" — the class behind the two
   heap-corruption defects fixed in v0.16.0, and the one a crate doing raw
   pointer arithmetic into DuckDB's memory is most exposed to. Miri cannot reach
   those paths: they call foreign functions.
@@ -356,6 +377,17 @@ Fixed).
     against it.
 
 ### Changed
+
+#### Fourth audit
+
+- CI's "the refused extension registered nothing" checks could not fail
+  (`duckdb -c` stops at the failed `LOAD`); they feed the statements on stdin
+  and require a marker row.
+- `AbiPolicy` handling is a pure `policy_verdict`, tested against every check
+  result. The docs of `enforce_abi_policy` no longer say `Warn` goes through
+  `set_error`.
+- Arrow export documents the INTERVAL and UHUGEINT values `DuckDB` corrupts.
+- `docs/upstream-duckdb-reports.md` gained items 7 to 19.
 
 - **Breaking: `CopyFunctionBuilder` is no longer `Send` or `Sync`.** Supporting
   `COPY … FROM` gave it two new fields that each carry a raw pointer —
@@ -769,6 +801,71 @@ Fixed).
 
 ### Fixed
 
+#### Fourth audit
+
+- **A C API aggregate in a running window returned the wrong answer.** Without
+  a destructor `DuckDB` streams it and re-reads the first row
+  (`sum`-like: `1 2 3 4 5` for `1 3 6 10 15`). Every aggregate now registers
+  one (a no-op when none is given).
+- **Arrow import with a nonzero parent offset imported the wrong rows**
+  (`DuckDB` ignores the offset for values); it is refused.
+- **`ListBuilder` overwrote rows already in the list vector** when it started
+  on a non-empty one; it appends after them.
+- **`VectorWriter::set_valid` left a nested row's children NULL**; it restores
+  them when the row was NULL.
+- **Scalar collision check.** It missed signatures containing a type alias,
+  could be shadowed by a user macro named like the catalog functions it
+  queries (it now qualifies them with `system.main.`), and accepted overloads
+  that `DuckDB`'s binder finds ambiguous with varargs. **Breaking:** such
+  overlapping overloads are refused at registration. `Connection` keeps a
+  snapshot of existing scalars, so 300 registrations through `Registrar`
+  take 18.6–35.6 ms instead of 5.2–6.3 s (release build, three runs each).
+- **Keyword names.** **Breaking:** `validate_function_name` refuses the 53
+  keywords (`DUCKDB_UNCALLABLE_KEYWORDS`) that `DuckDB` cannot call unquoted —
+  `coalesce(x)` silently ran the built-in — and `SqlMacro` parameters use the
+  new `validate_parameter_name` (79 keywords).
+- **Catalog entries outlived their handle.** **Breaking:** `CatalogEntry`
+  copies the name and type at lookup and owns nothing afterwards.
+- **Secret scopes were parsed from a string**; they are read as a list,
+  NULL-safely, from `system.main.duckdb_secrets()`.
+- **`CopyGlobalInitInfo::get_file_path` truncated at a NUL.** **Breaking:**
+  it returns `Result<String>`; `get_file_path_bytes` returns the raw bytes.
+- **`interval_to_micros` reported overflow for totals that fit** (an
+  intermediate sum overflowed); it computes the exact total in `i128`.
+- **`Appender`:** a failed automatic flush (every 204,800 rows) poisoned the
+  appender with a false "half-written row" message; the row counts as ended
+  and the constraint error is reported as it is.
+- **On DuckDB 1.4.x**, registering a scalar under any existing name (a new
+  overload of `abs`, say) failed with no reason, because the C API registers
+  with `CREATE` before 1.5.0; quack-rs refuses it first and says why. And
+  `LogicalType::try_new(TypeId::TimeNs)` returned an `INVALID` type there (the
+  1.4.x C API does not know `TIME_NS`); it is an error now, as is any type id
+  the running engine hands back changed.
+- **`LogicalType::register`** blamed a taken name when the type contained
+  `ANY`; it names the cause. `try_decimal` validates width and scale itself
+  (`DuckDB` does only from 1.5.4). **Breaking:** `try_array(_, 0)`, an empty
+  `union_type` and an empty `Value::array_value` are refused, as in SQL.
+- **`MockRegistrar` accepted builders the real registration refuses.**
+  **Breaking:** it runs the same checks (missing callback or return type,
+  empty function set, incomplete copy function, config option without type or
+  default) and records nothing on failure.
+- **`description.yml`:** a quoted, flow or block value on the line after its
+  key kept its quotes; values that `PyYAML` (YAML 1.1) reads as a boolean,
+  number, date or null draw a warning; the scaffold quotes `name`, `github`
+  and `ref`. The "text after a comment" error named the line the value
+  started on rather than the line of the comment that ended it.
+- **Scaffold:** the generated `lib.rs` failed `cargo fmt --check` for names of
+  4 characters or fewer or 40 or more; the generated CI's Linux SQLLogicTest
+  step was skipped by extension-ci-tools.
+- **`append_metadata`** refuses a platform group (`linux`) and a `wasm_*`
+  platform without `--wasm`, and recognises a footer with an empty ABI field.
+- **`validate_semver`** refuses numeric pre-release identifiers with leading
+  zeros; **`validate_spdx_license`** names the canonical spelling for a
+  case-only difference.
+- **ABI refusal for a development engine** no longer suggests a declaration
+  the build ignores; `build.rs` warns about a malformed
+  `QUACK_RS_TARGET_DUCKDB_VERSION`.
+
 - **Pitfall L8 — `DEFAULT_NULL_HANDLING` does not propagate NULLs for scalar
   functions.** quack-rs documented that `DuckDB` "automatically returns NULL if
   any argument is NULL, without your function callback being called". For a
@@ -1091,6 +1188,55 @@ Fixed).
 
 ### Security
 
+#### Fourth audit
+
+- **An Arrow import with a large dictionary wrote past a heap buffer.**
+  `data_chunk_from_arrow` on a dictionary-encoded array with NULLs and more
+  than 2048 entries — a `LIST` of 1025+ two-element dictionary-encoded lists
+  is enough — made `DuckDB` overflow a validity mask (valgrind: invalid write
+  in `GetValidityMask`; SIGSEGV or SIGABRT on 1.4.4, 1.5.0 and 1.5.5). Such
+  arrays are refused before `DuckDB` is called.
+- **An Arrow import read out of bounds.** A dictionary-encoded or null-type
+  column came back as a dictionary or constant vector, which every quack-rs
+  reader reads as flat: wrong values, then reads past the buffer. Those
+  columns are copied into flat vectors before `data_chunk_from_arrow` returns.
+- **Rendering a timestamp from SQL aborted the process.**
+  `make_timestamp(-9223372036854775808)` passed to a table function, then
+  `Value::as_str`, `display_string` or `{:?}`: `DuckDB`'s rendering threw
+  through the C API (exit 134, 1.4.4 to 1.5.5), also inside a LIST, STRUCT or
+  MAP. Every temporal payload is checked first; `as_str` returns
+  `Err(UNRENDERABLE)`. `as_time` and the other converting getters no longer
+  hand such a payload to `DuckDB`'s cast, which overflowed a signed multiply.
+- **A scalar bind callback inspecting a subquery argument aborted the process
+  on DuckDB 1.5.0 to 1.5.4.** Those releases copy the argument outside any
+  `try`; `SELECT f((SELECT 1))` threw a C++ exception through the callback.
+  **Breaking:** `ScalarBindInfo::argument` now asks for nothing on those
+  releases and fails the bind with an explanation; `get_argument`'s Safety
+  section states the requirement.
+- **An out-of-range TIME or timestamp crashed `DuckDB` later.**
+  `PreparedStatement::bind_time` / `bind_timestamp` / `bind_timestamp_tz` and
+  `Appender::append_time` / `append_timestamp` accepted any payload;
+  `i64::MIN` as a TIME segfaulted when rendered, and at the append itself
+  into a VARCHAR column. They are refused (**Breaking**). `bind_str`,
+  `bind_blob` and `append_bytes` refuse more than 4 GiB, which `DuckDB`
+  stored modulo 2^32 (a 4 GiB + 3 byte blob became 3 bytes).
+- **A panic in a scalar function's bind or init callback aborted the
+  process.** New `scalar_bind_callback!` / `scalar_init_callback!` macros
+  (`duckdb-1-5`) catch it and fail the query with its message; a panic with
+  an empty message reports `EMPTY_PANIC_PLACEHOLDER`.
+- **A null `get_api` or `access` from `DuckDB` panicked or crashed the entry
+  point.** `init_extension` checks both before `libduckdb-sys` unwraps them.
+- **A literal type in a registration invalidated the database.**
+  `TypeId::StringLiteral` / `IntegerLiteral` as a parameter, return or
+  registered type: the first query that used it raised an internal error and
+  every later query failed. `LogicalType::try_new` refuses both.
+- **`FfiState` destroyed states `init` never ran on.** After a `state_init`
+  error, `DuckDB` passes never-initialised states to `destroy`; each state now
+  carries an address-derived tag that `destroy` checks (**Breaking:**
+  `FfiState<T>` is two words).
+- **`SecretEntry` left secret bytes in spare capacity** after truncation;
+  zeroisation now covers the whole allocation.
+
 - **A panicking `Drop` in extension state aborted the process.** Every FFI
   destructor quack-rs generates — `FfiState<T>::destroy_callback`,
   `FfiBindData` / `FfiInitData` / `FfiLocalInitData::destroy`,
@@ -1176,7 +1322,7 @@ Fixed).
   repository default. Both now take `contents: read`.
 - `mutants.yml` interpolated a PR-derived file list straight into a `run:`
   block, where `$(...)` expands before bash parses the script. Moved to `env:`.
-- `persist-credentials: false` on all 42 `actions/checkout` steps.
+- `persist-credentials: false` on all 47 `actions/checkout` steps.
 
 - **Soundness, third pass: more ways safe code, or a malformed input, could
   corrupt or read freed memory.**

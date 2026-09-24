@@ -180,18 +180,21 @@ principles.
 
 ### 2. Zero panics across FFI
 
-`unwrap()`, `expect()`, and `panic!()` are forbidden in any code path that may be
-invoked by DuckDB. A panic escaping a C FFI boundary aborts the process (Rust ≥ 1.81;
-undefined behaviour before that). All
-error handling uses `Result`/`Option` and the `?` operator. Errors are reported
-back to DuckDB via `access.set_error`.
+A panic escaping a C FFI boundary aborts the process (Rust ≥ 1.81; undefined
+behaviour before that). Every callback kind therefore runs under `catch_unwind` and
+reports a panic through the callback's error channel, which needs
+`panic = "unwind"`. Library code panics only where a `# Panics` section documents
+it (`VectorWriter::write_varchar` on a string over 4 GiB, for one); everything else
+uses `Result`/`Option` and the `?` operator, and errors reach DuckDB through the
+callback's `set_error`, or `access.set_error` at load.
 
 ### 3. Bounded version range
 
-`libduckdb-sys = ">=1.4.4, <2"` — the range is intentional. DuckDB's C API is
-stable across the 1.4.x and 1.5.x releases (both use C API `v1.2.0`, verified by
-E2E tests). The upper bound prevents silent adoption of a new major-band whose
-C API may introduce breaking changes.
+`libduckdb-sys = ">=1.4.4, <2"` — the range is intentional. Every release from
+1.4.4 to 1.5.5 declares C API `v1.2.0`, and its stable part (357 functions) is
+unchanged across them; the unstable region differs between releases (459 / 545 /
+546 functions) and is checked at load by `abi.rs`. The upper bound prevents silent
+adoption of a new major-band whose C API may introduce breaking changes.
 
 ### 4. Testable business logic
 

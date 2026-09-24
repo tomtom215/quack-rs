@@ -56,8 +56,9 @@ be walked without knowing the width up front when `duckdb-1-5` is off.
 
 ## Related chapters
 
-- [Bulk Appender](appender.md) — `column_has_default` tells you when
-  `append_default` is safe to call
+- [Bulk Appender](appender.md) — `append_default` fills a column without a
+  `DEFAULT` with `NULL`, and fails for a `DEFAULT` that is not a constant
+  (`nextval(...)`, `random()`), which `column_has_default` reports as `true`
 - [Type System](../concepts/types.md) — what a [`LogicalType`] describes
 
 [`LogicalType`]: https://docs.rs/quack-rs/latest/quack_rs/types/logical_type/struct.LogicalType.html

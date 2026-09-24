@@ -44,6 +44,31 @@ pub(super) struct Entry {
     /// 1-based line of the key, for error messages.
     pub(super) line: usize,
     pub(super) value: Value,
+    /// Whether the value is a plain (unquoted, non-block) scalar, which a
+    /// YAML 1.1 reader may resolve to a boolean, number, date or null.
+    pub(super) plain: bool,
+}
+
+/// Whether a value's text opens a quoted, flow or block scalar, or a
+/// construct this reader refuses.
+fn starts_structured(text: &str) -> bool {
+    text.starts_with(['"', '\'', '[', '{', '|', '>', '&', '*', '!'])
+}
+
+/// Whether the value after `key:` — `rest` on the key's line, then
+/// `children` — is a plain scalar, deciding exactly as `parse_value` does.
+fn is_plain(rest: &str, children: &[Line<'_>]) -> bool {
+    let rest = strip_comment(rest.trim_start());
+    if !rest.is_empty() {
+        return !starts_structured(rest);
+    }
+    children
+        .iter()
+        .find(|l| l.is_content())
+        .is_some_and(|child| {
+            let mapping = split_key(child.text).is_some() && !starts_quoted(child.text);
+            !(child.is_seq_item() || mapping || starts_structured(child.text))
+        })
 }
 
 /// A top-level section such as `extension:`, with its entries in order.
@@ -221,6 +246,7 @@ fn parse_mapping(lines: &[Line<'_>], path: &str) -> Result<Vec<Entry>, String> {
             key: key.to_string(),
             line: line.number,
             value,
+            plain: is_plain(rest, children),
         });
     }
     Ok(entries)
@@ -281,7 +307,16 @@ fn parse_value(
             Some(child) if split_key(child.text).is_some() && !starts_quoted(child.text) => {
                 Ok(Value::Mapping)
             }
-            Some(_) => plain_scalar("", children, line),
+            // Any other value that starts on the next line reads as if it
+            // started on the key's own: `name:\n  "x"` is `x`, not `"x"` with
+            // its quotes, and a plain one folds the lines below it.
+            Some(child) => {
+                let at = children
+                    .iter()
+                    .position(Line::is_content)
+                    .map_or(children.len(), |i| i + 1);
+                parse_value(child.text, &children[at..], parent_indent, child.number)
+            }
         };
     }
 

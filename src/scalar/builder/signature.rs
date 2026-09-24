@@ -3,12 +3,13 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! Detecting overloads that declare the same argument types.
+//! Detecting overloads that accept the same call.
 //!
 //! `DuckDB` accepts a function set in which two overloads take identical
 //! arguments — registration succeeds — and then fails *every* call to it with
-//! "Could not choose a best candidate function". Nothing points back at the
-//! registration. The set builders call [`reject_duplicate_overloads`] before
+//! "Could not choose a best candidate function"; with varargs the same happens
+//! for the calls both overloads accept (see [`shapes_overlap`]). Nothing
+//! points back at the registration. The set builders call [`reject_duplicate_overloads`] before
 //! allocating any `DuckDB` handle so the mistake is reported where it was made.
 //!
 //! Shared by the scalar and aggregate set builders.
@@ -125,13 +126,57 @@ pub fn merged_params<'a, L>(
     out
 }
 
-/// Fails if two overloads declare the same argument types.
+/// One overload's argument shape: its fixed parameter types and its varargs
+/// type, if any, each rendered to a string that is equal exactly when the
+/// types are.
+#[derive(Debug, Clone, Copy)]
+pub struct Shape<'a> {
+    /// The fixed parameter types, in order.
+    pub fixed: &'a [String],
+    /// The varargs type, if the overload takes varargs.
+    pub varargs: Option<&'a str>,
+}
+
+impl Shape<'_> {
+    /// The type this overload expects at argument `index`, for a call with
+    /// more than `index` arguments that it accepts.
+    fn at(&self, index: usize) -> Option<&str> {
+        self.fixed.get(index).map(String::as_str).or(self.varargs)
+    }
+}
+
+/// Whether some call matches `a` and `b` with identical argument types, so
+/// `DuckDB` can prefer neither.
+///
+/// A fixed overload accepts exactly `fixed.len()` arguments; a varargs one
+/// accepts `fixed.len()` or more, the extra ones of its varargs type (none
+/// included: `f(ANY...)` matches `f()`). Two overloads collide when an
+/// argument count both accept sees the same type at every position. Types are
+/// compared as rendered, so `f(BIGINT)` and `f(ANY...)` do not collide —
+/// `DuckDB` resolves that call to the exact match, which is cheaper — while
+/// `f(BIGINT)` and `f(BIGINT, BIGINT...)` do, at one argument.
+#[must_use]
+pub fn shapes_overlap(a: Shape<'_>, b: Shape<'_>) -> bool {
+    let (la, lb) = (a.fixed.len(), b.fixed.len());
+    let arity = match (a.varargs.is_some(), b.varargs.is_some()) {
+        (false, false) if la == lb => la,
+        (false, true) if la >= lb => la,
+        (true, false) if lb >= la => lb,
+        (true, true) => la.max(lb),
+        _ => return false,
+    };
+    (0..arity).all(|i| a.at(i) == b.at(i))
+}
+
+/// Fails if two overloads accept the same argument list.
 ///
 /// `signatures[i]` is overload `i`'s merged parameter list. Types are compared
 /// structurally — `DECIMAL(18,2)` and `DECIMAL(18,3)` differ, as do two
 /// `STRUCT`s with different field names, two `ENUM`s with different members,
-/// or two types with different aliases — so only a set `DuckDB` genuinely
-/// cannot resolve is rejected.
+/// or two types with different aliases — and varargs are expanded as
+/// [`shapes_overlap`] describes, so only a set `DuckDB` genuinely cannot
+/// resolve is rejected: `{f(BIGINT), f(BIGINT, BIGINT...)}` is, because
+/// `f(1)` matches both.
 ///
 /// # Safety
 ///
@@ -143,59 +188,84 @@ pub unsafe fn reject_duplicate_overloads(
     name: &str,
     signatures: &[Vec<ParamRef<'_>>],
 ) -> Result<(), ExtensionError> {
-    let keys: Vec<String> = signatures
+    let parts: Vec<(Vec<String>, Option<String>)> = signatures
         .iter()
         // SAFETY: forwarded from this function's own contract.
-        .map(|params| unsafe { signature_key(params) })
+        .map(|params| unsafe { signature_parts(params) })
         .collect();
-    match first_duplicate(&keys) {
+    let shapes: Vec<Shape<'_>> = parts
+        .iter()
+        .map(|(fixed, varargs)| Shape {
+            fixed,
+            varargs: varargs.as_deref(),
+        })
+        .collect();
+    match first_overlap(&shapes) {
         None => Ok(()),
         Some((first, second)) => Err(ExtensionError::new(format!(
-            "function set '{name}': overload {first} and overload {second} both take \
-             ({sig}); DuckDB would accept the set but fail every call to it with \
+            "function set '{name}': overload {first} ({a}) and overload {second} ({b}) accept \
+             the same arguments; DuckDB would accept the set but fail every such call with \
              \"Could not choose a best candidate function\"",
-            sig = keys[first]
+            a = display_shape(shapes[first]),
+            b = display_shape(shapes[second]),
         ))),
     }
 }
 
-/// The indices of the first pair of equal keys, lowest first.
-fn first_duplicate(keys: &[String]) -> Option<(usize, usize)> {
-    keys.iter().enumerate().find_map(|(j, key)| {
-        keys[..j]
+/// The indices of the first pair of overlapping shapes, lowest first.
+fn first_overlap(shapes: &[Shape<'_>]) -> Option<(usize, usize)> {
+    shapes.iter().enumerate().find_map(|(j, shape)| {
+        shapes[..j]
             .iter()
-            .position(|earlier| earlier == key)
+            .position(|earlier| shapes_overlap(*earlier, *shape))
             .map(|i| (i, j))
     })
 }
 
-/// Renders a parameter list as a comparable, human-readable string.
+/// Renders a shape for an error message: `BIGINT, VARCHAR...`, or `()` for
+/// none.
+fn display_shape(shape: Shape<'_>) -> String {
+    let mut out = shape.fixed.join(", ");
+    if let Some(varargs) = shape.varargs {
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(varargs);
+        out.push_str("...");
+    }
+    if out.is_empty() {
+        out.push_str("()");
+    }
+    out
+}
+
+/// Renders each parameter, and the varargs type, as comparable,
+/// human-readable strings.
 ///
 /// # Safety
 ///
 /// As [`reject_duplicate_overloads`].
-unsafe fn signature_key(params: &[ParamRef<'_>]) -> String {
-    let mut out = String::new();
-    for (i, param) in params.iter().enumerate() {
-        if i > 0 {
-            out.push_str(", ");
-        }
+unsafe fn signature_parts(params: &[ParamRef<'_>]) -> (Vec<String>, Option<String>) {
+    let mut fixed = Vec::with_capacity(params.len());
+    let mut varargs = None;
+    for param in params {
+        let mut out = String::new();
         match param {
-            ParamRef::Id(id) => out.push_str(id.sql_name()),
-            // SAFETY: the handle is live per this function's contract.
-            ParamRef::Logical(lt) => unsafe { describe(lt.as_raw(), &mut out) },
+            ParamRef::Id(id) => fixed.push(id.sql_name().to_owned()),
+            ParamRef::Logical(lt) => {
+                // SAFETY: the handle is live per this function's contract.
+                unsafe { describe(lt.as_raw(), &mut out) };
+                fixed.push(out);
+            }
             ParamRef::Varargs(lt) => {
                 // SAFETY: as above.
                 unsafe { describe(lt.as_raw(), &mut out) };
-                out.push_str("...");
+                varargs = Some(out);
             }
-            ParamRef::VarargsId(id) => {
-                out.push_str(id.sql_name());
-                out.push_str("...");
-            }
+            ParamRef::VarargsId(id) => varargs = Some(id.sql_name().to_owned()),
         }
     }
-    out
+    (fixed, varargs)
 }
 
 /// A child logical type handle, destroyed on drop.
@@ -367,43 +437,140 @@ unsafe fn describe_member(out: &mut String, i: idx_t, name: *mut c_char, ty: duc
 mod tests {
     use super::*;
 
-    fn keys(sigs: &[&[TypeId]]) -> Vec<String> {
-        sigs.iter()
-            .map(|params| {
-                let refs: Vec<ParamRef<'_>> = params.iter().map(|id| ParamRef::Id(*id)).collect();
-                // SAFETY: only `ParamRef::Id`, so no DuckDB call is made.
-                unsafe { signature_key(&refs) }
+    /// Owned parts for a [`Shape`]: fixed types and an optional varargs type.
+    fn parts(fixed: &[&str], varargs: Option<&str>) -> (Vec<String>, Option<String>) {
+        (
+            fixed.iter().map(|t| (*t).to_owned()).collect(),
+            varargs.map(str::to_owned),
+        )
+    }
+
+    fn shape(p: &(Vec<String>, Option<String>)) -> Shape<'_> {
+        Shape {
+            fixed: &p.0,
+            varargs: p.1.as_deref(),
+        }
+    }
+
+    fn overlap(a: &(Vec<String>, Option<String>), b: &(Vec<String>, Option<String>)) -> bool {
+        let forward = shapes_overlap(shape(a), shape(b));
+        assert_eq!(forward, shapes_overlap(shape(b), shape(a)), "symmetric");
+        forward
+    }
+
+    #[test]
+    fn fixed_signatures_overlap_only_when_identical() {
+        let bigint = parts(&["BIGINT"], None);
+        assert!(overlap(&bigint, &bigint));
+        assert!(!overlap(&bigint, &parts(&["INTEGER"], None)));
+        assert!(!overlap(&bigint, &parts(&["BIGINT", "BIGINT"], None)));
+        assert!(!overlap(&bigint, &parts(&[], None)));
+        assert!(overlap(&parts(&[], None), &parts(&[], None)));
+    }
+
+    /// The three shapes the fourth audit's F6 registered against `DuckDB`
+    /// 1.5.5, each of which failed calls with "Could not choose a best
+    /// candidate function".
+    #[test]
+    fn varargs_overlap_the_way_duckdb_found_them_ambiguous() {
+        assert!(overlap(
+            &parts(&["BIGINT"], None),
+            &parts(&["BIGINT"], Some("BIGINT"))
+        ));
+        assert!(overlap(&parts(&[], None), &parts(&[], Some("ANY"))));
+        assert!(overlap(
+            &parts(&[], Some("BIGINT")),
+            &parts(&["BIGINT"], Some("BIGINT"))
+        ));
+    }
+
+    #[test]
+    fn varargs_overlap_only_where_an_argument_count_sees_equal_types() {
+        // An exact match is cheaper than ANY, so DuckDB resolves it.
+        assert!(!overlap(
+            &parts(&["BIGINT"], None),
+            &parts(&[], Some("ANY"))
+        ));
+        // f(VARCHAR, BIGINT...) takes at least one argument.
+        assert!(!overlap(
+            &parts(&[], None),
+            &parts(&["VARCHAR"], Some("BIGINT"))
+        ));
+        // Different varargs types still meet where neither has extra
+        // arguments: both accept `f('x')`.
+        assert!(overlap(
+            &parts(&["VARCHAR"], Some("BIGINT")),
+            &parts(&["VARCHAR"], Some("DOUBLE"))
+        ));
+        // Same varargs, different fixed prefix.
+        assert!(!overlap(
+            &parts(&["VARCHAR"], Some("BIGINT")),
+            &parts(&["DOUBLE"], Some("BIGINT"))
+        ));
+        // A fixed type that differs from the other's varargs type.
+        assert!(!overlap(
+            &parts(&["BIGINT", "DOUBLE"], None),
+            &parts(&["BIGINT"], Some("BIGINT"))
+        ));
+    }
+
+    #[test]
+    fn two_varargs_meet_at_the_longer_fixed_prefix() {
+        assert!(overlap(
+            &parts(&["VARCHAR"], Some("BIGINT")),
+            &parts(&["VARCHAR", "BIGINT", "BIGINT"], Some("BIGINT"))
+        ));
+        assert!(!overlap(
+            &parts(&["VARCHAR"], Some("BIGINT")),
+            &parts(&["VARCHAR", "DOUBLE"], Some("BIGINT"))
+        ));
+    }
+
+    #[test]
+    fn the_first_overlapping_pair_is_reported_lowest_first() {
+        let all = [
+            parts(&["DOUBLE"], None),
+            parts(&["BIGINT"], None),
+            parts(&["VARCHAR"], None),
+            parts(&["BIGINT"], None),
+            parts(&["DOUBLE"], None),
+        ];
+        let shapes: Vec<Shape<'_>> = all
+            .iter()
+            .map(|p| Shape {
+                fixed: &p.0,
+                varargs: p.1.as_deref(),
             })
-            .collect()
+            .collect();
+        // Overload 3 is the first to overlap an earlier one (1).
+        assert_eq!(first_overlap(&shapes), Some((1, 3)));
+        assert_eq!(first_overlap(&shapes[..3]), None);
     }
 
     #[test]
-    fn distinct_signatures_have_no_duplicate() {
-        let k = keys(&[
-            &[TypeId::BigInt],
-            &[TypeId::Integer],
-            &[TypeId::BigInt, TypeId::BigInt],
-            &[],
-        ]);
-        assert_eq!(first_duplicate(&k), None);
-    }
-
-    #[test]
-    fn the_first_duplicate_pair_is_reported_lowest_first() {
-        let k = keys(&[
-            &[TypeId::Double],
-            &[TypeId::BigInt],
-            &[TypeId::Varchar],
-            &[TypeId::BigInt],
-            &[TypeId::Double],
-        ]);
-        // Overload 3 is the first to repeat an earlier one (1).
-        assert_eq!(first_duplicate(&k), Some((1, 3)));
-    }
-
-    #[test]
-    fn two_zero_argument_overloads_are_duplicates() {
-        assert_eq!(first_duplicate(&keys(&[&[], &[]])), Some((0, 1)));
+    fn shapes_display_as_signatures() {
+        let p = parts(&["BIGINT", "VARCHAR"], Some("DOUBLE"));
+        let shape = Shape {
+            fixed: &p.0,
+            varargs: p.1.as_deref(),
+        };
+        assert_eq!(display_shape(shape), "BIGINT, VARCHAR, DOUBLE...");
+        let empty = parts(&[], None);
+        assert_eq!(
+            display_shape(Shape {
+                fixed: &empty.0,
+                varargs: None
+            }),
+            "()"
+        );
+        let only_varargs = parts(&[], Some("ANY"));
+        assert_eq!(
+            display_shape(Shape {
+                fixed: &only_varargs.0,
+                varargs: only_varargs.1.as_deref()
+            }),
+            "ANY..."
+        );
     }
 
     #[test]
@@ -417,8 +584,10 @@ mod tests {
         let err = unsafe { reject_duplicate_overloads("my_fn", &sigs) }.expect_err("duplicate");
         let msg = err.as_str();
         assert!(msg.contains("my_fn"), "{msg}");
-        assert!(msg.contains("overload 0 and overload 2"), "{msg}");
-        assert!(msg.contains("(BIGINT, VARCHAR)"), "{msg}");
+        assert!(
+            msg.contains("overload 0 (BIGINT, VARCHAR) and overload 2 (BIGINT, VARCHAR)"),
+            "{msg}"
+        );
     }
 
     /// `merged_params` with `&str` stand-ins for the logical types, rendered
@@ -435,8 +604,9 @@ mod tests {
             .collect()
     }
 
-    /// A varargs type declared by `TypeId` renders without `DuckDB`, differs
-    /// from a fixed parameter of the same type, and equal ones are duplicates.
+    /// A varargs type declared by `TypeId` renders without `DuckDB` and takes
+    /// part in the comparison: `f(BIGINT...)` accepts one `BIGINT`, so beside
+    /// `f(BIGINT)` the call `f(1)` is ambiguous, while `f(DOUBLE...)` is not.
     #[test]
     fn varargs_by_type_id_is_part_of_the_signature() {
         let sigs = vec![
@@ -444,7 +614,18 @@ mod tests {
             vec![ParamRef::VarargsId(TypeId::BigInt)],
         ];
         // SAFETY: no logical handles, so no DuckDB call is made.
-        unsafe { reject_duplicate_overloads("f", &sigs) }.expect("f(BIGINT) vs f(BIGINT...)");
+        let err = unsafe { reject_duplicate_overloads("f", &sigs) }
+            .expect_err("f(BIGINT) vs f(BIGINT...)");
+        assert!(
+            err.as_str().contains("(BIGINT) and overload 1 (BIGINT...)"),
+            "{err}"
+        );
+        let sigs = vec![
+            vec![ParamRef::Id(TypeId::BigInt)],
+            vec![ParamRef::VarargsId(TypeId::Double)],
+        ];
+        // SAFETY: as above.
+        unsafe { reject_duplicate_overloads("f", &sigs) }.expect("f(BIGINT) vs f(DOUBLE...)");
 
         let sigs = vec![
             vec![

@@ -197,9 +197,10 @@ fn ffi_state_size_matches_pointer() {
     }
     impl AggregateState for TestState {}
 
+    // The heap pointer and the initialisation tag.
     assert_eq!(
         FfiState::<TestState>::size(),
-        std::mem::size_of::<*mut TestState>()
+        2 * std::mem::size_of::<*mut TestState>()
     );
 }
 
@@ -727,12 +728,12 @@ fn mock_vector_reader_from_strs() {
 }
 
 #[test]
+#[should_panic(expected = "out of bounds")]
 fn mock_vector_reader_out_of_bounds() {
     use quack_rs::testing::MockVectorReader;
 
     let r = MockVectorReader::from_i64s([Some(1)]);
-    assert!(!r.is_valid(100));
-    assert_eq!(r.try_get_i64(100), None);
+    let _ = r.try_get_i64(100);
 }
 
 #[test]
@@ -811,7 +812,61 @@ fn mock_vector_writer_write_str_alias() {
 
 // ---------------------------------------------------------------------------
 // MockRegistrar tests
+//
+// The mock refuses a builder the real registration refuses before calling
+// DuckDB (a missing callback, among others), so every builder here is
+// complete. The callbacks are never invoked.
 // ---------------------------------------------------------------------------
+
+mod mock_callbacks {
+    use libduckdb_sys::{
+        duckdb_aggregate_state, duckdb_bind_info, duckdb_data_chunk, duckdb_function_info,
+        duckdb_init_info, duckdb_vector, idx_t,
+    };
+
+    pub const unsafe extern "C" fn scalar(
+        _: duckdb_function_info,
+        _: duckdb_data_chunk,
+        _: duckdb_vector,
+    ) {
+    }
+    pub const unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t {
+        0
+    }
+    pub const unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+    pub const unsafe extern "C" fn update(
+        _: duckdb_function_info,
+        _: duckdb_data_chunk,
+        _: *mut duckdb_aggregate_state,
+    ) {
+    }
+    pub const unsafe extern "C" fn combine(
+        _: duckdb_function_info,
+        _: *mut duckdb_aggregate_state,
+        _: *mut duckdb_aggregate_state,
+        _: idx_t,
+    ) {
+    }
+    pub const unsafe extern "C" fn finalize(
+        _: duckdb_function_info,
+        _: *mut duckdb_aggregate_state,
+        _: duckdb_vector,
+        _: idx_t,
+        _: idx_t,
+    ) {
+    }
+    pub const unsafe extern "C" fn bind(_: duckdb_bind_info) {}
+    pub const unsafe extern "C" fn init(_: duckdb_init_info) {}
+    pub const unsafe extern "C" fn scan(_: duckdb_function_info, _: duckdb_data_chunk) {}
+    pub const unsafe extern "C" fn cast(
+        _: duckdb_function_info,
+        _: idx_t,
+        _: duckdb_vector,
+        _: duckdb_vector,
+    ) -> bool {
+        true
+    }
+}
 
 #[test]
 fn mock_registrar_records_scalar_function() {
@@ -823,7 +878,8 @@ fn mock_registrar_records_scalar_function() {
     let mock = MockRegistrar::new();
     let b = ScalarFunctionBuilder::new("word_count")
         .param(TypeId::Varchar)
-        .returns(TypeId::BigInt);
+        .returns(TypeId::BigInt)
+        .function(mock_callbacks::scalar);
     unsafe { mock.register_scalar(b).unwrap() };
 
     assert!(mock.has_scalar("word_count"));
@@ -841,7 +897,12 @@ fn mock_registrar_records_aggregate_function() {
     let mock = MockRegistrar::new();
     let b = AggregateFunctionBuilder::new("my_agg")
         .param(TypeId::BigInt)
-        .returns(TypeId::BigInt);
+        .returns(TypeId::BigInt)
+        .state_size(mock_callbacks::state_size)
+        .init(mock_callbacks::state_init)
+        .update(mock_callbacks::update)
+        .combine(mock_callbacks::combine)
+        .finalize(mock_callbacks::finalize);
     unsafe { mock.register_aggregate(b).unwrap() };
 
     assert!(mock.has_aggregate("my_agg"));
@@ -855,7 +916,10 @@ fn mock_registrar_records_table_function() {
     use quack_rs::testing::MockRegistrar;
 
     let mock = MockRegistrar::new();
-    let b = TableFunctionBuilder::new("my_table_fn");
+    let b = TableFunctionBuilder::new("my_table_fn")
+        .bind(mock_callbacks::bind)
+        .init(mock_callbacks::init)
+        .scan(mock_callbacks::scan);
     unsafe { mock.register_table(b).unwrap() };
 
     assert!(mock.has_table("my_table_fn"));
@@ -884,7 +948,8 @@ fn mock_registrar_records_cast() {
     use quack_rs::types::TypeId;
 
     let mock = MockRegistrar::new();
-    let b = CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer);
+    let b =
+        CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer).function(mock_callbacks::cast);
     unsafe { mock.register_cast(b).unwrap() };
 
     let casts = mock.casts();
@@ -912,7 +977,8 @@ fn mock_registrar_used_as_generic_registrar() {
     fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
         let upper = ScalarFunctionBuilder::new("upper_ext")
             .param(TypeId::Varchar)
-            .returns(TypeId::Varchar);
+            .returns(TypeId::Varchar)
+            .function(mock_callbacks::scalar);
         let m = SqlMacro::scalar("pi", &[], "3.14159265358979").unwrap();
         unsafe {
             reg.register_scalar(upper)?;

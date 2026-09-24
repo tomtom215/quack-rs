@@ -258,7 +258,13 @@ impl ListVector {
     /// # Safety
     ///
     /// - `vector` must be a valid `DuckDB` LIST vector.
-    /// - The child must have been reserved with at least `capacity` elements.
+    /// - Every index written must be below the capacity most recently reserved
+    ///   with [`ListVector::reserve`].
+    /// - The writer must not be used after the child is grown again
+    ///   ([`ListVector::reserve`] with a larger capacity, or a
+    ///   [`ListBuilder`](crate::vector::ListBuilder) row that grows it): growing
+    ///   reallocates the child's data and validity buffers, and the writer
+    ///   caches pointers to both. Fetch a new writer after every reserve.
     pub unsafe fn child_writer(vector: duckdb_vector) -> VectorWriter {
         // SAFETY: `ListVector::get_child` only needs a valid LIST vector, which is
         // this function's first `# Safety` clause.
@@ -443,7 +449,14 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid `DuckDB` MAP vector.
+    /// - `vector` must be a valid `DuckDB` MAP vector.
+    /// - Every index written must be below the capacity most recently reserved
+    ///   with [`MapVector::reserve`].
+    /// - The writer must not be used after the map is grown again
+    ///   ([`MapVector::reserve`] with a larger capacity, or a
+    ///   [`ListBuilder`](crate::vector::ListBuilder) row that grows it): growing
+    ///   reallocates the child's data and validity buffers, and the writer
+    ///   caches pointers to both. Fetch a new writer after every reserve.
     pub unsafe fn key_writer(vector: duckdb_vector) -> VectorWriter {
         // SAFETY: `keys` only needs a valid MAP vector, which is this function's
         // `# Safety` contract.
@@ -456,7 +469,14 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid `DuckDB` MAP vector.
+    /// - `vector` must be a valid `DuckDB` MAP vector.
+    /// - Every index written must be below the capacity most recently reserved
+    ///   with [`MapVector::reserve`].
+    /// - The writer must not be used after the map is grown again
+    ///   ([`MapVector::reserve`] with a larger capacity, or a
+    ///   [`ListBuilder`](crate::vector::ListBuilder) row that grows it): growing
+    ///   reallocates the child's data and validity buffers, and the writer
+    ///   caches pointers to both. Fetch a new writer after every reserve.
     pub unsafe fn value_writer(vector: duckdb_vector) -> VectorWriter {
         // SAFETY: `values` only needs a valid MAP vector, which is this function's
         // `# Safety` contract.

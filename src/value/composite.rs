@@ -126,13 +126,21 @@ impl Value {
     ///
     /// # Errors
     ///
-    /// Returns an error when `duckdb_create_array_value` reports failure: an
-    /// `ANY` / `INVALID` element type, an item that will not cast to
-    /// `element_type`, or a length at or above `DuckDB`'s maximum array size.
+    /// Returns an error for an empty `items`: an `ARRAY` of size 0 is not a
+    /// type SQL can write (`array_value()` fails with "requires at least one
+    /// argument"), though a release `DuckDB` builds one. Also returns an error
+    /// when `duckdb_create_array_value` reports failure: an `ANY` / `INVALID`
+    /// element type, an item that will not cast to `element_type`, or a length
+    /// at or above `DuckDB`'s maximum array size.
     pub fn array_value(
         element_type: &crate::types::LogicalType,
         items: &[Self],
     ) -> Result<Self, ExtensionError> {
+        if items.is_empty() {
+            return Err(ExtensionError::new(
+                "Value::array_value: an ARRAY needs at least one element, as in SQL",
+            ));
+        }
         let mut raws: Vec<duckdb_value> = items.iter().map(Self::as_raw).collect();
         // SAFETY: as in `list_value`.
         let raw = unsafe {

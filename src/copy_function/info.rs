@@ -12,6 +12,8 @@
 use std::ffi::CStr;
 use std::os::raw::c_void;
 
+use crate::error::ExtensionError;
+
 use libduckdb_sys::{
     duckdb_copy_function_bind_get_client_context, duckdb_copy_function_bind_get_column_count,
     duckdb_copy_function_bind_get_column_type, duckdb_copy_function_bind_get_extra_info,
@@ -258,25 +260,50 @@ impl CopyGlobalInitInfo {
     /// `info_ref.file_path.c_str()`, the interior pointer of a live C++
     /// `std::string`, so it must **not** be freed. Doing so corrupts the heap.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the path is not valid UTF-8, which a path on Linux
+    /// need not be (`COPY t TO '~/out.x'` with a non-UTF-8 home directory, for
+    /// one). A lossy conversion would name a different file, so use
+    /// [`get_file_path_bytes`][Self::get_file_path_bytes] to open such a path.
+    ///
+    /// # Safety
+    ///
+    /// `self.info` must be a valid handle from an active callback invocation.
+    pub unsafe fn get_file_path(&self) -> Result<String, ExtensionError> {
+        // SAFETY: forwarded from this function's own contract.
+        let bytes = unsafe { self.get_file_path_bytes() };
+        String::from_utf8(bytes).map_err(|e| {
+            ExtensionError::new(format!(
+                "the COPY destination path is not valid UTF-8 ({e}); read it with \
+                 get_file_path_bytes"
+            ))
+        })
+    }
+
+    /// Returns the destination path for the copy operation as the exact bytes
+    /// `DuckDB` holds, whatever their encoding (empty if `DuckDB` has none).
+    ///
+    /// On Unix, `std::ffi::OsStr::from_bytes` turns them into a path that
+    /// opens the same file. See [`get_file_path`][Self::get_file_path] for the
+    /// ownership of `DuckDB`'s buffer.
+    ///
     /// # Safety
     ///
     /// `self.info` must be a valid handle from an active callback invocation.
     #[must_use]
-    pub unsafe fn get_file_path(&self) -> String {
+    pub unsafe fn get_file_path_bytes(&self) -> Vec<u8> {
         // SAFETY: self.info is valid per constructor contract.
         let c_str = unsafe { duckdb_copy_function_global_init_get_file_path(self.info) };
         if c_str.is_null() {
-            return String::new();
+            return Vec::new();
         }
         // SAFETY: c_str is a valid NUL-terminated string that DuckDB owns and
         // keeps alive for the duration of this callback. It is copied here and
         // deliberately not freed: unlike the `char *` returns elsewhere in the
         // C API (which `strdup` or `duckdb_malloc`), this one is `const char *`
         // and borrowed.
-        unsafe { CStr::from_ptr(c_str) }
-            .to_str()
-            .unwrap_or("")
-            .to_owned()
+        unsafe { CStr::from_ptr(c_str) }.to_bytes().to_vec()
     }
 
     /// Sets the global state pointer and its destructor.

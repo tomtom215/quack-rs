@@ -34,9 +34,10 @@ mod defaults;
 mod getters;
 mod hugeint;
 mod nested;
+mod render_guard;
 mod scalars;
 mod temporal;
-mod temporal_checks;
+pub(crate) mod temporal_checks;
 
 pub(crate) use checks::validate_decimal;
 
@@ -121,14 +122,20 @@ impl Value {
     /// # Errors
     ///
     /// Returns `ExtensionError` if the handle is null, the value is SQL `NULL`
-    /// (`duckdb_get_varchar` would throw on it, aborting the process), or the
-    /// text is not valid UTF-8.
+    /// (`duckdb_get_varchar` would throw on it, aborting the process), the
+    /// text is not valid UTF-8, or the value holds a timestamp `DuckDB` cannot
+    /// render — see [`UNRENDERABLE`]. `DuckDB` builds such timestamps from
+    /// ordinary SQL (`make_timestamp(-9223372036854775808)`), and rendering one
+    /// throws through the C API, which aborted the process.
     pub fn as_str(&self) -> Result<String, ExtensionError> {
         if self.raw.is_null() {
             return Err(ExtensionError::new("Value is null"));
         }
         if self.is_sql_null() {
             return Err(ExtensionError::new("Value is SQL NULL"));
+        }
+        if !self.renderable() {
+            return Err(ExtensionError::new(UNRENDERABLE));
         }
         // SAFETY: self.raw is a valid duckdb_value per constructor contract.
         let c_str: *mut c_char = unsafe { duckdb_get_varchar(self.raw) };
@@ -161,12 +168,13 @@ impl Value {
     /// Use [`as_str`][Self::as_str] for a VARCHAR's contents. This is for
     /// diagnostics and error messages, where it works for any value type.
     ///
-    /// Returns `None` if the handle is null or the rendered text is not valid
-    /// UTF-8.
+    /// Returns `None` if the handle is null, the rendered text is not valid
+    /// UTF-8, or the value holds a timestamp `DuckDB` cannot render (see
+    /// [`as_str`][Self::as_str]).
     #[cfg(feature = "duckdb-1-5")]
     #[must_use]
     pub fn display_string(&self) -> Option<String> {
-        if self.raw.is_null() {
+        if self.raw.is_null() || !self.renderable() {
             return None;
         }
         // SAFETY: self.raw is a valid duckdb_value per constructor contract.
@@ -278,6 +286,15 @@ impl Value {
         raw
     }
 }
+
+/// What [`Value::as_str`] reports for a value `DuckDB` cannot render.
+///
+/// That is a value holding a timestamp or time payload outside the range
+/// `DuckDB` converts, or an `ARRAY` / `UNION` of a temporal type, whose
+/// elements the C API gives no way to check first.
+pub const UNRENDERABLE: &str = "Value cannot be rendered: it holds a timestamp or time payload \
+     outside the range DuckDB converts (or an ARRAY / UNION of a temporal type, which cannot be \
+     checked), and DuckDB's rendering would throw through the C API and abort the process";
 
 impl Drop for Value {
     fn drop(&mut self) {

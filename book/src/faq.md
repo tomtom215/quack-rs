@@ -19,7 +19,7 @@ utilities for publishing community extensions.
 
 Building a DuckDB extension in Rust requires solving a set of undocumented
 FFI problems that every developer discovers independently. quack-rs encodes
-solutions to all 24 known pitfalls so you don't have to rediscover them.
+solutions to all 26 known pitfalls so you don't have to rediscover them.
 See the [Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?
@@ -248,7 +248,8 @@ same DuckDB version used by CI and copy the output verbatim.
 
 ### What happens if I read from a NULL row?
 
-You get garbage data from the vector's data buffer. Always check `is_valid`
+You get garbage data from the vector's data buffer — and for `VARCHAR` or
+`BLOB`, possibly a stale pointer into freed memory. Always check `is_valid`
 before reading. See [NULL Handling & Strings](data/nulls-and-strings.md).
 
 ---

@@ -25,15 +25,21 @@
 //! # What they are for
 //!
 //! Keep the per-row computation in plain Rust functions and test those
-//! directly. The mocks are for the row loop around it: they share the method
-//! names of [`VectorReader`][crate::vector::VectorReader] and
-//! [`VectorWriter`][crate::vector::VectorWriter] but are **separate types**, so
-//! a function written against them cannot be handed the real reader and writer.
+//! directly. The mocks are for the row loop around it. They mirror
+//! [`VectorReader`][crate::vector::VectorReader] and
+//! [`VectorWriter`][crate::vector::VectorWriter] without matching them method
+//! for method — [`MockVectorWriter`] shares most `write_*` names, while
+//! [`MockVectorReader`] offers `try_get_*` getters that return `None` for NULL
+//! where the real reader has `is_valid` plus `read_*` — and they are
+//! **separate types**, so a function written against them cannot be handed the
+//! real reader and writer.
 //! To run a real callback against real vectors, use
 //! `InMemoryDb` (`bundled-test` / `bundled-test-prebuilt` features).
 //!
 //! [`MockVectorWriter`] reproduces a real output vector's NULL and capacity
 //! behaviour rather than being more forgiving than it; see its type docs.
+//! [`MockVectorReader`] likewise panics on a row past its end, where a real
+//! reader would read out of bounds.
 //!
 //! ```rust
 //! use quack_rs::testing::{MockVectorWriter, MockVectorReader, MockDuckValue};

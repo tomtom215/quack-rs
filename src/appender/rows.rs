@@ -30,10 +30,12 @@ impl Appender {
     /// The closure appends one value per active column. `end_row` runs only if
     /// the closure succeeded.
     ///
-    /// If the closure (or `end_row`) fails after the row's first value went
-    /// in, `DuckDB` is left holding a half-written row it can neither finish
-    /// nor drop, and every row buffered since the last flush is lost. The
-    /// appender is then *poisoned*: see the [module docs][crate::appender].
+    /// If the closure (or `end_row`, for a missing column) fails after the
+    /// row's first value went in, `DuckDB` is left holding a half-written row
+    /// it can neither finish nor drop, and every row buffered since the last
+    /// flush is lost. The appender is then *poisoned*: see the
+    /// [module docs][crate::appender]. A failure of the automatic flush inside
+    /// `end_row` does not poison it (see [`end_row`][Self::end_row]).
     ///
     /// # Errors
     ///
@@ -66,15 +68,29 @@ impl Appender {
     ///
     /// Returns an [`AppendError`] if fewer values were appended than the
     /// appender has active columns (append the rest and call it again), or if
-    /// the appender is closed or poisoned.
+    /// the appender is closed or poisoned. Also when the automatic flush
+    /// `DuckDB` runs every 204,800 rows fails — a constraint violation in any
+    /// buffered row. The row has then ended and the appender stays usable, but
+    /// the rows that failed stay buffered: the next flush reports the same
+    /// error until `clear` (`duckdb-1-5`) discards them.
     pub fn end_row(&self) -> Result<(), AppendError> {
         self.usable()?;
         // SAFETY: self.handle is valid.
         let state = unsafe { duckdb_appender_end_row(self.handle) };
-        self.check(state)?;
-        self.column.set(0);
-        self.buffered.set(self.buffered.get().saturating_add(1));
-        Ok(())
+        let result = self.check(state);
+        // `BaseAppender::EndRow` throws before ending the row only when a
+        // column is missing; with every column in, it resets its counter and
+        // counts the row first, and only the automatic flush that follows
+        // (`Flush`, reached through `FlushChunk` once 204,800 rows are
+        // buffered: `DEFAULT_FLUSH_COUNT`, `appender.hpp`) can fail. The C API
+        // sets no memory threshold, so no other flush runs from here in
+        // 1.4.4 through 1.5.5. Such a failure leaves
+        // no half-written row, so it must not look like one.
+        if result.is_ok() || self.column.get() == self.column_count() {
+            self.column.set(0);
+            self.buffered.set(self.buffered.get().saturating_add(1));
+        }
+        result
     }
 
     /// Appends SQL `NULL` to the current row, whatever the column's type.
@@ -89,10 +105,17 @@ impl Appender {
 
     /// Appends the column's `DEFAULT` value to the current row.
     ///
+    /// A column declared without a `DEFAULT` gets `NULL`, as it would from an
+    /// `INSERT` that leaves it out.
+    ///
     /// # Errors
     ///
-    /// Returns an [`AppendError`] if the column has no default, or the append
-    /// fails.
+    /// Returns an [`AppendError`] if the column's `DEFAULT` is not a constant
+    /// the appender can evaluate up front — `nextval('seq')`, `random()`,
+    /// `now()`: `DuckDB`'s appender evaluates defaults once, when it is
+    /// created, and keeps none for an expression that is not foldable
+    /// (`Appender::InitializeChunk`, `appender.cpp`), so appending it fails
+    /// with "`AppendDefault` is not supported". Also if the append itself fails.
     pub fn append_default(&self) -> Result<(), AppendError> {
         // SAFETY: self.handle is valid.
         self.append_one(|| unsafe { duckdb_append_default(self.handle) })
@@ -117,9 +140,32 @@ impl Appender {
     ///
     /// # Errors
     ///
-    /// Returns an [`AppendError`] if the append fails.
+    /// Returns an [`AppendError`] if the append fails, or if `value` is longer
+    /// than `u32::MAX` bytes. `duckdb_append_blob` stores the length through a
+    /// 32-bit narrowing with no check in release builds: a 4 GiB + 3 byte blob
+    /// was stored as 3 bytes, with no error.
     pub fn append_bytes(&self, value: &[u8]) -> Result<(), AppendError> {
         self.append_bytes_as(value, false)
+    }
+
+    /// Refuses a 64-bit temporal payload `DuckDB` cannot render, before it is
+    /// appended.
+    fn check_temporal(
+        &self,
+        type_id: crate::types::TypeId,
+        v: i64,
+        what: &str,
+    ) -> Result<(), AppendError> {
+        self.usable()?;
+        if crate::value::temporal_checks::temporal_in_range(type_id, v) {
+            Ok(())
+        } else {
+            Err(append_error(&format!(
+                "{what}({v}) is outside DuckDB's range for {}; DuckDB would store it \
+                 unchecked and then crash or fail reading it",
+                type_id.sql_name()
+            )))
+        }
     }
 
     fn append_bytes_as(&self, value: &[u8], varchar: bool) -> Result<(), AppendError> {
@@ -142,6 +188,12 @@ impl Appender {
             };
             return self.record_append(state);
         }
+        if value.len() > MAX_VARCHAR_LEN {
+            return Err(append_error(&format!(
+                "BLOB of {} bytes exceeds DuckDB's {MAX_VARCHAR_LEN}-byte appender limit",
+                value.len()
+            )));
+        }
         // SAFETY: as above; DuckDB copies the bytes into a BLOB value.
         let state = unsafe {
             duckdb_append_blob(
@@ -155,6 +207,10 @@ impl Appender {
 
     /// Appends a `DATE` as days since 1970-01-01.
     ///
+    /// Every `i32` is accepted, as by [`Value::date`][crate::value::Value::date];
+    /// days outside the range `DuckDB`'s SQL produces render as text it cannot
+    /// parse again.
+    ///
     /// # Errors
     ///
     /// Returns an [`AppendError`] if the append fails.
@@ -167,8 +223,13 @@ impl Appender {
     ///
     /// # Errors
     ///
-    /// Returns an [`AppendError`] if the append fails.
+    /// Returns an [`AppendError`] if the append fails, or — before `DuckDB` is
+    /// called — if `micros` is outside `0..=86_400_000_000` (`00:00:00` to
+    /// `24:00:00`). `duckdb_append_time` checks nothing; appending `i64::MIN`
+    /// crashed the process when the row was read, and `i64::MAX` invalidated
+    /// the database.
     pub fn append_time(&self, micros: i64) -> Result<(), AppendError> {
+        self.check_temporal(crate::types::TypeId::Time, micros, "append_time")?;
         // SAFETY: self.handle is valid.
         self.append_one(|| unsafe { duckdb_append_time(self.handle, duckdb_time { micros }) })
     }
@@ -177,8 +238,13 @@ impl Appender {
     ///
     /// # Errors
     ///
-    /// Returns an [`AppendError`] if the append fails.
+    /// Returns an [`AppendError`] if the append fails, or — before `DuckDB` is
+    /// called — if `micros` is below `290309-12-22 (BC)` and not `-infinity`,
+    /// the range of [`Value::timestamp`][crate::value::Value::timestamp].
+    /// `DuckDB` stores such a value unchecked, and every later read of the row
+    /// fails with "Date out of range".
     pub fn append_timestamp(&self, micros: i64) -> Result<(), AppendError> {
+        self.check_temporal(crate::types::TypeId::Timestamp, micros, "append_timestamp")?;
         // SAFETY: self.handle is valid.
         self.append_one(|| unsafe {
             duckdb_append_timestamp(self.handle, duckdb_timestamp { micros })

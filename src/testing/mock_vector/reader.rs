@@ -153,24 +153,58 @@ impl MockVectorReader {
         self.rows.len()
     }
 
-    /// Returns `true` if row `idx` is not NULL.
+    /// Panics unless `idx` is a row of this reader, as a real vector requires.
     ///
-    /// Always returns `false` for out-of-bounds indices.
-    #[must_use]
-    pub fn is_valid(&self, idx: usize) -> bool {
-        self.rows.get(idx).is_some_and(Option::is_some)
+    /// A real [`VectorReader`][crate::vector::VectorReader] has no bounds
+    /// check: reading past the chunk's row count is undefined behaviour. A mock
+    /// that quietly answered "NULL" there would let an off-by-one row loop
+    /// pass its unit tests and then read out of bounds in production, so the
+    /// mock refuses it — as [`MockVectorWriter`][super::MockVectorWriter] does
+    /// for writes past its capacity.
+    #[track_caller]
+    fn check_bounds(&self, idx: usize) {
+        assert!(
+            idx < self.rows.len(),
+            "row {idx} is out of bounds for a mock reader of {} row(s); a real \
+             DuckDB vector reader has no bounds check and reading past the chunk's \
+             row count is undefined behaviour",
+            self.rows.len()
+        );
     }
 
-    /// Returns the raw value at row `idx`, or `None` if NULL or out of bounds.
+    /// Returns `true` if row `idx` is not NULL.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
+    pub fn is_valid(&self, idx: usize) -> bool {
+        self.check_bounds(idx);
+        self.rows[idx].is_some()
+    }
+
+    /// Returns the raw value at row `idx`, or `None` if it is NULL.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
+    #[must_use]
+    #[track_caller]
     pub fn get(&self, idx: usize) -> Option<&MockDuckValue> {
-        self.rows.get(idx).and_then(|v| v.as_ref())
+        self.check_bounds(idx);
+        self.rows[idx].as_ref()
     }
 
     // ── Typed getters ───────────────────────────────────────────────────────
 
     /// Returns the `BIGINT` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_i64(&self, idx: usize) -> Option<i64> {
         match self.get(idx) {
             Some(MockDuckValue::I64(v)) => Some(*v),
@@ -179,7 +213,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `INTEGER` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_i32(&self, idx: usize) -> Option<i32> {
         match self.get(idx) {
             Some(MockDuckValue::I32(v)) => Some(*v),
@@ -188,7 +227,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `DOUBLE` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_f64(&self, idx: usize) -> Option<f64> {
         match self.get(idx) {
             Some(MockDuckValue::F64(v)) => Some(*v),
@@ -197,7 +241,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `BOOLEAN` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_bool(&self, idx: usize) -> Option<bool> {
         match self.get(idx) {
             Some(MockDuckValue::Bool(v)) => Some(*v),
@@ -206,7 +255,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `VARCHAR` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_str(&self, idx: usize) -> Option<&str> {
         match self.get(idx) {
             Some(MockDuckValue::Varchar(s)) => Some(s.as_str()),
@@ -215,7 +269,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `INTERVAL` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_interval(&self, idx: usize) -> Option<DuckInterval> {
         match self.get(idx) {
             Some(MockDuckValue::Interval(v)) => Some(*v),
@@ -224,7 +283,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `TINYINT` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_i8(&self, idx: usize) -> Option<i8> {
         match self.get(idx) {
             Some(MockDuckValue::I8(v)) => Some(*v),
@@ -233,7 +297,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `SMALLINT` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_i16(&self, idx: usize) -> Option<i16> {
         match self.get(idx) {
             Some(MockDuckValue::I16(v)) => Some(*v),
@@ -242,7 +311,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `UTINYINT` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_u8(&self, idx: usize) -> Option<u8> {
         match self.get(idx) {
             Some(MockDuckValue::U8(v)) => Some(*v),
@@ -251,7 +325,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `USMALLINT` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_u16(&self, idx: usize) -> Option<u16> {
         match self.get(idx) {
             Some(MockDuckValue::U16(v)) => Some(*v),
@@ -260,7 +339,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `UINTEGER` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_u32(&self, idx: usize) -> Option<u32> {
         match self.get(idx) {
             Some(MockDuckValue::U32(v)) => Some(*v),
@@ -269,7 +353,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `UBIGINT` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_u64(&self, idx: usize) -> Option<u64> {
         match self.get(idx) {
             Some(MockDuckValue::U64(v)) => Some(*v),
@@ -278,7 +367,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `FLOAT` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_f32(&self, idx: usize) -> Option<f32> {
         match self.get(idx) {
             Some(MockDuckValue::F32(v)) => Some(*v),
@@ -287,7 +381,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `HUGEINT` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_i128(&self, idx: usize) -> Option<i128> {
         match self.get(idx) {
             Some(MockDuckValue::I128(v)) => Some(*v),
@@ -296,7 +395,12 @@ impl MockVectorReader {
     }
 
     /// Returns the `BLOB` value at row `idx`, or `None` if NULL or wrong type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_blob(&self, idx: usize) -> Option<&[u8]> {
         match self.get(idx) {
             Some(MockDuckValue::Blob(v)) => Some(v.as_slice()),
@@ -310,7 +414,12 @@ impl MockVectorReader {
     /// Undoes `DuckDB`'s top-bit flip exactly as
     /// [`VectorReader::read_uuid`][crate::vector::VectorReader::read_uuid] does.
     /// [`try_get_i128`][Self::try_get_i128] returns the raw storage.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `idx` is not less than [`row_count`][Self::row_count].
     #[must_use]
+    #[track_caller]
     pub fn try_get_uuid(&self, idx: usize) -> Option<u128> {
         self.try_get_i128(idx).map(crate::vector::uuid_from_storage)
     }

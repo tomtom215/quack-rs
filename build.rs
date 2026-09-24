@@ -229,7 +229,28 @@ fn export_built_against_duckdb_version() {
     if let Ok(version) = env::var("QUACK_RS_TARGET_DUCKDB_VERSION") {
         let version = version.trim();
         if !version.is_empty() {
+            // `abi::built_against_version` ignores anything but `vX.Y.Z`
+            // (a development build's `v1.5.6-dev123` included); say so here,
+            // where the declaration is made, rather than only in a LOAD error.
+            if !is_release_version(version) {
+                println!(
+                    "cargo:warning=QUACK_RS_TARGET_DUCKDB_VERSION='{version}' is not a release \
+                     version (vX.Y.Z) and is ignored: the ABI check treats this build as \
+                     undeclared"
+                );
+            }
             println!("cargo:rustc-env=QUACK_RS_BUILT_AGAINST_DUCKDB={version}");
         }
     }
+}
+
+/// `vX.Y.Z` (the `v` optional) with three decimal parts: what
+/// `abi::parse_version` accepts.
+fn is_release_version(version: &str) -> bool {
+    let parts: Vec<&str> = version
+        .strip_prefix('v')
+        .unwrap_or(version)
+        .split('.')
+        .collect();
+    parts.len() == 3 && parts.iter().all(|p| p.parse::<u64>().is_ok())
 }

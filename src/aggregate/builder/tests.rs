@@ -357,6 +357,23 @@ fn an_incomplete_aggregate_overload_is_reported_by_index_before_touching_duckdb(
     assert!(err.as_str().contains("overload 0"), "{err}");
 }
 
+/// A set-level return type is enough on its own: an overload without one of
+/// its own inherits it, and the completeness check accepts the set.
+#[test]
+fn a_set_level_return_type_completes_an_overload_without_one() {
+    let set = AggregateFunctionSetBuilder::new("s")
+        .returns(TypeId::BigInt)
+        .overload(
+            AggregateOverloadBuilder::new()
+                .state_size(ss)
+                .init(si)
+                .update(su)
+                .combine(sc)
+                .finalize(sf),
+        );
+    assert!(set.check_parts().is_ok(), "{:?}", set.check_parts());
+}
+
 /// `AggregateOverloadBuilder::extra_info` mirrors
 /// `AggregateFunctionBuilder::extra_info`, including ownership: an overload
 /// that never reaches `DuckDB` frees its allocation exactly once.

@@ -10,6 +10,12 @@
 //! the right functions are registered with the right names — without a live
 //! `DuckDB` instance.
 //!
+//! It refuses, with the same error, a builder the real registration refuses
+//! before its first `DuckDB` call: a missing return type or callback, a
+//! function set with no overloads, a copy function that implements neither
+//! direction, a config option without a type or default. Checks that need
+//! `DuckDB` — a composite `TypeId`, a name collision — are not run.
+//!
 //! # Limitation: builders with `LogicalType` fields
 //!
 //! Builders that contain [`LogicalType`][crate::types::LogicalType] values (e.g.,
@@ -30,11 +36,21 @@
 //! use quack_rs::aggregate::AggregateFunctionBuilder;
 //! use quack_rs::types::TypeId;
 //! use quack_rs::error::ExtensionError;
+//! use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+//!
+//! unsafe extern "C" fn word_count(
+//!     _info: duckdb_function_info,
+//!     _input: duckdb_data_chunk,
+//!     _output: duckdb_vector,
+//! ) {
+//!     // ...
+//! }
 //!
 //! fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
 //!     let scalar = ScalarFunctionBuilder::new("word_count")
 //!         .param(TypeId::Varchar)
-//!         .returns(TypeId::BigInt);
+//!         .returns(TypeId::BigInt)
+//!         .function(word_count);
 //!     unsafe { reg.register_scalar(scalar) }
 //! }
 //!
@@ -234,6 +250,7 @@ impl Registrar for MockRegistrar {
     /// This implementation is safe to call in any context — no `DuckDB`
     /// connection is required.
     unsafe fn register_scalar(&self, builder: ScalarFunctionBuilder) -> Result<(), ExtensionError> {
+        builder.check_parts()?;
         self.scalar_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -249,6 +266,7 @@ impl Registrar for MockRegistrar {
         &self,
         builder: ScalarFunctionSetBuilder,
     ) -> Result<(), ExtensionError> {
+        builder.check_parts()?;
         self.scalar_set_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -264,6 +282,7 @@ impl Registrar for MockRegistrar {
         &self,
         builder: AggregateFunctionBuilder,
     ) -> Result<(), ExtensionError> {
+        builder.check_parts()?;
         self.aggregate_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -279,6 +298,7 @@ impl Registrar for MockRegistrar {
         &self,
         builder: AggregateFunctionSetBuilder,
     ) -> Result<(), ExtensionError> {
+        builder.check_parts()?;
         self.aggregate_set_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -291,6 +311,7 @@ impl Registrar for MockRegistrar {
     ///
     /// This implementation is safe to call in any context.
     unsafe fn register_table(&self, builder: TableFunctionBuilder) -> Result<(), ExtensionError> {
+        builder.check_parts()?;
         self.table_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -317,6 +338,7 @@ impl Registrar for MockRegistrar {
     ///
     /// This implementation is safe to call in any context.
     unsafe fn register_cast(&self, builder: CastFunctionBuilder) -> Result<(), ExtensionError> {
+        builder.check_parts()?;
         self.casts.borrow_mut().push(CastRecord {
             source: builder.source(),
             target: builder.target(),
@@ -329,6 +351,7 @@ impl Registrar for MockRegistrar {
         &self,
         builder: crate::copy_function::CopyFunctionBuilder,
     ) -> Result<(), ExtensionError> {
+        builder.check_parts()?;
         self.copy_function_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -340,6 +363,7 @@ impl Registrar for MockRegistrar {
         &self,
         builder: crate::config_option::ConfigOptionBuilder,
     ) -> Result<(), ExtensionError> {
+        builder.check_parts()?;
         self.config_option_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -351,14 +375,88 @@ impl Registrar for MockRegistrar {
 mod tests {
     use super::*;
     use crate::types::TypeId;
+    use libduckdb_sys::{
+        duckdb_aggregate_state, duckdb_bind_info, duckdb_data_chunk, duckdb_function_info,
+        duckdb_init_info, duckdb_vector, idx_t,
+    };
+
+    // Callbacks for complete builders. Never invoked: the mock only records.
+    unsafe extern "C" fn scalar_fn(
+        _: duckdb_function_info,
+        _: duckdb_data_chunk,
+        _: duckdb_vector,
+    ) {
+    }
+    unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t {
+        0
+    }
+    unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+    unsafe extern "C" fn update(
+        _: duckdb_function_info,
+        _: duckdb_data_chunk,
+        _: *mut duckdb_aggregate_state,
+    ) {
+    }
+    unsafe extern "C" fn combine(
+        _: duckdb_function_info,
+        _: *mut duckdb_aggregate_state,
+        _: *mut duckdb_aggregate_state,
+        _: idx_t,
+    ) {
+    }
+    unsafe extern "C" fn finalize(
+        _: duckdb_function_info,
+        _: *mut duckdb_aggregate_state,
+        _: duckdb_vector,
+        _: idx_t,
+        _: idx_t,
+    ) {
+    }
+    unsafe extern "C" fn table_bind(_: duckdb_bind_info) {}
+    unsafe extern "C" fn table_init(_: duckdb_init_info) {}
+    unsafe extern "C" fn table_scan(_: duckdb_function_info, _: duckdb_data_chunk) {}
+    unsafe extern "C" fn cast_fn(
+        _: duckdb_function_info,
+        _: idx_t,
+        _: duckdb_vector,
+        _: duckdb_vector,
+    ) -> bool {
+        true
+    }
+
+    fn scalar(name: &str) -> ScalarFunctionBuilder {
+        ScalarFunctionBuilder::new(name)
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .function(scalar_fn)
+    }
+
+    fn aggregate(name: &str) -> AggregateFunctionBuilder {
+        AggregateFunctionBuilder::new(name)
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(state_size)
+            .init(state_init)
+            .update(update)
+            .combine(combine)
+            .finalize(finalize)
+    }
+
+    fn table(name: &str) -> TableFunctionBuilder {
+        TableFunctionBuilder::new(name)
+            .bind(table_bind)
+            .init(table_init)
+            .scan(table_scan)
+    }
+
+    fn cast() -> CastFunctionBuilder {
+        CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer).function(cast_fn)
+    }
 
     #[test]
     fn mock_registrar_records_scalar() {
         let mock = MockRegistrar::new();
-        let builder = ScalarFunctionBuilder::new("my_fn")
-            .param(TypeId::BigInt)
-            .returns(TypeId::BigInt);
-        unsafe { mock.register_scalar(builder).unwrap() };
+        unsafe { mock.register_scalar(scalar("my_fn")).unwrap() };
         assert!(mock.has_scalar("my_fn"));
         assert_eq!(mock.scalar_names(), vec!["my_fn"]);
         assert_eq!(mock.total_registrations(), 1);
@@ -367,10 +465,7 @@ mod tests {
     #[test]
     fn mock_registrar_records_aggregate() {
         let mock = MockRegistrar::new();
-        let builder = AggregateFunctionBuilder::new("my_agg")
-            .param(TypeId::BigInt)
-            .returns(TypeId::BigInt);
-        unsafe { mock.register_aggregate(builder).unwrap() };
+        unsafe { mock.register_aggregate(aggregate("my_agg")).unwrap() };
         assert!(mock.has_aggregate("my_agg"));
         assert_eq!(mock.aggregate_names(), vec!["my_agg"]);
         assert_eq!(mock.total_registrations(), 1);
@@ -379,7 +474,12 @@ mod tests {
     #[test]
     fn mock_registrar_records_scalar_set() {
         let mock = MockRegistrar::new();
-        let builder = crate::scalar::ScalarFunctionSetBuilder::new("my_set");
+        let builder = crate::scalar::ScalarFunctionSetBuilder::new("my_set").overload(
+            crate::scalar::ScalarOverloadBuilder::new()
+                .param(TypeId::BigInt)
+                .returns(TypeId::BigInt)
+                .function(scalar_fn),
+        );
         unsafe { mock.register_scalar_set(builder).unwrap() };
         assert!(mock.has_scalar_set("my_set"));
         assert!(!mock.has_scalar_set("other"));
@@ -390,7 +490,16 @@ mod tests {
     #[test]
     fn mock_registrar_records_aggregate_set() {
         let mock = MockRegistrar::new();
-        let builder = AggregateFunctionSetBuilder::new("my_agg_set");
+        let builder = AggregateFunctionSetBuilder::new("my_agg_set").overload(
+            crate::aggregate::AggregateOverloadBuilder::new()
+                .param(TypeId::BigInt)
+                .returns(TypeId::BigInt)
+                .state_size(state_size)
+                .init(state_init)
+                .update(update)
+                .combine(combine)
+                .finalize(finalize),
+        );
         unsafe { mock.register_aggregate_set(builder).unwrap() };
         assert!(mock.has_aggregate_set("my_agg_set"));
         assert_eq!(mock.aggregate_set_names(), vec!["my_agg_set"]);
@@ -400,8 +509,7 @@ mod tests {
     #[test]
     fn mock_registrar_records_table() {
         let mock = MockRegistrar::new();
-        let builder = TableFunctionBuilder::new("my_table");
-        unsafe { mock.register_table(builder).unwrap() };
+        unsafe { mock.register_table(table("my_table")).unwrap() };
         assert!(mock.has_table("my_table"));
         assert_eq!(mock.table_names(), vec!["my_table"]);
         assert_eq!(mock.total_registrations(), 1);
@@ -420,8 +528,7 @@ mod tests {
     #[test]
     fn mock_registrar_records_cast() {
         let mock = MockRegistrar::new();
-        let builder = CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer);
-        unsafe { mock.register_cast(builder).unwrap() };
+        unsafe { mock.register_cast(cast()).unwrap() };
         let casts = mock.casts();
         assert_eq!(casts.len(), 1);
         assert_eq!(casts[0].source, Some(TypeId::Varchar));
@@ -433,12 +540,8 @@ mod tests {
     fn mock_registrar_multiple_registrations() {
         let mock = MockRegistrar::new();
 
-        let s1 = ScalarFunctionBuilder::new("fn_one")
-            .param(TypeId::BigInt)
-            .returns(TypeId::BigInt);
-        let s2 = ScalarFunctionBuilder::new("fn_two")
-            .param(TypeId::Varchar)
-            .returns(TypeId::Integer);
+        let s1 = scalar("fn_one");
+        let s2 = scalar("fn_two");
 
         unsafe {
             mock.register_scalar(s1).unwrap();
@@ -458,7 +561,11 @@ mod tests {
         assert!(!mock.has_copy_function("my_format"));
         assert_eq!(mock.copy_function_names(), [] as [String; 0]);
 
-        let builder = crate::copy_function::CopyFunctionBuilder::try_new("my_format").unwrap();
+        let builder = crate::copy_function::CopyFunctionBuilder::try_new("my_format")
+            .unwrap()
+            .bind(copy_bind)
+            .sink(copy_sink)
+            .finalize(copy_finalize);
         unsafe { mock.register_copy_function(builder).unwrap() };
 
         assert!(mock.has_copy_function("my_format"));
@@ -472,7 +579,9 @@ mod tests {
 
         let option = crate::config_option::ConfigOptionBuilder::try_new("my_option")
             .expect("name")
-            .option_type(TypeId::Varchar);
+            .option_type(TypeId::Varchar)
+            .default_value("x")
+            .expect("default");
         // SAFETY: the mock ignores the connection entirely.
         unsafe { mock.register_config_option(option) }.expect("register");
         assert!(mock.has_config_option("my_option"));
@@ -494,10 +603,12 @@ mod tests {
     fn mock_registrar_total_registrations_scalar_plus_copy_function() {
         let mock = MockRegistrar::new();
 
-        let scalar = ScalarFunctionBuilder::new("my_scalar")
-            .param(TypeId::BigInt)
-            .returns(TypeId::BigInt);
-        let copy_fn = crate::copy_function::CopyFunctionBuilder::try_new("my_format").unwrap();
+        let scalar = scalar("my_scalar");
+        let copy_fn = crate::copy_function::CopyFunctionBuilder::try_new("my_format")
+            .unwrap()
+            .bind(copy_bind)
+            .sink(copy_sink)
+            .finalize(copy_finalize);
 
         unsafe {
             mock.register_scalar(scalar).unwrap();
@@ -549,15 +660,11 @@ mod tests {
     fn mock_registrar_total_registrations_counts_all_types() {
         let mock = MockRegistrar::new();
 
-        let scalar = ScalarFunctionBuilder::new("sc")
-            .param(TypeId::BigInt)
-            .returns(TypeId::BigInt);
-        let agg = AggregateFunctionBuilder::new("ag")
-            .param(TypeId::BigInt)
-            .returns(TypeId::BigInt);
-        let table = TableFunctionBuilder::new("tb");
+        let scalar = scalar("sc");
+        let agg = aggregate("ag");
+        let table = table("tb");
         let macro_ = SqlMacro::scalar("mc", &["x"], "x + 1").unwrap();
-        let cast = CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer);
+        let cast = cast();
 
         unsafe {
             mock.register_scalar(scalar).unwrap();
@@ -574,14 +681,104 @@ mod tests {
     fn mock_registrar_used_with_generic_registrar() {
         // Demonstrates using MockRegistrar where &impl Registrar is expected.
         fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
-            let s = ScalarFunctionBuilder::new("compute")
-                .param(TypeId::Integer)
-                .returns(TypeId::Integer);
-            unsafe { reg.register_scalar(s) }
+            unsafe { reg.register_scalar(scalar("compute")) }
         }
 
         let mock = MockRegistrar::new();
         register_all(&mock).unwrap();
         assert!(mock.has_scalar("compute"));
+    }
+
+    #[cfg(feature = "duckdb-1-5")]
+    unsafe extern "C" fn copy_bind(_: libduckdb_sys::duckdb_copy_function_bind_info) {}
+    #[cfg(feature = "duckdb-1-5")]
+    unsafe extern "C" fn copy_sink(
+        _: libduckdb_sys::duckdb_copy_function_sink_info,
+        _: duckdb_data_chunk,
+    ) {
+    }
+    #[cfg(feature = "duckdb-1-5")]
+    unsafe extern "C" fn copy_finalize(_: libduckdb_sys::duckdb_copy_function_finalize_info) {}
+
+    /// The mock used to record any builder, so a test could pass with a
+    /// registration the real connection refuses at `LOAD` — the module's own
+    /// doc example registered a scalar with no function callback. It now
+    /// runs the same checks the real registration runs before its first
+    /// `DuckDB` call, with the same messages, and records nothing on failure.
+    #[test]
+    fn the_mock_refuses_what_registration_refuses() {
+        let mock = MockRegistrar::new();
+        let refuse = |result: Result<(), ExtensionError>, want: &str| {
+            let err = result.expect_err(want);
+            assert!(err.as_str().contains(want), "{want}: {err}");
+        };
+        // SAFETY (every call): the mock ignores the connection entirely.
+        unsafe {
+            refuse(
+                mock.register_scalar(ScalarFunctionBuilder::new("f").returns(TypeId::BigInt)),
+                "function callback not set",
+            );
+            refuse(
+                mock.register_scalar(ScalarFunctionBuilder::new("f").function(scalar_fn)),
+                "return type not set",
+            );
+            refuse(
+                mock.register_scalar_set(crate::scalar::ScalarFunctionSetBuilder::new("s")),
+                "no overloads",
+            );
+            refuse(
+                mock.register_scalar_set(
+                    crate::scalar::ScalarFunctionSetBuilder::new("s").overload(
+                        crate::scalar::ScalarOverloadBuilder::new().returns(TypeId::BigInt),
+                    ),
+                ),
+                "overload 0 has no function callback",
+            );
+            refuse(
+                mock.register_aggregate(
+                    AggregateFunctionBuilder::new("a")
+                        .returns(TypeId::BigInt)
+                        .state_size(state_size)
+                        .init(state_init)
+                        .update(update)
+                        .combine(combine),
+                ),
+                "finalize callback not set",
+            );
+            refuse(
+                mock.register_aggregate_set(AggregateFunctionSetBuilder::new("as")),
+                "no overloads",
+            );
+            refuse(
+                mock.register_table(
+                    TableFunctionBuilder::new("t")
+                        .bind(table_bind)
+                        .init(table_init),
+                ),
+                "scan callback not set",
+            );
+            refuse(
+                mock.register_cast(CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)),
+                "cast function callback not set",
+            );
+        }
+        assert_eq!(mock.total_registrations(), 0, "nothing refused is recorded");
+    }
+
+    #[cfg(feature = "duckdb-1-5")]
+    #[test]
+    fn the_mock_refuses_incomplete_copy_functions_and_config_options() {
+        let mock = MockRegistrar::new();
+        let copy = crate::copy_function::CopyFunctionBuilder::try_new("fmt").unwrap();
+        // SAFETY: the mock ignores the connection entirely.
+        let err = unsafe { mock.register_copy_function(copy) }.expect_err("nothing set");
+        assert!(err.as_str().contains("implements nothing"), "{err}");
+        let option = crate::config_option::ConfigOptionBuilder::try_new("opt")
+            .expect("name")
+            .option_type(TypeId::Varchar);
+        // SAFETY: as above.
+        let err = unsafe { mock.register_config_option(option) }.expect_err("no default");
+        assert!(err.as_str().contains("has no default value"), "{err}");
+        assert_eq!(mock.total_registrations(), 0);
     }
 }

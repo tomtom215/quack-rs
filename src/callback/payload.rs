@@ -174,4 +174,26 @@ mod tests {
             std::panic::catch_unwind(|| panic!("boom {}", 7)).expect_err("panic must unwind");
         assert_eq!(take_panic_message(payload), "boom 7");
     }
+
+    /// The fourth audit's F16: a `Box<str>` payload (`panic_any` with a boxed
+    /// string) was reported as `<non-string panic payload>`.
+    #[test]
+    fn a_boxed_str_payload_keeps_its_message() {
+        let payload = std::panic::catch_unwind(|| {
+            std::panic::panic_any(Box::<str>::from("boxed boom"));
+        })
+        .expect_err("panic_any must unwind");
+        assert_eq!(take_panic_message(payload), "boxed boom");
+    }
+
+    /// The fourth audit's F12 / T3: every callback macro reports through
+    /// `panic_c_message`, which never hands `DuckDB` an empty message.
+    #[test]
+    fn panic_c_message_replaces_only_an_empty_message() {
+        use super::super::{panic_c_message, EMPTY_PANIC_PLACEHOLDER};
+        let empty = std::panic::catch_unwind(|| panic!("")).expect_err("panic must unwind");
+        assert_eq!(panic_c_message(empty).to_str(), Ok(EMPTY_PANIC_PLACEHOLDER));
+        let nul = std::panic::catch_unwind(|| panic!("a\0b")).expect_err("panic must unwind");
+        assert_eq!(panic_c_message(nul).to_str(), Ok("a?b"));
+    }
 }

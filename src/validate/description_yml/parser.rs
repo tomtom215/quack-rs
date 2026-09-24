@@ -12,6 +12,7 @@ use crate::validate::{
 
 use super::model::DescriptionYml;
 use super::yaml::{read_sections, Entry, Section, Value};
+use super::yaml11;
 
 /// Parses and validates a `description.yml` string.
 ///
@@ -180,6 +181,8 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     }
     let git_ref_next = repo.scalar("ref_next")?;
 
+    warn_about_yaml_1_1_retyping(&[&extension, &repo], &mut warnings);
+
     Ok(DescriptionYml {
         name,
         description,
@@ -195,6 +198,46 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         git_ref_next,
         warnings,
     })
+}
+
+/// Warns about each field this parser reads as text whose unquoted value
+/// `PyYAML` — which the community build reads the file with, following YAML
+/// 1.1 — reads as something else: an unquoted `yes` is a boolean there and
+/// `0.10` the float 0.1. Fields this parser does not read
+/// (`custom_toolchain_script: true`, a real boolean) are left alone.
+fn warn_about_yaml_1_1_retyping(sections: &[&Fields<'_>], warnings: &mut Vec<String>) {
+    const READ_AS_TEXT: [&str; 12] = [
+        "name",
+        "description",
+        "version",
+        "language",
+        "build",
+        "license",
+        "licence",
+        "requires_toolchains",
+        "excluded_platforms",
+        "github",
+        "ref",
+        "ref_next",
+    ];
+    for fields in sections {
+        for entry in fields.entries {
+            let Value::Scalar(ref text) = entry.value else {
+                continue;
+            };
+            if !entry.plain || !READ_AS_TEXT.contains(&entry.key.as_str()) {
+                continue;
+            }
+            if let Some(kind) = yaml11::implicit_type(text) {
+                warnings.push(format!(
+                    "{}.{}: the unquoted value '{text}' is {kind}, not text, to YAML 1.1 \
+                     readers such as PyYAML, which the community-extensions build uses; quote \
+                     it",
+                    fields.section, entry.key
+                ));
+            }
+        }
+    }
 }
 
 fn missing(field: &str) -> ExtensionError {

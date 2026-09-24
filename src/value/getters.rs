@@ -99,6 +99,15 @@ impl Value {
         if self.is_sql_null() || !is_scalar_cast_source(source) {
             return None;
         }
+        // A temporal source whose own payload is out of range: `DuckDB`'s cast
+        // of it can overflow a signed multiply (`Timestamp::GetTime` on
+        // `i64::MIN`, reported by UBSan) or throw, and such values do reach a
+        // `Value` — `make_timestamp(-9223372036854775808)` is ordinary SQL. The
+        // same-type read `temporal_payload` makes comes back here with
+        // `source == target`, which skips this.
+        if source != target && !self.own_payload_in_range(source) {
+            return None;
+        }
         // A pair `DuckDB` converts with a throwing loop: check the payload
         // first. `cast_guard(t, t)` is `None`, so the same-type read inside
         // `timestamp_payload` does not come back here.
@@ -175,6 +184,48 @@ impl Value {
                 self.read_cast(source, |v| unsafe { duckdb_get_timestamp_ns(v) }.nanos)
             }
             _ => None,
+        }
+    }
+
+    /// The raw payload of a `TIME`, `TIME_NS` or timestamp-family value, read
+    /// at its own type (no cast, so no conversion can fail).
+    pub(super) fn temporal_payload(&self, source: TypeId) -> Option<i64> {
+        match source {
+            // SAFETY: `read_cast` passes a live, non-NULL handle of exactly
+            // this type, so `duckdb_get_time`'s cast is a plain copy.
+            TypeId::Time => self.read_cast(source, |v| unsafe { duckdb_get_time(v) }.micros),
+            #[cfg(feature = "duckdb-1-5")]
+            // SAFETY: as above, for `TIME_NS`.
+            TypeId::TimeNs => self.read_cast(source, |v| unsafe { duckdb_get_time_ns(v) }.nanos),
+            _ => self.timestamp_payload(source),
+        }
+    }
+
+    /// The raw 64-bit encoding of a `TIMETZ` value, read at its own type.
+    pub(super) fn time_tz_payload(&self) -> Option<u64> {
+        // SAFETY: `read_cast` passes a live, non-NULL handle; on a `TIMETZ`
+        // value `duckdb_get_time_tz`'s cast is a plain copy.
+        self.read_cast(TypeId::TimeTz, |v| unsafe { duckdb_get_time_tz(v) }.bits)
+    }
+
+    /// Whether a temporal value's own payload is in the range `DuckDB`
+    /// converts safely; `true` for every other type.
+    fn own_payload_in_range(&self, source: TypeId) -> bool {
+        match source {
+            TypeId::TimeTz => self.time_tz_payload().is_some_and(time_tz_in_range),
+            TypeId::Time
+            | TypeId::Timestamp
+            | TypeId::TimestampTz
+            | TypeId::TimestampS
+            | TypeId::TimestampMs
+            | TypeId::TimestampNs => self
+                .temporal_payload(source)
+                .is_some_and(|v| temporal_in_range(source, v)),
+            #[cfg(feature = "duckdb-1-5")]
+            TypeId::TimeNs => self
+                .temporal_payload(source)
+                .is_some_and(|v| temporal_in_range(source, v)),
+            _ => true,
         }
     }
 

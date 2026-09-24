@@ -104,11 +104,12 @@ pub(super) fn plain_scalar(
     if !head.is_empty() {
         parts.push(head);
     }
-    let mut ended = head.len() < first.trim_end().len();
+    // The line of the comment that ended the value, once one has.
+    let mut ended_on = (head.len() < first.trim_end().len()).then_some(line);
     for child in children.iter().filter(|l| l.is_content()) {
-        if ended {
+        if let Some(comment_line) = ended_on {
             return Err(format!(
-                "line {}: text after a comment that ended the value on line {line}",
+                "line {}: text after a comment that ended the value on line {comment_line}",
                 child.number
             ));
         }
@@ -120,7 +121,9 @@ pub(super) fn plain_scalar(
             ));
         }
         let text = strip_comment(child.text);
-        ended = text.len() < child.text.len();
+        if text.len() < child.text.len() {
+            ended_on = Some(child.number);
+        }
         parts.push(text);
     }
     let joined = parts.join(" ");

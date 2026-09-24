@@ -89,8 +89,11 @@ pub const COMMON_SPDX_LICENSES: &[&str] = &[
 ///
 /// Accepted:
 ///
-/// - any identifier in [`COMMON_SPDX_LICENSES`] (case-sensitive, per the SPDX
-///   specification);
+/// - any identifier in [`COMMON_SPDX_LICENSES`], spelled with its canonical
+///   case. SPDX (Annex D.2) says identifiers *should* be matched
+///   case-insensitively, but also that the canonical case matters, since it is
+///   used in the license's URL; this validator requires it, and names the
+///   canonical spelling when only the case differs (`mit` → `MIT`);
 /// - a user-defined `LicenseRef-<idstring>` reference, which SPDX allows in
 ///   any expression;
 /// - either of those followed by `WITH <exception>`, e.g.
@@ -150,11 +153,28 @@ pub fn validate_spdx_license(license: &str) -> Result<(), ExtensionError> {
         // Deliberately not "is not a recognized SPDX identifier": this list is
         // a shortlist of ~40 out of 700+, so saying that would be wrong for
         // most valid identifiers.
-        Ok(Some(Unlisted::License(id))) => Err(ExtensionError::new(format!(
-            "license '{id}' is not in quack-rs's list of common SPDX identifiers. \
-             It may still be valid — check https://spdx.org/licenses/. \
-             Common choices: MIT, Apache-2.0, BSD-3-Clause, GPL-3.0-or-later, MPL-2.0"
-        ))),
+        Ok(Some(Unlisted::License(id))) => Err(ExtensionError::new(
+            COMMON_SPDX_LICENSES
+                .iter()
+                .find(|known| known.eq_ignore_ascii_case(id))
+                .map_or_else(
+                    || {
+                        format!(
+                            "license '{id}' is not in quack-rs's list of common SPDX \
+                             identifiers. It may still be valid — check \
+                             https://spdx.org/licenses/. Common choices: MIT, Apache-2.0, \
+                             BSD-3-Clause, GPL-3.0-or-later, MPL-2.0"
+                        )
+                    },
+                    |canonical| {
+                        format!(
+                            "license '{id}' should be spelled '{canonical}': SPDX identifiers \
+                             match case-insensitively, but the canonical case is the one the \
+                             SPDX list and its URLs use"
+                        )
+                    },
+                ),
+        )),
         // The exception list is the whole registry as of the version it was
         // taken from, so only a newer addition can be valid and missing.
         Ok(Some(Unlisted::Exception(id))) => Err(ExtensionError::new(format!(
@@ -531,11 +551,21 @@ mod tests {
         assert_eq!(sorted.len(), COMMON_SPDX_LICENSES.len());
     }
 
+    /// The canonical case is required, and a case-only difference names the
+    /// canonical spelling. (The docs used to call this "case-sensitive, per
+    /// the SPDX specification"; the specification says the opposite.)
     #[test]
-    fn case_sensitive() {
-        // SPDX identifiers are case-sensitive
-        assert!(validate_spdx_license("mit").is_err());
-        assert!(validate_spdx_license("apache-2.0").is_err());
+    fn a_case_only_difference_names_the_canonical_spelling() {
+        for (given, canonical) in [("mit", "MIT"), ("apache-2.0", "Apache-2.0")] {
+            let err = validate_spdx_license(given).expect_err(given);
+            assert!(
+                err.as_str()
+                    .contains(&format!("should be spelled '{canonical}'")),
+                "{err}"
+            );
+        }
+        let err = validate_spdx_license("NotALicense").expect_err("unlisted");
+        assert!(err.as_str().contains("not in quack-rs's list"), "{err}");
     }
 
     #[test]

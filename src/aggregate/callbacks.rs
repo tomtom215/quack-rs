@@ -21,7 +21,7 @@
 //! | [`UpdateFn`] | Per batch of input rows | Accumulates data from a chunk into the states |
 //! | [`CombineFn`] | Parallel merge, window segment trees | Merges source states into target states |
 //! | [`FinalizeFn`] | Per batch of result rows, with a `count` and an `offset` | Writes results from `count` states to the output vector starting at `offset` |
-//! | [`DestroyFn`] | For every state that was initialized: after finalize, and on the source states once `combine` has merged them | Frees per-state memory |
+//! | [`DestroyFn`] | For every state `DuckDB` created: after finalize, on the source states once `combine` has merged them — and, after a failed `state_init`, on states that were never initialised | Frees per-state memory |
 //!
 //! Sources (`DuckDB` 1.5.5): `CAPIAggregateStateSize`, `CAPIAggregateFinalize`
 //! and `CAPIAggregateDestructor` in `src/main/capi/aggregate_function-c.cpp`;
@@ -151,11 +151,42 @@ pub type FinalizeFn = unsafe extern "C" fn(
 
 /// Frees memory allocated by [`StateInitFn`].
 ///
-/// Called for every state that was initialized — after finalize, but also on
-/// the source states of a [`CombineFn`] once they have been merged, and on
-/// states that are never finalized. Must free all heap allocations made in
+/// Called for every state `DuckDB` created — after finalize, but also on the
+/// source states of a [`CombineFn`] once they have been merged, and on states
+/// that are never finalized. Must free all heap allocations made in
 /// `StateInitFn`.
+///
+/// # Not every state it receives was initialised
+///
+/// When a [`StateInitFn`] call fails, `DuckDB` 1.4.4 to 1.5.5 still destroys
+/// every state row it had created, including rows whose `state_init` never ran
+/// — for this aggregate and for any other in the same query
+/// (`RowOperations::InitializeStates` is not exception-safe). In one run
+/// against 1.5.5, a failure at init call 3001 sent 4096 states to the
+/// destructor, 1096 of them never initialised. A destructor that frees a
+/// pointer stored by `state_init` must therefore recognise a slot `state_init`
+/// did not write; [`FfiState`][crate::aggregate::FfiState] does so with a tag.
+/// The same failure also leaves most initialised states undestroyed, so what
+/// they own leaks; see `docs/upstream-duckdb-reports.md`.
 pub type DestroyFn = unsafe extern "C" fn(states: *mut duckdb_aggregate_state, count: idx_t);
+
+/// The destructor registered for an aggregate whose builder was given none.
+///
+/// It does nothing, and it exists for its presence: `DuckDB` evaluates an
+/// aggregate with **no** state destructor as a *streaming* window
+/// (`PhysicalStreamingWindow::IsStreamingFunction`) for
+/// `agg(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)` and other
+/// running frames, and that path gives every C API aggregate wrong answers:
+/// it slices the argument chunk to one row per `update` call, and
+/// `CAPIAggregateUpdate` flattens that slice in place on the first call, so
+/// every later row of the chunk re-reads row 0 (Pitfall L13). Any destructor
+/// takes the aggregate off that path. A no-op cannot fail, touches no state
+/// and cannot unwind.
+pub(crate) const unsafe extern "C" fn no_op_destroy(
+    _states: *mut duckdb_aggregate_state,
+    _count: idx_t,
+) {
+}
 
 #[cfg(test)]
 mod tests {

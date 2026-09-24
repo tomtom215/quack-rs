@@ -35,7 +35,12 @@ impl Appender {
     ///
     /// # Safety
     ///
-    /// `con` must be a valid, open `duckdb_connection`.
+    /// `con` must be a valid, open `duckdb_connection`. It need not outlive
+    /// the appender for memory safety (`DuckDB`'s appender holds only a weak
+    /// reference to the client context and checks it before writing), but rows still buffered when it closes are lost:
+    /// appends keep succeeding, and the next flush or `close` fails with
+    /// "Attempting to flush data to a closed connection". Close the appender
+    /// first.
     pub unsafe fn new(
         con: duckdb_connection,
         schema: Option<&CStr>,
@@ -67,7 +72,12 @@ impl Appender {
     ///
     /// # Safety
     ///
-    /// `con` must be a valid, open `duckdb_connection`.
+    /// `con` must be a valid, open `duckdb_connection`. It need not outlive
+    /// the appender for memory safety (`DuckDB`'s appender holds only a weak
+    /// reference to the client context and checks it before writing), but rows still buffered when it closes are lost:
+    /// appends keep succeeding, and the next flush or `close` fails with
+    /// "Attempting to flush data to a closed connection". Close the appender
+    /// first.
     pub unsafe fn with_catalog(
         con: duckdb_connection,
         catalog: Option<&CStr>,

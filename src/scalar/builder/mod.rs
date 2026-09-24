@@ -8,7 +8,7 @@
 //! Scalar functions take a data chunk of input rows and produce one output value
 //! per row. This is the most common function type in `DuckDB` extensions.
 
-mod collision;
+pub(crate) mod collision;
 mod overload;
 mod set;
 pub(crate) mod signature;

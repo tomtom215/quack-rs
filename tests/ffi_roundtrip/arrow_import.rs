@@ -155,6 +155,24 @@ fn a_child_shorter_than_its_parent_is_refused() {
     assert_eq!(import(&con, raw), Ok(4));
 }
 
+/// `DuckDB` imports child rows `0..length` whatever the parent struct
+/// array's `offset`: in the C reproducer, 3 rows at offset 2 over a child
+/// `[0, 10, …, 90]` came back as `0 10 20` instead of `20 30 40`, with no
+/// error (1.4.4, 1.5.0 and 1.5.5). A nonzero offset is now refused before
+/// `DuckDB` sees the array.
+#[test]
+fn a_nonzero_parent_offset_is_refused_not_imported_as_the_wrong_rows() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let mut child = int_child(10, 10);
+    let mut kids = Box::new([ptr::from_mut(&mut *child.raw)]);
+    let (mut raw, _buffers) = parent(3, 1, kids.as_mut_ptr());
+    raw.offset = 2;
+    let err = import(&con, raw).expect_err("offset 2 is refused");
+    assert!(err.contains("has offset 2"), "{err}");
+}
+
 /// Exports one value of `expr` and imports it back, returning the imported
 /// column's type and the value rendered by `DuckDB` (through a table the
 /// chunk is appended to).
@@ -239,4 +257,186 @@ fn dictionary_encoded_children_are_converted() {
     let back = unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }
         .expect("dictionary arrays import");
     assert_eq!(back.size(), 10);
+}
+
+/// Runs `sql`, exports its first chunk to Arrow and imports it back.
+fn export_import(con: &OwnedConnection, sql: &str) -> quack_rs::query::OwnedDataChunk {
+    let mut result = con.query(sql).expect("query");
+    let ty = result.column_logical_type(0).expect("type");
+    let options = ArrowOptions::from_connection(con).expect("options");
+    let mut schema = to_arrow_schema(&options, &[("v", &ty)]).expect("schema");
+    // SAFETY: `con` is live.
+    let converted = unsafe { schema_from_arrow(con.as_raw(), &mut schema) }.expect("converted");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
+    let array = data_chunk_to_arrow(&options, &chunk).expect("export");
+    // SAFETY: `con` is live and `converted` came from it.
+    unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }.expect("import")
+}
+
+/// What the ENUM queries below hold at `row`: `None` every seventh row, else
+/// alternately a string longer than the 12-byte inline limit and a short one.
+const fn enum_expected(row: usize) -> Option<&'static str> {
+    if row % 7 == 3 {
+        None
+    } else if row % 2 == 0 {
+        Some("bb-longer-than-twelve-bytes")
+    } else {
+        Some("aa")
+    }
+}
+
+const ENUM_ROWS: &str = "(CASE WHEN i % 7 = 3 THEN NULL WHEN i % 2 = 0 \
+     THEN 'bb-longer-than-twelve-bytes' ELSE 'aa' END)::ENUM('aa', 'bb-longer-than-twelve-bytes')";
+
+/// The fourth audit's V3: `DuckDB` imports a dictionary-encoded column as a
+/// *dictionary* vector (`vector.Slice` in `ColumnArrowToDuckDBDictionary`),
+/// sized for the dictionary, not the chunk. Every `VectorReader` indexes the
+/// data flat, so reading row `i` read entry `i` of a 3-entry buffer: wrong
+/// values for every row, and a heap read out of bounds past row 2.
+/// `data_chunk_from_arrow` now flattens such columns before returning them.
+#[test]
+fn a_dictionary_encoded_column_reads_back_row_for_row() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let back = export_import(
+        &con,
+        &format!("SELECT {ENUM_ROWS} AS v FROM range(2048) t(i)"),
+    );
+    assert_eq!(back.size(), 2048);
+    // SAFETY: column 0 exists; the chunk outlives the reader.
+    let reader = unsafe { back.reader(0) };
+    for row in 0..back.size() {
+        // SAFETY: `row < size`; strings are only read from valid rows.
+        let got = unsafe { reader.is_valid(row).then(|| reader.read_str(row)) };
+        assert_eq!(got, enum_expected(row), "row {row}");
+    }
+}
+
+/// V3 inside a `STRUCT`: the struct's child is imported through the same
+/// dictionary path (`arrow_conversion.cpp`, the struct case).
+#[test]
+fn a_dictionary_encoded_struct_field_reads_back_row_for_row() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let back = export_import(
+        &con,
+        &format!("SELECT {{'e': {ENUM_ROWS}}} AS v FROM range(2048) t(i)"),
+    );
+    // SAFETY: column 0 is a one-field STRUCT; the chunk outlives the reader.
+    let field = unsafe { back.struct_field_reader(0, 0) };
+    for row in 0..back.size() {
+        // SAFETY: `row < size`; strings are only read from valid rows.
+        let got = unsafe { field.is_valid(row).then(|| field.read_str(row)) };
+        assert_eq!(got, enum_expected(row), "row {row}");
+    }
+}
+
+/// V3 inside a `LIST`: each row holds `[e, e]`, so the child has twice as
+/// many entries as the chunk has rows — 2048 here, the most `DuckDB` can
+/// import with NULLs (see the next test).
+#[test]
+fn a_dictionary_encoded_list_child_reads_back_row_for_row() {
+    use quack_rs::vector::complex::ListVector;
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let back = export_import(
+        &con,
+        &format!("SELECT [{ENUM_ROWS}, {ENUM_ROWS}] AS v FROM range(1024) t(i)"),
+    );
+    assert_eq!(back.size(), 1024);
+    // SAFETY: column 0 exists.
+    let list = unsafe { back.vector(0) };
+    // SAFETY: `list` is a live LIST vector of the chunk.
+    let child = unsafe { ListVector::child_reader(list, ListVector::get_size(list)) };
+    for row in 0..back.size() {
+        // SAFETY: `row < size`.
+        let entry = unsafe { ListVector::get_entry(list, row) };
+        assert_eq!(entry.length, 2, "row {row}");
+        for k in 0..2 {
+            let at = usize::try_from(entry.offset).unwrap() + k;
+            // SAFETY: `at` is inside the child; strings are only read from valid rows.
+            let got = unsafe { child.is_valid(at).then(|| child.read_str(at)) };
+            assert_eq!(got, enum_expected(row), "row {row} element {k}");
+        }
+    }
+}
+
+/// Found while fixing V3: `DuckDB` imports a dictionary-encoded array with
+/// NULLs and more than `STANDARD_VECTOR_SIZE` (2048) entries by writing past a
+/// heap buffer (`ColumnArrowToDuckDBDictionary` copies the indices' validity
+/// into a 2048-row `ValidityMask`). A 2048-row chunk of `[e, e]` has a
+/// 4096-entry dictionary child, and before the check this test's import
+/// corrupted the heap (glibc: `realloc(): invalid next size`; valgrind: an
+/// invalid write 0 bytes after a 256-byte block in `GetValidityMask`).
+#[test]
+fn a_dictionary_array_duckdb_would_overflow_on_is_refused() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let mut result = con
+        .query(&format!(
+            "SELECT [{ENUM_ROWS}, {ENUM_ROWS}] AS v FROM range(2048) t(i)"
+        ))
+        .expect("query");
+    let ty = result.column_logical_type(0).expect("type");
+    let options = ArrowOptions::from_connection(&con).expect("options");
+    let mut schema = to_arrow_schema(&options, &[("v", &ty)]).expect("schema");
+    // SAFETY: `con` is live.
+    let converted = unsafe { schema_from_arrow(con.as_raw(), &mut schema) }.expect("converted");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
+    let array = data_chunk_to_arrow(&options, &chunk).expect("export");
+    // SAFETY: `con` is live and `converted` came from it.
+    let err = unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }
+        .expect_err("a 4096-entry dictionary child with NULLs");
+    assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
+    let message = err.message().unwrap_or_default();
+    assert!(message.contains("4096 entries and nulls"), "{message}");
+}
+
+/// An Arrow null-type column imports as a *constant* NULL vector
+/// (`vector.Reference(Value())` in `ColumnArrowToDuckDB`); it now reads as
+/// NULL in every row like any flat vector. The array is built by hand: an
+/// Arrow null array has no buffers at all.
+#[test]
+fn a_null_type_column_reads_back_null_in_every_row() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let options = ArrowOptions::from_connection(&con).expect("options");
+    let null_type = LogicalType::new(TypeId::SqlNull);
+    let mut schema = to_arrow_schema(&options, &[("v", &null_type)]).expect("schema");
+    assert_eq!(schema.child(0).and_then(|c| c.format()), Some("n"));
+    // SAFETY: `con` is live.
+    let converted = unsafe { schema_from_arrow(con.as_raw(), &mut schema) }.expect("converted");
+
+    let mut child = Box::new(RawArrowArray {
+        length: 2048,
+        null_count: 2048,
+        offset: 0,
+        n_buffers: 0,
+        n_children: 0,
+        buffers: ptr::null_mut(),
+        children: ptr::null_mut(),
+        dictionary: ptr::null_mut(),
+        release: Some(release_nothing),
+        private_data: ptr::null_mut(),
+    });
+    let mut children = [ptr::from_mut(&mut *child)];
+    let (raw, _buffers) = parent(2048, 1, children.as_mut_ptr());
+    // SAFETY: every pointer in `raw` refers to a local that outlives the
+    // import; `release_nothing` frees nothing.
+    let array = unsafe { ArrowArray::from_raw(raw) };
+    // SAFETY: `con` is live, `converted` came from it, and the array
+    // conforms to its one null-type column.
+    let back = unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }.expect("import");
+    assert_eq!(back.size(), 2048);
+    // SAFETY: column 0 exists; the chunk outlives the reader.
+    let reader = unsafe { back.reader(0) };
+    for row in 0..back.size() {
+        // SAFETY: `row < size`.
+        assert!(!unsafe { reader.is_valid(row) }, "row {row}");
+    }
 }

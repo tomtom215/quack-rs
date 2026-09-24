@@ -212,11 +212,7 @@ use quack_rs::prelude::*;
 
 /// The example function: `{name}_hello(name)` greets `name`.
 fn hello_macro() -> Result<SqlMacro, ExtensionError> {{
-    SqlMacro::scalar(
-        "{name}_hello",
-        &["name"],
-        "concat('Hello from {name}! ', name)",
-    )
+    {hello_call}
 }}
 
 /// Registers all extension functions on the given connection.
@@ -236,7 +232,7 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
 // Entry point — the C Extension API handles everything, no C++ glue needed.
 // ---------------------------------------------------------------------------
 
-quack_rs::entry_point!({name}_init_c_api, register);
+{entry_point_call}
 
 // Unit tests run under plain `cargo test`: building a function definition
 // needs no DuckDB. Calling into DuckDB does, so behaviour against a real engine
@@ -257,7 +253,43 @@ mod tests {{
 "##,
         description = doc_comment_lines(&config.description),
         name = config.name,
+        hello_call = hello_macro_call(&config.name),
+        entry_point_call = entry_point_call(&config.name),
     )
+}
+
+/// The `entry_point!` invocation, laid out as `rustfmt` lays it out: on one
+/// line while its arguments fit in `fn_call_width` (60 columns), otherwise one
+/// argument per line, without a trailing comma.
+fn entry_point_call(name: &str) -> String {
+    let args = format!("{name}_init_c_api, register");
+    if args.len() <= 60 {
+        format!("quack_rs::entry_point!({args});")
+    } else {
+        format!("quack_rs::entry_point!(\n    {name}_init_c_api,\n    register\n);")
+    }
+}
+
+/// The `SqlMacro::scalar(...)` call in `hello_macro`, laid out the way
+/// `rustfmt` lays it out for this name, so the generated project's
+/// `cargo fmt --check` passes. `rustfmt` keeps a call's arguments on one line
+/// while they fit in `fn_call_width` (60 columns by default); a short name
+/// fits, a longer one does not.
+fn hello_macro_call(name: &str) -> String {
+    let args = [
+        format!("\"{name}_hello\""),
+        String::from("&[\"name\"]"),
+        format!("\"concat('Hello from {name}! ', name)\""),
+    ];
+    let one_line = args.join(", ");
+    if one_line.len() <= 60 {
+        format!("SqlMacro::scalar({one_line})")
+    } else {
+        format!(
+            "SqlMacro::scalar(\n        {},\n    )",
+            args.join(",\n        ")
+        )
+    }
 }
 
 pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
@@ -273,9 +305,11 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
   license: {license}
   requires_toolchains: rust;python3
 ",
-        name = config.name,
-        // Quoted: `description` is free text, and a version such as
-        // `2025120401` or `1.0` would otherwise be read as a number.
+        // Quoted, like every text field here: the community build reads this
+        // file with PyYAML (YAML 1.1), where an unquoted `yes` or `null` is
+        // not a name, a version such as `2025120401` or `1.0` is a number,
+        // and a ref such as `0123456` is the octal integer 42798.
+        name = yaml_quoted(&config.name),
         description = yaml_quoted(&config.description),
         version = yaml_quoted(&config.version),
         license = config.license,
@@ -291,13 +325,13 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
 
     let _ = writeln!(yml);
     let _ = writeln!(yml, "repo:");
-    let _ = writeln!(yml, "  github: {}", config.github_repo);
+    let _ = writeln!(yml, "  github: {}", yaml_quoted(&config.github_repo));
     // DuckDB's documentation: "Provide the hash of the latest commit on the
     // branch targeting stable as `ref`". The community repository builds
     // exactly this revision and signs the result, so a branch name would make
     // the build unreproducible.
     let _ = writeln!(yml, "  # Must be a commit hash, not a branch.");
-    let _ = writeln!(yml, "  ref: {}", config.git_ref);
+    let _ = writeln!(yml, "  ref: {}", yaml_quoted(&config.git_ref));
     let _ = writeln!(
         yml,
         "  # ref_next: <hash>   # optional: a revision compatible with DuckDB main,"
@@ -462,7 +496,10 @@ jobs:
             platform: windows_amd64
     runs-on: ${{{{ matrix.os }}}}
     env:
-      DUCKDB_PLATFORM: ${{{{ matrix.platform }}}}
+      # Empty on Linux, so extension-ci-tools detects the platform itself:
+      # its base.Makefile sets SKIP_TESTS=1 whenever DUCKDB_PLATFORM is
+      # linux_amd64, which would turn the SQLLogicTest step into a no-op.
+      DUCKDB_PLATFORM: ${{{{ matrix.os != 'ubuntu-latest' && matrix.platform || '' }}}}
     steps:
       # Every action is SHA-pinned. A tag or branch is a moving target that the
       # action's owner can repoint at any time, and a workflow step runs

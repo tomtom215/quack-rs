@@ -51,7 +51,10 @@ if unsafe { !reader.is_valid(row) } {
 # }
 ```
 
-**Always check `is_valid` before reading.** Reading from a NULL row returns garbage data.
+**Always check `is_valid` before reading.** Reading a fixed-width value from a
+NULL row returns garbage data; reading a `VARCHAR` or `BLOB` from one can
+follow a stale pointer into freed memory (see
+[NULL Handling & Strings](nulls-and-strings.md)).
 
 ### Reading values
 

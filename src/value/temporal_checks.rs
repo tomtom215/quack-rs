@@ -151,7 +151,7 @@ const TIME_TZ_MAX_OFFSET: u64 = 16 * 60 * 60 - 1;
 /// - `TIMESTAMP_NS`: `±infinity` or at least [`TIMESTAMP_NS_MIN_NANOS`].
 ///
 /// Any other type returns `false`.
-pub(super) const fn temporal_in_range(type_id: TypeId, v: i64) -> bool {
+pub const fn temporal_in_range(type_id: TypeId, v: i64) -> bool {
     let infinite = v == TS_INFINITY || v == TS_NEGATIVE_INFINITY;
     match type_id {
         TypeId::Time => v >= 0 && v <= MICROS_PER_DAY,

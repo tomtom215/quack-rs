@@ -57,6 +57,25 @@ impl NullTarget {
             unsafe { libduckdb_sys::duckdb_validity_set_row_invalid(self.validity, row as idx_t) };
         }
     }
+
+    /// Marks valid the rows of this mask that `rows` of the top-level vector
+    /// cover: the inverse of [`clear`][Self::clear].
+    ///
+    /// # Safety
+    ///
+    /// As for [`clear`][Self::clear].
+    pub unsafe fn restore(&self, rows: core::ops::Range<usize>) {
+        let (Some(start), Some(end)) = (
+            (rows.start as u64).checked_mul(self.rows_per_row),
+            (rows.end as u64).checked_mul(self.rows_per_row),
+        ) else {
+            return;
+        };
+        for row in start..end {
+            // SAFETY: as in `clear`.
+            unsafe { libduckdb_sys::duckdb_validity_set_row_valid(self.validity, row as idx_t) };
+        }
+    }
 }
 
 /// Collects every descendant mask that `FlatVector::SetNull` would clear.

@@ -81,7 +81,7 @@
 //! | `catalog` | Catalog entry lookup (`duckdb-1-5` feature) |
 //! | `client_context` | Client context access (`duckdb-1-5` feature) |
 //! | `config_option` | Extension-defined configuration options (`duckdb-1-5` feature) |
-//! | `copy_function` | Custom `COPY TO` handlers (`duckdb-1-5` feature) |
+//! | `copy_function` | Custom `COPY TO` handlers and `COPY … FROM` readers (`duckdb-1-5` feature) |
 //! | `error_data` | Structured error type + UTF-8 validation (`duckdb-1-5` feature) |
 //! | `expression` | Bound expression inspection / constant folding (`duckdb-1-5` feature) |
 //! | `file_system` | `DuckDB` virtual file system access (`duckdb-1-5` feature) |
@@ -101,20 +101,21 @@
 //! - Every `unsafe` block **inside a safe function** carries a `// SAFETY:`
 //!   comment, because there the crate — not the caller — is asserting the
 //!   invariant.
-//! - Inside an `unsafe fn`, blocks that simply forward the function's own
-//!   documented contract are not re-annotated. `unsafe_op_in_unsafe_fn` is
-//!   denied crate-wide, so those blocks are required syntax rather than new
-//!   assertions.
+//! - Every `unsafe` block **inside an `unsafe fn`** carries one too, even when
+//!   it only forwards the function's own contract (`unsafe_op_in_unsafe_fn` is
+//!   denied crate-wide, so the block is required syntax); the comment then says
+//!   which clause of the contract it relies on.
 //!
-//! Enabling `clippy::undocumented_unsafe_blocks` reports the third category as
-//! well; that is a stricter convention than the one above, not a soundness
-//! finding.
+//! `clippy::undocumented_unsafe_blocks` is enabled for library code and CI runs
+//! clippy with `-D warnings`, so an unannotated block fails the build. Test
+//! code is exempt: its invariants are the test's own setup.
 //!
 //! ## Design Principles
 //!
 //! 1. **Thin wrapper**: every abstraction must pay for itself in reduced boilerplate
 //!    or improved safety. When in doubt, prefer simplicity.
-//! 2. **No panics across FFI**: `unwrap()` is forbidden in FFI callbacks and entry points.
+//! 2. **No panics across FFI**: every callback kind runs under `catch_unwind`, so a panic
+//!    becomes a SQL error; library code panics only where a `# Panics` section says so.
 //! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2` to support `DuckDB` 1.4.x
 //!    and 1.5.x while preventing silent adoption of breaking changes in future major
 //!    releases.

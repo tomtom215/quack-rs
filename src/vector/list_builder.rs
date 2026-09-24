@@ -113,7 +113,12 @@ pub(crate) const MAX_CHILD_CAPACITY_USIZE: usize = if MAX_LIST_CHILD_CAPACITY > 
 #[derive(Debug)]
 pub struct ListBuilder {
     vector: duckdb_vector,
-    /// Total elements written into the child so far — the offset of the next row.
+    /// Whether `written` has been initialised from the child's current size.
+    /// Deferred to the first write so that [`new`][Self::new] stays `const`
+    /// and makes no `DuckDB` call.
+    started: bool,
+    /// Elements in the child so far, including any already there when the
+    /// builder started — the offset of the next row.
     written: usize,
     /// Capacity most recently requested, so `push_row` only reserves when it
     /// must (each reserve that grows is a reallocation plus a copy).
@@ -129,6 +134,17 @@ pub struct ListBuilder {
 impl ListBuilder {
     /// Starts building into `vector`.
     ///
+    /// Rows are **appended** after any elements the vector's child already
+    /// holds, so several builders — or several calls of a callback — can fill
+    /// one vector in turn. `DuckDB` relies on this: it can call an
+    /// aggregate's `finalize` many times on the same result vector with an
+    /// increasing `offset`, one row per call (`agg(x ORDER BY y)` finalizes
+    /// through `SortedAggregateFunction` that way), and a builder that started
+    /// at child offset 0 each time would overwrite the earlier rows' elements.
+    /// A fresh output vector has an empty child, so for a scalar function this
+    /// makes no difference. The element limit counts the elements already
+    /// there.
+    ///
     /// # Safety
     ///
     /// `vector` must be a valid, writable `LIST` or `MAP` output vector.
@@ -136,6 +152,7 @@ impl ListBuilder {
     pub const unsafe fn new(vector: duckdb_vector) -> Self {
         Self {
             vector,
+            started: false,
             written: 0,
             reserved: 0,
             limit: MAX_CHILD_CAPACITY_USIZE,
@@ -168,7 +185,9 @@ impl ListBuilder {
         self
     }
 
-    /// Total elements written into the child vector so far.
+    /// Elements in the child vector so far: those this builder wrote, plus any
+    /// the vector already held when the builder started (see
+    /// [`new`][Self::new]).
     #[must_use]
     #[inline]
     pub const fn element_count(&self) -> usize {
@@ -240,6 +259,8 @@ impl ListBuilder {
     where
         F: FnOnce(&mut VectorWriter, usize),
     {
+        // SAFETY: `self.vector` is valid per the constructor's contract.
+        unsafe { self.start() };
         let base = self.written;
         // SAFETY: `self.vector` is valid per the constructor's contract.
         if !unsafe { self.ensure_capacity(base.saturating_add(len)) } {
@@ -274,6 +295,8 @@ impl ListBuilder {
     where
         F: FnOnce(&mut VectorWriter, &mut VectorWriter, usize),
     {
+        // SAFETY: `self.vector` is valid per the constructor's contract.
+        unsafe { self.start() };
         let base = self.written;
         // SAFETY: `self.vector` is valid per the constructor's contract.
         if !unsafe { self.ensure_capacity(base.saturating_add(len)) } {
@@ -296,6 +319,22 @@ impl ListBuilder {
         // SAFETY: `row_idx` is in bounds per the caller's contract.
         unsafe { ListVector::set_entry(self.vector, row_idx, base as u64, len as u64) };
         self.written = base + len;
+    }
+
+    /// Picks up the child's current size on first use, so that rows are
+    /// appended after elements an earlier builder or callback wrote.
+    ///
+    /// # Safety
+    ///
+    /// `self.vector` must be a valid `LIST` or `MAP` vector.
+    unsafe fn start(&mut self) {
+        if !self.started {
+            // SAFETY: forwarded from this function's own contract.
+            let existing = unsafe { ListVector::get_size(self.vector) };
+            self.written = existing;
+            self.reserved = existing;
+            self.started = true;
+        }
     }
 
     /// Writes `row_idx` as a NULL with an empty entry.
@@ -327,7 +366,10 @@ impl ListBuilder {
     /// Every element promised by a [`push_row`][Self::push_row] /
     /// [`push_map_row`][Self::push_map_row] call must actually have been
     /// written.
-    pub unsafe fn finish(self) {
+    pub unsafe fn finish(mut self) {
+        // SAFETY: `self.vector` is valid per the constructor's contract. A
+        // builder that wrote nothing keeps the child's existing size.
+        unsafe { self.start() };
         // SAFETY: `self.vector` is valid per the constructor's contract, and
         // `self.written` counts exactly the elements the caller wrote.
         unsafe { ListVector::set_size(self.vector, self.written) };

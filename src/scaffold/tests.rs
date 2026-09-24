@@ -107,7 +107,7 @@ fn lib_rs_no_cpp_glue() {
 fn description_yml_has_fields() {
     let files = generate_scaffold(&valid_config()).unwrap();
     let desc = files.iter().find(|f| f.path == "description.yml").unwrap();
-    assert!(desc.content.contains("name: my_analytics"));
+    assert!(desc.content.contains("name: \"my_analytics\""));
     assert!(desc.content.contains("license: MIT"));
     assert!(desc.content.contains("janedoe/duckdb-my-analytics"));
 }
@@ -313,6 +313,31 @@ fn extension_ci_yml_has_linux_matrix() {
         .unwrap();
     assert!(ci.content.contains("ubuntu-latest"));
     assert!(ci.content.contains("linux_amd64"));
+}
+
+/// extension-ci-tools' `base.Makefile` sets `SKIP_TESTS=1` when
+/// `DUCKDB_PLATFORM` is `linux_amd64`, so the generated Linux leg printed
+/// "Skipping tests.." and passed without running a single `SQLLogicTest`. Left
+/// empty, the platform is detected and the tests run (checked against
+/// extension-ci-tools `39ffc46`: `[1/1] test/sql/<name>.test SUCCESS`).
+#[test]
+fn the_linux_leg_does_not_set_the_platform_that_skips_tests() {
+    let files = generate_scaffold(&valid_config()).unwrap();
+    let ci = &files
+        .iter()
+        .find(|f| f.path == ".github/workflows/extension-ci.yml")
+        .unwrap()
+        .content;
+    assert!(
+        ci.contains(
+            "DUCKDB_PLATFORM: ${{ matrix.os != 'ubuntu-latest' && matrix.platform || '' }}"
+        ),
+        "{ci}"
+    );
+    assert!(
+        !ci.contains("DUCKDB_PLATFORM: ${{ matrix.platform }}"),
+        "{ci}"
+    );
 }
 
 #[test]
@@ -555,10 +580,10 @@ fn generated_description_does_not_pin_a_branch() {
         .expect("description.yml")
         .content;
     assert!(
-        !yml.contains("ref: main"),
+        !yml.contains("ref: main") && !yml.contains("ref: \"main\""),
         "a branch ref makes the community build unreproducible:\n{yml}"
     );
-    assert!(yml.contains(&format!("ref: {}", crate::scaffold::REF_PLACEHOLDER)));
+    assert!(yml.contains(&format!("ref: \"{}\"", crate::scaffold::REF_PLACEHOLDER)));
     assert!(yml.contains("Must be a commit hash"));
     // 332 of 346 published extensions have a docs: section; it is what renders
     // on the community-extensions documentation site.

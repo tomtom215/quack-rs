@@ -501,3 +501,253 @@ fn temporal_constructors_reject_what_duckdb_cannot_render() {
         assert!(!text.is_empty(), "{days}: {text}");
     }
 }
+
+// ── V2 (fourth audit): values DuckDB builds from SQL must not abort ──────────
+
+/// What the bind of `vq_render` saw for one parameter: `as_str`'s result,
+/// whether `display_string` produced text (`None` without `duckdb-1-5`, which
+/// it needs), the `Debug` text, and `as_time`.
+type Rendered = (Result<String, String>, Option<bool>, String, Option<i64>);
+
+static RENDERED: Mutex<Vec<(&'static str, Rendered)>> = Mutex::new(Vec::new());
+
+// `Option` so the two variants share a signature: without `duckdb-1-5` there
+// is no `display_string` to ask.
+#[cfg(feature = "duckdb-1-5")]
+#[allow(clippy::unnecessary_wraps)]
+fn display_produced_text(value: &Value) -> Option<bool> {
+    Some(value.display_string().is_some())
+}
+
+#[cfg(not(feature = "duckdb-1-5"))]
+const fn display_produced_text(_: &Value) -> Option<bool> {
+    None
+}
+
+fn render(value: &Value) -> Rendered {
+    (
+        value.as_str().map_err(|e| e.to_string()),
+        display_produced_text(value),
+        format!("{value:?}"),
+        value.as_time(),
+    )
+}
+
+/// The constructors refuse out-of-range payloads (F-V2 above), but `DuckDB`
+/// builds them itself: `make_timestamp(-9223372036854775808)` is ordinary SQL,
+/// and a table function receives it as a parameter. `as_str`, `Debug` and
+/// `display_string` handed it to `duckdb_get_varchar` / `duckdb_value_to_string`,
+/// which throw "Date out of range" through the C API: the process aborted
+/// (exit 134), also for the same payload inside a `LIST`. `as_time` ran
+/// `DuckDB`'s cast on it, whose `Timestamp::GetTime` overflows a signed
+/// multiply. All four now refuse, and an in-range timestamp still renders.
+#[test]
+fn rendering_an_out_of_range_timestamp_from_sql_is_an_error_not_an_abort() {
+    let fx = Fixture::open();
+    let table_fn = TableFunctionBuilder::new("vq_render")
+        .named_param("t", TypeId::Timestamp)
+        .named_param_logical("l", quack_rs::types::LogicalType::list(TypeId::Timestamp))
+        .with_state::<bool, _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            for name in ["t", "l"] {
+                // SAFETY: both names were declared above.
+                let value = unsafe { bind.get_named_parameter_value(name) };
+                if !value.is_null() {
+                    RENDERED
+                        .lock()
+                        .expect("not poisoned")
+                        .push((name, render(&value)));
+                }
+            }
+            Ok(true)
+        })
+        .scan(|pending, chunk| {
+            // SAFETY: column 0 is BIGINT; row 0 is in range; a zero size ends
+            // the scan.
+            unsafe {
+                if std::mem::take(pending) {
+                    chunk.writer(0).write_i64(0, 1);
+                    chunk.set_size(1);
+                } else {
+                    chunk.set_size(0);
+                }
+            }
+            Ok(())
+        })
+        .build()
+        .expect("build vq_render");
+    // SAFETY: `con` is open for the fixture's lifetime.
+    unsafe { table_fn.register(fx.con()) }.expect("register vq_render");
+
+    let run = |args: &str| {
+        RENDERED.lock().expect("not poisoned").clear();
+        let sql = format!("SELECT n FROM vq_render({args})");
+        assert_eq!(
+            fx.scalar(&sql, |r, i| unsafe { r.read_i64(i) }),
+            Some(1),
+            "{sql}"
+        );
+        std::mem::take(&mut *RENDERED.lock().expect("not poisoned"))
+    };
+
+    for args in [
+        "t := make_timestamp(-9223372036854775808)",
+        "l := [make_timestamp(-9223372036854775808)]",
+        "l := [TIMESTAMP '2024-01-01', make_timestamp(-9223372036854775808)]",
+    ] {
+        let seen = run(args);
+        assert_eq!(seen.len(), 1, "{args}");
+        let (_, (as_str, display, debug, time)) = &seen[0];
+        assert_eq!(
+            as_str.as_ref().map_err(String::as_str),
+            Err(quack_rs::value::UNRENDERABLE),
+            "{args}"
+        );
+        assert_ne!(*display, Some(true), "{args}: display_string");
+        assert!(debug.starts_with("Value"), "{args}: {debug}");
+        assert_eq!(*time, None, "{args}: as_time");
+    }
+
+    // In range, the same paths render as before.
+    let seen = run("t := TIMESTAMP '2024-01-01 12:00:00', l := [TIMESTAMP '2024-01-01']");
+    assert_eq!(seen.len(), 2);
+    let (_, (t_str, t_display, _, t_time)) = &seen[0];
+    assert_eq!(
+        t_str.as_ref().ok().map(String::as_str),
+        Some("2024-01-01 12:00:00")
+    );
+    assert_ne!(*t_display, Some(false));
+    assert_eq!(*t_time, Some(12 * 3_600 * 1_000_000));
+    let (_, (l_str, l_display, _, _)) = &seen[1];
+    assert_eq!(
+        l_str.as_ref().ok().map(String::as_str),
+        Some("['2024-01-01 00:00:00']")
+    );
+    assert_ne!(*l_display, Some(false));
+}
+
+static RENDERED_ANY: Mutex<Vec<Rendered>> = Mutex::new(Vec::new());
+
+/// The same check over every out-of-range expression the audit found
+/// aborting, each reaching the table function at its own type through an
+/// `ANY` parameter, including a `STRUCT` and a `MAP` holding one. An `ARRAY`
+/// or `UNION` of a timestamp type is refused even in range: the C API cannot
+/// read their elements, so the payload cannot be checked.
+#[test]
+fn every_sql_built_out_of_range_timestamp_is_refused_by_the_renderers() {
+    const MIN: &str = "-9223372036854775808";
+    let fx = Fixture::open();
+    let table_fn = TableFunctionBuilder::new("vq_render_any")
+        .param(TypeId::Any)
+        .with_state::<bool, _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            // SAFETY: parameter 0 was declared above.
+            let value = unsafe { bind.get_parameter_value(0) };
+            RENDERED_ANY
+                .lock()
+                .expect("not poisoned")
+                .push(render(&value));
+            Ok(true)
+        })
+        .scan(|pending, chunk| {
+            // SAFETY: column 0 is BIGINT; row 0 is in range; a zero size ends
+            // the scan.
+            unsafe {
+                if std::mem::take(pending) {
+                    chunk.writer(0).write_i64(0, 1);
+                    chunk.set_size(1);
+                } else {
+                    chunk.set_size(0);
+                }
+            }
+            Ok(())
+        })
+        .build()
+        .expect("build vq_render_any");
+    // SAFETY: `con` is open for the fixture's lifetime.
+    unsafe { table_fn.register(fx.con()) }.expect("register vq_render_any");
+    let run = |arg: &str| {
+        RENDERED_ANY.lock().expect("not poisoned").clear();
+        let sql = format!("SELECT n FROM vq_render_any({arg})");
+        assert_eq!(
+            fx.scalar(&sql, |r, i| unsafe { r.read_i64(i) }),
+            Some(1),
+            "{sql}"
+        );
+        let mut seen = std::mem::take(&mut *RENDERED_ANY.lock().expect("not poisoned"));
+        assert_eq!(seen.len(), 1, "{sql}");
+        seen.remove(0)
+    };
+
+    let too_far = "'294247-01-10 04:00:54.775806'";
+    for arg in [
+        format!("make_timestamp({MIN})"),
+        "to_timestamp(-9223372036854.775808)".to_owned(),
+        format!("make_timestamp_ns({MIN})"),
+        format!("TRY_CAST({too_far} AS TIMESTAMP_S)"),
+        format!("TRY_CAST({too_far} AS TIMESTAMP_MS)"),
+        format!("[make_timestamp({MIN})]"),
+        "{'a': 1, 'b': to_timestamp(-9223372036854.775808)}".to_owned(),
+        format!("MAP([1], [make_timestamp({MIN})])"),
+        format!("[make_timestamp({MIN})]::TIMESTAMP[1]"),
+        "[TIMESTAMP '2024-01-01']::TIMESTAMP[1]".to_owned(),
+    ] {
+        let (as_str, display, debug, _) = run(&arg);
+        assert_eq!(
+            as_str.as_ref().map_err(String::as_str),
+            Err(quack_rs::value::UNRENDERABLE),
+            "{arg}"
+        );
+        assert_ne!(display, Some(true), "{arg}");
+        assert!(debug.starts_with("Value"), "{arg}: {debug}");
+    }
+
+    for (arg, want) in [
+        ("TIMESTAMP '2024-01-01'", "2024-01-01 00:00:00"),
+        (
+            "{'a': 1, 'b': TIMESTAMP '2024-01-01'}",
+            "{'a': 1, 'b': '2024-01-01 00:00:00'}",
+        ),
+        (
+            "MAP([1], [TIMESTAMP '2024-01-01'])",
+            "{1='2024-01-01 00:00:00'}",
+        ),
+        ("[1, 2]::INTEGER[2]", "[1, 2]"),
+        // A NULL has no payload to range-check, so it renders whatever its
+        // type, here nested where `as_str` reaches it.
+        ("[NULL::TIMESTAMP, NULL::TIMESTAMP_NS]", "[NULL, NULL]"),
+        (
+            "{'a': NULL::TIME, 'b': NULL::TIMETZ}",
+            "{'a': NULL, 'b': NULL}",
+        ),
+        ("MAP([1], [NULL::TIMESTAMP_S])", "{1=NULL}"),
+    ] {
+        let (as_str, display, _, _) = run(arg);
+        assert_eq!(
+            as_str.as_ref().ok().map(String::as_str),
+            Some(want),
+            "{arg}"
+        );
+        assert_ne!(display, Some(false), "{arg}");
+    }
+
+    // A top-level NULL: `as_str` reports the NULL itself, and the renderers
+    // behind `display_string` and `Debug` are not refused.
+    for arg in [
+        "NULL::TIMESTAMP",
+        "NULL::TIMESTAMP_S",
+        "NULL::TIMESTAMP_MS",
+        "NULL::TIMESTAMP_NS",
+        "NULL::TIMESTAMPTZ",
+        "NULL::TIME",
+        "NULL::TIMETZ",
+    ] {
+        let (as_str, display, _, _) = run(arg);
+        assert_eq!(
+            as_str.as_ref().map_err(String::as_str),
+            Err("Value is SQL NULL"),
+            "{arg}"
+        );
+        assert_ne!(display, Some(false), "{arg}");
+    }
+}

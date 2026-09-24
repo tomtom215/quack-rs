@@ -140,8 +140,13 @@ impl Default for DuckInterval {
 ///   this agrees with comparing total microseconds only when the fields do
 ///   not mix signs: `interval '1 month' - interval '1 day'` equals
 ///   `interval '29 days'` in microseconds but compares **greater** in SQL.
-/// - **`epoch_us(interval)`** — returns exactly what this function returns;
-///   `epoch_us(interval '1 year')` is 360 days.
+/// - **`epoch_us(interval)`** — returns exactly what this function returns
+///   whenever it returns a value; `epoch_us(interval '1 year')` is 360 days.
+///   `DuckDB` adds the fields one at a time in `i64` (`Interval::GetMicro`)
+///   and fails with "Could not convert Day to Microseconds" when one of them
+///   overflows on its own, as `106751992 days -86400000000 microseconds`
+///   does; this function computes the exact total and returns it whenever
+///   the total fits.
 ///
 /// It is **not** what `DuckDB` does elsewhere: `interval + interval` keeps
 /// months, days and micros separate (`1 month 30 days`), adding an interval to
@@ -151,7 +156,10 @@ impl Default for DuckInterval {
 ///
 /// # Returns
 ///
-/// `None` if any intermediate multiplication or addition overflows `i64`.
+/// `None` if the total does not fit in an `i64`. Intermediate results never
+/// overflow: the sum is computed exactly, so `{months: 2770036, days:
+/// 31299404, micros: -2032753245989188716}`, whose months and days alone
+/// exceed `i64::MAX`, converts to `7851448571610811284`.
 ///
 /// # Example
 ///
@@ -172,9 +180,16 @@ impl Default for DuckInterval {
 /// ```
 #[inline]
 pub fn interval_to_micros(iv: DuckInterval) -> Option<i64> {
-    let months_us = i64::from(iv.months).checked_mul(MICROS_PER_MONTH)?;
-    let days_us = i64::from(iv.days).checked_mul(MICROS_PER_DAY)?;
-    months_us.checked_add(days_us)?.checked_add(iv.micros)
+    i64::try_from(total_micros_i128(iv)).ok()
+}
+
+/// The exact total in microseconds (1 month = 30 days). It cannot overflow
+/// `i128`: each product is below 2^32 · 2^42 in magnitude, and the sum of
+/// three terms below 2^75 stays far inside 2^127.
+fn total_micros_i128(iv: DuckInterval) -> i128 {
+    i128::from(iv.months) * i128::from(MICROS_PER_MONTH)
+        + i128::from(iv.days) * i128::from(MICROS_PER_DAY)
+        + i128::from(iv.micros)
 }
 
 /// Converts a [`DuckInterval`] to total microseconds, saturating on overflow.
@@ -191,19 +206,8 @@ pub fn interval_to_micros(iv: DuckInterval) -> Option<i64> {
 /// ```
 #[inline]
 pub fn interval_to_micros_saturating(iv: DuckInterval) -> i64 {
-    interval_to_micros(iv).unwrap_or_else(|| {
-        // Determine sign of the true (overflowed) result using i128 arithmetic.
-        // This correctly handles mixed-sign cases where some components are
-        // positive and others are negative.
-        let months_us = i128::from(iv.months) * i128::from(MICROS_PER_MONTH);
-        let days_us = i128::from(iv.days) * i128::from(MICROS_PER_DAY);
-        let total = months_us + days_us + i128::from(iv.micros);
-        if total >= 0 {
-            i64::MAX
-        } else {
-            i64::MIN
-        }
-    })
+    let total = total_micros_i128(iv);
+    i64::try_from(total).unwrap_or(if total >= 0 { i64::MAX } else { i64::MIN })
 }
 
 /// Reads a [`DuckInterval`] from a raw `DuckDB` vector data pointer at a given row index.
@@ -360,6 +364,40 @@ mod tests {
             micros: 42,
         };
         assert_eq!(interval_to_micros_saturating(iv), 42);
+    }
+
+    /// The total fits even though an intermediate sum or product does not:
+    /// adding the fields left to right in `i64` reported overflow (and the
+    /// saturating form returned `i64::MAX`) for both. `DuckDB`'s
+    /// `epoch_us` returns the first value and errors on the second.
+    #[test]
+    fn a_total_that_fits_converts_even_when_an_intermediate_does_not() {
+        let months_and_days_overflow = DuckInterval {
+            months: 2_770_036,
+            days: 31_299_404,
+            micros: -2_032_753_245_989_188_716,
+        };
+        assert_eq!(
+            interval_to_micros(months_and_days_overflow),
+            Some(7_851_448_571_610_811_284)
+        );
+        assert_eq!(
+            interval_to_micros_saturating(months_and_days_overflow),
+            7_851_448_571_610_811_284
+        );
+        let days_alone_overflow = DuckInterval {
+            months: 0,
+            days: 106_751_992,
+            micros: -86_400_000_000,
+        };
+        assert_eq!(
+            days_alone_overflow.to_micros(),
+            Some(9_223_372_022_400_000_000)
+        );
+        assert_eq!(
+            days_alone_overflow.to_micros_saturating(),
+            9_223_372_022_400_000_000
+        );
     }
 
     #[test]
@@ -585,6 +623,20 @@ mod tests {
                         prop_assert_eq!(sat, i64::MIN);
                     }
                 }
+            }
+
+            /// Both conversions against the exact total over the whole input
+            /// space: the checked one is `Some` exactly when the total fits,
+            /// and the saturating one is the total clamped to `i64`.
+            #[test]
+            fn both_conversions_match_the_exact_total(months: i32, days: i32, micros: i64) {
+                let iv = DuckInterval { months, days, micros };
+                let total = i128::from(months) * 2_592_000_000_000
+                    + i128::from(days) * 86_400_000_000
+                    + i128::from(micros);
+                prop_assert_eq!(interval_to_micros(iv), i64::try_from(total).ok());
+                let clamped = total.clamp(i128::from(i64::MIN), i128::from(i64::MAX));
+                prop_assert_eq!(i128::from(interval_to_micros_saturating(iv)), clamped);
             }
 
             #[test]

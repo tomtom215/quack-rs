@@ -16,10 +16,18 @@ the writing callbacks unset entirely.
 
 ## Lifecycle (`COPY … TO`)
 
-1. **Bind** — called once. Inspect output columns, configure the export.
-2. **Global init** — called once. Open the output file, allocate global state.
-3. **Sink** — called once per data chunk. Write rows to the output.
-4. **Finalize** — called once. Flush buffers, close the file.
+1. **Bind** — called when the statement is bound: once for a plain `COPY`,
+   and again on every `EXECUTE` of a prepared one. Inspect output columns,
+   configure the export.
+2. **Global init** — called once **per output file**: once for a plain
+   `COPY`, once per file with `PER_THREAD_OUTPUT` or `PARTITION_BY`. Open the
+   file, allocate that file's global state. With `USE_TMP_FILE` the path is a
+   temporary name that DuckDB renames afterwards.
+3. **Sink** — called for each data chunk, from several threads at once. Write
+   rows to the output.
+4. **Finalize** — called once per output file, after its last sink. Flush
+   buffers, close the file. It is **not** called when a sink reports an error,
+   so release resources in the global state's destructor as well.
 
 ## Builder API
 
@@ -88,6 +96,12 @@ Three things about the reader are not like an ordinary table function:
   never declared is a binder error before your bind callback runs — and the
   message names the *table function*, which is why the example gives it the
   format's name.
+- **Those options arrive uncast.** DuckDB passes each value as written, not
+  cast to the declared type: `SKIP_ROWS 'abc'` reaches a `BIGINT` parameter as
+  the `VARCHAR` `'abc'`, and `SKIP_ROWS 3` as an `INTEGER`. An option written
+  without a value (`(FORMAT my_format, HEADER)`) is not passed at all. Check
+  `Value::type_id()` before trusting a value — `as_i64_or(0)` on `'abc'`
+  quietly returns the default.
 - **The schema is already fixed**, because `COPY … FROM` loads into an existing
   table. The bind callback must **not** call `add_result_column`. Read the
   target's schema instead:
@@ -177,7 +191,8 @@ the handle at the top of your callback to access helper methods:
 |--------|-------------|
 | `get_bind_data()` | Retrieve the bind data pointer |
 | `get_extra_info()` | Extra-info pointer set on the copy function |
-| `get_file_path()` | Output file path for the COPY operation |
+| `get_file_path()` | Output file path for the COPY operation; an error if it is not valid UTF-8 |
+| `get_file_path_bytes()` | The same path as its exact bytes, for a path that is not UTF-8 |
 | `set_global_state(state, destroy)` | Store global state and its destructor |
 | `set_error(message)` | Report an init-time error |
 | `get_client_context()` | Returns a `ClientContext` |

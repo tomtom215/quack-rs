@@ -946,6 +946,9 @@ mod fold_errors {
                 .register(fx.con())
                 .expect("register");
         }
+        if !crate::inspects_arguments_or_refuses(&fx, "SELECT tc_fold(1::BIGINT)") {
+            return;
+        }
         for (sql, ty, message) in [
             (
                 "SELECT tc_fold('abc'::BIGINT)",
@@ -1506,4 +1509,112 @@ fn a_registered_table_function_does_not_persist_into_a_database_file() {
     }
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("duckdb.wal"));
+}
+
+/// The fourth audit's T1. A `CatalogEntry` held `DuckDB`'s reference to the
+/// entry, valid only while the transaction that found it lasted, yet its
+/// methods were safe. After `COMMIT`, `DROP TABLE` and a new `CREATE TABLE`,
+/// `name()` returned the new table's name (valgrind: an invalid read in
+/// `duckdb_catalog_entry_get_name`). The entry now copies its name and type
+/// at lookup, so they stay what they were.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn a_catalog_entry_keeps_its_name_after_the_table_is_dropped() {
+    use quack_rs::catalog::CatalogEntryType;
+    use quack_rs::client_context::ClientContext;
+
+    let fx = Fixture::open();
+    let exec = |sql: &str| {
+        // SAFETY: `con` is open.
+        unsafe { quack_rs::query::query(fx.con(), sql) }.unwrap_or_else(|e| panic!("{sql}: {e}"));
+    };
+    exec("CREATE TABLE a_rather_long_table_name_to_spot(i INT)");
+    exec("BEGIN");
+    // SAFETY: `con` is open.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("context");
+    // SAFETY: an explicit transaction is active.
+    let catalog = unsafe { ctx.catalog(c"memory") }.expect("catalog");
+    // SAFETY: as above; the catalog's database stays attached.
+    let entry = unsafe {
+        catalog.get_entry(
+            ctx.as_raw(),
+            c"main",
+            c"a_rather_long_table_name_to_spot",
+            CatalogEntryType::Table,
+        )
+    }
+    .expect("lookup")
+    .expect("the table exists");
+    exec("COMMIT");
+    exec("DROP TABLE a_rather_long_table_name_to_spot");
+    exec("CREATE TABLE filler AS SELECT repeat('Z', 200) AS s FROM range(100)");
+    assert_eq!(entry.name(), Some("a_rather_long_table_name_to_spot"));
+    assert_eq!(entry.entry_type(), CatalogEntryType::Table);
+}
+
+/// The fourth audit's F8, pinned so the cast docs stay true: registering a
+/// cast for a pair `DuckDB` already casts replaces the built-in one for the
+/// whole database — every connection, and the implicit cast an `INSERT`
+/// performs — and registering it again replaces it again, with no error.
+mod cast_replaces_the_builtin {
+    use super::{Fixture, TypeId};
+    use quack_rs::cast::CastFunctionBuilder;
+    use quack_rs::query::OwnedConnection;
+    use quack_rs::vector::{VectorReader, VectorWriter};
+
+    // A strict VARCHAR -> INTEGER cast: digits only, no whitespace.
+    quack_rs::cast_callback!(strict_int, |_info, count, input, output| {
+        let rows = usize::try_from(count).unwrap_or(0);
+        let reader = unsafe { VectorReader::from_vector(input, rows) };
+        let mut writer = unsafe { VectorWriter::new(output) };
+        let mut ok = true;
+        for row in 0..rows {
+            let parsed = unsafe { reader.is_valid(row).then(|| reader.read_str(row)) }.map(|s| {
+                s.bytes()
+                    .all(|b| b.is_ascii_digit())
+                    .then(|| s.parse::<i32>().ok())
+                    .flatten()
+            });
+            match parsed {
+                Some(Some(v)) => unsafe { writer.write_i32(row, v) },
+                Some(None) => {
+                    ok = false;
+                    unsafe { writer.set_null(row) };
+                }
+                None => unsafe { writer.set_null(row) },
+            }
+        }
+        ok
+    });
+
+    #[test]
+    fn a_varchar_to_integer_cast_replaces_the_builtin_for_the_whole_database() {
+        let fx = Fixture::open();
+        assert_eq!(
+            fx.scalar("SELECT ' 7'::INTEGER", |r, i| unsafe { r.read_i32(i) }),
+            Some(7),
+            "the built-in cast trims whitespace"
+        );
+        // SAFETY: `con` is open; the callback matches `CastFn`.
+        let register = || unsafe {
+            CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)
+                .function(strict_int)
+                .register(fx.con())
+        };
+        register().expect("register");
+        register().expect("a second registration is not refused either");
+        assert!(super::error_of(&fx, "SELECT ' 7'::INTEGER").contains("Conversion Error"));
+        // SAFETY: the fixture's database outlives the connection.
+        let other = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+        assert!(
+            other.query("SELECT ' 7'::INTEGER").is_err(),
+            "another connection"
+        );
+        fx.query("CREATE TABLE cast_target (i INTEGER)");
+        assert!(
+            super::error_of(&fx, "INSERT INTO cast_target VALUES (' 7')")
+                .contains("Conversion Error"),
+            "an INSERT's implicit cast"
+        );
+    }
 }

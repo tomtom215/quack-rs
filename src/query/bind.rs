@@ -12,6 +12,7 @@ use libduckdb_sys::{
 
 use super::PreparedStatement;
 use crate::error::ExtensionError;
+use crate::types::TypeId;
 
 impl PreparedStatement {
     /// Binds a `BIGINT` at 1-based `index`.
@@ -62,6 +63,8 @@ impl PreparedStatement {
     ///
     /// See [`bind_i64`][Self::bind_i64].
     pub fn bind_str(&self, index: usize, value: &str) -> Result<(), ExtensionError> {
+        crate::vector::string::check_string_len(value.len())
+            .map_err(|e| ExtensionError::new(format!("bind_str (parameter {index}): {e}")))?;
         // SAFETY: `value` is valid for the duration of the call; the length is
         // passed explicitly so the pointer need not be NUL-terminated.
         let state = unsafe {
@@ -81,6 +84,8 @@ impl PreparedStatement {
     ///
     /// See [`bind_i64`][Self::bind_i64].
     pub fn bind_blob(&self, index: usize, value: &[u8]) -> Result<(), ExtensionError> {
+        crate::vector::string::check_string_len(value.len())
+            .map_err(|e| ExtensionError::new(format!("bind_blob (parameter {index}): {e}")))?;
         // SAFETY: `value` is valid for the duration of the call.
         let state = unsafe {
             duckdb_bind_blob(
@@ -274,6 +279,11 @@ impl PreparedStatement {
 
     /// Binds a `DATE` at 1-based `index`, as days since 1970-01-01.
     ///
+    /// Every `i32` is accepted, as by [`Value::date`][crate::value::Value::date]:
+    /// `DuckDB` renders any day count without failing. Days outside the range
+    /// its SQL produces (`i32::MIN` renders as `5877642-06-23 (BC)`) come back
+    /// as text `DuckDB` cannot parse again.
+    ///
     /// # Errors
     ///
     /// See [`bind_i64`][Self::bind_i64].
@@ -295,8 +305,18 @@ impl PreparedStatement {
     ///
     /// # Errors
     ///
-    /// See [`bind_i64`][Self::bind_i64].
+    /// See [`bind_i64`][Self::bind_i64]; also refuses, before calling `DuckDB`,
+    /// a value outside `0..=86_400_000_000` (`00:00:00`–`24:00:00`).
+    /// `duckdb_bind_time` checks nothing, and rendering such a value crashed
+    /// the process (`i64::MIN`) or invalidated the database (`i64::MAX`).
     pub fn bind_time(&self, index: usize, micros: i64) -> Result<(), ExtensionError> {
+        check_temporal(
+            TypeId::Time,
+            micros,
+            "bind_time",
+            index,
+            "00:00:00 to 24:00:00",
+        )?;
         // SAFETY: `self.statement` is valid for this value's lifetime.
         self.check(
             unsafe {
@@ -314,8 +334,18 @@ impl PreparedStatement {
     ///
     /// # Errors
     ///
-    /// See [`bind_i64`][Self::bind_i64].
+    /// See [`bind_i64`][Self::bind_i64]; also refuses, before calling `DuckDB`,
+    /// a value below `290309-12-22 (BC)` other than `-infinity` — the range of
+    /// [`Value::timestamp`][crate::value::Value::timestamp]. `DuckDB` stores
+    /// such a value unchecked and then fails every read of it.
     pub fn bind_timestamp(&self, index: usize, micros: i64) -> Result<(), ExtensionError> {
+        check_temporal(
+            TypeId::Timestamp,
+            micros,
+            "bind_timestamp",
+            index,
+            "290309-12-22 (BC) 00:00:00 up to the maximum, or ±infinity",
+        )?;
         // SAFETY: `self.statement` is valid for this value's lifetime.
         self.check(
             unsafe {
@@ -334,8 +364,16 @@ impl PreparedStatement {
     ///
     /// # Errors
     ///
-    /// See [`bind_i64`][Self::bind_i64].
+    /// See [`bind_i64`][Self::bind_i64]; also refuses the out-of-range values
+    /// [`bind_timestamp`][Self::bind_timestamp] refuses.
     pub fn bind_timestamp_tz(&self, index: usize, micros: i64) -> Result<(), ExtensionError> {
+        check_temporal(
+            TypeId::TimestampTz,
+            micros,
+            "bind_timestamp_tz",
+            index,
+            "290309-12-22 (BC) 00:00:00 up to the maximum, or ±infinity",
+        )?;
         // SAFETY: `self.statement` is valid for this value's lifetime.
         self.check(
             unsafe {
@@ -434,5 +472,25 @@ impl PreparedStatement {
                 self.parameter_count()
             )))
         }
+    }
+}
+
+/// Refuses a 64-bit temporal payload outside the range `DuckDB` can render,
+/// before it is bound; `what` and `range` name the method and the range.
+fn check_temporal(
+    type_id: TypeId,
+    v: i64,
+    what: &str,
+    index: usize,
+    range: &str,
+) -> Result<(), ExtensionError> {
+    if crate::value::temporal_checks::temporal_in_range(type_id, v) {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "{what} (parameter {index}): {v} is outside DuckDB's range for {} ({range}); \
+             DuckDB would bind it unchecked and then crash, abort or fail every read of it",
+            type_id.sql_name()
+        )))
     }
 }

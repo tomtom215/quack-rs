@@ -316,12 +316,15 @@ fn scalar_and_aggregate_name_collisions_are_refused() {
     };
 
     // Same name and signature twice: refused; the first registration stays.
+    let merges = super::engine_merges_scalar_overloads(&fx);
     register_scalar("twice_scalar", 1).expect("first registration");
     let err = register_scalar("twice_scalar", 100).expect_err("identical signature");
-    assert!(
-        err.as_str().contains("twice_scalar(BIGINT) already exists"),
-        "{err}"
-    );
+    let expected = if merges {
+        "twice_scalar(BIGINT) already exists"
+    } else {
+        "DuckDB before v1.5.0 cannot add an overload"
+    };
+    assert!(err.as_str().contains(expected), "{err}");
     assert_eq!(i64_at(&fx, "SELECT twice_scalar(1::BIGINT)"), Some(2));
 
     // A built-in: before the check, this silently replaced `abs(BIGINT)`
@@ -332,16 +335,22 @@ fn scalar_and_aggregate_name_collisions_are_refused() {
     );
     assert_eq!(i64_at(&fx, "SELECT abs(-5::BIGINT)"), Some(5));
 
-    // A new overload of an existing name is still fine: abs(BIGINT, BIGINT)
-    // does not exist.
+    // A new overload of an existing name is still fine from DuckDB 1.5.0:
+    // abs(BIGINT, BIGINT) does not exist. Before it, no existing name can
+    // take another overload, and quack-rs says so.
     // SAFETY: `con` is open.
-    unsafe {
+    let overload = unsafe {
         ScalarFunctionBuilder::map2("abs", |a: i64, b: i64| a - b)
             .expect("valid name")
             .register(fx.con())
-            .expect("a new signature is a new overload");
+    };
+    if merges {
+        overload.expect("a new signature is a new overload");
+        assert_eq!(i64_at(&fx, "SELECT abs(7::BIGINT, 2::BIGINT)"), Some(5));
+    } else {
+        let err = overload.expect_err("no overload of an existing name before 1.5.0");
+        assert!(err.as_str().contains("before v1.5.0"), "{err}");
     }
-    assert_eq!(i64_at(&fx, "SELECT abs(7::BIGINT, 2::BIGINT)"), Some(5));
 
     // Sets are checked per overload, and the error names the overload.
     // SAFETY: `con` is open.
@@ -440,6 +449,23 @@ fn every_rendered_parameter_type_matches_duckdbs_own_spelling() {
     ];
     #[cfg(feature = "duckdb-1-5-3")]
     ids.extend([TypeId::Geometry, TypeId::Variant]);
+    // DuckDB 1.4.x has TIME_NS in SQL but not in its C API (it returns an
+    // INVALID type for it), so `LogicalType::try_new` refuses it there. Pin
+    // exactly that, so a type silently missing anywhere else still fails.
+    let unsupported: Vec<TypeId> = ids
+        .iter()
+        .copied()
+        .filter(|id| LogicalType::try_new(*id).is_err())
+        .collect();
+    let version = fx
+        .scalar("SELECT version()", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .expect("version() is never NULL");
+    let before_1_5 = quack_rs::abi::parse_version(&version).is_some_and(|v| v < (1, 5, 0));
+    let expected: &[TypeId] = if before_1_5 { &[TypeId::TimeNs] } else { &[] };
+    assert_eq!(unsupported, expected, "{version}");
+    ids.retain(|id| !unsupported.contains(id));
     let mut cases: Vec<(String, Make)> = ids
         .into_iter()
         .map(|id| {
@@ -664,11 +690,14 @@ fn scalar_overloads_carry_their_own_volatility_and_varargs() {
             .expect("register tick_set");
         ScalarFunctionSetBuilder::try_new("sum_set")
             .expect("valid name")
-            // (BIGINT) and (BIGINT, BIGINT...) differ in DuckDB's eyes, so the
-            // duplicate-overload check must not reject them.
+            // (DOUBLE) and (BIGINT, BIGINT...) accept no call in common, so
+            // the overlap check must not reject them. (BIGINT) would not do:
+            // `sum_set(1::BIGINT)` matches (BIGINT) and (BIGINT, BIGINT...)
+            // equally, and DuckDB refuses the call as ambiguous — see
+            // `collision::the_overlap_check_agrees_with_duckdbs_binder`.
             .overload(
                 ScalarOverloadBuilder::new()
-                    .param(TypeId::BigInt)
+                    .param(TypeId::Double)
                     .returns(TypeId::BigInt)
                     .function(overload_fns::tick),
             )
@@ -731,6 +760,9 @@ fn scalar_overloads_carry_their_own_bind_and_init() {
             )
             .register(fx.con())
             .expect("register scale_set");
+    }
+    if !super::inspects_arguments_or_refuses(&fx, "SELECT scale_set(i, 3) FROM range(1) t(i)") {
+        return;
     }
     fx.query("CREATE TABLE scale_in AS SELECT i::BIGINT AS i FROM range(10) t(i)");
     assert_eq!(

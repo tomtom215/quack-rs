@@ -42,13 +42,15 @@
 //!
 //! # SQL injection safety
 //!
-//! Macro names and parameter names are validated against
-//! [`validate_function_name`]: an ASCII letter or underscore followed by ASCII
-//! letters, digits or underscores (`[A-Za-z_][A-Za-z0-9_]*`, at most 256
-//! characters), and not one of `DuckDB`'s reserved keywords. Mixed case is
-//! accepted. The keyword rule applies to parameters too: a parameter called
-//! `order` could only be referred to in the body as `"order"`, so it is
-//! refused rather than left to fail inside the body.
+//! Macro names are validated against [`validate_function_name`], and
+//! parameter names against [`validate_parameter_name`]: an ASCII letter or
+//! underscore followed by ASCII letters, digits or underscores
+//! (`[A-Za-z_][A-Za-z0-9_]*`, at most 256 characters), and not a `DuckDB`
+//! keyword that cannot be used in that position unquoted — measured, not
+//! guessed: `coalesce` or `values` cannot be called as a macro, and a
+//! parameter called `order` or `left` could only be referred to in the body
+//! as `"order"` / `"left"`, so each is refused rather than left to fail at
+//! registration or inside the body. Mixed case is accepted.
 //!
 //! The generated SQL always emits the names as **double-quoted identifiers**
 //! (`"name"`). The validated character set cannot contain `"`, so quoting
@@ -93,7 +95,7 @@ use libduckdb_sys::{
 };
 
 use crate::error::ExtensionError;
-use crate::validate::validate_function_name;
+use crate::validate::{validate_function_name, validate_parameter_name};
 
 /// The body of a SQL macro: a scalar expression or a table query.
 ///
@@ -314,15 +316,15 @@ impl SqlMacro {
     }
 }
 
-/// Validates a macro name and all parameter names using the same rules as
-/// function names ([`validate_function_name`]).
+/// Validates a macro name ([`validate_function_name`]) and all parameter
+/// names ([`validate_parameter_name`]).
 fn validate_name_and_params(
     name: &str,
     params: &[&str],
 ) -> Result<(String, Vec<String>), ExtensionError> {
     validate_function_name(name)?;
     for &param in params {
-        validate_function_name(param).map_err(|e| param_error(param, e.as_str()))?;
+        validate_parameter_name(param).map_err(|e| param_error(param, e.as_str()))?;
     }
     Ok((
         name.to_owned(),

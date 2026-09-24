@@ -179,6 +179,13 @@ impl ScalarOverloadBuilder {
     /// Sets a bind callback for this overload (`DuckDB` 1.5.0+).
     ///
     /// Mirrors [`ScalarFunctionBuilder::bind`][super::ScalarFunctionBuilder::bind].
+    ///
+    /// Guard it against panics with
+    /// [`scalar_bind_callback!`](crate::scalar_bind_callback), **not**
+    /// `table_bind_callback!`: the two share a C signature, so the compiler
+    /// accepts either, but the table macro reports a panic through the table
+    /// function's `duckdb_bind_set_error`, which writes past the smaller scalar
+    /// bind info and corrupts the stack.
     #[cfg(feature = "duckdb-1-5")]
     pub fn bind(mut self, f: ScalarBindFn) -> Self {
         self.bind = Some(f);
@@ -188,6 +195,13 @@ impl ScalarOverloadBuilder {
     /// Sets an init callback for this overload (`DuckDB` 1.5.0+).
     ///
     /// Mirrors [`ScalarFunctionBuilder::init`][super::ScalarFunctionBuilder::init].
+    ///
+    /// Guard it against panics with
+    /// [`scalar_init_callback!`](crate::scalar_init_callback), **not**
+    /// `table_init_callback!`: the two share a C signature, so the compiler
+    /// accepts either, but the table macro reports a panic through the table
+    /// function's `duckdb_init_set_error`, which writes past the smaller scalar
+    /// init info and corrupts the stack.
     #[cfg(feature = "duckdb-1-5")]
     pub fn init(mut self, f: ScalarInitFn) -> Self {
         self.init = Some(f);
@@ -216,9 +230,22 @@ impl ScalarOverloadBuilder {
     ///
     /// # Safety
     ///
-    /// `data` must point to valid memory that outlives the function registration,
-    /// or will be freed by `destroy`. The typical pattern
-    /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// - `data` must stay valid until `destroy` frees it (with no `destroy`,
+    ///   for as long as the database lives), and `destroy` must be able to
+    ///   free it exactly once with no one else freeing it — so one pointer
+    ///   must not be given to two builders or overloads, each of which hands
+    ///   its `destroy` to `DuckDB` separately.
+    /// - The pointee must be `Send + Sync`. `DuckDB` hands the same pointer to
+    ///   the callbacks on every thread that executes the function, possibly at
+    ///   the same moment, and `destroy` runs on whichever thread releases the
+    ///   function — or, if the builder is dropped unregistered, the thread
+    ///   that drops it.
+    /// - `destroy` must not unwind: it is an `extern "C" fn`, so a panic
+    ///   escaping it aborts the process. Wrap a body that can panic in
+    ///   [`catch_ffi_panic`][crate::callback::catch_ffi_panic].
+    ///
+    /// The typical pattern is to box your data:
+    /// `Box::into_raw(Box::new(my_data)).cast()`.
     pub unsafe fn extra_info(
         mut self,
         data: *mut c_void,

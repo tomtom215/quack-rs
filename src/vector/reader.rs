@@ -430,6 +430,10 @@ impl VectorReader {
     ///
     /// - `idx` must be less than `self.row_count()`.
     /// - The column must contain `VARCHAR` data.
+    /// - Row `idx` must not be NULL (check [`is_valid`][Self::is_valid] first).
+    ///   `DuckDB` does not reset the payload of a NULL row, so it can still
+    ///   hold the pointer-format entry of a string from an earlier chunk,
+    ///   whose memory may since have been freed or reused.
     /// - For pointer-format strings, the pointed-to heap memory must be valid
     ///   for the lifetime of the returned `&str`.
     pub unsafe fn read_str(&self, idx: usize) -> &str {
@@ -449,6 +453,10 @@ impl VectorReader {
     ///
     /// - `idx` must be less than `self.row_count()`.
     /// - The column must contain `BLOB` data.
+    /// - Row `idx` must not be NULL (check [`is_valid`][Self::is_valid] first).
+    ///   `DuckDB` does not reset the payload of a NULL row, so it can still
+    ///   hold the pointer-format entry of a string from an earlier chunk,
+    ///   whose memory may since have been freed or reused.
     /// - The pointed-to memory must be valid for the lifetime of the returned slice.
     pub unsafe fn read_blob(&self, idx: usize) -> &[u8] {
         // SAFETY: BLOB uses the same duckdb_string_t layout as VARCHAR, so

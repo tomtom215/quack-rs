@@ -117,11 +117,21 @@ fn reader_from_strs() {
     assert_eq!(r.try_get_str(2), Some("world"));
 }
 
+/// Reading past the end is refused, as the writer refuses writing past it: a
+/// real reader has no bounds check, so an off-by-one loop must fail here
+/// rather than pass.
 #[test]
-fn reader_out_of_bounds_is_invalid() {
+#[should_panic(expected = "row 99 is out of bounds for a mock reader of 1 row(s)")]
+fn reader_out_of_bounds_is_valid_panics() {
     let r = MockVectorReader::from_i64s([Some(1)]);
-    assert!(!r.is_valid(99));
-    assert_eq!(r.try_get_i64(99), None);
+    let _ = r.is_valid(99);
+}
+
+#[test]
+#[should_panic(expected = "row 1 is out of bounds for a mock reader of 1 row(s)")]
+fn reader_out_of_bounds_typed_getter_panics() {
+    let r = MockVectorReader::from_i64s([Some(1)]);
+    let _ = r.try_get_i64(1);
 }
 
 #[test]
