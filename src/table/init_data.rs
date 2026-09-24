@@ -203,10 +203,21 @@ impl<T: 'static> FfiLocalInitData<T> {
     /// - `info` must be a valid `duckdb_function_info`.
     /// - No mutable reference to the same data must exist simultaneously.
     pub unsafe fn get<'a>(info: duckdb_function_info) -> Option<&'a T> {
+        // SAFETY: `info` is a valid `duckdb_function_info` per the first `# Safety` clause;
+        // `duckdb_function_get_local_init_data` only returns the stored
+        // `local_data.init_data` pointer (null if none, table_function-c.cpp).
         let raw = unsafe { duckdb_function_get_local_init_data(info) };
         if raw.is_null() {
             return None;
         }
+        // SAFETY: FIXME(soundness): this needs `raw` to be the `Box<T>` that
+        // `FfiLocalInitData::<T>::set` leaked, for this same `T`, still live. `raw` is
+        // non-null (checked above) and the absence of a `&mut` is the second `# Safety`
+        // clause, but this function's contract, unlike `FfiInitData::get`'s, never requires
+        // `T` to be the type passed to `set` (nor does either bound `'a` by the scan call,
+        // though DuckDB destroys the data with the scan state). A caller meeting the
+        // documented contract can therefore read a `u8` allocation as a larger `T` (out of
+        // bounds / misaligned).
         Some(unsafe { &*raw.cast::<T>() })
     }
 
@@ -219,10 +230,21 @@ impl<T: 'static> FfiLocalInitData<T> {
     /// - `info` must be a valid `duckdb_function_info`.
     /// - No other reference to the same data must exist simultaneously.
     pub unsafe fn get_mut<'a>(info: duckdb_function_info) -> Option<&'a mut T> {
+        // SAFETY: `info` is a valid `duckdb_function_info` per the first `# Safety` clause;
+        // `duckdb_function_get_local_init_data` only returns the stored
+        // `local_data.init_data` pointer (null if none, table_function-c.cpp).
         let raw = unsafe { duckdb_function_get_local_init_data(info) };
         if raw.is_null() {
             return None;
         }
+        // SAFETY: FIXME(soundness): this needs `raw` to be the `Box<T>` that
+        // `FfiLocalInitData::<T>::set` leaked, for this same `T`, still live. `raw` is
+        // non-null (checked above) and exclusivity is the second `# Safety` clause, but
+        // this function's contract, unlike `FfiInitData::get`'s, never requires `T` to be
+        // the type passed to `set` (nor does either bound `'a` by the scan call, though
+        // DuckDB destroys the data with the scan state). A caller meeting the documented
+        // contract can therefore write a larger `T` through a `u8` allocation (heap
+        // corruption).
         Some(unsafe { &mut *raw.cast::<T>() })
     }
 

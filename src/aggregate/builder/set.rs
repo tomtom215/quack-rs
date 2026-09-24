@@ -398,6 +398,11 @@ impl AggregateFunctionSetBuilder {
             // PITFALL L6: CRITICAL — must call this on EACH function, not just the set.
             // Without this, duckdb_register_aggregate_function_set silently returns DuckDBError.
             // Discovered by reading DuckDB's test/api/capi/test_capi_aggregate_functions.cpp.
+            // SAFETY: `func` is the handle `duckdb_create_aggregate_function` just
+            // returned, not yet destroyed; it is null only if allocating its info threw,
+            // and `duckdb_aggregate_function_set_name` null-checks both arguments
+            // (aggregate_function-c.cpp). `self.name` is a `CString`, so NUL-terminated
+            // and live for the call, and DuckDB copies it into `AggregateFunction::name`.
             unsafe {
                 duckdb_aggregate_function_set_name(func, self.name.as_ptr());
             }

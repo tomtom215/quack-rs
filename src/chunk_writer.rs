@@ -161,6 +161,11 @@ impl ChunkWriter {
     /// `col_idx` must be less than the chunk's column count.
     #[must_use]
     pub unsafe fn vector(&self, col_idx: usize) -> libduckdb_sys::duckdb_vector {
+        // SAFETY: `self.raw` is the valid output chunk of the scan callback in progress,
+        // per the first `# Safety` clause of `ChunkWriter::new` / `with_capacity`.
+        // `duckdb_data_chunk_get_vector` bounds-checks `col_idx` itself (null when out of
+        // range, data_chunk-c.cpp); this function's `# Safety` clause keeps it in range, so
+        // the result is the column's `Vector`, owned by the chunk.
         unsafe { libduckdb_sys::duckdb_data_chunk_get_vector(self.raw, col_idx as idx_t) }
     }
 
@@ -184,8 +189,17 @@ impl ChunkWriter {
     /// - `col_idx` must be less than the chunk's column count.
     /// - The column at `col_idx` must have a STRUCT type with `field_count` fields.
     pub unsafe fn struct_writer(&self, col_idx: usize, field_count: usize) -> StructWriter {
+        // SAFETY: `self.raw` is the valid output chunk of the scan callback in progress,
+        // per the first `# Safety` clause of `ChunkWriter::new` / `with_capacity`.
+        // `col_idx` is in range per this function's first `# Safety` clause, so
+        // `duckdb_data_chunk_get_vector` (which returns null otherwise, data_chunk-c.cpp)
+        // yields the chunk-owned, writable column vector.
         let vec =
             unsafe { libduckdb_sys::duckdb_data_chunk_get_vector(self.raw, col_idx as idx_t) };
+        // SAFETY: `vec` is the non-null, writable column vector fetched above, owned by the
+        // output chunk and so live for the scan callback; this function's second `# Safety`
+        // clause is exactly `StructWriter::new`'s requirement that it be a STRUCT with
+        // `field_count` fields.
         unsafe { StructWriter::new(vec, field_count) }
     }
 

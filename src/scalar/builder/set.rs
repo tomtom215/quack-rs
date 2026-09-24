@@ -240,6 +240,11 @@ impl ScalarFunctionSetBuilder {
             let mut func = unsafe { duckdb_create_scalar_function() };
 
             // PITFALL L6: Must call this on EACH function, not just the set.
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. `self.name` is a `CString`, so NUL-terminated and live
+            // for the call; `duckdb_scalar_function_set_name` copies it into
+            // `ScalarFunction::name`.
             unsafe {
                 duckdb_scalar_function_set_name(func, self.name.as_ptr());
             }
@@ -254,6 +259,13 @@ impl ScalarFunctionSetBuilder {
                     if logical_idx < overload.logical_params.len()
                         && overload.logical_params[logical_idx].0 == pos
                     {
+                        // SAFETY: `func` is the handle `duckdb_create_scalar_function`
+                        // returned above (a fresh `new ScalarFunction`,
+                        // scalar_function-c.cpp), destroyed only at the end of this
+                        // iteration. The type is a `LogicalType` owned by
+                        // `overload.logical_params`, so its handle is live for this borrow;
+                        // `duckdb_scalar_function_add_parameter` copies it
+                        // (`arguments.push_back(*logical_type)`), keeping no pointer.
                         unsafe {
                             duckdb_scalar_function_add_parameter(
                                 func,
@@ -263,6 +275,12 @@ impl ScalarFunctionSetBuilder {
                         logical_idx += 1;
                     } else if simple_idx < overload.params.len() {
                         let lt = LogicalType::new(overload.params[simple_idx]);
+                        // SAFETY: `func` is the handle `duckdb_create_scalar_function`
+                        // returned above (a fresh `new ScalarFunction`,
+                        // scalar_function-c.cpp), destroyed only at the end of this
+                        // iteration. `lt` was created on the line above and is dropped only
+                        // after this call; `duckdb_scalar_function_add_parameter` copies
+                        // the type.
                         unsafe {
                             duckdb_scalar_function_add_parameter(func, lt.as_raw());
                         }
@@ -272,11 +290,21 @@ impl ScalarFunctionSetBuilder {
             }
 
             // Set return type
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. `ret_raw` borrows `overload.return_logical` (owned by
+            // the builder) or `_ret_lt_owner`, both alive to the end of this iteration;
+            // `SetReturnType` copies the type.
             unsafe {
                 duckdb_scalar_function_set_return_type(func, ret_raw);
             }
 
             // Set callback
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. `function` is a non-null `ScalarFn` (an `extern "C"`
+            // fn pointer with the signature DuckDB calls); DuckDB only stores it in the
+            // function's `CScalarFunctionInfo`.
             unsafe {
                 duckdb_scalar_function_set_function(func, Some(function));
             }
@@ -331,17 +359,34 @@ impl ScalarFunctionSetBuilder {
             }
 
             // Add to set
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. `set` came from `duckdb_create_scalar_function_set`,
+            // which returns null only for an empty name, and this call null-checks both
+            // handles (returning `DuckDBError`). `AddFunction(T function)` takes the
+            // function by value (function_set.hpp), so the set keeps its own copy, not
+            // `func`.
             unsafe {
                 duckdb_add_scalar_function_to_set(set, func);
             }
 
             // Destroy individual function (ownership transferred to set)
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. The set holds its own copy of the function (and shares
+            // the extra info through its `shared_ptr`), so this single destroy of `func`
+            // frees nothing the set uses; it also nulls `func`.
             unsafe {
                 duckdb_destroy_scalar_function(&raw mut func);
             }
         }
 
         if register_error.is_none() {
+            // SAFETY: `con` is a valid, open connection per this function's `# Safety`
+            // clause. `set` is the set created above, not yet destroyed (the null an empty
+            // name yields is refused by DuckDB's own null check). Registration copies the
+            // set into the catalog (`CreateScalarFunctionInfo`) and catches its own
+            // exceptions, so destroying `set` below is still ours to do.
             let result = unsafe { duckdb_register_scalar_function_set(con, set) };
             if result != DuckDBSuccess {
                 register_error = Some(ExtensionError::new(format!(

@@ -176,6 +176,9 @@ impl LogicalType {
     /// The inner handle must be valid (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn get_type_id(&self) -> TypeId {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_get_type_id` only reads the type's id.
         TypeId::from_duckdb_type(unsafe { duckdb_get_type_id(self.inner) })
     }
 
@@ -187,6 +190,9 @@ impl LogicalType {
     /// The inner handle must be valid (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn try_get_type_id(&self) -> Option<TypeId> {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_get_type_id` only reads the type's id.
         TypeId::try_from_duckdb_type(unsafe { duckdb_get_type_id(self.inner) })
     }
 
@@ -197,13 +203,22 @@ impl LogicalType {
     /// The inner handle must be valid (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn get_alias(&self) -> Option<String> {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_logical_type_get_alias` dereferences it unconditionally and returns a
+        // `strdup` copy of the alias or null (logical_types-c.cpp).
         let ptr = unsafe { duckdb_logical_type_get_alias(self.inner) };
         if ptr.is_null() {
             return None;
         }
+        // SAFETY: `ptr` was checked non-null just above and is a `strdup` result, so it is
+        // NUL-terminated; it stays allocated until the `duckdb_free` below.
         let s = unsafe { std::ffi::CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned();
+        // SAFETY: `ptr` is the non-null `strdup` allocation DuckDB handed us (duckdb.h:
+        // free with `duckdb_free`, which is `free`); `s` already holds an owned copy, and
+        // this is the only free.
         unsafe { duckdb_free(ptr.cast::<core::ffi::c_void>()) };
         Some(s)
     }
@@ -219,6 +234,10 @@ impl LogicalType {
     /// Panics if `alias` contains an interior null byte.
     pub unsafe fn set_alias(&self, alias: &str) {
         let c_alias = std::ffi::CString::new(alias).expect("alias must not contain null bytes");
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `c_alias` is a NUL-terminated `CString` that outlives the call, and
+        // `LogicalType::SetAlias(string)` copies it, so no pointer is retained.
         unsafe { duckdb_logical_type_set_alias(self.inner, c_alias.as_ptr()) };
     }
 
@@ -229,6 +248,10 @@ impl LogicalType {
     /// The inner handle must be a `DECIMAL` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn decimal_width(&self) -> u8 {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_decimal_width` checks the id itself and returns 0 for a non-DECIMAL type
+        // (logical_types-c.cpp), so a type of another kind is not UB here.
         unsafe { duckdb_decimal_width(self.inner) }
     }
 
@@ -239,6 +262,10 @@ impl LogicalType {
     /// The inner handle must be a `DECIMAL` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn decimal_scale(&self) -> u8 {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_decimal_scale` checks the id itself and returns 0 for a non-DECIMAL type
+        // (logical_types-c.cpp), so a type of another kind is not UB here.
         unsafe { duckdb_decimal_scale(self.inner) }
     }
 
@@ -249,6 +276,10 @@ impl LogicalType {
     /// The inner handle must be a `DECIMAL` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn decimal_internal_type(&self) -> TypeId {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_decimal_internal_type` checks the id itself and returns INVALID for a
+        // non-DECIMAL type (logical_types-c.cpp), so a type of another kind is not UB here.
         TypeId::from_duckdb_type(unsafe { duckdb_decimal_internal_type(self.inner) })
     }
 
@@ -259,6 +290,10 @@ impl LogicalType {
     /// The inner handle must be an `ENUM` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn enum_internal_type(&self) -> TypeId {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_enum_internal_type` checks the id itself and returns INVALID for a
+        // non-ENUM type (logical_types-c.cpp), so a type of another kind is not UB here.
         TypeId::from_duckdb_type(unsafe { duckdb_enum_internal_type(self.inner) })
     }
 
@@ -269,6 +304,10 @@ impl LogicalType {
     /// The inner handle must be an `ENUM` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn enum_dictionary_size(&self) -> u32 {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_enum_dictionary_size` checks the id itself and returns 0 for a non-ENUM
+        // type (logical_types-c.cpp), so a type of another kind is not UB here.
         unsafe { duckdb_enum_dictionary_size(self.inner) }
     }
 
@@ -284,12 +323,22 @@ impl LogicalType {
     /// Panics if `duckdb_enum_dictionary_value` returns a null pointer.
     #[must_use]
     pub unsafe fn enum_dictionary_value(&self, index: u64) -> String {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_enum_dictionary_value` returns null for a non-ENUM type (asserted below)
+        // and does not bounds-check `index`; this function's `# Safety` clause requires
+        // `index` to be within the dictionary.
         let ptr =
             unsafe { duckdb_enum_dictionary_value(self.inner, index as libduckdb_sys::idx_t) };
         assert!(!ptr.is_null(), "duckdb_enum_dictionary_value returned null");
+        // SAFETY: `ptr` is non-null (asserted on the line above) and is a `strdup` result,
+        // so it is NUL-terminated; it stays allocated until the free below.
         let s = unsafe { std::ffi::CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned();
+        // SAFETY: `ptr` is the non-null `strdup` allocation DuckDB handed us (duckdb.h:
+        // free with `duckdb_free`, which is `free`); `s` already holds an owned copy, and
+        // this is the only free.
         unsafe { duckdb_free(ptr.cast::<core::ffi::c_void>()) };
         s
     }
@@ -301,6 +350,12 @@ impl LogicalType {
     /// The inner handle must be a `LIST` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn list_child_type(&self) -> Self {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_list_type_child_type` returns null for a non-LIST/MAP type, which
+        // `from_raw`'s assert turns into a panic; otherwise it returns a fresh heap `new
+        // LogicalType(..)` the caller owns (duckdb.h: "must be freed with
+        // `duckdb_destroy_logical_type`"), satisfying `from_raw`'s ownership clause.
         unsafe { Self::from_raw(duckdb_list_type_child_type(self.inner)) }
     }
 
@@ -311,6 +366,12 @@ impl LogicalType {
     /// The inner handle must be a `MAP` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn map_key_type(&self) -> Self {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_map_type_key_type` returns null for a non-MAP type, which `from_raw`'s
+        // assert turns into a panic; otherwise it returns a fresh heap `new
+        // LogicalType(..)` the caller owns (duckdb.h: "must be freed with
+        // `duckdb_destroy_logical_type`"), satisfying `from_raw`'s ownership clause.
         unsafe { Self::from_raw(duckdb_map_type_key_type(self.inner)) }
     }
 
@@ -321,6 +382,12 @@ impl LogicalType {
     /// The inner handle must be a `MAP` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn map_value_type(&self) -> Self {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_map_type_value_type` returns null for a non-MAP type, which `from_raw`'s
+        // assert turns into a panic; otherwise it returns a fresh heap `new
+        // LogicalType(..)` the caller owns (duckdb.h: "must be freed with
+        // `duckdb_destroy_logical_type`"), satisfying `from_raw`'s ownership clause.
         unsafe { Self::from_raw(duckdb_map_type_value_type(self.inner)) }
     }
 
@@ -331,6 +398,11 @@ impl LogicalType {
     /// The inner handle must be a `STRUCT` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn struct_child_count(&self) -> u64 {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_struct_type_child_count` checks the physical type itself and returns 0
+        // for a non-STRUCT type (logical_types-c.cpp), so a type of another kind is not UB
+        // here.
         unsafe { duckdb_struct_type_child_count(self.inner) as u64 }
     }
 
@@ -346,6 +418,15 @@ impl LogicalType {
     /// Panics if `duckdb_struct_type_child_name` returns a null pointer.
     #[must_use]
     pub unsafe fn struct_child_name(&self, index: u64) -> String {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it). `index`
+        // is in bounds per this function's `# Safety` clause:
+        // `duckdb_struct_type_child_name` does not check it (the `*Type::Get*Name` helpers
+        // in types.cpp only `D_ASSERT` it). A wrong-kind type yields null. The result is
+        // checked non-null by the assert before `CStr::from_ptr`; it is a `strdup` copy, so
+        // NUL-terminated and ours to release with `duckdb_free` (which is `free`,
+        // helper-c.cpp), exactly once, after `to_string_lossy().into_owned()` has copied
+        // it.
         unsafe {
             let ptr = duckdb_struct_type_child_name(self.inner, index as libduckdb_sys::idx_t);
             assert!(
@@ -366,6 +447,12 @@ impl LogicalType {
     /// within bounds (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn struct_child_type(&self, index: u64) -> Self {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it). `index`
+        // is in bounds per this function's `# Safety` clause:
+        // `duckdb_struct_type_child_type` only `D_ASSERT`s it (types.cpp). A non-STRUCT
+        // type yields null, which `from_raw`'s assert turns into a panic; otherwise the
+        // result is a fresh `new LogicalType(..)` the caller owns, as `from_raw` requires.
         unsafe {
             Self::from_raw(duckdb_struct_type_child_type(
                 self.inner,
@@ -381,6 +468,10 @@ impl LogicalType {
     /// The inner handle must be a `UNION` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn union_member_count(&self) -> u64 {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_union_type_member_count` checks the id itself and returns 0 for a
+        // non-UNION type (logical_types-c.cpp), so a type of another kind is not UB here.
         unsafe { duckdb_union_type_member_count(self.inner) as u64 }
     }
 
@@ -396,6 +487,15 @@ impl LogicalType {
     /// Panics if `duckdb_union_type_member_name` returns a null pointer.
     #[must_use]
     pub unsafe fn union_member_name(&self, index: u64) -> String {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it). `index`
+        // is in bounds per this function's `# Safety` clause:
+        // `duckdb_union_type_member_name` does not check it (the `*Type::Get*Name` helpers
+        // in types.cpp only `D_ASSERT` it). A wrong-kind type yields null. The result is
+        // checked non-null by the assert before `CStr::from_ptr`; it is a `strdup` copy, so
+        // NUL-terminated and ours to release with `duckdb_free` (which is `free`,
+        // helper-c.cpp), exactly once, after `to_string_lossy().into_owned()` has copied
+        // it.
         unsafe {
             let ptr = duckdb_union_type_member_name(self.inner, index as libduckdb_sys::idx_t);
             assert!(
@@ -416,6 +516,12 @@ impl LogicalType {
     /// within bounds (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn union_member_type(&self, index: u64) -> Self {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it). `index`
+        // is in bounds per this function's `# Safety` clause:
+        // `duckdb_union_type_member_type` only `D_ASSERT`s it (types.cpp). A non-UNION type
+        // yields null, which `from_raw`'s assert turns into a panic; otherwise the result
+        // is a fresh `new LogicalType(..)` the caller owns, as `from_raw` requires.
         unsafe {
             Self::from_raw(duckdb_union_type_member_type(
                 self.inner,
@@ -431,6 +537,10 @@ impl LogicalType {
     /// The inner handle must be an `ARRAY` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn array_size(&self) -> u64 {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_array_type_array_size` checks the id itself and returns 0 for a non-ARRAY
+        // type (logical_types-c.cpp), so a type of another kind is not UB here.
         unsafe { duckdb_array_type_array_size(self.inner) as u64 }
     }
 
@@ -441,6 +551,12 @@ impl LogicalType {
     /// The inner handle must be an `ARRAY` logical type (requires `DuckDB` runtime).
     #[must_use]
     pub unsafe fn array_child_type(&self) -> Self {
+        // SAFETY: `self.inner` is a non-null handle this value owns and keeps live until
+        // `Drop` (type invariant: `owned_or` rejects null, `from_raw` asserts it).
+        // `duckdb_array_type_child_type` returns null for a non-ARRAY type, which
+        // `from_raw`'s assert turns into a panic; otherwise it returns a fresh heap `new
+        // LogicalType(..)` the caller owns (duckdb.h: "must be freed with
+        // `duckdb_destroy_logical_type`"), satisfying `from_raw`'s ownership clause.
         unsafe { Self::from_raw(duckdb_array_type_child_type(self.inner)) }
     }
 

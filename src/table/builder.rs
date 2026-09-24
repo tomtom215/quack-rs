@@ -451,6 +451,12 @@ impl TableFunctionBuilder {
                     param_types_for_copy_from.push(TypeId::try_from_duckdb_type(unsafe {
                         libduckdb_sys::duckdb_get_type_id(logical.as_raw())
                     }));
+                    // SAFETY: `func` is the handle `duckdb_create_table_function` returned
+                    // above (a fresh `new TableFunction`, table_function-c.cpp) and not yet
+                    // handed on or destroyed. `logical` is a `LogicalType` owned by
+                    // `self.logical_params`, so its handle is live for this borrow;
+                    // `duckdb_table_function_add_parameter` copies it
+                    // (`arguments.push_back(*logical_type)`), keeping no pointer.
                     unsafe {
                         duckdb_table_function_add_parameter(func, logical.as_raw());
                     }
@@ -458,6 +464,11 @@ impl TableFunctionBuilder {
                 } else if simple_idx < self.params.len() {
                     let lt = LogicalType::new(self.params[simple_idx]);
                     param_types_for_copy_from.push(Some(self.params[simple_idx]));
+                    // SAFETY: `func` is the handle `duckdb_create_table_function` returned
+                    // above (a fresh `new TableFunction`, table_function-c.cpp) and not yet
+                    // handed on or destroyed. `lt` was created just above and is dropped
+                    // only after this call; `duckdb_table_function_add_parameter` copies
+                    // the type.
                     unsafe {
                         duckdb_table_function_add_parameter(func, lt.as_raw());
                     }
@@ -471,10 +482,23 @@ impl TableFunctionBuilder {
             match np {
                 NamedParam::Simple { name, type_id } => {
                     let lt = LogicalType::new(*type_id);
+                    // SAFETY: `func` is the handle `duckdb_create_table_function` returned
+                    // above (a fresh `new TableFunction`, table_function-c.cpp) and not yet
+                    // handed on or destroyed. `name` is a `CString` (non-null,
+                    // NUL-terminated; DuckDB does not null-check it) and `lt` was created
+                    // just above; both outlive the call, and
+                    // `duckdb_table_function_add_named_parameter` copies both into
+                    // `named_parameters`.
                     unsafe {
                         duckdb_table_function_add_named_parameter(func, name.as_ptr(), lt.as_raw());
                     }
                 }
+                // SAFETY: `func` is the handle `duckdb_create_table_function` returned
+                // above (a fresh `new TableFunction`, table_function-c.cpp) and not yet
+                // handed on or destroyed. `name` is a `CString` (non-null, NUL-terminated;
+                // DuckDB does not null-check it) and `logical_type` is a live `LogicalType`
+                // owned by `self.named_params`; `duckdb_table_function_add_named_parameter`
+                // copies both.
                 NamedParam::Logical { name, logical_type } => unsafe {
                     duckdb_table_function_add_named_parameter(
                         func,

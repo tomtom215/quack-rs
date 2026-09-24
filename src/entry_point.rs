@@ -296,6 +296,10 @@ pub unsafe fn init_extension_with_policy<F>(
 where
     F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
 {
+    // SAFETY: `init_extension_internal`'s `# Safety` is "same invariants as
+    // `init_extension`", which this function's own `# Safety` ("same invariants as
+    // `init_extension`") passes on unchanged: `info` and `access` are the pointers DuckDB
+    // passed to the entry point, valid for the duration of this call.
     match unsafe { init_extension_internal(info, access, api_version, policy, register) } {
         Ok(result) => result,
         Err(e) => {
@@ -381,6 +385,10 @@ pub unsafe fn init_extension_v2_with_policy<F>(
 where
     F: FnOnce(&Connection) -> Result<(), crate::error::ExtensionError>,
 {
+    // SAFETY: `init_extension_v2_internal`'s `# Safety` is "same invariants as
+    // `init_extension_v2`", which this function's own `# Safety` ("same invariants as
+    // `init_extension_v2`") passes on unchanged: `info` and `access` are the pointers
+    // DuckDB passed to the entry point, valid for the duration of this call.
     match unsafe { init_extension_v2_internal(info, access, api_version, policy, register) } {
         Ok(result) => result,
         Err(e) => {

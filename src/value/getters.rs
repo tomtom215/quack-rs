@@ -125,18 +125,53 @@ impl Value {
         // exactly the getter's type.
         match source {
             TypeId::Timestamp => {
+                // SAFETY: `read_cast` only calls this closure with `copy.raw`, a live
+                // non-null duplicate of a non-NULL scalar (it refuses null handles, SQL
+                // NULL and non-scalar types first), so `CAPIGetValue`'s unchecked
+                // `UnwrapValue` and `GetValue<T>` (duckdb_value-c.cpp) neither see null nor
+                // throw on NULL. This arm reads a `TIMESTAMP` at its own type, so
+                // `duckdb_get_timestamp`'s `DefaultTryCastAs` is a plain copy, and it
+                // mutates only the throwaway duplicate.
                 self.read_cast(source, |v| unsafe { duckdb_get_timestamp(v) }.micros)
             }
             TypeId::TimestampTz => {
+                // SAFETY: `read_cast` only calls this closure with `copy.raw`, a live
+                // non-null duplicate of a non-NULL scalar (it refuses null handles, SQL
+                // NULL and non-scalar types first), so `CAPIGetValue`'s unchecked
+                // `UnwrapValue` and `GetValue<T>` (duckdb_value-c.cpp) neither see null nor
+                // throw on NULL. This arm reads a `TIMESTAMPTZ` at its own type, so
+                // `duckdb_get_timestamp_tz`'s `DefaultTryCastAs` is a plain copy, and it
+                // mutates only the throwaway duplicate.
                 self.read_cast(source, |v| unsafe { duckdb_get_timestamp_tz(v) }.micros)
             }
             TypeId::TimestampS => {
+                // SAFETY: `read_cast` only calls this closure with `copy.raw`, a live
+                // non-null duplicate of a non-NULL scalar (it refuses null handles, SQL
+                // NULL and non-scalar types first), so `CAPIGetValue`'s unchecked
+                // `UnwrapValue` and `GetValue<T>` (duckdb_value-c.cpp) neither see null nor
+                // throw on NULL. This arm reads a `TIMESTAMP_S` at its own type, so
+                // `duckdb_get_timestamp_s`'s `DefaultTryCastAs` is a plain copy, and it
+                // mutates only the throwaway duplicate.
                 self.read_cast(source, |v| unsafe { duckdb_get_timestamp_s(v) }.seconds)
             }
             TypeId::TimestampMs => {
+                // SAFETY: `read_cast` only calls this closure with `copy.raw`, a live
+                // non-null duplicate of a non-NULL scalar (it refuses null handles, SQL
+                // NULL and non-scalar types first), so `CAPIGetValue`'s unchecked
+                // `UnwrapValue` and `GetValue<T>` (duckdb_value-c.cpp) neither see null nor
+                // throw on NULL. This arm reads a `TIMESTAMP_MS` at its own type, so
+                // `duckdb_get_timestamp_ms`'s `DefaultTryCastAs` is a plain copy, and it
+                // mutates only the throwaway duplicate.
                 self.read_cast(source, |v| unsafe { duckdb_get_timestamp_ms(v) }.millis)
             }
             TypeId::TimestampNs => {
+                // SAFETY: `read_cast` only calls this closure with `copy.raw`, a live
+                // non-null duplicate of a non-NULL scalar (it refuses null handles, SQL
+                // NULL and non-scalar types first), so `CAPIGetValue`'s unchecked
+                // `UnwrapValue` and `GetValue<T>` (duckdb_value-c.cpp) neither see null nor
+                // throw on NULL. This arm reads a `TIMESTAMP_NS` at its own type, so
+                // `duckdb_get_timestamp_ns`'s `DefaultTryCastAs` is a plain copy, and it
+                // mutates only the throwaway duplicate.
                 self.read_cast(source, |v| unsafe { duckdb_get_timestamp_ns(v) }.nanos)
             }
             _ => None,
@@ -339,6 +374,12 @@ impl Value {
     pub fn as_timestamp_tz(&self) -> Option<i64> {
         // SAFETY: `read_cast` passes a live, non-NULL scalar handle.
         self.read_cast(TypeId::TimestampTz, |v| {
+            // SAFETY: `v` is `read_cast`'s live, non-null private duplicate of a non-NULL
+            // scalar (null handles, SQL NULL and non-scalar sources are refused first), so
+            // `duckdb_get_timestamp_tz`'s unchecked `UnwrapValue` and `GetValue<T>` cannot
+            // hit null or throw on NULL; `read_cast` has also checked `cast_guard(source,
+            // TimestampTz)` against the payload, ruling out the throwing temporal casts.
+            // The cast mutates only the duplicate.
             unsafe { duckdb_get_timestamp_tz(v) }.micros
         })
         .filter(|&v| temporal_in_range(TypeId::TimestampTz, v))
@@ -350,6 +391,12 @@ impl Value {
     pub fn as_timestamp_s(&self) -> Option<i64> {
         // SAFETY: `read_cast` passes a live, non-NULL scalar handle.
         self.read_cast(TypeId::TimestampS, |v| {
+            // SAFETY: `v` is `read_cast`'s live, non-null private duplicate of a non-NULL
+            // scalar (null handles, SQL NULL and non-scalar sources are refused first), so
+            // `duckdb_get_timestamp_s`'s unchecked `UnwrapValue` and `GetValue<T>` cannot
+            // hit null or throw on NULL; `read_cast` has also checked `cast_guard(source,
+            // TimestampS)` against the payload, ruling out the throwing temporal casts. The
+            // cast mutates only the duplicate.
             unsafe { duckdb_get_timestamp_s(v) }.seconds
         })
         .filter(|&v| temporal_in_range(TypeId::TimestampS, v))
@@ -361,6 +408,12 @@ impl Value {
     pub fn as_timestamp_ms(&self) -> Option<i64> {
         // SAFETY: `read_cast` passes a live, non-NULL scalar handle.
         self.read_cast(TypeId::TimestampMs, |v| {
+            // SAFETY: `v` is `read_cast`'s live, non-null private duplicate of a non-NULL
+            // scalar (null handles, SQL NULL and non-scalar sources are refused first), so
+            // `duckdb_get_timestamp_ms`'s unchecked `UnwrapValue` and `GetValue<T>` cannot
+            // hit null or throw on NULL; `read_cast` has also checked `cast_guard(source,
+            // TimestampMs)` against the payload, ruling out the throwing temporal casts.
+            // The cast mutates only the duplicate.
             unsafe { duckdb_get_timestamp_ms(v) }.millis
         })
         .filter(|&v| temporal_in_range(TypeId::TimestampMs, v))
@@ -374,6 +427,12 @@ impl Value {
     pub fn as_timestamp_ns(&self) -> Option<i64> {
         // SAFETY: `read_cast` passes a live, non-NULL scalar handle.
         self.read_cast(TypeId::TimestampNs, |v| {
+            // SAFETY: `v` is `read_cast`'s live, non-null private duplicate of a non-NULL
+            // scalar (null handles, SQL NULL and non-scalar sources are refused first), so
+            // `duckdb_get_timestamp_ns`'s unchecked `UnwrapValue` and `GetValue<T>` cannot
+            // hit null or throw on NULL; `read_cast` has also checked `cast_guard(source,
+            // TimestampNs)` against the payload, ruling out the throwing temporal casts.
+            // The cast mutates only the duplicate.
             unsafe { duckdb_get_timestamp_ns(v) }.nanos
         })
         .filter(|&v| temporal_in_range(TypeId::TimestampNs, v))

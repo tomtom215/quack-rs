@@ -236,8 +236,20 @@ pub const unsafe fn read_interval_at(data: *const u8, idx: usize) -> DuckInterva
     // SAFETY: Each INTERVAL is exactly 16 bytes (repr(C) struct with i32, i32, i64).
     // The caller guarantees `data` points to valid INTERVAL data and `idx` is in bounds.
     let ptr = unsafe { data.add(idx * 16) };
+    // SAFETY: `ptr` is the start of the 16-byte INTERVAL at row `idx` inside the buffer
+    // `data` points to (both `# Safety` clauses), so `ptr + 0` through `+ 4` are
+    // initialised bytes of that element (`months: i32`); `read_unaligned` needs no
+    // alignment, only readable memory.
     let months = unsafe { core::ptr::read_unaligned(ptr.cast::<i32>()) };
+    // SAFETY: `ptr` is the start of the 16-byte INTERVAL at row `idx` inside the buffer
+    // `data` points to (both `# Safety` clauses), so `ptr + 4` through `+ 8` are
+    // initialised bytes of that element (`days: i32`); `read_unaligned` needs no alignment,
+    // only readable memory.
     let days = unsafe { core::ptr::read_unaligned(ptr.add(4).cast::<i32>()) };
+    // SAFETY: `ptr` is the start of the 16-byte INTERVAL at row `idx` inside the buffer
+    // `data` points to (both `# Safety` clauses), so `ptr + 8` through `+ 16` are
+    // initialised bytes of that element (`micros: i64`); `read_unaligned` needs no
+    // alignment, only readable memory.
     let micros = unsafe { core::ptr::read_unaligned(ptr.add(8).cast::<i64>()) };
     DuckInterval {
         months,

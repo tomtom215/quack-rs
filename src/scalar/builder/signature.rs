@@ -250,9 +250,15 @@ unsafe fn take_c_string(ptr: *mut c_char) -> String {
 ///
 /// `ty` must be a live logical type handle.
 unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
-    // SAFETY (whole body): `ty` is live per this function's contract; every
-    // accessor is only called for the type id it is documented for, and every
-    // child handle is owned by an `Owned` guard.
+    // SAFETY: (whole body) `ty` is a live handle per this function's `# Safety`
+    // clause; `duckdb_logical_type_get_alias` and `duckdb_get_type_id` need
+    // only that. Every other accessor is called in the arm for the type id it
+    // checks (logical_types-c.cpp), so none returns null here: each child
+    // handle is a fresh `new LogicalType` owned by an `Owned` guard, and is
+    // live when it is passed on to the recursive `describe`. The loop indices
+    // stay below the count DuckDB reported (`child_count`, `member_count`,
+    // `dictionary_size`), which the index accessors only `D_ASSERT`. Every
+    // returned string is a `strdup` copy that `take_c_string` frees once.
     unsafe {
         let alias = duckdb_logical_type_get_alias(ty);
         if !alias.is_null() {

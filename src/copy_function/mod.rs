@@ -413,6 +413,13 @@ impl CopyFunctionBuilder {
 
         // SAFETY: func must be destroyed after registration.
         let mut func_mut = func;
+        // SAFETY: `func_mut` holds the `new CopyFunction` from
+        // `duckdb_create_copy_function` above, destroyed nowhere else.
+        // `duckdb_register_copy_function` copies it into the catalog
+        // (`CreateCopyFunctionInfo(copy_function_ref)`, copy_function-c.cpp; the
+        // extra info is shared through `function_info`'s `shared_ptr`) and keeps
+        // no pointer to `func`, so this single `delete` is safe whether
+        // registration succeeded or not.
         unsafe {
             duckdb_destroy_copy_function(&raw mut func_mut);
         }

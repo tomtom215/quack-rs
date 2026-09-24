@@ -250,6 +250,12 @@ impl ConfigOptionBuilder {
 
         // SAFETY: option was created above and must be destroyed after registration.
         let mut option_mut = option;
+        // SAFETY: `option_mut` holds the `new CConfigOption` from
+        // `duckdb_create_config_option` above, destroyed nowhere else.
+        // `duckdb_register_config_option` copied its name, description, type and
+        // default into the database config (`AddExtensionOption`,
+        // config_options-c.cpp) and kept no pointer to it, so this single
+        // `delete` is safe whether registration succeeded or not.
         unsafe {
             duckdb_destroy_config_option(&raw mut option_mut);
         }
@@ -382,11 +388,16 @@ unsafe fn typed_default(
 ///
 /// Row 0 must exist, be valid, and hold a value of type `type_id`.
 unsafe fn value_of_type(reader: &VectorReader, type_id: TypeId) -> Option<Value> {
-    // SAFETY (every arm): row 0 exists and the physical layout matches
-    // `type_id`, per this function's contract. The temporal constructors
-    // validate their payload; a value DuckDB's own `TRY_CAST` produced is
-    // always in range, so their `Err` arm is unreachable here and `.ok()?`
-    // only satisfies the type.
+    // SAFETY: (every arm) row 0 exists, is valid and holds a `type_id` value,
+    // per this function's `# Safety` contract, so each `read_*(0)` is in
+    // bounds and reads the physical layout it expects (`BIT` shares BLOB's
+    // `duckdb_string_t` layout). `reader` borrows the chunk, so the string
+    // bytes `read_str` / `read_blob` borrow stay live while the constructors
+    // copy them; `duckdb_create_bit` copies too (`Value::BIT`), and
+    // `Value::from_raw` takes the fresh handle it returns. The temporal
+    // constructors validate their payload; a value DuckDB's own `TRY_CAST`
+    // produced is always in range, so their `Err` arm is unreachable here and
+    // `.ok()?` only satisfies the type.
     let value = unsafe {
         match type_id {
             TypeId::Boolean => Value::boolean(reader.read_bool(0)),

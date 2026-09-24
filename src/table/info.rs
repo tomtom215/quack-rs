@@ -317,6 +317,12 @@ impl BindInfo {
     /// - `index` must be less than [`parameter_count`][BindInfo::parameter_count].
     /// - The caller is responsible for destroying the returned `duckdb_value`.
     pub unsafe fn get_parameter(&self, index: u64) -> duckdb_value {
+        // SAFETY: `self.info` is the live `duckdb_bind_info` of the bind callback in
+        // progress, per the `# Safety` contract of `BindInfo::new`.
+        // `duckdb_bind_get_parameter` itself returns null for `index >= parameter_count`
+        // (table_function-c.cpp), so the index clause is belt-and-braces; otherwise it
+        // returns a fresh `new Value` that this function's `# Safety` clause makes the
+        // caller destroy.
         unsafe { duckdb_bind_get_parameter(self.info, index) }
     }
 
@@ -330,6 +336,11 @@ impl BindInfo {
     /// If `name` contains an interior null byte it is truncated at that point.
     pub unsafe fn get_named_parameter(&self, name: &str) -> duckdb_value {
         let c_name = str_to_cstring(name);
+        // SAFETY: `self.info` is the live `duckdb_bind_info` of the bind callback in
+        // progress, per the `# Safety` contract of `BindInfo::new`. `c_name` is a
+        // NUL-terminated `CString` that outlives the call, and DuckDB only looks it up in
+        // `named_parameters`. The result is null (no such parameter) or a fresh `new Value`
+        // the caller must destroy, per this function's `# Safety` clause.
         unsafe { duckdb_bind_get_named_parameter(self.info, c_name.as_ptr()) }
     }
 
@@ -381,6 +392,10 @@ impl BindInfo {
     /// The caller must ensure the returned pointer (if non-null) is used
     /// according to its original type.
     pub unsafe fn get_extra_info(&self) -> *mut c_void {
+        // SAFETY: `self.info` is the live `duckdb_bind_info` of the bind callback in
+        // progress, per the `# Safety` contract of `BindInfo::new`. DuckDB just returns the
+        // stored `extra_info` pointer; how it is used is the caller's obligation under this
+        // function's `# Safety` clause.
         unsafe { duckdb_bind_get_extra_info(self.info) }
     }
 
@@ -398,7 +413,15 @@ impl BindInfo {
     #[cfg(feature = "duckdb-1-5")]
     pub unsafe fn get_client_context(&self) -> crate::client_context::ClientContext {
         let mut ctx: duckdb_client_context = core::ptr::null_mut();
+        // SAFETY: `self.info` is the live `duckdb_bind_info` of the bind callback in
+        // progress, per the `# Safety` contract of `BindInfo::new`. `ctx` is a local
+        // out-parameter DuckDB writes a fresh `new CClientContextWrapper` into
+        // (table_function-c.cpp).
         unsafe { duckdb_table_function_get_client_context(self.info, &raw mut ctx) };
+        // SAFETY: DuckDB wrote a non-null wrapper into `ctx` (it skips the write only for a
+        // null `info`, which `BindInfo::new`'s contract rules out), freshly allocated for
+        // us, so nothing else destroys it. That the connection outlives the returned
+        // context is this function's own `# Safety` clause, as `from_raw` requires.
         unsafe { crate::client_context::ClientContext::from_raw(ctx) }
     }
 
@@ -495,6 +518,10 @@ impl InitInfo {
     /// The caller must ensure the returned pointer (if non-null) is used
     /// according to its original type.
     pub unsafe fn get_extra_info(&self) -> *mut c_void {
+        // SAFETY: `self.info` is the live `duckdb_init_info` of the init callback in
+        // progress, per the `# Safety` contract of `InitInfo::new`. DuckDB just returns the
+        // stored `extra_info` pointer; how it is used is the caller's obligation under this
+        // function's `# Safety` clause.
         unsafe { duckdb_init_get_extra_info(self.info) }
     }
 
@@ -543,6 +570,10 @@ impl FunctionInfo {
     /// The caller must ensure the returned pointer (if non-null) is used
     /// according to its original type.
     pub unsafe fn get_extra_info(&self) -> *mut c_void {
+        // SAFETY: `self.info` is the live `duckdb_function_info` of the scan callback in
+        // progress, per the `# Safety` contract of `FunctionInfo::new`. DuckDB just returns
+        // the stored `extra_info` pointer; how it is used is the caller's obligation under
+        // this function's `# Safety` clause.
         unsafe { duckdb_function_get_extra_info(self.info) }
     }
 
