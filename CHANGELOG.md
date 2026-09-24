@@ -437,6 +437,12 @@ in each section below.
   there, and the flattening copy reads it (found with an
   AddressSanitizer-built `libduckdb`; item 29). Its Errors section now lists
   the layout refusals.
+- Documentation corrections from a mechanical check of the docs' universal
+  and numeric claims: the Arrow conversion functions are already in
+  `DuckDB` 1.4.4's C API (not added in 1.5.0); the unstable API region did
+  not change "in every recent release" (1.4.4 and 1.4.5, 1.5.0 and 1.5.1, and
+  1.5.2 to 1.5.5 are byte-identical); it was not changed by middle insertions
+  "in four of the last four" versions (two).
 - `LESSONS.md` and the book's pitfall catalogue gained L15 (`combine` must
   leave its source states unchanged) and L16 (a valid Arrow array is not
   always one `DuckDB` imports correctly): 28 documented pitfalls.

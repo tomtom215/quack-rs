@@ -371,8 +371,8 @@ append_metadata target/release/libmy_extension.so \
 > ¹ Requires the `duckdb-1-5` feature flag (DuckDB 1.5.0+).
 >
 > ² Requires the `duckdb-1-5-4` feature flag. The functions themselves are in
-> DuckDB's C API from 1.5.0; the flag exists because `libduckdb-sys` did not
-> ship the Arrow C Data Interface struct layouts until 1.10504.0.
+> DuckDB's C API already in 1.4.4; the flag exists because `libduckdb-sys` did
+> not ship the Arrow C Data Interface struct layouts until 1.10504.0.
 
 [`arrow`]: https://docs.rs/quack-rs/latest/quack_rs/arrow/index.html
 [`callback`]: https://docs.rs/quack-rs/latest/quack_rs/callback/index.html
@@ -953,8 +953,8 @@ preserves compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
 
 ### Arrow interop
 
-DuckDB 1.5.0 added a conversion family that moves data straight between a
-`duckdb_data_chunk` and the [Arrow C Data Interface] — `duckdb_to_arrow_schema`,
+DuckDB's C API has a conversion family (already in 1.4.4) that moves data
+straight between a `duckdb_data_chunk` and the [Arrow C Data Interface] — `duckdb_to_arrow_schema`,
 `duckdb_data_chunk_to_arrow`, `duckdb_schema_from_arrow`,
 `duckdb_data_chunk_from_arrow` and the `duckdb_arrow_options` accessors.
 `quack-rs` wraps all of them in the [`arrow`] module behind the
@@ -968,7 +968,7 @@ and one that does not pays nothing.
 
 The feature is separate from `duckdb-1-5` only because `libduckdb-sys` declared
 those records as opaque zero-sized placeholders until **1.10504.0**; the DuckDB
-functions themselves are present from 1.5.0.
+functions themselves are present in every release quack-rs supports.
 
 [Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
 

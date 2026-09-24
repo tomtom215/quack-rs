@@ -128,8 +128,8 @@ read-only format leaves the writing callbacks unset entirely. See the
 
 ## Arrow interop (resolved behind `duckdb-1-5-4`)
 
-DuckDB 1.5.0 added a conversion family that moves data straight between a
-`duckdb_data_chunk` and the Arrow C Data Interface. quack-rs wraps all eight
+DuckDB's C API has a conversion family (already in 1.4.4) that moves data
+straight between a `duckdb_data_chunk` and the Arrow C Data Interface. quack-rs wraps all eight
 non-deprecated entries in the `arrow` module, with **no `arrow` crate
 dependency** — see the [Arrow Interop](../duckdb-1-5/arrow.md) chapter.
 
@@ -139,7 +139,8 @@ The remaining fourteen Arrow entries in the C API struct are the older
 
 The feature is `duckdb-1-5-4` rather than `duckdb-1-5` because `libduckdb-sys`
 declared the two Arrow ABI records as opaque zero-sized placeholders until
-1.10504.0. The DuckDB functions themselves are present from 1.5.0.
+1.10504.0. The DuckDB functions themselves are present in every release
+quack-rs supports.
 
 ## Callback accessor wrappers (resolved)
 

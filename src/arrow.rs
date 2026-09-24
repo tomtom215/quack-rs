@@ -3,10 +3,10 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! Arrow C Data Interface bridge (`DuckDB` 1.5.0+, `duckdb-1-5-4` feature).
+//! Arrow C Data Interface bridge (`duckdb-1-5-4` feature).
 //!
-//! `DuckDB` 1.5.0 added a conversion family that moves data between a
-//! `duckdb_data_chunk` and the [Arrow C Data Interface] without going through a
+//! `DuckDB`'s C API has a conversion family (already in 1.4.4) that moves data
+//! between a `duckdb_data_chunk` and the [Arrow C Data Interface] without going through a
 //! query result:
 //!
 //! | `DuckDB` C API | quack-rs |

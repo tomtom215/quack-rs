@@ -155,7 +155,8 @@ features or to upgrade DuckDB.
 
 `Strict` also refuses a DuckDB release quack-rs has no verified layout for — a
 newer release, or a `-dev` build. That is deliberate: DuckDB changed the unstable
-region in every recent release, so "unknown" is not evidence of "compatible".
+region in every minor release from 1.3.0 on, and in the 1.5.2 patch release, so
+"unknown" is not evidence of "compatible".
 The refusal lists the fixes, best first:
 
 1. rebuild against the release you are targeting and set

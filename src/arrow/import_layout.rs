@@ -7,7 +7,10 @@
 //! walking the array alongside its schema before the import.
 //!
 //! `DuckDB`'s conversion (`ArrowToDuckDBConversion`, `arrow_conversion.cpp`,
-//! the same in 1.4.4 and 1.5.0–1.5.5 where cited) computes where each node's
+//! the same in 1.5.2–1.5.5 where cited: a `duckdb-1-5-4` build carries the
+//! 546-slot API layout, which the default ABI check refuses on 1.5.0 and
+//! 1.5.1, whose union and 64-bit run-end paths differ) computes where each
+//! node's
 //! rows start from two parameters its caller passes: a `parent_offset` and a
 //! `nested_offset`, the latter replacing the former inside a `LIST`
 //! (`GetEffectiveOffset`). Arrow's rule is that a node's row `i` is element

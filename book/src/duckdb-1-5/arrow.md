@@ -2,8 +2,8 @@
 
 > **Requires the `duckdb-1-5-4` feature flag.**
 
-DuckDB 1.5.0 added a conversion family that moves data straight between a
-`duckdb_data_chunk` and the
+DuckDB's C API has a conversion family (already in 1.4.4) that moves data
+straight between a `duckdb_data_chunk` and the
 [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html),
 without a query result in between. `quack_rs::arrow` wraps all of it.
 
@@ -18,9 +18,9 @@ that *does* use arrow-rs bridges across with a pointer cast.
 
 ## Why the feature is `duckdb-1-5-4` and not `duckdb-1-5`
 
-All eight C functions are in `duckdb_ext_api_v1` from DuckDB **1.5.0** — that
-was checked against the v1.5.0 `duckdb_extension.h`, not assumed. The floor
-comes from the bindings: `libduckdb-sys` declared both records as *opaque
+All eight C functions are in `duckdb_ext_api_v1` already in DuckDB **1.4.4**
+(`extension_api.hpp` at v1.4.4, slots 410 to 434; they moved to 411 to 509 in
+1.5.0). The floor comes from the bindings: `libduckdb-sys` declared both records as *opaque
 zero-sized* bindgen placeholders (`_unused: [u8; 0]`) until **1.10504.0**, and
 you cannot allocate the caller-owned structs these APIs need out of a
 zero-sized type. `src/arrow.rs` carries a `const` assertion that says exactly
