@@ -227,6 +227,10 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 return_self_not_must_use = "allow"
+# Every `unsafe` block in library code states why it is sound. Test code is
+# exempt (`cfg_attr(test, ...)` in src/lib.rs and each tests/*.rs crate root):
+# its invariants are the test's own setup.
+undocumented_unsafe_blocks = "warn"
 
 [package.metadata.docs.rs]
 # Render the full API on docs.rs — including everything gated behind

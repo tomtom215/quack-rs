@@ -18,6 +18,9 @@
 //!
 //! All tests here are pure-Rust and do not require a `DuckDB` runtime.
 
+// Test code: each block's invariant is the test's own setup (Cargo.toml).
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 use quack_rs::aggregate::AggregateState;
 use quack_rs::interval::{interval_to_micros, interval_to_micros_saturating, DuckInterval};
 use quack_rs::sql_macro::{MacroBody, SqlMacro};

@@ -16,7 +16,9 @@
     clippy::format_collect,
     clippy::manual_assert,
     clippy::err_expect,
-    clippy::case_sensitive_file_extension_comparisons
+    clippy::case_sensitive_file_extension_comparisons,
+    // Test code: each block's invariant is the test's own setup (Cargo.toml).
+    clippy::undocumented_unsafe_blocks
 )]
 
 //! End-to-end FFI round-trips against a real `DuckDB`.

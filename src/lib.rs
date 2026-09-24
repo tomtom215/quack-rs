@@ -138,6 +138,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
+#![cfg_attr(test, allow(clippy::undocumented_unsafe_blocks))]
 
 // quack-rs supports 64-bit targets and `wasm32-unknown-emscripten` (the
 // DuckDB-WASM target). The `duckdb_string_t` layout reserves 8 bytes for the
