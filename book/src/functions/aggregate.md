@@ -48,7 +48,7 @@ flowchart TD
     UPDATE["**update**(chunk, states[])<br/>Process one input batch<br/>(NULL rows included — check is_valid)"]
     COMBINE["**combine**(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
     FINAL["**finalize**(states[], out, count, offset)<br/>Write count results at out[offset..], once per result batch"]
-    DESTROY["**state_destroy**(states[], count)<br/>Free memory — for every initialized state,<br/>including combine sources after the merge"]
+    DESTROY["**state_destroy**(states[], count)<br/>Free memory — after finalize and for combine<br/>sources after the merge (not every state: see Known Limitations)"]
 
     style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```

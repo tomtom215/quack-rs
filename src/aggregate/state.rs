@@ -139,8 +139,11 @@ pub trait AggregateState: Default + Send + Sync + 'static {}
 /// dropped. A `T` stored inline costs nothing more: its bytes belong to
 /// `DuckDB`'s hash table, which `DuckDB` frees. What leaks is whatever `T`
 /// itself owns on the heap (a `Vec`, a `String`, a `HashMap`), and, for a
-/// boxed `T`, the box. Until `DuckDB` fixes this, prefer a state that owns no
-/// heap memory and is small enough to be stored inline.
+/// boxed `T`, the box. The same holds for a window frame with an `EXCLUDE`
+/// clause, whose segment tree initialises one extra state per row and never
+/// destroys it (item 35; 5000 `T`s undropped over a 5000-row window). Until
+/// `DuckDB` fixes these, prefer a state that owns no heap memory and is small
+/// enough to be stored inline.
 ///
 /// # States `DuckDB` never initialised
 ///

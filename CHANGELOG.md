@@ -466,7 +466,11 @@ in each section below.
 - `LESSONS.md` and the book's pitfall catalogue gained L15 (`combine` must
   leave its source states unchanged) and L16 (a valid Arrow array is not
   always one `DuckDB` imports correctly): 28 documented pitfalls.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 34, and item 16 gained
+- `DestroyFn`, `FfiState` and the book's known limitations document that
+  `DuckDB` never destroys one aggregate state per row of a window frame with
+  `EXCLUDE` (item 35: 5000 of a 5000-row window, every release from 1.4.4).
+  `DestroyFn`'s docs said it was called for every state `DuckDB` created.
+- `docs/upstream-duckdb-reports.md` gained items 20 to 35, and item 16 gained
   a `HUGEINT` reproducer.
 
 #### Fourth audit

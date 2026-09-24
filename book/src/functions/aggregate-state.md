@@ -91,9 +91,9 @@ FfiState::<MyState>::size_callback(_info);
 FfiState::<MyState>::init_callback(info, state);
 // Effect: writes MyState::default() into the slot (or a box holding it), then the tag
 
-// state_destroy: DuckDB calls this for every state it created — after finalize,
-// on combine's source states once merged, and (after a failed state_init) on
-// states never initialised, which the tag makes it skip
+// destructor: DuckDB calls this after finalize, on combine's source states once
+// merged, and (after a failed state_init) on states never initialised, which
+// the tag makes it skip; not on every state (see Known Limitations)
 FfiState::<MyState>::destroy_callback(states, count);
 // Effect: for each state whose tag matches: clear the tag, then drop the T
 # }

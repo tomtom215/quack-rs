@@ -86,6 +86,17 @@ keep aggregate states small and free of heap allocations where you can.
 Pinned by `states_a_grouped_scan_never_reaches_leak_no_rust_heap` in
 `tests/aggregate_leaks.rs`.
 
+## Window frames with `EXCLUDE` never destroy one state per row (DuckDB defect)
+
+A C API aggregate in a window whose frame has `EXCLUDE CURRENT ROW`, `GROUP`
+or `TIES` is evaluated by DuckDB's segment tree in two parts, and the second
+part initialises one state per row that is never destroyed: over a 5000-row
+window, 5000 states on every release from 1.4.4 to 1.5.5 (none without
+`EXCLUDE`). The answer is right; as above, a small `FfiState<T>` leaks only
+what `T` owns on the heap. See `docs/upstream-duckdb-reports.md`, item 35;
+pinned by `a_window_frame_with_exclude_leaves_states_undestroyed` in
+`tests/ffi_roundtrip/agg_states.rs`.
+
 ## An abandoned stream keeps its table-function state (DuckDB behaviour)
 
 Dropping a streaming `QueryResult` part-way through, and then its

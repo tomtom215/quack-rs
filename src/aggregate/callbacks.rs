@@ -21,7 +21,7 @@
 //! | [`UpdateFn`] | Per batch of input rows | Accumulates data from a chunk into the states |
 //! | [`CombineFn`] | Parallel merge, window segment trees | Merges source states into target states |
 //! | [`FinalizeFn`] | Per batch of result rows, with a `count` and an `offset` | Writes results from `count` states to the output vector starting at `offset` |
-//! | [`DestroyFn`] | For every state `DuckDB` created: after finalize, on the source states once `combine` has merged them — and, after a failed `state_init`, on states that were never initialised | Frees per-state memory |
+//! | [`DestroyFn`] | After finalize, on the source states once `combine` has merged them, and, after a failed `state_init`, on states that were never initialised; not on some states a stopped scan or an `EXCLUDE` window frame leaves behind (see [`DestroyFn`]) | Frees per-state memory |
 //!
 //! Sources (`DuckDB` 1.5.5): `CAPIAggregateStateSize`, `CAPIAggregateFinalize`
 //! and `CAPIAggregateDestructor` in `src/main/capi/aggregate_function-c.cpp`;
@@ -163,10 +163,15 @@ pub type FinalizeFn = unsafe extern "C" fn(
 
 /// Frees memory allocated by [`StateInitFn`].
 ///
-/// Called for every state `DuckDB` created — after finalize, but also on the
-/// source states of a [`CombineFn`] once they have been merged, and on states
-/// that are never finalized. Must free all heap allocations made in
-/// `StateInitFn`.
+/// Called after finalize, on the source states of a [`CombineFn`] once they
+/// have been merged, and on states that are never finalized. Must free all
+/// heap allocations made in `StateInitFn`.
+///
+/// `DuckDB` 1.4.4 to 1.5.5 does not call it for every state it created: not
+/// for a grouped aggregate's states a stopped result scan never reached
+/// (`docs/upstream-duckdb-reports.md`, item 20), and not for the states a
+/// window frame with `EXCLUDE` initialises for each row (item 35). What those
+/// states own on the heap leaks.
 ///
 /// # Not every state it receives was initialised
 ///

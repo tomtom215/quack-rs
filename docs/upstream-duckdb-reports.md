@@ -45,6 +45,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 32 | Arrow sparse union with nonzero `null_count` has its type ids read as a validity bitmap | C program, below | refused |
 | 33 | Arrow import of a `geoarrow.wkb` column of more than 2048 rows writes past a vector | C program, below | refused past 2048 rows |
 | 34 | Arrow export declares plain binary for BIGNUM/GEOMETRY but writes binary views under `arrow_output_version = '1.4'` | C program, below | such an export refused |
+| 35 | Window frames with `EXCLUDE` never destroy the aggregate states of their second segment-tree part | C program, below | documented; small states stored inline |
 
 ## Before filing
 
@@ -3670,3 +3671,104 @@ plain binary or UTF-8 node's buffer count with the schema `DuckDB` declares
 for the chunk's types and refuses the array on a mismatch
 (`src/arrow/export_check.rs`; `tests/ffi_roundtrip/arrow_export.rs`, which
 failed on a 1.5.4 engine before the check).
+
+---
+
+## 35. Window frames with `EXCLUDE` never destroy one aggregate state per row
+
+A window frame with an `EXCLUDE` clause is evaluated by the segment tree in
+two parts. `WindowSegmentTreeLocalState::Evaluate` (`window_segment_tree.cpp`)
+evaluates the right-hand part per chunk: `right_part->Evaluate` runs
+`Initialize(count)`, which calls `state_init` on `count` states, and the
+part is then combined into the left one. Only `Finalize` destroys states, and
+it runs for the left part alone; `~WindowSegmentTreePart` is empty. So each
+chunk initialises one right-hand state per row that nothing destroys. A C API
+aggregate with `EXCLUDE CURRENT ROW`, `GROUP` or `TIES` takes this path
+(`WindowConstantAggregator::CanAggregate` refuses exclusions, and the C API
+has no custom window callback).
+
+Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5, x86_64
+Linux. Build: `gcc -I<libduckdb dir> item35.c -L<libduckdb dir> -lduckdb -o
+item35`, then run with `LD_LIBRARY_PATH=<libduckdb dir>`. The counters are
+atomic because `DuckDB` calls the callbacks from several threads.
+
+```c
+// A C API aggregate in a sliding window, with and without EXCLUDE: count the
+// states state_init created and the destructor destroyed.
+// Build: gcc -I<libduckdb dir> item35.c -L<libduckdb dir> -lduckdb -o item35
+#include <stdio.h>
+#include <stdint.h>
+#include <duckdb.h>
+static long long inits, destroys;
+static idx_t state_size(duckdb_function_info info) { (void)info; return 8; }
+static void state_init(duckdb_function_info info, duckdb_aggregate_state s) { (void)info; *(int64_t *)s = 0; __atomic_fetch_add(&inits, 1, __ATOMIC_SEQ_CST); }
+static void update(duckdb_function_info info, duckdb_data_chunk input, duckdb_aggregate_state *states) {
+    (void)info;
+    idx_t n = duckdb_data_chunk_get_size(input);
+    int64_t *v = (int64_t *)duckdb_vector_get_data(duckdb_data_chunk_get_vector(input, 0));
+    for (idx_t i = 0; i < n; i++) *(int64_t *)states[i] += v[i];
+}
+static void combine(duckdb_function_info info, duckdb_aggregate_state *src, duckdb_aggregate_state *dst, idx_t n) {
+    (void)info;
+    for (idx_t i = 0; i < n; i++) *(int64_t *)dst[i] += *(int64_t *)src[i];
+}
+static void finalize(duckdb_function_info info, duckdb_aggregate_state *src, duckdb_vector out, idx_t n, idx_t off) {
+    (void)info;
+    int64_t *d = (int64_t *)duckdb_vector_get_data(out);
+    for (idx_t i = 0; i < n; i++) d[off + i] = *(int64_t *)src[i];
+}
+static void destroy(duckdb_aggregate_state *states, idx_t n) { (void)states; __atomic_fetch_add(&destroys, (long long)n, __ATOMIC_SEQ_CST); }
+
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    printf("Built with DuckDB %s\n", duckdb_library_version());
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    duckdb_aggregate_function f = duckdb_create_aggregate_function();
+    duckdb_aggregate_function_set_name(f, "counted_sum");
+    duckdb_logical_type t = duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);
+    duckdb_aggregate_function_add_parameter(f, t);
+    duckdb_aggregate_function_set_return_type(f, t);
+    duckdb_aggregate_function_set_functions(f, state_size, state_init, update, combine, finalize);
+    duckdb_aggregate_function_set_destructor(f, destroy);
+    if (duckdb_register_aggregate_function(con, f) != DuckDBSuccess) { printf("register failed\n"); return 1; }
+    const char *frames[] = {"", "EXCLUDE CURRENT ROW", "EXCLUDE GROUP", "EXCLUDE TIES"};
+    for (int k = 0; k < 4; k++) {
+        char sql[512];
+        snprintf(sql, sizeof sql,
+                 "SELECT sum(x) FROM (SELECT counted_sum(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND "
+                 "CURRENT ROW %s) AS x FROM range(5000) t(i))", frames[k]);
+        inits = destroys = 0;
+        duckdb_result r;
+        if (duckdb_query(con, sql, &r) != DuckDBSuccess) { printf("%s: %s\n", frames[k], duckdb_result_error(&r)); continue; }
+        duckdb_destroy_result(&r);
+        duckdb_query(con, "SELECT 1", NULL);
+        printf("frame %-20s: %lld states initialised, %lld destroyed\n", frames[k][0] ? frames[k] : "(none)", inits, destroys);
+    }
+    duckdb_disconnect(&con); duckdb_close(&db);
+    printf("after close: %lld initialised, %lld destroyed\n", inits, destroys);
+    return 0;
+}
+```
+
+Observed, identical on all eight releases apart from the version line
+(`md5sum`):
+
+```text
+Built with DuckDB v1.5.5
+frame (none)              : 5336 states initialised, 5336 destroyed
+frame EXCLUDE CURRENT ROW : 10336 states initialised, 5336 destroyed
+frame EXCLUDE GROUP       : 10336 states initialised, 5336 destroyed
+frame EXCLUDE TIES        : 10336 states initialised, 5336 destroyed
+after close: 10336 initialised, 5336 destroyed
+```
+
+Expected: as many states destroyed as initialised, as without `EXCLUDE`.
+
+quack-rs mitigation: none possible in the callbacks. A slot `state_init`
+receives again cannot be told from reused memory that holds a stale copy of
+a state `DuckDB` moved, so it cannot be dropped there safely. `FfiState<T>`
+stores a small `T` inline, so only what `T` owns on the heap leaks; the
+limitation is documented on `DestroyFn` and `FfiState` and in the book's
+known limitations, and `tests/ffi_roundtrip/agg_states.rs` counts the `T`s
+never dropped (5000 of a 5000-row window with `EXCLUDE CURRENT ROW` on
+1.5.5, none without).

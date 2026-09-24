@@ -116,3 +116,99 @@ fn every_state_of_a_parallel_grouped_aggregate_is_dropped() {
         assert_eq!(LIVE.load(Ordering::SeqCst), 0, "states still live after {sql}");
     }
 }
+
+/// Live `WindowSum` values (a counter of its own: tests run in parallel).
+static WINDOW_LIVE: AtomicI64 = AtomicI64::new(0);
+
+struct WindowSum {
+    total: i64,
+}
+impl Default for WindowSum {
+    fn default() -> Self {
+        WINDOW_LIVE.fetch_add(1, Ordering::SeqCst);
+        Self { total: 0 }
+    }
+}
+impl Drop for WindowSum {
+    fn drop(&mut self) {
+        WINDOW_LIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+impl AggregateState for WindowSum {}
+
+quack_rs::aggregate_update_callback!(window_update, |_info, input, states| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    for row in 0..chunk.size() {
+        if let Some(s) = unsafe { FfiState::<WindowSum>::with_state_mut(*states.add(row)) } {
+            s.total += unsafe { reader.read_i64(row) };
+        }
+    }
+});
+
+quack_rs::aggregate_combine_callback!(window_combine, |_info, source, target, count| {
+    for i in 0..count as usize {
+        let v = unsafe { FfiState::<WindowSum>::with_state(*source.add(i)) }.map_or(0, |s| s.total);
+        if let Some(t) = unsafe { FfiState::<WindowSum>::with_state_mut(*target.add(i)) } {
+            t.total += v;
+        }
+    }
+});
+
+quack_rs::aggregate_finalize_callback!(window_finalize, |_info, source, result, count, offset| {
+    let mut writer = unsafe { VectorWriter::from_vector(result) };
+    for i in 0..count as usize {
+        let row = offset as usize + i;
+        match unsafe { FfiState::<WindowSum>::with_state(*source.add(i)) } {
+            Some(s) => unsafe { writer.write_i64(row, s.total) },
+            None => unsafe { writer.set_null(row) },
+        }
+    }
+});
+
+/// A window frame with `EXCLUDE` is evaluated by `DuckDB`'s segment tree in
+/// two parts, and the second part's states are initialised for every chunk
+/// but never destroyed (`WindowSegmentTreeLocalState::Evaluate`,
+/// `window_segment_tree.cpp`; upstream item 35). A small `T` lives in
+/// `DuckDB`'s state bytes, so the result is right and only what `T` owns on
+/// the heap leaks; this counts the `T`s never dropped. Without `EXCLUDE`
+/// every state is dropped.
+#[test]
+fn a_window_frame_with_exclude_leaves_states_undestroyed() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the builder's signatures.
+    unsafe {
+        AggregateFunctionBuilder::try_new("window_sum")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .ffi_state::<WindowSum>()
+            .update(window_update)
+            .combine(window_combine)
+            .finalize(window_finalize)
+            .register(fx.con())
+            .expect("register window_sum");
+    }
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let leaked = |frame: &str| {
+        let sql = format!(
+            "SELECT count(*) FILTER (WHERE a IS DISTINCT FROM b) FROM (\
+               SELECT window_sum(i) OVER w AS a, coalesce(sum(i) OVER w, 0) AS b \
+               FROM range(5000) t(i) \
+               WINDOW w AS (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW {frame}))"
+        );
+        let mut result = con.query(&sql).expect(&sql);
+        let chunk = result.next_chunk().expect("fetch").expect("one row");
+        // SAFETY: one BIGINT column, one row.
+        assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 0, "{sql}");
+        drop(chunk);
+        drop(result);
+        con.execute("SELECT 1").expect("next statement");
+        let live = WINDOW_LIVE.swap(0, Ordering::SeqCst);
+        println!("window_sum {frame:?}: {live} states never dropped");
+        live
+    };
+    assert_eq!(leaked(""), 0);
+    assert!(leaked("EXCLUDE CURRENT ROW") > 0);
+}
