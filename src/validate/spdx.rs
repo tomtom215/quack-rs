@@ -391,15 +391,21 @@ mod tests {
     /// process — reachable from `parse_description_yml` on untrusted input.
     #[test]
     fn deeply_nested_parentheses_are_an_error_not_a_stack_overflow() {
+        // Under Miri a million characters takes hours; 1,000 is still far
+        // past the 64-level limit, so the recursion bound is exercised the
+        // same way. The timing bound only means something natively.
+        let depth = if cfg!(miri) { 1_000 } else { 1_000_000 };
         let started = std::time::Instant::now();
-        let err = validate_spdx_license(&"(".repeat(1_000_000)).unwrap_err();
+        let err = validate_spdx_license(&"(".repeat(depth)).unwrap_err();
         assert!(err.as_str().contains("nests parentheses"), "{err}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        if !cfg!(miri) {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        }
 
         let yml = format!(
             "extension:\n  name: my_ext\n  description: d\n  language: Rust\n  build: cargo\n  \
              license: \"{}\"\n  maintainers:\n    - a\nrepo:\n  github: a/b\n  ref: main\n",
-            "(".repeat(1_000_000)
+            "(".repeat(depth)
         );
         let parsed = crate::validate::description_yml::parse_description_yml(&yml)
             .expect("an unusable license is a warning, not a parse failure");
