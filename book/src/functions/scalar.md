@@ -344,7 +344,7 @@ ScalarOverloadBuilder::new()
 - **`set_null` must be called for NULL outputs** — it calls `ensure_validity_writable`
   automatically ([Pitfall L4](../reference/pitfalls.md#l4-ensure_validity_writable-is-required-before-null-output))
 - **`read_bool` returns `bool`** — handles DuckDB's non-0/1 boolean bytes correctly
-  ([Pitfall L5](../reference/pitfalls.md#l5-boolean-reading-must-use-u8--0))
+  ([Pitfall L5](../reference/pitfalls.md#l5-boolean-reading-must-use-u8--0-not-const-bool))
 - **`read_str` handles both inline and pointer string formats** automatically
   ([Pitfall P7](../reference/pitfalls.md#p7-duckdb_string_t-format-is-undocumented))
 

@@ -84,8 +84,8 @@ Use `argument_count()` to bound the index.
   with the [`Value`] produced by `fold`
 - [Structured Errors](error-data.md) — the [`ErrorData`] returned on failure
 
-[`ScalarBindInfo::argument`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/struct.ScalarBindInfo.html
+[`ScalarBindInfo::argument`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/info/struct.ScalarBindInfo.html
 [`Value`]: https://docs.rs/quack-rs/latest/quack_rs/value/struct.Value.html
-[`LogicalType`]: https://docs.rs/quack-rs/latest/quack_rs/types/struct.LogicalType.html
+[`LogicalType`]: https://docs.rs/quack-rs/latest/quack_rs/types/logical_type/struct.LogicalType.html
 [`ErrorData`]: https://docs.rs/quack-rs/latest/quack_rs/error_data/struct.ErrorData.html
 [is_foldable]: https://docs.rs/quack-rs/latest/quack_rs/expression/struct.Expression.html#method.is_foldable

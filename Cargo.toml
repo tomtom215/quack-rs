@@ -233,9 +233,9 @@ missing_errors_doc = "allow"
 return_self_not_must_use = "allow"
 
 [package.metadata.docs.rs]
-# Render the full API on docs.rs — including the `duckdb-1-5` / `duckdb-1-5-3`
-# feature-gated modules and `TypeId` variants — so the documentation (and the
-# README's docs.rs links) resolve. Without this, docs.rs builds the empty default
+# Render the full API on docs.rs — including everything gated behind
+# `duckdb-1-5`, `duckdb-1-5-3` and `duckdb-1-5-4` (which implies the other two)
+# — so the documentation (and the book's and README's docs.rs links) resolve. Without this, docs.rs builds the empty default
 # feature set and every feature-gated item would be missing. `bundled-test` is
 # intentionally excluded (it compiles DuckDB from source).
 features = ["duckdb-1-5-4"]

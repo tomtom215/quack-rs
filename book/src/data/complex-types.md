@@ -286,4 +286,4 @@ All helpers are in `quack_rs::vector::complex` (re-exported from `quack_rs::prel
 |--------|-------------|
 | `get_child(vec)` | Returns the child vector of a fixed-size ARRAY vector |
 
-[`vector::complex`]: ../../src/vector/complex.rs
+[`vector::complex`]: https://docs.rs/quack-rs/latest/quack_rs/vector/complex/index.html

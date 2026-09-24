@@ -343,7 +343,7 @@ given is a double free.
 it must not unwind. Wrap anything that can panic in
 [`callback::catch_ffi_panic`] and return null.
 
-[`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/struct.ScalarBindInfo.html#method.set_bind_data_copy
+[`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/info/struct.ScalarBindInfo.html#method.set_bind_data_copy
 [`callback::catch_ffi_panic`]: https://docs.rs/quack-rs/latest/quack_rs/callback/fn.catch_ffi_panic.html
 
 ---

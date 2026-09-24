@@ -578,6 +578,12 @@ jobs:
           RUSTFLAGS: ""
         run: cargo install mdbook --locked --version "0.4.40"
       - run: mdbook build
+      # mdBook checks neither `#anchor`s nor docs.rs links. Rustdoc with the
+      # docs.rs feature set (Cargo.toml [package.metadata.docs.rs]) gives the
+      # pages the docs.rs links must resolve to once released.
+      - run: cargo doc --no-deps --features duckdb-1-5-4
+      - name: Book and README links resolve
+        run: python3 scripts/check-book-links.py
 
   msrv-vs-duckdb-ci:
     name: MSRV vs DuckDB's extension CI

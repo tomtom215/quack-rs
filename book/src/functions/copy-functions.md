@@ -48,7 +48,7 @@ let builder = CopyFunctionBuilder::try_new("my_format")?
 
 Reading is a **table function**, attached to the copy function rather than
 registered on its own. Build it with
-[`TableFunctionBuilder::build_handle`](https://docs.rs/quack-rs/latest/quack_rs/table/struct.TableFunctionBuilder.html#method.build_handle),
+[`TableFunctionBuilder::build_handle`](https://docs.rs/quack-rs/latest/quack_rs/table/builder/struct.TableFunctionBuilder.html#method.build_handle),
 then hand it to `copy_from`:
 
 ```rust,no_run

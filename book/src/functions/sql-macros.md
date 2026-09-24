@@ -165,7 +165,7 @@ assert_eq!(
 ## Name and parameter validation
 
 Macro names and parameter names are validated with
-[`validate_function_name`](https://docs.rs/quack-rs/latest/quack_rs/validate/fn.validate_function_name.html),
+[`validate_function_name`](https://docs.rs/quack-rs/latest/quack_rs/validate/function_name/fn.validate_function_name.html),
 the same rules as function names:
 - Start with an ASCII letter or underscore, then ASCII letters, digits or underscores
 - Not exceed 256 characters
