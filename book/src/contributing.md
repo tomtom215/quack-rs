@@ -103,6 +103,9 @@ Every `unsafe` block must have a `// SAFETY:` comment explaining:
 1. Which invariant the caller guarantees
 2. Why the operation is valid given that invariant
 
+`clippy::undocumented_unsafe_blocks` enforces this in library code (CI treats
+it as an error); test code is exempt.
+
 ```rust
 # struct Ffi { inner: *mut u64 }
 # let ffi = Ffi { inner: Box::into_raw(Box::new(0_u64)) };

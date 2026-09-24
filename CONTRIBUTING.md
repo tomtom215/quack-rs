@@ -249,6 +249,9 @@ Every `unsafe` block must have a `// SAFETY:` comment that explains:
 1. Which invariant the caller guarantees
 2. Why the operation is valid given that invariant
 
+`clippy::undocumented_unsafe_blocks` enforces this in library code (CI treats
+it as an error); test code is exempt.
+
 Example:
 ```rust
 // SAFETY: `states` is a valid array of `count` pointers, each initialized

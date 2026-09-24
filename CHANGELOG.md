@@ -431,8 +431,19 @@ the 0.17.0 notes about aggregates and NULL rows (see Fixed).
   into `value/composite.rs`, `value/nested.rs`, `value/scalars.rs`,
   `value/temporal.rs` and `value/temporal_checks.rs`; the `LogicalType`
   constructors moved to `types/logical_type/construct.rs`; and
-  `ScalarOverloadBuilder` moved to `scalar/builder/overload.rs`. This keeps
-  those files inside the 500-line guideline in `CONTRIBUTING.md`.
+  `ScalarOverloadBuilder` moved to `scalar/builder/overload.rs`. `src/query.rs`,
+  `src/appender.rs`, `src/arrow.rs` and `src/testing/mock_vector.rs` are split
+  the same way into private submodules. This keeps those files inside the
+  500-line guideline in `CONTRIBUTING.md`.
+- Every `unsafe` block in library code now states, in a `// SAFETY:` comment,
+  the invariant it relies on and why it holds; 149 did not.
+  `clippy::undocumented_unsafe_blocks` is enabled so CI keeps it that way (test
+  code is exempt).
+- `docs/architecture.md` matches the crate again: its module table listed
+  neither `abi`, `arrow`, `callback`, `chunk_writer`, `datetime`, `query`,
+  `secrets`, `tls` nor `warning`, and said `appender`, `table_description`,
+  `ScalarFunctionBuilder::varargs` and `volatile` need `duckdb-1-5` (they do
+  not). An integration test now fails when the table and `src/lib.rs` disagree.
 
 ### Fixed
 
@@ -693,6 +704,26 @@ the 0.17.0 notes about aggregates and NULL rows (see Fixed).
     overwrote the current package's `Cargo.toml` and `src/lib.rs`. Broken links
     in the book are fixed, and hand-kept test counts, several of them wrong, are
     removed from the repository trees.
+- **`# Safety` contracts that allowed undefined behaviour** (found while
+  documenting every `unsafe` block; contract text only, no signature or
+  behaviour change):
+  - `FfiLocalInitData::get` / `get_mut`, `FfiInitData::get_mut` and
+    `FfiBindData::get_from_init` / `get_from_function` did not require `T` to
+    be the type passed to `set`; `set::<u8>` then `get_mut::<[u64; 64]>` met
+    every stated clause and wrote 512 bytes through a 1-byte allocation. The
+    init-data getters also did not bound the returned lifetime by the scan
+    call. Both requirements are now stated.
+  - `MapVector::set_size` did not require the size to equal the entries
+    written, so a larger size made DuckDB read past the child vectors.
+  - `read_duck_blob` did not require the vector to outlive the returned slice,
+    which borrows the vector's own buffer for a blob of 12 bytes or fewer.
+- `cargo doc` failed with default features on a link to
+  `PreparedStatement::execute_streaming`, which needs `duckdb-1-5`. CI now also
+  builds the docs with default features, the set a dependent crate documents.
+- `Cargo.toml`'s `duckdb-1-5` description gave the requirement as
+  `libduckdb-sys >= 1.5.0` (the crate is versioned 1.10500.0) and claimed the
+  feature has no effect against 1.4.x, which was never checked; the hello-ext
+  README said `varargs` and `volatile` need `duckdb-1-5`.
 
 ### Security
 

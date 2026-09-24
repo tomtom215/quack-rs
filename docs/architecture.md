@@ -253,6 +253,10 @@ Within this crate:
 
 - The `#![deny(unsafe_op_in_unsafe_fn)]` lint is enabled globally: unsafe operations
   inside `unsafe fn` still require explicit `unsafe {}` blocks with their own comment.
+- Every `unsafe` block in library code carries a `// SAFETY:` comment stating the
+  invariant it relies on and why it holds there. `clippy::undocumented_unsafe_blocks`
+  (`Cargo.toml` `[lints.clippy]`, an error under CI's `-D warnings`) enforces it;
+  test code is exempt.
 - Raw pointer validity is enforced through type invariants:
   - `FfiState<T>::init_callback` — caller guarantees `state` points to allocated memory
   - `FfiState<T>::destroy_callback` — sets `inner = null` after freeing (prevents double-free)
