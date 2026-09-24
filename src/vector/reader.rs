@@ -451,7 +451,10 @@ impl VectorReader {
     /// - The column must contain `BLOB` data.
     /// - The pointed-to memory must be valid for the lifetime of the returned slice.
     pub unsafe fn read_blob(&self, idx: usize) -> &[u8] {
-        // SAFETY: BLOB uses the same duckdb_string_t layout as VARCHAR.
+        // SAFETY: BLOB uses the same duckdb_string_t layout as VARCHAR, so
+        // `self.data` is a valid buffer for `read_duck_blob` and `idx` is in
+        // bounds (clauses 1-2); clause 3 keeps both the vector's buffer and any
+        // heap data alive for the returned slice, which is bound to `&self`.
         unsafe { crate::vector::string::read_duck_blob(self.data, idx) }
     }
 

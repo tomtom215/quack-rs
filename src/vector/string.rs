@@ -328,17 +328,16 @@ pub unsafe fn read_duck_string<'a>(data: *const u8, idx: usize) -> &'a str {
 /// - `idx` must be within bounds of the vector.
 /// - For pointer-format blobs, the heap data must be valid for the lifetime of
 ///   the returned slice.
+/// - The returned slice can borrow from the vector's own data buffer (an inline
+///   blob of 12 bytes or fewer is stored there), so the vector must also
+///   outlive it — do not destroy the data chunk while the slice is live.
 pub unsafe fn read_duck_blob<'a>(data: *const u8, idx: usize) -> &'a [u8] {
     // SAFETY: each duckdb_string_t is exactly DUCK_STRING_SIZE bytes.
     let str_ptr = unsafe { data.add(idx * DUCK_STRING_SIZE) };
     // SAFETY: `[u8; 16]` has alignment 1, and `str_ptr` points at row `idx`'s
     // 16-byte `duckdb_string_t` inside the vector's data buffer (`# Safety`
-    // clauses 1-2), so the bytes are in bounds.
-    // FIXME(soundness): the reference gets the caller-chosen lifetime `'a`, but
-    // this `# Safety` section only requires *pointer-format* heap data to live
-    // for `'a`. An inline blob (<= 12 bytes) is returned as a slice of this
-    // record, i.e. of the vector's data buffer, so the vector itself must also
-    // outlive `'a`; `read_duck_string` states that, this function does not.
+    // clauses 1-2), so the bytes are in bounds; clause 4 keeps the vector, and
+    // so this record, alive for the caller-chosen `'a`.
     let raw_bytes: &'a [u8; DUCK_STRING_SIZE] =
         unsafe { &*str_ptr.cast::<[u8; DUCK_STRING_SIZE]>() };
     // SAFETY: the caller vouched for the vector's pointer-format payloads.

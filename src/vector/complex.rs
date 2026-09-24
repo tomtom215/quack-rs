@@ -396,18 +396,19 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid `DuckDB` MAP vector.
+    /// - `vector` must be a valid `DuckDB` MAP vector.
+    /// - `size` must equal the number of key-value entries written into the key
+    ///   and value child vectors, so it is at most the capacity reserved with
+    ///   [`reserve`][Self::reserve]. `DuckDB` stores `size` unchecked and later
+    ///   reads that many child entries.
     #[inline]
     pub unsafe fn set_size(vector: duckdb_vector, size: usize) {
         // SAFETY: `duckdb_list_vector_set_size` calls `ListVector::SetListSize`
         // (data_chunk-c.cpp), which casts the vector's `auxiliary` to
         // `VectorListBuffer` and stores `size` unchecked (vector.cpp,
-        // vector_buffer.cpp); the `# Safety` contract makes `vector` a valid MAP
-        // vector, so the call itself is sound.
-        // FIXME(soundness): duckdb.h says this can set a size beyond the child's
-        // capacity, and DuckDB later reads that many child entries. Unlike
-        // `ListVector::set_size`, this function's `# Safety` section does not
-        // require `size` to be at most the reserved/written entry count.
+        // vector_buffer.cpp). `# Safety` clause 1 makes `vector` a valid MAP
+        // vector; clause 2 keeps `size` within the entries actually written,
+        // so DuckDB's later reads of `size` child entries stay in bounds.
         unsafe { duckdb_list_vector_set_size(vector, size as idx_t) };
     }
 
