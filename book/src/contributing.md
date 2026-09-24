@@ -195,6 +195,13 @@ quack-rs/
 │   │   ├── lifecycle.rs               # Flushing, closing and (with `duckdb-1-5`) clearing an [`Appender`]
 │   │   ├── rows.rs                    # Row-at-a-time appends: `row`, `end_row` and the non-numeric `append_*` methods
 │   │   └── scalars.rs                 # The fixed-width numeric `append_*` methods, `append_bool` through `append_u128`
+│   ├── arrow/
+│   │   ├── array.rs                   # `ArrowArray` — an owned Arrow C Data Interface array
+│   │   ├── convert.rs                 # The four conversions between `DuckDB` data chunks and the Arrow C Data Interface
+│   │   ├── converted.rs               # `ArrowConvertedSchema` — an Arrow schema translated into `DuckDB`'s own type descriptors
+│   │   ├── options.rs                 # `ArrowOptions` — the Arrow production settings of a connection or a result
+│   │   ├── schema.rs                  # `ArrowSchema` — an owned Arrow C Data Interface schema
+│   │   └── tests.rs                   # Unit tests
 │   ├── bin/
 │   │   └── append_metadata/
 │   │       ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
