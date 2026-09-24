@@ -68,11 +68,10 @@ use crate::value::Value;
 /// the usable row capacity accordingly. Every physical element is at most 16
 /// bytes, so a vector within this bound needs at most 2 TiB and its size can
 /// never wrap a 64-bit multiply.
-pub const MAX_CAPACITY: usize = if (1_u64 << 37) > usize::MAX as u64 {
-    usize::MAX
-} else {
-    1 << 37
-};
+///
+/// On a target whose `usize` cannot hold 2^37 no allocation can reach the
+/// ceiling, so the bound is `usize::MAX` there.
+pub const MAX_CAPACITY: usize = crate::vector::list_builder::MAX_CHILD_CAPACITY_USIZE;
 
 /// The largest number of elements any single vector — `ty` itself or a child
 /// vector `DuckDB` allocates for it — would hold for a `rows`-row vector of
@@ -344,6 +343,20 @@ pub unsafe fn reference_vector(to: duckdb_vector, from: duckdb_vector) {
 mod tests {
     #[cfg(feature = "_duckdb-testing")]
     use super::*;
+
+    /// `OwnedVector::new` refuses anything above `DuckDB`'s
+    /// `DConstants::MAX_VECTOR_SIZE` (2^37 elements) — and nothing below it.
+    /// On a target whose `usize` cannot hold 2^37, no allocation can reach
+    /// it, so the bound is `usize::MAX` there.
+    #[test]
+    fn max_capacity_is_duckdbs_max_vector_size() {
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(super::MAX_CAPACITY, 137_438_953_472);
+        assert_eq!(
+            super::MAX_CAPACITY,
+            usize::try_from(137_438_953_472_u64).unwrap_or(usize::MAX)
+        );
+    }
     #[cfg(feature = "_duckdb-testing")]
     use crate::types::TypeId;
 

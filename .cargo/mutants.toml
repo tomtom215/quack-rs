@@ -146,10 +146,55 @@ exclude_globs = [
 #   the gate, as do the `Some(..)` mutants of `built_against_version`, and
 #   `built_against_version_is_the_build_scripts_declaration` kills `-> None`
 #   in a build that does declare a version.
+#
+# The entries below are equivalent in the same sense, or (the last) FFI-bound:
+#
+# - `yaml_quoted`'s `'\r'` arm (src/scaffold/escape.rs). With the arm deleted a
+#   carriage return falls through to the `\u000d` escape, which decodes to the
+#   same character. The only input that could show the difference in the
+#   output is a carriage return, and none reaches the function:
+#   `validate_free_text` refuses every control character but tab and newline
+#   in the description and maintainer (a bare CR is a hard error in the `//!`
+#   doc comment the description also becomes), and the version, the only
+#   other quoted field, is validated to ASCII letters, digits and `._+-`. Every
+#   configuration `generate_scaffold` accepts produces byte-identical files.
+#   The `'\n'` and `'\t'` arms stay in the gate: those characters do reach it,
+#   and `description_yml_keeps_free_text_readable` kills their deletion.
+# - `MAX_CHILD_CAPACITY_USIZE`'s `MAX_LIST_CHILD_CAPACITY > usize::MAX as u64`
+#   (src/vector/list_builder.rs, a const with no enclosing function, hence the
+#   `$`-anchored pattern) mutated to `>=` or `==`. 2^37 never equals
+#   `usize::MAX` on any target, so `>=` is the same program everywhere; `==` is
+#   the same program on every 64-bit target — the condition is false either
+#   way — which is every mutation run (it would differ on 32-bit, where the
+#   existing `max_capacity_matches_duckdbs_constant` catches it). The `<`
+#   mutant stays in the gate and is killed. `vector::ops::MAX_CAPACITY` is
+#   defined as this constant, so it has no separate mutants.
+# - `with_element_limit`'s `limit < MAX_CHILD_CAPACITY_USIZE` mutated to `<=`:
+#   the two differ only at `limit == MAX_CHILD_CAPACITY_USIZE`, where both arms
+#   store that same value.
+# - `CastGuard::accepts`'s `(v < 0) as i64` mutated to `<=` (src/value/
+#   temporal_checks.rs, the `FiniteAndNanoDayFits` arm). The two differ only at
+#   `v == 0`, where the mutant computes day `(0 + 1) / NANOS_PER_DAY - 1 = -1`
+#   instead of 0; `-1 * NANOS_PER_DAY` fits an `i64` as `0 * NANOS_PER_DAY`
+#   does and 0 is finite, so `accepts(0)` is `true` either way — and the day is
+#   used for nothing else.
+# - `ListBuilder::element_count -> 0 / 1` (src/vector/list_builder.rs): the
+#   count only advances in `push_row` / `push_map_row` after
+#   `ListVector::set_entry`, which calls `duckdb_vector_get_data`, so no unit
+#   test without a live engine can make it anything but 0 (the same rationale
+#   as the FFI entries in `exclude_globs`). It is checked end to end against a
+#   real LIST vector by `list_builder_writes_correct_offsets_across_growth` in
+#   tests/ffi_roundtrip.rs; `overflowed`, whose refusal path makes no DuckDB
+#   call, stays in the gate.
 exclude_re = [
     "impl [a-z:]*Debug for",    # Debug impls: rendering is not behaviour
     "abi.rs.*replace uses_unstable_api -> bool with true",  # equivalent: see above
     "abi.rs.*replace built_against_version -> Option<&'static str> with None",  # equivalent: see above
+    "escape.rs.*delete match arm '.r' in yaml_quoted",  # unreachable input: see above
+    "list_builder.rs:[0-9]+:[0-9]+: replace > with (==|>=)$",  # equivalent: see above
+    "list_builder.rs.*replace < with <= in ListBuilder::with_element_limit",  # equivalent: see above
+    "temporal_checks.rs.*replace < with <= in CastGuard::accepts",  # equivalent: see above
+    "list_builder.rs.*replace ListBuilder::element_count -> usize with",  # FFI-bound: see above
 
     # ── FFI-only checks in files that otherwise stay in the gate ────────────
     # Each check below runs only with a DuckDB handle in hand, so a --lib run

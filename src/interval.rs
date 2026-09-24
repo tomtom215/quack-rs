@@ -431,7 +431,52 @@ mod tests {
         assert_eq!(interval_to_micros(iv), Some(expected));
     }
 
+    /// `DuckDB`'s `Interval::MICROS_PER_MONTH` is 30 days: `epoch_us(interval
+    /// '1 month')` is `2_592_000_000_000`. Spelled out as a literal so the
+    /// constant is checked, not reused.
+    #[test]
+    fn one_month_is_thirty_days_of_micros() {
+        assert_eq!(MICROS_PER_MONTH, 2_592_000_000_000);
+        let iv = DuckInterval {
+            months: 1,
+            days: 0,
+            micros: 0,
+        };
+        assert_eq!(interval_to_micros(iv), Some(2_592_000_000_000));
+        assert_eq!(
+            interval_to_micros(iv),
+            interval_to_micros(DuckInterval {
+                months: 0,
+                days: 30,
+                micros: 0,
+            })
+        );
+    }
+
     // Mixed-sign overflow saturation tests (CRIT-5 regression tests)
+
+    /// When only the final micros addition overflows, the true total has the
+    /// sign of the micros, even though the days component is far smaller in
+    /// magnitude: one day plus `i64::MAX` micros saturates up, minus one day
+    /// plus `i64::MIN` micros saturates down.
+    #[test]
+    fn saturation_direction_follows_micros_when_micros_overflow() {
+        let up = DuckInterval {
+            months: 0,
+            days: 1,
+            micros: i64::MAX,
+        };
+        assert_eq!(interval_to_micros(up), None);
+        assert_eq!(interval_to_micros_saturating(up), i64::MAX);
+
+        let down = DuckInterval {
+            months: 0,
+            days: -1,
+            micros: i64::MIN,
+        };
+        assert_eq!(interval_to_micros(down), None);
+        assert_eq!(interval_to_micros_saturating(down), i64::MIN);
+    }
 
     #[test]
     fn saturating_positive_overflow_with_negative_days() {

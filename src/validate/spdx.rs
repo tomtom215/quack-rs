@@ -426,6 +426,18 @@ mod tests {
         assert!(validate_spdx_license(&nested(MAX_NESTING + 1)).is_err());
     }
 
+    /// The limit is on nesting depth, not on how many parenthesised groups
+    /// an expression has: closing a group returns to the outer depth, so many
+    /// sibling groups — each nested right up to the limit — are accepted.
+    #[test]
+    fn sibling_groups_do_not_count_towards_the_nesting_limit() {
+        let group = format!("{}MIT{}", "(".repeat(MAX_NESTING), ")".repeat(MAX_NESTING));
+        let many = vec![group.as_str(); MAX_NESTING + 2].join(" AND ");
+        assert!(validate_spdx_license(&many).is_ok(), "{many}");
+        let flat = vec!["(MIT)"; 2 * MAX_NESTING].join(" OR ");
+        assert!(validate_spdx_license(&flat).is_ok(), "{flat}");
+    }
+
     /// `WITH <exception>` is SPDX's license-exception syntax, e.g. the
     /// `Apache-2.0 WITH LLVM-exception` that LLVM-derived code carries.
     #[test]

@@ -250,7 +250,8 @@ impl Value {
 
 #[cfg(test)]
 mod tests {
-    use super::Value;
+    use super::{check, Value, TIMESTAMP_RANGE};
+    use crate::types::TypeId;
 
     /// An out-of-range `TIME_TZ` encoding is refused before `DuckDB` is
     /// called, so this needs no live runtime. Passed on, it would be stored
@@ -292,6 +293,32 @@ mod tests {
             let err = ctor(v).expect_err("out of range must be refused");
             let msg = err.as_str();
             assert!(msg.contains(&format!("Value::{name}({v})")), "{msg}");
+        }
+    }
+
+    /// The range check every fallible constructor runs before calling
+    /// `DuckDB`: an in-range payload is passed through unchanged, whatever
+    /// its value, and one just outside the range is refused with an error
+    /// naming the constructor, the value and the range.
+    #[test]
+    fn check_passes_in_range_payloads_through_and_names_the_rest() {
+        for v in [0, 1, 12_345, 86_400_000_000] {
+            assert_eq!(check(TypeId::Time, v, "time", "TIME range"), Ok(v));
+        }
+        for v in [-1, 86_400_000_001] {
+            let err = check(TypeId::Time, v, "time", "TIME range").expect_err("out of range");
+            assert!(
+                err.as_str()
+                    .contains(&format!("Value::time({v}) is outside DuckDB's range")),
+                "{err}"
+            );
+            assert!(err.as_str().contains("TIME range"), "{err}");
+        }
+        for v in [i64::MAX, -i64::MAX, -2, 1_700_000_000_000_000] {
+            assert_eq!(
+                check(TypeId::Timestamp, v, "timestamp", TIMESTAMP_RANGE),
+                Ok(v)
+            );
         }
     }
 }

@@ -389,4 +389,52 @@ mod tests {
             );
         }
     }
+
+    /// Zero is a valid length and a valid offset: an empty, childless record
+    /// (a zero-column result) passes the structural check.
+    #[test]
+    fn a_zero_length_zero_offset_childless_array_passes() {
+        let mut raw = RawArrowArray::empty();
+        raw.release = Some(no_op_release);
+        // SAFETY: no buffers or children; `no_op_release` frees nothing.
+        let array = unsafe { ArrowArray::from_raw(raw) };
+        assert_eq!(check_struct_children(&array), Ok(()));
+    }
+
+    /// Checks a one-column struct array of `length` rows at `offset` whose
+    /// child holds `child_length` rows.
+    fn check_one_child(length: i64, offset: i64, child_length: i64) -> Result<(), String> {
+        let mut child = RawArrowArray::empty();
+        child.length = child_length;
+        child.release = Some(no_op_release);
+        let mut child_ptrs = [std::ptr::from_mut(&mut child)];
+
+        let mut raw = RawArrowArray::empty();
+        raw.length = length;
+        raw.offset = offset;
+        raw.n_children = 1;
+        raw.children = child_ptrs.as_mut_ptr();
+        raw.release = Some(no_op_release);
+        // SAFETY: `no_op_release` frees nothing, and `child` / `child_ptrs`
+        // are locals declared before `array`, so they outlive it.
+        let array = unsafe { ArrowArray::from_raw(raw) };
+        check_struct_children(&array)
+    }
+
+    /// `DuckDB` reads rows `offset..offset + length` of every child, so a
+    /// child must hold at least that many: exactly enough or more is
+    /// accepted, one short is refused by name.
+    #[test]
+    fn a_child_must_cover_the_parents_offset_plus_length() {
+        // length 3 at offset 2 reads child rows 0..5.
+        assert_eq!(check_one_child(3, 2, 5), Ok(()), "exactly enough rows");
+        assert_eq!(check_one_child(3, 2, 6), Ok(()), "more rows than needed");
+        let err = check_one_child(3, 2, 4).expect_err("one row short");
+        assert!(
+            err.contains("child 0 of the Arrow array has 4 row(s)") && err.contains("needs 5"),
+            "{err}"
+        );
+        // An empty struct array at offset 0 needs nothing from its child.
+        assert_eq!(check_one_child(0, 0, 0), Ok(()));
+    }
 }

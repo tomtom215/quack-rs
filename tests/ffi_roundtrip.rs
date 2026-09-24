@@ -1735,6 +1735,9 @@ fn a_panicking_cast_becomes_a_sql_error() {
 
 // ─── LIST and MAP construction ───────────────────────────────────────────────
 
+/// `ListBuilder::element_count` of the last chunk `make_range_list` built.
+static RANGE_LIST_ELEMENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 quack_rs::scalar_callback!(make_range_list, |_info, input, output| {
     // Builds LIST<BIGINT> = [0, 1, ..., n-1] for each input n.
     use quack_rs::vector::ListBuilder;
@@ -1755,6 +1758,7 @@ quack_rs::scalar_callback!(make_range_list, |_info, input, output| {
             });
         }
     }
+    RANGE_LIST_ELEMENTS.store(builder.element_count(), std::sync::atomic::Ordering::SeqCst);
     unsafe { builder.finish() };
 });
 
@@ -1780,6 +1784,23 @@ fn list_builder_writes_correct_offsets_across_growth() {
         })
         .as_deref(),
         Some("[0, 1, 2]")
+    );
+    // The builder counts every element it wrote into the child.
+    assert_eq!(
+        RANGE_LIST_ELEMENTS.load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum(len(make_range_list(n)))::BIGINT FROM (VALUES (2), (0), (4)) t(n)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(6)
+    );
+    assert_eq!(
+        RANGE_LIST_ELEMENTS.load(std::sync::atomic::Ordering::SeqCst),
+        6,
+        "one chunk of rows with 2, 0 and 4 elements"
     );
 
     // Empty lists must produce a zero-length entry, not NULL.

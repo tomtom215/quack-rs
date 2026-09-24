@@ -240,3 +240,112 @@ fn github_repo_must_be_owner_slash_repo() {
         assert!(generate_scaffold(&cfg).is_ok(), "{repo:?}");
     }
 }
+
+/// `description.yml` is a file the author reads, edits and commits, so the
+/// quoting must not obscure text that needs no escape: printable ASCII and
+/// other printable characters are written as they are, and a newline or a tab
+/// uses YAML's short escape rather than a `\uXXXX` code.
+#[test]
+fn description_yml_keeps_free_text_readable() {
+    for (text, quoted) in [
+        (
+            "Fast: analytics for DuckDB",
+            r#""Fast: analytics for DuckDB""#,
+        ),
+        ("line one\nline two", r#""line one\nline two""#),
+        ("tab\tinside", r#""tab\tinside""#),
+        (
+            "caf\u{e9}, \u{65e5}\u{672c}\u{8a9e}, \u{1f986}",
+            "\"caf\u{e9}, \u{65e5}\u{672c}\u{8a9e}, \u{1f986}\"",
+        ),
+    ] {
+        let files = generate_scaffold(&config(text, "Jane Doe")).unwrap();
+        let yml = file(&files, "description.yml");
+        assert!(
+            yml.contains(&format!("\n  description: {quoted}\n")),
+            "{text:?}:\n{yml}"
+        );
+        assert!(
+            yml.contains(&format!("\n  extended_description: {quoted}\n")),
+            "{text:?}:\n{yml}"
+        );
+    }
+    let files = generate_scaffold(&config("d", "Jane: Doe #1")).unwrap();
+    let yml = file(&files, "description.yml");
+    assert!(yml.contains("\n    - \"Jane: Doe #1\"\n"), "{yml}");
+}
+
+/// A YAML 1.1 reader such as `PyYAML` — what the community-extensions tooling
+/// uses — takes a raw U+2028 or U+2029 for a line break, which a quoted
+/// scalar folds into a space, and does not accept a raw byte-order mark
+/// inside a scalar. All three are allowed in a description, so they must
+/// reach the file only as escapes. This is what the `PyYAML` round trip above
+/// checks, without needing `python3` on the machine.
+#[test]
+fn yaml_1_1_line_breaks_and_the_bom_are_escaped() {
+    let text = "a\u{2028}b\u{2029}c\u{feff}d";
+    let files = generate_scaffold(&config(text, "Jane Doe")).unwrap();
+    let yml = file(&files, "description.yml");
+    assert!(
+        !yml.contains(['\u{2028}', '\u{2029}', '\u{feff}']),
+        "raw separator or BOM in:\n{yml}"
+    );
+    assert!(
+        yml.contains(r#"  description: "a\u2028b\u2029c\ufeffd""#),
+        "{yml}"
+    );
+    let parsed = parse_description_yml(yml).expect("parses");
+    assert_eq!(parsed.description, text);
+}
+
+/// The description is the generated crate's `//!` doc: every line of it
+/// appears, each behind its own prefix, and a blank line stays a bare `//!`.
+#[test]
+fn lib_rs_doc_comment_carries_every_description_line() {
+    let files = generate_scaffold(&config("First line.\n\nThird: line", "Jane Doe")).unwrap();
+    let lib = file(&files, "src/lib.rs");
+    assert!(
+        lib.contains("//! First line.\n//!\n//! Third: line\n"),
+        "{lib}"
+    );
+}
+
+/// `repo.ref` is a revision the community repository checks out: a commit
+/// hash or tag. An empty value, anything that could be read as an option
+/// (`-...`), and characters outside ordinary ref spelling are refused.
+#[test]
+fn git_ref_must_be_a_hash_or_tag() {
+    for git_ref in [
+        "",
+        "-",
+        "-rf",
+        "--upload-pack=x",
+        "two words",
+        "v1;rm",
+        "a\nb",
+        "ref#1",
+    ] {
+        let cfg = ScaffoldConfig {
+            git_ref: git_ref.to_string(),
+            ..config("d", "Jane")
+        };
+        assert!(generate_scaffold(&cfg).is_err(), "{git_ref:?} accepted");
+    }
+    for git_ref in [
+        "0123456789abcdef0123456789abcdef01234567",
+        "v1.2.3",
+        "release/1.0_rc-1",
+        "a-b",
+        REF_PLACEHOLDER,
+    ] {
+        let cfg = ScaffoldConfig {
+            git_ref: git_ref.to_string(),
+            ..config("d", "Jane")
+        };
+        let files = generate_scaffold(&cfg).unwrap_or_else(|e| panic!("{git_ref:?}: {e}"));
+        assert!(
+            file(&files, "description.yml").contains(&format!("\n  ref: {git_ref}\n")),
+            "{git_ref:?}"
+        );
+    }
+}

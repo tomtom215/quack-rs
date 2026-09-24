@@ -405,6 +405,37 @@ mod tests {
         assert!(validate_semver("1.0.01").is_err());
     }
 
+    /// semver.org items 9 and 10: pre-release and build identifiers are
+    /// non-empty runs of `[0-9A-Za-z-]` separated by dots.
+    #[test]
+    fn malformed_prerelease_or_build_identifiers_rejected() {
+        for (version, message) in [
+            ("1.0.0-", "pre-release identifier must not be empty"),
+            ("1.0.0+", "build metadata identifier must not be empty"),
+            ("1.0.0-alpha..1", "pre-release contains an empty identifier"),
+            ("1.0.0-alpha.", "pre-release contains an empty identifier"),
+            (
+                "1.0.0+build..1",
+                "build metadata contains an empty identifier",
+            ),
+            (
+                "1.0.0-al_pha",
+                "pre-release identifier 'al_pha' contains invalid",
+            ),
+            (
+                "1.0.0+b!d",
+                "build metadata identifier 'b!d' contains invalid",
+            ),
+            (
+                "1.0.0-rc.1+sha.5114f85+x",
+                "build metadata identifier '5114f85+x'",
+            ),
+        ] {
+            let err = validate_semver(version).expect_err(version);
+            assert!(err.as_str().contains(message), "{version}: {err}");
+        }
+    }
+
     #[test]
     fn leading_zero_on_zero_itself_accepted() {
         assert!(validate_semver("0.0.0").is_ok());

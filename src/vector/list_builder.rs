@@ -100,7 +100,7 @@ pub const MAX_LIST_CHILD_CAPACITY: u64 = 1 << 37;
     clippy::cast_possible_truncation,
     reason = "the branch above proves the value fits"
 )]
-const MAX_CHILD_CAPACITY_USIZE: usize = if MAX_LIST_CHILD_CAPACITY > usize::MAX as u64 {
+pub(crate) const MAX_CHILD_CAPACITY_USIZE: usize = if MAX_LIST_CHILD_CAPACITY > usize::MAX as u64 {
     usize::MAX
 } else {
     MAX_LIST_CHILD_CAPACITY as usize
@@ -351,6 +351,27 @@ mod tests {
         let raised =
             unsafe { ListBuilder::new(std::ptr::null_mut()) }.with_element_limit(usize::MAX);
         assert_eq!(raised.limit, MAX_CHILD_CAPACITY_USIZE);
+    }
+
+    /// A request past the element limit is refused before `DuckDB` is asked
+    /// for anything, and the refusal sticks: `overflowed` reports it and every
+    /// later request — however small — is refused too, so no row after the
+    /// first overflowing one is written.
+    #[test]
+    fn a_request_past_the_element_limit_is_refused_and_reported() {
+        // SAFETY: `ensure_capacity` makes no DuckDB call for a request of 0
+        // elements or one past the limit, so the null vector is never used.
+        let mut builder = unsafe { ListBuilder::new(std::ptr::null_mut()) }.with_element_limit(10);
+        // SAFETY: as above.
+        assert!(unsafe { builder.ensure_capacity(0) });
+        assert!(!builder.overflowed());
+        // SAFETY: as above.
+        assert!(!unsafe { builder.ensure_capacity(11) });
+        assert!(builder.overflowed());
+        // SAFETY: as above; the builder has overflowed, so nothing is reserved.
+        assert!(!unsafe { builder.ensure_capacity(0) });
+        assert!(builder.overflowed());
+        assert_eq!(builder.element_count(), 0);
     }
 
     #[test]
