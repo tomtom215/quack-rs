@@ -97,7 +97,7 @@ pub(super) fn kind_of(format: &str, children: usize, extension: Option<&str>) ->
         "+r" => Kind::RunEnd,
         _ => {
             if let Some(size) = format.strip_prefix("+w:") {
-                return size.parse().map_or(Kind::Leaf, Kind::FixedList);
+                return stoi_prefix(size).map_or(Kind::Leaf, Kind::FixedList);
             }
             if let Some(codes) = format.strip_prefix("+us:") {
                 let identity = codes
@@ -115,6 +115,23 @@ pub(super) fn kind_of(format: &str, children: usize, extension: Option<&str>) ->
             Kind::Leaf
         }
     }
+}
+
+/// The size `DuckDB` reads from a fixed-size list's format, which it parses
+/// with `std::stoi` (`arrow_duck_schema.cpp`): leading C whitespace and a `+`
+/// are skipped, and parsing stops at the first non-digit, so `" 2"`, `"+2"`
+/// and `"2x"` are all 2. `None` where `stoi` throws or the size is negative,
+/// which fails `schema_from_arrow` before any import.
+fn stoi_prefix(text: &str) -> Option<u64> {
+    let text = text.trim_start_matches([' ', '\t', '\n', '\x0B', '\x0C', '\r']);
+    let text = text.strip_prefix('+').unwrap_or(text);
+    let digits = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    text[..digits]
+        .parse::<i32>()
+        .ok()
+        .and_then(|n| u64::try_from(n).ok())
 }
 
 /// A schema node, reduced to what the walk needs.
@@ -242,26 +259,34 @@ impl Ctx {
         }
     }
 
-    /// Where `DuckDB` reads a node at `offset`'s values from.
-    const fn duck_start(self, offset: i64) -> i64 {
+    /// Where `DuckDB` reads a node at `offset`'s values from; `None` if the
+    /// sum overflows.
+    const fn duck_start(self, offset: i64) -> Option<i64> {
         match self.nested {
-            Some(nested) => offset + nested,
-            None => offset + self.parent,
+            Some(nested) => offset.checked_add(nested),
+            None => offset.checked_add(self.parent),
         }
     }
 
-    /// Where `DuckDB` reads a node at `offset`'s validity from.
-    const fn duck_validity(self, offset: i64) -> i64 {
+    /// Where `DuckDB` reads a node at `offset`'s validity from; `None` if the
+    /// sum overflows.
+    const fn duck_validity(self, offset: i64) -> Option<i64> {
         match self.nested {
-            Some(nested) => offset + nested,
-            None => offset + self.vparent,
+            Some(nested) => offset.checked_add(nested),
+            None => offset.checked_add(self.vparent),
         }
     }
 
-    /// Where Arrow says a node at `offset`'s rows start.
-    const fn arrow_start(self, offset: i64) -> i64 {
-        offset + self.inherited
+    /// Where Arrow says a node at `offset`'s rows start; `None` if the sum
+    /// overflows.
+    const fn arrow_start(self, offset: i64) -> Option<i64> {
+        offset.checked_add(self.inherited)
     }
+}
+
+/// An offset sum that does not fit in `i64`, as an error.
+fn in_range(sum: Option<i64>) -> Result<i64, String> {
+    sum.ok_or_else(|| "an offset, added to its parents' offsets, overflows i64".to_owned())
 }
 
 /// Whether `node` has a validity buffer and a nonzero null count, the
@@ -395,6 +420,12 @@ unsafe fn check_node(
     ctx: Ctx,
     limit: Limit,
 ) -> Result<(), String> {
+    if node.length < 0 || node.offset < 0 {
+        return Err(format!(
+            "the array has a negative length ({}) or offset ({})",
+            node.length, node.offset
+        ));
+    }
     let children = usize::try_from(node.n_children).unwrap_or(0);
     if children != shape.children.len() {
         return Err(format!(
@@ -433,11 +464,12 @@ unsafe fn check_node(
                     .to_owned(),
             );
         }
-        if ctx.size > 0 && ctx.duck_start(node.offset) != ctx.arrow_start(node.offset) {
+        let arrow = in_range(ctx.arrow_start(node.offset))?;
+        let duck = in_range(ctx.duck_start(node.offset))?;
+        if ctx.size > 0 && duck != arrow {
             return Err(format!(
-                "dictionary indices would be read from row {} where Arrow puts them at row {}",
-                ctx.duck_start(node.offset),
-                ctx.arrow_start(node.offset)
+                "dictionary indices would be read from row {duck} where Arrow puts them at row \
+                 {arrow}"
             ));
         }
         // SAFETY: `node` is a valid array.
@@ -454,12 +486,11 @@ unsafe fn check_node(
             ));
         }
         // `GetValidityMask` is passed `parent_offset` but not `nested_offset`.
-        if own_nulls && ctx.size > 0 && node.offset + ctx.parent != ctx.arrow_start(node.offset) {
+        let validity = in_range(node.offset.checked_add(ctx.parent))?;
+        if own_nulls && ctx.size > 0 && validity != arrow {
             return Err(format!(
-                "the validity of dictionary indices would be read from row {} where Arrow puts \
-                 it at row {} (DuckDB ignores the list's offset here)",
-                node.offset + ctx.parent,
-                ctx.arrow_start(node.offset)
+                "the validity of dictionary indices would be read from row {validity} where \
+                 Arrow puts it at row {arrow} (DuckDB ignores the list's offset here)"
             ));
         }
         if (own_nulls || ctx.struct_nulls) && ctx.size > limit {
@@ -521,22 +552,20 @@ unsafe fn check_node(
     let rows = ctx.size > 0;
     // SAFETY: `node` is a valid array.
     let has_validity = unsafe { copies_validity(node) };
-    if rows && has_validity && ctx.duck_validity(node.offset) != ctx.arrow_start(node.offset) {
+    let arrow = in_range(ctx.arrow_start(node.offset))?;
+    let validity = in_range(ctx.duck_validity(node.offset))?;
+    if rows && has_validity && validity != arrow {
         return Err(format!(
-            "validity would be read from row {} where Arrow puts it at row {}",
-            ctx.duck_validity(node.offset),
-            ctx.arrow_start(node.offset)
+            "validity would be read from row {validity} where Arrow puts it at row {arrow}"
         ));
     }
     let reads_values = !matches!(shape.kind, Kind::Struct | Kind::FixedList(_));
-    let start = ctx.duck_start(node.offset);
-    if rows && reads_values && start != ctx.arrow_start(node.offset) {
+    let start = in_range(ctx.duck_start(node.offset))?;
+    if rows && reads_values && start != arrow {
         return Err(format!(
-            "rows would be read from row {start} where Arrow puts them at row {}",
-            ctx.arrow_start(node.offset)
+            "rows would be read from row {start} where Arrow puts them at row {arrow}"
         ));
     }
-    let arrow = ctx.arrow_start(node.offset);
 
     match shape.kind {
         Kind::CopiedIntoOneVector if ctx.size > limit => Err(format!(

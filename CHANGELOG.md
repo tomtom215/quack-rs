@@ -1050,6 +1050,20 @@ in each section below.
   and ARRAY element vector below that child, down to the next `LIST` or `MAP`:
   `DuckDB` 1.5.5 reallocates all of their data and validity buffers
   (`tests/ffi_roundtrip/nested_reserve.rs` measures which move).
+- **Arrow import: a fixed-size list format DuckDB accepts could bypass the
+  layout checks.** `DuckDB` reads the size in `+w:N` with `std::stoi`, so
+  `+w:2x`, `+w: 2` and `+w:+2` are fixed-size lists to it; quack-rs parsed the
+  size strictly, took them for leaves and skipped every check below them. A
+  fixed-size list → struct → dictionary layout the checks refuse under
+  `+w:2` crashed the process (SIGSEGV) under `+w:2x`. The size is now parsed
+  as `stoi` parses it.
+- **Arrow import: offsets below the top level were not checked for being
+  negative, and their sums could overflow** (a panic in a debug build).
+  Every node's length and offset must be non-negative, and a sum past
+  `i64::MAX` is refused.
+- **`ArrowArray::release` and `ArrowSchema::release` called a producer's
+  callback again** at drop when the callback did not null itself, as the
+  Arrow specification requires it to; they now null it themselves.
 - **`entry_point!` and `entry_point_v2!` aborted the process when an
   argument expression panicked.** `$policy` and `$register` were evaluated in
   the generated `extern "C"` function before the panic guard ("panic in a

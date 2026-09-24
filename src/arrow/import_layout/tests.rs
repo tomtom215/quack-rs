@@ -118,6 +118,21 @@ fn formats_map_to_the_kinds_duckdb_reads() {
     assert_eq!(kind_of("+vL", 1, None), Kind::ListView { wide: true });
     assert_eq!(kind_of("+w:4", 1, None), Kind::FixedList(4));
     assert_eq!(kind_of("+w:x", 1, None), Kind::Leaf);
+    // `DuckDB` parses the size with `std::stoi`.
+    for size in ["2x", " 2", "\t+2", "+2", "02", "2 "] {
+        assert_eq!(
+            kind_of(&format!("+w:{size}"), 1, None),
+            Kind::FixedList(2),
+            "{size:?}"
+        );
+    }
+    for size in ["", "-2", "x2", "+-2", "99999999999"] {
+        assert_eq!(
+            kind_of(&format!("+w:{size}"), 1, None),
+            Kind::Leaf,
+            "{size:?}"
+        );
+    }
     assert_eq!(kind_of("+r", 2, None), Kind::RunEnd);
     assert_eq!(kind_of("+us:0,1", 2, None), Kind::SparseUnion);
     assert_eq!(kind_of("+us:1,0", 2, None), Kind::RecodedUnion);
@@ -455,4 +470,43 @@ fn the_walk_continues_below_a_node_of_zero_rows() {
     assert_eq!(check_column(1, column(0), shape.clone()), Ok(()));
     let err = check_column(1, column(1), shape).expect_err("below a zero-row struct");
     assert!(err.contains("run-end-encoded array's values"), "{err}");
+}
+
+/// Offsets are summed down the tree; a sum past `i64::MAX` is refused rather
+/// than overflowing (a panic in a debug build, a wrong comparison in release).
+#[test]
+fn an_offset_sum_that_overflows_is_refused() {
+    let shape = of(Kind::Struct, vec![leaf()]);
+    // No data buffers: the check reads none for these nodes.
+    let column = Node::new(1, 1, 0, vec![vec![]]).with_children(vec![Node::new(
+        1,
+        i64::MAX,
+        0,
+        vec![vec![], vec![]],
+    )]);
+    let err = check_column(1, column, shape).expect_err("the sum overflows");
+    assert!(
+        err.contains("field 0: ") && err.contains("overflow"),
+        "{err}"
+    );
+}
+
+/// Only the record batch's own length and offset were checked for being
+/// negative; every node's are now.
+#[test]
+fn a_negative_offset_or_length_below_the_top_is_refused() {
+    let shape = of(Kind::Struct, vec![leaf()]);
+    for (length, offset) in [(1, -1), (-1, 0)] {
+        let column = Node::new(1, 0, 0, vec![vec![]]).with_children(vec![Node::new(
+            length,
+            offset,
+            0,
+            vec![vec![], vec![]],
+        )]);
+        let err = check_column(1, column, shape.clone()).expect_err("negative");
+        assert!(
+            err.contains(&format!("negative length ({length}) or offset ({offset})")),
+            "{err}"
+        );
+    }
 }

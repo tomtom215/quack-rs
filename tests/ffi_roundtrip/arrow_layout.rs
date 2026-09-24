@@ -717,3 +717,60 @@ fn a_geoarrow_column_of_more_than_2048_rows_is_refused() {
     assert_eq!(rendered.len(), 2048);
     assert_eq!(rendered[2047], "POINT (2047 0)");
 }
+
+/// `DuckDB` reads a fixed-size list's size with `std::stoi`, which stops at
+/// the first non-digit and skips leading blanks and a `+`: `+w:2x` is an
+/// `INTEGER[2]` to it. quack-rs parsed the size strictly, took `+w:2x` for a
+/// leaf and skipped the checks below it, so the fixed-size list → struct →
+/// dictionary layout refused under `+w:2` got through under `+w:2x`.
+#[test]
+fn a_fixed_size_list_format_is_read_as_duckdb_reads_it() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    let rendered = imports(
+        &con,
+        sch("+w:2x", vec![sch("i", vec![])]),
+        arr(2, 0, 0, vec![vec![]], vec![ints(&[1, 2, 3, 4], 0)]),
+        2,
+        "INTEGER[2]",
+    );
+    assert_eq!(rendered, ["[1, 2]", "[3, 4]"]);
+
+    let rows = 1500_usize;
+    for format in ["+w:2", "+w:2x", "+w: 2", "+w:+2"] {
+        let valid: Vec<bool> = (0..rows).map(|i| i % 3 != 0).collect();
+        let indices = arr(
+            (2 * rows) as i64,
+            0,
+            0,
+            vec![vec![], bytes(&vec![1_i32; 2 * rows])],
+            vec![],
+        );
+        let strukt = arr(
+            (2 * rows) as i64,
+            0,
+            0,
+            vec![vec![]],
+            vec![with_dict(indices, padded_dictionary())],
+        );
+        let list = arr(
+            rows as i64,
+            0,
+            rows.div_ceil(3) as i64,
+            vec![bitmap(&valid)],
+            vec![strukt],
+        );
+        refused(
+            import_one(
+                &con,
+                sch(
+                    format,
+                    vec![sch("+s", vec![dict_sch("i", sch("i", vec![]))])],
+                ),
+                list,
+                rows as i64,
+            ),
+            "2048-row mask",
+        );
+    }
+}

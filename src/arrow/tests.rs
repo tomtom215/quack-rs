@@ -401,3 +401,42 @@ fn a_converted_schema_remembers_its_column_count_and_shapes() {
     assert_eq!(converted.shapes()[2].children.len(), 2);
     assert!(format!("{converted:?}").contains("column_count"));
 }
+
+// A producer that breaks the rule above: its callback does not null `release`.
+unsafe extern "C" fn count_schema_release_leaving_it_set(schema: *mut RawArrowSchema) {
+    // SAFETY: as in `count_schema_release`.
+    unsafe { bump((*schema).private_data) };
+}
+
+unsafe extern "C" fn count_array_release_leaving_it_set(array: *mut RawArrowArray) {
+    // SAFETY: as in `count_array_release`.
+    unsafe { bump((*array).private_data) };
+}
+
+/// `release` runs the producer's callback once even when the callback does
+/// not null itself, so a later `release` or the drop cannot free twice.
+#[test]
+fn release_runs_once_even_if_the_callback_leaves_itself_set() {
+    static SCHEMA: AtomicUsize = AtomicUsize::new(0);
+    static ARRAY: AtomicUsize = AtomicUsize::new(0);
+    let mut raw = RawArrowSchema::empty();
+    raw.private_data = std::ptr::from_ref(&SCHEMA).cast_mut().cast();
+    raw.release = Some(count_schema_release_leaving_it_set);
+    // SAFETY: the callback frees nothing.
+    let mut schema = unsafe { ArrowSchema::from_raw(raw) };
+    schema.release();
+    assert!(schema.is_released());
+    schema.release();
+    drop(schema);
+    assert_eq!(SCHEMA.load(Ordering::SeqCst), 1);
+
+    let mut raw = RawArrowArray::empty();
+    raw.private_data = std::ptr::from_ref(&ARRAY).cast_mut().cast();
+    raw.release = Some(count_array_release_leaving_it_set);
+    // SAFETY: the callback frees nothing.
+    let mut array = unsafe { ArrowArray::from_raw(raw) };
+    array.release();
+    assert!(array.is_released());
+    drop(array);
+    assert_eq!(ARRAY.load(Ordering::SeqCst), 1);
+}

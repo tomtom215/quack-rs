@@ -98,9 +98,11 @@ impl ArrowSchema {
     /// Releases the schema now instead of at drop. Idempotent.
     pub fn release(&mut self) {
         if let Some(release) = self.0.release {
-            // SAFETY: `release` came from the producer that filled this record,
-            // and is called at most once — it nulls itself.
+            // SAFETY: `release` came from the producer that filled this record.
+            // It runs at most once: the specification has it null itself, and
+            // the line after it nulls it for a producer that does not.
             unsafe { release(&raw mut self.0) };
+            self.0.release = None;
         }
     }
 
