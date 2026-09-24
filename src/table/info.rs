@@ -112,6 +112,11 @@ impl BindInfo {
     ///
     /// The query then fails at bind time with that message, even if the bind
     /// callback goes on to succeed.
+    ///
+    /// Do not call this in the bind of a `COPY … FROM` reader (see
+    /// [`CopyFunctionBuilder::copy_from`][crate::copy_function::CopyFunctionBuilder::copy_from]):
+    /// there the target table fixes the columns, and a declared one widens
+    /// every chunk the `INSERT` receives past the table.
     pub fn add_result_column(&self, name: &str, type_id: TypeId) -> &Self {
         match LogicalType::try_new(type_id) {
             Ok(lt) => self.add_result_column_with_type(name, &lt),

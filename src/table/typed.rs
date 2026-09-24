@@ -176,7 +176,10 @@ impl TableFunctionBuilder {
     ///   [`BindInfo::add_result_column`][crate::table::BindInfo::add_result_column]
     ///   — at least one column. With `duckdb-1-5`, a bind that declares none
     ///   is reported as an ordinary bind error instead of the `INTERNAL Error`
-    ///   `DuckDB` raises for it.
+    ///   `DuckDB` raises for it. Used as a `COPY … FROM` reader, it must
+    ///   instead declare none and read the target table's columns
+    ///   ([`BindInfo::result_column_count`][crate::table::BindInfo::result_column_count]);
+    ///   with `duckdb-1-5` a column declared there fails the bind.
     /// - Read parameters (positional or named) from the [`BindInfo`].
     /// - Return the *template* scan state `S` on success, or an
     ///   [`ExtensionError`] on failure. Errors are propagated to `DuckDB` via

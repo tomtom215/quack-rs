@@ -47,6 +47,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 34 | Arrow export declares plain binary for BIGNUM/GEOMETRY but writes binary views under `arrow_output_version = '1.4'` | C program, below | such an export refused |
 | 35 | Window frames with `EXCLUDE` never destroy the aggregate states of their second segment-tree part | C program, below | documented; small states stored inline |
 | 36 | `duckdb_prepare` frees the statement it already stored in `*out` when an allocation fails while it builds the parameter-name map | C program (fault injection), below | documented; nothing an extension can do |
+| 37 | A `COPY … FROM` reader that calls `duckdb_bind_add_result_column` widens the `INSERT`'s chunks past the table; an assertion build invalidates the database | C program, below | refused for typed readers; documented for raw ones |
 
 ## Before filing
 
@@ -3959,3 +3960,128 @@ wrapper from a live one, and the error path it must take to read the message
 and free the statement is the one that touches it. `prepare`'s documentation
 and the book's known limitations describe the hazard, which every caller of
 the C API shares.
+
+## 37. A `COPY … FROM` reader that declares a result column widens the `INSERT`'s chunks past the table
+
+`duckdb.h` says a table function used by `duckdb_copy_function_set_copy_from_function`
+"should not define its own result columns using `duckdb_bind_add_result_column`",
+and nothing enforces it. `Binder::BindCopyFrom` (`bind_copy.cpp`) passes
+`bound_insert.expected_types`, the `INSERT`'s own list, to `CCopyFromBind`
+(`copy_function-c.cpp`), which hands it to the table function's bind as the
+bind's result types; `duckdb_bind_add_result_column` appends to that list. The
+`LogicalGet` is then built with one column per entry, so every chunk the
+`INSERT` receives is wider than the table. A release build drops the extra
+column; a build with assertions fails `chunk.ColumnCount() == types.size()`
+in `RowGroupCollection::Append` and invalidates the database.
+
+Environment: prebuilt `libduckdb` v1.5.0 to v1.5.5, x86_64 Linux (copy
+functions are not in the 1.4.x C API), and v1.5.5 built from source with
+`-DFORCE_ASSERT=1` (and AddressSanitizer). Build: `gcc -I<libduckdb dir>
+item37.c -L<libduckdb dir> -lduckdb -o item37`, then run with
+`LD_LIBRARY_PATH=<libduckdb dir>`.
+
+```c
+// A COPY ... FROM reader whose bind calls duckdb_bind_add_result_column.
+// CCopyFromBind passes the INSERT's own expected_types as the bind's result
+// types, so the added column widens every chunk the INSERT receives past the
+// table's width.
+// Build: gcc -I<libduckdb dir> item37.c -L<libduckdb dir> -lduckdb -o item37
+#include <stdio.h>
+#include <stdint.h>
+#include <duckdb.h>
+static int done;
+static void bind(duckdb_bind_info info) {
+    printf("result columns at bind: %llu\n",
+           (unsigned long long)duckdb_table_function_bind_get_result_column_count(info));
+    duckdb_logical_type t = duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);
+    duckdb_bind_add_result_column(info, "extra", t);
+    duckdb_destroy_logical_type(&t);
+    printf("result columns after add: %llu\n",
+           (unsigned long long)duckdb_table_function_bind_get_result_column_count(info));
+}
+static void init(duckdb_init_info info) { (void)info; }
+static void scan(duckdb_function_info info, duckdb_data_chunk out) {
+    (void)info;
+    if (done) { duckdb_data_chunk_set_size(out, 0); return; }
+    done = 1;
+    idx_t cols = duckdb_data_chunk_get_column_count(out);
+    printf("scan chunk columns: %llu\n", (unsigned long long)cols);
+    for (idx_t c = 0; c < cols; c++)
+        ((int64_t *)duckdb_vector_get_data(duckdb_data_chunk_get_vector(out, c)))[0] = 5 + (int64_t)c;
+    duckdb_data_chunk_set_size(out, 1);
+}
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    printf("Built with DuckDB %s\n", duckdb_library_version());
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    duckdb_table_function tf = duckdb_create_table_function();
+    duckdb_table_function_set_name(tf, "declares");
+    duckdb_logical_type v = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+    duckdb_table_function_add_parameter(tf, v);
+    duckdb_destroy_logical_type(&v);
+    duckdb_table_function_set_bind(tf, bind);
+    duckdb_table_function_set_init(tf, init);
+    duckdb_table_function_set_function(tf, scan);
+    duckdb_copy_function cf = duckdb_create_copy_function();
+    duckdb_copy_function_set_name(cf, "declares");
+    duckdb_copy_function_set_copy_from_function(cf, tf);
+    if (duckdb_register_copy_function(con, cf) != DuckDBSuccess) { printf("register failed\n"); return 1; }
+    duckdb_result r;
+    duckdb_query(con, "CREATE TABLE t(a BIGINT)", NULL);
+    if (duckdb_query(con, "COPY t FROM '/dev/null' (FORMAT declares)", &r) == DuckDBError) {
+        const char *e = duckdb_result_error(&r);
+        printf("COPY failed: %.170s\n", e);
+    } else {
+        printf("COPY ok\n");
+    }
+    duckdb_destroy_result(&r);
+    if (duckdb_query(con, "SELECT count(*), min(a) FROM t", &r) == DuckDBError) {
+        printf("SELECT failed: %.170s\n", duckdb_result_error(&r));
+    } else {
+        printf("rows %lld, a = %lld\n", (long long)duckdb_value_int64(&r, 0, 0), (long long)duckdb_value_int64(&r, 1, 0));
+    }
+    duckdb_destroy_result(&r);
+    duckdb_destroy_copy_function(&cf);
+    duckdb_destroy_table_function(&tf);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Observed on the six release builds, identical apart from the version line
+(`md5sum`):
+
+```text
+Built with DuckDB v1.5.5
+result columns at bind: 1
+result columns after add: 2
+scan chunk columns: 2
+COPY ok
+rows 1, a = 5
+```
+
+Observed on v1.5.5 built with assertions (messages cut at 170 characters by
+the program):
+
+```text
+Built with DuckDB v1.5.5
+result columns at bind: 1
+result columns after add: 2
+scan chunk columns: 2
+COPY failed: INTERNAL Error: Assertion triggered in file "/opt/duckdb-git-1.5.5/src/storage/table/row_group_collection.cpp" on line 539: chunk.ColumnCount() == types.size()
+
+Stack Tra
+SELECT failed: FATAL Error: Failed: database has been invalidated because of a previous fatal error. The database must be restarted prior to being used again.
+Original error: "Assertion
+```
+
+Expected: `duckdb_bind_add_result_column` refused (the bind fails with a
+message) when the bind already has its result types from `COPY … FROM`, or
+the columns ignored without touching the `INSERT`'s list.
+
+quack-rs mitigation: the typed table builder's bind notes the result-column
+count on entry, which is non-zero only under `COPY … FROM`, and fails the bind
+if the closure added a column. A raw `TableFunctionBuilder` bind is the
+caller's own callback; `CopyFunctionBuilder::copy_from` and
+`BindInfo::add_result_column` document the rule.
+`tests/ffi_roundtrip/copy_from_columns.rs` checks the refusal.

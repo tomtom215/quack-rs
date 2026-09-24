@@ -5979,3 +5979,7 @@ mod mock_parity;
 #[cfg(feature = "duckdb-1-5")]
 #[path = "ffi_roundtrip/nested_reserve.rs"]
 mod nested_reserve;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/copy_from_columns.rs"]
+mod copy_from_columns;

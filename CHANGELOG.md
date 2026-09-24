@@ -480,7 +480,7 @@ in each section below.
 - `OwnedConnection`'s `Send` justification said `DuckDB` forbids concurrent
   use of one connection; it serialises it. The comment now gives the real
   reasons, and a test queries and drops a connection on another thread.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 36, and item 16 gained
+- `docs/upstream-duckdb-reports.md` gained items 20 to 37, and item 16 gained
   a `HUGEINT` reproducer.
 
 #### Fourth audit
@@ -1038,6 +1038,13 @@ in each section below.
   and ARRAY element vector below that child, down to the next `LIST` or `MAP`:
   `DuckDB` 1.5.5 reallocates all of their data and validity buffers
   (`tests/ffi_roundtrip/nested_reserve.rs` measures which move).
+- **A typed table function used as a `COPY … FROM` reader could invalidate
+  the database.** Its bind declares columns, and under `COPY … FROM`
+  `DuckDB` appends each to the `INSERT`'s own expected types, so every chunk
+  reaching the table is too wide: a `DuckDB` built with assertions fails
+  `chunk.ColumnCount() == types.size()` and invalidates the database; a
+  release build drops the column. The typed bind now fails with a message
+  when a column is declared there (upstream item 37).
 
 #### Fourth audit
 

@@ -110,6 +110,12 @@ fn contain_payload(payload: Box<dyn std::any::Any + Send>) -> String {
 const NO_COLUMNS_MESSAGE: &str = "quack-rs: the typed table function's bind declared no result \
      columns; call BindInfo::add_result_column at least once";
 
+/// The bind error reported when a typed `COPY … FROM` reader declared a column.
+#[cfg(feature = "duckdb-1-5")]
+const COPY_FROM_COLUMNS_MESSAGE: &str = "quack-rs: a COPY ... FROM reader must not declare result \
+     columns: the target table fixes them. Read them with BindInfo::result_column_count and \
+     its siblings instead of calling add_result_column";
+
 /// Bind trampoline monomorphised per state type `S`.
 ///
 /// # Safety
@@ -128,9 +134,20 @@ unsafe extern "C" fn typed_bind_trampoline<S: Send + 'static>(info: duckdb_bind_
         // SAFETY: `raw` originated from `Box::into_raw(Box::new(TypedCallbacks::<S>))`
         // in `wire()`. It remains valid until DuckDB invokes `destroy_extra`.
         let cbs = unsafe { &*raw.cast::<TypedCallbacks<S>>() };
+        // A table function's bind starts with no result column, except under
+        // `COPY … FROM`, where `CCopyFromBind` passes the `INSERT`'s own
+        // expected types: a column added then widens the `INSERT`'s chunks
+        // past the table (upstream item 37).
+        #[cfg(feature = "duckdb-1-5")]
+        let columns_at_entry = bind_info.result_column_count();
 
         match (cbs.bind)(&bind_info) {
             Ok(factory) => {
+                #[cfg(feature = "duckdb-1-5")]
+                if columns_at_entry > 0 && bind_info.result_column_count() > columns_at_entry {
+                    bind_info.set_error(COPY_FROM_COLUMNS_MESSAGE);
+                    return;
+                }
                 // A bind that declares no column makes DuckDB raise an
                 // INTERNAL Error with a C++ stack trace
                 // (bind_table_function.cpp: "Table function must return at

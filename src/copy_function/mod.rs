@@ -191,7 +191,13 @@ impl CopyFunctionBuilder {
     ///   callback "should not define its own result columns using
     ///   `duckdb_bind_add_result_column`" and should read the expected schema
     ///   from [`BindInfo::result_column_count`][crate::table::BindInfo::result_column_count]
-    ///   and its siblings instead.
+    ///   and its siblings instead. Nothing enforces that: `DuckDB` appends a
+    ///   declared column to the `INSERT`'s own list of expected types, so its
+    ///   chunks are wider than the table. A release `DuckDB` drops the extra
+    ///   column; one built with assertions invalidates the database
+    ///   (`docs/upstream-duckdb-reports.md`, item 37). A typed reader
+    ///   ([`with_state`][crate::table::TableFunctionBuilder::with_state]) that
+    ///   declares one fails its bind; a raw bind callback must not.
     ///
     /// `DuckDB` copies the table function here, so the handle may be dropped
     /// immediately afterwards.
