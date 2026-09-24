@@ -253,13 +253,41 @@ impl AggregateFunctionBuilder {
         self
     }
 
+    /// Installs [`FfiState<T>`][crate::aggregate::FfiState]'s `state_size`,
+    /// `init` and `destructor` callbacks together, so they cannot describe
+    /// different states (setting them one by one, a size callback for one `T`
+    /// with an init callback for another wrote past `DuckDB`'s allocation).
+    /// `update`, `combine` and `finalize` still read the state through
+    /// `FfiState::<T>::with_state` / `with_state_mut` with the same `T`.
+    pub fn ffi_state<T: crate::aggregate::AggregateState>(self) -> Self {
+        self.state_size(crate::aggregate::FfiState::<T>::size_callback)
+            .init(crate::aggregate::FfiState::<T>::init_callback)
+            .destructor(crate::aggregate::FfiState::<T>::destroy_callback)
+    }
+
     /// Sets the `state_size` callback.
+    ///
+    /// The `state_size`, `init` and `destructor` callbacks must describe the
+    /// same state: `DuckDB` allocates what `state_size` returns and hands that
+    /// allocation to `init` and, later, to `destructor` and the other
+    /// callbacks. [`FfiState<A>`][crate::aggregate::FfiState]'s size callback
+    /// with `FfiState<B>`'s init callback writes a `B` into space sized for an
+    /// `A`, past the allocation when `B` is larger. Prefer
+    /// [`ffi_state`][Self::ffi_state], which installs all three for one `T`.
     pub fn state_size(mut self, f: StateSizeFn) -> Self {
         self.state_size = Some(f);
         self
     }
 
     /// Sets the `state_init` callback.
+    ///
+    /// The `state_size`, `init` and `destructor` callbacks must describe the
+    /// same state: `DuckDB` allocates what `state_size` returns and hands that
+    /// allocation to `init` and, later, to `destructor` and the other
+    /// callbacks. [`FfiState<A>`][crate::aggregate::FfiState]'s size callback
+    /// with `FfiState<B>`'s init callback writes a `B` into space sized for an
+    /// `A`, past the allocation when `B` is larger. Prefer
+    /// [`ffi_state`][Self::ffi_state], which installs all three for one `T`.
     pub fn init(mut self, f: StateInitFn) -> Self {
         self.init = Some(f);
         self

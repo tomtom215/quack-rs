@@ -43,7 +43,10 @@ impl AggregateFunctionBuilder {
     ///
     /// # Safety
     ///
-    /// `con` must be a valid, open `duckdb_connection`.
+    /// - `con` must be a valid, open `duckdb_connection`.
+    /// - The `state_size`, `init` and `destructor` callbacks, and the ones
+    ///   that read the state, must describe the same state; see
+    ///   [`ffi_state`][Self::ffi_state].
     #[allow(clippy::too_many_lines)]
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.

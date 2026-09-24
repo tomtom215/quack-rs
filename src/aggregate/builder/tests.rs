@@ -414,3 +414,26 @@ fn an_aggregate_overloads_extra_info_is_freed_once_when_the_set_is_rejected() {
     drop(unsafe { AggregateOverloadBuilder::new().extra_info(data(), Some(free_it)) });
     assert_eq!(FREED.load(Ordering::SeqCst), 3);
 }
+
+#[test]
+fn ffi_state_installs_all_three_state_callbacks_for_one_type() {
+    use crate::aggregate::callbacks::{DestroyFn, StateInitFn, StateSizeFn};
+    use crate::aggregate::{AggregateState, FfiState};
+    #[derive(Default)]
+    struct Wide(#[allow(dead_code, reason = "only its size matters")] [u64; 8]);
+    impl AggregateState for Wide {}
+
+    let size = FfiState::<Wide>::size_callback as StateSizeFn as usize;
+    let init = FfiState::<Wide>::init_callback as StateInitFn as usize;
+    let destroy = FfiState::<Wide>::destroy_callback as DestroyFn as usize;
+
+    let single = AggregateFunctionBuilder::new("f").ffi_state::<Wide>();
+    assert_eq!(single.state_size.map(|f| f as usize), Some(size));
+    assert_eq!(single.init.map(|f| f as usize), Some(init));
+    assert_eq!(single.destructor.map(|f| f as usize), Some(destroy));
+
+    let overload = AggregateOverloadBuilder::new().ffi_state::<Wide>();
+    assert_eq!(overload.state_size.map(|f| f as usize), Some(size));
+    assert_eq!(overload.init.map(|f| f as usize), Some(init));
+    assert_eq!(overload.destructor.map(|f| f as usize), Some(destroy));
+}

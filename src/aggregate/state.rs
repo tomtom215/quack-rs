@@ -185,9 +185,7 @@ pub trait AggregateState: Default + Send + Sync + 'static {}
 /// impl AggregateState for MyState {}
 ///
 /// // In your registration code:
-/// // .state_size(FfiState::<MyState>::size_callback)
-/// // .init(FfiState::<MyState>::init_callback)
-/// // .destructor(FfiState::<MyState>::destroy_callback)
+/// // .ffi_state::<MyState>()
 /// ```
 ///
 /// **Breaking** in 0.18.0: `FfiState<T>` was a two-word struct with a public

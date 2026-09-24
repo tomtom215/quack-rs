@@ -428,6 +428,15 @@ in each section below.
   the scalar bind info when it reported a panic. The two kinds no longer
   type-check in each other's slots (`compile_fail` doctests). A hand-written
   raw scalar callback changes its parameter type only.
+- `AggregateFunctionBuilder::ffi_state::<T>()` and
+  `AggregateOverloadBuilder::ffi_state::<T>()` install `FfiState<T>`'s
+  `state_size`, `init` and `destructor` callbacks together. Set one by one,
+  a size callback for one `T` with an init callback for a larger one wrote
+  past `DuckDB`'s allocation; the setters remain, and the aggregate
+  `register` methods and `Registrar` now state that pairing as a Safety
+  obligation (the `Registrar` docs said a call on the entry point's
+  connection was "always sound"). The README and prelude examples use the
+  new method; the prelude's had no destructor, so it leaked every state.
 - **Breaking: `ArrowConvertedSchema::from_raw` takes the Arrow schema** the
   handle was built from (`&ArrowSchema`) instead of a column count, and is no
   longer `const`: `data_chunk_from_arrow` checks each array against that

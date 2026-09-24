@@ -221,12 +221,10 @@ fn register(con: libduckdb_sys::duckdb_connection) -> ExtResult<()> {
         AggregateFunctionBuilder::try_new("word_count")?
             .param(TypeId::Varchar)
             .returns(TypeId::BigInt)
-            .state_size(FfiState::<WordCountState>::size_callback)
-            .init(FfiState::<WordCountState>::init_callback)
+            .ffi_state::<WordCountState>()
             .update(update)
             .combine(combine)
             .finalize(finalize)
-            .destructor(FfiState::<WordCountState>::destroy_callback)
             .register(con)?;
     }
     Ok(())

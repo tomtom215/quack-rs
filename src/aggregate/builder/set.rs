@@ -362,7 +362,10 @@ impl AggregateFunctionSetBuilder {
     ///
     /// # Safety
     ///
-    /// `con` must be a valid, open `duckdb_connection`.
+    /// - `con` must be a valid, open `duckdb_connection`.
+    /// - In each overload, the `state_size`, `init` and `destructor` callbacks,
+    ///   and the ones that read the state, must describe the same state; see
+    ///   [`AggregateOverloadBuilder::ffi_state`].
     #[allow(clippy::too_many_lines)]
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         // Validate everything before allocating any DuckDB handle. The checks

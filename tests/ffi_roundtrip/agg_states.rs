@@ -82,12 +82,12 @@ fn every_state_of_a_parallel_grouped_aggregate_is_dropped() {
             .expect("name")
             .param(TypeId::BigInt)
             .returns(TypeId::BigInt)
-            .state_size(FfiState::<CountedSum>::size_callback)
-            .init(FfiState::<CountedSum>::init_callback)
+            // All three state callbacks for one type; the live-state count
+            // below also checks that the destructor is among them.
+            .ffi_state::<CountedSum>()
             .update(counted_update)
             .combine(counted_combine)
             .finalize(counted_finalize)
-            .destructor(FfiState::<CountedSum>::destroy_callback)
             .register(fx.con())
             .expect("register counted_sum");
     }
