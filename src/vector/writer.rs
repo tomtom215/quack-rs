@@ -251,6 +251,12 @@ impl VectorWriter {
         let lower = value as u64;
         #[allow(clippy::cast_possible_truncation)]
         let upper = (value >> 64) as i64;
+        // SAFETY: `base` and `base + 8` are the `lower`/`upper` halves of row
+        // `idx`'s 16-byte `duckdb_hugeint` ({uint64_t lower; int64_t upper},
+        // duckdb.h) in `self.data`, the flat data buffer the constructor's contract
+        // keeps valid. Both 8-byte writes stay in bounds because `idx` is within
+        // the vector's capacity (`# Safety` clause 1) and a HUGEINT vector (clause
+        // 2) stores 16 bytes per row; `write_unaligned` needs no alignment.
         unsafe {
             core::ptr::write_unaligned(base.cast::<u64>(), lower);
             core::ptr::write_unaligned(base.add(8).cast::<i64>(), upper);
@@ -399,6 +405,13 @@ impl VectorWriter {
     ) {
         // SAFETY: INTERVAL = { months: i32 @ 0, days: i32 @ 4, micros: i64 @ 8 } = 16 bytes.
         let base = unsafe { self.data.add(idx * 16) };
+        // SAFETY: `base`, `base + 4` and `base + 8` are the `months`, `days` and
+        // `micros` fields of row `idx`'s 16-byte `duckdb_interval` ({int32_t;
+        // int32_t; int64_t}, duckdb.h) in `self.data`, the flat data buffer the
+        // constructor's contract keeps valid. All writes stay in bounds because
+        // `idx` is within the vector's capacity (`# Safety` clause 1) and an
+        // INTERVAL vector (clause 2) stores 16 bytes per row; `write_unaligned`
+        // needs no alignment.
         unsafe {
             core::ptr::write_unaligned(base.cast::<i32>(), value.months);
             core::ptr::write_unaligned(base.add(4).cast::<i32>(), value.days);
@@ -503,6 +516,12 @@ impl VectorWriter {
         let lower = value as u64;
         #[allow(clippy::cast_possible_truncation)]
         let upper = (value >> 64) as u64;
+        // SAFETY: `base` and `base + 8` are the `lower`/`upper` halves of row
+        // `idx`'s 16-byte `duckdb_uhugeint` ({uint64_t lower; uint64_t upper},
+        // duckdb.h) in `self.data`, the flat data buffer the constructor's contract
+        // keeps valid. Both 8-byte writes stay in bounds because `idx` is within
+        // the vector's capacity (`# Safety` clause 1) and a UHUGEINT vector (clause
+        // 2) stores 16 bytes per row; `write_unaligned` needs no alignment.
         unsafe {
             core::ptr::write_unaligned(base.cast::<u64>(), lower);
             core::ptr::write_unaligned(base.add(8).cast::<u64>(), upper);

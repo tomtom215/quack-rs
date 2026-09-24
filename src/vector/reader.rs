@@ -87,6 +87,10 @@ impl VectorReader {
     pub unsafe fn from_vector(vector: duckdb_vector, row_count: usize) -> Self {
         // SAFETY: vector is valid per caller's contract.
         let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
+        // SAFETY: `duckdb_vector_get_validity` returns null for a null handle and
+        // otherwise reads the vector's validity mask (data_chunk-c.cpp); `# Safety`
+        // clause 1 makes `vector` valid. A null result (all-valid mask, or a
+        // non-flat, non-constant vector) is handled by `is_valid`.
         let validity = unsafe { duckdb_vector_get_validity(vector) };
         Self {
             data,
@@ -266,7 +270,13 @@ impl VectorReader {
         // SAFETY: HUGEINT is stored as { lower: u64, upper: i64 } = 16 bytes.
         // DuckDB lays this out in little-endian order: lower at offset 0, upper at offset 8.
         let base = unsafe { self.data.add(idx * 16) };
+        // SAFETY: `base` is row `idx`'s 16-byte `duckdb_hugeint` ({lower: u64,
+        // upper: i64}, duckdb.h) in the vector's data buffer, in bounds because
+        // `idx < self.row_count()` (`# Safety` clause 1) and a HUGEINT column
+        // (clause 2) stores 16 bytes per row; `read_unaligned` needs no alignment.
         let lower = unsafe { core::ptr::read_unaligned(base.cast::<u64>()) };
+        // SAFETY: `base + 8 .. base + 16` is the `upper` half of the same in-bounds
+        // 16-byte value; `read_unaligned` needs no alignment.
         let upper = unsafe { core::ptr::read_unaligned(base.add(8).cast::<i64>()) };
         // Widening casts: u64→i128 and i64→i128 are always lossless.
         #[allow(clippy::cast_lossless)]
@@ -287,7 +297,13 @@ impl VectorReader {
     pub const unsafe fn read_u128(&self, idx: usize) -> u128 {
         // SAFETY: UHUGEINT = { lower: u64, upper: u64 } = 16 bytes.
         let base = unsafe { self.data.add(idx * 16) };
+        // SAFETY: `base` is row `idx`'s 16-byte `duckdb_uhugeint` ({lower: u64,
+        // upper: u64}, duckdb.h) in the vector's data buffer, in bounds because
+        // `idx < self.row_count()` (`# Safety` clause 1) and a UHUGEINT column
+        // (clause 2) stores 16 bytes per row; `read_unaligned` needs no alignment.
         let lower = unsafe { core::ptr::read_unaligned(base.cast::<u64>()) };
+        // SAFETY: `base + 8 .. base + 16` is the `upper` half of the same in-bounds
+        // 16-byte value; `read_unaligned` needs no alignment.
         let upper = unsafe { core::ptr::read_unaligned(base.add(8).cast::<u64>()) };
         ((upper as u128) << 64) | (lower as u128)
     }

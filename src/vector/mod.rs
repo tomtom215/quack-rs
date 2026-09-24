@@ -60,6 +60,14 @@ pub fn vector_size() -> u64 {
 pub unsafe fn vector_get_column_type(
     vector: libduckdb_sys::duckdb_vector,
 ) -> crate::types::LogicalType {
+    // SAFETY: `duckdb_vector_get_column_type` returns null for a null handle and
+    // otherwise reads `v->GetType()` (data_chunk-c.cpp); the `# Safety` contract
+    // makes `vector` a valid `duckdb_vector`.
     let raw = unsafe { libduckdb_sys::duckdb_vector_get_column_type(vector) };
+    // SAFETY: `from_raw` needs a non-null handle that it alone will destroy. For
+    // a valid vector `raw` is `new LogicalType(v->GetType())`
+    // (data_chunk-c.cpp), a fresh allocation that duckdb.h says must be
+    // destroyed with `duckdb_destroy_logical_type`, which `LogicalType`'s `Drop`
+    // does; `raw` is not used again (and `from_raw` asserts it is non-null).
     unsafe { crate::types::LogicalType::from_raw(raw) }
 }
