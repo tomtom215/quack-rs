@@ -351,6 +351,10 @@ impl ScalarFunctionBuilder {
     /// - `destroy` must not unwind: it is an `extern "C" fn`, so a panic
     ///   escaping it aborts the process. Wrap a body that can panic in
     ///   [`catch_ffi_panic`][crate::callback::catch_ffi_panic].
+    /// - The pointee must be the type the installed function reads it as. A
+    ///   closure-built function reads its own `extra_info`, so the builder
+    ///   inside a [`TypedScalarFunctionBuilder`][crate::scalar::TypedScalarFunctionBuilder]
+    ///   must not be given another.
     ///
     /// The typical pattern is to box your data:
     /// `Box::into_raw(Box::new(my_data)).cast()`.

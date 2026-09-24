@@ -988,6 +988,13 @@ in each section below.
   on before `with_state`, but not on the raw builder it returns, and
   `SELECT b` then returned column `a`'s value. Registering such a builder
   (and `MockRegistrar::register_table`) now fails.
+- **A typed table function's callbacks could be replaced after `build()`**
+  with the raw builder's safe `bind`, `init`, `local_init` and `scan`
+  setters (or `extra_info`), after which the typed trampolines read one
+  type's data as another's: an init callback setting a `u64` as init data
+  made the scan lock it as a `Mutex<S>`. Registering such a builder (and
+  `MockRegistrar::register_table`) now fails; both `extra_info` Safety
+  sections now say the pointee must be what the installed callbacks read.
 - **A `row` closure that panicked after its first value left the appender
   unpoisoned**, so finishing the row by hand committed a row half written by
   the closure that panicked. It is poisoned, as an error there poisons it.

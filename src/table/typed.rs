@@ -94,7 +94,8 @@
 //! [`build`][TypedTableFunctionBuilder::build] returns an error if it was
 //! switched on on the raw builder before `with_state` / `with_bind_init`, and
 //! registering the builder `build` returns fails if it was switched on
-//! afterwards.
+//! afterwards. So does replacing its `bind`, `init`, `local_init`, `scan` or
+//! `extra_info`: the typed callbacks read one another's data.
 //! With pushdown on,
 //! `DuckDB` hands the scan a chunk holding only the *projected* columns, in
 //! projection order, so `chunk.writer(0)` is no longer "the first declared
@@ -466,6 +467,32 @@ mod tests {
             .projection_pushdown(true);
         // SAFETY: as above.
         unsafe { registrar.register_table(raw) }.expect("raw pushdown");
+    }
+
+    #[test]
+    fn replacing_a_typed_functions_callbacks_after_build_is_refused() {
+        use crate::connection::Registrar;
+        use crate::testing::MockRegistrar;
+        let built = || {
+            TableFunctionBuilder::new("demo")
+                .with_state::<DummyState, _>(|_bind| Ok(DummyState { _rows: 10 }))
+                .scan(|_state, _chunk| Ok(()))
+                .build()
+                .expect("build")
+        };
+        let registrar = MockRegistrar::new();
+        for (what, builder) in [
+            ("bind", built().bind(noop_bind)),
+            ("init", built().init(noop_init)),
+            ("local_init", built().local_init(noop_init)),
+            ("scan", built().scan(noop_scan)),
+        ] {
+            // SAFETY: `MockRegistrar` never calls `DuckDB`.
+            let err = unsafe { registrar.register_table(builder) }.expect_err(what);
+            assert!(err.as_str().contains(what), "{what}: {err}");
+        }
+        // SAFETY: as above.
+        unsafe { registrar.register_table(built()) }.expect("untouched");
     }
 
     #[test]
