@@ -59,9 +59,13 @@ outcome the guards exist to prevent.)
 
 quack-rs requires **Rust ≥ 1.86.0**.
 
-This MSRV is required for:
-- `&raw mut expr` syntax for creating raw pointers without references (sound and stable since 1.84.0)
-- `const extern fn` support
+1.86.0 is a ceiling as much as a floor. DuckDB's community-extension build
+workflow (`_extension_distribution.yml` in `duckdb/extension-ci-tools`) pins
+Rust **1.86.0** for its WebAssembly jobs, so an extension — and therefore
+quack-rs — must build on it; CI's `msrv-vs-duckdb-ci` job re-derives that pin
+and fails if the MSRV rises above it. The `msrv` job checks the crate with
+`cargo +1.86.0 check`, and the benchmark dev-dependency (`criterion`) needs
+1.86 as well.
 
 Install or update via:
 

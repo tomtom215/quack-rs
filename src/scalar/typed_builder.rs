@@ -30,7 +30,7 @@ use libduckdb_sys::{
 use crate::data_chunk::DataChunk;
 use crate::error::ExtensionError;
 use crate::scalar::builder::ScalarFunctionBuilder;
-use crate::types::{LogicalType, NullHandling, TypeId};
+use crate::types::{NullHandling, TypeId};
 use crate::vector::{vector_get_column_type, VectorWriter};
 
 /// The per-chunk executor a typed closure is compiled into.
@@ -207,6 +207,14 @@ impl TypedScalarFunctionBuilder {
     ///
     /// The public `map*` constructors on [`ScalarFunctionBuilder`] are thin
     /// wrappers over this.
+    ///
+    /// Makes no `DuckDB` call, so a typed function can be built — and its
+    /// name inspected — without a live dispatch table. The type ids are not
+    /// checked here: every [`ScalarValue`][crate::scalar::ScalarValue] and
+    /// [`ScalarOut`][crate::scalar::ScalarOut] implementation in this crate
+    /// names a primitive type, and an out-of-crate implementation naming a
+    /// composite one is rejected by [`ScalarFunctionBuilder::register`] before
+    /// it allocates anything.
     pub(super) fn from_exec(
         name: &str,
         params: &[TypeId],
@@ -214,13 +222,11 @@ impl TypedScalarFunctionBuilder {
         null_handling: NullHandling,
         exec: ChunkExec,
     ) -> Result<Self, ExtensionError> {
-        let mut builder = ScalarFunctionBuilder::try_new(name)?;
-        for (i, id) in params.iter().enumerate() {
-            LogicalType::check_slot(*id, &format!("scalar function parameter {i}"))?;
-            builder = builder.param(*id);
-        }
-        LogicalType::check_slot(ret, "scalar function return type")?;
-        builder = builder.returns(ret).null_handling(null_handling);
+        let builder = params
+            .iter()
+            .fold(ScalarFunctionBuilder::try_new(name)?, |b, id| b.param(*id))
+            .returns(ret)
+            .null_handling(null_handling);
 
         let typed = TypedScalar {
             params: params.to_vec(),
@@ -256,8 +262,11 @@ impl TypedScalarFunctionBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `ExtensionError` if `DuckDB` reports a registration failure
-    /// (for example, a function with this name and signature already exists).
+    /// Returns `ExtensionError` if a scalar function with this name and
+    /// parameter types already exists (which `DuckDB` would silently replace
+    /// or make ambiguous), or if `DuckDB` reports a registration failure — for
+    /// example, the name belongs to an aggregate function or a macro. See
+    /// [`ScalarFunctionBuilder::register`] for the collision rules.
     ///
     /// # Safety
     ///
@@ -298,11 +307,8 @@ mod tests {
 
     #[test]
     fn name_is_the_one_the_builder_was_created_with() {
-        // Built directly: `from_exec` checks each slot by creating a
-        // `LogicalType`, which needs a live DuckDB.
-        let builder = TypedScalarFunctionBuilder {
-            inner: ScalarFunctionBuilder::new("double_it"),
-        };
+        let builder = ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)
+            .expect("builds without a live DuckDB");
         assert_eq!(builder.name(), "double_it");
         // A stability change keeps the name.
         assert_eq!(builder.volatile().name(), "double_it");

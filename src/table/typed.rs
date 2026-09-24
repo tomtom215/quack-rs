@@ -90,7 +90,10 @@
 //!
 //! # No projection pushdown
 //!
-//! The typed builder does not offer `projection_pushdown`. With pushdown on,
+//! The typed builder does not offer `projection_pushdown`, and
+//! [`build`][TypedTableFunctionBuilder::build] returns an error if it was
+//! switched on on the raw builder before `with_state` / `with_bind_init`.
+//! With pushdown on,
 //! `DuckDB` hands the scan a chunk holding only the *projected* columns, in
 //! projection order, so `chunk.writer(0)` is no longer "the first declared
 //! column" — and the scan closure has no way to learn the mapping. A scan
@@ -167,7 +170,10 @@ impl TableFunctionBuilder {
     /// statements). It must:
     ///
     /// - Declare the output schema via
-    ///   [`BindInfo::add_result_column`][crate::table::BindInfo::add_result_column].
+    ///   [`BindInfo::add_result_column`][crate::table::BindInfo::add_result_column]
+    ///   — at least one column. With `duckdb-1-5`, a bind that declares none
+    ///   is reported as an ordinary bind error instead of the `INTERNAL Error`
+    ///   `DuckDB` raises for it.
     /// - Read parameters (positional or named) from the [`BindInfo`].
     /// - Return the *template* scan state `S` on success, or an
     ///   [`ExtensionError`] on failure. Errors are propagated to `DuckDB` via
@@ -293,7 +299,8 @@ impl<S: Send + 'static> TypedTableFunctionBuilder<S> {
     /// Returning with chunk size zero signals end-of-stream to `DuckDB`.
     ///
     /// Column `i` of the chunk is the `i`-th column declared in `bind`: the
-    /// typed builder never enables projection pushdown.
+    /// typed builder never enables projection pushdown (and
+    /// [`build`][Self::build] refuses a raw builder that had it enabled).
     ///
     /// Errors are reported through `duckdb_function_set_error` and terminate
     /// the scan.
@@ -349,9 +356,25 @@ impl<S: Send + 'static> TypedTableFunctionBuilder<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error if [`scan`][Self::scan] was never called. The bind
-    /// closure is always set at construction time.
+    /// Returns an error if [`scan`][Self::scan] was never called (the bind
+    /// closure is always set at construction time), or if
+    /// [`projection_pushdown`][TableFunctionBuilder::projection_pushdown] was
+    /// enabled on the raw builder before it was turned into a typed one. The
+    /// typed scan closure writes columns in declaration order and cannot learn
+    /// the projection, so with pushdown on `SELECT b` would receive column
+    /// `a`'s values. Switching it off silently would change configuration the
+    /// caller asked for, so it is an error instead.
     pub fn build(self) -> Result<TableFunctionBuilder, ExtensionError> {
+        if self.inner.projection_pushdown_enabled() {
+            return Err(ExtensionError::new(format!(
+                "typed table function '{}': projection_pushdown was enabled on the builder \
+                 before with_state/with_bind_init. The typed scan closure writes columns in \
+                 declaration order and cannot see the projection, so pushdown would put one \
+                 column's values under another's name. Remove projection_pushdown(true), or \
+                 use the raw TableFunctionBuilder with InitInfo::projected_column_index.",
+                self.inner.name()
+            )));
+        }
         let bind = self
             .bind
             .ok_or_else(|| ExtensionError::new("typed table function: bind closure not set"))?;
@@ -432,7 +455,23 @@ mod tests {
             .with_state::<DummyState, _>(|_| Ok(DummyState { _rows: 0 }))
             .param(TypeId::Varchar)
             .named_param("path", TypeId::Varchar);
-        assert_eq!(typed.name(), "demo");
+        // The inner builder's fields are private to `builder`; its `Debug`
+        // output is the observable record of what the passthroughs stored.
+        let inner = format!("{:?}", typed.inner);
+        assert!(inner.contains("params: [Varchar]"), "{inner}");
+        assert!(inner.contains("named_params: 1"), "{inner}");
+    }
+
+    #[test]
+    fn build_refuses_projection_pushdown_enabled_beforehand() {
+        let typed = TableFunctionBuilder::new("demo")
+            .projection_pushdown(true)
+            .with_state::<DummyState, _>(|_| Ok(DummyState { _rows: 0 }))
+            .scan(|_state, _chunk| Ok(()));
+        match typed.build() {
+            Err(e) => assert!(e.as_str().contains("projection_pushdown"), "{e}"),
+            Ok(_) => panic!("projection pushdown must be refused"),
+        }
     }
 
     /// The factories are what make repeated `init` calls against one bind

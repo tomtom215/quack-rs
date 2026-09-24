@@ -3,11 +3,21 @@
 #
 # Continuous integration — enforces all quality gates.
 #
-# Jobs: check, test (default + bundled + bundled-prebuilt + duckdb-1-5), wasm,
-#       clippy, clippy-beta, fmt, doc, msrv, bench-compile, example-check,
-#       scaffold-compile, scaffold-e2e, symbol-check, extension-load,
-#       abi-table, abi-guard, msrv-vs-duckdb-ci, publish-dry-run,
-#       security, osv-scan, nightly.
+# Jobs: check, test, test-bundled, test-bundled-prebuilt, test-duckdb-1-5,
+#       wasm, clippy, clippy-beta, fmt, doc, msrv, dependency-floor,
+#       bench-compile, example-check, scaffold-compile, symbol-check,
+#       abi-table, platform-table, spdx-list, autoload-entries, book,
+#       msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
+#       abi-guard-layout, publish-dry-run, security, osv-scan, nightly, miri,
+#       leak-check, asan, semver, fuzz.
+#
+# `dtolnay/rust-toolchain` is pinned, in every workflow, to d103106 -- a commit
+# on the action's `master` branch (2026-09-03). The action's per-toolchain
+# branches (`stable`, `nightly`, ...) are regenerated, so a commit taken from
+# one of them stops being reachable from any ref and can be garbage-collected;
+# the previous pin, 631a55b, was such a commit. On `master` the `toolchain:`
+# input is required, so every use states it. The pin fixes the action's code,
+# not the Rust version: `toolchain: stable` still installs the current stable.
 
 name: CI
 
@@ -51,7 +61,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --all-targets
 
@@ -67,7 +79,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --all-targets
       # `--all-targets` expands to --lib --bins --tests --benches --examples,
@@ -89,7 +103,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --all-targets --features bundled-test
 
@@ -106,7 +122,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Download pre-built libduckdb
         # The version is DERIVED from Cargo.lock, not written here. It used to
@@ -130,6 +148,16 @@ jobs:
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
         run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
+      # Every Rust block in book/src and README.md, compiled as a doctest
+      # against this checkout (and run, unless marked `no_run`). Before this,
+      # no CI job compiled the book's examples. (`mdbook test -L target/...`
+      # is not a substitute: it passes no `--extern`, so under edition 2021
+      # every `use quack_rs::...` is unresolved.)
+      - name: Book and README code blocks
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: cargo test --doc --manifest-path book/doctest/Cargo.toml
       # `tests/ffi_roundtrip.rs` is `#![cfg(feature = "_duckdb-testing")]`, so
       # the plain `clippy` job compiles it away to nothing and never lints the
       # largest test file in the repo. Lint it where it is actually built.
@@ -152,7 +180,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --all-targets --features duckdb-1-5
       - run: cargo test --all-targets --features duckdb-1-5
@@ -172,8 +202,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
+          toolchain: stable
           targets: wasm32-unknown-emscripten
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # DuckDB-WASM target. quack-rs's own lib must compile for wasm32; in
@@ -191,8 +222,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
+          toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --all-targets -- -D warnings
@@ -209,7 +241,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # beta
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
           toolchain: beta
           components: clippy
@@ -244,8 +276,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
+          toolchain: stable
           components: rustfmt
       - run: cargo fmt -- --check
 
@@ -257,7 +290,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Use --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
       # duckdb-1-5) instead of --all-features
@@ -265,6 +300,11 @@ jobs:
       # not be compiled yet when the build script runs (build scripts only
       # wait for [build-dependencies], not [dependencies]).
       - run: cargo doc --no-deps --features duckdb-1-5-4
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+      # A dependent crate documents quack-rs with *its* feature set, usually
+      # the default one, where a link to a feature-gated item is broken.
+      - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
       # The book's changelog page is a mirror of CHANGELOG.md. Kept by hand it
@@ -294,7 +334,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
           toolchain: "1.86.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -305,6 +345,37 @@ jobs:
       # MSRV gate was inert. This matches `cargo +1.86.0 check` in CONTRIBUTING.
       - run: cargo +1.86.0 check
 
+  dependency-floor:
+    # Cargo.toml declares `duckdb` / `libduckdb-sys` `>=1.4.4, <2`, but every
+    # other job builds the newest release Cargo.lock pins. This one resolves the
+    # declared floor and runs the library tests there, so the lower bound is a
+    # tested claim rather than a hope.
+    #
+    # On stable, not 1.86.0: at the 1.4.4 floor the resolver picks `icu` 2.3
+    # crates (libduckdb-sys 1.4.4 -> reqwest -> url -> idna -> icu_normalizer),
+    # which need rustc 1.88, so `cargo +1.86.0` fails there before reaching
+    # quack-rs. The MSRV
+    # job above covers 1.86.0 with the locked dependencies; this covers the
+    # dependency floor with a current compiler.
+    name: Dependency floor (duckdb / libduckdb-sys 1.4.4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Resolve the declared floor
+        run: |
+          set -euo pipefail
+          cargo update -p duckdb --precise 1.4.4
+          cargo update -p libduckdb-sys --precise 1.4.4
+          grep -A1 -E '^name = "(duckdb|libduckdb-sys)"$' Cargo.lock
+      - run: cargo test --lib
+
   bench-compile:
     name: Benchmark (compile check)
     runs-on: ubuntu-latest
@@ -313,7 +384,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo bench --no-run
 
@@ -329,7 +402,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --manifest-path examples/hello-ext/Cargo.toml --all-targets
       - name: Clippy (Linux only)
@@ -345,7 +420,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Verify scaffold output compiles
         run: cargo test scaffold_generated_code_compiles -- --nocapture
@@ -362,7 +439,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
@@ -462,6 +541,55 @@ jobs:
           fi
           exit "${status:-0}"
 
+  autoload-entries:
+    name: Catalog autoload names (vs every supported DuckDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # `catalog` refuses Type/Collation lookups of names that make DuckDB
+      # autoload an extension, because a failed autoload inside
+      # duckdb_catalog_get_entry aborts the process. The names are copied
+      # from DuckDB's extension_entries.hpp; this fails when a release adds
+      # one the list lacks.
+      - name: Verify src/catalog.rs covers every supported release
+        # Exit 2 is the documented "could not check" code (upstream
+        # unreachable) and must not be read as drift.
+        run: |
+          python3 scripts/check-autoload-entries.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
+
+  book:
+    name: Book builds (mdBook)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
+      # docs.yml builds the book only when main is pushed, so a broken page
+      # was found after merge. Same mdBook version as docs.yml.
+      - name: Install mdBook 0.4.40
+        env:
+          RUSTFLAGS: ""
+        run: cargo install mdbook --locked --version "0.4.40"
+      - run: mdbook build
+      # mdBook checks neither `#anchor`s nor docs.rs links. Rustdoc with the
+      # docs.rs feature set (Cargo.toml [package.metadata.docs.rs]) gives the
+      # pages the docs.rs links must resolve to once released.
+      - run: cargo doc --no-deps --features duckdb-1-5-4
+      - name: Book and README links resolve
+        run: python3 scripts/check-book-links.py
+
   msrv-vs-duckdb-ci:
     name: MSRV vs DuckDB's extension CI
     runs-on: ubuntu-latest
@@ -508,7 +636,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
@@ -575,6 +705,12 @@ jobs:
             exit 1
           }
           echo "Extension loaded and produced correct results"
+      - name: Every documented hello-ext check
+        # examples/hello-ext/README.md documents 31 statements and their
+        # results; this used to run two of them. The script runs all of
+        # examples/hello-ext/sql_checks.txt and also fails if the README's
+        # statements drift from that fixture.
+        run: python3 scripts/check-hello-ext.py --duckdb ./duckdb --extension /tmp/ext/hello_ext.duckdb_extension
 
   scaffold-e2e:
     name: Scaffold end-to-end (build, stamp, load, query)
@@ -584,7 +720,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install DuckDB CLI
         run: |
@@ -658,14 +796,20 @@ jobs:
           cargo clippy --all-targets -- -D warnings
 
   abi-guard:
-    name: ABI guard rejects a cross-version unstable build
+    # What this job proves is narrow: a build whose QUACK_RS_TARGET_DUCKDB_VERSION
+    # contradicts its own bindings is refused (AbiCheck::DeclaredVersionMismatch),
+    # whatever DuckDB loads it. It never reaches the layout comparison itself --
+    # `abi-guard-layout` below is the job that exercises LayoutMismatch.
+    name: ABI guard refuses a build whose declared DuckDB version contradicts its bindings
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install DuckDB CLI
         run: |
@@ -777,6 +921,105 @@ jobs:
             exit 1
           fi
 
+  abi-guard-layout:
+    # The real failure the ABI guard exists for: a `duckdb-1-5` extension built
+    # the ordinary way -- no QUACK_RS_TARGET_DUCKDB_VERSION, against the
+    # libduckdb-sys this repository pins in Cargo.lock -- and stamped C_STRUCT,
+    # so DuckDB's own metadata check lets it into any release. Loaded into a
+    # DuckDB whose duckdb_ext_api_v1 has a different slot count it must be
+    # refused with the LayoutMismatch diagnostic and register nothing; loaded
+    # into the DuckDB its bindings came from it must work. The engines are
+    # pinned releases, not `latest`, so the expected verdict never shifts.
+    name: ABI guard refuses a real layout mismatch (and accepts the matching DuckDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build and stamp a duckdb-1-5 demo against the pinned bindings
+        run: |
+          set -euo pipefail
+          # Deliberately unset: this build declares nothing, like most do.
+          unset QUACK_RS_TARGET_DUCKDB_VERSION
+          sys=$(awk '/^name = "libduckdb-sys"$/ { getline; sub(/^version = "/, ""); sub(/"$/, ""); print; exit }' Cargo.lock)
+          echo "libduckdb-sys pinned in Cargo.lock: $sys (DuckDB $(scripts/duckdb-version-from-lock.sh))"
+          cargo build --release --bin append_metadata
+          mkdir -p /tmp/abi_layout/src
+          cat > /tmp/abi_layout/Cargo.toml <<EOF
+          [package]
+          name = "abi_layout"
+          version = "0.1.0"
+          edition = "2021"
+
+          [lib]
+          crate-type = ["cdylib"]
+
+          [dependencies]
+          quack-rs = { path = "$(pwd)", features = ["duckdb-1-5"] }
+          libduckdb-sys = { version = "=$sys", features = ["loadable-extension"] }
+
+          [profile.release]
+          opt-level = 1
+          panic = "unwind"
+
+          [workspace]
+          EOF
+          cat > /tmp/abi_layout/src/lib.rs <<'EOF'
+          use quack_rs::client_context::ClientContext;
+          use quack_rs::error::ExtensionError;
+          use quack_rs::prelude::*;
+
+          fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
+              // duckdb_connection_get_client_context lives past the stable prefix.
+              let ctx = unsafe { ClientContext::from_connection(con) }?;
+              let _ = ctx.connection_id();
+              unsafe { SqlMacro::scalar("abi_layout_ok", &["x"], "x + 1")?.register(con)? };
+              Ok(())
+          }
+
+          quack_rs::entry_point!(abi_layout_init_c_api, register);
+          EOF
+          (cd /tmp/abi_layout && cargo build --release)
+          ./target/release/append_metadata \
+            /tmp/abi_layout/target/release/libabi_layout.so \
+            /tmp/abi_layout/abi_layout.duckdb_extension \
+            --abi-type C_STRUCT --extension-version v0.1.0 \
+            --duckdb-version v1.2.0 --platform linux_amd64
+      - name: Refused by DuckDB v1.5.0 and v1.4.4, loaded by the matching release
+        run: |
+          set -euo pipefail
+          matching=$(scripts/duckdb-version-from-lock.sh)
+          probe() {  # <duckdb-version> <expected: refuse|load>
+            local v=$1 expect=$2 dir=/tmp/duckdb-$1
+            mkdir -p "$dir"
+            curl -fsSL "https://github.com/duckdb/duckdb/releases/download/$v/duckdb_cli-linux-amd64.zip" -o "$dir/cli.zip"
+            unzip -o -q "$dir/cli.zip" -d "$dir"
+            echo "--- $("$dir/duckdb" --version), expecting $expect ---"
+            "$dir/duckdb" -unsigned -csv -noheader \
+              -c "LOAD '/tmp/abi_layout/abi_layout.duckdb_extension'; SELECT abi_layout_ok(1);" \
+              > "$dir/out.log" 2>&1 || true
+            cat "$dir/out.log"
+            if [ "$expect" = refuse ]; then
+              # The LayoutMismatch arm of AbiCheck::error_message.
+              grep -q "DuckDB C extension API layout mismatch" "$dir/out.log" || {
+                echo "::error::DuckDB $v: expected the layout-mismatch refusal"; exit 1; }
+              if grep -qx '2' "$dir/out.log"; then
+                echo "::error::DuckDB $v: the refused extension still registered abi_layout_ok"; exit 1
+              fi
+            else
+              grep -qx '2' "$dir/out.log" || {
+                echo "::error::DuckDB $v: the extension should have loaded and answered 2"; exit 1; }
+            fi
+          }
+          probe v1.5.0 refuse
+          probe v1.4.4 refuse
+          probe "$matching" load
+
   publish-dry-run:
     name: Publish dry-run
     runs-on: ubuntu-latest
@@ -785,7 +1028,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo publish --dry-run
         run: cargo publish --dry-run --allow-dirty
@@ -824,7 +1069,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
           toolchain: stable
       - name: Install osv-scanner (pinned, checksum-verified)
@@ -854,7 +1099,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -872,7 +1117,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
           toolchain: nightly
           components: miri, rust-src
@@ -919,7 +1164,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
           toolchain: nightly
           components: rust-src
@@ -986,7 +1231,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
           toolchain: nightly
           components: rust-src
@@ -1024,7 +1269,9 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # quack-rs is an SDK: its public API *is* the product, and a downstream
       # extension that stops compiling on a patch release is a worse outcome
@@ -1039,7 +1286,38 @@ jobs:
           RUSTFLAGS: ""
         run: cargo install cargo-semver-checks --locked --version "0.50.0"
       - name: Check the public API against the last published release
-        run: cargo semver-checks check-release --features duckdb-1-5-4
+        # cargo-semver-checks derives what to enforce from the version bump.
+        # When the bump is itself breaking (a major bump, or a minor bump of a
+        # 0.x crate -- it prints "(major change)"), everything is allowed and it
+        # runs 0 checks; that is correct for a breaking release, and the next
+        # step lists what broke. For any other bump, "0 checks" means nothing
+        # was verified, so it fails here rather than passing silently.
+        run: |
+          set -euo pipefail
+          cargo semver-checks check-release --features duckdb-1-5-4 2>&1 | tee /tmp/semver.log
+          if grep -q "(major change)" /tmp/semver.log; then
+            echo "::notice::the version bump is breaking, so the published-baseline comparison enforces nothing; review the origin/main comparison for the changelog"
+          elif grep -qE "Checked \[[^]]*\] 0 checks" /tmp/semver.log; then
+            echo "::error::cargo-semver-checks ran 0 checks against the published baseline for a non-breaking version bump"
+            exit 1
+          fi
+      - name: List public API changes since origin/main (informational)
+        # Not a gate: 0.x releases may break, and the published-baseline step
+        # already decides pass/fail. `--release-type patch` makes every lint run
+        # whatever the two versions are, so each breaking change on this branch
+        # is listed -- in the log and the job summary -- for the CHANGELOG
+        # review. Needs the full history (`fetch-depth: 0` above).
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          cargo semver-checks check-release --baseline-rev origin/main --release-type patch \
+            --features duckdb-1-5-4 2>&1 | tee /tmp/semver-main.log
+          {
+            echo "### Public API changes since origin/main"
+            echo '```'
+            tail -n 200 /tmp/semver-main.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   fuzz:
     name: Fuzz (smoke)
@@ -1049,7 +1327,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

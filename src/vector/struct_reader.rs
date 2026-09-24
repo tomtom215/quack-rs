@@ -92,6 +92,10 @@ impl StructReader {
     #[must_use]
     #[inline]
     pub unsafe fn child_vector(&self, field_idx: usize) -> duckdb_vector {
+        // SAFETY: `StructVector::get_child` needs a live STRUCT vector and a field
+        // index below its field count. `new`'s contract makes `self.vector` a valid
+        // STRUCT vector with `field_count` fields for this reader's lifetime, and
+        // this function's `# Safety` clause requires `field_idx < field_count`.
         unsafe { StructVector::get_child(self.vector, field_idx) }
     }
 
@@ -106,6 +110,10 @@ impl StructReader {
     /// Panics if `field_idx >= field_count`.
     #[inline]
     pub unsafe fn is_valid(&self, row: usize, field_idx: usize) -> bool {
+        // SAFETY: `VectorReader::is_valid` needs `row` below the reader's row count.
+        // `self.fields[field_idx]` (bounds-checked) was built by `new` over STRUCT
+        // child `field_idx` with the parent's `row_count`, and this function's
+        // `# Safety` clause requires `row` below that count.
         unsafe { self.fields[field_idx].is_valid(row) }
     }
 
@@ -121,6 +129,11 @@ impl StructReader {
     /// Panics if `field_idx >= field_count`.
     #[inline]
     pub unsafe fn read_bool(&self, row: usize, field_idx: usize) -> bool {
+        // SAFETY: `VectorReader::read_bool` needs `row` below its row count and a
+        // BOOLEAN column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a BOOLEAN field.
         unsafe { self.fields[field_idx].read_bool(row) }
     }
 
@@ -136,6 +149,14 @@ impl StructReader {
     /// Panics if `field_idx >= field_count`.
     #[inline]
     pub unsafe fn read_str(&self, row: usize, field_idx: usize) -> &str {
+        // SAFETY: `VectorReader::read_str` needs `row` below its row count and a
+        // VARCHAR column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a VARCHAR field.
+        // The result borrows `&self`, and the string heap it may point into belongs
+        // to the child vector, which `new`'s contract keeps valid for the reader's
+        // lifetime.
         unsafe { self.fields[field_idx].read_str(row) }
     }
 
@@ -146,6 +167,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_i8(&self, row: usize, field_idx: usize) -> i8 {
+        // SAFETY: `VectorReader::read_i8` needs `row` below its row count and a
+        // TINYINT column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a TINYINT field.
         unsafe { self.fields[field_idx].read_i8(row) }
     }
 
@@ -156,6 +182,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_i16(&self, row: usize, field_idx: usize) -> i16 {
+        // SAFETY: `VectorReader::read_i16` needs `row` below its row count and a
+        // SMALLINT column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a SMALLINT field.
         unsafe { self.fields[field_idx].read_i16(row) }
     }
 
@@ -166,6 +197,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_i32(&self, row: usize, field_idx: usize) -> i32 {
+        // SAFETY: `VectorReader::read_i32` needs `row` below its row count and a
+        // INTEGER column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a INTEGER field.
         unsafe { self.fields[field_idx].read_i32(row) }
     }
 
@@ -176,6 +212,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_i64(&self, row: usize, field_idx: usize) -> i64 {
+        // SAFETY: `VectorReader::read_i64` needs `row` below its row count and a
+        // BIGINT column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a BIGINT field.
         unsafe { self.fields[field_idx].read_i64(row) }
     }
 
@@ -186,6 +227,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_i128(&self, row: usize, field_idx: usize) -> i128 {
+        // SAFETY: `VectorReader::read_i128` needs `row` below its row count and a
+        // HUGEINT column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a HUGEINT field.
         unsafe { self.fields[field_idx].read_i128(row) }
     }
 
@@ -196,6 +242,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_u8(&self, row: usize, field_idx: usize) -> u8 {
+        // SAFETY: `VectorReader::read_u8` needs `row` below its row count and a
+        // UTINYINT column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a UTINYINT field.
         unsafe { self.fields[field_idx].read_u8(row) }
     }
 
@@ -206,6 +257,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_u16(&self, row: usize, field_idx: usize) -> u16 {
+        // SAFETY: `VectorReader::read_u16` needs `row` below its row count and a
+        // USMALLINT column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a USMALLINT field.
         unsafe { self.fields[field_idx].read_u16(row) }
     }
 
@@ -216,6 +272,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_u32(&self, row: usize, field_idx: usize) -> u32 {
+        // SAFETY: `VectorReader::read_u32` needs `row` below its row count and a
+        // UINTEGER column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a UINTEGER field.
         unsafe { self.fields[field_idx].read_u32(row) }
     }
 
@@ -226,6 +287,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_u64(&self, row: usize, field_idx: usize) -> u64 {
+        // SAFETY: `VectorReader::read_u64` needs `row` below its row count and a
+        // UBIGINT column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a UBIGINT field.
         unsafe { self.fields[field_idx].read_u64(row) }
     }
 
@@ -236,6 +302,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_f32(&self, row: usize, field_idx: usize) -> f32 {
+        // SAFETY: `VectorReader::read_f32` needs `row` below its row count and a
+        // FLOAT column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a FLOAT field.
         unsafe { self.fields[field_idx].read_f32(row) }
     }
 
@@ -246,6 +317,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_f64(&self, row: usize, field_idx: usize) -> f64 {
+        // SAFETY: `VectorReader::read_f64` needs `row` below its row count and a
+        // DOUBLE column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a DOUBLE field.
         unsafe { self.fields[field_idx].read_f64(row) }
     }
 
@@ -256,6 +332,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_interval(&self, row: usize, field_idx: usize) -> DuckInterval {
+        // SAFETY: `VectorReader::read_interval` needs `row` below its row count and a
+        // INTERVAL column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a INTERVAL field.
         unsafe { self.fields[field_idx].read_interval(row) }
     }
 
@@ -266,6 +347,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_date(&self, row: usize, field_idx: usize) -> i32 {
+        // SAFETY: `VectorReader::read_date` needs `row` below its row count and a
+        // DATE column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a DATE field.
         unsafe { self.fields[field_idx].read_date(row) }
     }
 
@@ -276,6 +362,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_timestamp(&self, row: usize, field_idx: usize) -> i64 {
+        // SAFETY: `VectorReader::read_timestamp` needs `row` below its row count and a
+        // TIMESTAMP column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a TIMESTAMP field.
         unsafe { self.fields[field_idx].read_timestamp(row) }
     }
 
@@ -286,6 +377,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_time(&self, row: usize, field_idx: usize) -> i64 {
+        // SAFETY: `VectorReader::read_time` needs `row` below its row count and a
+        // TIME column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a TIME field.
         unsafe { self.fields[field_idx].read_time(row) }
     }
 
@@ -296,6 +392,14 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_blob(&self, row: usize, field_idx: usize) -> &[u8] {
+        // SAFETY: `VectorReader::read_blob` needs `row` below its row count and a
+        // BLOB column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a BLOB field.
+        // The result borrows `&self`, and the string heap it may point into belongs
+        // to the child vector, which `new`'s contract keeps valid for the reader's
+        // lifetime.
         unsafe { self.fields[field_idx].read_blob(row) }
     }
 
@@ -309,6 +413,11 @@ impl StructReader {
     /// See [`read_bool`][Self::read_bool].
     #[inline]
     pub unsafe fn read_uuid(&self, row: usize, field_idx: usize) -> u128 {
+        // SAFETY: `VectorReader::read_uuid` needs `row` below its row count and a
+        // UUID column. `self.fields[field_idx]` (bounds-checked) was built by `new`
+        // over STRUCT child `field_idx` with the parent's `row_count`, and the
+        // `# Safety` contract (`read_bool`'s, for the field's own type) gives
+        // `row` below that count and a UUID field.
         unsafe { self.fields[field_idx].read_uuid(row) }
     }
 }

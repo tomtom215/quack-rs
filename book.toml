@@ -9,6 +9,10 @@ src = "book/src"
 build-dir = "book/book"
 create-missing = false
 
+# Blocks are compiled as edition-2021 doctests (see book/doctest/).
+[rust]
+edition = "2021"
+
 [output.html]
 site-url = "https://quack-rs.com/"
 git-repository-url = "https://github.com/tomtom215/quack-rs"

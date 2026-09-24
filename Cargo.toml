@@ -95,14 +95,8 @@ bundled-test-prebuilt = ["_duckdb-testing"]
 ## `bundled-test-prebuilt` (pre-built libduckdb); those two differ only in
 ## whether `duckdb/bundled` is also turned on.
 _duckdb-testing = ["dep:duckdb"]
-## Enables wrappers for DuckDB 1.5.0 C API additions (e.g. scalar function local
-## states, config option registration). Requires `libduckdb-sys >= 1.5.0` to be
-## resolved by Cargo. Has no effect when compiled against libduckdb-sys 1.4.x.
-##
 ## Requires `libduckdb-sys >= 1.10500.0` (DuckDB 1.5.0+) to be resolved by Cargo.
 ## Enables wrappers for new C Extension API surfaces:
-## - `TypeId::TimeNs` column type
-## - `TypeId::Any`, `TypeId::Varint`, `TypeId::SqlNull`, `TypeId::IntegerLiteral`, `TypeId::StringLiteral` column types
 ## - Scalar function bind/init lifecycle and local state
 ## - Config option registration (extension-defined settings)
 ## - Copy function support (custom `COPY TO` handlers)
@@ -233,11 +227,16 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 return_self_not_must_use = "allow"
+# Every `unsafe` block in library code states why it is sound. Test code is
+# exempt (`cfg_attr(test, ...)` in src/lib.rs and each tests/*.rs crate root):
+# its invariants are the test's own setup.
+undocumented_unsafe_blocks = "warn"
 
 [package.metadata.docs.rs]
-# Render the full API on docs.rs — including the `duckdb-1-5` / `duckdb-1-5-3`
-# feature-gated modules and `TypeId` variants — so the documentation (and the
-# README's docs.rs links) resolve. Without this, docs.rs builds the empty default
-# feature set and every feature-gated item would be missing. `bundled-test` is
+# Render the full API on docs.rs — including everything gated behind
+# `duckdb-1-5`, `duckdb-1-5-3` and `duckdb-1-5-4` (which implies the other two)
+# — so the documentation (and the book's and README's docs.rs links) resolve.
+# Without this, docs.rs builds the empty default feature set and every
+# feature-gated item would be missing. `bundled-test` is
 # intentionally excluded (it compiles DuckDB from source).
 features = ["duckdb-1-5-4"]

@@ -27,10 +27,9 @@
 //! // }
 //! ```
 //!
-//! # Estimated impact
-//!
-//! Eliminates ~120 raw `duckdb_struct_vector_get_child` calls across typical
-//! extensions, reducing unsafe surface area by ~30%.
+//! It fetches every field's child vector once, up front, so a loop writing
+//! `n` rows of `k` fields makes `k` `duckdb_struct_vector_get_child` calls
+//! instead of one per write.
 
 use libduckdb_sys::duckdb_vector;
 
@@ -183,7 +182,9 @@ impl StructWriter {
     ///
     /// # Panics
     ///
-    /// Panics if `field_idx >= field_count`.
+    /// Panics if `field_idx >= field_count`, or if `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN] (see
+    /// [`VectorWriter::write_varchar`][crate::vector::VectorWriter::write_varchar]).
     #[inline]
     pub unsafe fn write_varchar(&mut self, row: usize, field_idx: usize, value: &str) {
         // SAFETY: caller guarantees row is in bounds and field type is VARCHAR.
@@ -202,6 +203,12 @@ impl StructWriter {
     /// Panics if `field_idx >= field_count`.
     #[inline]
     pub unsafe fn write_i8(&mut self, row: usize, field_idx: usize, value: i8) {
+        // SAFETY: `VectorWriter::write_i8` needs `row` within the vector's capacity
+        // and a TINYINT vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a TINYINT field.
         unsafe { self.fields[field_idx].write_i8(row, value) };
     }
 
@@ -212,6 +219,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_i16(&mut self, row: usize, field_idx: usize, value: i16) {
+        // SAFETY: `VectorWriter::write_i16` needs `row` within the vector's capacity
+        // and a SMALLINT vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a SMALLINT field.
         unsafe { self.fields[field_idx].write_i16(row, value) };
     }
 
@@ -222,6 +235,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_i32(&mut self, row: usize, field_idx: usize, value: i32) {
+        // SAFETY: `VectorWriter::write_i32` needs `row` within the vector's capacity
+        // and a INTEGER vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a INTEGER field.
         unsafe { self.fields[field_idx].write_i32(row, value) };
     }
 
@@ -232,6 +251,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_i64(&mut self, row: usize, field_idx: usize, value: i64) {
+        // SAFETY: `VectorWriter::write_i64` needs `row` within the vector's capacity
+        // and a BIGINT vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a BIGINT field.
         unsafe { self.fields[field_idx].write_i64(row, value) };
     }
 
@@ -242,6 +267,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_i128(&mut self, row: usize, field_idx: usize, value: i128) {
+        // SAFETY: `VectorWriter::write_i128` needs `row` within the vector's capacity
+        // and a HUGEINT vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a HUGEINT field.
         unsafe { self.fields[field_idx].write_i128(row, value) };
     }
 
@@ -252,6 +283,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_u8(&mut self, row: usize, field_idx: usize, value: u8) {
+        // SAFETY: `VectorWriter::write_u8` needs `row` within the vector's capacity
+        // and a UTINYINT vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a UTINYINT field.
         unsafe { self.fields[field_idx].write_u8(row, value) };
     }
 
@@ -262,6 +299,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_u16(&mut self, row: usize, field_idx: usize, value: u16) {
+        // SAFETY: `VectorWriter::write_u16` needs `row` within the vector's capacity
+        // and a USMALLINT vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a USMALLINT field.
         unsafe { self.fields[field_idx].write_u16(row, value) };
     }
 
@@ -272,6 +315,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_u32(&mut self, row: usize, field_idx: usize, value: u32) {
+        // SAFETY: `VectorWriter::write_u32` needs `row` within the vector's capacity
+        // and a UINTEGER vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a UINTEGER field.
         unsafe { self.fields[field_idx].write_u32(row, value) };
     }
 
@@ -282,6 +331,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_u64(&mut self, row: usize, field_idx: usize, value: u64) {
+        // SAFETY: `VectorWriter::write_u64` needs `row` within the vector's capacity
+        // and a UBIGINT vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a UBIGINT field.
         unsafe { self.fields[field_idx].write_u64(row, value) };
     }
 
@@ -292,6 +347,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_f32(&mut self, row: usize, field_idx: usize, value: f32) {
+        // SAFETY: `VectorWriter::write_f32` needs `row` within the vector's capacity
+        // and a FLOAT vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a FLOAT field.
         unsafe { self.fields[field_idx].write_f32(row, value) };
     }
 
@@ -302,6 +363,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_f64(&mut self, row: usize, field_idx: usize, value: f64) {
+        // SAFETY: `VectorWriter::write_f64` needs `row` within the vector's capacity
+        // and a DOUBLE vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a DOUBLE field.
         unsafe { self.fields[field_idx].write_f64(row, value) };
     }
 
@@ -312,6 +379,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_interval(&mut self, row: usize, field_idx: usize, value: DuckInterval) {
+        // SAFETY: `VectorWriter::write_interval` needs `row` within the vector's capacity
+        // and a INTERVAL vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a INTERVAL field.
         unsafe { self.fields[field_idx].write_interval(row, value) };
     }
 
@@ -320,8 +393,19 @@ impl StructWriter {
     /// # Safety
     ///
     /// See [`write_i8`][Self::write_i8].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `field_idx >= field_count`, or if `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN].
     #[inline]
     pub unsafe fn write_blob(&mut self, row: usize, field_idx: usize, value: &[u8]) {
+        // SAFETY: `VectorWriter::write_blob` needs `row` within the vector's capacity
+        // and a BLOB vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a BLOB field.
         unsafe { self.fields[field_idx].write_blob(row, value) };
     }
 
@@ -335,6 +419,12 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_uuid(&mut self, row: usize, field_idx: usize, value: u128) {
+        // SAFETY: `VectorWriter::write_uuid` needs `row` within the vector's capacity
+        // and a UUID vector. `self.fields[field_idx]` (bounds-checked) wraps STRUCT
+        // child `field_idx`, which DuckDB allocates with the parent's capacity
+        // (`VectorStructBuffer` constructor, vector_buffer.cpp) and which `new`'s
+        // contract keeps valid; the `# Safety` contract (`write_i8`'s, for the field's
+        // own type) gives `row` within that capacity and a UUID field.
         unsafe { self.fields[field_idx].write_uuid(row, value) };
     }
 
@@ -347,6 +437,8 @@ impl StructWriter {
     /// See [`write_varchar`][Self::write_varchar].
     #[inline]
     pub unsafe fn write_str(&mut self, row: usize, field_idx: usize, value: &str) {
+        // SAFETY: this function's contract is `write_varchar`'s (`row` within
+        // capacity, a VARCHAR field), which is exactly what `write_varchar` needs.
         unsafe { self.write_varchar(row, field_idx, value) };
     }
 
@@ -359,6 +451,9 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_date(&mut self, row: usize, field_idx: usize, days_since_epoch: i32) {
+        // SAFETY: `write_i32` needs `row` within capacity and a field of 4-byte
+        // `int32` rows. A DATE field (this function's contract) is `duckdb_date
+        // {int32_t days}` (duckdb.h), the same physical layout as INTEGER.
         unsafe { self.write_i32(row, field_idx, days_since_epoch) };
     }
 
@@ -376,6 +471,10 @@ impl StructWriter {
         field_idx: usize,
         micros_since_epoch: i64,
     ) {
+        // SAFETY: `write_i64` needs `row` within capacity and a field of 8-byte
+        // `int64` rows. A TIMESTAMP field (this function's contract) is
+        // `duckdb_timestamp {int64_t micros}` (duckdb.h), the same physical layout
+        // as BIGINT.
         unsafe { self.write_i64(row, field_idx, micros_since_epoch) };
     }
 
@@ -388,6 +487,9 @@ impl StructWriter {
     /// See [`write_i8`][Self::write_i8].
     #[inline]
     pub unsafe fn write_time(&mut self, row: usize, field_idx: usize, micros_since_midnight: i64) {
+        // SAFETY: `write_i64` needs `row` within capacity and a field of 8-byte
+        // `int64` rows. A TIME field (this function's contract) is `duckdb_time
+        // {int64_t micros}` (duckdb.h), the same physical layout as BIGINT.
         unsafe { self.write_i64(row, field_idx, micros_since_midnight) };
     }
 

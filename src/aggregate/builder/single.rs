@@ -277,10 +277,13 @@ impl AggregateFunctionBuilder {
 
     /// Sets the NULL handling behaviour for this aggregate function.
     ///
-    /// By default, `DuckDB` skips NULL rows in aggregate functions
-    /// ([`DefaultNullHandling`][NullHandling::DefaultNullHandling]).
-    /// Set to [`SpecialNullHandling`][NullHandling::SpecialNullHandling] to receive
-    /// NULL values in your `update` callback.
+    /// This does **not** decide whether `update` sees NULL rows: it receives
+    /// every row under either setting, so an aggregate that ignores NULLs must
+    /// skip rows whose
+    /// [`VectorReader::is_valid`][crate::vector::VectorReader::is_valid] is
+    /// false. [`SpecialNullHandling`][NullHandling::SpecialNullHandling]
+    /// declares that the aggregate may return non-NULL for NULL input; see
+    /// [`NullHandling`] for the one planner decision that reads it.
     pub const fn null_handling(mut self, handling: NullHandling) -> Self {
         self.null_handling = handling;
         self
@@ -315,6 +318,15 @@ impl AggregateFunctionBuilder {
     /// - The return type was not set.
     /// - Any required callback was not set.
     /// - `DuckDB` reports a registration failure.
+    ///
+    /// # Name collisions
+    ///
+    /// An aggregate can neither extend nor replace an existing catalog entry:
+    /// registration fails if the name is already taken by any scalar function,
+    /// aggregate function or macro, built-in or not — including an earlier
+    /// registration of this same aggregate. (`DuckDB` registers with
+    /// `ALTER_ON_CONFLICT`, and turning the create into an alter is not
+    /// implemented for aggregates: `CreateInfo::GetAlterInfo` throws.)
     ///
     /// # Safety
     ///

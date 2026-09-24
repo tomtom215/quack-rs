@@ -524,10 +524,10 @@ fn an_unquoted_value_without_a_comment_is_kept_whole() {
 // rejection or a silently wrong parse, with the extension it was observed in
 // named so the claim can be re-checked.
 
-/// `docs.extended_description` is free-form prose in 42 of 43 published
-/// extensions. A flat line scan treats a `version:` or `license:` line inside
-/// that prose as a real field and silently overwrites the extension's own
-/// metadata.
+/// `docs.extended_description` is free-form prose in 319 of the 346 published
+/// descriptors (community-extensions `5ae7df8`). A flat line scan treats a
+/// `version:` or `license:` line inside that prose as a real field and silently
+/// overwrites the extension's own metadata.
 #[test]
 fn prose_in_the_docs_section_is_not_metadata() {
     let yml = "extension:\n\
@@ -592,8 +592,8 @@ fn single_quoted_date_versions_parse() {
 
 /// Observed in `chsql`, `substrait`, `magic` and eleven others: a quoted
 /// `excluded_platforms` with a trailing semicolon, and `windows_amd64_rtools`,
-/// which is not in the distribution matrix but is excluded by 14 of 43
-/// published extensions.
+/// which is not in the distribution matrix but is excluded by 84 of the 346
+/// published descriptors (community-extensions `5ae7df8`).
 #[test]
 fn quoted_excluded_platforms_with_trailing_semicolon_parse() {
     let yml = "extension:\n\
@@ -614,7 +614,7 @@ fn quoted_excluded_platforms_with_trailing_semicolon_parse() {
         desc.excluded_platforms,
         "windows_amd64_rtools;windows_amd64_mingw;windows_amd64;"
     );
-    // No `requires_toolchains`: only 14 of 43 published extensions set it.
+    // No `requires_toolchains`: only 143 of 346 published descriptors set it.
     assert_eq!(desc.requires_toolchains, "");
 }
 

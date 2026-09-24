@@ -10,8 +10,9 @@ lifecycle callbacks: **bind**, **init**, and **scan**.
    API that hides bind/init/scan trampolines behind safe Rust closures and gives every
    execution a fresh, typed scan state built from what `bind` produced.
 2. **`TableFunctionBuilder`** — the underlying raw builder used by `TypedTableFunctionBuilder`
-   internally. Reach for it when you need fine-grained control: `local_init`-driven
-   parallel scans, projection pushdown with column filtering, or callback shapes that
+   internally. Reach for it when you need fine-grained control: parallel scans
+   (`InitInfo::set_max_threads` above 1, usually with `local_init` for per-thread
+   state), projection pushdown with column filtering, or callback shapes that
    don't fit the "produce state in bind, mutate it in scan" model.
 
 Both builders are backed by the helper types `BindInfo`, `InitInfo`, `FunctionInfo`,
@@ -139,9 +140,17 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
   calling `InitInfo::set_max_threads(1)` internally.
 - The typed builder does **not** offer projection pushdown: with pushdown on, the
   scan's chunk holds only the projected columns and a closure written against the
-  declared schema would write the wrong column. Use the raw builder for pushdown.
-- Extensions that need multi-worker parallelism (`local_init` + thread-local buffers)
-  should use the raw [`TableFunctionBuilder`](#builder-api) directly.
+  declared schema would write the wrong column. `build()` returns an error if
+  `projection_pushdown(true)` was set on the raw builder before `with_state` /
+  `with_bind_init`. Use the raw builder for pushdown.
+- The bind closure must declare at least one column. With `duckdb-1-5`, a bind
+  that declares none is reported as an ordinary bind error; DuckDB itself raises an
+  `INTERNAL Error` with a C++ stack trace for it (and does so for a raw bind
+  callback, which quack-rs cannot check after it returns — call `set_error`
+  yourself).
+- Extensions that need multi-worker parallelism (`set_max_threads` above 1, with
+  `local_init` + thread-local buffers) should use the raw
+  [`TableFunctionBuilder`](#builder-api) directly.
 - `TypedTableFunctionBuilder::build()` returns a fully configured
   `TableFunctionBuilder`, so you can still pass it through any `Registrar`
   — including `MockRegistrar` for unit tests.
@@ -149,6 +158,12 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
 ## Builder API
 
 ```rust
+# use libduckdb_sys::{duckdb_bind_info, duckdb_connection, duckdb_data_chunk,
+#     duckdb_function_info, duckdb_init_info};
+# unsafe extern "C" fn my_bind_callback(_: duckdb_bind_info) {}
+# unsafe extern "C" fn my_init_callback(_: duckdb_init_info) {}
+# unsafe extern "C" fn my_scan_callback(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 use quack_rs::table::{TableFunctionBuilder, BindInfo, FfiBindData, FfiInitData};
 use quack_rs::types::TypeId;
 
@@ -158,6 +173,8 @@ TableFunctionBuilder::new("my_function")
     .init(my_init_callback)
     .scan(my_scan_callback)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 Output columns are declared inside the bind callback using `BindInfo::add_result_column`,
@@ -173,12 +190,15 @@ read from several threads at once, so `FfiBindData::set` requires `T: Send + Syn
 Use `FfiBindData<T>` to allocate it safely:
 
 ```rust
+# use libduckdb_sys::duckdb_bind_info;
+# use quack_rs::table::{BindInfo, FfiBindData};
 struct MyBindData {
     limit: i64,
 }
 
 unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
-    let n = unsafe { duckdb_get_int64(duckdb_bind_get_parameter(info, 0)) };
+    // `get_parameter_value` returns an RAII `Value`; a NULL argument reads as the default.
+    let n = unsafe { BindInfo::new(info).get_parameter_value(0) }.as_i64_or(0);
     unsafe { FfiBindData::<MyBindData>::set(info, MyBindData { limit: n }) };
 }
 ```
@@ -192,6 +212,8 @@ Per-scan state (e.g., a current row index) uses `FfiInitData<T>` (`T: Send + Syn
 since concurrent scan threads share it):
 
 ```rust
+# use libduckdb_sys::duckdb_init_info;
+# use quack_rs::table::FfiInitData;
 struct MyScanState {
     pos: i64,
 }
@@ -207,6 +229,13 @@ The `hello-ext` example registers `generate_series_ext(n BIGINT)` which emits
 integers `0 .. n-1`. See `examples/hello-ext/src/lib.rs` for the full source.
 
 ```rust
+# use libduckdb_sys::{duckdb_bind_info, duckdb_connection, duckdb_data_chunk,
+#     duckdb_function_info, duckdb_init_info, DuckDBSuccess};
+# use quack_rs::data_chunk::DataChunk;
+# use quack_rs::table::{BindInfo, FfiBindData, FfiInitData, TableFunctionBuilder};
+# use quack_rs::types::TypeId;
+# struct GsBindData { total: i64 }
+# struct GsScanState { pos: i64 }
 // Bind: extract `n`, register one output column
 unsafe extern "C" fn gs_bind(info: duckdb_bind_info) {
     let bind_info = unsafe { BindInfo::new(info) };
@@ -225,13 +254,18 @@ unsafe extern "C" fn gs_init(info: duckdb_init_info) {
 
 // Scan: emit a batch of rows using DataChunk wrapper
 unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chunk) {
-    let bind = unsafe { FfiBindData::<GsBindData>::get_from_function(info) }.unwrap();
-    let state = unsafe { FfiInitData::<GsScanState>::get_mut(info) }.unwrap();
+    let chunk = unsafe { DataChunk::from_raw(output) };
+    // Never unwrap in a callback: a missing state ends the scan instead.
+    let bind = unsafe { FfiBindData::<GsBindData>::get_from_function(info) };
+    let state = unsafe { FfiInitData::<GsScanState>::get_mut(info) };
+    let (Some(bind), Some(state)) = (bind, state) else {
+        unsafe { chunk.set_size(0) };
+        return;
+    };
 
     let remaining = bind.total - state.pos;
     let batch = remaining.min(2048).max(0) as usize;
 
-    let chunk = unsafe { DataChunk::from_raw(output) };
     let mut writer = unsafe { chunk.writer(0) };
     for i in 0..batch {
         unsafe { writer.write_i64(i, state.pos + i as i64) };
@@ -239,17 +273,47 @@ unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chu
     unsafe { chunk.set_size(batch) };
     state.pos += batch as i64;
 }
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+# let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+# unsafe {
+#     assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), DuckDBSuccess);
+#     assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), DuckDBSuccess);
+#     TableFunctionBuilder::new("generate_series_ext")
+#         .param(TypeId::BigInt)
+#         .bind(gs_bind)
+#         .init(gs_init)
+#         .scan(gs_scan)
+#         .register(con)
+#         .unwrap();
+# }
+# let sum = |sql: &str| -> i64 {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
+#     unsafe { chunk.reader(0).read_i64(0) }
+# };
+# assert_eq!(sum("SELECT sum(value)::BIGINT FROM generate_series_ext(5)"), 10);
+# assert_eq!(sum("SELECT count(*) FROM generate_series_ext(5000)"), 5000);
 ```
 
 ## Registration
 
 ```rust
+# use libduckdb_sys::{duckdb_bind_info, duckdb_connection, duckdb_data_chunk,
+#     duckdb_function_info, duckdb_init_info};
+# use quack_rs::table::TableFunctionBuilder;
+# use quack_rs::types::TypeId;
+# unsafe extern "C" fn gs_bind(_: duckdb_bind_info) {}
+# unsafe extern "C" fn gs_init(_: duckdb_init_info) {}
+# unsafe extern "C" fn gs_scan(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 TableFunctionBuilder::new("generate_series_ext")
     .param(TypeId::BigInt)
     .bind(gs_bind)
     .init(gs_init)
     .scan(gs_scan)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 ## Advanced features
@@ -259,6 +323,14 @@ TableFunctionBuilder::new("generate_series_ext")
 Named parameters let callers pass optional arguments by name (e.g., `step := 10`):
 
 ```rust
+# use libduckdb_sys::{duckdb_bind_info, duckdb_connection, duckdb_data_chunk,
+#     duckdb_function_info, duckdb_init_info};
+# use quack_rs::table::TableFunctionBuilder;
+# use quack_rs::types::TypeId;
+# unsafe extern "C" fn gs_v2_bind(_: duckdb_bind_info) {}
+# unsafe extern "C" fn gs_v2_init(_: duckdb_init_info) {}
+# unsafe extern "C" fn gs_v2_scan(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 TableFunctionBuilder::new("gen_series_v2")
     .param(TypeId::BigInt)                    // positional: n
     .named_param("step", TypeId::BigInt)      // named: step := <value>
@@ -266,6 +338,8 @@ TableFunctionBuilder::new("gen_series_v2")
     .init(gs_v2_init)
     .scan(gs_v2_scan)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 In the bind callback, read the named parameter with
@@ -273,11 +347,33 @@ In the bind callback, read the named parameter with
 query omits `step := …`, the returned `Value` wraps a null handle (`is_null()` is
 `true`), so use a defaulting accessor such as `as_i64_or(1)`.
 
+### Registering a name twice
+
+The C API has no table function *sets*: a second registration under a name that
+already exists — your own earlier one, another extension's, or a built-in such as
+`range` — is dropped by DuckDB while `duckdb_register_table_function` still
+reports success, and the old function keeps answering. `register` therefore checks
+`duckdb_functions()` first and returns an error naming the conflict. Table
+functions registered through the C API live in the in-memory system catalog and
+are never persisted, so reloading an extension into a database file never trips
+this check.
+
 ### Local init (per-thread state)
 
-For multi-threaded table functions, use `local_init` to allocate per-thread state:
+`local_init` allocates per-thread state for a scan that runs on several threads.
+It does **not** make the scan parallel by itself — that is
+`InitInfo::set_max_threads` (see [Thread control](#thread-control)):
 
 ```rust
+# use libduckdb_sys::{duckdb_bind_info, duckdb_connection, duckdb_data_chunk,
+#     duckdb_function_info, duckdb_init_info};
+# use quack_rs::table::TableFunctionBuilder;
+# use quack_rs::types::TypeId;
+# unsafe extern "C" fn gs_v2_bind(_: duckdb_bind_info) {}
+# unsafe extern "C" fn gs_v2_init(_: duckdb_init_info) {}
+# unsafe extern "C" fn gs_v2_local_init(_: duckdb_init_info) {}
+# unsafe extern "C" fn gs_v2_scan(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 TableFunctionBuilder::new("gen_series_v2")
     .param(TypeId::BigInt)
     .bind(gs_v2_bind)
@@ -285,6 +381,8 @@ TableFunctionBuilder::new("gen_series_v2")
     .local_init(gs_v2_local_init)            // per-thread state allocation
     .scan(gs_v2_scan)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 The local init callback receives `duckdb_init_info` and can use
@@ -300,9 +398,12 @@ set** — and all of them share the one global init data and bind data. Do not u
 atomics and read it with `FfiInitData::get`:
 
 ```rust
+# use libduckdb_sys::duckdb_init_info;
+# use quack_rs::table::{FfiInitData, InitInfo};
+# struct MyState { pos: i64 }
 unsafe extern "C" fn gs_v2_init(info: duckdb_init_info) {
     let init_info = unsafe { InitInfo::new(info) };
-    unsafe { init_info.set_max_threads(1) };
+    init_info.set_max_threads(1);
     unsafe { FfiInitData::<MyState>::set(info, MyState { pos: 0 }) };
 }
 ```
@@ -312,14 +413,21 @@ unsafe extern "C" fn gs_v2_init(info: duckdb_init_info) {
 Enable projection pushdown to let DuckDB skip unrequested columns:
 
 ```rust
+# use quack_rs::table::TableFunctionBuilder;
+# fn demo() {
+# let _ =
 TableFunctionBuilder::new("my_func")
     .projection_pushdown(true)
     // ...
+# ;
+# }
 ```
 
 > **Caution:** When projection pushdown is enabled, your scan callback must check
 > which columns DuckDB actually needs using `InitInfo::projected_column_count` and
 > `InitInfo::projected_column_index`. Writing to non-projected columns causes crashes.
+> `projected_column_index` returns `None` past the end of the projection (the C API
+> itself answers `0` there, which is indistinguishable from the first column).
 
 See `examples/hello-ext/src/lib.rs` for a complete example using `named_param`,
 `local_init`, and `set_max_threads`.
@@ -331,6 +439,14 @@ For parameterised types that `TypeId` cannot express (e.g. `LIST(BIGINT)`,
 `named_param_logical`:
 
 ```rust
+# use libduckdb_sys::{duckdb_bind_info, duckdb_connection, duckdb_data_chunk,
+#     duckdb_function_info, duckdb_init_info};
+# use quack_rs::table::TableFunctionBuilder;
+# use quack_rs::types::TypeId;
+# unsafe extern "C" fn bind_fn(_: duckdb_bind_info) {}
+# unsafe extern "C" fn init_fn(_: duckdb_init_info) {}
+# unsafe extern "C" fn scan_fn(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 use quack_rs::types::LogicalType;
 
 TableFunctionBuilder::new("read_data")
@@ -342,6 +458,8 @@ TableFunctionBuilder::new("read_data")
     .init(init_fn)
     .scan(scan_fn)
     .register(con)?;
+# Ok(())
+# }
 ```
 
 ### BindInfo helpers
@@ -352,8 +470,8 @@ TableFunctionBuilder::new("read_data")
 |--------|-------------|
 | `add_result_column(name, TypeId)` | Declares an output column (a type DuckDB would silently drop, like `ANY`, is a bind error instead) |
 | `add_result_column_with_type(name, &LogicalType)` | Output column with complex type (same check, including nested `ANY`/`INVALID`) |
-| `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer |
-| `set_error(message)` | Report a bind-time error |
+| `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer — DuckDB 1.5.5 records `is_exact = false` as estimate **and** upper bound, `true` as estimate only (the reverse of its header); see the rustdoc |
+| `set_error(message)` | Report a bind-time error (an empty message is replaced by a placeholder) |
 | `parameter_count()` | Number of positional parameters |
 | `get_parameter(index)` | Returns a positional parameter value (`duckdb_value`) |
 | `get_named_parameter(name)` | Returns a named parameter value (`duckdb_value`) |
@@ -367,9 +485,9 @@ TableFunctionBuilder::new("read_data")
 | Method | Description |
 |--------|-------------|
 | `projected_column_count()` | Number of projected columns (with pushdown) |
-| `projected_column_index(idx)` | Output column index at projection position |
+| `projected_column_index(idx)` | Declared column index at projection position; `None` when `idx` is out of range |
 | `set_max_threads(n)` | Maximum concurrent scan threads (default 1; shared global state above 1) |
-| `set_error(message)` | Report an init-time error |
+| `set_error(message)` | Report an init-time error (an empty message is replaced by a placeholder) |
 | `get_extra_info()` | Returns the extra-info pointer set on the function |
 
 ### FunctionInfo helpers
@@ -378,13 +496,15 @@ TableFunctionBuilder::new("read_data")
 
 | Method | Description |
 |--------|-------------|
-| `set_error(message)` | Report a scan-time error |
+| `set_error(message)` | Report a scan-time error (an empty message is replaced by a placeholder) |
 | `get_extra_info()` | Returns the extra-info pointer set on the function |
 
 ### Extra info
 
 Use `TableFunctionBuilder::extra_info` to attach function-level data that is
-accessible from all callbacks (bind, init, and scan) via `get_extra_info()`.
+accessible from all callbacks (bind, init, and scan) via `get_extra_info()`. The
+pointee must be `Send + Sync`: DuckDB passes the same pointer to callbacks running
+on several threads at once, and frees it on whichever thread releases the function.
 
 ## Verified output (DuckDB 1.4.4 and 1.5.0)
 

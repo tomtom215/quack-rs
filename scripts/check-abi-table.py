@@ -13,6 +13,14 @@ This script re-derives that table straight from `src/include/duckdb_extension.h`
 at each release tag and fails if `src/abi.rs` has drifted or a new release is
 missing.
 
+The release tags are enumerated from upstream at run time (`git ls-remote
+--tags`), not from a list kept in this file: a hard-coded list only ever checks
+the releases someone already knew about, so a new DuckDB release went unnoticed
+(v1.4.5 shipped and was absent from both the list and the table). Every tag of
+the form `vX.Y.Z` at or above v1.2.0 -- the first release with a
+`duckdb_ext_api_v1` -- is checked; pre-release tags (`v1.6.0-rc1`, ...) are not
+releases and are skipped.
+
 A fetch that fails is **not** evidence that a release does not exist. Treating
 it as one silently narrows the derived table and then reports `src/abi.rs` as
 stale -- advice that, if followed, would shrink the layout table and make the
@@ -22,8 +30,9 @@ downloaded suspends the staleness comparison (exit 2) rather than failing it.
 Exit codes:
     0  src/abi.rs matches upstream
     1  it has genuinely drifted, or a header is inconsistent
-    2  at least one release header could not be fetched, so the comparison
-       would be unsound -- treat as "could not check", not as a failure
+    2  the release tags could not be listed, or at least one release header
+       could not be fetched, so the comparison would be unsound -- treat as
+       "could not check", not as a failure
 
 Usage:
     python3 scripts/check-abi-table.py              # verify
@@ -36,6 +45,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -46,14 +56,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ABI_RS = REPO_ROOT / "src" / "abi.rs"
 
 HEADER_URL = "https://raw.githubusercontent.com/duckdb/duckdb/{tag}/src/include/duckdb_extension.h"
+UPSTREAM_GIT = "https://github.com/duckdb/duckdb.git"
 
-# Every DuckDB release whose C extension API is v1.x. Extend as DuckDB releases.
-DEFAULT_TAGS = [
-    "v1.2.0", "v1.2.1", "v1.2.2",
-    "v1.3.0", "v1.3.1", "v1.3.2",
-    "v1.4.0", "v1.4.1", "v1.4.2", "v1.4.3", "v1.4.4",
-    "v1.5.0", "v1.5.1", "v1.5.2", "v1.5.3", "v1.5.4", "v1.5.5",
-]
+# The first release whose `duckdb_extension.h` defines `duckdb_ext_api_v1`.
+FIRST_RELEASE = (1, 2, 0)
+# A release tag. Anything with a suffix (`-rc1`, `-dev`) is not a release.
+RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 FN_PTR = re.compile(r"\(\s*\*\s*(duckdb_\w+)\s*\)")
 
@@ -121,6 +129,37 @@ def struct_fields(header: str, *, unstable: bool) -> list[str]:
     return fields
 
 
+def release_tags(*, attempts: int = 3) -> list[str] | None:
+    """Every upstream release tag `vX.Y.Z` >= FIRST_RELEASE.
+
+    Returns None when the tag list could not be read, which must be reported
+    as "could not check" -- never mistaken for "there are no releases".
+    """
+    last = "unknown error"
+    for attempt in range(attempts):
+        try:
+            out = subprocess.run(
+                ["git", "ls-remote", "--tags", "--refs", UPSTREAM_GIT],
+                check=True, capture_output=True, text=True, timeout=120,
+            ).stdout
+        except (OSError, subprocess.SubprocessError) as err:
+            last = f"{type(err).__name__}: {err}"
+        else:
+            tags = []
+            for line in out.splitlines():
+                tag = line.split("\t", 1)[-1].replace("refs/tags/", "", 1)
+                match = RELEASE_TAG.match(tag)
+                if match and tuple(int(g) for g in match.groups()) >= FIRST_RELEASE:
+                    tags.append(tag)
+            if tags:
+                return tags
+            last = "git ls-remote listed no release tags"
+        if attempt + 1 < attempts:
+            time.sleep(2 * (attempt + 1))
+    print(f"  could not list upstream release tags ({last})")
+    return None
+
+
 def version_key(tag: str) -> tuple[int, ...]:
     return tuple(int(p) for p in tag.lstrip("v").split("."))
 
@@ -167,10 +206,18 @@ def render(entries: list[tuple[int, int, int, int, int]]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--print", action="store_true", help="print the derived Rust table")
-    parser.add_argument("--tags", nargs="*", default=None, help="release tags to check")
+    parser.add_argument(
+        "--tags", nargs="*", default=None,
+        help="release tags to check (default: every upstream vX.Y.Z >= v1.2.0)",
+    )
     args = parser.parse_args()
 
-    tags = sorted(set(args.tags or DEFAULT_TAGS), key=version_key)
+    listed = args.tags or release_tags()
+    if listed is None:
+        print("::warning::could not list DuckDB release tags; KNOWN_LAYOUTS was not checked")
+        return 2
+    tags = sorted(set(listed), key=version_key)
+    print(f"checking {len(tags)} release(s): {tags[0]} .. {tags[-1]}")
 
     rows: list[tuple[tuple[int, int, int], int]] = []
     stable_counts: set[int] = set()

@@ -13,7 +13,7 @@ the `DuckInterval` struct and safe conversion utilities.
 
 DuckDB's C `duckdb_interval` struct is 16 bytes with this exact layout:
 
-```
+```text
 offset 0:  months (i32)  — calendar months
 offset 4:  days   (i32)  — calendar days
 offset 8:  micros (i64)  — sub-day microseconds
@@ -28,8 +28,12 @@ compile time to be exactly 16 bytes.
 ## Reading INTERVAL values
 
 ```rust
+# use quack_rs::interval::DuckInterval;
+# use quack_rs::vector::VectorReader;
+# fn demo(reader: &VectorReader, row: usize) {
 let iv: DuckInterval = unsafe { reader.read_interval(row) };
 println!("{} months, {} days, {} µs", iv.months, iv.days, iv.micros);
+# }
 ```
 
 `VectorReader::read_interval` handles the raw pointer arithmetic and alignment
@@ -54,8 +58,10 @@ Fields are public and can be constructed directly.
 ### Zero interval
 
 ```rust
+# use quack_rs::interval::DuckInterval;
 let zero = DuckInterval::zero();    // { months: 0, days: 0, micros: 0 }
 let zero = DuckInterval::default(); // same
+# assert_eq!(zero, DuckInterval::zero());
 ```
 
 ---
@@ -69,6 +75,7 @@ microseconds using the DuckDB approximation: **1 month = 30 days**.
 ### Checked conversion (returns `Option`)
 
 ```rust
+# use quack_rs::interval::DuckInterval;
 use quack_rs::interval::interval_to_micros;
 
 let iv = DuckInterval { months: 0, days: 1, micros: 500_000 };
@@ -79,6 +86,7 @@ match interval_to_micros(iv) {
 
 // Method form:
 let us: Option<i64> = iv.to_micros();
+# assert_eq!(us, Some(86_400_000_000 + 500_000));
 ```
 
 Returns `None` if the result would overflow `i64`. This can happen with extreme
@@ -87,6 +95,7 @@ values (e.g., `months: i32::MAX`).
 ### Saturating conversion (never panics)
 
 ```rust
+# use quack_rs::interval::DuckInterval;
 use quack_rs::interval::interval_to_micros_saturating;
 
 let iv = DuckInterval { months: i32::MAX, days: i32::MAX, micros: i64::MAX };
@@ -94,6 +103,8 @@ let us: i64 = interval_to_micros_saturating(iv); // i64::MAX
 
 // Method form:
 let us: i64 = iv.to_micros_saturating();
+# assert_eq!(us, i64::MAX);
+# assert_eq!(interval_to_micros_saturating(iv), i64::MAX);
 ```
 
 Use the saturating form in FFI callbacks where panics are not allowed.
@@ -122,10 +133,12 @@ If you have a raw data pointer (e.g., from `duckdb_vector_get_data`), you can
 read an interval directly:
 
 ```rust
+# fn demo(data_ptr: *const u8, row_idx: usize) {
 use quack_rs::interval::read_interval_at;
 
 // SAFETY: data is a valid DuckDB INTERVAL vector data pointer, idx is in bounds.
 let iv = unsafe { read_interval_at(data_ptr, row_idx) };
+# }
 ```
 
 In practice you should use `VectorReader::read_interval(row)` instead, which
@@ -136,6 +149,9 @@ handles all safety invariants.
 ## Complete example: aggregate over INTERVAL
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info};
+# use quack_rs::aggregate::{AggregateState, FfiState};
+# use quack_rs::vector::VectorReader;
 #[derive(Default)]
 struct TotalDurationState {
     total_micros: i64,

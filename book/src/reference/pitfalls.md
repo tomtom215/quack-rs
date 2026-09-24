@@ -14,17 +14,23 @@ impossible.
 
 **Symptom**: Aggregate function returns wrong results. No error, no crash.
 
-**Root cause**: DuckDB's segment tree creates fresh **zero-initialized** target
-states via `state_init`, then calls `combine` to merge source states into them.
-If your `combine` only propagates data fields (`count`, `sum`) but omits
-configuration fields (`window_size`, `mode`), the configuration will be zero at
-`finalize` time, silently corrupting results.
+**Root cause**: DuckDB's segment tree creates fresh target states, initialised
+by `state_init` (with `FfiState<T>`, a `T::default()`), then calls `combine` to
+merge source states into them. If your `combine` only propagates data fields
+(`count`, `sum`) but omits configuration fields (`window_size`, `mode`), the
+configuration is still its `state_init` default at `finalize` time, silently
+corrupting results.
 
 This bug passed 435 unit tests before being caught by E2E tests.
 
 **Fix**:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { window_size: i64, mode: u8, count: i64 }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn combine(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -64,6 +70,11 @@ already-freed memory → undefined behavior.
 instead of writing your own destructor:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { window_size: i64, mode: u8, count: i64 }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
     unsafe { FfiState::<MyState>::destroy_callback(states, count) };
 }
@@ -87,6 +98,12 @@ FFI callbacks. `FfiState::with_state_mut` returns `Option`, not `Result`, so
 callers use `if let`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { window_size: i64, mode: u8, count: i64 }
+# impl AggregateState for MyState {}
+# unsafe fn demo(state_ptr: duckdb_aggregate_state) {
 // Safe pattern — no unwrap in FFI callback
 if let Some(st) = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) } {
     st.count += 1;
@@ -94,6 +111,7 @@ if let Some(st) = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) } {
 
 // Dangerous — never do this in an FFI callback
 let st = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) }.unwrap(); // panics if None
+# }
 ```
 
 quack-rs's callback macros and typed builders catch a panic and report it as a
@@ -123,12 +141,17 @@ the validity bitmap on the write path. `VectorWriter::set_null` does this
 automatically:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(writer: &mut VectorWriter, row: usize) {
 // Correct — handled by set_null
 unsafe { writer.set_null(row) };
 
 // Wrong — validity bitmap may not be allocated yet
 // let validity = duckdb_vector_get_validity(output);          // NULL
 // duckdb_validity_set_row_invalid(validity, row);            // silently ignored
+# }
 ```
 
 For `STRUCT` and `ARRAY` outputs `set_null` also nulls the children at that
@@ -152,7 +175,12 @@ behavior.
 does this:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(reader: &VectorReader, row: usize) {
 let b: bool = unsafe { reader.read_bool(row) };  // safe: uses u8 != 0 internally
+# }
 ```
 
 ---
@@ -215,7 +243,8 @@ user installs is a release build.
 for them, or call `DataChunk::propagate_nulls(&mut writer)` at the end of a
 hand-written callback. `map1_opt` / `map2_opt` and
 `NullHandling::SpecialNullHandling` are for functions that genuinely mean to see
-NULLs. **Aggregates are different** — their executor really does filter NULL rows.
+NULLs. **Aggregates are no different**: `update` receives NULL rows under either
+setting too, so check `is_valid` before reading (see L12).
 
 ---
 
@@ -283,6 +312,14 @@ a copy callback alongside the bind data, in the same bind callback and after
 `set_bind_data`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# use std::os::raw::c_void;
+# use quack_rs::scalar::ScalarBindInfo;
+# #[derive(Clone)] struct MyBindData;
+# unsafe extern "C" fn destroy(p: *mut c_void) { drop(unsafe { Box::from_raw(p.cast::<MyBindData>()) }); }
+# unsafe fn demo(bind_info: ScalarBindInfo, boxed: Box<MyBindData>) {
 unsafe extern "C" fn copy(data: *mut c_void) -> *mut c_void {
     if data.is_null() {
         return std::ptr::null_mut();
@@ -295,6 +332,7 @@ unsafe {
     bind_info.set_bind_data(Box::into_raw(boxed).cast(), Some(destroy));
     bind_info.set_bind_data_copy(Some(copy));
 }
+# }
 ```
 
 The duplicate is freed with the **same** destructor as the original, so `copy`
@@ -305,7 +343,7 @@ given is a double free.
 it must not unwind. Wrap anything that can panic in
 [`callback::catch_ffi_panic`] and return null.
 
-[`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/struct.ScalarBindInfo.html#method.set_bind_data_copy
+[`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/info/struct.ScalarBindInfo.html#method.set_bind_data_copy
 [`callback::catch_ffi_panic`]: https://docs.rs/quack-rs/latest/quack_rs/callback/fn.catch_ffi_panic.html
 
 ---
@@ -343,6 +381,40 @@ checked and work.
 
 ---
 
+## L12: Aggregate `update` receives NULL rows under `DEFAULT_NULL_HANDLING`
+
+**Status**: Documented on `NullHandling`, `UpdateFn` and both aggregate builders'
+`null_handling`. Pinned by
+`aggregate_update_receives_null_rows_under_either_null_handling` in
+`tests/ffi_roundtrip/lifecycle.rs`.
+
+**Symptom**: An aggregate that reads every row — `state.sum += reader.read_i64(row)`
+— returns a wrong answer, with no error, as soon as its input column contains a
+NULL. The value read for a NULL row is whatever the data buffer happens to hold.
+
+**Root cause**: quack-rs used to document (in `NullHandling`, the builders and
+this book) that DuckDB's aggregate executor filters NULL rows out before
+`update` unless `SpecialNullHandling` is set. It does not. `CAPIAggregateUpdate`
+(`src/main/capi/aggregate_function-c.cpp`) flattens each input vector and
+passes the whole chunk, validity and all. For an aggregate the setting is
+read in one place, `BoundAggregateExpression::PropagatesNullValues`, which only
+the correlated-subquery decorrelator (`flatten_dependent_join.cpp`) consults to
+pick an `INNER` or `LEFT` join; the aggregate `VerifyNullHandling` check is
+compiled only under `#ifdef DEBUG`. Checked against DuckDB 1.5.5: `update` saw
+every NULL row, ungrouped and under `GROUP BY`, under both settings, and no
+correlated subquery tried answered differently under the two.
+
+**Fix**: in `update`, skip rows where `VectorReader::is_valid(row)` is false,
+whatever the null handling. Use `SpecialNullHandling` to declare that the
+aggregate returns non-NULL for NULL input; it does not change which rows arrive.
+
+A related trap under either setting: in a correlated subquery,
+`(SELECT my_count(x) FROM t2 WHERE t2.k = t1.k)` is NULL, not `my_count` of an
+empty input, for an outer row with no match. DuckDB rewrites that NULL to 0 only
+for its own `count`. Wrap the subquery in `coalesce(..., 0)` if it matters.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured in `Cargo.toml`. Scaffold handles this.
@@ -366,7 +438,10 @@ crate-type = ["cdylib", "rlib"]
 
 **Status**: `DUCKDB_API_VERSION` constant encodes the correct value.
 
-**Symptom**: Metadata script fails or produces incorrect metadata.
+**Symptom**: The metadata script succeeds, and `LOAD` then refuses the file:
+"The file was built for DuckDB C API version 'v1.5.5', but we can only load
+extensions built for DuckDB C API 'v1.2.0' and lower" (verified on DuckDB 1.4.4
+and 1.5.5 with a file stamped `-dv v1.5.5`).
 
 **Root cause**: The `-dv` flag to `append_extension_metadata.py` must be the
 C API version (`v1.2.0`), not the DuckDB release version (`v1.4.4`). These are
@@ -397,11 +472,23 @@ generates a complete SQLLogicTest skeleton.
 
 **Symptom**: `make configure` or `make release` fails.
 
-**Fix**:
+**Fix**: In a **new** project (for example one fresh from the scaffold) the
+submodule has never been added: the scaffold writes `.gitmodules`, but a file
+cannot create the gitlink git needs, so `git submodule update --init` finds
+nothing to do and exits 0 without cloning anything. Add it once:
+
+```bash
+git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+```
+
+In a **clone** of a repository that already has the submodule:
 
 ```bash
 git submodule update --init --recursive
 ```
+
+The generated `Makefile` checks for the checkout before it includes anything
+from it and prints both commands if it is missing.
 
 ---
 
@@ -677,10 +764,11 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 | L9: Arrow array taken on failure | Prevented | Use `arrow::data_chunk_from_arrow` (takes by value) |
 | L10: bind data lost on expression copy | Prevented | Use `ScalarBindData::set` (or pair `set_bind_data` with `set_bind_data_copy`) |
 | L11: aggregate crash under `OVER ()` / `ORDER BY` | DuckDB defect | Do not use C API aggregates in those query shapes |
+| L12: aggregate `update` sees NULL rows | Documented | Skip rows where `is_valid` is false |
 | P1: lib name mismatch | Scaffold | Set `[lib] name` in `Cargo.toml` |
 | P2: API version string | Constant | Use `DUCKDB_API_VERSION` |
 | P3: unit tests insufficient | Documented | Write SQLLogicTest E2E tests |
-| P4: submodule not initialized | Build-time | `git submodule update --init` |
+| P4: submodule not initialized | Build-time | New project: `git submodule add …`; clone: `git submodule update --init` |
 | P5: SQLLogicTest exact match | Documented | Copy output from DuckDB CLI |
 | P6: register set silent fail | Prevented | Builder returns `Err` |
 | P7: VARCHAR format undocumented | Prevented | Use `VectorReader::read_str` |

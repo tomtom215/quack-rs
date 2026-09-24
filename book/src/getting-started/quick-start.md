@@ -91,8 +91,14 @@ entry_point!(my_extension_init_c_api, |con| register(con));
 # Build the extension
 cargo build --release
 
-# Load in DuckDB CLI
-duckdb -cmd "LOAD './target/release/libmy_extension.so'; SELECT double_it(21);"
+# DuckDB refuses to LOAD a bare .so: append the metadata footer first
+# (`append_metadata` is a binary in the quack-rs repository; see Publishing).
+append_metadata target/release/libmy_extension.so my_extension.duckdb_extension \
+    --abi-type C_STRUCT --extension-version v0.1.0 \
+    --duckdb-version v1.2.0 --platform linux_amd64
+
+# Load it; -unsigned allows a locally built, unsigned extension.
+duckdb -unsigned -c "LOAD './my_extension.duckdb_extension'; SELECT double_it(21);"
 # ┌───────────────┐
 # │ double_it(21) │
 # │     int64     │
@@ -101,7 +107,9 @@ duckdb -cmd "LOAD './target/release/libmy_extension.so'; SELECT double_it(21);"
 # └───────────────┘
 ```
 
-> **macOS**: use `.dylib` extension. **Windows**: use `.dll`.
+> **macOS**: the library is `libmy_extension.dylib` and the platform
+> `osx_arm64` (or `osx_amd64`). **Windows**: `my_extension.dll` and
+> `windows_amd64`.
 
 ---
 

@@ -87,6 +87,10 @@ impl VectorReader {
     pub unsafe fn from_vector(vector: duckdb_vector, row_count: usize) -> Self {
         // SAFETY: vector is valid per caller's contract.
         let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();
+        // SAFETY: `duckdb_vector_get_validity` returns null for a null handle and
+        // otherwise reads the vector's validity mask (data_chunk-c.cpp); `# Safety`
+        // clause 1 makes `vector` valid. A null result (all-valid mask, or a
+        // non-flat, non-constant vector) is handled by `is_valid`.
         let validity = unsafe { duckdb_vector_get_validity(vector) };
         Self {
             data,
@@ -266,7 +270,13 @@ impl VectorReader {
         // SAFETY: HUGEINT is stored as { lower: u64, upper: i64 } = 16 bytes.
         // DuckDB lays this out in little-endian order: lower at offset 0, upper at offset 8.
         let base = unsafe { self.data.add(idx * 16) };
+        // SAFETY: `base` is row `idx`'s 16-byte `duckdb_hugeint` ({lower: u64,
+        // upper: i64}, duckdb.h) in the vector's data buffer, in bounds because
+        // `idx < self.row_count()` (`# Safety` clause 1) and a HUGEINT column
+        // (clause 2) stores 16 bytes per row; `read_unaligned` needs no alignment.
         let lower = unsafe { core::ptr::read_unaligned(base.cast::<u64>()) };
+        // SAFETY: `base + 8 .. base + 16` is the `upper` half of the same in-bounds
+        // 16-byte value; `read_unaligned` needs no alignment.
         let upper = unsafe { core::ptr::read_unaligned(base.add(8).cast::<i64>()) };
         // Widening casts: u64→i128 and i64→i128 are always lossless.
         #[allow(clippy::cast_lossless)]
@@ -287,7 +297,13 @@ impl VectorReader {
     pub const unsafe fn read_u128(&self, idx: usize) -> u128 {
         // SAFETY: UHUGEINT = { lower: u64, upper: u64 } = 16 bytes.
         let base = unsafe { self.data.add(idx * 16) };
+        // SAFETY: `base` is row `idx`'s 16-byte `duckdb_uhugeint` ({lower: u64,
+        // upper: u64}, duckdb.h) in the vector's data buffer, in bounds because
+        // `idx < self.row_count()` (`# Safety` clause 1) and a UHUGEINT column
+        // (clause 2) stores 16 bytes per row; `read_unaligned` needs no alignment.
         let lower = unsafe { core::ptr::read_unaligned(base.cast::<u64>()) };
+        // SAFETY: `base + 8 .. base + 16` is the `upper` half of the same in-bounds
+        // 16-byte value; `read_unaligned` needs no alignment.
         let upper = unsafe { core::ptr::read_unaligned(base.add(8).cast::<u64>()) };
         ((upper as u128) << 64) | (lower as u128)
     }
@@ -435,7 +451,10 @@ impl VectorReader {
     /// - The column must contain `BLOB` data.
     /// - The pointed-to memory must be valid for the lifetime of the returned slice.
     pub unsafe fn read_blob(&self, idx: usize) -> &[u8] {
-        // SAFETY: BLOB uses the same duckdb_string_t layout as VARCHAR.
+        // SAFETY: BLOB uses the same duckdb_string_t layout as VARCHAR, so
+        // `self.data` is a valid buffer for `read_duck_blob` and `idx` is in
+        // bounds (clauses 1-2); clause 3 keeps both the vector's buffer and any
+        // heap data alive for the returned slice, which is bound to `&self`.
         unsafe { crate::vector::string::read_duck_blob(self.data, idx) }
     }
 
@@ -531,18 +550,23 @@ impl VectorReader {
 mod tests {
     use super::*;
 
-    /// Verify that `VectorReader` handles the boolean-as-u8 pattern correctly.
+    /// Pitfall L5: `read_bool` must treat any non-zero byte as `true` rather
+    /// than reinterpret the byte as a Rust `bool` (UB for anything but 0/1).
+    /// The reader is built over a local buffer, so this calls the real
+    /// `read_bool` — and under Miri, would flag a `bool` transmute of `2`.
     #[test]
-    fn bool_read_u8_pattern() {
-        // Simulate a DuckDB BOOLEAN vector with a non-standard value (e.g., 2)
-        // to verify we use != 0 comparison rather than transmuting to bool.
+    fn read_bool_treats_every_non_zero_byte_as_true() {
         let data: [u8; 4] = [0, 1, 2, 255];
-
-        // Directly test the read_bool logic by checking values
-        // (We can't easily create a real VectorReader without DuckDB, so we test
-        // the underlying invariant: any non-zero byte is `true`.)
-        let as_bools: Vec<bool> = data.iter().map(|&b| b != 0).collect();
-        assert_eq!(as_bools, [false, true, true, true]);
+        let reader = VectorReader {
+            data: data.as_ptr(),
+            validity: std::ptr::null_mut(),
+            row_count: data.len(),
+        };
+        // SAFETY: every index is within `data`, which outlives `reader`.
+        let read: Vec<bool> = (0..data.len())
+            .map(|i| unsafe { reader.read_bool(i) })
+            .collect();
+        assert_eq!(read, [false, true, true, true]);
     }
 
     #[test]

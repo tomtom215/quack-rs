@@ -35,7 +35,7 @@
 //! |----------|-------------|--------------|
 //! | v1.2.0 – v1.2.2 | 408 | baseline |
 //! | v1.3.0 – v1.3.2 | 428 | appended |
-//! | v1.4.0 – v1.4.4 | 459 | `duckdb_create_varint` → `duckdb_create_bignum`, appended |
+//! | v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` → `duckdb_create_bignum`, appended |
 //! | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
 //! | v1.5.2 – v1.5.5 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
 //!
@@ -127,7 +127,7 @@ type LayoutEntry = (u64, u64, u64, u64, usize);
 const KNOWN_LAYOUTS: &[LayoutEntry] = &[
     (1, 2, 0, 2, 408),
     (1, 3, 0, 2, 428),
-    (1, 4, 0, 4, 459),
+    (1, 4, 0, 5, 459),
     (1, 5, 0, 1, 545),
     (1, 5, 2, 5, 546),
 ];
@@ -206,17 +206,32 @@ impl AbiCheck {
                 engine_version,
                 engine_slots,
                 compiled_slots,
-            } => Some(format!(
-                "DuckDB C extension API layout mismatch: this extension was built against a \
-                 duckdb_ext_api_v1 with {compiled_slots} slots, but DuckDB {engine_version} \
-                 provides {engine_slots}. The extension uses the unstable region of the C API \
-                 (quack-rs feature `duckdb-1-5`), whose slot indices differ between these \
-                 releases, so loading it would dispatch to the wrong functions. Rebuild the \
-                 extension against DuckDB {engine_version}, and stamp it with \
-                 `--abi-type C_STRUCT_UNSTABLE --duckdb-version {engine_version}` \
-                 (or `USE_UNSTABLE_C_API=1` with extension-ci-tools) so this is caught at \
-                 install time."
-            )),
+            } => {
+                // The `duckdb-1-5` wrappers do not exist in a 1.4-or-older
+                // header, so "rebuild against it" is only half the answer there.
+                let pre_1_5 = parse_version(engine_version).is_some_and(|v| v < (1, 5, 0));
+                let rebuild = if pre_1_5 {
+                    format!(
+                        "DuckDB {engine_version} is older than v1.5.0, so it cannot run an \
+                         extension that needs the `duckdb-1-5` features at all: build a variant \
+                         without them against DuckDB {engine_version}, or have users upgrade \
+                         DuckDB."
+                    )
+                } else {
+                    format!("Rebuild the extension against DuckDB {engine_version}.")
+                };
+                Some(format!(
+                    "DuckDB C extension API layout mismatch: this extension was built against a \
+                     duckdb_ext_api_v1 with {compiled_slots} slots, but DuckDB {engine_version} \
+                     provides {engine_slots}. The extension uses the unstable region of the C \
+                     API (quack-rs feature `duckdb-1-5`), whose slot indices differ between \
+                     these releases, so loading it would dispatch to the wrong functions. \
+                     {rebuild} Stamp every build that uses the unstable region with `--abi-type \
+                     C_STRUCT_UNSTABLE --duckdb-version <the DuckDB release it was built against>` (or \
+                     `USE_UNSTABLE_C_API=1` with extension-ci-tools) so DuckDB refuses a \
+                     mismatched binary at install time."
+                ))
+            }
             Self::UnknownEngineVersion {
                 engine_version,
                 compiled_slots,
@@ -230,8 +245,10 @@ impl AbiCheck {
                  mis-dispatch. Fix it in one of these ways, best first: rebuild against DuckDB \
                  {engine_version} and set QUACK_RS_TARGET_DUCKDB_VERSION={engine_version} so \
                  this check passes without waiting for a quack-rs release; upgrade quack-rs to \
-                 a version whose layout table lists {engine_version}; or accept the risk with \
-                 `AbiPolicy::AllowUnknownEngine`."
+                 a version whose layout table lists {engine_version} (which either verifies \
+                 the layout or names the mismatch); or, if the extension does not need the \
+                 unstable region, build it without the `duckdb-1-5` features so it only uses \
+                 the stable prefix, which every DuckDB since v1.2.0 lays out identically."
             )),
             Self::DeclaredVersionMismatch {
                 declared_version,
@@ -499,6 +516,10 @@ pub enum AbiPolicy {
     /// in every recent release, so an unknown version is *more* likely to differ
     /// than to match. Under this policy, an extension that calls into the
     /// unstable region on a release it was not built for is undefined behaviour.
+    /// This is not hypothetical: before `DuckDB` v1.4.5 was added to the table, a
+    /// v1.5.5 build loaded into v1.4.5 under this policy and segfaulted on its
+    /// first unstable-region call. The refusal message for an unknown engine
+    /// therefore never suggests this policy.
     AllowUnknownEngine,
     /// Skip the check entirely.
     ///
@@ -587,6 +608,7 @@ mod tests {
             ("v1.3.2", 428),
             ("v1.4.0", 459),
             ("v1.4.4", 459),
+            ("v1.4.5", 459),
             ("v1.5.0", 545),
             ("v1.5.1", 545),
             ("v1.5.2", 546),
@@ -625,9 +647,10 @@ mod tests {
 
     #[test]
     fn does_not_extrapolate_beyond_verified_patches() {
-        // v1.4.5 has not been released and its layout is unknown; guessing would
-        // defeat the purpose of the guard.
-        assert_eq!(expected_slot_count("v1.4.5"), None);
+        // Releases absent from the table (unreleased at the time it was last
+        // regenerated) are unknown; guessing would defeat the purpose of the
+        // guard.
+        assert_eq!(expected_slot_count("v1.4.6"), None);
         assert_eq!(expected_slot_count("v1.5.6"), None);
         assert_eq!(expected_slot_count("v1.6.0"), None);
         assert_eq!(expected_slot_count("v2.0.0"), None);
@@ -718,6 +741,27 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Regression: `DuckDB` v1.4.5 (459 slots) was missing from the table, so a
+    /// 546-slot extension loaded into it was `UnknownEngineVersion` rather than
+    /// a mismatch — and `AllowUnknownEngine` then let it load and segfault on
+    /// its first unstable-region call. Every policy that refuses a verified
+    /// mismatch must now refuse it.
+    #[test]
+    fn duckdb_1_4_5_is_a_verified_mismatch_for_a_1_5_build() {
+        for compiled in [545, 546] {
+            assert!(
+                matches!(
+                    decide(compiled, None, Some("v1.4.5")),
+                    AbiCheck::LayoutMismatch {
+                        engine_slots: 459,
+                        ..
+                    }
+                ),
+                "compiled {compiled}"
+            );
+        }
     }
 
     #[test]
@@ -842,8 +886,37 @@ mod tests {
             .find("QUACK_RS_TARGET_DUCKDB_VERSION")
             .expect("declare remedy");
         let upgrade = msg.find("upgrade quack-rs").expect("upgrade remedy");
-        let accept = msg.find("AllowUnknownEngine").expect("opt-out remedy");
-        assert!(declare < upgrade && upgrade < accept, "{msg}");
+        let stable = msg
+            .find("without the `duckdb-1-5`")
+            .expect("stable-only remedy");
+        assert!(declare < upgrade && upgrade < stable, "{msg}");
+        // Never advise the opt-out: an unknown engine is exactly the case where
+        // it can load a mis-dispatching binary (DuckDB v1.4.5 segfaulted this
+        // way before it was added to the table).
+        assert!(!msg.contains("AllowUnknownEngine"), "{msg}");
+    }
+
+    #[test]
+    fn mismatch_message_for_a_pre_1_5_engine_does_not_advise_an_impossible_rebuild() {
+        // A `duckdb-1-5` build cannot be compiled against DuckDB 1.4 headers, so
+        // "rebuild against v1.4.4" alone is not actionable.
+        let msg = AbiCheck::LayoutMismatch {
+            engine_version: "v1.4.4".into(),
+            engine_slots: 459,
+            compiled_slots: 546,
+        }
+        .error_message()
+        .expect("mismatch must produce a message");
+        assert!(msg.contains("older than v1.5.0"), "{msg}");
+        assert!(!msg.contains("AllowUnknownEngine"), "{msg}");
+        let msg = AbiCheck::LayoutMismatch {
+            engine_version: "v1.5.0".into(),
+            engine_slots: 545,
+            compiled_slots: 546,
+        }
+        .error_message()
+        .expect("mismatch must produce a message");
+        assert!(!msg.contains("older than v1.5.0"), "{msg}");
     }
 
     #[test]

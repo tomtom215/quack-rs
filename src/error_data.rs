@@ -27,7 +27,7 @@
 //! assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
 //! ```
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::fmt;
 
 use libduckdb_sys::{
@@ -342,16 +342,11 @@ pub struct ErrorData {
 impl ErrorData {
     /// Creates a new structured error with the given category and message.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`, the same as
+    /// every other error path in the crate, so no part of the message is lost.
     #[must_use]
     pub fn new(error_type: DuckDbErrorType, message: &str) -> Self {
-        let c_msg = CString::new(message).unwrap_or_else(|_| {
-            let pos = message
-                .bytes()
-                .position(|b| b == 0)
-                .unwrap_or(message.len());
-            CString::new(&message.as_bytes()[..pos]).unwrap_or_default()
-        });
+        let c_msg = crate::callback::message_to_c_string(message);
         // SAFETY: error_type.to_raw() is a valid duckdb_error_type and c_msg is a
         // valid null-terminated string for the duration of the call.
         let raw = unsafe { duckdb_create_error_data(error_type.to_raw(), c_msg.as_ptr()) };
@@ -489,9 +484,13 @@ impl From<ErrorData> for ExtensionError {
 /// Checks whether `bytes` form a valid UTF-8 string according to `DuckDB`'s
 /// validator (`DuckDB` 1.5.0+).
 ///
-/// `DuckDB` enforces stricter rules than Rust in some cases (e.g. rejecting
-/// certain code points), so this is useful when validating externally-sourced
-/// bytes before handing them to `DuckDB` string APIs.
+/// `DuckDB`'s rules match Rust's: every Unicode scalar value is accepted, and
+/// surrogates, overlong encodings, code points above `U+10FFFF`, truncated
+/// sequences and stray continuation bytes are rejected, exactly where
+/// [`std::str::from_utf8`] rejects them (checked over all 1,112,064 scalar
+/// values and each malformed class). Use this when you want `DuckDB`'s
+/// structured [`ErrorData`] for the failure; for a yes/no answer,
+/// `std::str::from_utf8` is equivalent and needs no engine.
 ///
 /// # Errors
 ///

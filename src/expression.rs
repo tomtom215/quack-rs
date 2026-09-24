@@ -124,6 +124,15 @@ impl Expression {
     /// null or the expression is not foldable (for example it references a
     /// column). `duckdb_expression_fold` reports that last case by returning
     /// *no* error and leaving the output value unset.
+    ///
+    /// For an evaluation failure, `DuckDB` 1.5.5 builds the error from
+    /// `ex.what()` — the exception's JSON form, such as
+    /// `{"exception_type":"Conversion","exception_message":"Could not convert
+    /// string 'abc' to INT64",...}` — and always tags it `INVALID_INPUT`
+    /// (`src/main/capi/expression-c.cpp`). This unpacks it: the returned error
+    /// carries the plain `exception_message` and the
+    /// [`DuckDbErrorType`] named by `exception_type`. Text that does not parse
+    /// as that JSON is returned unchanged, still typed `InvalidInput`.
     pub fn fold(&self, context: &ClientContext) -> Result<Value, ErrorData> {
         let mut out_value: duckdb_value = std::ptr::null_mut();
         // SAFETY: self.raw and context.as_raw() are valid; out_value is a valid
@@ -139,7 +148,7 @@ impl Expression {
                 // here is what frees it.
                 drop(unsafe { Value::from_raw(out_value) });
             }
-            return Err(err);
+            return Err(unpack_exception_json(err));
         }
         if out_value.is_null() {
             // `duckdb_expression_fold` returns early, with neither an error nor
@@ -153,6 +162,171 @@ impl Expression {
         // owned duckdb_value.
         Ok(unsafe { Value::from_raw(out_value) })
     }
+}
+
+/// Replaces an error whose message is `DuckDB`'s exception JSON with one
+/// carrying the plain message and the named error type. Anything else is
+/// returned unchanged.
+fn unpack_exception_json(err: ErrorData) -> ErrorData {
+    let Some(raw) = err.message() else {
+        return err;
+    };
+    let Some((type_name, message)) = parse_exception_json(&raw) else {
+        return err;
+    };
+    ErrorData::new(error_type_from_name(&type_name), &message)
+}
+
+/// Maps `Exception::ExceptionTypeToString` names (`EXCEPTION_MAP` in
+/// `src/common/exception.cpp`) back to [`DuckDbErrorType`]. An unknown name
+/// maps to [`DuckDbErrorType::Invalid`], as `DuckDB`'s own reverse lookup does.
+fn error_type_from_name(name: &str) -> DuckDbErrorType {
+    use DuckDbErrorType as T;
+    match name {
+        "Out of Range" => T::OutOfRange,
+        "Conversion" => T::Conversion,
+        "Unknown Type" => T::UnknownType,
+        "Decimal" => T::Decimal,
+        "Mismatch Type" => T::MismatchType,
+        "Divide by Zero" => T::DivideByZero,
+        "Object Size" => T::ObjectSize,
+        "Invalid type" => T::InvalidType,
+        "Serialization" => T::Serialization,
+        "TransactionContext" => T::Transaction,
+        "Not implemented" => T::NotImplemented,
+        "Expression" => T::Expression,
+        "Catalog" => T::Catalog,
+        "Parser" => T::Parser,
+        "Binder" => T::Binder,
+        "Planner" => T::Planner,
+        "Scheduler" => T::Scheduler,
+        "Executor" => T::Executor,
+        "Constraint" => T::Constraint,
+        "Index" => T::Index,
+        "Stat" => T::Stat,
+        "Connection" => T::Connection,
+        "Syntax" => T::Syntax,
+        "Settings" => T::Settings,
+        "Optimizer" => T::Optimizer,
+        "NullPointer" => T::NullPointer,
+        "IO" => T::Io,
+        "INTERRUPT" => T::Interrupt,
+        "FATAL" => T::Fatal,
+        "INTERNAL" => T::Internal,
+        "Invalid Input" => T::InvalidInput,
+        "Out of Memory" => T::OutOfMemory,
+        "Permission" => T::Permission,
+        "Parameter Not Resolved" => T::ParameterNotResolved,
+        "Parameter Not Allowed" => T::ParameterNotAllowed,
+        "Dependency" => T::Dependency,
+        "Missing Extension" => T::MissingExtension,
+        "HTTP" => T::Http,
+        "Extension Autoloading" => T::Autoload,
+        "Sequence" => T::Sequence,
+        "Invalid Configuration" => T::InvalidConfiguration,
+        _ => T::Invalid,
+    }
+}
+
+/// Parses `DuckDB`'s exception JSON — a flat object whose values are all
+/// strings, written by `StringUtil::ExceptionToJSONMap` — and returns its
+/// `exception_type` and `exception_message`.
+///
+/// Returns `None` for anything else (not an object, a non-string value, a
+/// missing key, trailing text), so the caller can fall back to the raw text.
+fn parse_exception_json(raw: &str) -> Option<(String, String)> {
+    let mut chars = raw.trim().chars().peekable();
+    let mut exception_type = None;
+    let mut exception_message = None;
+    let skip_ws = |chars: &mut std::iter::Peekable<std::str::Chars<'_>>| {
+        while chars.peek().is_some_and(char::is_ascii_whitespace) {
+            chars.next();
+        }
+    };
+    if chars.next()? != '{' {
+        return None;
+    }
+    skip_ws(&mut chars);
+    if chars.peek() == Some(&'}') {
+        return None;
+    }
+    loop {
+        skip_ws(&mut chars);
+        let key = parse_json_string(&mut chars)?;
+        skip_ws(&mut chars);
+        if chars.next()? != ':' {
+            return None;
+        }
+        skip_ws(&mut chars);
+        let value = parse_json_string(&mut chars)?;
+        match key.as_str() {
+            "exception_type" => exception_type = Some(value),
+            "exception_message" => exception_message = Some(value),
+            _ => {}
+        }
+        skip_ws(&mut chars);
+        match chars.next()? {
+            ',' => {}
+            '}' => break,
+            _ => return None,
+        }
+    }
+    skip_ws(&mut chars);
+    if chars.next().is_some() {
+        return None;
+    }
+    Some((exception_type?, exception_message?))
+}
+
+/// Parses one JSON string literal, including its quotes, decoding escapes
+/// (with `\u` surrogate pairs).
+fn parse_json_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    if chars.next()? != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    loop {
+        match chars.next()? {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'b' => out.push('\u{8}'),
+                'f' => out.push('\u{c}'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'u' => {
+                    let high = parse_hex4(chars)?;
+                    let code = if (0xD800..0xDC00).contains(&high) {
+                        if chars.next()? != '\\' || chars.next()? != 'u' {
+                            return None;
+                        }
+                        let low = parse_hex4(chars)?;
+                        if !(0xDC00..0xE000).contains(&low) {
+                            return None;
+                        }
+                        0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+                    } else {
+                        high
+                    };
+                    out.push(char::from_u32(code)?);
+                }
+                _ => return None,
+            },
+            c => out.push(c),
+        }
+    }
+}
+
+/// Reads four hex digits of a `\u` escape.
+fn parse_hex4(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<u32> {
+    let mut code = 0;
+    for _ in 0..4 {
+        code = code * 16 + chars.next()?.to_digit(16)?;
+    }
+    Some(code)
 }
 
 impl Drop for Expression {
@@ -176,6 +350,55 @@ mod tests {
         assert!(expr.is_null());
         assert!(!expr.is_foldable());
         assert!(expr.return_type().is_none());
+    }
+
+    #[test]
+    fn exception_json_is_unpacked_into_type_and_message() {
+        let raw = r#"{"exception_type":"Conversion","exception_message":"Could not convert string 'abc' to INT64","position":"20"}"#;
+        assert_eq!(
+            parse_exception_json(raw),
+            Some((
+                "Conversion".to_owned(),
+                "Could not convert string 'abc' to INT64".to_owned()
+            ))
+        );
+        assert_eq!(
+            error_type_from_name("Out of Range"),
+            DuckDbErrorType::OutOfRange
+        );
+        assert_eq!(
+            error_type_from_name("Conversion"),
+            DuckDbErrorType::Conversion
+        );
+        assert_eq!(
+            error_type_from_name("no such type"),
+            DuckDbErrorType::Invalid
+        );
+    }
+
+    #[test]
+    fn exception_json_escapes_are_decoded() {
+        let raw = r#"{ "exception_message" : "a\"b\\c\n\u00e9\ud83e\udd86\/" , "exception_type" : "IO" }"#;
+        assert_eq!(
+            parse_exception_json(raw),
+            Some(("IO".to_owned(), "a\"b\\c\n\u{e9}\u{1f986}/".to_owned()))
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_exception_json_is_not_parsed() {
+        for raw in [
+            "plain text",
+            "",
+            "{}",
+            r#"{"exception_type":"IO"}"#,
+            r#"{"exception_type":"IO","exception_message":"m","n":1}"#,
+            r#"{"exception_type":"IO","exception_message":"m"} trailing"#,
+            r#"{"exception_type":"IO","exception_message":"unterminated}"#,
+            r#"{"exception_type":"IO","exception_message":"\ud800"}"#,
+        ] {
+            assert_eq!(parse_exception_json(raw), None, "{raw}");
+        }
     }
 
     #[test]

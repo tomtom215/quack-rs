@@ -51,50 +51,81 @@ DuckDB API not initialized
 
 ## Mock types for callback logic
 
-When your scalar or table function callback reads inputs and writes outputs,
-extract that logic into a pure-Rust function. Then test it with
-`MockVectorReader` (input) and `MockVectorWriter` (output):
+Keep the per-row computation in a plain Rust function and test that function
+directly — it needs no vectors at all. The FFI callback is then a thin loop
+around it, and for the common shapes the typed constructors
+(`ScalarFunctionBuilder::map1`, `map1_str`, …) write that loop for you, NULL
+handling included.
 
-```rust
-use quack_rs::testing::{MockVectorReader, MockVectorWriter};
-
-// Pure Rust logic — extracted from the FFI callback
-fn compute_upper(reader: &MockVectorReader, writer: &mut MockVectorWriter) {
-    for i in 0..reader.row_count() {
-        if reader.is_valid(i) {
-            let s = reader.try_get_str(i).unwrap_or("");
-            writer.write_varchar(i, &s.to_uppercase());
-        } else {
-            writer.set_null(i);
-        }
-    }
+```rust,test_harness
+// The logic: plain Rust, tested with plain `#[test]`s.
+fn shout(s: &str) -> String {
+    s.to_uppercase()
 }
 
 #[test]
-fn test_compute_upper() {
-    let reader = MockVectorReader::from_strs([Some("hello"), None, Some("world")]);
-    let mut writer = MockVectorWriter::new(3);
-    compute_upper(&reader, &mut writer);
-
-    assert_eq!(writer.try_get_str(0), Some("HELLO"));
-    assert!(writer.is_null(1));
-    assert_eq!(writer.try_get_str(2), Some("WORLD"));
+fn shout_uppercases() {
+    assert_eq!(shout("hello"), "HELLO");
 }
 ```
 
-The real FFI callback becomes a thin wrapper:
-
 ```rust,no_run
-unsafe extern "C" fn my_scalar(
+use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+use quack_rs::vector::{VectorReader, VectorWriter};
+# fn shout(s: &str) -> String { s.to_uppercase() }
+
+// The callback: a thin loop over the real vectors.
+unsafe extern "C" fn shout_callback(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
     output: duckdb_vector,
 ) {
-    // Real DuckDB wrappers — only used in production, not in cargo test
+    let rows = usize::try_from(unsafe { libduckdb_sys::duckdb_data_chunk_get_size(input) })
+        .unwrap_or(0);
     let reader = unsafe { VectorReader::new(input, 0) };
     let mut writer = unsafe { VectorWriter::new(output) };
-    // TODO: adapt mock-compatible logic to real readers/writers
+    for row in 0..rows {
+        if unsafe { reader.is_valid(row) } {
+            let out = shout(unsafe { reader.read_str(row) });
+            unsafe { writer.write_varchar(row, &out) };
+        } else {
+            unsafe { writer.set_null(row) };
+        }
+    }
 }
+```
+
+To test the loop itself against real vectors, use `InMemoryDb` (below): it
+runs the callback inside a real DuckDB.
+
+`MockVectorReader` and `MockVectorWriter` are in-memory stand-ins with the
+same method names as `VectorReader` and `VectorWriter`. They are **separate
+types**, so a function written against the mocks cannot be handed the real
+reader and writer; they are for prototyping and checking row-loop logic
+without a database. They do reproduce the behaviour of a real vector that a
+more forgiving mock would hide:
+
+- `set_null` clears a validity bit and a later `write_*` does not set it
+  again (a real vector keeps returning NULL for that row);
+- a row that is never written is valid, not NULL — use `is_written` to check
+  a loop wrote every row;
+- writing past the capacity given to `MockVectorWriter::new` panics.
+
+```rust
+use quack_rs::testing::{MockVectorReader, MockVectorWriter};
+
+let reader = MockVectorReader::from_strs([Some("hello"), None, Some("world")]);
+let mut writer = MockVectorWriter::new(3);
+for i in 0..reader.row_count() {
+    match reader.try_get_str(i) {
+        Some(s) => writer.write_varchar(i, &s.to_uppercase()),
+        None => writer.set_null(i),
+    }
+}
+assert_eq!(writer.try_get_str(0), Some("HELLO"));
+assert!(writer.is_null(1));
+assert_eq!(writer.try_get_str(2), Some("WORLD"));
+assert!((0..3).all(|i| writer.is_written(i) || writer.is_null(i)));
 ```
 
 ---
@@ -104,7 +135,7 @@ unsafe extern "C" fn my_scalar(
 `MockRegistrar` implements the `Registrar` trait without calling any DuckDB C API.
 Use it to verify your registration function registers the right set of functions:
 
-```rust
+```rust,test_harness
 use quack_rs::connection::Registrar;
 use quack_rs::testing::MockRegistrar;
 use quack_rs::scalar::ScalarFunctionBuilder;
@@ -175,8 +206,7 @@ artifact, use `InMemoryDb::open_unsigned` instead of `open()` — the
 `allow_unsigned_extensions` config option is startup-only and can't be set
 via `SET` after the connection has opened.
 
-```rust,no_run
-# #[cfg(feature = "bundled-test")]
+```rust,test_harness
 use quack_rs::testing::InMemoryDb;
 use quack_rs::sql_macro::SqlMacro;
 
@@ -203,7 +233,7 @@ Opening an `InMemoryDb` also populates the `loadable-extension` dispatch table �
 for the whole process, not just that handle. After that the entire C API works,
 so you can register a real function and call it from SQL inside `cargo test`:
 
-```rust,ignore
+```rust,test_harness
 use libduckdb_sys::{duckdb_connection, DuckDBSuccess};
 use quack_rs::data_chunk::DataChunk;
 use quack_rs::query::query;
@@ -246,7 +276,7 @@ fn triple_it_works() {
 
     // 4. Run SQL and assert on the answer.
     let mut result = unsafe { query(con, "SELECT triple_it(14)") }.unwrap();
-    let chunk = result.next_chunk().unwrap();
+    let chunk = result.next_chunk().unwrap().unwrap();
     assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 42);
 }
 ```
@@ -292,7 +322,7 @@ flowchart LR
 
 ### Basic usage
 
-```rust
+```rust,test_harness
 use quack_rs::testing::AggregateTestHarness;
 use quack_rs::aggregate::AggregateState;
 
@@ -314,7 +344,12 @@ fn test_sum() {
 
 For testing over a collection of inputs:
 
-```rust
+```rust,test_harness
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct WordCountState { count: usize }
+# impl AggregateState for WordCountState {}
+# fn count_words(s: &str) -> usize { s.split_whitespace().count() }
 #[test]
 fn test_word_count() {
     let result = AggregateTestHarness::<WordCountState>::aggregate(
@@ -327,11 +362,15 @@ fn test_word_count() {
 
 ### Testing `combine` (Pitfall L1)
 
-DuckDB creates fresh zero-initialized target states and calls `combine` to merge
-into them. You MUST propagate ALL fields — including configuration fields —
+DuckDB creates fresh target states — set up by `state_init`, which with
+`FfiState<T>` means `T::default()` — and calls `combine` to merge into them. You MUST propagate ALL fields — including configuration fields —
 not just accumulated data. Test this explicitly:
 
-```rust
+```rust,test_harness
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct MyState { window_size: i64, count: i64 }
+# impl AggregateState for MyState {}
 #[test]
 fn combine_propagates_config() {
     let mut h1 = AggregateTestHarness::<MyState>::new();
@@ -340,7 +379,7 @@ fn combine_propagates_config() {
         s.count += 5;          // data field
     });
 
-    // h2 simulates a fresh zero-initialized state created by DuckDB
+    // h2 simulates a fresh target state: `state_init` gave it `MyState::default()`
     let mut h2 = AggregateTestHarness::<MyState>::new();
 
     h2.combine(&h1, |src, tgt| {
@@ -357,6 +396,10 @@ fn combine_propagates_config() {
 ### Inspecting intermediate state
 
 ```rust
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct SumState { total: i64 }
+# impl AggregateState for SumState {}
 let mut h = AggregateTestHarness::<SumState>::new();
 h.update(|s| s.total += 5);
 assert_eq!(h.state().total, 5);   // borrow without consuming
@@ -367,6 +410,10 @@ assert_eq!(h.state().total, 8);
 ### Resetting
 
 ```rust
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct SumState { total: i64 }
+# impl AggregateState for SumState {}
 let mut h = AggregateTestHarness::<SumState>::new();
 h.update(|s| s.total = 999);
 h.reset();
@@ -376,8 +423,13 @@ assert_eq!(h.state().total, 0);  // back to S::default()
 ### Pre-populating state
 
 ```rust
+# use quack_rs::aggregate::AggregateState;
+# use quack_rs::testing::AggregateTestHarness;
+# #[derive(Default)] struct MyState { window_size: i64, count: i64 }
+# impl AggregateState for MyState {}
 let initial = MyState { window_size: 3600, count: 0 };
 let h = AggregateTestHarness::with_state(initial);
+# assert_eq!(h.finalize().window_size, 3600);
 ```
 
 ---
@@ -386,7 +438,7 @@ let h = AggregateTestHarness::with_state(initial);
 
 Scalar logic is pure Rust — test it directly:
 
-```rust
+```rust,test_harness
 // From examples/hello-ext/src/lib.rs — scalar function logic
 pub fn first_word(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or("")
@@ -407,7 +459,7 @@ fn first_word_basic() {
 
 `SqlMacro::to_sql()` is pure Rust — no DuckDB connection needed:
 
-```rust
+```rust,test_harness
 use quack_rs::sql_macro::SqlMacro;
 
 #[test]
@@ -435,7 +487,7 @@ format runs SQL directly in DuckDB and verifies output line-by-line.
 
 ### File location
 
-```
+```text
 test/sql/my_extension.test
 ```
 
@@ -504,7 +556,6 @@ cargo run --bin append_metadata -- \
 
 # Load it in DuckDB CLI (-unsigned allows loading without a signed certificate)
 /tmp/duckdb -unsigned -c "
-SET allow_extensions_metadata_mismatch=true;
 LOAD '/tmp/my_extension.duckdb_extension';
 SELECT my_function('hello world');
 "
@@ -544,7 +595,8 @@ SELECT my_function('hello world');
 The `proptest` crate is well-suited for testing aggregate logic over arbitrary
 inputs:
 
-```rust
+```rust,test_harness
+# use quack_rs::interval::{interval_to_micros_saturating, DuckInterval};
 use proptest::prelude::*;
 
 proptest! {

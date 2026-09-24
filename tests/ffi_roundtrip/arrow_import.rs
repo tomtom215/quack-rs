@@ -1,0 +1,242 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community
+// and encouraging more Rust development!
+
+//! `arrow::data_chunk_from_arrow` against a live `DuckDB`: what it checks
+//! before handing an array to `duckdb_data_chunk_from_arrow`, and which
+//! layouts `DuckDB` actually converts.
+//!
+//! `duckdb_data_chunk_from_arrow` dereferences `arrow_array->children[i]`
+//! once per converted-schema column with no null or length check
+//! (`arrow-c.cpp`), so the structural checks quack-rs can make on the raw
+//! record are made first.
+
+use std::ffi::c_void;
+use std::ptr;
+
+use quack_rs::arrow::{
+    data_chunk_from_arrow, data_chunk_to_arrow, schema_from_arrow, to_arrow_schema, ArrowArray,
+    ArrowOptions, RawArrowArray,
+};
+use quack_rs::error_data::DuckDbErrorType;
+use quack_rs::query::OwnedConnection;
+use quack_rs::types::{LogicalType, TypeId};
+
+use super::Fixture;
+
+/// A release callback for records whose buffers the test owns.
+unsafe extern "C" fn release_nothing(array: *mut RawArrowArray) {
+    // SAFETY: called with a valid pointer; the specification requires the
+    // callback to null its own `release`.
+    unsafe { (*array).release = None };
+}
+
+/// A struct-array record with `n_children` children at `children`, and the
+/// buffer list it points into (one null validity buffer). The caller keeps
+/// the buffer list alive for as long as the record is in use; the records
+/// release nothing, so the test owns and frees everything they point at.
+fn parent(
+    length: i64,
+    n_children: i64,
+    children: *mut *mut RawArrowArray,
+) -> (RawArrowArray, Box<[*const c_void; 1]>) {
+    let mut buffers = Box::new([ptr::null()]);
+    let raw = RawArrowArray {
+        length,
+        null_count: 0,
+        offset: 0,
+        n_buffers: 1,
+        n_children,
+        buffers: buffers.as_mut_ptr(),
+        children,
+        dictionary: ptr::null_mut(),
+        release: Some(release_nothing),
+        private_data: ptr::null_mut(),
+    };
+    (raw, buffers)
+}
+
+/// An `int32` child of `length` rows over a buffer of `data_len`, with the
+/// allocations it points into.
+struct IntChild {
+    raw: Box<RawArrowArray>,
+    _buffers: Box<[*const c_void; 2]>,
+    _data: Box<[i32]>,
+}
+
+fn int_child(length: i64, data_len: usize) -> IntChild {
+    let data = vec![7_i32; data_len].into_boxed_slice();
+    let mut buffers = Box::new([ptr::null(), data.as_ptr().cast()]);
+    let raw = Box::new(RawArrowArray {
+        length,
+        null_count: 0,
+        offset: 0,
+        n_buffers: 2,
+        n_children: 0,
+        buffers: buffers.as_mut_ptr(),
+        children: ptr::null_mut(),
+        dictionary: ptr::null_mut(),
+        release: Some(release_nothing),
+        private_data: ptr::null_mut(),
+    });
+    IntChild {
+        raw,
+        _buffers: buffers,
+        _data: data,
+    }
+}
+
+/// Converts a one-column `INTEGER` schema on `con`.
+fn integer_schema(con: &OwnedConnection) -> quack_rs::arrow::ArrowConvertedSchema {
+    let options = ArrowOptions::from_connection(con).expect("options");
+    let int = LogicalType::new(TypeId::Integer);
+    let mut schema = to_arrow_schema(&options, &[("v", &int)]).expect("schema");
+    // SAFETY: `con` is live.
+    unsafe { schema_from_arrow(con.as_raw(), &mut schema) }.expect("converted")
+}
+
+fn import(con: &OwnedConnection, raw: RawArrowArray) -> Result<usize, String> {
+    let converted = integer_schema(con);
+    // SAFETY: the record's release callback may be called once; nothing else
+    // holds it.
+    let array = unsafe { ArrowArray::from_raw(raw) };
+    // SAFETY: `con` is live and `converted` came from it.
+    unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }
+        .map(|chunk| chunk.size())
+        .map_err(|e| {
+            assert_eq!(e.error_type(), DuckDbErrorType::InvalidInput, "{e}");
+            e.to_string()
+        })
+}
+
+/// A struct array claiming a child but with a null `children` pointer:
+/// `DuckDB` dereferenced it (`SIGSEGV`).
+#[test]
+fn a_null_children_pointer_is_refused() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let (raw, _buffers) = parent(4, 1, ptr::null_mut());
+    let err = import(&con, raw).expect_err("no children to read");
+    assert!(err.contains("children"), "{err}");
+}
+
+/// A null entry in `children`: `DuckDB` dereferenced it too.
+#[test]
+fn a_null_child_is_refused() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let mut kids: Box<[*mut RawArrowArray; 1]> = Box::new([ptr::null_mut()]);
+    let (raw, _buffers) = parent(4, 1, kids.as_mut_ptr());
+    let err = import(&con, raw).expect_err("child 0 is null");
+    assert!(err.contains("child 0"), "{err}");
+}
+
+/// The specification requires every child of a struct array to hold at least
+/// `offset + length` of the parent's rows; `DuckDB` reads that many without
+/// checking.
+#[test]
+fn a_child_shorter_than_its_parent_is_refused() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let mut short = int_child(2, 2);
+    let mut kids = Box::new([ptr::from_mut(&mut *short.raw)]);
+    let (raw, _buffers) = parent(4096, 1, kids.as_mut_ptr());
+    let err = import(&con, raw).expect_err("child too short");
+    assert!(err.contains("child 0"), "{err}");
+
+    // A well-formed array of the same shape imports.
+    let mut full = int_child(4, 4);
+    let mut full_kids = Box::new([ptr::from_mut(&mut *full.raw)]);
+    let (raw, _full_buffers) = parent(4, 1, full_kids.as_mut_ptr());
+    assert_eq!(import(&con, raw), Ok(4));
+}
+
+/// Exports one value of `expr` and imports it back, returning the imported
+/// column's type and the value rendered by `DuckDB` (through a table the
+/// chunk is appended to).
+fn round_trip(con: &OwnedConnection, expr: &str) -> (TypeId, String) {
+    let mut result = con.query(&format!("SELECT {expr} AS v")).expect("query");
+    let ty = result.column_logical_type(0).expect("type");
+    let options = ArrowOptions::from_connection(con).expect("options");
+    let mut schema = to_arrow_schema(&options, &[("v", &ty)]).expect("schema");
+    // SAFETY: `con` is live.
+    let converted = unsafe { schema_from_arrow(con.as_raw(), &mut schema) }.expect("converted");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
+    let array = data_chunk_to_arrow(&options, &chunk).expect("export");
+    // SAFETY: `con` is live and `converted` came from it.
+    let back = unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }.expect("import");
+    // SAFETY: the chunk has one column and one row.
+    let vector = unsafe { back.vector(0) };
+    // SAFETY: `vector` belongs to the live chunk `back`.
+    let back_type =
+        unsafe { LogicalType::from_raw(libduckdb_sys::duckdb_vector_get_column_type(vector)) };
+    // SAFETY: `back_type` is a live, owned logical type.
+    let back_id = unsafe { back_type.get_type_id() };
+    con.execute("DROP TABLE IF EXISTS rt").expect("drop");
+    con.execute(&format!("CREATE TABLE rt (v {})", back_id.sql_name()))
+        .expect("create");
+    // SAFETY: `con` is live and the table exists.
+    let appender =
+        unsafe { quack_rs::appender::Appender::new(con.as_raw(), None, c"rt") }.expect("appender");
+    appender.append_chunk(&back).expect("append");
+    appender.close().expect("close");
+    drop(appender);
+    let mut text = con.query("SELECT v::VARCHAR FROM rt").expect("select");
+    let chunk = text.next_chunk().expect("fetch").expect("one row");
+    // SAFETY: one VARCHAR column, one row.
+    (back_id, unsafe { chunk.reader(0).read_str(0).to_owned() })
+}
+
+/// Two Arrow round trips are lossy, as the Arrow docs in the book say.
+#[test]
+fn timetz_and_bit_do_not_round_trip_exactly() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let (ty, text) = round_trip(&con, "'01:02:03+05:30'::TIMETZ");
+    assert_eq!(
+        (ty, text.as_str()),
+        (TypeId::Time, "01:02:03"),
+        "offset lost"
+    );
+    let (ty, text) = round_trip(&con, "'10110'::BIT");
+    assert_eq!(ty, TypeId::Blob, "BIT comes back as {text}");
+    // The control: a type that does round-trip.
+    let (ty, text) = round_trip(&con, "TIMESTAMP '2024-02-29 12:34:56'");
+    assert_eq!(
+        (ty, text.as_str()),
+        (TypeId::Timestamp, "2024-02-29 12:34:56")
+    );
+}
+
+/// The audit's F-V9a: the docs said dictionary-encoded children were
+/// rejected with `NotImplemented`. `DuckDB` converts them
+/// (`ColumnArrowToDuckDBDictionary`); an `ENUM` column exports as one.
+#[test]
+fn dictionary_encoded_children_are_converted() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let mut result = con
+        .query("SELECT (['a','b','c'][i % 3 + 1])::ENUM('a','b','c') AS e FROM range(10) t(i)")
+        .expect("query");
+    let ty = result.column_logical_type(0).expect("type");
+    let options = ArrowOptions::from_connection(&con).expect("options");
+    let mut schema = to_arrow_schema(&options, &[("e", &ty)]).expect("schema");
+    let child = schema.child(0).expect("one column");
+    // SAFETY: `child` borrows a live schema record.
+    let dictionary = unsafe { (*child.as_ptr()).dictionary };
+    assert!(!dictionary.is_null(), "an ENUM exports dictionary-encoded");
+    // SAFETY: `con` is live.
+    let converted = unsafe { schema_from_arrow(con.as_raw(), &mut schema) }.expect("converted");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
+    let array = data_chunk_to_arrow(&options, &chunk).expect("export");
+    // SAFETY: `con` is live and `converted` came from it.
+    let back = unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }
+        .expect("dictionary arrays import");
+    assert_eq!(back.size(), 10);
+}

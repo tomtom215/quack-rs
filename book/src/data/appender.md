@@ -17,7 +17,7 @@ Call one `append_*` per column, then finish the row. `row` calls `end_row` for
 you, which is the difference between a forgotten `end_row` being a non-issue and
 a silently short table:
 
-```rust,no_run
+```rust
 use quack_rs::appender::{AppendError, Appender};
 # use libduckdb_sys::duckdb_connection;
 
@@ -35,6 +35,27 @@ for (sensor, reading) in [("a", 1.5_f64), ("b", 2.5)] {
 appender.close()?;
 # Ok(())
 # }
+# fn live_connection() -> libduckdb_sys::duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), libduckdb_sys::DuckDBSuccess);
+#     }
+#     con
+# }
+# /// First column of the first row, as BIGINT; `None` for NULL.
+# fn query_i64(con: libduckdb_sys::duckdb_connection, sql: &str) -> Option<i64> {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
+#     let reader = unsafe { chunk.reader(0) };
+#     unsafe { reader.is_valid(0).then(|| reader.read_i64(0)) }
+# }
+# let con = live_connection();
+# unsafe { quack_rs::query::execute(con, "CREATE TABLE measurements (sensor VARCHAR, reading DOUBLE)") }.unwrap();
+# unsafe { demo(con) }.unwrap();
+# assert_eq!(query_i64(con, "SELECT count(*) FROM measurements"), Some(2));
+# assert_eq!(query_i64(con, "SELECT (sum(reading) * 10)::BIGINT FROM measurements"), Some(40));
 ```
 
 `append_str` uses `duckdb_append_varchar_length`, so **interior NUL bytes
@@ -104,7 +125,6 @@ without re-appending rows that were already committed:
 
 ```rust,no_run
 # use quack_rs::appender::Appender;
-# #[cfg(feature = "duckdb-1-5")]
 # fn demo(appender: &Appender) {
 if let Err(err) = appender.flush() {
     eprintln!("flush failed: {err}");
@@ -112,6 +132,36 @@ if let Err(err) = appender.flush() {
 }
 # }
 ```
+
+## A row that fails half-way loses the batch
+
+DuckDB counts the values of the current row and cannot take one back. If a
+`row` closure fails *after* its first value went in, the half-written row can
+be neither finished nor dropped, and DuckDB's `close` then returns success
+while writing **nothing** — every row buffered since the last flush is gone.
+
+quack-rs does not let that pass silently. The appender becomes *poisoned*:
+every later `row`, append, `end_row`, `flush` and `close` returns an error
+saying how many buffered rows were not written. With `duckdb-1-5`, `clear()`
+discards them and makes the appender usable again; without it, create a new
+appender. `close()` with a row that was started but not ended is an error
+too (finish the row and close again).
+
+A value that fails as the *first* of its row loses nothing, and when you
+append by hand you can retry a rejected value in the same column. If losing a
+batch is not acceptable, `flush()` at the points you can afford to go back to.
+
+After a successful `close()` the appender refuses all further work.
+
+## Row order and schema changes
+
+- Row-at-a-time rows wait in their own buffer until 2,048 accumulate, while
+  `append_chunk` adds its rows to the table-bound buffer directly, so a chunk
+  lands **ahead of** rows appended before it that are still buffered. Flush
+  first if insertion order matters.
+- Buffered rows are written by column **position** at flush time. If another
+  connection drops a column and adds one in between, a value lands in the new
+  column with no error.
 
 ## API
 
@@ -134,7 +184,7 @@ if let Err(err) = appender.flush() {
 | `flush()` / `close()` | Flush buffered rows / flush and close |
 | `error_message()` | Message from the last failed operation |
 | `append_default_to_chunk(&chunk, col, row)` ¹ | Write a column's `DEFAULT` into a chunk cell |
-| `clear()` ¹ | Discard buffered, unflushed rows |
+| `clear()` ¹ | Discard buffered, unflushed rows (and un-poison the appender) |
 | `error_data()` ¹ | Structured [`ErrorData`] from the last failed operation |
 
 > ¹ Requires the `duckdb-1-5` feature flag.

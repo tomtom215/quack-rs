@@ -96,6 +96,9 @@ impl StructVector {
         field_idx: usize,
         row_count: usize,
     ) -> VectorReader {
+        // SAFETY: `StructVector::get_child` needs a live STRUCT vector and
+        // `field_idx` < its field count; those are this function's first two
+        // `# Safety` clauses, forwarded unchanged.
         let child = unsafe { Self::get_child(vector, field_idx) };
         // SAFETY: child is a valid vector with row_count rows.
         unsafe { VectorReader::from_vector(child, row_count) }
@@ -108,6 +111,9 @@ impl StructVector {
     /// - `vector` must be a valid `DuckDB` STRUCT vector.
     /// - `field_idx` must be a valid field index.
     pub unsafe fn field_writer(vector: duckdb_vector, field_idx: usize) -> VectorWriter {
+        // SAFETY: `StructVector::get_child` needs a live STRUCT vector and
+        // `field_idx` < its field count; those are this function's first two
+        // `# Safety` clauses, forwarded unchanged.
         let child = unsafe { Self::get_child(vector, field_idx) };
         // SAFETY: child is a valid writable vector.
         unsafe { VectorWriter::from_vector(child) }
@@ -152,6 +158,11 @@ impl ListVector {
     #[inline]
     #[must_use]
     pub unsafe fn get_size(vector: duckdb_vector) -> usize {
+        // SAFETY: `duckdb_list_vector_get_size` returns 0 for a null handle and
+        // otherwise calls `ListVector::GetListSize` (data_chunk-c.cpp), which casts
+        // the vector's `auxiliary` buffer to `VectorListBuffer` (vector.cpp), so it
+        // needs a LIST (or MAP) vector; the `# Safety` contract makes `vector` a
+        // valid LIST vector.
         usize::try_from(unsafe { duckdb_list_vector_get_size(vector) }).unwrap_or(0)
     }
 
@@ -184,7 +195,9 @@ impl ListVector {
     ///   [`MAX_LIST_CHILD_CAPACITY`][crate::vector::MAX_LIST_CHILD_CAPACITY]
     ///   (`2^37`). Above it `DuckDB` throws an `OutOfRangeException`
     ///   (`VectorListBuffer::Reserve`), which the C API does not catch, so the
-    ///   process aborts.
+    ///   process aborts. Below it, a reservation the allocator cannot satisfy
+    ///   aborts the same way, so a capacity derived from input data should be
+    ///   bounded to what fits in memory.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
         // SAFETY: caller guarantees vector is valid.
@@ -205,6 +218,12 @@ impl ListVector {
         // SAFETY: vector is valid; we write to the parent vector's data at row_idx.
         let data = unsafe { duckdb_vector_get_data(vector) };
         // The parent stores duckdb_list_entry per row. Each entry is { offset: u64, length: u64 }.
+        // SAFETY: `data` is the flat `list_entry_t` array of this LIST vector
+        // (`duckdb_vector_get_data` returns `FlatVector::GetData`, data_chunk-c.cpp),
+        // one 16-byte `{offset: u64, length: u64}` entry per row of capacity, which
+        // `duckdb_list_entry` mirrors (see `list_entry_layout` below). The
+        // `# Safety` contract requires `row_idx` to be a valid row of `vector`, so
+        // `add(row_idx)` stays inside that allocation.
         let entry_ptr = unsafe { data.cast::<duckdb_list_entry>().add(row_idx) };
         // SAFETY: entry_ptr is in bounds for the allocated vector.
         unsafe {
@@ -221,7 +240,14 @@ impl ListVector {
     /// - `row_idx` must be a valid row index.
     #[must_use]
     pub unsafe fn get_entry(vector: duckdb_vector, row_idx: usize) -> duckdb_list_entry {
+        // SAFETY: `duckdb_vector_get_data` only dereferences the handle, returning
+        // null for a null one (data_chunk-c.cpp); the `# Safety` contract makes
+        // `vector` a valid LIST vector, whose data buffer is its `list_entry_t`
+        // array.
         let data = unsafe { duckdb_vector_get_data(vector) };
+        // SAFETY: the buffer holds one 16-byte `list_entry_t` per row, which
+        // `duckdb_list_entry` mirrors, and the `# Safety` contract requires
+        // `row_idx` to be a valid row index, so `add(row_idx)` stays in bounds.
         let entry_ptr = unsafe { data.cast::<duckdb_list_entry>().add(row_idx) };
         // SAFETY: entry_ptr is valid and initialized by DuckDB or a prior set_entry call.
         unsafe { core::ptr::read_unaligned(entry_ptr) }
@@ -234,7 +260,15 @@ impl ListVector {
     /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - The child must have been reserved with at least `capacity` elements.
     pub unsafe fn child_writer(vector: duckdb_vector) -> VectorWriter {
+        // SAFETY: `ListVector::get_child` only needs a valid LIST vector, which is
+        // this function's first `# Safety` clause.
         let child = unsafe { Self::get_child(vector) };
+        // SAFETY: `VectorWriter::from_vector` needs a valid, writable vector that
+        // outlives the writer. `child` is `&ListVector::GetEntry(*v)`
+        // (data_chunk-c.cpp), which duckdb.h documents as valid as long as the
+        // parent is, and the parent is the caller's valid LIST vector; the returned
+        // writer has no lifetime, so keeping `vector` alive while it is used is left
+        // to the caller, as with every raw-handle constructor here.
         unsafe { VectorWriter::from_vector(child) }
     }
 
@@ -245,7 +279,13 @@ impl ListVector {
     /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - `element_count` must equal the total number of elements in the child.
     pub unsafe fn child_reader(vector: duckdb_vector, element_count: usize) -> VectorReader {
+        // SAFETY: `ListVector::get_child` only needs a valid LIST vector, which is
+        // this function's first `# Safety` clause.
         let child = unsafe { Self::get_child(vector) };
+        // SAFETY: `VectorReader::from_vector` needs a valid vector and its row count.
+        // `child` is `&ListVector::GetEntry(*v)` (data_chunk-c.cpp), valid as long as
+        // the caller's LIST vector is (duckdb.h), and `# Safety` clause 2 makes
+        // `element_count` the number of elements in that child.
         unsafe { VectorReader::from_vector(child, element_count) }
     }
 }
@@ -282,6 +322,10 @@ impl MapVector {
     #[must_use]
     pub unsafe fn struct_child(vector: duckdb_vector) -> duckdb_vector {
         // MAP is LIST<STRUCT{key,value}>, so the list child is a STRUCT vector.
+        // SAFETY: `duckdb_list_vector_get_child` calls `ListVector::GetEntry`
+        // (data_chunk-c.cpp), whose `GetEntryInternal` accepts `LogicalTypeId::MAP`
+        // as well as LIST (vector.cpp); the `# Safety` contract makes `vector` a
+        // valid MAP vector.
         unsafe { duckdb_list_vector_get_child(vector) }
     }
 
@@ -293,6 +337,8 @@ impl MapVector {
     #[inline]
     #[must_use]
     pub unsafe fn keys(vector: duckdb_vector) -> duckdb_vector {
+        // SAFETY: `struct_child` only needs a valid MAP vector, which is this
+        // function's `# Safety` contract.
         let struct_vec = unsafe { Self::struct_child(vector) };
         // SAFETY: MAP child STRUCT always has key at field 0, value at field 1.
         unsafe { duckdb_struct_vector_get_child(struct_vec, 0) }
@@ -306,6 +352,8 @@ impl MapVector {
     #[inline]
     #[must_use]
     pub unsafe fn values(vector: duckdb_vector) -> duckdb_vector {
+        // SAFETY: `struct_child` only needs a valid MAP vector, which is this
+        // function's `# Safety` contract.
         let struct_vec = unsafe { Self::struct_child(vector) };
         // SAFETY: MAP child STRUCT always has key at field 0, value at field 1.
         unsafe { duckdb_struct_vector_get_child(struct_vec, 1) }
@@ -319,6 +367,10 @@ impl MapVector {
     #[inline]
     #[must_use]
     pub unsafe fn total_entry_count(vector: duckdb_vector) -> usize {
+        // SAFETY: `duckdb_list_vector_get_size` calls `ListVector::GetListSize`
+        // (data_chunk-c.cpp), which reads the `VectorListBuffer` that LIST and MAP
+        // vectors both carry (vector.cpp); the `# Safety` contract makes `vector` a
+        // valid MAP vector.
         usize::try_from(unsafe { duckdb_list_vector_get_size(vector) }).unwrap_or(0)
     }
 
@@ -332,6 +384,11 @@ impl MapVector {
     ///   (`2^37`); see [`ListVector::reserve`], which this shares with `DuckDB`.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
+        // SAFETY: `duckdb_list_vector_reserve` calls `ListVector::Reserve`
+        // (data_chunk-c.cpp), which requires a LIST or MAP vector with a list buffer
+        // (vector.cpp) — `# Safety` clause 1 — and throws `OutOfRangeException`
+        // above `MAX_VECTOR_SIZE` = 2^37 (vector_buffer.cpp), which would abort
+        // across the C API; clause 2 keeps `capacity` at or below that.
         unsafe { duckdb_list_vector_reserve(vector, capacity as idx_t) };
     }
 
@@ -339,9 +396,19 @@ impl MapVector {
     ///
     /// # Safety
     ///
-    /// `vector` must be a valid `DuckDB` MAP vector.
+    /// - `vector` must be a valid `DuckDB` MAP vector.
+    /// - `size` must equal the number of key-value entries written into the key
+    ///   and value child vectors, so it is at most the capacity reserved with
+    ///   [`reserve`][Self::reserve]. `DuckDB` stores `size` unchecked and later
+    ///   reads that many child entries.
     #[inline]
     pub unsafe fn set_size(vector: duckdb_vector, size: usize) {
+        // SAFETY: `duckdb_list_vector_set_size` calls `ListVector::SetListSize`
+        // (data_chunk-c.cpp), which casts the vector's `auxiliary` to
+        // `VectorListBuffer` and stores `size` unchecked (vector.cpp,
+        // vector_buffer.cpp). `# Safety` clause 1 makes `vector` a valid MAP
+        // vector; clause 2 keeps `size` within the entries actually written,
+        // so DuckDB's later reads of `size` child entries stay in bounds.
         unsafe { duckdb_list_vector_set_size(vector, size as idx_t) };
     }
 
@@ -365,6 +432,10 @@ impl MapVector {
     /// Same as [`ListVector::get_entry`].
     #[must_use]
     pub unsafe fn get_entry(vector: duckdb_vector, row_idx: usize) -> duckdb_list_entry {
+        // SAFETY: this function's contract is `ListVector::get_entry`'s (a valid
+        // vector whose data is a `list_entry_t` array, and a valid `row_idx`); a
+        // MAP vector is physically `LIST<STRUCT{key, value}>`, so its data buffer
+        // has that same layout.
         unsafe { ListVector::get_entry(vector, row_idx) }
     }
 
@@ -374,6 +445,8 @@ impl MapVector {
     ///
     /// `vector` must be a valid `DuckDB` MAP vector.
     pub unsafe fn key_writer(vector: duckdb_vector) -> VectorWriter {
+        // SAFETY: `keys` only needs a valid MAP vector, which is this function's
+        // `# Safety` contract.
         let keys = unsafe { Self::keys(vector) };
         // SAFETY: keys is a valid writable child vector.
         unsafe { VectorWriter::from_vector(keys) }
@@ -385,6 +458,8 @@ impl MapVector {
     ///
     /// `vector` must be a valid `DuckDB` MAP vector.
     pub unsafe fn value_writer(vector: duckdb_vector) -> VectorWriter {
+        // SAFETY: `values` only needs a valid MAP vector, which is this function's
+        // `# Safety` contract.
         let vals = unsafe { Self::values(vector) };
         // SAFETY: vals is a valid writable child vector.
         unsafe { VectorWriter::from_vector(vals) }
@@ -397,6 +472,8 @@ impl MapVector {
     /// - `vector` must be a valid `DuckDB` MAP vector.
     /// - `element_count` must equal the total number of key-value entries.
     pub unsafe fn key_reader(vector: duckdb_vector, element_count: usize) -> VectorReader {
+        // SAFETY: `keys` only needs a valid MAP vector, which is this function's
+        // first `# Safety` clause.
         let keys = unsafe { Self::keys(vector) };
         // SAFETY: keys is a valid vector with element_count elements.
         unsafe { VectorReader::from_vector(keys, element_count) }
@@ -409,6 +486,8 @@ impl MapVector {
     /// - `vector` must be a valid `DuckDB` MAP vector.
     /// - `element_count` must equal the total number of key-value entries.
     pub unsafe fn value_reader(vector: duckdb_vector, element_count: usize) -> VectorReader {
+        // SAFETY: `values` only needs a valid MAP vector, which is this function's
+        // first `# Safety` clause.
         let vals = unsafe { Self::values(vector) };
         // SAFETY: vals is a valid vector with element_count elements.
         unsafe { VectorReader::from_vector(vals, element_count) }
@@ -431,13 +510,15 @@ impl ArrayVector {
     #[inline]
     #[must_use]
     pub unsafe fn get_child(vector: duckdb_vector) -> duckdb_vector {
+        // SAFETY: `duckdb_array_vector_get_child` calls `ArrayVector::GetEntry`
+        // (data_chunk-c.cpp), which requires an ARRAY vector; the `# Safety`
+        // contract makes `vector` a valid ARRAY vector.
         unsafe { duckdb_array_vector_get_child(vector) }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use libduckdb_sys::duckdb_list_entry;
 
     #[test]
@@ -448,26 +529,5 @@ mod tests {
             16,
             "duckdb_list_entry should be {{ offset: u64, length: u64 }}"
         );
-    }
-
-    #[test]
-    fn set_and_get_list_entry() {
-        // Simulate the list parent vector data buffer (one row).
-        let mut data = duckdb_list_entry {
-            offset: 0,
-            length: 0,
-        };
-        let vec_ptr: duckdb_vector = std::ptr::addr_of_mut!(data).cast();
-
-        // Write entry for row 0: offset=5, length=3.
-        // We bypass the actual DuckDB call and test the pointer arithmetic directly.
-        let entry_ptr = std::ptr::addr_of_mut!(data);
-        unsafe {
-            (*entry_ptr).offset = 5;
-            (*entry_ptr).length = 3;
-        }
-        assert_eq!(data.offset, 5);
-        assert_eq!(data.length, 3);
-        let _ = vec_ptr; // suppress unused warning; no FFI call possible without runtime
     }
 }

@@ -75,9 +75,14 @@ use crate::vector::VectorWriter;
 /// `DuckDB`'s hard ceiling on a child vector's capacity.
 ///
 /// `duckdb_list_vector_reserve` throws a C++ `OutOfRangeException` above this,
-/// and the C API wrapper does not catch it — the exception would unwind into
-/// Rust, which is undefined behaviour. [`ListBuilder`] refuses to make the call
-/// instead.
+/// and the C API wrapper does not catch it — the exception unwinds into Rust,
+/// which aborts the process ("Rust cannot catch foreign exceptions").
+/// [`ListBuilder`] refuses to make the call instead.
+///
+/// Staying below it is necessary, not sufficient: a reservation under the
+/// ceiling that the allocator cannot satisfy throws through the same uncaught
+/// path. Use [`ListBuilder::with_element_limit`] to bound lengths that come
+/// from untrusted input.
 ///
 /// Typed `u64` to match `duckdb::DConstants::MAX_VECTOR_SIZE`, which is
 /// `1ULL << 37ULL` — an `idx_t`, not a pointer-sized value. It does not fit in a
@@ -95,7 +100,7 @@ pub const MAX_LIST_CHILD_CAPACITY: u64 = 1 << 37;
     clippy::cast_possible_truncation,
     reason = "the branch above proves the value fits"
 )]
-const MAX_CHILD_CAPACITY_USIZE: usize = if MAX_LIST_CHILD_CAPACITY > usize::MAX as u64 {
+pub(crate) const MAX_CHILD_CAPACITY_USIZE: usize = if MAX_LIST_CHILD_CAPACITY > usize::MAX as u64 {
     usize::MAX
 } else {
     MAX_LIST_CHILD_CAPACITY as usize
@@ -113,8 +118,11 @@ pub struct ListBuilder {
     /// Capacity most recently requested, so `push_row` only reserves when it
     /// must (each reserve that grows is a reallocation plus a copy).
     reserved: usize,
-    /// Set when a requested capacity exceeded [`MAX_LIST_CHILD_CAPACITY`]; the
-    /// builder then stops writing rather than letting `DuckDB` throw.
+    /// Most child elements this builder will reserve: [`MAX_LIST_CHILD_CAPACITY`]
+    /// unless lowered with [`with_element_limit`][Self::with_element_limit].
+    limit: usize,
+    /// Set when a requested capacity exceeded `limit`; the builder then writes
+    /// every remaining row as NULL rather than letting `DuckDB` throw.
     overflowed: bool,
 }
 
@@ -130,8 +138,34 @@ impl ListBuilder {
             vector,
             written: 0,
             reserved: 0,
+            limit: MAX_CHILD_CAPACITY_USIZE,
             overflowed: false,
         }
+    }
+
+    /// Lowers the number of child elements this builder will reserve, in total
+    /// across all rows. Values above [`MAX_LIST_CHILD_CAPACITY`] are clamped to
+    /// it.
+    ///
+    /// # Why an extension needs this
+    ///
+    /// [`MAX_LIST_CHILD_CAPACITY`] is `DuckDB`'s own ceiling, 2^37 elements —
+    /// far more memory than most machines have. A request below that ceiling
+    /// that the allocator cannot satisfy makes `DuckDB` throw from
+    /// `duckdb_list_vector_reserve`, which has no `try`/`catch` (`DuckDB`
+    /// 1.5.5, `src/main/capi/data_chunk-c.cpp`), so the exception unwinds into
+    /// Rust and the process aborts. Nothing in this crate can catch it. When
+    /// row lengths come from untrusted input, set a limit that fits in memory;
+    /// a row that would exceed it is written as NULL and
+    /// [`overflowed`][Self::overflowed] reports it.
+    #[must_use]
+    pub const fn with_element_limit(mut self, limit: usize) -> Self {
+        self.limit = if limit < MAX_CHILD_CAPACITY_USIZE {
+            limit
+        } else {
+            MAX_CHILD_CAPACITY_USIZE
+        };
+        self
     }
 
     /// Total elements written into the child vector so far.
@@ -141,11 +175,16 @@ impl ListBuilder {
         self.written
     }
 
-    /// Returns `true` if a requested capacity exceeded
-    /// [`MAX_LIST_CHILD_CAPACITY`], after which the builder writes nothing more.
+    /// Returns `true` if a row would have taken the child vector past the
+    /// element limit ([`MAX_LIST_CHILD_CAPACITY`], or the one set with
+    /// [`with_element_limit`][Self::with_element_limit]).
     ///
-    /// Check this before [`finish`][Self::finish] if the row lengths come from
-    /// untrusted input; the rows already written stay valid.
+    /// From that row on, the builder writes nothing into the child: that row
+    /// and every later [`push_row`][Self::push_row] /
+    /// [`push_map_row`][Self::push_map_row] row is set to NULL, with an empty
+    /// list entry. Rows written before it stay valid. Check this before
+    /// [`finish`][Self::finish] if the row lengths come from untrusted input,
+    /// and report an error if a NULL is not an acceptable answer.
     #[must_use]
     #[inline]
     pub const fn overflowed(&self) -> bool {
@@ -154,8 +193,8 @@ impl ListBuilder {
 
     /// Grows the child vector to hold at least `capacity` elements in total.
     ///
-    /// Returns `false` — writing nothing — if `capacity` exceeds
-    /// [`MAX_LIST_CHILD_CAPACITY`].
+    /// Returns `false` — writing nothing — if `capacity` exceeds the element
+    /// limit, or an earlier request already did.
     ///
     /// # Safety
     ///
@@ -164,16 +203,16 @@ impl ListBuilder {
         if self.overflowed {
             return false;
         }
-        // Compared in `u64` because the ceiling is an `idx_t`: on a 32-bit
-        // target it exceeds `usize::MAX`, so no `usize` can reach it.
-        if capacity as u64 > MAX_LIST_CHILD_CAPACITY {
+        // `self.limit <= MAX_CHILD_CAPACITY_USIZE`, which is DuckDB's ceiling
+        // clamped to `usize` (on a 32-bit target no `usize` can reach it).
+        if capacity > self.limit {
             self.overflowed = true;
             return false;
         }
         if capacity > self.reserved {
             // Grow geometrically: each reserve that grows reallocates and copies
             // the whole child, so doing it once per row is quadratic.
-            let target = capacity.next_power_of_two().min(MAX_CHILD_CAPACITY_USIZE);
+            let target = capacity.next_power_of_two().min(self.limit);
             // SAFETY: `self.vector` is valid per this function's contract, and
             // `target` is within DuckDB's limit.
             unsafe { ListVector::reserve(self.vector, target) };
@@ -188,7 +227,9 @@ impl ListBuilder {
     /// obtained *after* the reserve, so it is never stale — and `base`, the
     /// index the row's first element occupies. Write indices `base..base + len`.
     ///
-    /// Does nothing once [`overflowed`][Self::overflowed] is set.
+    /// If the row would exceed the element limit — or an earlier row already
+    /// did — the closure is not called and the row is written as NULL; see
+    /// [`overflowed`][Self::overflowed].
     ///
     /// # Safety
     ///
@@ -202,6 +243,8 @@ impl ListBuilder {
         let base = self.written;
         // SAFETY: `self.vector` is valid per the constructor's contract.
         if !unsafe { self.ensure_capacity(base.saturating_add(len)) } {
+            // SAFETY: `row_idx` is in bounds per the caller's contract.
+            unsafe { self.refuse_row(row_idx) };
             return;
         }
         if len > 0 {
@@ -219,6 +262,9 @@ impl ListBuilder {
     /// The closure receives a writer for the key child, a writer for the value
     /// child, and the base index. Write indices `base..base + len` in both.
     ///
+    /// Past the element limit the row is written as NULL, exactly as for
+    /// [`push_row`][Self::push_row].
+    ///
     /// # Safety
     ///
     /// - `self.vector` must be a `MAP` vector.
@@ -231,6 +277,8 @@ impl ListBuilder {
         let base = self.written;
         // SAFETY: `self.vector` is valid per the constructor's contract.
         if !unsafe { self.ensure_capacity(base.saturating_add(len)) } {
+            // SAFETY: `row_idx` is in bounds per the caller's contract.
+            unsafe { self.refuse_row(row_idx) };
             return;
         }
         if len > 0 {
@@ -248,6 +296,25 @@ impl ListBuilder {
         // SAFETY: `row_idx` is in bounds per the caller's contract.
         unsafe { ListVector::set_entry(self.vector, row_idx, base as u64, len as u64) };
         self.written = base + len;
+    }
+
+    /// Writes `row_idx` as a NULL with an empty entry.
+    ///
+    /// The entry matters as much as the NULL: `DuckDB` reuses output vectors
+    /// across chunks, so a row whose entry is never written keeps the
+    /// `{offset, length}` of an earlier chunk, pointing into child data this
+    /// chunk never wrote.
+    ///
+    /// # Safety
+    ///
+    /// `row_idx` must be within the parent vector's capacity.
+    unsafe fn refuse_row(&mut self, row_idx: usize) {
+        // SAFETY: `self.vector` is valid per the constructor's contract and
+        // `row_idx` is in bounds per this function's.
+        unsafe {
+            ListVector::set_entry(self.vector, row_idx, self.written as u64, 0);
+            VectorWriter::from_vector(self.vector).set_null(row_idx);
+        }
     }
 
     /// Declares how many child elements are valid, completing the vector.
@@ -269,7 +336,43 @@ impl ListBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_CHILD_CAPACITY_USIZE, MAX_LIST_CHILD_CAPACITY};
+    use super::{ListBuilder, MAX_CHILD_CAPACITY_USIZE, MAX_LIST_CHILD_CAPACITY};
+
+    #[test]
+    fn the_element_limit_defaults_to_and_is_clamped_by_duckdbs_ceiling() {
+        // SAFETY: `new` and `with_element_limit` only store the pointer; no
+        // DuckDB call is made, so a null vector is never dereferenced.
+        let fresh = unsafe { ListBuilder::new(std::ptr::null_mut()) };
+        assert_eq!(fresh.limit, MAX_CHILD_CAPACITY_USIZE);
+        assert!(!fresh.overflowed());
+        let lowered = fresh.with_element_limit(100);
+        assert_eq!(lowered.limit, 100);
+        // SAFETY: as above.
+        let raised =
+            unsafe { ListBuilder::new(std::ptr::null_mut()) }.with_element_limit(usize::MAX);
+        assert_eq!(raised.limit, MAX_CHILD_CAPACITY_USIZE);
+    }
+
+    /// A request past the element limit is refused before `DuckDB` is asked
+    /// for anything, and the refusal sticks: `overflowed` reports it and every
+    /// later request — however small — is refused too, so no row after the
+    /// first overflowing one is written.
+    #[test]
+    fn a_request_past_the_element_limit_is_refused_and_reported() {
+        // SAFETY: `ensure_capacity` makes no DuckDB call for a request of 0
+        // elements or one past the limit, so the null vector is never used.
+        let mut builder = unsafe { ListBuilder::new(std::ptr::null_mut()) }.with_element_limit(10);
+        // SAFETY: as above.
+        assert!(unsafe { builder.ensure_capacity(0) });
+        assert!(!builder.overflowed());
+        // SAFETY: as above.
+        assert!(!unsafe { builder.ensure_capacity(11) });
+        assert!(builder.overflowed());
+        // SAFETY: as above; the builder has overflowed, so nothing is reserved.
+        assert!(!unsafe { builder.ensure_capacity(0) });
+        assert!(builder.overflowed());
+        assert_eq!(builder.element_count(), 0);
+    }
 
     #[test]
     fn max_capacity_matches_duckdbs_constant() {

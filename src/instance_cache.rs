@@ -41,11 +41,40 @@ use crate::error::ExtensionError;
 
 /// RAII wrapper for a `duckdb_instance_cache`.
 ///
-/// Automatically destroyed when dropped. Databases obtained from the cache
-/// remain valid until they are individually closed and the cache is dropped.
+/// Automatically destroyed when dropped. A database obtained from the cache
+/// holds its own reference to the instance, so it stays valid after the cache
+/// is dropped, until it is closed.
+///
+/// # Threads
+///
+/// `InstanceCache` is `Send + Sync`: one cache can be shared by threads that
+/// open databases through it concurrently, which is what it is for.
+///
+/// One ordering hazard is `DuckDB`'s, not a data race: while the **last**
+/// handle to a cached file database is being closed, a concurrent
+/// [`get_or_create`][Self::get_or_create] for the same path can fail with
+/// "Unique file handle conflict ... is already attached" — the closing
+/// instance still holds the file. Keep one handle open for as long as other
+/// threads may open the path, or retry.
 pub struct InstanceCache {
     cache: duckdb_instance_cache,
 }
+
+// SAFETY: the handle owns a heap-allocated `DBInstanceCacheWrapper` holding a
+// `duckdb::DBInstanceCache` (src/main/capi/duckdb-c.cpp). That object has no
+// thread affinity, so it may be dropped on any thread (`Send`). Its only
+// shared-state operation reachable through `&self` is
+// `duckdb_get_or_create_from_cache` → `DBInstanceCache::GetOrCreateInstance`,
+// which takes the cache's `mutex cache_lock` before it reads or writes the
+// `db_instances` map, and serialises creation of one database with that
+// entry's `update_database_mutex` (src/main/db_instance_cache.cpp,
+// src/include/duckdb/main/db_instance_cache.hpp). Concurrent calls through
+// shared references are therefore data-race free (`Sync`). The one argument it
+// mutates besides its own state is the `DBConfig` passed in; `DbConfig` is
+// neither `Send` nor `Sync`, so two threads cannot pass the same one.
+unsafe impl Send for InstanceCache {}
+// SAFETY: see the `Send` impl above.
+unsafe impl Sync for InstanceCache {}
 
 impl InstanceCache {
     /// Creates a new, empty instance cache.
@@ -59,8 +88,16 @@ impl InstanceCache {
     /// Opens `path` through the cache, creating the instance if it does not yet
     /// exist or returning a handle to the cached one if it does.
     ///
-    /// Pass `config` to control how a freshly-created instance is configured; it
-    /// is ignored when an instance already exists for `path`.
+    /// Pass `config` to control how a freshly-created instance is configured.
+    /// When an instance already exists for `path`, `config` must match the one
+    /// it was created with: a different configuration is an error ("Can't open
+    /// a connection to same database file with a different configuration than
+    /// existing connections", `DBInstanceCache::GetInstanceInternal`), not
+    /// silently ignored. `None` means `DuckDB`'s defaults, so it too conflicts
+    /// with an instance created with a non-default `config`.
+    ///
+    /// An empty `path` (or `:memory:`) is never cached: each call creates a new,
+    /// separate in-memory database.
     ///
     /// The returned `duckdb_database` is owned by the caller and **must** be
     /// closed with `duckdb_close` when no longer needed.
@@ -68,7 +105,8 @@ impl InstanceCache {
     /// # Errors
     ///
     /// Returns an [`ExtensionError`] carrying `DuckDB`'s message if the instance
-    /// cannot be opened or created.
+    /// cannot be opened or created, or if `config` conflicts with the cached
+    /// instance's.
     pub fn get_or_create(
         &self,
         path: &CStr,
@@ -145,6 +183,62 @@ mod tests {
         let mut db = result.unwrap();
         // SAFETY: db is a valid duckdb_database returned from the cache.
         unsafe { libduckdb_sys::duckdb_close(&raw mut db) };
+    }
+
+    /// Scratch database path unique to this test process.
+    fn scratch_db(tag: &str) -> std::ffi::CString {
+        let path = std::env::temp_dir().join(format!(
+            "quack_rs_instance_cache_{tag}_{}.duckdb",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::ffi::CString::new(path.to_str().expect("utf-8 temp dir")).expect("no NUL")
+    }
+
+    /// TBL-13: the doc said a different config for an existing instance is
+    /// ignored; `DuckDB` rejects it.
+    #[test]
+    fn a_different_config_for_a_cached_instance_is_an_error() {
+        let _dispatch = crate::testing::InMemoryDb::open().unwrap();
+        let cache = InstanceCache::new();
+        let path = scratch_db("config");
+        let mut first = cache.get_or_create(&path, None).expect("first open");
+        let config = DbConfig::new().unwrap().set("threads", "1").unwrap();
+        let err = cache
+            .get_or_create(&path, Some(&config))
+            .expect_err("a conflicting config must be refused");
+        assert!(err.as_str().contains("different configuration"), "{err}");
+        // SAFETY: `first` came from the cache and is closed once.
+        unsafe { libduckdb_sys::duckdb_close(&raw mut first) };
+        let _ = std::fs::remove_file(path.to_str().unwrap_or_default());
+    }
+
+    /// TBL-25: a cache can be shared across threads.
+    #[test]
+    fn one_cache_serves_concurrent_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<InstanceCache>();
+
+        let _dispatch = crate::testing::InMemoryDb::open().unwrap();
+        let cache = InstanceCache::new();
+        let path = scratch_db("threads");
+        // Every thread opens, then waits until all have opened before any
+        // closes: closing the last handle while another thread opens the
+        // same path is a DuckDB-level conflict (see "Threads").
+        let opened = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    let mut db = cache
+                        .get_or_create(&path, None)
+                        .expect("open from a thread");
+                    opened.wait();
+                    // SAFETY: `db` came from the cache and is closed once.
+                    unsafe { libduckdb_sys::duckdb_close(&raw mut db) };
+                });
+            }
+        });
+        let _ = std::fs::remove_file(path.to_str().unwrap_or_default());
     }
 }
 

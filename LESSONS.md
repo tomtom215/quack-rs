@@ -14,10 +14,11 @@ will hit every one of these problems. This SDK makes most of them impossible.
 
 **Symptom**: Aggregate function returns wrong results. No error, no crash.
 
-**Root cause**: DuckDB's segment tree creates fresh zero-initialized target states via `state_init`,
-then calls `combine` to merge source states into them. If your `combine` only propagates data
-fields (e.g., `count`, `sum`) but forgets configuration fields (e.g., `window_size`, `mode`),
-the configuration will be zero at finalize time, silently corrupting results.
+**Root cause**: DuckDB's segment tree creates fresh target states with `state_init` (for
+`FfiState<T>`, `T::default()`), then calls `combine` to merge source states into them. If your
+`combine` only propagates data fields (e.g., `count`, `sum`) but forgets configuration fields
+(e.g., `window_size`, `mode`), the configuration is still at its default at finalize time,
+silently corrupting results.
 
 **Fix**:
 ```rust
@@ -188,9 +189,9 @@ SELECT always_999(NULL::BIGINT);  -- NULL, because of constant folding
 - `map1_opt` / `map2_opt`, and `NullHandling::SpecialNullHandling`, are for
   functions that genuinely mean to see NULLs.
 
-**Aggregates are different.** DuckDB's aggregate executor really does filter NULL
-rows before `update` under `DEFAULT_NULL_HANDLING`; this lesson is specific to
-scalar functions.
+**Aggregates are no different**: `update` receives NULL rows under either
+setting too — see L12. (Until September 2026 this paragraph said the opposite;
+it was never checked, and it was wrong.)
 
 Pinned by `default_null_handling_does_not_propagate_nulls_for_scalar_functions`
 in `tests/ffi_roundtrip.rs`, so a future DuckDB that changes this shows up as a
@@ -350,6 +351,41 @@ checked and work.
 
 ---
 
+## L12: Aggregate `update` receives NULL rows under `DEFAULT_NULL_HANDLING`
+
+**Status**: Documented on `NullHandling`, `UpdateFn` and both aggregate builders'
+`null_handling`. Pinned by
+`aggregate_update_receives_null_rows_under_either_null_handling` in
+`tests/ffi_roundtrip/lifecycle.rs`.
+
+**Symptom**: An aggregate that reads every row — `state.sum += reader.read_i64(row)`
+— returns a wrong answer, with no error, as soon as its input column contains a
+NULL. The value read for a NULL row is whatever the data buffer happens to hold.
+
+**Root cause**: quack-rs used to document (in `NullHandling`, the builders and
+the book) that DuckDB's aggregate executor filters NULL rows out before
+`update` unless `SpecialNullHandling` is set. It does not. `CAPIAggregateUpdate`
+(`src/main/capi/aggregate_function-c.cpp`) flattens each input vector and
+passes the whole chunk, validity and all. For an aggregate the setting is
+read in one place, `BoundAggregateExpression::PropagatesNullValues`, which only
+the correlated-subquery decorrelator (`flatten_dependent_join.cpp`) consults to
+pick an `INNER` or `LEFT` join; the aggregate `VerifyNullHandling` check is
+compiled only under `#ifdef DEBUG`. Checked against DuckDB 1.5.5: `update` saw
+every NULL row, ungrouped and under `GROUP BY`, under both settings, and no
+correlated subquery tried answered differently under the two.
+
+**Fix**: in `update`, skip rows where `VectorReader::is_valid(row)` is false,
+whatever the null handling. Use `SpecialNullHandling` to declare that the
+aggregate returns non-NULL for NULL input; it does not change which rows arrive.
+
+A related trap under either setting: in a correlated subquery,
+`(SELECT my_count(x) FROM t2 WHERE t2.k = t1.k)` is NULL, not `my_count` of an
+empty input, for an outer row with no match. DuckDB rewrites that NULL to 0 only
+for its own `count`. Wrap the subquery in `coalesce(..., 0)` if it matters.
+Pinned by `a_count_like_aggregate_in_a_correlated_subquery_is_null_for_an_unmatched_row`.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured manually in `Cargo.toml`.
@@ -373,7 +409,10 @@ crate-type = ["cdylib", "rlib"]
 
 **Status**: Must be handled manually when using `append_extension_metadata.py`.
 
-**Symptom**: Metadata script fails or produces incorrect metadata.
+**Symptom**: The metadata script succeeds, and `LOAD` then refuses the file:
+"The file was built for DuckDB C API version 'v1.5.5', but we can only load
+extensions built for DuckDB C API 'v1.2.0' and lower" (verified on DuckDB 1.4.4
+and 1.5.5 with a file stamped `-dv v1.5.5`).
 
 **Root cause**: The `-dv` flag to `append_extension_metadata.py` must be the C API version
 (e.g., `"v1.2.0"`), NOT the DuckDB release version (e.g., `"v1.4.4"` / `"v1.5.0"` / `"v1.5.1"`).
@@ -406,9 +445,11 @@ In duckdb-behavioral, 435 unit tests passed while the extension had three critic
 2. 6 of 7 functions not registered (function set name bug)
 3. Wrong results from window_funnel (combine not propagating config)
 
-**Fix**: Always run E2E tests using the actual DuckDB CLI:
+**Fix**: Always run E2E tests using the actual DuckDB CLI, loading the
+packaged `.duckdb_extension` (DuckDB refuses a bare `.so`; append the metadata
+footer with `append_metadata`, and start the CLI with `-unsigned`):
 ```sql
-LOAD './libmy_extension.so';
+LOAD './my_extension.duckdb_extension';
 SELECT my_function(col) FROM ...;
 ```
 
@@ -421,12 +462,25 @@ SELECT my_function(col) FROM ...;
 **Symptom**: `make configure` or `make release` fails.
 
 **Root cause**: The community extension CI uses `extension-ci-tools` as a git submodule.
-If not initialized, the Makefile cannot find the build scripts.
+If it is not checked out, the Makefile cannot find the build scripts.
 
-**Fix**:
+**Fix**: In a **new** project (for example one fresh from the scaffold) the
+submodule has never been added: the scaffold writes `.gitmodules`, but a file
+cannot create the gitlink git needs, so `git submodule update --init` finds
+nothing to do and exits 0 without cloning anything. Add it once:
+
+```bash
+git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+```
+
+In a **clone** of a repository that already has the submodule:
+
 ```bash
 git submodule update --init --recursive
 ```
+
+The generated `Makefile` checks for the checkout before it includes anything
+from it and prints both commands if it is missing.
 
 ---
 
@@ -602,7 +656,7 @@ it at compiled-in offsets. The struct has two regions:
 |--------|-------------|------------|
 | v1.2.0 – v1.2.2 | 408 | baseline |
 | v1.3.0 – v1.3.2 | 428 | appended |
-| v1.4.0 – v1.4.4 | 459 | `duckdb_create_varint` renamed to `duckdb_create_bignum`; appended |
+| v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` renamed to `duckdb_create_bignum`; appended |
 | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
 | v1.5.2 – v1.5.5 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
 

@@ -41,7 +41,7 @@ Arguments:
   <input>   Input .so / .dylib / .dll / .wasm file
   <output>  Output .duckdb_extension file
 
-Options:
+Options (each value can also be given as --option=VALUE):
   --abi-type <TYPE>            C_STRUCT | CPP | C_STRUCT_UNSTABLE  [default: C_STRUCT]
   --extension-version <VER>    Your extension's version (e.g. v0.1.0)  [default: v0.1.0]
   --duckdb-version <VER>       C_STRUCT: the C extension API version, at most {api}
@@ -80,7 +80,15 @@ pub fn parse(raw: &[String]) -> Result<Command, String> {
     let (mut dump, mut replace, mut wasm) = (false, false, false);
 
     let mut iter = raw.iter().map(String::as_str);
-    while let Some(arg) = iter.next() {
+    while let Some(raw_arg) = iter.next() {
+        // `--flag=value` is the same as `--flag value`.
+        let (arg, inline) = match raw_arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
+            _ => (raw_arg, None),
+        };
+        if inline.is_some() && matches!(arg, "--help" | "--dump" | "--replace" | "--wasm") {
+            return Err(format!("{arg} takes no value"));
+        }
         let slot = match arg {
             "-h" | "--help" => return Ok(Command::Help),
             "--dump" => {
@@ -108,11 +116,15 @@ pub fn parse(raw: &[String]) -> Result<Command, String> {
             }
         };
         // A following flag is not a value: `--platform --dump` used to stamp
-        // the platform "--dump".
-        let value = match iter.next() {
-            Some(v) if !v.starts_with('-') => v,
-            Some(v) => return Err(format!("{arg} requires a value, got the flag {v:?}")),
-            None => return Err(format!("{arg} requires a value")),
+        // the platform "--dump". An inline `--flag=value` is taken as given.
+        let value = match inline {
+            Some("") => return Err(format!("{arg} requires a value")),
+            Some(v) => v,
+            None => match iter.next() {
+                Some(v) if !v.starts_with('-') => v,
+                Some(v) => return Err(format!("{arg} requires a value, got the flag {v:?}")),
+                None => return Err(format!("{arg} requires a value")),
+            },
         };
         if slot.replace(value).is_some() {
             return Err(format!("{arg} given more than once"));

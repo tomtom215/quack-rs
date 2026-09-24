@@ -226,6 +226,9 @@ impl DataChunk {
     /// - `col_idx` must be less than [`column_count`][DataChunk::column_count].
     /// - The chunk must be a writable output chunk (not a read-only input chunk).
     pub unsafe fn writer(&self, col_idx: usize) -> VectorWriter {
+        // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
+        // first `# Safety` clause; `self.raw` is live for this wrapper's lifetime per
+        // `DataChunk::from_raw`'s contract.
         let vec = unsafe { self.vector(col_idx) };
         // SAFETY: vec is a valid writable vector from the output chunk.
         unsafe { VectorWriter::from_vector(vec) }
@@ -253,6 +256,9 @@ impl DataChunk {
     /// - `col_idx` must be less than [`column_count`][Self::column_count].
     /// - The column at `col_idx` must have a STRUCT type with `field_count` fields.
     pub unsafe fn struct_reader(&self, col_idx: usize, field_count: usize) -> StructReader {
+        // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
+        // first `# Safety` clause; `self.raw` is live for this wrapper's lifetime per
+        // `DataChunk::from_raw`'s contract.
         let vec = unsafe { self.vector(col_idx) };
         // SAFETY: vec is a valid STRUCT vector per caller's contract.
         unsafe { StructReader::new(vec, field_count, self.size()) }
@@ -268,6 +274,9 @@ impl DataChunk {
     /// - The column at `col_idx` must have a STRUCT type.
     /// - `field_idx` must be a valid field index within the STRUCT.
     pub unsafe fn struct_field_reader(&self, col_idx: usize, field_idx: usize) -> VectorReader {
+        // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
+        // first `# Safety` clause; `self.raw` is live for this wrapper's lifetime per
+        // `DataChunk::from_raw`'s contract.
         let vec = unsafe { self.vector(col_idx) };
         // SAFETY: vec is a valid STRUCT vector per caller's contract.
         unsafe { StructVector::field_reader(vec, field_idx, self.size()) }
@@ -284,6 +293,9 @@ impl DataChunk {
     /// - The column at `col_idx` must have a STRUCT type with `field_count` fields.
     /// - The chunk must be a writable output chunk.
     pub unsafe fn struct_writer(&self, col_idx: usize, field_count: usize) -> StructWriter {
+        // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
+        // first `# Safety` clause; `self.raw` is live for this wrapper's lifetime per
+        // `DataChunk::from_raw`'s contract.
         let vec = unsafe { self.vector(col_idx) };
         // SAFETY: vec is a valid STRUCT vector per caller's contract.
         unsafe { StructWriter::new(vec, field_count) }

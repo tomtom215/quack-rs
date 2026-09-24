@@ -45,22 +45,35 @@ flowchart TD
 
     SIZE["**state_size**()<br/>How many bytes to allocate per group?"]
     INIT["**state_init**(state)<br/>Initialize a fresh state"]
-    UPDATE["**update**(chunk, states[])<br/>Process one input batch"]
+    UPDATE["**update**(chunk, states[])<br/>Process one input batch<br/>(NULL rows included — check is_valid)"]
     COMBINE["**combine**(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
-    FINAL["**finalize**(states[], out, count)<br/>Write results to output vector"]
-    DESTROY["**state_destroy**(states[], count)<br/>Free memory"]
+    FINAL["**finalize**(states[], out, count, offset)<br/>Write count results at out[offset..], once per result batch"]
+    DESTROY["**state_destroy**(states[], count)<br/>Free memory — for every initialized state,<br/>including combine sources after the merge"]
 
     style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```
 
 DuckDB may call `combine` multiple times as it merges results from parallel segments.
-**Target states in `combine` are always fresh (zero-initialized via `state_init`).**
+**Target states in `combine` hold whatever `state_init` set up** — not a copy of the
+source — so `combine` must carry every field across. `state_size` is called whenever
+an operator sizes its state buffers (not once at registration), so it must always
+return the same value; `destroy` runs on `combine`'s source states once they have
+been merged, as well as after `finalize`.
 
 ---
 
 ## Registration
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe extern "C" fn state_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::TypeId;
 
@@ -93,6 +106,15 @@ heap memory (e.g., when using `FfiState<T>`).
 ### `state_size`
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { config_field: i64, accumulator: i64 }
+# impl MyState {
+#     fn accumulate(&mut self, v: i64) { self.accumulator += v; }
+#     fn result(&self) -> i64 { self.accumulator }
+# }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn state_size(_info: duckdb_function_info) -> idx_t {
     FfiState::<MyState>::size_callback(_info)
 }
@@ -104,6 +126,15 @@ Returns the size DuckDB must allocate per group. This is always `size_of::<*mut 
 ### `state_init`
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { config_field: i64, accumulator: i64 }
+# impl MyState {
+#     fn accumulate(&mut self, v: i64) { self.accumulator += v; }
+#     fn result(&self) -> i64 { self.accumulator }
+# }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn state_init(info: duckdb_function_info, state: duckdb_aggregate_state) {
     unsafe { FfiState::<MyState>::init_callback(info, state) };
 }
@@ -115,6 +146,15 @@ the DuckDB-allocated state slot.
 ### `update`
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { config_field: i64, accumulator: i64 }
+# impl MyState {
+#     fn accumulate(&mut self, v: i64) { self.accumulator += v; }
+#     fn result(&self) -> i64 { self.accumulator }
+# }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn update(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -140,6 +180,15 @@ unsafe extern "C" fn update(
 ### `combine`
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { config_field: i64, accumulator: i64 }
+# impl MyState {
+#     fn accumulate(&mut self, v: i64) { self.accumulator += v; }
+#     fn result(&self) -> i64 { self.accumulator }
+# }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn combine(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -158,7 +207,8 @@ unsafe extern "C" fn combine(
 }
 ```
 
-> **Pitfall L1 — critical**: Target states are fresh `T::default()` values.
+> **Pitfall L1 — critical**: Target states are fresh states, set up by `state_init`
+> (with `FfiState<T>::init_callback`, a `T::default()`), not copies of the source.
 > You must copy **every** field, including configuration fields set during `update`.
 > Forgetting even one config field produces silently wrong results.
 > See [Pitfall L1](../reference/pitfalls.md#l1-combine-must-propagate-all-config-fields).
@@ -166,6 +216,15 @@ unsafe extern "C" fn combine(
 ### `finalize`
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct MyState { config_field: i64, accumulator: i64 }
+# impl MyState {
+#     fn accumulate(&mut self, v: i64) { self.accumulator += v; }
+#     fn result(&self) -> i64 { self.accumulator }
+# }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn finalize(
     _info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -190,6 +249,11 @@ Always add it to your index.
 ### `state_destroy`
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default)] struct WordCountState { count: i64 }
+# impl AggregateState for WordCountState {}
 unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
     unsafe { FfiState::<WordCountState>::destroy_callback(states, count) };
 }
@@ -207,6 +271,15 @@ For functions that accept or return parameterized types like `LIST(BIGINT)`,
 `returns_logical` instead of `param` and `returns`:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe extern "C" fn state_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::{LogicalType, TypeId};
 
@@ -232,12 +305,19 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 determined by the total number of calls made so far:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# fn demo() {
+# let _ =
 AggregateFunctionBuilder::new("my_func")
     .param(TypeId::Varchar)                          // position 0: VARCHAR
     .param_logical(LogicalType::list(TypeId::BigInt)) // position 1: LIST(BIGINT)
     .param(TypeId::Integer)                           // position 2: INTEGER
     .returns(TypeId::BigInt)
     // ...
+# ;
+# }
 ```
 
 If both `returns` and `returns_logical` are called, the logical type takes precedence.
@@ -250,6 +330,19 @@ Attach arbitrary data to an aggregate function using `extra_info`. This is usefu
 for parameterising the function behaviour (e.g., passing configuration):
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe extern "C" fn state_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn my_destroy(p: *mut std::os::raw::c_void) {
+#     drop(unsafe { Box::from_raw(p.cast::<u64>()) });
+# }
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use std::os::raw::c_void;
 
 let config = Box::into_raw(Box::new(42u64)).cast::<c_void>();
@@ -266,6 +359,8 @@ unsafe {
         .destructor(state_destroy)
         .register(con)?;
 }
+# Ok(())
+# }
 ```
 
 Inside callbacks, retrieve the extra info with `AggregateFunctionInfo::get_extra_info()`.
@@ -282,6 +377,9 @@ aggregate function callbacks (update, combine, finalize, etc.). It exposes:
 - `set_error(message)` — reports an error, causing DuckDB to abort the query
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
 use quack_rs::aggregate::AggregateFunctionInfo;
 
 unsafe extern "C" fn update(

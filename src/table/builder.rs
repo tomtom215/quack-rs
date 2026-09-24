@@ -14,7 +14,8 @@
 //! ```text
 //! 1. bind       — parse args, declare output columns, optionally set cardinality hint
 //! 2. init       — allocate global scan state (shared across threads)
-//! 3. local_init — allocate per-thread scan state (optional)
+//! 3. local_init — allocate per-thread scan state (optional; parallelism itself
+//!    comes from `InitInfo::set_max_threads` in `init`)
 //! 4. scan       — fill one output chunk; set chunk size to 0 when exhausted
 //! ```
 //!
@@ -118,7 +119,8 @@ enum NamedParam {
 ///
 /// - [`param`][TableFunctionBuilder::param]: positional parameters.
 /// - [`named_param`][TableFunctionBuilder::named_param]: named parameters (`name := value`).
-/// - [`local_init`][TableFunctionBuilder::local_init]: per-thread init (enables parallel scan).
+/// - [`local_init`][TableFunctionBuilder::local_init]: per-thread scan state. It does not by
+///   itself make the scan parallel; [`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads] does.
 /// - [`projection_pushdown`][TableFunctionBuilder::projection_pushdown]: hint projection info to `DuckDB`.
 /// - [`extra_info`][TableFunctionBuilder::extra_info]: function-level data available in all callbacks.
 #[must_use]
@@ -186,6 +188,14 @@ impl TableFunctionBuilder {
         self.name.to_str().unwrap_or("")
     }
 
+    /// Whether [`projection_pushdown`][Self::projection_pushdown] was enabled.
+    ///
+    /// The typed builder refuses a raw builder that has it on; see
+    /// [`TypedTableFunctionBuilder::build`][crate::table::TypedTableFunctionBuilder::build].
+    pub(crate) const fn projection_pushdown_enabled(&self) -> bool {
+        self.projection_pushdown
+    }
+
     /// Adds a positional parameter with the given type.
     pub fn param(mut self, type_id: TypeId) -> Self {
         self.params.push(type_id);
@@ -239,6 +249,17 @@ impl TableFunctionBuilder {
     /// The bind callback is called once at query-parse time. It must:
     /// - Declare all output columns via [`crate::table::BindInfo::add_result_column`].
     /// - Optionally read parameters and store bind data via [`crate::table::FfiBindData::set`].
+    ///
+    /// # At least one column
+    ///
+    /// A bind that returns without declaring a column (and without calling
+    /// [`BindInfo::set_error`][crate::table::BindInfo::set_error]) makes
+    /// `DuckDB` fail the query with an `INTERNAL Error` — "Table function must
+    /// return at least one column", with a C++ stack trace
+    /// (`src/planner/binder/tableref/bind_table_function.cpp`). A raw callback
+    /// cannot be checked after it returns, so report the problem yourself with
+    /// `set_error`. The [typed builder][crate::table::TypedTableFunctionBuilder]
+    /// does this for you.
     pub fn bind(mut self, f: BindFn) -> Self {
         self.bind = Some(f);
         self
@@ -254,8 +275,16 @@ impl TableFunctionBuilder {
 
     /// Sets the per-thread local init callback (optional).
     ///
-    /// When set, `DuckDB` calls this once per worker thread. Use [`crate::table::FfiLocalInitData::set`]
-    /// to store thread-local scan state. Setting a local init enables parallel scanning.
+    /// When set, `DuckDB` calls this once per worker thread that runs the scan.
+    /// Use [`crate::table::FfiLocalInitData::set`] to store thread-local scan state.
+    ///
+    /// Setting a local init does **not** make the scan parallel. `DuckDB`
+    /// schedules at most `MaxThreads` scanners, and a C API table function's
+    /// `MaxThreads` is exactly what the global init passed to
+    /// [`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads] —
+    /// 1 when it was never called (`src/main/capi/table_function-c.cpp`,
+    /// `CTableGlobalInitData::MaxThreads`). Parallelism needs `set_max_threads`
+    /// above 1; `local_init` only gives each of those threads its own state.
     pub fn local_init(mut self, f: InitFn) -> Self {
         self.local_init = Some(f);
         self
@@ -288,8 +317,17 @@ impl TableFunctionBuilder {
     ///
     /// # Safety
     ///
-    /// `data` must remain valid until `DuckDB` calls `destroy`. The typical pattern
-    /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// - `data` must remain valid until `DuckDB` calls `destroy`. The typical
+    ///   pattern is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// - The pointee must be `Send + Sync`. `DuckDB` hands the same pointer to
+    ///   bind, init and scan on whichever threads run them — several at once
+    ///   when queries run concurrently or the scan is parallel
+    ///   ([`InitInfo::set_max_threads`][crate::table::InitInfo::set_max_threads]
+    ///   above 1) — and `destroy` runs on whichever thread releases the
+    ///   function. Shared mutable state behind the pointer needs a `Mutex` or
+    ///   atomics.
+    /// - `destroy` must not panic; wrap its body in
+    ///   [`catch_ffi_panic`][crate::callback::catch_ffi_panic].
     pub unsafe fn extra_info(mut self, data: *mut c_void, destroy: ExtraDestroyFn) -> Self {
         // SAFETY: forwarded from this method's own contract.
         self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, Some(destroy)) });
@@ -298,9 +336,30 @@ impl TableFunctionBuilder {
 
     /// Registers the table function on the given connection.
     ///
+    /// # A name can be registered once
+    ///
+    /// `duckdb_register_table_function` adds the function to the system
+    /// catalog with `ALTER_ON_CONFLICT`, and for a table function that means
+    /// "keep the existing entry": the new function is dropped and the call
+    /// still returns success (`DuckSchemaEntry::AddEntryInternal`,
+    /// `src/catalog/catalog_entry/duck_schema_entry.cpp`). The C API has no
+    /// table function *sets*, so there is no way to add an overload to a name
+    /// that exists — a second `register` under the same name, a name another
+    /// extension registered, or a built-in's name (`range`, `read_csv`) would
+    /// silently leave the old function answering. `register` therefore
+    /// checks `duckdb_functions()` first and refuses a name that is already a
+    /// table function or table macro in the system catalog (compared
+    /// case-insensitively, as `DuckDB` resolves names).
+    ///
+    /// Table functions registered through the C API live only in the
+    /// in-memory system catalog and are never written to a database file, so
+    /// a name found there is always a live conflict — not a leftover from an
+    /// earlier session that the next `LOAD` would trip over.
+    ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if:
+    /// - The name is already taken (see above), or the check cannot run.
     /// - The bind, init, or scan callback was not set.
     /// - `DuckDB` reports a registration failure.
     ///
@@ -308,6 +367,8 @@ impl TableFunctionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        // SAFETY: forwarded from this method's own contract.
+        unsafe { refuse_taken_table_function_name(con, self.name()) }?;
         // SAFETY: forwarded from this method's own contract.
         let handle = unsafe { self.build_handle() }?;
 
@@ -390,6 +451,12 @@ impl TableFunctionBuilder {
                     param_types_for_copy_from.push(TypeId::try_from_duckdb_type(unsafe {
                         libduckdb_sys::duckdb_get_type_id(logical.as_raw())
                     }));
+                    // SAFETY: `func` is the handle `duckdb_create_table_function` returned
+                    // above (a fresh `new TableFunction`, table_function-c.cpp) and not yet
+                    // handed on or destroyed. `logical` is a `LogicalType` owned by
+                    // `self.logical_params`, so its handle is live for this borrow;
+                    // `duckdb_table_function_add_parameter` copies it
+                    // (`arguments.push_back(*logical_type)`), keeping no pointer.
                     unsafe {
                         duckdb_table_function_add_parameter(func, logical.as_raw());
                     }
@@ -397,6 +464,11 @@ impl TableFunctionBuilder {
                 } else if simple_idx < self.params.len() {
                     let lt = LogicalType::new(self.params[simple_idx]);
                     param_types_for_copy_from.push(Some(self.params[simple_idx]));
+                    // SAFETY: `func` is the handle `duckdb_create_table_function` returned
+                    // above (a fresh `new TableFunction`, table_function-c.cpp) and not yet
+                    // handed on or destroyed. `lt` was created just above and is dropped
+                    // only after this call; `duckdb_table_function_add_parameter` copies
+                    // the type.
                     unsafe {
                         duckdb_table_function_add_parameter(func, lt.as_raw());
                     }
@@ -410,10 +482,23 @@ impl TableFunctionBuilder {
             match np {
                 NamedParam::Simple { name, type_id } => {
                     let lt = LogicalType::new(*type_id);
+                    // SAFETY: `func` is the handle `duckdb_create_table_function` returned
+                    // above (a fresh `new TableFunction`, table_function-c.cpp) and not yet
+                    // handed on or destroyed. `name` is a `CString` (non-null,
+                    // NUL-terminated; DuckDB does not null-check it) and `lt` was created
+                    // just above; both outlive the call, and
+                    // `duckdb_table_function_add_named_parameter` copies both into
+                    // `named_parameters`.
                     unsafe {
                         duckdb_table_function_add_named_parameter(func, name.as_ptr(), lt.as_raw());
                     }
                 }
+                // SAFETY: `func` is the handle `duckdb_create_table_function` returned
+                // above (a fresh `new TableFunction`, table_function-c.cpp) and not yet
+                // handed on or destroyed. `name` is a `CString` (non-null, NUL-terminated;
+                // DuckDB does not null-check it) and `logical_type` is a live `LogicalType`
+                // owned by `self.named_params`; `duckdb_table_function_add_named_parameter`
+                // copies both.
                 NamedParam::Logical { name, logical_type } => unsafe {
                     duckdb_table_function_add_named_parameter(
                         func,
@@ -461,6 +546,55 @@ impl TableFunctionBuilder {
             name: self.name,
             param_types: param_types_for_copy_from,
         })
+    }
+}
+
+/// Refuses `name` if the system catalog already holds a table function or
+/// table macro with that name (case-insensitively).
+///
+/// See "A name can be registered once" on [`TableFunctionBuilder::register`].
+///
+/// # Safety
+///
+/// `con` must be a valid, open `duckdb_connection`.
+unsafe fn refuse_taken_table_function_name(
+    con: duckdb_connection,
+    name: &str,
+) -> Result<(), ExtensionError> {
+    let context = |detail: String| {
+        ExtensionError::new(format!(
+            "table function '{name}': cannot check whether the name is taken: {detail}"
+        ))
+    };
+    let sql = "SELECT count(*) FROM duckdb_functions() \
+               WHERE database_name = 'system' AND schema_name = 'main' \
+               AND function_type IN ('table', 'table_macro') \
+               AND lower(function_name) = lower($1)";
+    // SAFETY: `con` is valid per this function's contract.
+    let statement =
+        unsafe { crate::query::prepare(con, sql) }.map_err(|e| context(e.to_string()))?;
+    statement
+        .bind_str(1, name)
+        .map_err(|e| context(e.to_string()))?;
+    let mut result = statement.execute().map_err(|e| context(e.to_string()))?;
+    let chunk = result
+        .next_chunk()
+        .map_err(|e| context(e.to_string()))?
+        .ok_or_else(|| context("the check returned no rows".into()))?;
+    if chunk.size() != 1 || chunk.column_count() != 1 {
+        return Err(context("the check returned an unexpected shape".into()));
+    }
+    // SAFETY: one row, one BIGINT column; `count(*)` is never NULL.
+    let taken = unsafe { chunk.reader(0).read_i64(0) };
+    if taken == 0 {
+        Ok(())
+    } else {
+        Err(ExtensionError::new(format!(
+            "table function '{name}' already exists (a built-in, another extension's, or an \
+             earlier registration). DuckDB's C API cannot add overloads to an existing table \
+             function: it would drop this registration and still report success, leaving the \
+             existing function to answer. Choose a different name."
+        )))
     }
 }
 

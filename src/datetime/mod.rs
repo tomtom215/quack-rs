@@ -42,9 +42,12 @@
 //! `DATE` of 2026-13-01, decomposing the `infinity` `TIMESTAMP` — and the C API
 //! does not catch it, so it would abort the whole process. The wrappers here
 //! check first, mirroring `DuckDB`'s own conditions, and return `None`:
-//! [`date_to_days`], [`timestamp_from_micros`], [`timestamp_to_micros`],
-//! [`time_tz_bits`] and [`decimal_to_f64`]. [`is_valid_date`] exposes the date
-//! check on its own.
+//! [`date_to_days`], [`time_from_micros`], [`time_tz_from_bits`],
+//! [`timestamp_from_micros`], [`timestamp_to_micros`], [`time_tz_bits`] and
+//! [`decimal_to_f64`]. [`is_valid_date`] exposes the date check on its own.
+//! Two of those (`time_from_micros`, `time_tz_from_bits`) guard a debug
+//! assertion rather than an exception: a release build of `DuckDB` returns
+//! nonsense fields there, and a build with assertions aborts.
 //!
 //! # Infinity
 //!
@@ -188,6 +191,9 @@ pub const TIMESTAMP_NEGATIVE_INFINITY_MICROS: i64 = -i64::MAX;
 ///
 /// Check [`is_finite_date`] first: `DuckDB` reserves extreme values for
 /// `infinity` / `-infinity`, which have no calendar representation.
+/// `duckdb_from_date` does not check for them — it cannot fail — so a
+/// sentinel decomposes into a date that looks real: `infinity` becomes
+/// 5881580-07-11, one day past the largest date `DuckDB` accepts.
 ///
 /// # Safety
 ///
@@ -234,13 +240,23 @@ pub unsafe fn is_finite_date(days: i32) -> bool {
 
 /// Decomposes a `TIME` (microseconds since midnight) into a wall-clock time.
 ///
+/// Returns `None` outside `DuckDB`'s `TIME` range, 0 to [`MICROS_PER_DAY`]
+/// (`00:00:00`–`24:00:00`). `duckdb_from_time` does not check the range: a
+/// release build of `DuckDB` decomposes such a value into out-of-range fields
+/// (`-1` gives `micros == -1`), and a build with assertions enabled aborts the
+/// process, so it is checked here first.
+///
 /// # Safety
 ///
 /// See [`date_from_days`].
 #[must_use]
-pub unsafe fn time_from_micros(micros: i64) -> Time {
-    // SAFETY: forwarded from this function's own contract.
-    unsafe { duckdb_from_time(duckdb_time { micros }) }.into()
+pub unsafe fn time_from_micros(micros: i64) -> Option<Time> {
+    if !checks::time_decomposes(micros) {
+        return None;
+    }
+    // SAFETY: forwarded from this function's own contract; `micros` is in
+    // `Time::IsValidTime`'s range, so `Time::Convert`'s assertion holds.
+    Some(unsafe { duckdb_from_time(duckdb_time { micros }) }.into())
 }
 
 /// Composes a wall-clock time into a `TIME` (microseconds since midnight).
@@ -285,17 +301,34 @@ pub unsafe fn time_tz_bits(micros_since_midnight: i64, offset_seconds: i32) -> O
 
 /// Unpacks `DuckDB`'s `TIME WITH TIME ZONE` bit representation.
 ///
+/// Returns `None` unless `bits` is an encoding [`time_tz_bits`] can produce:
+/// a time of day between `00:00:00` and `24:00:00` and an offset within
+/// ±[`TIME_TZ_MAX_OFFSET_SECONDS`]. The 40-bit time field can hold about 12.7
+/// days; `duckdb_from_time_tz` decomposes it with `Time::Convert`, whose
+/// assertion aborts a `DuckDB` built with assertions on anything past a day
+/// (see [`time_from_micros`]).
+///
 /// # Safety
 ///
 /// See [`date_from_days`].
 #[must_use]
-pub unsafe fn time_tz_from_bits(bits: u64) -> TimeTz {
-    // SAFETY: forwarded from this function's own contract.
+pub unsafe fn time_tz_from_bits(bits: u64) -> Option<TimeTz> {
+    // `dtime_tz_t`: the time in the high 40 bits, `MAX_OFFSET - offset` in
+    // the low 24; both fit their targets without loss.
+    #[allow(clippy::cast_possible_wrap, reason = "40 bits fit an i64")]
+    let micros = (bits >> 24) as i64;
+    #[allow(clippy::cast_possible_truncation, reason = "24 bits fit an i32")]
+    let offset_seconds = TIME_TZ_MAX_OFFSET_SECONDS - (bits & 0x00FF_FFFF) as i32;
+    if !checks::time_tz_encodable(micros, offset_seconds) {
+        return None;
+    }
+    // SAFETY: forwarded from this function's own contract; the time field is
+    // in `Time::IsValidTime`'s range, so `Time::Convert`'s assertion holds.
     let raw = unsafe { duckdb_from_time_tz(duckdb_time_tz { bits }) };
-    TimeTz {
+    Some(TimeTz {
         time: raw.time.into(),
         offset_seconds: raw.offset,
-    }
+    })
 }
 
 // ─── TIMESTAMP ───────────────────────────────────────────────────────────────

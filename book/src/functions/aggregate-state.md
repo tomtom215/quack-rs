@@ -51,7 +51,7 @@ and your state lives in a `Box<T>` heap allocation whose pointer is stored in th
 
 ### Memory layout
 
-```
+```text
 DuckDB-allocated slot (state_size bytes = sizeof(*mut T)):
   [ inner: *mut T ]  ──→  Box<T>  (on the Rust heap)
 ```
@@ -59,22 +59,38 @@ DuckDB-allocated slot (state_size bytes = sizeof(*mut T)):
 ### Lifecycle callbacks
 
 ```rust
-// state_size: DuckDB calls this once to know how many bytes to allocate per group
-FfiState::<MyState>::size_callback(_info)
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::aggregate::{AggregateState, FfiState};
+# #[derive(Default, Debug)] struct MyState { config: usize, total: i64 }
+# impl AggregateState for MyState {}
+# unsafe fn demo(_info: duckdb_function_info, info: duckdb_function_info,
+#     state: duckdb_aggregate_state, states: *mut duckdb_aggregate_state, count: idx_t) {
+// state_size: DuckDB calls this whenever an operator sizes its state buffers
+FfiState::<MyState>::size_callback(_info);
 // Returns: size_of::<*mut MyState>()
 
-// state_init: DuckDB calls this once per group after allocating the slot
-FfiState::<MyState>::init_callback(info, state)
+// state_init: DuckDB calls this for every state slot it allocates, combine
+// targets included
+FfiState::<MyState>::init_callback(info, state);
 // Effect: writes Box::into_raw(Box::new(MyState::default())) into the slot
 
-// state_destroy: DuckDB calls this after finalize for every group
-FfiState::<MyState>::destroy_callback(states, count)
+// state_destroy: DuckDB calls this for every initialized state — after finalize,
+// and on combine's source states once they have been merged
+FfiState::<MyState>::destroy_callback(states, count);
 // Effect: for each state: drop(Box::from_raw(inner)); inner = null
+# }
 ```
 
 ### Accessing state in callbacks
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::aggregate::{AggregateState, FfiState};
+# #[derive(Default, Debug)] struct MyState { config: usize, total: i64 }
+# impl AggregateState for MyState {}
+# unsafe fn demo(state_ptr: duckdb_aggregate_state, delta: i64) {
 // Immutable access (in finalize, combine source):
 if let Some(st) = FfiState::<MyState>::with_state(state_ptr) {
     let value = st.total;
@@ -84,6 +100,7 @@ if let Some(st) = FfiState::<MyState>::with_state(state_ptr) {
 if let Some(st) = FfiState::<MyState>::with_state_mut(state_ptr) {
     st.total += delta;
 }
+# }
 ```
 
 Both methods return `Option<&T>` / `Option<&mut T>`. They return `None` if `inner` is
@@ -97,6 +114,10 @@ rather than panicking on null is what keeps the extension panic-free.
 Without quack-rs, a naive destructor looks like:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, idx_t};
+# struct MyState;
+# // The layout quack-rs uses, written out: this is the code *without* quack-rs.
+# #[repr(C)] struct FfiState<T> { inner: *mut T }
 // ❌ Naive — causes double-free if DuckDB calls destroy twice
 unsafe extern "C" fn destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
     for i in 0..count as usize {
@@ -109,6 +130,9 @@ unsafe extern "C" fn destroy(states: *mut duckdb_aggregate_state, count: idx_t) 
 `FfiState::destroy_callback` does:
 
 ```rust
+# struct Ffi { inner: *mut u8 }
+# let mut ffi = Ffi { inner: Box::into_raw(Box::new(0_u8)) };
+# drop(unsafe { Box::from_raw(ffi.inner) });
 // After drop(Box::from_raw(ffi.inner)):
 ffi.inner = std::ptr::null_mut();   // ← prevents double-free
 ```
@@ -121,7 +145,10 @@ If DuckDB calls destroy again, `with_state` returns `None` and the loop body is 
 
 `AggregateTestHarness<S>` simulates the DuckDB aggregate lifecycle in pure Rust:
 
-```rust
+```rust,test_harness
+# use quack_rs::aggregate::AggregateState;
+# #[derive(Default, Debug)] struct MyState { config: usize, total: i64 }
+# impl AggregateState for MyState {}
 use quack_rs::testing::AggregateTestHarness;
 
 #[test]

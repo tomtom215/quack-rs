@@ -8,6 +8,8 @@
 //! Scalar functions take a data chunk of input rows and produce one output value
 //! per row. This is the most common function type in `DuckDB` extensions.
 
+mod collision;
+mod overload;
 mod set;
 pub(crate) mod signature;
 mod single;
@@ -15,7 +17,8 @@ mod single;
 #[cfg(test)]
 mod tests;
 
-pub use set::{ScalarFunctionSetBuilder, ScalarOverloadBuilder};
+pub use overload::ScalarOverloadBuilder;
+pub use set::ScalarFunctionSetBuilder;
 #[cfg(feature = "duckdb-1-5")]
 pub use single::{ScalarBindFn, ScalarInitFn};
 pub use single::{ScalarFn, ScalarFunctionBuilder};

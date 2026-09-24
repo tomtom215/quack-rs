@@ -39,6 +39,36 @@ pub const DUCK_STRING_SIZE: usize = 16;
 /// The maximum string length that fits inline in a `duckdb_string_t` (≤12 bytes).
 pub const DUCK_STRING_INLINE_MAX_LEN: usize = 12;
 
+/// The longest `VARCHAR` or `BLOB` value `DuckDB` can store, in bytes:
+/// `string_t::MAX_STRING_SIZE`, which is `u32::MAX` because the length field
+/// of a `duckdb_string_t` is a `u32`.
+///
+/// `DuckDB` does not enforce it when a value is written through the C API:
+/// `StringVector::AddStringOrBlob` narrows the 64-bit length with a plain cast
+/// in release builds, so a longer value is stored as its length modulo 2^32 —
+/// truncated, and for a `VARCHAR` possibly cut inside a UTF-8 sequence.
+/// [`VectorWriter::write_varchar`][crate::vector::VectorWriter::write_varchar]
+/// and its siblings check this limit first.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "u32 -> usize is lossless on every target with at least 32-bit pointers, which is all Rust targets DuckDB supports"
+)]
+pub const MAX_STRING_LEN: usize = u32::MAX as usize;
+
+/// Returns an error if `len` exceeds [`MAX_STRING_LEN`].
+///
+/// # Errors
+///
+/// Returns an error naming both lengths when `len > MAX_STRING_LEN`.
+pub fn check_string_len(len: usize) -> Result<(), crate::error::ExtensionError> {
+    if len > MAX_STRING_LEN {
+        return Err(crate::error::ExtensionError::new(format!(
+            "value of {len} bytes exceeds DuckDB's maximum string length of {MAX_STRING_LEN} bytes"
+        )));
+    }
+    Ok(())
+}
+
 /// A parsed view of a `duckdb_string_t` value.
 ///
 /// This type borrows from the raw vector data — it does not allocate.
@@ -298,9 +328,16 @@ pub unsafe fn read_duck_string<'a>(data: *const u8, idx: usize) -> &'a str {
 /// - `idx` must be within bounds of the vector.
 /// - For pointer-format blobs, the heap data must be valid for the lifetime of
 ///   the returned slice.
+/// - The returned slice can borrow from the vector's own data buffer (an inline
+///   blob of 12 bytes or fewer is stored there), so the vector must also
+///   outlive it — do not destroy the data chunk while the slice is live.
 pub unsafe fn read_duck_blob<'a>(data: *const u8, idx: usize) -> &'a [u8] {
     // SAFETY: each duckdb_string_t is exactly DUCK_STRING_SIZE bytes.
     let str_ptr = unsafe { data.add(idx * DUCK_STRING_SIZE) };
+    // SAFETY: `[u8; 16]` has alignment 1, and `str_ptr` points at row `idx`'s
+    // 16-byte `duckdb_string_t` inside the vector's data buffer (`# Safety`
+    // clauses 1-2), so the bytes are in bounds; clause 4 keeps the vector, and
+    // so this record, alive for the caller-chosen `'a`.
     let raw_bytes: &'a [u8; DUCK_STRING_SIZE] =
         unsafe { &*str_ptr.cast::<[u8; DUCK_STRING_SIZE]>() };
     // SAFETY: the caller vouched for the vector's pointer-format payloads.
@@ -311,6 +348,18 @@ pub unsafe fn read_duck_blob<'a>(data: *const u8, idx: usize) -> &'a [u8] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn string_length_limit_is_duckdbs_u32_length_field() {
+        assert_eq!(super::MAX_STRING_LEN as u64, u64::from(u32::MAX));
+        assert!(super::check_string_len(0).is_ok());
+        assert!(super::check_string_len(super::MAX_STRING_LEN).is_ok());
+        #[cfg(target_pointer_width = "64")]
+        {
+            let err = super::check_string_len(super::MAX_STRING_LEN + 1).expect_err("too long");
+            assert!(err.as_str().contains("4294967296 bytes"), "{err}");
+        }
+    }
+
     use super::*;
 
     fn make_inline_bytes(s: &str) -> [u8; 16] {

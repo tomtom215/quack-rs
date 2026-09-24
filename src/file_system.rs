@@ -59,9 +59,16 @@ pub enum FileFlag {
     Read,
     /// Open for writing.
     Write,
-    /// Create the file if it does not exist.
+    /// Create the file if it does not exist. Requires [`Write`][Self::Write].
     Create,
-    /// Create the file, failing if it already exists.
+    /// Create the file, failing if it already exists. Requires
+    /// [`Write`][Self::Write].
+    ///
+    /// Setting it also sets [`Create`][Self::Create]: `DuckDB` maps it to
+    /// `FILE_FLAGS_EXCLUSIVE_CREATE`, which only means "fail if it exists" in
+    /// combination with `FILE_FLAGS_FILE_CREATE` (`O_EXCL` without `O_CREAT`
+    /// is ignored by `open(2)`), and on its own neither created a missing file
+    /// nor refused an existing one.
     CreateNew,
     /// Open in append mode.
     Append,
@@ -115,8 +122,20 @@ impl FileOpenOptions {
     }
 
     /// Sets a file-open flag, returning `true` on success.
+    ///
+    /// Setting [`FileFlag::CreateNew`] also sets [`FileFlag::Create`]; see
+    /// there.
+    ///
+    /// # `value == false` does not clear a flag
+    ///
+    /// `duckdb_file_open_options_set_flag` ORs the flag in and ignores
+    /// `value` (`src/main/capi/file_system-c.cpp`), so a flag cannot be
+    /// unset once set. To change your mind, build a fresh `FileOpenOptions`.
     pub fn set_flag(&self, flag: FileFlag, value: bool) -> bool {
         if self.options.is_null() {
+            return false;
+        }
+        if flag == FileFlag::CreateNew && value && !self.set_flag(FileFlag::Create, true) {
             return false;
         }
         // SAFETY: self.options is a valid duckdb_file_open_options.
@@ -171,8 +190,9 @@ impl Drop for FileOpenOptions {
 /// }
 /// ```
 ///
-/// [`FileHandle`]s opened through it do not borrow it: an open handle stays
-/// valid after the connection closes, until the database itself is closed.
+/// [`FileHandle`]s opened through it borrow it in turn, so a handle cannot
+/// outlive the file system, the client context, or — through the context's
+/// contract — the connection and database behind them.
 pub struct FileSystem<'ctx> {
     fs: duckdb_file_system,
     _context: PhantomData<&'ctx ClientContext>,
@@ -224,10 +244,16 @@ impl<'ctx> FileSystem<'ctx> {
 
     /// Opens `path` with the given `options`.
     ///
+    /// The handle borrows this file system; see [`FileHandle`].
+    ///
     /// # Errors
     ///
     /// Returns the structured [`ErrorData`] if the file cannot be opened.
-    pub fn open(&self, path: &CStr, options: &FileOpenOptions) -> Result<FileHandle, ErrorData> {
+    pub fn open(
+        &self,
+        path: &CStr,
+        options: &FileOpenOptions,
+    ) -> Result<FileHandle<'_>, ErrorData> {
         let mut handle: duckdb_file_handle = std::ptr::null_mut();
         // SAFETY: self.fs, path, and options.as_raw() are all valid; handle is a
         // valid out-pointer.
@@ -270,27 +296,48 @@ const CHUNK: usize = 64 * 1024;
 ///
 /// Automatically closed and destroyed when dropped.
 ///
-/// A handle does not borrow the [`FileSystem`] that opened it and remains
-/// usable after that file system and its connection are gone. It does refer
-/// to the *database's* underlying file system, though: once the database is
-/// closed (`duckdb_close` on the last reference), every method is a
-/// use-after-free. Closing a database is an `unsafe` operation in quack-rs;
-/// its caller must drop outstanding `FileHandle`s first.
-pub struct FileHandle {
+/// # Lifetime
+///
+/// A handle refers to the database's underlying file system: once the
+/// database is closed (`duckdb_close` on the last reference), every method is
+/// a use-after-free — valgrind reports an invalid read in
+/// `duckdb::FileHandle::Read`. The handle therefore borrows the
+/// [`FileSystem`] that opened it for `'fs`, which in turn borrows the
+/// [`ClientContext`] whose contract keeps the connection (and so the
+/// database) open. Using a handle after its file system is gone does not
+/// compile:
+///
+/// ```rust,compile_fail,E0505
+/// use quack_rs::client_context::ClientContext;
+/// use quack_rs::file_system::{FileOpenOptions, FileSystem};
+///
+/// fn demo(ctx: &ClientContext) {
+///     let fs = FileSystem::from_client_context(ctx).unwrap();
+///     let handle = fs.open(c"data.csv", &FileOpenOptions::read_only()).unwrap();
+///     drop(fs); // error[E0505]: cannot move out of `fs` because it is borrowed
+///     let _ = handle.size();
+/// }
+/// ```
+pub struct FileHandle<'fs> {
     handle: duckdb_file_handle,
+    _file_system: PhantomData<&'fs ()>,
 }
 
-impl FileHandle {
+impl FileHandle<'_> {
     /// Wraps a raw `duckdb_file_handle`, taking ownership.
     ///
     /// # Safety
     ///
     /// `handle` must be a valid, non-null `duckdb_file_handle` that the caller no
-    /// longer manages.
+    /// longer manages, and the database it was opened against must stay open
+    /// for the whole of the lifetime the caller picks for the result.
     #[inline]
     #[must_use]
     pub const unsafe fn from_raw(handle: duckdb_file_handle) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            _file_system: PhantomData,
+        }
     }
 
     /// Returns the raw handle.
@@ -506,7 +553,7 @@ impl FileHandle {
     }
 }
 
-impl Drop for FileHandle {
+impl Drop for FileHandle<'_> {
     fn drop(&mut self) {
         if !self.handle.is_null() {
             // SAFETY: self.handle is a valid handle that we own.
@@ -515,11 +562,19 @@ impl Drop for FileHandle {
     }
 }
 
-crate::debug_repr::impl_handle_debug!(FileOpenOptions.options, FileHandle.handle);
+crate::debug_repr::impl_handle_debug!(FileOpenOptions.options);
 
 impl core::fmt::Debug for FileSystem<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FileSystem").field("fs", &self.fs).finish()
+    }
+}
+
+impl core::fmt::Debug for FileHandle<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FileHandle")
+            .field("handle", &self.handle)
+            .finish()
     }
 }
 

@@ -138,3 +138,94 @@ fn overload_builder_stores_fields() {
     assert_eq!(ob.return_type, Some(TypeId::Varchar));
     assert!(ob.function.is_some());
 }
+
+#[test]
+fn overload_builder_mirrors_the_single_builders_stability_setter() {
+    let ob = ScalarOverloadBuilder::new();
+    assert!(!ob.volatile);
+    assert!(ob.volatile().volatile);
+}
+
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn overload_builder_mirrors_the_single_builders_bind_and_init_setters() {
+    unsafe extern "C" fn b(_: libduckdb_sys::duckdb_bind_info) {}
+    unsafe extern "C" fn i(_: libduckdb_sys::duckdb_init_info) {}
+
+    let ob = ScalarOverloadBuilder::new();
+    assert!(ob.bind.is_none() && ob.init.is_none());
+    let ob = ob.bind(b).init(i);
+    assert!(ob.bind.is_some() && ob.init.is_some());
+}
+
+/// Every overload is checked for a return type and a callback before any
+/// `DuckDB` call, and the error names the overload. A null connection proves
+/// it: reaching `DuckDB` at all would panic (no dispatch table) or crash.
+#[test]
+fn an_incomplete_overload_is_reported_by_index_before_touching_duckdb() {
+    unsafe extern "C" fn f(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+
+    let missing_function = ScalarFunctionSetBuilder::new("s")
+        .overload(
+            ScalarOverloadBuilder::new()
+                .returns(TypeId::BigInt)
+                .function(f),
+        )
+        .overload(
+            ScalarOverloadBuilder::new()
+                .param(TypeId::Double)
+                .returns(TypeId::BigInt),
+        );
+    // SAFETY: validation fails before `con` is used.
+    let err = unsafe { missing_function.register(std::ptr::null_mut()) }
+        .expect_err("overload 1 has no callback");
+    assert!(err.as_str().contains("overload 1"), "{err}");
+    assert!(err.as_str().contains("function"), "{err}");
+
+    let missing_return = ScalarFunctionSetBuilder::new("s").overload(
+        ScalarOverloadBuilder::new()
+            .param(TypeId::Double)
+            .function(f),
+    );
+    // SAFETY: as above.
+    let err = unsafe { missing_return.register(std::ptr::null_mut()) }
+        .expect_err("overload 0 has no return type");
+    assert!(err.as_str().contains("overload 0"), "{err}");
+    assert!(err.as_str().contains("return type"), "{err}");
+
+    // SAFETY: as above.
+    let err = unsafe { ScalarFunctionSetBuilder::new("s").register(std::ptr::null_mut()) }
+        .expect_err("no overloads");
+    assert!(err.as_str().contains("no overloads"), "{err}");
+}
+
+/// An overload's `extra_info` is freed exactly once when validation rejects
+/// the set, whichever overload failed.
+#[test]
+fn a_rejected_set_frees_every_overloads_extra_info_once() {
+    use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static FREED: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "C" fn free_it(p: *mut c_void) {
+        // SAFETY: allocated below by `Box::into_raw`.
+        drop(unsafe { Box::from_raw(p.cast::<u8>()) });
+        FREED.fetch_add(1, Ordering::SeqCst);
+    }
+    unsafe extern "C" fn f(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+    let data = || Box::into_raw(Box::new(7_u8)).cast::<c_void>();
+
+    // SAFETY: `free_it` frees exactly what `data` allocates.
+    let set = unsafe {
+        ScalarFunctionSetBuilder::new("s")
+            .overload(
+                ScalarOverloadBuilder::new()
+                    .returns(TypeId::BigInt)
+                    .function(f)
+                    .extra_info(data(), Some(free_it)),
+            )
+            .overload(ScalarOverloadBuilder::new().extra_info(data(), Some(free_it)))
+    };
+    // SAFETY: validation fails before `con` is used.
+    assert!(unsafe { set.register(std::ptr::null_mut()) }.is_err());
+    assert_eq!(FREED.load(Ordering::SeqCst), 2);
+}

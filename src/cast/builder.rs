@@ -5,7 +5,6 @@
 
 //! Builder for registering custom `DuckDB` cast functions.
 
-use std::ffi::CString;
 use std::os::raw::c_void;
 
 use libduckdb_sys::{
@@ -19,16 +18,8 @@ use libduckdb_sys::{
 };
 
 use crate::error::ExtensionError;
+use crate::table::cstr::error_cstring;
 use crate::types::{LogicalType, TypeId};
-
-/// Converts a `&str` to `CString` without panicking.
-#[mutants::skip] // private FFI helper — tested in replacement_scan::tests
-fn str_to_cstring(s: &str) -> CString {
-    CString::new(s).unwrap_or_else(|_| {
-        let pos = s.bytes().position(|b| b == 0).unwrap_or(s.len());
-        CString::new(&s.as_bytes()[..pos]).unwrap_or_default()
-    })
-}
 
 // ── Cast mode ─────────────────────────────────────────────────────────────────
 
@@ -36,7 +27,9 @@ fn str_to_cstring(s: &str) -> CString {
 ///
 /// In [`Try`][CastMode::Try] mode, conversion failures should write `NULL` for
 /// the failed row and call [`CastFunctionInfo::set_row_error`] rather than
-/// aborting the whole query.
+/// aborting the whole query. See [`CastFn`] for what `DuckDB` does with the
+/// callback's return value in each mode — in particular, returning `false`
+/// in `Try` mode does **not** null anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastMode {
     /// Regular `CAST` — any failure aborts the query.
@@ -107,38 +100,60 @@ impl CastFunctionInfo {
         unsafe { duckdb_cast_function_get_extra_info(self.info) }
     }
 
-    /// Reports a fatal error, causing `DuckDB` to abort the current query.
+    /// Records the error `DuckDB` raises when the callback returns `false`.
     ///
-    /// Use this only in [`CastMode::Normal`]; in [`CastMode::Try`] prefer
-    /// [`set_row_error`][Self::set_row_error] so that failed rows become `NULL`.
+    /// Use this only in [`CastMode::Normal`], where returning `false` fails the
+    /// query with this message as a `Conversion Error`. In [`CastMode::Try`]
+    /// the message is kept but the query does not fail, and no row becomes
+    /// `NULL` because of it: use [`set_row_error`][Self::set_row_error] for
+    /// every failed row instead.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`. An empty message is replaced by
+    /// [`EMPTY_ERROR_PLACEHOLDER`][Self::EMPTY_ERROR_PLACEHOLDER].
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = error_cstring(message, Self::EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_cast_function_set_error(self.info, c_msg.as_ptr());
         }
     }
 
-    /// Reports a per-row error for `TRY_CAST`.
+    /// Reports a per-row conversion failure and sets `row` of `output` to
+    /// `NULL`.
     ///
-    /// Records `message` for `row` in the output error vector.  The row's
-    /// output value should be set to `NULL` by the caller.
+    /// `duckdb_cast_function_set_row_error` does both: it records `message` as
+    /// the cast's error message and calls `FlatVector::SetNull(output, row)`
+    /// (`src/main/capi/cast_function-c.cpp`). In [`CastMode::Try`] this is the
+    /// only way a row becomes `NULL`; in [`CastMode::Normal`] the message is
+    /// what the query fails with once the callback returns `false`.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior null byte in `message` is replaced by `?`. An empty message is replaced by
+    /// [`EMPTY_ERROR_PLACEHOLDER`][Self::EMPTY_ERROR_PLACEHOLDER].
     ///
     /// # Safety
     ///
-    /// `output` must be the same `duckdb_vector` passed to the cast callback.
+    /// - `output` must be the same `duckdb_vector` passed to the cast callback.
+    /// - `row` must be less than the `count` passed to the cast callback.
+    ///   `DuckDB` does not check it: the validity-mask bounds check is a
+    ///   `D_ASSERT`, compiled out of release builds
+    ///   (`src/include/duckdb/common/types/validity_mask.hpp`), so an
+    ///   out-of-range `row` writes past the end of the validity mask.
     pub unsafe fn set_row_error(&self, message: &str, row: idx_t, output: duckdb_vector) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = error_cstring(message, Self::EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid; output and row are caller-supplied.
         unsafe {
             duckdb_cast_function_set_row_error(self.info, c_msg.as_ptr(), row, output);
         }
     }
+
+    /// The message [`set_error`][Self::set_error] and
+    /// [`set_row_error`][Self::set_row_error] report in place of an empty one.
+    ///
+    /// Without it, `DuckDB` fails the query with `Conversion Error: ` followed
+    /// by nothing.
+    pub const EMPTY_ERROR_PLACEHOLDER: &'static str =
+        "cast function reported an error without a message";
 }
 
 // ── Callback type alias ────────────────────────────────────────────────────────
@@ -150,7 +165,34 @@ impl CastFunctionInfo {
 /// - `input`  — source vector (read from this).
 /// - `output` — destination vector (write results here).
 ///
-/// Return `true` on success, `false` to signal a fatal cast error.
+/// # The return value
+///
+/// Return `true` when every row converted. What `false` does depends on the
+/// [`CastMode`]:
+///
+/// - **`Normal`** (`CAST`): the query fails with a `Conversion Error`
+///   carrying the message from [`CastFunctionInfo::set_error`] or
+///   [`set_row_error`][CastFunctionInfo::set_row_error]. Set one before
+///   returning `false`. With none, a [`cast_callback!`][crate::cast_callback]
+///   function reports
+///   [`CAST_FAILED_WITHOUT_MESSAGE`][crate::callback::CAST_FAILED_WITHOUT_MESSAGE];
+///   a hand-written callback makes `DuckDB` report `Conversion Error: `
+///   followed by nothing.
+/// - **`Try`** (`TRY_CAST`): **nothing**. `DuckDB` discards the return value
+///   (`src/execution/expression_executor/execute_cast.cpp` calls the bound
+///   cast function and ignores what it returns; `CAPICastFunction` only
+///   records the message). Every row of `output` is returned as it stands —
+///   a row the callback never wrote holds whatever the vector held before,
+///   which can be a previous chunk's value. So in `Try` mode, call
+///   [`set_row_error`][CastFunctionInfo::set_row_error] (or set the row to
+///   `NULL` yourself) for **every** row that failed; returning `false` is not
+///   a substitute. This matches `DuckDB`'s own casts, whose `TRY_CAST` loops
+///   null each failed row individually and return `false` only as a summary.
+///
+/// A panic inside a [`cast_callback!`][crate::cast_callback] body is the one
+/// case quack-rs handles for you: in `Try` mode every row of the chunk is set
+/// to `NULL`, because what the body had written before it panicked cannot be
+/// trusted.
 pub type CastFn = unsafe extern "C" fn(
     info: duckdb_function_info,
     count: idx_t,
@@ -204,9 +246,17 @@ pub struct CastFunctionBuilder {
     extra_info: Option<crate::extra_info::ExtraInfo>,
 }
 
-// SAFETY: CastFunctionBuilder owns the extra_info pointer and LogicalType handles
-// until registration. The raw pointers are only sent across threads as part of the
-// builder, which extension authors typically use on a single thread.
+// SAFETY: moving a builder to another thread moves ownership of three kinds of
+// raw handle, and none of them has thread affinity:
+// - `LogicalType` owns a heap-allocated C++ `duckdb::LogicalType`; its type info
+//   is held by a `shared_ptr` (atomic refcount), and `duckdb_destroy_logical_type`
+//   is a plain `delete` that any thread may run.
+// - `CastFn` is a plain function pointer.
+// - `ExtraInfo` holds the user's `extra_info` pointer and may run its destructor
+//   on whichever thread drops the builder. That is only sound for a pointee that
+//   is `Send`, and `extra_info` is an `unsafe fn` whose contract requires exactly
+//   that (`Send + Sync`, because DuckDB reads it from every thread that casts).
+// The builder is not `Sync`: nothing here is shared, only moved.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for CastFunctionBuilder {}
 
@@ -283,8 +333,14 @@ impl CastFunctionBuilder {
     ///
     /// # Safety
     ///
-    /// `ptr` must remain valid until `DuckDB` calls `destroy`, or for the
-    /// lifetime of the database if `destroy` is `None`.
+    /// - `ptr` must remain valid until `DuckDB` calls `destroy`, or for the
+    ///   lifetime of the database if `destroy` is `None`.
+    /// - The pointee must be `Send + Sync`. `DuckDB` hands the same pointer to
+    ///   the cast callback on every thread that executes the cast, possibly at
+    ///   the same moment, and `destroy` runs on whichever thread releases the
+    ///   last reference — or, if the builder is dropped unregistered, on the
+    ///   thread that drops it (the builder is `Send`). Shared mutable state
+    ///   behind the pointer needs a `Mutex` or atomics.
     pub unsafe fn extra_info(
         mut self,
         ptr: *mut c_void,
@@ -323,15 +379,16 @@ impl CastFunctionBuilder {
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.
+        // The callback check needs no DuckDB call, so it goes first.
+        let function = self
+            .function
+            .ok_or_else(|| ExtensionError::new("cast function callback not set"))?;
         if let Some(id) = self.source {
             LogicalType::check_slot(id, "cast function source type")?;
         }
         if let Some(id) = self.target {
             LogicalType::check_slot(id, "cast function target type")?;
         }
-        let function = self
-            .function
-            .ok_or_else(|| ExtensionError::new("cast function callback not set"))?;
         if con.is_null() {
             return Err(ExtensionError::new(
                 "cast function registration: connection is null",
@@ -475,11 +532,15 @@ mod tests {
     }
 
     #[test]
-    fn builder_no_function_is_error() {
-        // We cannot call register without a live DuckDB, but we can assert the
-        // function field starts as None.
-        let b = CastFunctionBuilder::new(TypeId::BigInt, TypeId::Double);
-        assert!(b.function.is_none());
+    fn register_without_a_function_is_an_error_before_touching_duckdb() {
+        // The function check runs before any DuckDB call, so a null
+        // connection is never dereferenced.
+        // SAFETY: `register` returns before using `con`.
+        let err = unsafe {
+            CastFunctionBuilder::new(TypeId::BigInt, TypeId::Double).register(std::ptr::null_mut())
+        }
+        .expect_err("a builder without a function must be refused");
+        assert!(err.as_str().contains("callback not set"), "{err}");
     }
 
     #[test]
@@ -500,8 +561,10 @@ mod tests {
     }
 
     #[test]
-    fn cast_function_info_wraps_null() {
-        // Constructing with null must not crash (no DuckDB calls made).
-        let _info = unsafe { CastFunctionInfo::new(std::ptr::null_mut()) };
+    fn cast_function_info_round_trips_its_handle() {
+        let raw = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
+        // SAFETY: the handle is only stored and read back, never passed to DuckDB.
+        let info = unsafe { CastFunctionInfo::new(raw) };
+        assert_eq!(info.info, raw);
     }
 }

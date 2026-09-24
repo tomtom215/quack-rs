@@ -25,6 +25,23 @@
 //! `init_extension` uses `Result` for all error propagation and never calls
 //! `unwrap()` or `panic!()` inside an FFI callback.
 //!
+//! # Registration is not transactional
+//!
+//! Each `register` call commits to `DuckDB`'s catalog on its own; there is no
+//! enclosing transaction the entry point could roll back. If the registration
+//! closure registers some functions and then returns `Err` (or panics), the
+//! `LOAD` fails — but the functions registered before the failure **stay
+//! registered** and callable for the life of the database, while `DuckDB`
+//! does not list the extension as loaded. Retrying the `LOAD` in the same
+//! process then fails at the first function it re-registers: `DuckDB`
+//! refuses an aggregate name registered twice, and quack-rs refuses a scalar
+//! signature that already exists.
+//!
+//! So do every fallible thing that does not register — reading
+//! configuration, validating settings, building lookup tables — **before**
+//! the first `register` call, and treat an error after it as leaving the
+//! database partially extended.
+//!
 //! # Usage
 //!
 //! Extension authors typically use the `entry_point!` macro,
@@ -49,6 +66,8 @@
 //!     }
 //! }
 //! ```
+
+use std::io::Write as _;
 
 use libduckdb_sys::{
     duckdb_connect, duckdb_connection, duckdb_disconnect, duckdb_extension_access,
@@ -91,6 +110,10 @@ use crate::error::ExtensionError;
 /// The default is [`AbiPolicy::Strict`][crate::abi::AbiPolicy::Strict], which
 /// refuses to load when the running `DuckDB` does not provide the C API struct
 /// layout this extension was compiled against. See [`crate::abi`].
+///
+/// Registration is **not transactional**: functions registered before the
+/// closure fails stay registered. See the
+/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
 ///
 /// # Example
 ///
@@ -148,6 +171,10 @@ macro_rules! entry_point {
 /// - `$fn_name`: The exact symbol name `DuckDB` will call.
 /// - `$register`: A closure of type `fn(&Connection) -> Result<(), ExtensionError>`.
 ///
+/// Registration is **not transactional**: functions registered before the
+/// closure fails stay registered. See the
+/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
+///
 /// # Example
 ///
 /// ```rust,no_run
@@ -200,6 +227,10 @@ macro_rules! entry_point_v2 {
 /// 4. Calls `register(connection)`.
 /// 5. Disconnects with `duckdb_disconnect`.
 /// 6. On any error, reports via `access.set_error` and returns `false`.
+///
+/// Registration is **not transactional**: functions registered before the
+/// closure fails stay registered. See the
+/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
 ///
 /// # Return value
 ///
@@ -265,6 +296,10 @@ pub unsafe fn init_extension_with_policy<F>(
 where
     F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
 {
+    // SAFETY: `init_extension_internal`'s `# Safety` is "same invariants as
+    // `init_extension`", which this function's own `# Safety` ("same invariants as
+    // `init_extension`") passes on unchanged: `info` and `access` are the pointers DuckDB
+    // passed to the entry point, valid for the duration of this call.
     match unsafe { init_extension_internal(info, access, api_version, policy, register) } {
         Ok(result) => result,
         Err(e) => {
@@ -284,6 +319,10 @@ where
 ///
 /// Prefer this over [`init_extension`] for new extensions. The raw
 /// `duckdb_connection` entry point is retained for backward compatibility.
+///
+/// Registration is **not transactional**: functions registered before the
+/// closure fails stay registered. See the
+/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
 ///
 /// # Return value
 ///
@@ -346,6 +385,10 @@ pub unsafe fn init_extension_v2_with_policy<F>(
 where
     F: FnOnce(&Connection) -> Result<(), crate::error::ExtensionError>,
 {
+    // SAFETY: `init_extension_v2_internal`'s `# Safety` is "same invariants as
+    // `init_extension_v2`", which this function's own `# Safety` ("same invariants as
+    // `init_extension_v2`") passes on unchanged: `info` and `access` are the pointers
+    // DuckDB passed to the entry point, valid for the duration of this call.
     match unsafe { init_extension_v2_internal(info, access, api_version, policy, register) } {
         Ok(result) => result,
         Err(e) => {
@@ -629,8 +672,13 @@ unsafe fn enforce_abi_policy(
     // — so reporting a *warning* that way would abort the load and make `Warn`
     // indistinguishable from `Strict`. The C extension API has no non-fatal
     // diagnostic channel, so stderr is the honest one.
+    //
+    // `eprintln!` panics when the write fails (a closed pipe, a full disk),
+    // and this runs under the C entry point, outside the registration
+    // closure's `catch_unwind`: a panic here would abort the host process.
+    // A lost warning is the right trade.
     let _ = (info, access);
-    eprintln!("quack-rs warning: {message}");
+    let _ = writeln!(std::io::stderr(), "quack-rs warning: {message}");
     Ok(())
 }
 
@@ -650,7 +698,9 @@ unsafe fn report_error(
     }
     // SAFETY: access is non-null per the check above and valid per caller's contract.
     if let Some(set_error) = unsafe { (*access).set_error } {
-        let c_msg = error.to_c_string();
+        // Replace, not truncate at, an interior NUL: the same rule as every
+        // other error path (`ExtensionError::to_c_string` included).
+        let c_msg = crate::callback::message_to_c_string(error.as_str());
         // SAFETY: c_msg is a valid CString; info is valid.
         unsafe { set_error(info, c_msg.as_ptr()) };
     }
@@ -794,6 +844,41 @@ mod tests {
             get_database,
             get_api: Some(no_api),
         }
+    }
+
+    /// The message the capturing `set_error` below last received.
+    static REPORTED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    unsafe extern "C" fn capture_error(_: duckdb_extension_info, msg: *const c_char) {
+        // SAFETY: `report_error` passes a live NUL-terminated string.
+        let text = unsafe { std::ffi::CStr::from_ptr(msg) }
+            .to_string_lossy()
+            .into_owned();
+        if let Ok(mut slot) = REPORTED.lock() {
+            *slot = Some(text);
+        }
+    }
+
+    /// A NUL inside an error message is replaced, not truncated at: the same
+    /// rule as every other `set_error` path in the crate
+    /// (`callback::message_to_c_string`), so the text after it survives.
+    #[test]
+    fn an_init_error_with_an_interior_nul_keeps_its_tail() {
+        let access = duckdb_extension_access {
+            set_error: Some(capture_error),
+            get_database: Some(null_database),
+            get_api: Some(no_api),
+        };
+        // SAFETY: `access` is a valid struct; `info` is never dereferenced.
+        unsafe {
+            super::report_error(
+                core::ptr::null_mut(),
+                &raw const access,
+                &crate::error::ExtensionError::new("bad config\0: key `x` missing"),
+            );
+        }
+        let reported = REPORTED.lock().ok().and_then(|mut s| s.take());
+        assert_eq!(reported.as_deref(), Some("bad config?: key `x` missing"));
     }
 
     #[test]

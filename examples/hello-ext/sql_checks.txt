@@ -1,0 +1,172 @@
+# SPDX-License-Identifier: MIT
+#
+# The SQL checks in README.md's "Load in DuckDB CLI" block, with the exact
+# output the DuckDB CLI prints for each (`-csv -noheader -nullvalue NULL`).
+# scripts/check-hello-ext.py runs them against a loaded extension and fails
+# if README.md's statements and these ever differ.
+#
+# Format: `== <id>`, the statement, `----`, the expected output (one line per
+# row, columns comma-separated; `ERROR: <prefix>` for an expected error).
+
+== T01
+SELECT word_count(sentence) AS wc FROM ( VALUES ('hello world'), ('one two three'), (NULL)) t(sentence);
+----
+5
+
+== T02
+SELECT first_word('hello world');
+----
+hello
+
+== T03
+SELECT COUNT(*) FROM generate_series_ext(5);
+----
+5
+
+== T04
+SELECT COUNT(*) FROM generate_series_ext(0);
+----
+0
+
+== T05
+SELECT CAST('3.14' AS INTEGER);
+----
+ERROR: Conversion Error
+
+== T06
+SELECT TRY_CAST('1e5' AS INTEGER);
+----
+NULL
+
+== T07
+SELECT sum_list([1, 2, 3]);
+----
+6
+
+== T08
+SELECT sum_list([10, NULL, 20]);
+----
+30
+
+== T09
+SELECT make_pair('hello', 42);
+----
+{'key': hello, 'value': 42}
+
+== T10
+SELECT coalesce_val(NULL::BIGINT, 99);
+----
+99
+
+== T11
+SELECT coalesce_val(NULL::VARCHAR, 'fallback');
+----
+fallback
+
+== T12
+SELECT coalesce_val(42::BIGINT, 99);
+----
+42
+
+== T13
+SELECT typed_sum(a, b) FROM (VALUES (1, 2), (3, 4)) t(a, b);
+----
+10
+
+== T14
+SELECT typed_sum(a, b, c) FROM (VALUES (1, 2, 3), (4, 5, 6)) t(a, b, c);
+----
+21
+
+== T15
+SELECT double_it(21);
+----
+42
+
+== T16
+SELECT * FROM seq_n(5);
+----
+1
+2
+3
+4
+5
+
+== T17
+SELECT make_kv_map('hello', 42);
+----
+{hello=42}
+
+== T18
+SELECT COUNT(*) FROM gen_series_v2(5);
+----
+5
+
+== T19
+SELECT * FROM gen_series_v2(3, step := 10);
+----
+0,10
+10,10
+20,10
+
+== T20
+SELECT add_interval(INTERVAL '1 day', 1000000);
+----
+1 day 00:00:01
+
+== T21
+SELECT all_types_echo(true, 1::TINYINT, 2::SMALLINT, 3, 4::BIGINT, 5::UTINYINT, 6::USMALLINT, 7::UINTEGER, 8::UBIGINT, 9.5::FLOAT, 10.5, 11::HUGEINT);
+----
+b=true,i8=1,i16=2,i32=3,i64=4,u8=5,u16=6,u32=7,u64=8,f32=9.5,f64=10.5,i128=11
+
+== T22
+SELECT all_types_echo(NULL::BOOLEAN, 1::TINYINT, 2::SMALLINT, 3, 4::BIGINT, 5::UTINYINT, 6::USMALLINT, 7::UINTEGER, 8::UBIGINT, 9.5::FLOAT, 10.5, 11::HUGEINT);
+----
+NULL
+
+== T23
+SELECT * FROM read_hello('world');
+----
+Hello, world!
+
+== T24
+SELECT * FROM 'hello:DuckDB';
+----
+Hello, DuckDB!
+
+== T25
+SELECT 2.5::DOUBLE::BIGINT;
+----
+3
+
+== T25b1
+SELECT TRY_CAST(1e19::DOUBLE AS BIGINT);
+----
+NULL
+
+== T25b2
+SELECT TRY_CAST('nan'::DOUBLE AS BIGINT);
+----
+NULL
+
+== T26
+SELECT sum_list(NULL::BIGINT[]);
+----
+NULL
+
+== T27
+SELECT make_pair(NULL, 42);
+----
+NULL
+
+== T28
+SELECT make_kv_map(NULL, 42);
+----
+NULL
+
+== T29
+SELECT value FROM gen_series_v2(3);
+----
+0
+1
+2

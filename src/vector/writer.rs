@@ -33,6 +33,8 @@ use libduckdb_sys::{
 };
 
 use super::nested_null::{self, NullTarget};
+use super::string::check_string_len;
+use crate::error::ExtensionError;
 
 /// A typed writer for a `DuckDB` output vector in a `finalize` callback.
 ///
@@ -249,6 +251,12 @@ impl VectorWriter {
         let lower = value as u64;
         #[allow(clippy::cast_possible_truncation)]
         let upper = (value >> 64) as i64;
+        // SAFETY: `base` and `base + 8` are the `lower`/`upper` halves of row
+        // `idx`'s 16-byte `duckdb_hugeint` ({uint64_t lower; int64_t upper},
+        // duckdb.h) in `self.data`, the flat data buffer the constructor's contract
+        // keeps valid. Both 8-byte writes stay in bounds because `idx` is within
+        // the vector's capacity (`# Safety` clause 1) and a HUGEINT vector (clause
+        // 2) stores 16 bytes per row; `write_unaligned` needs no alignment.
         unsafe {
             core::ptr::write_unaligned(base.cast::<u64>(), lower);
             core::ptr::write_unaligned(base.add(8).cast::<i64>(), upper);
@@ -272,28 +280,67 @@ impl VectorWriter {
     /// the inline (≤12 bytes) and pointer (>12 bytes) storage formats
     /// automatically. `DuckDB` manages the memory for the string data.
     ///
-    /// # Note on very long strings
+    /// # Panics
     ///
-    /// If `value.len()` exceeds `idx_t::MAX` (2^64 − 1 on 64-bit platforms),
-    /// the length is silently clamped to `idx_t::MAX`. In practice, this limit
-    /// is unreachable on any current hardware (≈18 exabytes), so no explicit
-    /// error path is provided.
+    /// Panics if `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN] (4 GiB − 1),
+    /// the most a `DuckDB` string can hold. Writing it anyway would store the
+    /// length modulo 2^32 — a silently truncated value. Inside
+    /// [`scalar_callback!`][crate::scalar_callback] and the typed scalar
+    /// constructors the panic becomes a SQL error; use
+    /// [`try_write_varchar`][Self::try_write_varchar] to handle it yourself.
     ///
     /// # Safety
     ///
     /// - `idx` must be within the vector's capacity.
     /// - The vector must have `VARCHAR` type.
     pub unsafe fn write_varchar(&mut self, idx: usize, value: &str) {
-        // SAFETY: self.vector is valid per constructor's contract.
-        // duckdb_vector_assign_string_element_len copies the string data.
+        // SAFETY: forwarded from this method's own contract.
+        if let Err(e) = unsafe { self.try_write_varchar(idx, value) } {
+            panic!("write_varchar: {e}");
+        }
+    }
+
+    /// Writes a VARCHAR string value at row `idx`, or returns an error — writing
+    /// nothing — if `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `value.len()` exceeds `MAX_STRING_LEN`.
+    ///
+    /// # Safety
+    ///
+    /// See [`write_varchar`][Self::write_varchar].
+    pub unsafe fn try_write_varchar(
+        &mut self,
+        idx: usize,
+        value: &str,
+    ) -> Result<(), ExtensionError> {
+        // SAFETY: forwarded from this method's own contract.
+        unsafe { self.try_assign_string(idx, value.as_bytes()) }
+    }
+
+    /// Stores `bytes` as the `duckdb_string_t` at row `idx` after checking its
+    /// length. `DuckDB` copies the bytes.
+    ///
+    /// # Safety
+    ///
+    /// `idx` must be within the vector's capacity, and the vector must be
+    /// `VARCHAR` (with `bytes` valid UTF-8) or `BLOB`.
+    unsafe fn try_assign_string(&mut self, idx: usize, bytes: &[u8]) -> Result<(), ExtensionError> {
+        check_string_len(bytes.len())?;
+        // SAFETY: self.vector is valid and idx in bounds per the caller's
+        // contract; the length fits in `u32`, so DuckDB's narrowing is exact.
         unsafe {
             duckdb_vector_assign_string_element_len(
                 self.vector,
                 idx as idx_t,
-                value.as_ptr().cast::<std::os::raw::c_char>(),
-                idx_t::try_from(value.len()).unwrap_or(idx_t::MAX),
+                bytes.as_ptr().cast::<std::os::raw::c_char>(),
+                bytes.len() as idx_t,
             );
         }
+        Ok(())
     }
 
     /// Writes a `DATE` value at row `idx` as days since the Unix epoch.
@@ -358,6 +405,13 @@ impl VectorWriter {
     ) {
         // SAFETY: INTERVAL = { months: i32 @ 0, days: i32 @ 4, micros: i64 @ 8 } = 16 bytes.
         let base = unsafe { self.data.add(idx * 16) };
+        // SAFETY: `base`, `base + 4` and `base + 8` are the `months`, `days` and
+        // `micros` fields of row `idx`'s 16-byte `duckdb_interval` ({int32_t;
+        // int32_t; int64_t}, duckdb.h) in `self.data`, the flat data buffer the
+        // constructor's contract keeps valid. All writes stay in bounds because
+        // `idx` is within the vector's capacity (`# Safety` clause 1) and an
+        // INTERVAL vector (clause 2) stores 16 bytes per row; `write_unaligned`
+        // needs no alignment.
         unsafe {
             core::ptr::write_unaligned(base.cast::<i32>(), value.months);
             core::ptr::write_unaligned(base.add(4).cast::<i32>(), value.days);
@@ -370,20 +424,42 @@ impl VectorWriter {
     /// This uses the same underlying storage as VARCHAR — `DuckDB` stores BLOBs
     /// using `duckdb_vector_assign_string_element_len`, which copies the data.
     ///
+    /// # Panics
+    ///
+    /// Panics if `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN]; see
+    /// [`write_varchar`][Self::write_varchar]. Use
+    /// [`try_write_blob`][Self::try_write_blob] to handle it yourself.
+    ///
     /// # Safety
     ///
     /// - `idx` must be within the vector's capacity.
     /// - The vector must have `BLOB` type.
     pub unsafe fn write_blob(&mut self, idx: usize, value: &[u8]) {
-        // SAFETY: BLOB uses the same storage as VARCHAR.
-        unsafe {
-            duckdb_vector_assign_string_element_len(
-                self.vector,
-                idx as idx_t,
-                value.as_ptr().cast::<std::os::raw::c_char>(),
-                idx_t::try_from(value.len()).unwrap_or(idx_t::MAX),
-            );
+        // SAFETY: forwarded from this method's own contract.
+        if let Err(e) = unsafe { self.try_write_blob(idx, value) } {
+            panic!("write_blob: {e}");
         }
+    }
+
+    /// Writes a `BLOB` value at row `idx`, or returns an error — writing
+    /// nothing — if `value` is longer than
+    /// [`MAX_STRING_LEN`][crate::vector::string::MAX_STRING_LEN].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `value.len()` exceeds `MAX_STRING_LEN`.
+    ///
+    /// # Safety
+    ///
+    /// See [`write_blob`][Self::write_blob].
+    pub unsafe fn try_write_blob(
+        &mut self,
+        idx: usize,
+        value: &[u8],
+    ) -> Result<(), ExtensionError> {
+        // SAFETY: forwarded from this method's own contract.
+        unsafe { self.try_assign_string(idx, value) }
     }
 
     /// Writes a `UUID` value at row `idx`.
@@ -440,6 +516,12 @@ impl VectorWriter {
         let lower = value as u64;
         #[allow(clippy::cast_possible_truncation)]
         let upper = (value >> 64) as u64;
+        // SAFETY: `base` and `base + 8` are the `lower`/`upper` halves of row
+        // `idx`'s 16-byte `duckdb_uhugeint` ({uint64_t lower; uint64_t upper},
+        // duckdb.h) in `self.data`, the flat data buffer the constructor's contract
+        // keeps valid. Both 8-byte writes stay in bounds because `idx` is within
+        // the vector's capacity (`# Safety` clause 1) and a UHUGEINT vector (clause
+        // 2) stores 16 bytes per row; `write_unaligned` needs no alignment.
         unsafe {
             core::ptr::write_unaligned(base.cast::<u64>(), lower);
             core::ptr::write_unaligned(base.add(8).cast::<u64>(), upper);

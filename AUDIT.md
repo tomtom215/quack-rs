@@ -125,6 +125,15 @@ shows up as a test failure rather than a surprise.
 NULL rows before `update` under the default. The correction is specific to
 scalar functions, and the docs now say so.
 
+> **Corrected September 2026 (third pass).** The last paragraph is false.
+> `CAPIAggregateUpdate` (`aggregate_function-c.cpp:92-111`, DuckDB 1.5.5)
+> flattens the inputs and passes every row, NULL rows included, under either
+> null-handling setting. An aggregate's setting is read only by
+> `BoundAggregateExpression::PropagatesNullValues`, which only the
+> correlated-subquery decorrelator consults. VALIDATED end to end by
+> `aggregate_update_receives_null_rows_under_either_null_handling`
+> (`tests/ffi_roundtrip/lifecycle.rs`); recorded as Pitfall L12. See section 8.
+
 ### D3 — Composite `TypeId`s silently produced an invalid type (Medium)
 
 `duckdb.h` on `duckdb_create_logical_type`:
@@ -513,6 +522,21 @@ if nobody wrote down that they were checked.
   takes a total capacity and reallocates the child buffer when it grows; the
   builder re-fetches the child writer after every reserve, and refuses to exceed
   `MAX_VECTOR_SIZE` rather than let DuckDB throw a C++ exception into Rust.
+
+  > **Corrected September 2026 (third pass).** Two parts of this were wrong.
+  > A refused row got no list entry, and the refusal was sticky, so every later
+  > row in the chunk kept the previous chunk's `{offset, length}` and came back
+  > as a valid list the callback never wrote (VALIDATED: a whole 2048-row chunk
+  > of stale lists). And staying under the ceiling does not prevent an abort:
+  > `duckdb_list_vector_reserve` has no try/catch, so an allocation failure
+  > below it unwinds too (VALIDATED: 2^36 `BIGINT` elements). Refused rows are
+  > now NULL, and `ListBuilder::with_element_limit` bounds input-driven lengths.
+- **Correction (third pass): the appender was not the only 32-bit narrowing.**
+  The next bullet is right about `duckdb_append_varchar_length`, but
+  `VectorWriter::write_varchar` / `write_blob` reached the same narrowing in
+  `StringVector::AddStringOrBlob` unguarded: a 4 GiB + 1 byte value was stored
+  as a one-byte string (VALIDATED). They now refuse it (`try_write_varchar`,
+  `vector::string::MAX_STRING_LEN`).
 - **The appender, the virtual file system and the string decoder** are careful in
   the places that matter: short reads and writes are looped
   (`FileHandle::read_exact` / `write_all`), `duckdb_append_varchar_length`'s
@@ -789,10 +813,21 @@ README assertion that panicked — are fixed and were recompiled.
    would still make DuckDB's `GetValue` throw; none was found across the 31
    value types the new test exercises against every getter, but that is testing,
    not proof.
-4. **The book is not compiled in CI.** `docs.yml` runs `mdbook build`, never
-   `mdbook test`, which is how the non-compiling examples went unnoticed.
-   Compiling book blocks against the local crate needs a small harness (plain
-   `mdbook test` cannot link external crates).
+
+   > **Corrected September 2026 (third pass).** "PROVEN not to abort for a
+   > cast that fails" was false. Temporal casts bound through
+   > `TemplatedCastLoop` throw instead of reporting through the error channel,
+   > so 8 value-type/getter pairs aborted the process at both +infinity and
+   > -infinity, 16 cases in all (VALIDATED, e.g. `TIMESTAMP -> as_time`,
+   > `TIMESTAMP_MS -> as_date`; the DuckDB CLI's
+   > `TRY_CAST('infinity'::TIMESTAMP AS TIME)` throws too). The proof missed
+   > casts bound through `duckdb::Cast`, and the test used only benign values.
+   > The getters now refuse those pairs first (`value::temporal_checks`). See
+   > section 8.
+4. ~~**The book is not compiled in CI.**~~ — fixed in the third pass:
+   `book/doctest` compiles every Rust block of the book and README as a
+   doctest in CI, and a `book` job builds the book and checks its links on
+   every pull request (section 8).
 5. ~~The book changelog's relative links~~ — fixed in this pass:
    `scripts/sync-book-changelog.py` rewrites repository-file links to GitHub
    URLs, since the mirror lives in `book/src/reference/`.
@@ -842,3 +877,210 @@ target directory and test each other's binaries. It reported a mutant that
 replaced `validate_extension_name` with `Ok(())` as surviving the tests that
 assert it rejects hyphens — impossible, and how the problem was noticed. That
 run was discarded.
+
+---
+
+## 8. Third audit, September 2026 (0.18.0, before release)
+
+Reviewed on `claude/busy-lamport-19hxye`, starting from `main` at `82b96fc`
+(the merged second audit), against **DuckDB 1.5.5** (prebuilt `libduckdb`,
+x86-64 Linux, `libduckdb-sys 1.10505.0`) with the v1.5.5 source tree as the
+reference, the 1.4.4 and 1.5.0 CLIs for cross-version checks, and DuckDB `main`
+at `30c64e17` (2026-09-23, source only, not built) for the upstream checks.
+Nothing from this pass has been published. 0.17.0 was prepared but never
+tagged or published (crates.io's latest is 0.16.0); it has been folded into the
+unreleased 0.18.0, where every entry below also lands.
+
+### 8.1 Method
+
+Six area audits again (vector/chunk memory, scalar/aggregate lifecycle,
+table/cast/copy/macro/catalog, values/queries/Arrow, tooling, documentation),
+each finding required to carry a probe against a real DuckDB or a derivation
+from both sides' source, and each fix a regression test shown failing first.
+Labels are as in section 7: **VALIDATED** (reproduced by a program, then shown
+fixed) and **PROVEN** (derived from source; nothing could trigger it). A third
+label is used here for contract fixes found by reading: **CONTRACT** — an
+`unsafe fn`'s `# Safety` section omitted a requirement, so a caller following it
+could still cause UB; fixed by stating the requirement, no runtime test possible.
+
+This pass also corrected four claims earlier sections made as verified. Each
+correction is inline where the claim was made, marked "Corrected September 2026
+(third pass)": D2 (aggregates do receive NULL rows), two section 4 bullets
+(`ListBuilder`; `VectorWriter`'s string narrowing), and section 7.5 item 3 (the
+`Value` getters were not proven abort-free).
+
+### 8.2 Defects found and fixed
+
+Process aborts from ordinary input (a C++ exception unwinding into Rust):
+
+| Defect | Evidence |
+|---|---|
+| `Value` temporal getters on ±infinity: 8 type/getter pairs, 16 cases (`TIMESTAMP -> as_time`, `TIMESTAMP_MS -> as_date`, …) | VALIDATED (exit 134); now refused first |
+| `Value` temporal constructors accepted any `i64`; a later `as_str` / getter aborted (`time(i64::MAX)`, `timestamp_s(1e14)`, `timestamp(i64::MIN)`) | VALIDATED; constructors now return `Result` (**breaking**) |
+| Catalog lookups of names DuckDB autoloads an extension for (e.g. type `inet`) | VALIDATED, and reproduced in plain C (8.5) |
+| Config option: a default that `DefaultCastAs` cannot convert (incl. ICU-only `TIMESTAMPTZ` strings); `SET <option> = NULL` read back | VALIDATED (probes t09, t29) |
+| `OwnedVector::new` capacities whose byte size wraps: a 32-byte buffer for `HUGEINT × (2^60 + 2)` | VALIDATED (16 of 16 neighbouring vectors corrupted) |
+| `ListBuilder` below the 2^37 ceiling: `duckdb_list_vector_reserve` OOM | VALIDATED (2^36 `BIGINT`); `with_element_limit` added |
+| `AbiPolicy::Warn`'s diagnostic could panic under the C entry point | PROVEN |
+
+Wrong answers with no error:
+
+| Defect | Evidence |
+|---|---|
+| A scalar whose signature already exists silently **replaced** it for every connection — a built-in included (`abs(BIGINT)`) | VALIDATED; now refused, 37 rendered types checked against `duckdb_functions()` |
+| A table or copy function with a taken name was silently dropped | VALIDATED |
+| `ListBuilder` refused rows kept the previous chunk's list entries | VALIDATED (a whole 2048-row chunk) |
+| `VectorWriter::write_varchar` / `write_blob` over 4 GiB stored a truncated string | VALIDATED (strlen = 1) |
+| `QueryResult::next_chunk` reported a failed stream as end-of-results | VALIDATED; now `Result<Option<_>>` (**breaking**) |
+| `Appender`: a half-written row was committed on `close`, buffered rows lost | VALIDATED; the appender is poisoned instead |
+| Typed table builder accepted projection pushdown it cannot honour | VALIDATED |
+| A panicking `TRY_CAST` callback left rows holding stale values | VALIDATED; every row is nulled |
+| `SqlMacro` bodies with `--` comments broke; `1); DROP TABLE …; SELECT (1` ran | VALIDATED |
+| An error message with an interior NUL lost its tail in some paths and kept it in others; every path now replaces NUL with `?` (`ErrorData::new` was the last) | VALIDATED (e.g. `"bad\0input"` → `"bad"`) |
+| A `CAST` callback returning `false` with no message: `Conversion Error: ` and nothing | VALIDATED |
+| `FileHandle` outlived its `FileSystem`; `FileFlag::CreateNew` did not create | VALIDATED (valgrind "Invalid read"); `FileHandle<'fs>` (**breaking**) |
+
+Security: `SecretEntry` freed replaced field, provider and scope values
+without zeroizing them, and `Debug` printed the scope. VALIDATED by an
+inspecting global allocator (`tests/secret_zeroize.rs`): 3 marked buffers freed
+before the fix, 0 after, in debug and release.
+
+Capability: `InstanceCache` is now `Send + Sync`. PROVEN from DuckDB's
+`DBInstanceCache` locking (`db_instance_cache.cpp`), and exercised from four
+threads.
+
+Panics and contract gaps:
+
+| Defect | Evidence |
+|---|---|
+| `varargs(TypeId::List)` panicked in the setter | VALIDATED; now an `Err` from `register` |
+| `MapVector::set_size` did not require `size` ≤ entries written | CONTRACT |
+| `read_duck_blob` did not require the vector to outlive an inline blob | CONTRACT |
+| `FfiInitData` / `FfiLocalInitData` / `FfiBindData` getters did not require `T` to be the type `set` stored (`set::<u8>`, `get_mut::<[u64; 64]>` wrote 512 bytes through a 1-byte allocation) | CONTRACT |
+
+Found by the final verification sweep and by CI, not by the area audits:
+
+| Finding | Evidence |
+|---|---|
+| DuckDB does not destroy every aggregate state of a query whose `finalize` reports an error (ungrouped: 2 initialised, 1 destroyed; grouped: 4 and 2); anything a state owns leaks | VALIDATED by counting callbacks; documented, pinned by a test, drafted upstream |
+| Two new tests leaked (an `FfiState` aggregate failing in `finalize`; Arrow records built with `Box::leak`), which would have failed CI's blocking LeakSanitizer job | VALIDATED: 280 bytes, then 16 bytes (6 of 6 runs); clean in 3 of 3 runs after |
+| A new SPDX test (a million nested parentheses) cannot finish under Miri; the PyYAML test spawns a process Miri cannot | VALIDATED: over 30 minutes on one test; both now scaled or skipped under Miri only |
+| The incremental mutation gate would have failed: 63 mutants survived in files this branch changed, 28 of them in code split out of `value.rs`, whose exclusion did not follow it | VALIDATED; now 0 missed (8.6). Survivors in pure logic are killed by new unit tests; FFI-bound ones are excluded with a reason, and 4 that had no end-to-end test now have one |
+| This pass's own test pinned `time_from_micros(-1)` and three other out-of-range inputs as harmless arithmetic, which holds only for a release DuckDB: `Time::Convert` ends in `D_ASSERT(IsValidTime)`, so a DuckDB built with assertions aborted. CI's source-built jobs (`bundled-test` on three OSes, coverage) caught it; no local run had built DuckDB from source | VALIDATED (SIGABRT at `time.cpp:326`, locally and in CI); `time_from_micros` and `time_tz_from_bits` now return `None` outside `00:00:00`–`24:00:00` (**breaking**) |
+| Two end-to-end tests could not run against a source-built DuckDB, which no local run had tried: the temporal sweep's SQL oracle ran `CAST(<infinite TIMESTAMP_MS> AS DATE)` (and `TIME`), on which DuckDB 1.5.5 itself fails `D_ASSERT(IsFinite)` in `Timestamp::FromEpochMs` (a release build answers with a Conversion Error), and the config-option test required ICU, which libduckdb-sys's `cc` build does not compile in | VALIDATED (gdb backtrace into `sql_cast`; the 1.5.5 CLI's error for all four casts). Neither is a quack-rs defect: the oracle pins the release answer (`None`) for exactly those pairs, and without ICU the zoned default is asserted to be refused rather than registered |
+
+Tooling, all VALIDATED: the ABI table lacked DuckDB v1.4.5; `validate_spdx_license`
+overflowed the stack on deep nesting and rejected `WITH` exceptions; `vX.Y.Z`
+versions were misclassified; the scaffold wrote free text unquoted into YAML
+and Rust, and generated a unit test and SQLLogicTest that tested nothing;
+`append_metadata` rejected 32-byte fields and `--flag=value`; the test shim did
+not check that its headers matched the bindings.
+
+Documentation: every Rust block in the book and README is now compiled as a
+doctest in CI (`book/doctest`); every relative and docs.rs link is checked
+against the rendered book and rustdoc (`scripts/check-book-links.py`), which
+found 8 broken links; all 31 hello-ext README statements run in CI
+(`scripts/check-hello-ext.py`), which checks them against the fixture too; and
+`docs/architecture.md`, stale in its module list and feature gates, is now held
+to `src/lib.rs` by an integration test. The load recipes no longer tell readers
+to set `allow_extensions_metadata_mismatch`, which the documented `C_STRUCT`
+stamping never needs (VALIDATED on 1.4.4, 1.5.0 and 1.5.5).
+
+Code health: the four files furthest over the 500-line guideline (`query.rs`,
+`arrow.rs`, `appender.rs`, `testing/mock_vector.rs`) were split by pure moves.
+The rustdoc page list is unchanged apart from four redirect stubs, and every
+test count is identical before and after. Every `unsafe` block in library code
+now carries a `// SAFETY:` note, and `clippy::undocumented_unsafe_blocks` keeps
+it that way.
+
+### 8.3 Verified correct
+
+- `arrow::data_chunk_from_arrow` refuses a negative length or offset by name
+  before DuckDB sees it (pinned by a unit test, shown red with the check
+  disabled); DuckDB itself aborts on it (8.5).
+- A user macro shadowing a built-in is documented on `SqlMacro` and in the
+  book, and still behaves as documented (DuckDB 1.5.5 CLI: `abs(-1)` returns
+  the macro's 42; `system.main.abs(-1)` returns 1).
+- Identical scalar calls whose bind callbacks stored different data are merged
+  (`CScalarFunctionBindData::Equals` compares only `extra_info` and the
+  callback); documented on `ScalarBindData`, pinned end to end, and raised
+  upstream as a feature request (8.5).
+
+### 8.4 Not changed, deliberately
+
+- 39 files under `src/` still exceed 500 lines, counting their unit tests;
+  CONTRIBUTING's guideline says "should generally" and allows exceptions for
+  cohesion. Only files with more than 800 non-test lines were split.
+- `/dev/null` in the audit container was a regular file whose contents changed
+  as processes wrote to it. Cargo's `rustc` probe reads it and cached the
+  failure, which failed builds with "failed to run `rustc` to learn about
+  target-specific information" and made cargo-mutants mark mutants unviable.
+  Repairing the device was not permitted in that environment, so the final runs
+  use a `RUSTC_WRAPPER` that gives `rustc` an empty stdin in its place; no
+  result below depends on the corrupted file. This is an environment fault,
+  not a repository one.
+- `undocumented_unsafe_blocks` is allowed in test code (`cfg_attr(test)` in
+  `src/lib.rs`, and the two integration test crates that need it): 632 blocks
+  in `tests/` alone, plus those in `src`'s unit-test modules, whose invariants
+  are the test's own setup.
+
+### 8.5 Upstream
+
+Four DuckDB C API functions let a C++ exception escape an `extern "C"`
+function, each reproduced in plain C against the v1.5.5 library (exit 134) and
+unchanged in `main`'s source at `30c64e17`: `duckdb_list_vector_reserve`,
+`duckdb_catalog_get_entry` (failed autoload), `duckdb_config_option_set_default_value`
+(`DefaultCastAs`) and `duckdb_data_chunk_from_arrow` (`NumericCast` and
+`Initialize` before its `try`). A fifth report asks for a way to compare scalar
+and aggregate bind data, and a sixth reports the aggregate states a failed
+`finalize` leaves undestroyed. Drafted, not yet filed; DuckDB's tracker was not
+searched for duplicates. The drafts, reproducers and a status table are in
+`docs/upstream-duckdb-reports.md`.
+
+Not drafted: in DuckDB 1.5.5, `CastTimestampMsToDate` and `CastTimestampMsToTime`
+pass an infinite value to `Timestamp::FromEpochMs`, whose `D_ASSERT` aborts a
+debug build from plain SQL (8.2). `main` at `30c64e17` casts through `TryCast`
+instead and no longer calls `FromEpochMs` outside the infinity-guarded C API
+converter (derived from source; not built).
+
+### 8.6 How this pass was verified
+
+All at `fcebab5` against DuckDB 1.5.5 unless stated, x86-64 Linux:
+
+- **Tests:** 759 library tests with default features; with
+  `bundled-test-prebuilt,duckdb-1-5-4`, 913 library, 187 end-to-end
+  (`tests/ffi_roundtrip`), 70 integration and 34 `append_metadata` tests;
+  198 doctests; 239 book and README blocks compiled by `book/doctest`
+  (4 ignored, each saying why).
+- **Lints and docs:** `cargo fmt --check`; clippy `-D warnings` with default
+  features, `duckdb-1-5`, `duckdb-1-5-3` and `bundled-test-prebuilt,duckdb-1-5-4`;
+  rustdoc `-D warnings` with default features and with `duckdb-1-5-4`;
+  `mdbook build`; `scripts/check-book-links.py`; the sitemap and changelog-mirror
+  checks. MSRV `cargo +1.86.0 check`. Dependency floor (`duckdb` and
+  `libduckdb-sys` pinned to 1.4.4): 759 library tests pass.
+- **Sanitizers, with CI's exact flags:** Miri over the library, 841 passed,
+  1 ignored (the subprocess test), no undefined behaviour; LeakSanitizer and
+  AddressSanitizer over the 187 end-to-end tests, no reports.
+- **hello-ext:** built from this tree, stamped `C_STRUCT` / `v1.2.0`, all 31
+  README statements pass on DuckDB 1.4.4, 1.5.0 and 1.5.5; 2 of them
+  (T25b1, T25b2) also pass without the extension, and T25 shows its cast is
+  the one running.
+- **Mutation testing,** the invocation CI's incremental job runs on this branch
+  (116 changed `src` files, config exclusions re-applied, `--features
+  duckdb-1-5-4 --lib`): 994 mutants, **0 missed**, 745 caught, 249 unviable,
+  0 timeouts. No mutant log contains the `rustc` probe failure of 8.4.
+  CI's own run of the same invocation (on `3ddd9b8`) missed one mutant the
+  local run had caught: `days * MICROS_PER_DAY` -> `+` in
+  `interval_to_micros_saturating`, which only a randomized proptest could
+  reach. A deterministic test now kills it (shown failing with the mutation
+  applied), and `src/interval.rs` under `PROPTEST_CASES=1` gives 28 mutants,
+  27 caught, 1 unviable, 0 missed; the only other proptests in the library
+  (`src/testing/harness.rs`) exercise the harness and their own test states.
+- **DuckDB built from source, assertions on,** after the `time_from_micros`
+  fix (8.2), with CI's two commands: `cargo test --all-targets --features
+  bundled-test` passes 816 library, 34 `append_metadata`, 119 end-to-end,
+  70 integration and 1 `secret_zeroize` test; `--all-features` (the coverage
+  job) passes 915, 34, 187, 70 and 1. The unfixed code aborts the first of
+  these at `time.cpp:326`, in the test named in 8.2. CI's mutation invocation
+  on the two files that fix changed: 128 mutants, 124 caught, 4 unviable,
+  **0 missed**.

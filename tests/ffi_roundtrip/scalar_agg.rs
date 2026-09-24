@@ -127,6 +127,46 @@ fn a_panic_payload_whose_drop_panics_becomes_a_sql_error() {
     );
 }
 
+/// Regression: a result longer than `DuckDB`'s 4 GiB − 1 string limit used to
+/// be stored as its length modulo 2^32 — here, one byte — with no error.
+/// `DuckDB` narrows the length with a plain cast in release builds
+/// (`StringVector::AddStringOrBlob`). It must fail the query instead.
+///
+/// Linux only: the 4 GiB buffer is `calloc`ed and never written, so it costs
+/// no physical memory there; other platforms may commit it eagerly.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_string_result_over_duckdbs_limit_is_an_error_not_a_truncation() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open.
+    unsafe {
+        ScalarFunctionBuilder::map1("t_huge_str", |n: i64| -> String {
+            let len = usize::try_from(n).expect("non-negative");
+            String::from_utf8(vec![0_u8; len]).expect("NUL bytes are UTF-8")
+        })
+        .expect("build")
+        .register(fx.con())
+        .expect("register");
+    }
+
+    // SAFETY: `con` is open.
+    let err = unsafe { query(fx.con(), "SELECT strlen(t_huge_str(4294967297))") }
+        .expect_err("an over-long result must fail the query");
+    assert!(
+        err.as_str()
+            .contains("exceeds DuckDB's maximum string length"),
+        "{err}"
+    );
+
+    // A value within the limit still round-trips.
+    assert_eq!(
+        fx.scalar("SELECT strlen(t_huge_str(20))", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(20)
+    );
+}
+
 // ─── Typed closures keep the signature they were compiled for ───────────────
 
 /// A `Registrar` that edits the signature of every scalar it is handed — the
@@ -309,6 +349,68 @@ fn a_type_id_and_an_equal_logical_type_are_duplicates() {
     // SAFETY: `con` is open.
     let err = unsafe { set.register(fx.con()) }.expect_err("duplicate overloads");
     assert!(err.as_str().contains("overload 0 and overload 1"), "{err}");
+}
+
+/// `varargs(TypeId)` used to build its `LogicalType` inside the setter, so a
+/// composite id panicked there. It is now checked with the other slots and
+/// refused by `register`, naming the slot, before any handle is allocated.
+#[test]
+fn a_composite_varargs_type_id_is_refused_by_register() {
+    let fx = Fixture::open();
+    let single = ScalarFunctionBuilder::try_new("bad_varargs")
+        .expect("name")
+        .returns(TypeId::BigInt)
+        .varargs(TypeId::List)
+        .function(first_arg_as_i64);
+    // SAFETY: `con` is open.
+    let err = unsafe { single.register(fx.con()) }.expect_err("LIST needs a child type");
+    assert!(err.as_str().contains("scalar function varargs"), "{err}");
+
+    let set = ScalarFunctionSetBuilder::try_new("bad_varargs_set")
+        .expect("name")
+        .overload(bigint_overload())
+        .overload(
+            ScalarOverloadBuilder::new()
+                .returns(TypeId::BigInt)
+                .varargs(TypeId::Decimal)
+                .function(first_arg_as_i64),
+        );
+    // SAFETY: `con` is open.
+    let err = unsafe { set.register(fx.con()) }.expect_err("DECIMAL needs width and scale");
+    assert!(err.as_str().contains("overload 1 varargs"), "{err}");
+
+    // Neither was registered.
+    for name in ["bad_varargs", "bad_varargs_set"] {
+        // SAFETY: `con` is open.
+        let err = unsafe { query(fx.con(), &format!("SELECT {name}(1::BIGINT)")) }
+            .expect_err("the refused function must not exist");
+        assert!(err.as_str().contains(name), "{err}");
+    }
+}
+
+/// A varargs type given as a `TypeId` and as the equal `LogicalType` is the
+/// same signature to `DuckDB`.
+#[test]
+fn varargs_by_type_id_and_by_equal_logical_type_are_duplicates() {
+    let fx = Fixture::open();
+    let set = ScalarFunctionSetBuilder::try_new("dup_varargs")
+        .expect("name")
+        .overload(
+            ScalarOverloadBuilder::new()
+                .returns(TypeId::BigInt)
+                .varargs(TypeId::BigInt)
+                .function(first_arg_as_i64),
+        )
+        .overload(
+            ScalarOverloadBuilder::new()
+                .returns(TypeId::BigInt)
+                .varargs_logical(LogicalType::new(TypeId::BigInt))
+                .function(first_arg_as_i64),
+        );
+    // SAFETY: `con` is open.
+    let err = unsafe { set.register(fx.con()) }.expect_err("duplicate overloads");
+    assert!(err.as_str().contains("overload 0 and overload 1"), "{err}");
+    assert!(err.as_str().contains("(BIGINT...)"), "{err}");
 }
 
 quack_rs::scalar_callback!(writes_one, |_info, input, output| {

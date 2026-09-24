@@ -30,8 +30,10 @@
 //!         SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))")?
 //!             .register(con)?;
 //!
-//!         // Table macro: active_rows(tbl) — returns filtered rows
-//!         SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM tbl WHERE active = true")?
+//!         // Table macro: active_rows(tbl) — returns filtered rows. A table
+//!         // parameter is read through `query_table`: a bare `FROM tbl` makes
+//!         // DuckDB look for a table named `tbl` at registration, and fail.
+//!         SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM query_table(tbl) WHERE active = true")?
 //!             .register(con)?;
 //!     }
 //!     Ok(())
@@ -43,19 +45,45 @@
 //! Macro names and parameter names are validated against
 //! [`validate_function_name`]: an ASCII letter or underscore followed by ASCII
 //! letters, digits or underscores (`[A-Za-z_][A-Za-z0-9_]*`, at most 256
-//! characters). Mixed case is accepted.
+//! characters), and not one of `DuckDB`'s reserved keywords. Mixed case is
+//! accepted. The keyword rule applies to parameters too: a parameter called
+//! `order` could only be referred to in the body as `"order"`, so it is
+//! refused rather than left to fail inside the body.
 //!
-//! The generated SQL always emits them as **double-quoted identifiers**
+//! The generated SQL always emits the names as **double-quoted identifiers**
 //! (`"name"`). The validated character set cannot contain `"`, so quoting
-//! needs no escaping, and it means a name that happens to be a SQL keyword
-//! (a parameter called `order`, say) still parses. Quoting does not make the
-//! name case-sensitive: `DuckDB` resolves identifiers case-insensitively
-//! whether or not they were quoted, so a macro registered as `MyMacro` is
-//! callable as `mymacro(...)` or `MYMACRO(...)`.
+//! needs no escaping. Quoting does not make the name case-sensitive: `DuckDB`
+//! resolves identifiers case-insensitively whether or not they were quoted, so
+//! a macro registered as `MyMacro` is callable as `mymacro(...)` or
+//! `MYMACRO(...)`.
 //!
 //! The SQL body (`expression` / `query`) is your own extension code, not
 //! user-supplied input. **Never build macro bodies from untrusted runtime
-//! data.** There is no escaping applied to the body.
+//! data.** There is no escaping applied to the body. [`SqlMacro::register`]
+//! does refuse a body that turns the statement into several (`1); DROP TABLE
+//! t; SELECT (1`), using `DuckDB`'s own parser to count them, but a body can
+//! still change the meaning of the one statement it is part of.
+//!
+//! # Where a macro lives, and what that means
+//!
+//! A macro is not a function registration: [`SqlMacro::register`] runs
+//! `CREATE OR REPLACE MACRO` on the connection, so the macro is an ordinary
+//! catalog object in the connection's **default database and schema** — the
+//! user's database. That has consequences a registered function does not:
+//!
+//! - **It persists.** In a database file the macro is written to disk and is
+//!   still there in the next session, even if the extension is never loaded
+//!   again. Loading the extension again is fine: `CREATE OR REPLACE` simply
+//!   replaces it.
+//! - **It needs a writable database.** On a database opened read-only the
+//!   `CREATE` fails, so an entry point that propagates the error with `?`
+//!   makes `LOAD` fail. Decide whether a macro is essential or can be skipped
+//!   there.
+//! - **It replaces a user's macro of the same name**, silently — that is what
+//!   `OR REPLACE` means. Prefix macro names with the extension's name.
+//! - **It can shadow a built-in function.** A macro named `abs` in the
+//!   default schema is found before the built-in `abs` in the system catalog,
+//!   so `abs(-1)` calls the macro.
 
 use std::ffi::{CStr, CString};
 
@@ -79,7 +107,7 @@ pub enum MacroBody {
 
     /// A SQL query — generates `AS TABLE query`.
     ///
-    /// Example: `"SELECT * FROM tbl WHERE active = true"`
+    /// Example: `"SELECT * FROM query_table(tbl) WHERE active = true"`
     Table(String),
 }
 
@@ -158,7 +186,9 @@ impl SqlMacro {
     /// let m = SqlMacro::table(
     ///     "active_rows",
     ///     &["tbl"],
-    ///     "SELECT * FROM tbl WHERE active = true",
+    ///     // Read a table parameter through `query_table`; a bare `FROM tbl`
+    ///     // is resolved when the macro is created, and fails.
+    ///     "SELECT * FROM query_table(tbl) WHERE active = true",
     /// )?;
     /// # Ok::<_, quack_rs::error::ExtensionError>(())
     /// ```
@@ -178,9 +208,10 @@ impl SqlMacro {
     /// Returns the `CREATE OR REPLACE MACRO` SQL statement for this definition.
     ///
     /// The macro name and parameter names are emitted as double-quoted
-    /// identifiers, so a name that is also a SQL keyword still parses; see
-    /// the [module docs][crate::sql_macro#sql-injection-safety]. The body is
-    /// emitted verbatim.
+    /// identifiers; see the [module docs][crate::sql_macro#sql-injection-safety].
+    /// The body is emitted verbatim — except that a scalar body containing
+    /// `--` is followed by a newline before the closing parenthesis, so a
+    /// trailing line comment cannot swallow it.
     ///
     /// Useful for logging, testing, and inspection without a live connection.
     ///
@@ -192,10 +223,13 @@ impl SqlMacro {
     /// let m = SqlMacro::scalar("add", &["a", "b"], "a + b").unwrap();
     /// assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "add"("a", "b") AS (a + b)"#);
     ///
-    /// let t = SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM tbl WHERE active = true").unwrap();
+    /// // A table parameter is read through `query_table`: a bare `FROM tbl` would
+    /// // look for a table named `tbl` when the macro is created, and fail.
+    /// let t = SqlMacro::table("active_rows", &["tbl"], "SELECT * FROM query_table(tbl) WHERE active = true")
+    ///     .unwrap();
     /// assert_eq!(
     ///     t.to_sql(),
-    ///     r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM tbl WHERE active = true"#
+    ///     r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM query_table(tbl) WHERE active = true"#
     /// );
     /// ```
     #[must_use]
@@ -211,6 +245,12 @@ impl SqlMacro {
             .collect::<Vec<_>>()
             .join(", ");
         match &self.body {
+            // A `--` comment runs to the end of the line, and would comment
+            // out the `)` appended here. Only bodies that could hold one get
+            // the newline, so ordinary definitions keep their one-line SQL.
+            MacroBody::Scalar(expr) if expr.contains("--") => {
+                format!("CREATE OR REPLACE MACRO {name}({params}) AS ({expr}\n)")
+            }
             MacroBody::Scalar(expr) => {
                 format!("CREATE OR REPLACE MACRO {name}({params}) AS ({expr})")
             }
@@ -222,18 +262,35 @@ impl SqlMacro {
 
     /// Registers this macro on the given connection.
     ///
-    /// Executes the `CREATE OR REPLACE MACRO` statement via `duckdb_query`.
+    /// Executes the `CREATE OR REPLACE MACRO` statement via `duckdb_query` —
+    /// after checking with `duckdb_extract_statements`, `DuckDB`'s own parser,
+    /// that it is exactly one statement. Read
+    /// [where a macro lives](crate::sql_macro#where-a-macro-lives-and-what-that-means)
+    /// first: the macro is created in the user's database, persists there,
+    /// and fails on a read-only database.
     ///
     /// # Errors
     ///
-    /// Returns [`ExtensionError`] if `DuckDB` rejects the SQL statement.
-    /// The error message is extracted from `duckdb_result_error`.
+    /// Returns [`ExtensionError`] if the body makes the SQL more than one
+    /// statement (nothing is executed then), or if `DuckDB` rejects the SQL
+    /// statement — for example on a read-only database. The error message is
+    /// extracted from `duckdb_result_error`.
     ///
     /// # Safety
     ///
     /// `con` must be a valid, open [`duckdb_connection`].
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         let sql = self.to_sql();
+        // SAFETY: caller guarantees con is valid and open.
+        let statements = unsafe { count_statements(con, &sql) }?;
+        if statements > 1 {
+            return Err(ExtensionError::new(format!(
+                "macro '{}': the body turns CREATE MACRO into {statements} SQL statements; a \
+                 macro body must be a single expression or query, with no top-level `;`. \
+                 Nothing was executed.",
+                self.name
+            )));
+        }
         // SAFETY: caller guarantees con is valid and open.
         unsafe { execute_sql(con, &sql) }
     }
@@ -265,13 +322,53 @@ fn validate_name_and_params(
 ) -> Result<(String, Vec<String>), ExtensionError> {
     validate_function_name(name)?;
     for &param in params {
-        validate_function_name(param)
-            .map_err(|e| ExtensionError::new(format!("invalid parameter name '{param}': {e}")))?;
+        validate_function_name(param).map_err(|e| param_error(param, e.as_str()))?;
     }
     Ok((
         name.to_owned(),
         params.iter().map(|&p| p.to_owned()).collect(),
     ))
+}
+
+/// Rewords a [`validate_function_name`] error for a parameter.
+///
+/// The validator speaks of a "function name"; for a parameter that is
+/// misleading, and its keyword advice (`SELECT order(...)` is a parser error)
+/// is about calling a function, not about referring to a parameter.
+fn param_error(param: &str, detail: &str) -> ExtensionError {
+    if detail.contains("reserved keyword") {
+        return ExtensionError::new(format!(
+            "invalid parameter name '{param}': it is a reserved keyword in DuckDB's SQL, so the \
+             macro body could only refer to it as \"{param}\"; choose another name"
+        ));
+    }
+    let detail = detail
+        .strip_prefix("function name")
+        .map_or_else(|| detail.to_owned(), |rest| format!("parameter name{rest}"));
+    ExtensionError::new(format!("invalid parameter name '{param}': {detail}"))
+}
+
+/// Counts the statements `DuckDB`'s parser finds in `sql`.
+///
+/// Returns 0 when `sql` does not parse; executing it then reports the parse
+/// error.
+///
+/// # Safety
+///
+/// `con` must be a valid, open [`duckdb_connection`].
+unsafe fn count_statements(con: duckdb_connection, sql: &str) -> Result<u64, ExtensionError> {
+    let c_sql = CString::new(sql)
+        .map_err(|_| ExtensionError::new("SQL statement contains interior null bytes"))?;
+    let mut extracted: libduckdb_sys::duckdb_extracted_statements = std::ptr::null_mut();
+    // SAFETY: con is valid; c_sql is NUL-terminated; `extracted` is a valid
+    // out-pointer, always allocated by DuckDB when `con` and `sql` are non-null.
+    let count = unsafe {
+        libduckdb_sys::duckdb_extract_statements(con, c_sql.as_ptr(), &raw mut extracted)
+    };
+    // SAFETY: `extracted` came from `duckdb_extract_statements` (or is null,
+    // which the destructor accepts) and is destroyed once.
+    unsafe { libduckdb_sys::duckdb_destroy_extracted(&raw mut extracted) };
+    Ok(count)
 }
 
 /// Executes a SQL statement on `con`, surfacing any `DuckDB` error.
@@ -378,12 +475,12 @@ mod tests {
         let m = SqlMacro::table(
             "active_rows",
             &["tbl"],
-            "SELECT * FROM tbl WHERE active = true",
+            "SELECT * FROM query_table(tbl) WHERE active = true",
         )
         .unwrap();
         assert_eq!(
             m.to_sql(),
-            r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM tbl WHERE active = true"#
+            r#"CREATE OR REPLACE MACRO "active_rows"("tbl") AS TABLE SELECT * FROM query_table(tbl) WHERE active = true"#
         );
     }
 
@@ -425,6 +522,32 @@ mod tests {
         assert!(SqlMacro::scalar("f", &["GoodParam"], "1").is_ok());
         let err = SqlMacro::scalar("f", &["bad param"], "1").unwrap_err();
         assert!(err.as_str().contains("bad param"));
+        assert!(
+            err.as_str()
+                .contains("parameter name contains invalid character"),
+            "{err}"
+        );
+        assert!(!err.as_str().contains("function name"), "{err}");
+    }
+
+    #[test]
+    fn a_keyword_parameter_is_refused_with_a_parameter_specific_message() {
+        let err = SqlMacro::scalar("f", &["order"], "1").unwrap_err();
+        assert!(
+            err.as_str().contains("invalid parameter name 'order'"),
+            "{err}"
+        );
+        assert!(err.as_str().contains("reserved keyword"), "{err}");
+        assert!(!err.as_str().contains("function name"), "{err}");
+    }
+
+    #[test]
+    fn a_scalar_body_with_a_line_comment_ends_with_a_newline() {
+        let m = SqlMacro::scalar("f", &["x"], "x + 1 -- plus one").unwrap();
+        assert_eq!(
+            m.to_sql(),
+            "CREATE OR REPLACE MACRO \"f\"(\"x\") AS (x + 1 -- plus one\n)"
+        );
     }
 
     #[test]

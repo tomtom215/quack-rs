@@ -18,6 +18,9 @@
 //!
 //! All tests here are pure-Rust and do not require a `DuckDB` runtime.
 
+// Test code: each block's invariant is the test's own setup (Cargo.toml).
+#![allow(clippy::undocumented_unsafe_blocks)]
+
 use quack_rs::aggregate::AggregateState;
 use quack_rs::interval::{interval_to_micros, interval_to_micros_saturating, DuckInterval};
 use quack_rs::sql_macro::{MacroBody, SqlMacro};
@@ -312,12 +315,12 @@ fn extension_error_to_c_string_no_null() {
 }
 
 #[test]
-fn extension_error_truncates_at_null_byte() {
+fn extension_error_keeps_the_text_after_a_null_byte() {
     use quack_rs::error::ExtensionError;
 
     let err = ExtensionError::new("before\0after");
     let c = err.to_c_string();
-    assert_eq!(c.to_str().unwrap(), "before");
+    assert_eq!(c.to_str().unwrap(), "before?after");
 }
 
 #[test]
@@ -519,9 +522,11 @@ fn sql_macro_error_mentions_bad_param_name() {
 // ---------------------------------------------------------------------------
 
 /// Generates scaffold files, writes them to a temp directory with a path-dep
-/// on the local quack-rs crate, and runs `cargo check` to verify the generated
-/// code actually compiles.  This catches template regressions (like broken
-/// macro paths) that unit tests can't detect.
+/// on the local quack-rs crate, and runs the generated project's own
+/// `cargo test --lib`: the code must compile, and the unit test the scaffold
+/// ships must run and pass. This catches template regressions (like broken
+/// macro paths) that unit tests can't detect — and a scaffold whose tests are
+/// vacuous (it used to generate zero).
 #[test]
 fn scaffold_generated_code_compiles() {
     use quack_rs::scaffold::{generate_scaffold, ScaffoldConfig};
@@ -530,7 +535,12 @@ fn scaffold_generated_code_compiles() {
 
     let config = ScaffoldConfig {
         name: "test_ext".to_string(),
-        description: "Scaffold compile test".to_string(),
+        // Deliberately awkward: a multi-line description used to leave every
+        // line after the first outside the `//!` comment, where it failed to
+        // compile. Quotes, a backslash and non-ASCII text ride along.
+        description: "Scaffold compile test: \"quoted\", C:\\path \u{2014} caf\u{e9}\n\
+                      second line # not a comment"
+            .to_string(),
         version: "0.1.0".to_string(),
         license: "MIT".to_string(),
         maintainer: "CI".to_string(),
@@ -597,21 +607,32 @@ fn scaffold_generated_code_compiles() {
         }
     }
 
-    // Run cargo check on the generated project
+    // Build and run the generated project's unit tests.
     let output = Command::new("cargo")
-        .args(["check", "--lib"])
+        .args(["test", "--lib"])
         .current_dir(&tmp)
         .output()
-        .expect("failed to run cargo check");
+        .expect("failed to run cargo test");
 
     // Clean up before asserting so we don't leave temp dirs on failure
     let _ = fs::remove_dir_all(&tmp);
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
-        "Scaffold-generated code failed to compile!\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
+        "Scaffold-generated code failed to compile or its tests failed!\nstdout:\n{}\nstderr:\n{}",
+        stdout,
         String::from_utf8_lossy(&output.stderr),
+    );
+    let passed: usize = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("test result: ok. "))
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        passed > 0,
+        "the generated project's `cargo test` ran no tests:\n{stdout}"
     );
 }
 
@@ -650,17 +671,16 @@ fn mock_vector_writer_set_null_after_write() {
     assert_eq!(w.try_get_i64(0), None);
 }
 
+/// A real `DuckDB` vector has a fixed capacity; writing past it is
+/// out-of-bounds memory. The mock used to grow silently instead, so a test
+/// could pass for a callback that overruns its output. It must refuse.
 #[test]
-fn mock_vector_writer_grows_beyond_initial_capacity() {
+#[should_panic(expected = "out of bounds for a mock vector of capacity 0")]
+fn mock_vector_writer_refuses_to_grow_beyond_its_capacity() {
     use quack_rs::testing::MockVectorWriter;
 
     let mut w = MockVectorWriter::new(0);
     w.write_i64(3, 99);
-    assert_eq!(w.len(), 4);
-    assert_eq!(w.try_get_i64(3), Some(99));
-    assert!(w.is_null(0));
-    assert!(w.is_null(1));
-    assert!(w.is_null(2));
 }
 
 #[test]
@@ -1055,6 +1075,335 @@ fn the_example_obeys_the_crates_own_release_profile_rules() {
         check.is_fully_optimized(),
         "the example is what people copy; it should also be the profile quack-rs \
          recommends for a shipped extension"
+    );
+}
+
+/// The repository-structure trees in `CONTRIBUTING.md` and the book list every
+/// source file under `src/` and `tests/`, and nothing that does not exist.
+///
+/// The trees were accurate when this test was written except for the one file
+/// most recently added, which is how such a tree goes stale: nothing fails.
+#[test]
+fn documented_source_trees_match_the_filesystem() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("book").is_dir() {
+        eprintln!("SKIPPED documented_source_trees_match_the_filesystem: book/ is not packaged");
+        return;
+    }
+    let mut actual = std::collections::BTreeSet::new();
+    let mut dirs = vec![root.join("src"), root.join("tests")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs" || e == "cpp") {
+                let rel = path.strip_prefix(root).expect("under root");
+                actual.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    for doc in ["CONTRIBUTING.md", "book/src/contributing.md"] {
+        let text = std::fs::read_to_string(root.join(doc)).expect(doc);
+        let block = text
+            .split("```")
+            .find(|b| b.contains("quack-rs/") && b.contains("├── src/"))
+            .unwrap_or_else(|| panic!("{doc}: no repository tree found"));
+        // Each level is four columns ("│   " or "    ") before "├── " / "└── ".
+        let mut stack: Vec<String> = Vec::new();
+        let mut listed = std::collections::BTreeSet::new();
+        for line in block.lines() {
+            let chars: Vec<char> = line.chars().collect();
+            let Some(pos) = line.find("├── ").or_else(|| line.find("└── ")) else {
+                continue;
+            };
+            let depth = line[..pos].chars().count() / 4;
+            let name: String = chars[line[..pos].chars().count() + 4..]
+                .iter()
+                .take_while(|c| !c.is_whitespace())
+                .collect();
+            stack.truncate(depth);
+            let full = format!("{}{name}", stack.concat());
+            if name.ends_with('/') {
+                stack.push(name);
+            } else if full.starts_with("src/") || full.starts_with("tests/") {
+                listed.insert(full);
+            }
+        }
+        let unlisted: Vec<_> = actual.difference(&listed).collect();
+        let phantom: Vec<_> = listed
+            .difference(&actual)
+            .filter(|p| {
+                std::path::Path::new(p.as_str())
+                    .extension()
+                    .is_some_and(|e| e == "rs" || e == "cpp")
+            })
+            .collect();
+        assert!(
+            unlisted.is_empty() && phantom.is_empty(),
+            "{doc}'s tree is stale.\nMissing from the tree: {unlisted:?}\nListed but absent: {phantom:?}"
+        );
+    }
+}
+
+/// Every "N pitfalls" claim in the documentation matches the number of
+/// pitfalls `LESSONS.md` actually documents.
+///
+/// The count had drifted three ways at once — 21 in the crate docs and the
+/// FAQ, 23 in the README and the book introduction — because each copy was
+/// edited by hand.
+#[test]
+fn documented_pitfall_counts_match_lessons_md() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("book").is_dir() {
+        eprintln!("SKIPPED documented_pitfall_counts_match_lessons_md: book/ is not packaged");
+        return;
+    }
+    let lessons = std::fs::read_to_string(root.join("LESSONS.md")).expect("LESSONS.md");
+    let actual = lessons
+        .lines()
+        .filter(|l| {
+            l.strip_prefix("## ")
+                .and_then(|h| h.split_once(':'))
+                .is_some_and(|(id, _)| {
+                    id.len() >= 2
+                        && matches!(id.as_bytes()[0], b'L' | b'P')
+                        && id[1..].bytes().all(|b| b.is_ascii_digit())
+                })
+        })
+        .count();
+    assert!(
+        actual > 0,
+        "no `## L<n>:` / `## P<n>:` headings found in LESSONS.md"
+    );
+
+    let mut files = vec![root.join("README.md"), root.join("src/lib.rs")];
+    let mut dirs = vec![root.join("book/src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "md")
+                && path.file_name().is_some_and(|n| n != "changelog.md")
+            {
+                files.push(path);
+            }
+        }
+    }
+    let mut wrong = Vec::new();
+    for file in &files {
+        let text =
+            std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        let words: Vec<&str> = text.split_whitespace().collect();
+        for (i, w) in words.iter().enumerate() {
+            let digits = w.trim_matches(|c: char| !c.is_ascii_digit());
+            let Ok(n) = digits.parse::<usize>() else {
+                continue;
+            };
+            // "<n> ... pitfall(s)" within the next four words, e.g. "23 documented
+            // FFI pitfalls", "all 21 known pitfalls", "23 pitfalls documented".
+            // Historical counts ("revealed 16 undocumented pitfalls", "the
+            // first 16 of the pitfalls") are about the past and stay as written.
+            let window = &words[i + 1..words.len().min(i + 5)];
+            let near = window.iter().any(|w| w.starts_with("pitfall"));
+            let historical = window.iter().any(|w| w.contains("undocumented"))
+                || i.checked_sub(1).is_some_and(|p| words[p] == "first");
+            if near && !historical && n != actual {
+                wrong.push(format!("{}: says {n}", file.display()));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "LESSONS.md documents {actual} pitfalls, but:\n{}",
+        wrong.join("\n")
+    );
+}
+
+/// The module-responsibilities table in `docs/architecture.md` has a row for
+/// every public top-level module in `src/lib.rs`, and each row's "requires
+/// `<feature>`" note matches the `#[cfg(feature = ...)]` on that `pub mod` line.
+///
+/// The table had drifted both ways: nine modules added since it was written were
+/// missing, and `appender` / `table_description` were still marked as requiring
+/// `duckdb-1-5` after the gate was lifted from them.
+#[test]
+fn architecture_module_table_matches_lib_rs() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let doc_path = root.join("docs/architecture.md");
+    if !doc_path.is_file() {
+        eprintln!("SKIPPED architecture_module_table_matches_lib_rs: docs/ is not packaged");
+        return;
+    }
+    let lib = std::fs::read_to_string(root.join("src/lib.rs")).expect("src/lib.rs");
+    // module name -> the feature on the `#[cfg(feature = "...")]` line directly
+    // above its `pub mod` (None when there is no such line).
+    let mut modules = std::collections::BTreeMap::new();
+    let mut previous = "";
+    for line in lib.lines() {
+        if let Some(name) = line
+            .strip_prefix("pub mod ")
+            .and_then(|r| r.strip_suffix(';'))
+        {
+            let gate = previous
+                .trim()
+                .strip_prefix("#[cfg(feature = \"")
+                .and_then(|r| r.strip_suffix("\")]"))
+                .map(str::to_owned);
+            modules.insert(name.to_owned(), gate);
+        }
+        if !line.trim().is_empty() {
+            previous = line;
+        }
+    }
+    assert!(
+        !modules.is_empty(),
+        "no `pub mod` lines found in src/lib.rs"
+    );
+
+    let doc = std::fs::read_to_string(&doc_path).expect("docs/architecture.md");
+    let table = doc
+        .split("### Module responsibilities")
+        .nth(1)
+        .expect("docs/architecture.md: no \"### Module responsibilities\" section")
+        .split("\n---")
+        .next()
+        .unwrap_or_default();
+    // (module path, every feature its row says it requires), in table order
+    let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+    for line in table.lines() {
+        let Some(cell) = line.strip_prefix("| `") else {
+            continue;
+        };
+        let path = cell.split('`').next().unwrap_or_default().to_owned();
+        let required = line
+            .split("requires `")
+            .skip(1)
+            .filter_map(|r| r.split('`').next())
+            .map(str::to_owned)
+            .collect();
+        rows.push((path, required));
+    }
+
+    let mut problems = Vec::new();
+    for (name, gate) in &modules {
+        let prefix = format!("{name}::");
+        let own = rows.iter().find(|(p, _)| p == name);
+        let subs: Vec<_> = rows
+            .iter()
+            .filter(|(p, _)| p.starts_with(&prefix))
+            .collect();
+        match (own, gate) {
+            (None, _) if subs.is_empty() => problems.push(format!(
+                "`{name}` is a `pub mod` in src/lib.rs but has no `{name}` or `{name}::*` row"
+            )),
+            // A parent documented only through its submodule rows: when it is
+            // gated, every one of those rows must say so.
+            (None, Some(f)) => {
+                for (p, required) in subs.iter().filter(|(_, r)| !r.contains(f)) {
+                    problems.push(format!(
+                        "`{p}`: src/lib.rs gates `{name}` on {f:?}, but the row says it requires {required:?}"
+                    ));
+                }
+            }
+            (None, None) => {}
+            (Some((_, required)), _) => {
+                let expected: Vec<String> = gate.iter().cloned().collect();
+                if *required != expected {
+                    problems.push(format!(
+                        "`{name}`: src/lib.rs gates it on {gate:?}, but its row says it requires {required:?}"
+                    ));
+                }
+            }
+        }
+    }
+    for (path, _) in &rows {
+        let top = path.split("::").next().unwrap_or_default();
+        if !modules.contains_key(top) {
+            problems.push(format!(
+                "`{path}` has a row but `{top}` is not a `pub mod` in src/lib.rs"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "docs/architecture.md's module-responsibilities table is stale:\n{}",
+        problems.join("\n")
+    );
+}
+
+/// Every paragraph of user-facing documentation that mentions
+/// `panic = "abort"` must be warning against it.
+///
+/// The Cargo manifests are held to `validate_release_profile` above, but the
+/// docs are prose: the book once said `panic = "abort"` was *required*, and
+/// after that was fixed the hello-ext README's checklist still told readers to
+/// verify their profile "has `panic = "abort"`". This test fails on either.
+/// A paragraph passes when it also contains one of the words below.
+#[test]
+fn documentation_never_recommends_panic_abort() {
+    // Stems, matched as substrings — except "not", matched as a whole word
+    // below so that "note" or "annotation" do not count as a warning.
+    const NEGATIONS: &[&str] = &[
+        "never",
+        "reject",
+        "inert",
+        "disable",
+        "terminat",
+        "dies",
+        "kill",
+        "abort the",
+        "aborts",
+        "crash",
+        "nothing can be caught",
+        "cannot catch",
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("book").is_dir() {
+        eprintln!("SKIPPED documentation_never_recommends_panic_abort: book/ is not packaged");
+        return;
+    }
+    let mut files = vec![
+        root.join("README.md"),
+        root.join("LESSONS.md"),
+        root.join("CONTRIBUTING.md"),
+        root.join("SECURITY.md"),
+        root.join("examples/hello-ext/README.md"),
+    ];
+    let mut dirs = vec![root.join("book/src"), root.join("docs")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "md")
+                // The changelog mirror records what old releases said.
+                && path.file_name().is_some_and(|n| n != "changelog.md")
+            {
+                files.push(path);
+            }
+        }
+    }
+    let mut offenders = Vec::new();
+    for file in &files {
+        let text =
+            std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        for paragraph in text.split("\n\n") {
+            let lower = paragraph.to_lowercase();
+            let warns = NEGATIONS.iter().any(|n| lower.contains(n))
+                || lower
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w == "not");
+            if lower.contains("panic = \"abort\"") && !warns {
+                offenders.push(format!("{}:\n{paragraph}", file.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these paragraphs mention panic = \"abort\" without warning against it:\n\n{}",
+        offenders.join("\n\n")
     );
 }
 

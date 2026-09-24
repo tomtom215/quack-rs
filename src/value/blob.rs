@@ -38,6 +38,11 @@ fn require_blob(id: Option<TypeId>) -> Result<(), ExtensionError> {
 #[mutants::skip] // DuckDB allocator effects are not observable from safe Rust tests.
 unsafe fn free_blob_data(data: *mut core::ffi::c_void) {
     if !data.is_null() {
+        // SAFETY: `data` is non-null (checked just above). This private helper's only
+        // callers, both in `as_blob`, pass the `blob.data` that `duckdb_get_blob` just
+        // `malloc`ed (duckdb_value-c.cpp) and free it exactly once, on mutually exclusive
+        // paths; duckdb.h says to release it with `duckdb_free`, which is `free`
+        // (helper-c.cpp).
         unsafe { duckdb_free(data) };
     }
 }

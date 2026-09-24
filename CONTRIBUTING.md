@@ -138,7 +138,6 @@ cargo run --bin append_metadata -- \
     --abi-type C_STRUCT --extension-version v0.1.0 \
     --duckdb-version v1.2.0 --platform linux_amd64
 /tmp/duckdb -unsigned -c "
-SET allow_extensions_metadata_mismatch=true;
 LOAD '/tmp/hello_ext.duckdb_extension';
 SELECT word_count('hello world foo');   -- 3
 SELECT first_word('hello world');       -- hello
@@ -234,10 +233,11 @@ from without `--config`.
 
 Tests follow the pattern: `{component}_{scenario}_{expected_outcome}`
 
-Examples:
-- `interval_to_micros_overflow_saturates`
-- `error_from_string_preserves_message`
-- `aggregate_state_combine_propagates_config`
+Examples from the suite:
+- `harness_combine_propagates_config` (`tests/integration_test.rs`)
+- `extension_error_message_preserved` (`tests/integration_test.rs`)
+- `default_null_handling_does_not_propagate_nulls_for_scalar_functions`
+  (`tests/ffi_roundtrip.rs`)
 
 ---
 
@@ -248,6 +248,9 @@ Examples:
 Every `unsafe` block must have a `// SAFETY:` comment that explains:
 1. Which invariant the caller guarantees
 2. Why the operation is valid given that invariant
+
+`clippy::undocumented_unsafe_blocks` enforces this in library code (CI treats
+it as an error); test code is exempt.
 
 Example:
 ```rust
@@ -336,13 +339,26 @@ quack-rs/
 │   │       ├── overload.rs            # One overload within an [`AggregateFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` aggregate function set (multiple overloads)
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` aggregate function
-│   │       └── tests.rs               # Unit tests (23 tests)
+│   │       └── tests.rs               # Unit tests
+│   ├── appender/
+│   │   ├── chunk.rs                   # Chunk-at-a-time appends: handing the [`Appender`] a whole [`DataChunk`]
+│   │   ├── construct.rs               # Creating an [`Appender`] and choosing the columns it appends to
+│   │   ├── lifecycle.rs               # Flushing, closing and (with `duckdb-1-5`) clearing an [`Appender`]
+│   │   ├── rows.rs                    # Row-at-a-time appends: `row`, `end_row` and the non-numeric `append_*` methods
+│   │   └── scalars.rs                 # The fixed-width numeric `append_*` methods, `append_bool` through `append_u128`
+│   ├── arrow/
+│   │   ├── array.rs                   # `ArrowArray` — an owned Arrow C Data Interface array
+│   │   ├── convert.rs                 # The four conversions between `DuckDB` data chunks and the Arrow C Data Interface
+│   │   ├── converted.rs               # `ArrowConvertedSchema` — an Arrow schema translated into `DuckDB`'s own type descriptors
+│   │   ├── options.rs                 # `ArrowOptions` — the Arrow production settings of a connection or a result
+│   │   ├── schema.rs                  # `ArrowSchema` — an owned Arrow C Data Interface schema
+│   │   └── tests.rs                   # Unit tests
 │   ├── bin/
 │   │   └── append_metadata/
 │   │       ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
 │   │       ├── footer.rs              # The 512-byte `DuckDB` extension footer, and the optional 22-byte WebAssembly custom-section header that precedes it
 │   │       ├── main.rs                # Append a DuckDB extension metadata block to a compiled .so / .dylib / .dll file,
-│   │       └── tests.rs               # Unit tests (31 tests)
+│   │       └── tests.rs               # Unit tests
 │   ├── callback/
 │   │   └── payload.rs                 # Disposing of a caught panic payload without re-entering the unwinder
 │   ├── cast/
@@ -354,16 +370,24 @@ quack-rs/
 │   ├── datetime/
 │   │   ├── checks.rs                  # Pure-Rust mirrors of the checks `DuckDB` makes before it throws
 │   │   ├── mod.rs                     # Calendar conversions for `DuckDB`'s temporal types
-│   │   └── tests.rs                   # Unit tests (18 tests)
+│   │   └── tests.rs                   # Unit tests
 │   ├── query/
-│   │   └── cstr.rs                    # The two C-string conversions the `query` module runs everything through
+│   │   ├── bind.rs                    # Binding a [`PreparedStatement`]'s parameters: the typed `bind_*` methods and `bind_value`
+│   │   ├── chunk.rs                   # [`OwnedDataChunk`]: a `duckdb_data_chunk` destroyed on drop
+│   │   ├── connection.rs              # [`OwnedConnection`] and its cross-thread [`InterruptHandle`]
+│   │   ├── cstr.rs                    # The two C-string conversions the `query` module runs everything through
+│   │   ├── live_tests.rs              # Tests that need a live `DuckDB`
+│   │   ├── prepared.rs                # Inspecting and executing a [`PreparedStatement`]; `bind.rs` binds its parameters
+│   │   └── result.rs                  # Reading a [`QueryResult`]: its columns, its chunks and what kind of outcome it is
 │   ├── replacement_scan/
 │   │   └── mod.rs                     # Builder for registering `DuckDB` replacement scans
 │   ├── scaffold/
+│   │   ├── escape.rs                  # Quoting configured free text for YAML and Rust doc comments
 │   │   ├── mod.rs                     # Project scaffolding for `DuckDB` Rust extensions
 │   │   ├── templates.rs               # Template generators for scaffold file content
-│   │   ├── tests.rs                   # Unit tests (46 tests)
-│   │   └── tests_generated.rs         # Unit tests (6 tests)
+│   │   ├── tests.rs                   # Unit tests
+│   │   ├── tests_escaping.rs          # Free text reaches the generated files intact
+│   │   └── tests_generated.rs         # Unit tests
 │   ├── scalar/
 │   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks
 │   │   ├── mod.rs                     # Builder for registering `DuckDB` scalar functions
@@ -371,14 +395,17 @@ quack-rs/
 │   │   ├── typed.rs                   # Scalar functions written as ordinary Rust closures
 │   │   ├── typed_builder.rs           # The builder the closure-based scalar constructors return, and the one `extern "C"` trampoline they all share
 │   │   └── builder/
+│   │       ├── collision.rs           # Refusing a scalar signature that would silently replace an existing one
 │   │       ├── mod.rs                 # Builder for registering `DuckDB` scalar functions
+│   │       ├── overload.rs            # One overload within a [`ScalarFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` scalar function set (multiple overloads)
 │   │       ├── signature.rs           # Detecting overloads that declare the same argument types
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` scalar function
-│   │       └── tests.rs               # Unit tests (16 tests)
+│   │       └── tests.rs               # Unit tests
 │   ├── table/
 │   │   ├── bind_data.rs               # Type-safe bind data management for table functions
 │   │   ├── builder.rs                 # Builder for registering `DuckDB` table functions
+│   │   ├── cstr.rs                    # Panic-free `&str` → `CString` conversion for the callback info wrappers
 │   │   ├── info.rs                    # Ergonomic wrappers around `DuckDB` callback info handles
 │   │   ├── init_data.rs               # Type-safe init data management for table functions
 │   │   ├── mod.rs                     # Builder for registering `DuckDB` table functions
@@ -392,12 +419,18 @@ quack-rs/
 │   │   ├── in_memory_db.rs            # In-memory `DuckDB` helper for integration tests
 │   │   ├── mock_registrar.rs          # [`MockRegistrar`] — a [`Registrar`] implementation for testing
 │   │   ├── mock_vector.rs             # In-memory mock types for `DuckDB` vectors
-│   │   └── mod.rs                     # Test utilities for `DuckDB` extension development
+│   │   ├── mod.rs                     # Test utilities for `DuckDB` extension development
+│   │   └── mock_vector/
+│   │       ├── reader.rs              # `MockVectorReader` — an in-memory mock input vector
+│   │       ├── tests.rs               # Unit tests
+│   │       └── writer.rs              # `MockVectorWriter` — an in-memory mock output vector
 │   ├── types/
 │   │   ├── logical_type.rs            # RAII wrapper for `duckdb_logical_type`
 │   │   ├── mod.rs                     # `DuckDB` type system wrappers
 │   │   ├── null_handling.rs           # NULL propagation behaviour for `DuckDB` functions
-│   │   └── type_id.rs                 # Ergonomic enum of all `DuckDB` column types
+│   │   ├── type_id.rs                 # Ergonomic enum of all `DuckDB` column types
+│   │   └── logical_type/
+│   │       └── construct.rs           # Every `LogicalType` constructor, as `try_*` plus a panicking wrapper
 │   ├── validate/
 │   │   ├── extension_name.rs          # Extension name validation per `DuckDB` community extension rules
 │   │   ├── function_name.rs           # SQL function name validation for `DuckDB` extensions
@@ -406,13 +439,14 @@ quack-rs/
 │   │   ├── release_profile.rs         # Release profile validation for `DuckDB` loadable extensions
 │   │   ├── semver.rs                  # Semantic versioning validation for `DuckDB` community extensions
 │   │   ├── spdx.rs                    # SPDX license identifier validation for `DuckDB` community extensions
+│   │   ├── spdx_exceptions.rs         # The SPDX license-exception identifiers accepted after `WITH`
 │   │   └── description_yml/
 │   │       ├── mod.rs                 # Validation of `DuckDB` community extension `description.yml` files
 │   │       ├── model.rs               # A validated representation of a `DuckDB` community extension `description.yml`
 │   │       ├── parser.rs              # Parses and validates a `description.yml` string
-│   │       ├── tests.rs               # Unit tests (34 tests)
-│   │       ├── tests_corpus.rs        # Unit tests (5 tests)
-│   │       ├── tests_yaml.rs          # Unit tests (16 tests)
+│   │       ├── tests.rs               # Unit tests
+│   │       ├── tests_corpus.rs        # Unit tests
+│   │       ├── tests_yaml.rs          # Unit tests
 │   │       ├── validator.rs           # Validates a `description.yml` string and returns `Ok(())` if it passes all checks
 │   │       ├── yaml.rs                # A reader for the subset of YAML that `description.yml` files use
 │   │       └── yaml/
@@ -420,9 +454,14 @@ quack-rs/
 │   ├── value/
 │   │   ├── blob.rs                    # `Value::as_blob` — `BLOB` extraction
 │   │   ├── checks.rs                  # Pure-Rust preconditions checked before a `Value` call reaches `DuckDB`
+│   │   ├── composite.rs               # Composite constructors: `STRUCT`, `LIST`, `ARRAY`, `ENUM`, `MAP`, `UNION`
 │   │   ├── defaults.rs                # The defaulting accessors — `Value::as_*_or`
 │   │   ├── getters.rs                 # The typed scalar accessors — `Value::as_i64`, `as_timestamp`, `as_decimal`, …
-│   │   └── hugeint.rs                 # Conversions between Rust's 128-bit integers and `DuckDB`'s split-word `HUGEINT` / `UHUGEINT` records
+│   │   ├── hugeint.rs                 # Conversions between Rust's 128-bit integers and `DuckDB`'s split-word `HUGEINT` / `UHUGEINT` records
+│   │   ├── nested.rs                  # Reading nested values: `LIST` elements, `STRUCT` fields, `MAP` entries
+│   │   ├── scalars.rs                 # The non-temporal scalar constructors
+│   │   ├── temporal.rs                # Temporal constructors, validated against `DuckDB`'s ranges
+│   │   └── temporal_checks.rs         # Pure-Rust range checks for the temporal types, derived from `DuckDB`'s source
 │   └── vector/
 │       ├── complex.rs                 # Complex type vector operations: STRUCT fields, LIST elements, MAP entries
 │       ├── list_builder.rs            # Safe construction of `LIST` and `MAP` output vectors
@@ -439,12 +478,20 @@ quack-rs/
 ├── tests/
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
+│   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
-│       ├── scalar_agg.rs              # End-to-end tests (8 tests)
-│       ├── table_cast.rs              # End-to-end tests (12 tests)
-│       ├── tooling.rs                 # End-to-end tests (2 tests)
-│       ├── value_query.rs             # End-to-end tests (13 tests)
-│       └── vector_dt.rs               # End-to-end tests (6 tests)
+│       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
+│       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
+│       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
+│       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
+│       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
+│       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
+│       ├── table_cast.rs              # Table function, cast, replacement scan, SQL macro and COPY regressions
+│       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
+│       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
+│       ├── value_temporal.rs          # Every `Value` getter against every temporal source type, at every edge
+│       └── vector_dt.rs               # NULLs in nested output vectors; selection vectors
 ├── benches/
 │   └── interval_bench.rs          # Criterion benchmarks for interval conversion
 ├── examples/

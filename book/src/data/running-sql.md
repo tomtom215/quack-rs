@@ -25,7 +25,7 @@ hand-written FFI leaks.
 
 `Connection` (from `entry_point_v2!`) can run SQL directly:
 
-```rust,ignore
+```rust
 use quack_rs::connection::Connection;
 use quack_rs::error::ExtensionError;
 
@@ -35,7 +35,7 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
 
     // Read something back.
     let mut result = unsafe { con.query("SELECT current_setting('threads')") }?;
-    if let Some(chunk) = result.next_chunk() {
+    if let Some(chunk) = result.next_chunk()? {
         // The reader must outlive the `&str` it hands out, so bind it first.
         let reader = unsafe { chunk.reader(0) };
         let threads = unsafe { reader.read_str(0) };
@@ -46,18 +46,50 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
 ```
 
 Results arrive a chunk at a time — at most `duckdb_vector_size()` rows each — so
-call `next_chunk` until it returns `None`:
+call `next_chunk` until it returns `Ok(None)`:
 
-```rust,ignore
+```rust
+# use quack_rs::error::ExtensionError;
+# use quack_rs::query::OwnedConnection;
+# // `Connection` (from entry_point_v2!) only exists during an extension load. An
+# // `OwnedConnection` has the same query / execute / prepare methods.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+# let mut db = std::ptr::null_mut();
+# unsafe { assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess); }
+# let con = unsafe { OwnedConnection::open(db) }.unwrap();
+# let run = || -> Result<(), ExtensionError> {
 let mut result = unsafe { con.query("SELECT i FROM range(10000) t(i)") }?;
 let mut total: i64 = 0;
-while let Some(chunk) = result.next_chunk() {
+while let Some(chunk) = result.next_chunk()? {
     let reader = unsafe { chunk.reader(0) };
     for row in 0..chunk.size() {
         total += unsafe { reader.read_i64(row) };
     }
 }
+# assert_eq!(total, 49_995_000);
+# Ok(()) };
+# run().unwrap();
 ```
+
+`next_chunk` returns `Result<Option<_>>` because a result can stop early. A
+**streaming** result (`PreparedStatement::execute_streaming`) produces rows as
+it runs, so a runtime error part-way through — or another statement run on the
+same connection, which invalidates the stream — surfaces at `next_chunk`. The C
+API reports that the same way as the end of the rows (a null chunk); quack-rs
+reads the error DuckDB recorded and returns it, so a partial result cannot pass
+for a complete one. The `?` above is what keeps it from being silently
+truncated.
+
+### Several statements in one string
+
+`query` and `execute` accept several `;`-separated statements, and DuckDB runs
+**every one**, in order. The result you get back is the first statement that
+produces rows — or, when none does, the last statement's; the results of later
+row-producing statements are discarded. So `"SELECT 1; INSERT …"` runs the
+`INSERT` but `execute` reports `0` rows changed. The first failing statement
+fails the call, after the ones before it have run (and, outside an explicit
+transaction, committed). An empty string, or just `;`, succeeds with an empty
+result. `prepare` takes exactly one statement.
 
 ## Bind values, do not interpolate them
 
@@ -65,31 +97,74 @@ Anything that did not come from your own source text — a table name from a
 function argument, a path from a config option — goes through a parameter.
 Parameters are 1-indexed, matching the C API.
 
-```rust,ignore
+```rust
+# use quack_rs::error::ExtensionError;
+# use quack_rs::query::OwnedConnection;
+# // `Connection` (from entry_point_v2!) only exists during an extension load. An
+# // `OwnedConnection` has the same query / execute / prepare methods.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+# let mut db = std::ptr::null_mut();
+# unsafe { assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess); }
+# let con = unsafe { OwnedConnection::open(db) }.unwrap();
+# con.execute("CREATE TABLE audit (name VARCHAR, n BIGINT)").unwrap();
+# let user_supplied_name = "O'Brien'); DROP TABLE audit; --";
+# let run = || -> Result<(), ExtensionError> {
 let stmt = unsafe { con.prepare("INSERT INTO audit VALUES (?, ?)") }?;
 stmt.bind_str(1, user_supplied_name)?;   // safe even if it contains quotes
 stmt.bind_i64(2, 42)?;
 stmt.execute()?;
+# let mut r = con.query("SELECT count(*) FROM audit WHERE name LIKE 'O''Brien%'")?;
+# assert_eq!(unsafe { r.next_chunk()?.unwrap().reader(0).read_i64(0) }, 1);
+# Ok(()) };
+# run().unwrap();
 ```
 
 `bind_str` passes the length explicitly, so embedded NUL bytes are preserved and
 no `CString` conversion can fail. Named parameters resolve by name:
 
-```rust,ignore
+```rust
+# use quack_rs::error::ExtensionError;
+# use quack_rs::query::OwnedConnection;
+# // `Connection` (from entry_point_v2!) only exists during an extension load. An
+# // `OwnedConnection` has the same query / execute / prepare methods.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+# let mut db = std::ptr::null_mut();
+# unsafe { assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess); }
+# let con = unsafe { OwnedConnection::open(db) }.unwrap();
+# con.execute("CREATE TABLE t AS SELECT range AS id FROM range(10)").unwrap();
+# let id = 7;
+# let run = || -> Result<(), ExtensionError> {
 let stmt = unsafe { con.prepare("SELECT * FROM t WHERE id = $needle") }?;
 let index = stmt.parameter_index("needle").expect("named parameter");
 stmt.bind_i64(index, id)?;
+# let mut r = stmt.execute()?;
+# assert_eq!(unsafe { r.next_chunk()?.unwrap().reader(0).read_i64(0) }, 7);
+# Ok(()) };
+# run().unwrap();
 ```
 
 Reuse a statement by clearing its bindings between executions:
 
-```rust,ignore
+```rust
+# use quack_rs::error::ExtensionError;
+# use quack_rs::query::OwnedConnection;
+# // `Connection` (from entry_point_v2!) only exists during an extension load. An
+# // `OwnedConnection` has the same query / execute / prepare methods.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+# let mut db = std::ptr::null_mut();
+# unsafe { assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess); }
+# let con = unsafe { OwnedConnection::open(db) }.unwrap();
+# let run = || -> Result<(), ExtensionError> {
+# let stmt = con.prepare("SELECT ?::BIGINT * 2")?;
+# let ids = [1_i64, 2, 3];
 for id in ids {
     stmt.clear_bindings()?;
     stmt.bind_i64(1, id)?;
     let mut result = stmt.execute()?;
     // …
 }
+# Ok(()) };
+# run().unwrap();
 ```
 
 ## After registration
@@ -103,7 +178,7 @@ If a callback or a background thread needs to run SQL, open your own connection
 during registration and keep it. A `duckdb_connection` holds its own reference to
 the database instance, so it stays valid after loading finishes:
 
-```rust,ignore
+```rust
 use quack_rs::connection::Connection;
 use quack_rs::error::ExtensionError;
 use quack_rs::query::OwnedConnection;
@@ -128,9 +203,18 @@ thread, or guard it with a mutex.
 
 Failures carry DuckDB's own message:
 
-```rust,ignore
+```rust
+# use quack_rs::error::ExtensionError;
+# use quack_rs::query::OwnedConnection;
+# // `Connection` (from entry_point_v2!) only exists during an extension load. An
+# // `OwnedConnection` has the same query / execute / prepare methods.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+# let mut db = std::ptr::null_mut();
+# unsafe { assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess); }
+# let con = unsafe { OwnedConnection::open(db) }.unwrap();
 let err = unsafe { con.query("SELECT * FROM no_such_table") }.unwrap_err();
 assert!(err.as_str().contains("no_such_table"));
+# assert_eq!(con.execute("SELECT 1").unwrap(), 0);
 ```
 
 The connection stays usable afterwards.

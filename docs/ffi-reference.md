@@ -338,7 +338,7 @@ handle the `None` case.
 | `Varchar` | `DUCKDB_TYPE_DUCKDB_TYPE_VARCHAR` |
 | `Timestamp` | `DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP` |
 | `Interval` | `DUCKDB_TYPE_DUCKDB_TYPE_INTERVAL` |
-| `TimeNs` | `DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS` (requires `duckdb-1-5`) |
+| `TimeNs` | `DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS` |
 
 `DUCKDB_TYPE` is a `u32` type alias, not an enum. Using `TypeId` avoids
 dealing with these constants directly.

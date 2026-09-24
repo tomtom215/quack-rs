@@ -151,6 +151,28 @@ unsafe extern "C" fn clone_boxed<T: Clone>(ptr: *mut c_void) -> *mut c_void {
 /// For data that is expensive or impossible to clone, store an
 /// [`Arc<T>`][std::sync::Arc]: cloning it is a reference-count bump, and every
 /// copy then shares one value.
+///
+/// # Bind data must be a function of the call's arguments
+///
+/// `DuckDB` decides whether two calls are the same expression without looking
+/// at their bind data: `CScalarFunctionBindData::Equals`
+/// (`src/main/capi/scalar_function-c.cpp`, `DuckDB` 1.5.5) compares only the
+/// function's `extra_info` and callback pointer. Two calls with the same
+/// arguments are therefore merged by common-subexpression elimination and
+/// `GROUP BY` matching even if their bind callbacks stored different values,
+/// and one call's bind data answers for both. Checked against 1.5.5: with a
+/// bind callback that stores a counter, `SELECT f(i), f(i)` runs the bind
+/// callback twice and returns the first call's value in both columns.
+///
+/// This is harmless when the bind data depends only on what `DuckDB` does
+/// compare — the arguments (constant arguments included: `f(i, 2)` and
+/// `f(i, 3)` are different expressions and keep their own bind data), the
+/// argument types, and `extra_info`. It is wrong when the bind callback reads
+/// something else that can differ between two identical calls in one query:
+/// a counter, a clock, a random source. Mark such a function
+/// [`volatile`][crate::scalar::ScalarFunctionBuilder::volatile]: volatile
+/// calls are never merged (checked: the counter example then returns two
+/// different values).
 pub struct ScalarBindData<T: Send + Sync + 'static> {
     _marker: PhantomData<T>,
 }

@@ -103,13 +103,16 @@ impl<T: 'static> FfiInitData<T> {
     /// - `info` must be a valid `duckdb_function_info` from a scan callback.
     /// - `T` must be the type passed to [`set`][Self::set].
     /// - No mutable reference to the same data must exist simultaneously.
+    /// - The returned reference must not outlive the scan callback: `DuckDB`
+    ///   destroys the data with the scan state.
     pub unsafe fn get<'a>(info: duckdb_function_info) -> Option<&'a T> {
         // SAFETY: info is valid per caller's contract.
         let raw = unsafe { duckdb_function_get_init_data(info) };
         if raw.is_null() {
             return None;
         }
-        // SAFETY: raw was created by set() via Box::into_raw.
+        // SAFETY: raw is non-null (checked above) and, by the `# Safety`
+        // clauses, is the live `Box<T>` that `set` leaked for this same `T`.
         Some(unsafe { &*raw.cast::<T>() })
     }
 
@@ -120,6 +123,9 @@ impl<T: 'static> FfiInitData<T> {
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_function_info` from a scan callback.
+    /// - `T` must be the type passed to [`set`][Self::set].
+    /// - The returned reference must not outlive the scan callback: `DuckDB`
+    ///   destroys the data with the scan state.
     /// - No other reference to the same data must exist simultaneously. Global
     ///   init data is shared by every concurrent scan call of the query, so this
     ///   holds only when the init callback left `max_threads` at 1 (the default)
@@ -133,8 +139,9 @@ impl<T: 'static> FfiInitData<T> {
         if raw.is_null() {
             return None;
         }
-        // SAFETY: raw was created by set() via Box::into_raw; exclusivity is
-        // the caller's contract above.
+        // SAFETY: raw is non-null (checked above) and, by the `# Safety`
+        // clauses, is the live `Box<T>` that `set` leaked for this same `T`;
+        // exclusivity is the caller's contract above.
         Some(unsafe { &mut *raw.cast::<T>() })
     }
 
@@ -201,12 +208,21 @@ impl<T: 'static> FfiLocalInitData<T> {
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_function_info`.
+    /// - `T` must be the type passed to [`set`][Self::set].
     /// - No mutable reference to the same data must exist simultaneously.
+    /// - The returned reference must not outlive the scan callback: `DuckDB`
+    ///   destroys the data with the scan state.
     pub unsafe fn get<'a>(info: duckdb_function_info) -> Option<&'a T> {
+        // SAFETY: `info` is a valid `duckdb_function_info` per the first `# Safety` clause;
+        // `duckdb_function_get_local_init_data` only returns the stored
+        // `local_data.init_data` pointer (null if none, table_function-c.cpp).
         let raw = unsafe { duckdb_function_get_local_init_data(info) };
         if raw.is_null() {
             return None;
         }
+        // SAFETY: `raw` is non-null (checked above) and, by the second `# Safety`
+        // clause, the live `Box<T>` that `set` leaked for this same `T`; the
+        // third rules out a `&mut`, the fourth bounds `'a` by the scan call.
         Some(unsafe { &*raw.cast::<T>() })
     }
 
@@ -217,12 +233,21 @@ impl<T: 'static> FfiLocalInitData<T> {
     /// # Safety
     ///
     /// - `info` must be a valid `duckdb_function_info`.
+    /// - `T` must be the type passed to [`set`][Self::set].
     /// - No other reference to the same data must exist simultaneously.
+    /// - The returned reference must not outlive the scan callback: `DuckDB`
+    ///   destroys the data with the scan state.
     pub unsafe fn get_mut<'a>(info: duckdb_function_info) -> Option<&'a mut T> {
+        // SAFETY: `info` is a valid `duckdb_function_info` per the first `# Safety` clause;
+        // `duckdb_function_get_local_init_data` only returns the stored
+        // `local_data.init_data` pointer (null if none, table_function-c.cpp).
         let raw = unsafe { duckdb_function_get_local_init_data(info) };
         if raw.is_null() {
             return None;
         }
+        // SAFETY: `raw` is non-null (checked above) and, by the second `# Safety`
+        // clause, the live `Box<T>` that `set` leaked for this same `T`; the
+        // third gives exclusivity, the fourth bounds `'a` by the scan call.
         Some(unsafe { &mut *raw.cast::<T>() })
     }
 

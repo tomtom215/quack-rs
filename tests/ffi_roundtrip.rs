@@ -16,7 +16,9 @@
     clippy::format_collect,
     clippy::manual_assert,
     clippy::err_expect,
-    clippy::case_sensitive_file_extension_comparisons
+    clippy::case_sensitive_file_extension_comparisons,
+    // Test code: each block's invariant is the test's own setup (Cargo.toml).
+    clippy::undocumented_unsafe_blocks
 )]
 
 //! End-to-end FFI round-trips against a real `DuckDB`.
@@ -106,7 +108,10 @@ impl Fixture {
     /// `read`. `None` when that value is SQL NULL.
     fn scalar<T>(&self, sql: &str, read: impl Fn(&VectorReader, usize) -> T) -> Option<T> {
         let mut result = self.query(sql);
-        let chunk = result.next_chunk().expect("at least one chunk");
+        let chunk = result
+            .next_chunk()
+            .expect("fetch")
+            .expect("at least one chunk");
         assert_eq!(chunk.size(), 1, "{sql} must return exactly one row");
         // SAFETY: the chunk has one row and at least one column.
         let reader = unsafe { chunk.reader(0) };
@@ -597,7 +602,7 @@ fn temporal_types_round_trip_and_agree_with_duckdb() {
         })
         .expect("not null");
     // SAFETY: the dispatch table is live for this fixture.
-    let decoded = unsafe { datetime::time_tz_from_bits(bits) };
+    let decoded = unsafe { datetime::time_tz_from_bits(bits) }.expect("in range");
     assert_eq!(decoded.time.hour, 12);
     assert_eq!(decoded.offset_seconds, 2 * 3_600);
 }
@@ -700,7 +705,7 @@ fn null_inputs_and_outputs_are_handled() {
     // reading the bitmap back.
     let mut result =
         fx.query("SELECT count(*) AS total, count(all_null(i)) AS non_null FROM range(5000) t(i)");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: both columns are BIGINT and row 0 exists.
     unsafe {
         assert_eq!(chunk.reader(0).read_i64(0), 5000);
@@ -768,9 +773,13 @@ macro_rules! decimal_echo {
     };
 }
 
+decimal_echo!(echo_decimal_1, 1);
 decimal_echo!(echo_decimal_4, 4);
+decimal_echo!(echo_decimal_5, 5);
 decimal_echo!(echo_decimal_9, 9);
+decimal_echo!(echo_decimal_10, 10);
 decimal_echo!(echo_decimal_18, 18);
+decimal_echo!(echo_decimal_19, 19);
 decimal_echo!(echo_decimal_38, 38);
 
 #[test]
@@ -811,6 +820,56 @@ fn decimals_round_trip_at_every_physical_width() {
             fx.scalar(&sql, |r, i| unsafe { r.read_str(i).to_owned() })
                 .as_deref(),
             Some(literal),
+            "{sql}"
+        );
+    }
+}
+
+/// Both sides of every storage boundary (1 | 4/5 | 9/10 | 18/19 | 38), at the
+/// largest and smallest value each width holds and at zero. A `<=` written as
+/// `<` in the width dispatch moves exactly one of these widths into the wrong
+/// integer size, which the four widths above cannot tell apart.
+#[test]
+fn decimals_round_trip_on_both_sides_of_every_storage_boundary() {
+    let fx = Fixture::open();
+    for (width, callback) in [
+        (1_u8, echo_decimal_1 as ScalarFn),
+        (4, echo_decimal_4),
+        (5, echo_decimal_5),
+        (9, echo_decimal_9),
+        (10, echo_decimal_10),
+        (18, echo_decimal_18),
+        (19, echo_decimal_19),
+        (38, echo_decimal_38),
+    ] {
+        let name = format!("decb{width}");
+        // SAFETY: `con` is open; the callback matches the declared signature.
+        unsafe {
+            ScalarFunctionBuilder::try_new(&name)
+                .expect("name")
+                .param_logical(LogicalType::decimal(width, 0))
+                .returns_logical(LogicalType::decimal(width, 0))
+                .function(callback)
+                .register(fx.con())
+                .unwrap_or_else(|e| panic!("register {name}: {e}"));
+        }
+        // The values sit in adjacent rows of one vector. Reading a row with too
+        // wide an integer picks up its neighbour's bytes, so with a single row
+        // (or a zero neighbour) a wrong threshold still reads the right value.
+        let max = "9".repeat(usize::from(width));
+        let want = [format!("-{max}"), max.clone(), "0".to_owned(), max.clone()];
+        let values = want
+            .iter()
+            .enumerate()
+            .map(|(i, v)| format!("({i}, {v}::DECIMAL({width},0))"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT string_agg({name}(v)::VARCHAR, ',' ORDER BY i) FROM (VALUES {values}) t(i, v)"
+        );
+        assert_eq!(
+            fx.scalar(&sql, |r, i| unsafe { r.read_str(i).to_owned() }),
+            Some(want.join(",")),
             "{sql}"
         );
     }
@@ -1077,7 +1136,7 @@ fn an_aggregate_function_computes_across_chunks() {
     let mut result = fx.query(
         "SELECT g, my_sum(i) FROM (SELECT i % 4 AS g, i FROM range(1000) t(i)) GROUP BY g ORDER BY g",
     );
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     assert_eq!(chunk.size(), 4);
     for row in 0..4usize {
         // SAFETY: both columns are BIGINT and `row` is in bounds.
@@ -1461,7 +1520,7 @@ fn one_aggregate_set_serves_overloads_with_different_return_types() {
         "SELECT g, my_agg(s) FROM (SELECT i % 3 AS g, repeat('x', (i % 5) + 1) AS s \
          FROM range(300) t(i)) GROUP BY g ORDER BY g",
     );
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     assert_eq!(chunk.size(), 3);
     for row in 0..3usize {
         // SAFETY: column 0 is BIGINT, column 1 is VARCHAR, `row` is in bounds.
@@ -1676,6 +1735,9 @@ fn a_panicking_cast_becomes_a_sql_error() {
 
 // ─── LIST and MAP construction ───────────────────────────────────────────────
 
+/// `ListBuilder::element_count` of the last chunk `make_range_list` built.
+static RANGE_LIST_ELEMENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 quack_rs::scalar_callback!(make_range_list, |_info, input, output| {
     // Builds LIST<BIGINT> = [0, 1, ..., n-1] for each input n.
     use quack_rs::vector::ListBuilder;
@@ -1696,6 +1758,7 @@ quack_rs::scalar_callback!(make_range_list, |_info, input, output| {
             });
         }
     }
+    RANGE_LIST_ELEMENTS.store(builder.element_count(), std::sync::atomic::Ordering::SeqCst);
     unsafe { builder.finish() };
 });
 
@@ -1722,6 +1785,23 @@ fn list_builder_writes_correct_offsets_across_growth() {
         .as_deref(),
         Some("[0, 1, 2]")
     );
+    // The builder counts every element it wrote into the child.
+    assert_eq!(
+        RANGE_LIST_ELEMENTS.load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum(len(make_range_list(n)))::BIGINT FROM (VALUES (2), (0), (4)) t(n)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(6)
+    );
+    assert_eq!(
+        RANGE_LIST_ELEMENTS.load(std::sync::atomic::Ordering::SeqCst),
+        6,
+        "one chunk of rows with 2, 0 and 4 elements"
+    );
 
     // Empty lists must produce a zero-length entry, not NULL.
     assert_eq!(
@@ -1741,7 +1821,7 @@ fn list_builder_writes_correct_offsets_across_growth() {
                 count(*) FILTER (WHERE l = [x for x in range(len(l))]) AS correct
          FROM (SELECT i % 37 AS n, make_range_list(i % 37) AS l FROM range(2000) t(i))",
     );
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: all three columns are integral and row 0 exists.
     unsafe {
         assert_eq!(chunk.reader(0).read_i64(0), 2000);
@@ -1752,6 +1832,73 @@ fn list_builder_writes_correct_offsets_across_growth() {
             2000,
             "every row's list must equal 0..len"
         );
+    }
+}
+
+quack_rs::scalar_callback!(make_limited_list, |_info, input, output| {
+    // Like `make_range_list`, but through a builder capped at 100 elements.
+    use quack_rs::vector::ListBuilder;
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut builder = unsafe { ListBuilder::new(output) }.with_element_limit(100);
+    for row in 0..chunk.size() {
+        let n = unsafe { reader.read_i64(row) }.max(0) as usize;
+        unsafe {
+            builder.push_row(row, n, |writer, base| {
+                for i in 0..n {
+                    writer.write_i64(base + i, i as i64);
+                }
+            });
+        }
+    }
+    unsafe { builder.finish() };
+});
+
+/// Regression: once a row exceeded the builder's limit, it and every later row
+/// of the chunk were left without a list entry. `DuckDB` reuses output vectors
+/// across chunks, so those rows kept the previous chunk's `{offset, length}`
+/// and came back as valid lists the callback never wrote. They must be NULL.
+#[test]
+fn list_builder_rows_past_the_limit_are_null_not_stale() {
+    let fx = Fixture::open();
+
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("make_limited_list")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::list(TypeId::BigInt))
+            .function(make_limited_list)
+            .register(fx.con())
+            .expect("register make_limited_list");
+    }
+
+    // Chunk 1 (rows 0..2048) asks for 0 or 1 element per row: 1024 in total,
+    // over the limit of 100, so rows from the 101st non-empty one on must be
+    // NULL. Chunk 2 (rows 2048..4096) starts with a 1000-element request,
+    // which overflows immediately, so the whole chunk must be NULL — before
+    // the fix it reported chunk 1's leftover entries as valid lists.
+    let mut result = fx.query(
+        "SELECT count(*) FILTER (WHERE l IS NULL AND i >= 2048),
+                count(*) FILTER (WHERE l IS NOT NULL AND i >= 2048),
+                count(*) FILTER (WHERE l IS NOT NULL AND i < 2048),
+                count(*) FILTER (WHERE l IS NOT NULL AND l <> [x for x in range(len(l))])
+         FROM (SELECT i, make_limited_list(CASE WHEN i = 2048 THEN 1000 ELSE i % 2 END) AS l
+               FROM range(4096) t(i))",
+    );
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
+    // SAFETY: four BIGINT columns, row 0 exists.
+    unsafe {
+        assert_eq!(
+            chunk.reader(0).read_i64(0),
+            2048,
+            "chunk 2 must be all NULL"
+        );
+        assert_eq!(chunk.reader(1).read_i64(0), 0, "no stale lists in chunk 2");
+        // Rows 0..=200 of chunk 1 hold 100 one-element and 101 empty lists
+        // (201 rows); row 201 would be the 101st element.
+        assert_eq!(chunk.reader(2).read_i64(0), 201);
+        assert_eq!(chunk.reader(3).read_i64(0), 0, "every valid list is 0..len");
     }
 }
 
@@ -1814,7 +1961,7 @@ fn list_builder_drives_map_vectors_too() {
         "SELECT count(*) FILTER (WHERE map_extract(m, 'k3') = [3]) AS hits
          FROM (SELECT make_index_map(i % 11) AS m FROM range(1500) t(i))",
     );
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     let expected = (0..1500i64).filter(|i| i % 11 > 3).count() as i64;
     // SAFETY: the column is BIGINT and row 0 exists.
     assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, expected);
@@ -1996,7 +2143,10 @@ fn debug_impls_decode_live_duckdb_state() {
     assert_eq!(Value::boolean(true).type_id(), Some(TypeId::Boolean));
     assert_eq!(Value::double(1.5).type_id(), Some(TypeId::Double));
     assert_eq!(Value::date(0).type_id(), Some(TypeId::Date));
-    assert_eq!(Value::timestamp(0).type_id(), Some(TypeId::Timestamp));
+    assert_eq!(
+        Value::timestamp(0).expect("in range").type_id(),
+        Some(TypeId::Timestamp)
+    );
     assert_eq!(Value::uuid(0).type_id(), Some(TypeId::Uuid));
     #[cfg(feature = "duckdb-1-5")]
     assert_eq!(Value::null_value().type_id(), Some(TypeId::SqlNull));
@@ -2101,7 +2251,7 @@ fn the_appender_writes_every_scalar_type() {
                 n IS NULL
          FROM every_type",
     );
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     assert_eq!(chunk.size(), 1);
     // SAFETY: every column below matches the declared type, and row 0 exists.
     unsafe {
@@ -2151,7 +2301,7 @@ fn appended_varchars_keep_interior_nuls() {
     appender.close().expect("close");
 
     let mut result = fx.query("SELECT length(s), s FROM nul_text");
-    let chunk = result.next_chunk().expect("chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("chunk");
     // SAFETY: BIGINT then VARCHAR, row 0 exists.
     unsafe {
         assert_eq!(
@@ -2188,7 +2338,7 @@ fn the_appender_reports_its_failure_modes() {
     appender.close().expect("close");
 
     let mut result = fx.query("SELECT count(*), min(id), max(id) FROM bulk");
-    let chunk = result.next_chunk().expect("chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("chunk");
     // SAFETY: three BIGINT/INTEGER columns, row 0 exists.
     unsafe {
         assert_eq!(chunk.reader(0).read_i64(0), 5000);
@@ -2288,7 +2438,7 @@ fn the_appender_can_target_a_subset_of_columns() {
     appender.close().expect("close");
 
     let mut result = fx.query("SELECT id, note FROM partial");
-    let chunk = result.next_chunk().expect("chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("chunk");
     // SAFETY: INTEGER then VARCHAR, row 0 exists.
     unsafe {
         assert_eq!(chunk.reader(0).read_i32(0), 7);
@@ -2333,7 +2483,7 @@ fn append_value_covers_types_without_a_dedicated_method() {
     appender.close().expect("close");
 
     let mut result = fx.query("SELECT u::VARCHAR, d::VARCHAR FROM valued");
-    let chunk = result.next_chunk().expect("chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("chunk");
     // SAFETY: two VARCHAR columns, row 0 exists.
     unsafe {
         assert_eq!(
@@ -2375,7 +2525,7 @@ fn every_uuid_accessor_agrees_on_which_128_bits_it_means() {
 
     // Reading a real UUID column yields the textual bits.
     let mut result = fx.query(&format!("SELECT '{text}'::UUID"));
-    let chunk = result.next_chunk().expect("chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("chunk");
     // SAFETY: the column is UUID and row 0 exists.
     let (read_bits, raw_storage) = unsafe {
         let reader = chunk.reader(0);
@@ -2521,7 +2671,7 @@ fn the_name_validator_accepts_every_name_duckdb_does() {
     // Every extension name this DuckDB knows.
     let mut result = fx.query("SELECT DISTINCT extension_name FROM duckdb_extensions()");
     let mut extensions = 0;
-    while let Some(chunk) = result.next_chunk() {
+    while let Some(chunk) = result.next_chunk().expect("fetch") {
         for row in 0..chunk.size() {
             // SAFETY: VARCHAR column.
             let name = unsafe { chunk.reader(0).read_str(row) }.to_owned();
@@ -2541,7 +2691,7 @@ fn the_name_validator_accepts_every_name_duckdb_does() {
     // or `||` through a builder, and rejecting them is the point.
     let mut result = fx.query("SELECT DISTINCT function_name FROM duckdb_functions()");
     let (mut checked, mut operators) = (0, 0);
-    while let Some(chunk) = result.next_chunk() {
+    while let Some(chunk) = result.next_chunk().expect("fetch") {
         for row in 0..chunk.size() {
             // SAFETY: VARCHAR column.
             let name = unsafe { chunk.reader(0).read_str(row) }.to_owned();
@@ -3165,6 +3315,7 @@ fn catalog_lookup_finds_a_table_inside_a_transaction() {
             CatalogEntryType::Table,
         )
     }
+    .expect("a table lookup is not refused")
     .expect("the table must be found");
     assert_eq!(table.name(), Some("catalog_probe"));
     assert_eq!(table.entry_type(), CatalogEntryType::Table);
@@ -3179,6 +3330,7 @@ fn catalog_lookup_finds_a_table_inside_a_transaction() {
             CatalogEntryType::View,
         )
     }
+    .expect("a view lookup is not refused")
     .expect("the view must be found");
     assert_eq!(view.name(), Some("catalog_probe_v"));
     assert_eq!(view.entry_type(), CatalogEntryType::View);
@@ -3194,6 +3346,7 @@ fn catalog_lookup_finds_a_table_inside_a_transaction() {
             CatalogEntryType::Table,
         )
     }
+    .expect("a table lookup is not refused")
     .is_none());
 
     drop(table);
@@ -3346,7 +3499,7 @@ fn the_instance_cache_shares_one_database() {
     // SAFETY: `con2` is open.
     let mut result = unsafe { quack_rs::query::query(con2, "SELECT n FROM shared") }
         .expect("read through the second handle");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: INTEGER column, row 0.
     assert_eq!(unsafe { chunk.reader(0).read_i32(0) }, 7);
 
@@ -3580,7 +3733,7 @@ fn a_panicking_bind_state_destructor_does_not_abort() {
     // SAFETY: `con` is open.
     let mut result =
         unsafe { query(fx.con(), "SELECT count(*) FROM bind_bomb()") }.expect("scan runs");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: BIGINT column, row 0.
     assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 0);
     drop(chunk);
@@ -3671,7 +3824,7 @@ fn round_trip_value(fx: &Fixture, value: &quack_rs::value::Value) -> String {
         .expect("prepare SELECT ?");
     stmt.bind_value(1, value).expect("bind_value");
     let mut result = stmt.execute().expect("execute");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: one VARCHAR column, one row.
     let reader = unsafe { chunk.reader(0) };
     // SAFETY: row 0 exists.
@@ -3712,11 +3865,23 @@ fn every_scalar_value_constructor_round_trips_through_a_bound_parameter() {
         (Value::double(0.25), "0.25"),
         (Value::varchar("héllo"), "héllo"),
         (Value::date(0), "1970-01-01"),
-        (Value::time(3_600_000_000), "01:00:00"),
-        (Value::timestamp(0), "1970-01-01 00:00:00"),
-        (Value::timestamp_s(60), "1970-01-01 00:01:00"),
-        (Value::timestamp_ms(1_500), "1970-01-01 00:00:01.5"),
-        (Value::timestamp_ns(1_500_000_000), "1970-01-01 00:00:01.5"),
+        (Value::time(3_600_000_000).expect("in range"), "01:00:00"),
+        (
+            Value::timestamp(0).expect("in range"),
+            "1970-01-01 00:00:00",
+        ),
+        (
+            Value::timestamp_s(60).expect("in range"),
+            "1970-01-01 00:01:00",
+        ),
+        (
+            Value::timestamp_ms(1_500).expect("in range"),
+            "1970-01-01 00:00:01.5",
+        ),
+        (
+            Value::timestamp_ns(1_500_000_000).expect("in range"),
+            "1970-01-01 00:00:01.5",
+        ),
         (
             Value::interval(DuckInterval {
                 months: 1,
@@ -3874,7 +4039,7 @@ fn every_typed_bind_reaches_duckdb_with_the_right_width() {
             .expect("prepare");
         bind(&stmt).expect("bind");
         let mut result = stmt.execute().expect("execute");
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         // SAFETY: one VARCHAR column, one row.
         let got = unsafe { chunk.reader(0).read_str(0) }.to_owned();
         assert_eq!(got, expected);
@@ -3976,7 +4141,7 @@ fn a_streaming_result_reads_the_same_rows_as_a_materialised_one() {
 
     let mut sum: i64 = 0;
     let mut chunks = 0;
-    while let Some(chunk) = streamed.next_chunk() {
+    while let Some(chunk) = streamed.next_chunk().expect("fetch") {
         chunks += 1;
         // SAFETY: one BIGINT column.
         let reader = unsafe { chunk.reader(0) };
@@ -3994,7 +4159,7 @@ fn a_streaming_result_reads_the_same_rows_as_a_materialised_one() {
     let mut materialised = stmt2.execute().expect("execute");
     assert!(!materialised.is_streaming());
     let mut sum2: i64 = 0;
-    while let Some(chunk) = materialised.next_chunk() {
+    while let Some(chunk) = materialised.next_chunk().expect("fetch") {
         // SAFETY: one BIGINT column.
         let reader = unsafe { chunk.reader(0) };
         for row in 0..chunk.size() {
@@ -4034,7 +4199,7 @@ fn an_interrupt_handle_cancels_a_query_from_another_thread() {
     let mut ok = con
         .query("SELECT 42::BIGINT")
         .expect("the connection survives");
-    let chunk = ok.next_chunk().expect("one chunk");
+    let chunk = ok.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: one BIGINT column, one row.
     assert_eq!(unsafe { chunk.reader(0).read_i64(0) }, 42);
 }
@@ -4526,7 +4691,7 @@ fn nested_types_read_correctly_as_scalar_arguments() {
     .expect("insert");
 
     let mut result = fx.query("SELECT q_list_sum(l) AS s FROM lists");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: one BIGINT column with five rows.
     let reader = unsafe { chunk.reader(0) };
     let got: Vec<Option<i64>> = (0..chunk.size())
@@ -4880,7 +5045,7 @@ mod arrow_interop {
         let options = unsafe { result.arrow_options() }.expect("result arrow options");
         let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
 
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         assert_eq!(chunk.size(), 7);
         let array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
         assert_eq!(array.len(), 7, "the array carries every row");
@@ -4963,7 +5128,7 @@ mod arrow_interop {
         // SAFETY: the fixture's connection ran this query and outlives the options.
         let options = unsafe { result.arrow_options() }.expect("arrow options");
         let mut schema = to_arrow_schema(&options, &as_pairs(&cols)).expect("to_arrow_schema");
-        let chunk = result.next_chunk().expect("one chunk");
+        let chunk = result.next_chunk().expect("fetch").expect("one chunk");
         let mut array = data_chunk_to_arrow(&options, &chunk).expect("data_chunk_to_arrow");
 
         // Calling DuckDB's own release callbacks — this is where a wrong
@@ -5101,11 +5266,11 @@ mod arrow_interop {
         // SAFETY: `fx.con()` is open for the fixture's lifetime.
         let converted = unsafe { schema_from_arrow(fx.con(), &mut schema) }.expect("converted");
         assert_eq!(converted.column_count(), 2);
-        drop(two.next_chunk());
+        drop(two.next_chunk().expect("fetch"));
 
         // …fed a one-column array. DuckDB would read `children[1]` past the end.
         let mut one = fx.query("SELECT 9::INTEGER AS only");
-        let one_chunk = one.next_chunk().expect("one chunk");
+        let one_chunk = one.next_chunk().expect("fetch").expect("one chunk");
         let array = data_chunk_to_arrow(&options, &one_chunk).expect("data_chunk_to_arrow");
         assert_eq!(array.child_count(), 1);
 
@@ -5509,3 +5674,26 @@ mod value_query;
 
 #[path = "ffi_roundtrip/tooling.rs"]
 mod tooling;
+
+#[path = "ffi_roundtrip/value_temporal.rs"]
+mod value_temporal;
+
+#[path = "ffi_roundtrip/appender_rows.rs"]
+mod appender_rows;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/query_stream.rs"]
+mod query_stream;
+
+#[path = "ffi_roundtrip/value_nested.rs"]
+mod value_nested;
+
+#[cfg(feature = "duckdb-1-5-4")]
+#[path = "ffi_roundtrip/arrow_import.rs"]
+mod arrow_import;
+
+#[path = "ffi_roundtrip/query_docs.rs"]
+mod query_docs;
+
+#[path = "ffi_roundtrip/lifecycle.rs"]
+mod lifecycle;

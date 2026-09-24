@@ -51,6 +51,7 @@ exclude_globs = [
     "src/testing/harness.rs",   # test harness infrastructure (FFI wiring)
     "src/testing/in_memory_db.rs", # thin wrapper around DuckDB C API
     "src/testing/mock_vector.rs",  # test-only vector stub
+    "src/testing/mock_vector/*.rs", # the same stub, split out of mock_vector.rs
     "src/testing/mod.rs",       # re-exports only
     "src/bin/**",               # binary entry points
     # DuckDB 1.5.x FFI wrapper modules: every public method calls a DuckDB C
@@ -61,6 +62,7 @@ exclude_globs = [
     "src/expression.rs",        # Expression: all methods call duckdb_expression_*
     "src/file_system.rs",       # FileSystem/FileHandle: all methods call duckdb FS API
     "src/appender.rs",          # Appender: all methods call duckdb_appender_*
+    "src/appender/*.rs",        # the same Appender methods, split out of appender.rs
     "src/selection_vector.rs",  # SelectionVector: new() calls duckdb_create_selection_vector
     "src/instance_cache.rs",    # InstanceCache: all methods call duckdb_*_instance_cache
     "src/table_description.rs", # TableDescription: FFI methods; tests are bundled-test-gated
@@ -78,10 +80,24 @@ exclude_globs = [
     # and cargo-mutants still follows the mod statements in an excluded file.
     "src/value.rs",             # Value: 130 duckdb_get_* / duckdb_create_* wrappers
     "src/query.rs",             # QueryResult/PreparedStatement/Connection: FFI wrappers
+    # The same wrappers, split out of query.rs; src/query/cstr.rs stays in.
+    "src/query/bind.rs",
+    "src/query/chunk.rs",
+    "src/query/connection.rs",
+    "src/query/live_tests.rs",
+    "src/query/prepared.rs",
+    "src/query/result.rs",
     # Same rationale, added with the September 2026 audit fixes. Their pure
     # logic lives in siblings that stay in the gate: src/value/checks.rs (the
     # DECIMAL range check and the scalar-cast allow-list).
     "src/value/getters.rs",     # Value::as_*: each copies the value and calls duckdb_get_*
+    # Split out of value.rs with the same rationale: every function reads the
+    # value through duckdb_get_list_size / _list_child / _map_size / _map_key /
+    # _map_value / _struct_child / duckdb_get_value_type. Its siblings
+    # composite.rs, scalars.rs, temporal.rs and temporal_checks.rs stay in:
+    # their range and count checks run before any DuckDB call (composite.rs's
+    # FFI-only checks are dropped in exclude_re below instead).
+    "src/value/nested.rs",      # Value::list_* / struct_* / map_* readers: duckdb_get_*
     "src/vector/nested_null.rs",# walks a vector's type and child masks through the C API
     # FFI-only wrappers that were missing from this list: every surviving
     # mutant in them (Sept 2026 run) is in a function that only calls DuckDB
@@ -130,8 +146,70 @@ exclude_globs = [
 #   the gate, as do the `Some(..)` mutants of `built_against_version`, and
 #   `built_against_version_is_the_build_scripts_declaration` kills `-> None`
 #   in a build that does declare a version.
+#
+# The entries below are equivalent in the same sense, or (the last) FFI-bound:
+#
+# - `yaml_quoted`'s `'\r'` arm (src/scaffold/escape.rs). With the arm deleted a
+#   carriage return falls through to the `\u000d` escape, which decodes to the
+#   same character. The only input that could show the difference in the
+#   output is a carriage return, and none reaches the function:
+#   `validate_free_text` refuses every control character but tab and newline
+#   in the description and maintainer (a bare CR is a hard error in the `//!`
+#   doc comment the description also becomes), and the version, the only
+#   other quoted field, is validated to ASCII letters, digits and `._+-`. Every
+#   configuration `generate_scaffold` accepts produces byte-identical files.
+#   The `'\n'` and `'\t'` arms stay in the gate: those characters do reach it,
+#   and `description_yml_keeps_free_text_readable` kills their deletion.
+# - `MAX_CHILD_CAPACITY_USIZE`'s `MAX_LIST_CHILD_CAPACITY > usize::MAX as u64`
+#   (src/vector/list_builder.rs, a const with no enclosing function, hence the
+#   `$`-anchored pattern) mutated to `>=` or `==`. 2^37 never equals
+#   `usize::MAX` on any target, so `>=` is the same program everywhere; `==` is
+#   the same program on every 64-bit target — the condition is false either
+#   way — which is every mutation run (it would differ on 32-bit, where the
+#   existing `max_capacity_matches_duckdbs_constant` catches it). The `<`
+#   mutant stays in the gate and is killed. `vector::ops::MAX_CAPACITY` is
+#   defined as this constant, so it has no separate mutants.
+# - `with_element_limit`'s `limit < MAX_CHILD_CAPACITY_USIZE` mutated to `<=`:
+#   the two differ only at `limit == MAX_CHILD_CAPACITY_USIZE`, where both arms
+#   store that same value.
+# - `CastGuard::accepts`'s `(v < 0) as i64` mutated to `<=` (src/value/
+#   temporal_checks.rs, the `FiniteAndNanoDayFits` arm). The two differ only at
+#   `v == 0`, where the mutant computes day `(0 + 1) / NANOS_PER_DAY - 1 = -1`
+#   instead of 0; `-1 * NANOS_PER_DAY` fits an `i64` as `0 * NANOS_PER_DAY`
+#   does and 0 is finite, so `accepts(0)` is `true` either way — and the day is
+#   used for nothing else.
+# - `ListBuilder::element_count -> 0 / 1` (src/vector/list_builder.rs): the
+#   count only advances in `push_row` / `push_map_row` after
+#   `ListVector::set_entry`, which calls `duckdb_vector_get_data`, so no unit
+#   test without a live engine can make it anything but 0 (the same rationale
+#   as the FFI entries in `exclude_globs`). It is checked end to end against a
+#   real LIST vector by `list_builder_writes_correct_offsets_across_growth` in
+#   tests/ffi_roundtrip.rs; `overflowed`, whose refusal path makes no DuckDB
+#   call, stays in the gate.
 exclude_re = [
     "impl [a-z:]*Debug for",    # Debug impls: rendering is not behaviour
     "abi.rs.*replace uses_unstable_api -> bool with true",  # equivalent: see above
     "abi.rs.*replace built_against_version -> Option<&'static str> with None",  # equivalent: see above
+    "escape.rs.*delete match arm '.r' in yaml_quoted",  # unreachable input: see above
+    "list_builder.rs:[0-9]+:[0-9]+: replace > with (==|>=)$",  # equivalent: see above
+    "list_builder.rs.*replace < with <= in ListBuilder::with_element_limit",  # equivalent: see above
+    "temporal_checks.rs.*replace < with <= in CastGuard::accepts",  # equivalent: see above
+    "list_builder.rs.*replace ListBuilder::element_count -> usize with",  # FFI-bound: see above
+
+    # ── FFI-only checks in files that otherwise stay in the gate ────────────
+    # Each check below runs only with a DuckDB handle in hand, so a --lib run
+    # with no live engine cannot reach it; the rest of its file has pure logic
+    # that unit tests do kill, so the file is not excluded.
+    #
+    # composite.rs: Value::struct_value first reads the field count with
+    # duckdb_struct_type_child_count; Value::checked_container inspects the
+    # result of duckdb_create_list_value / _array_value and then calls
+    # duckdb_get_type_id; Value::map count check needs a LogicalType (only
+    # duckdb_create_*_type makes one) and Values to count. Covered end to end
+    # in tests/ffi_roundtrip.rs and tests/ffi_roundtrip/value_nested.rs.
+    "src/value/composite.rs:.*Value::(struct_value|checked_container|map)( |$)",
+    # info.rs: only BindInfo::set_error sets the flag, and it calls
+    # duckdb_bind_set_error. The with-true mutant is killed by a unit test;
+    # the with-false one by tests/ffi_roundtrip/table_cast.rs.
+    "src/table/info.rs:.*replace BindInfo::error_reported -> bool with false",
 ]

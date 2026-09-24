@@ -10,6 +10,7 @@
 //! [`generate_scaffold`][super::generate_scaffold] and are not part of
 //! the public API.
 
+use super::escape::{doc_comment_lines, yaml_quoted};
 use super::ScaffoldConfig;
 
 /// The `quack-rs` version requirement written into generated `Cargo.toml`
@@ -141,7 +142,12 @@ TARGET_DUCKDB_VERSION={target_version}
 {declare_block}
 all: configure release
 
-# Include extension-ci-tools build rules
+# Include extension-ci-tools build rules. A freshly generated project has a
+# .gitmodules but no submodule yet, and `git submodule update --init` does
+# nothing until the submodule has been added once (LESSONS.md P4).
+ifeq ($(wildcard extension-ci-tools/makefiles/c_api_extensions/base.Makefile),)
+$(error extension-ci-tools is missing. In a new repository run: git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools -- in a clone of an existing one: git submodule update --init --recursive)
+endif
 include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
 include extension-ci-tools/makefiles/c_api_extensions/rust.Makefile
 
@@ -194,7 +200,7 @@ check_duckdb_pin:
 
 pub(super) fn generate_lib_rs(config: &ScaffoldConfig) -> String {
     format!(
-        r#"//! {description}
+        r##"{description}
 //!
 //! A DuckDB extension built with [quack-rs](https://github.com/tomtom215/quack-rs).
 
@@ -204,6 +210,15 @@ use quack_rs::prelude::*;
 // Example: a simple SQL macro. Replace with your own functions.
 // ---------------------------------------------------------------------------
 
+/// The example function: `{name}_hello(name)` greets `name`.
+fn hello_macro() -> Result<SqlMacro, ExtensionError> {{
+    SqlMacro::scalar(
+        "{name}_hello",
+        &["name"],
+        "concat('Hello from {name}! ', name)",
+    )
+}}
+
 /// Registers all extension functions on the given connection.
 fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {{
     // Example: register a scalar SQL macro (no unsafe callbacks needed).
@@ -212,12 +227,7 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
     // SAFETY: `con` is the connection quack-rs opened for this entry point and
     // is valid for the duration of this function.
     unsafe {{
-        SqlMacro::scalar(
-            "{name}_hello",
-            &["name"],
-            "concat('Hello from {name}! ', name)",
-        )?
-        .register(con)?;
+        hello_macro()?.register(con)?;
     }}
     Ok(())
 }}
@@ -227,8 +237,25 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
 // ---------------------------------------------------------------------------
 
 quack_rs::entry_point!({name}_init_c_api, register);
-"#,
-        description = config.description,
+
+// Unit tests run under plain `cargo test`: building a function definition
+// needs no DuckDB. Calling into DuckDB does, so behaviour against a real engine
+// is tested in test/sql/{name}.test (SQLLogicTest, run by `make test`).
+#[cfg(test)]
+mod tests {{
+    use super::*;
+
+    #[test]
+    fn hello_macro_renders_the_expected_sql() -> Result<(), ExtensionError> {{
+        assert_eq!(
+            hello_macro()?.to_sql(),
+            r#"CREATE OR REPLACE MACRO "{name}_hello"("name") AS (concat('Hello from {name}! ', name))"#
+        );
+        Ok(())
+    }}
+}}
+"##,
+        description = doc_comment_lines(&config.description),
         name = config.name,
     )
 }
@@ -247,8 +274,10 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
   requires_toolchains: rust;python3
 ",
         name = config.name,
-        description = config.description,
-        version = config.version,
+        // Quoted: `description` is free text, and a version such as
+        // `2025120401` or `1.0` would otherwise be read as a number.
+        description = yaml_quoted(&config.description),
+        version = yaml_quoted(&config.version),
         license = config.license,
     );
 
@@ -258,7 +287,7 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
     }
 
     let _ = writeln!(yml, "  maintainers:");
-    let _ = writeln!(yml, "    - {}", config.maintainer);
+    let _ = writeln!(yml, "    - {}", yaml_quoted(&config.maintainer));
 
     let _ = writeln!(yml);
     let _ = writeln!(yml, "repo:");
@@ -278,16 +307,20 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
         "  #                    # used while a new DuckDB release is being prepared."
     );
 
-    // Every one of the 43 published extensions sampled has a `docs:` section;
-    // it is what renders on the community-extensions documentation site.
+    // 332 of the 346 published descriptors (community-extensions `5ae7df8`)
+    // have a `docs:` section; it is what renders on the community-extensions
+    // documentation site.
     let _ = writeln!(yml);
     let _ = writeln!(yml, "docs:");
     let _ = writeln!(yml, "  hello_world: |");
     // Must call something `generate_lib_rs` registers: this is the example the
     // community-extensions site shows users to copy.
     let _ = writeln!(yml, "    SELECT {}_hello('world');", config.name);
-    let _ = writeln!(yml, "  extended_description: |");
-    let _ = writeln!(yml, "    {}", config.description);
+    let _ = writeln!(
+        yml,
+        "  extended_description: {}",
+        yaml_quoted(&config.description)
+    );
 
     yml
 }
@@ -363,25 +396,25 @@ pub(super) fn generate_sqllogictest(config: &ScaffoldConfig) -> String {
          # Verify the extension loads without error\n\
          require {name}\n\
          \n\
-         # ---- Replace the examples below with your actual function tests ----\n\
+         # The example function registered in src/lib.rs.\n\
+         query T\n\
+         SELECT {name}_hello('world');\n\
+         ----\n\
+         Hello from {name}! world\n\
          \n\
-         # Example: test a scalar function that returns a VARCHAR\n\
-         # query T\n\
-         # SELECT {name}_hello('world');\n\
-         # ----\n\
-         # Hello from {name}! world\n\
+         # One row per input row.\n\
+         query T\n\
+         SELECT {name}_hello(x) FROM (VALUES ('a'), ('b')) t(x) ORDER BY x;\n\
+         ----\n\
+         Hello from {name}! a\n\
+         Hello from {name}! b\n\
          \n\
-         # Example: test an aggregate function\n\
+         # ---- Add a test like these for each function you add. ----\n\
+         # For example, an aggregate you register as {name}_count:\n\
          # query I\n\
          # SELECT {name}_count(col) FROM (VALUES (1), (2), (3)) t(col);\n\
          # ----\n\
          # 3\n\
-         \n\
-         # Example: NULL handling\n\
-         # query I\n\
-         # SELECT {name}_count(col) FROM (VALUES (NULL), (1)) t(col);\n\
-         # ----\n\
-         # 1\n\
          "
     )
 }
@@ -438,11 +471,13 @@ jobs:
         with:
           submodules: recursive
 
-      # Pinning this action's SHA does not pin your Rust version: the action
-      # reads the toolchain from rust-toolchain.toml or its `toolchain:` input
-      # at run time. You still get current stable.
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      # Pinned to a commit on the action's `master` branch (2026-09-03), whose
+      # `toolchain:` input is required. Pinning the action does not pin your
+      # Rust version: `toolchain: stable` installs the current stable release
+      # on every run.
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1

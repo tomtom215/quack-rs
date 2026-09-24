@@ -32,7 +32,9 @@ if err.has_error() {
 
 Build a structured error to hand back to DuckDB (for example from a callback):
 
-```rust,no_run
+```rust
+# // ErrorData is a DuckDB object: fill the dispatch table first.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
 use quack_rs::error_data::{DuckDbErrorType, ErrorData};
 
 let err = ErrorData::new(DuckDbErrorType::InvalidInput, "row index out of range");
@@ -50,6 +52,7 @@ registration or callback logic:
 use quack_rs::error::ExtensionError;
 use quack_rs::file_system::{FileOpenOptions, FileSystem};
 use quack_rs::client_context::ClientContext;
+use quack_rs::error_data::ErrorData;
 
 # fn read_header(ctx: &ClientContext) -> Result<(), ExtensionError> {
 let fs = FileSystem::from_client_context(ctx)
@@ -80,11 +83,16 @@ Unknown or future categories map to `DuckDbErrorType::Invalid`.
 
 ## UTF-8 validation
 
-The free function `check_valid_utf8` exposes DuckDB's own UTF-8 validator, which
-is stricter than Rust's in some cases. Use it to validate externally-sourced
-bytes before handing them to DuckDB string APIs:
+The free function `check_valid_utf8` exposes DuckDB's own UTF-8 validator. Its
+rules match Rust's exactly — it accepts every Unicode scalar value and rejects
+surrogates, overlong forms, code points above `U+10FFFF`, truncated sequences
+and stray continuation bytes, just as `std::str::from_utf8` does — so reach for
+it when you want DuckDB's structured `ErrorData` for the failure; for a yes/no
+answer `std::str::from_utf8` is equivalent:
 
-```rust,no_run
+```rust
+# // ErrorData is a DuckDB object: fill the dispatch table first.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
 use quack_rs::error_data::check_valid_utf8;
 
 # fn demo(bytes: &[u8]) {
@@ -92,6 +100,11 @@ match check_valid_utf8(bytes) {
     Ok(()) => { /* safe to pass to DuckDB */ }
     Err(err) => eprintln!("invalid UTF-8: {}", err.message().unwrap_or_default()),
 }
+# }
+# assert!(check_valid_utf8("héllo".as_bytes()).is_ok());
+# for bad in [&b"\xff"[..], b"\xed\xa0\x80", b"\xc0\xaf", b"\xf4\x90\x80\x80", b"\xe2\x82"] {
+#     assert!(check_valid_utf8(bad).is_err());
+#     assert!(std::str::from_utf8(bad).is_err());
 # }
 ```
 

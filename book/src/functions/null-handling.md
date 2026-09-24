@@ -90,8 +90,33 @@ validity for you — a NULL argument short-circuits to a NULL result without eve
 calling your code:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# fn live_connection() -> libduckdb_sys::duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), libduckdb_sys::DuckDBSuccess);
+#     }
+#     con
+# }
+# /// First column of the first row, as BIGINT; `None` for NULL.
+# fn query_i64(con: libduckdb_sys::duckdb_connection, sql: &str) -> Option<i64> {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
+#     let reader = unsafe { chunk.reader(0) };
+#     unsafe { reader.is_valid(0).then(|| reader.read_i64(0)) }
+# }
+# let con = live_connection();
+# let run = || -> Result<(), ExtensionError> { unsafe {
 ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?
     .register(con)?;
+# } Ok(()) };
+# run().unwrap();
+# assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
+# assert_eq!(query_i64(con, "SELECT double_it(NULL::BIGINT)"), None);
 ```
 
 Use `map1_opt` / `map2_opt` when the function needs to *see* NULLs; those
@@ -103,6 +128,25 @@ When you write the `extern "C"` callback yourself, restore SQL semantics with on
 call at the end:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# fn live_connection() -> libduckdb_sys::duckdb_connection {
+#     std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+#     let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
+#     unsafe {
+#         assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess);
+#         assert_eq!(libduckdb_sys::duckdb_connect(db, &mut con), libduckdb_sys::DuckDBSuccess);
+#     }
+#     con
+# }
+# /// First column of the first row, as BIGINT; `None` for NULL.
+# fn query_i64(con: libduckdb_sys::duckdb_connection, sql: &str) -> Option<i64> {
+#     let mut result = unsafe { quack_rs::query::query(con, sql) }.unwrap();
+#     let chunk = result.next_chunk().unwrap().unwrap();
+#     let reader = unsafe { chunk.reader(0) };
+#     unsafe { reader.is_valid(0).then(|| reader.read_i64(0)) }
+# }
 quack_rs::scalar_callback!(double_it, |_info, input, output| {
     let chunk = unsafe { DataChunk::from_raw(input) };
     let reader = unsafe { chunk.reader(0) };
@@ -113,6 +157,11 @@ quack_rs::scalar_callback!(double_it, |_info, input, output| {
     // Without this, double_it(NULL) is 0, not NULL.
     unsafe { chunk.propagate_nulls(&mut writer) };
 });
+# let con = live_connection();
+# unsafe { ScalarFunctionBuilder::new("double_it").param(TypeId::BigInt).returns(TypeId::BigInt)
+#     .function(double_it).register(con).unwrap(); }
+# assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
+# assert_eq!(query_i64(con, "SELECT double_it(NULL::BIGINT)"), None);
 ```
 
 `propagate_nulls` resolves each column's validity pointer once and marks the
@@ -124,27 +173,60 @@ you need the decision inline.
 
 ## `NullHandling` enum
 
-```rust,ignore
+```rust
 use quack_rs::types::NullHandling;
 
 // Default: the function promises NULL in -> NULL out.
 // Scalar: you must keep that promise (see above).
-// Aggregate: DuckDB enforces it by filtering NULL rows before `update`.
-NullHandling::DefaultNullHandling
+// Aggregate: `update` still receives NULL rows; skip them yourself.
+NullHandling::DefaultNullHandling;
 
 // The function means to see NULLs and may return non-NULL for them.
-NullHandling::SpecialNullHandling
+NullHandling::SpecialNullHandling;
 ```
 
 ---
 
 ## Aggregate functions
 
-Aggregates are the case where the default behaves as its name suggests: DuckDB's
-aggregate executor filters NULL rows out before calling `update`. Opt out when
-the aggregate needs to count or observe them:
+Aggregates behave like scalar functions here: under **either** setting,
+`update` receives every row of the chunk, NULL rows included. `CAPIAggregateUpdate`
+in DuckDB's `aggregate_function-c.cpp` flattens the inputs and passes the whole
+chunk through; nothing on the way filters by validity. An aggregate that ignores
+NULLs skips them itself:
 
 ```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe fn demo(chunk: &DataChunk, reader: &VectorReader) {
+for row in 0..chunk.size() {
+    if !unsafe { reader.is_valid(row) } {
+        continue; // a NULL row: its data slot holds no meaningful value
+    }
+    // ... accumulate reader.read_i64(row) into *states.add(row) ...
+}
+# }
+```
+
+`SpecialNullHandling` declares that the aggregate may return non-NULL for NULL
+input (a `count_with_nulls`, say). For an aggregate DuckDB reads the setting in
+one place only — the correlated-subquery decorrelator, to pick an `INNER` or
+`LEFT` join — and no query we tried (correlated scalar subqueries, with and
+without arithmetic or `coalesce` around the aggregate, `LATERAL`, a correlated
+subquery in `WHERE`) answered differently under the two settings on DuckDB 1.5.5.
+Set it anyway when it is true; it is what DuckDB expects.
+
+```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# unsafe extern "C" fn my_state_size(_: duckdb_function_info) -> idx_t { 0 }
+# unsafe extern "C" fn my_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# unsafe extern "C" fn my_update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn my_combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn my_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::{TypeId, NullHandling};
 
@@ -154,11 +236,25 @@ AggregateFunctionBuilder::new("count_with_nulls")
     .null_handling(NullHandling::SpecialNullHandling)
     .state_size(my_state_size)
     .init(my_init)
-    .update(my_update)   // now called for NULL rows too
+    .update(my_update)   // counts rows whose value is NULL, too
     .combine(my_combine)
     .finalize(my_finalize)
     .register(con)?;
+# Ok(())
+# }
 ```
+
+### Empty groups in a correlated subquery
+
+One difference from an uncorrelated query holds under both settings. In
+`SELECT (SELECT my_count(x) FROM t2 WHERE t2.k = t1.k) FROM t1`, an outer row
+with no matching `t2` rows gets NULL: the decorrelated plan joins the aggregate's
+groups back to the outer rows, and an outer row with no group never has an empty
+state finalized. DuckDB rewrites that NULL to 0 for its own `count` and
+`count(*)` only. A count-like aggregate of yours that returns 0 for empty input
+therefore returns NULL here; write `coalesce((SELECT ...), 0)` if the query needs
+0. (`SELECT my_count(x) FROM t2 WHERE false`, uncorrelated, does finalize an
+empty state and returns 0.)
 
 ---
 
@@ -168,7 +264,7 @@ AggregateFunctionBuilder::new("count_with_nulls")
 |----------|---------------|----------------|
 | Scalar function, NULL in → NULL out | `DefaultNullHandling` | **you** (`propagate_nulls`, or `map1`/`map2`) |
 | Scalar function that inspects NULLs (`COALESCE`-like, `IS_NULL`-like) | `SpecialNullHandling` | you |
-| Aggregate, ignore NULL rows | `DefaultNullHandling` (the default) | DuckDB |
+| Aggregate, ignore NULL rows | `DefaultNullHandling` (the default) | **you** (skip rows where `is_valid` is false) |
 | Aggregate that counts NULLs | `SpecialNullHandling` | you |
 
 If you don't call `.null_handling()`, `DefaultNullHandling` is used.

@@ -104,6 +104,11 @@ fn contain_payload(payload: Box<dyn std::any::Any + Send>) -> String {
     message
 }
 
+/// The bind error reported when a typed bind closure declared no column.
+#[cfg(feature = "duckdb-1-5")]
+const NO_COLUMNS_MESSAGE: &str = "quack-rs: the typed table function's bind declared no result \
+     columns; call BindInfo::add_result_column at least once";
+
 /// Bind trampoline monomorphised per state type `S`.
 ///
 /// # Safety
@@ -125,6 +130,18 @@ unsafe extern "C" fn typed_bind_trampoline<S: Send + 'static>(info: duckdb_bind_
 
         match (cbs.bind)(&bind_info) {
             Ok(factory) => {
+                // A bind that declares no column makes DuckDB raise an
+                // INTERNAL Error with a C++ stack trace
+                // (bind_table_function.cpp: "Table function must return at
+                // least one column"). Say what actually went wrong instead —
+                // unless an error is already set: a column whose type
+                // `add_result_column` rejected is not declared either, and
+                // that message is the more specific one.
+                #[cfg(feature = "duckdb-1-5")]
+                if !bind_info.error_reported() && bind_info.result_column_count() == 0 {
+                    bind_info.set_error(NO_COLUMNS_MESSAGE);
+                    return;
+                }
                 // SAFETY: `info` is valid; this is the bind callback's single
                 // opportunity to set bind data. The factory is `Send + Sync`,
                 // as bind data shared across init threads must be.

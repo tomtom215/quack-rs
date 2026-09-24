@@ -88,10 +88,10 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **23 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **24 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
-```
+```text
 L1  COMBINE must propagate ALL config fields (not just data)
 L2  State destroy double-free → FfiState<T> nulls pointers after free
 L3  No panics across FFI → init_extension uses Result throughout
@@ -107,6 +107,8 @@ L10 Scalar bind data is lost when DuckDB copies the expression →
     ScalarBindData::set registers the copy callback
 L11 C API aggregates crash under agg(x) OVER () and agg(x ORDER BY y) →
     a DuckDB defect; documented, not preventable from an extension
+L12 Aggregate update receives NULL rows under DEFAULT_NULL_HANDLING →
+    skip rows where is_valid is false; documented on NullHandling
 
 P1  Library name must match [lib] name in Cargo.toml exactly
 P2  C API version ("v1.2.0") ≠ DuckDB release version ("v1.4.4" / "v1.5.0")
@@ -250,7 +252,7 @@ let config = ScaffoldConfig {
     ..Default::default()
 };
 
-let files = generate_scaffold(&config)?;
+let files = generate_scaffold(&config).expect("valid config");
 for file in &files {
     println!("{}", file.path);
     // write file.content to disk
@@ -259,7 +261,7 @@ for file in &files {
 
 This generates all 11 files required for a DuckDB community extension submission:
 
-```
+```text
 Cargo.toml                          ← cdylib, pinned deps, release profile
 Makefile                            ← delegates to cargo + extension-ci-tools
 extension_config.cmake              ← required by extension-ci-tools
@@ -446,13 +448,14 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L9** | `duckdb_data_chunk_from_arrow` claims the array on failure | A double release after a failed conversion, or a leak after a zero-column one | `arrow::data_chunk_from_arrow` takes the array by value |
 | **L10** | Scalar bind data dropped when `DuckDB` copies the expression | Bind data reads as null for some queries (e.g. a filter pushed through a projection) — a wrong answer, not a crash | `ScalarBindData::set` registers a copy callback; raw API: `ScalarBindInfo::set_bind_data_copy` |
 | **L11** | C API aggregates under `agg(x) OVER ()` / `agg(x ORDER BY y)` | Segfault or memory corruption in `update` | A `DuckDB` defect (`CAPIAggregateUpdate` does not flatten the state vector), reported as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109); documented, cannot be prevented from an extension |
+| **L12** | Aggregate `update` receives NULL rows under `DEFAULT_NULL_HANDLING` | A wrong answer when the input has NULLs: `update` reads whatever the NULL slot holds | Skip rows where `is_valid` is false in `update`, whatever the null handling; documented on `NullHandling` and the aggregate builders |
 
 ### Practical Pitfalls (P)
 
 | ID | Name | Symptom | quack-rs Solution |
 |----|------|---------|-------------------|
 | **P1** | Library name mismatch | Extension fails to load | Documented; scaffold sets it correctly |
-| **P2** | C API version ≠ release version | Wrong `-dv` flag corrupts extension metadata | `DUCKDB_API_VERSION = "v1.2.0"` constant; `append_metadata` binary ships with the crate; `ScaffoldConfig` rejects `-dv`/ABI-type pairings DuckDB would refuse |
+| **P2** | C API version ≠ release version | Wrong `-dv` flag: the script succeeds, then `LOAD` refuses the file | `DUCKDB_API_VERSION = "v1.2.0"` constant; `append_metadata` binary ships with the crate; `ScaffoldConfig` rejects `-dv`/ABI-type pairings DuckDB would refuse |
 | **P3** | Missing E2E tests | Community submission rejected | Scaffold generates SQLLogicTest skeleton |
 | **P4** | Uninitialized submodule | `make` fails with missing files | Documented; scaffold generates `.gitmodules` |
 | **P5** | SQLLogicTest format mismatch | Tests fail with exact-match errors | Documented with format reference |
@@ -477,21 +480,30 @@ Every community extension must include a `description.yml` metadata file.
 `quack-rs` can validate the entire file before submission:
 
 ```rust
+use quack_rs::error::ExtensionError;
 use quack_rs::validate::description_yml::{
-    parse_description_yml, validate_rust_extension, validate_description_yml_str,
+    parse_description_yml, validate_description_yml_str, validate_rust_extension,
 };
 
-// Quick pass/fail check
-let result = validate_description_yml_str(include_str!("description.yml"));
-assert!(result.is_ok(), "description.yml has errors: {}", result.unwrap_err());
+fn check_description() -> Result<(), ExtensionError> {
+    let text = std::fs::read_to_string("description.yml")?;
 
-// Structured access for programmatic inspection
-let desc = parse_description_yml(include_str!("description.yml"))?;
-println!("Extension: {} v{}", desc.name, desc.version);
-println!("Maintainers: {:?}", desc.maintainers);
+    // Quick pass/fail check
+    validate_description_yml_str(&text)?;
 
-// Validate Rust-specific fields (language, build, toolchains)
-validate_rust_extension(&desc)?;
+    // Structured access for programmatic inspection
+    let desc = parse_description_yml(&text)?;
+    let version = desc.version.as_deref().unwrap_or("(none)");
+    println!("Extension: {} {version}", desc.name);
+    println!("Maintainers: {:?}", desc.maintainers);
+    // Non-fatal findings, e.g. a license SPDX does not list
+    for warning in &desc.warnings {
+        println!("warning: {warning}");
+    }
+
+    // Validate Rust-specific fields (language, build, toolchains)
+    validate_rust_extension(&desc)
+}
 ```
 
 **Validated fields:**
@@ -499,8 +511,8 @@ validate_rust_extension(&desc)?;
 | Field | Rule |
 |-------|------|
 | `extension.name` | `^[a-z][a-z0-9_]*$`, max 64 chars |
-| `extension.version` | Any of `[A-Za-z0-9._+-]`, up to 64 chars — DuckDB specifies no format, and 11 of 43 published extensions use a date-based build id |
-| `extension.license` | Recognized SPDX identifier |
+| `extension.version` | Any of `[A-Za-z0-9._+-]`, up to 64 chars — DuckDB specifies no format: of the 334 published community extensions that declare a version, 42 use a date-based build id such as `2025120401` (community-extensions `5ae7df8`, 2026-09-23) |
+| `extension.license` | Non-empty; an identifier SPDX does not list is reported in `warnings`, not rejected |
 | `extension.excluded_platforms` | Semicolon-separated list of known DuckDB platforms |
 | `extension.maintainers` | At least one maintainer required |
 | `repo.github` | Must contain `/` (owner/repo format) |
@@ -570,7 +582,7 @@ explicit exclusions. The list below mirrors `config/distribution_matrix.json` in
 [`duckdb/extension-ci-tools`](https://github.com/duckdb/extension-ci-tools/blob/main/config/distribution_matrix.json),
 and a CI job (`scripts/check-platform-table.py`) fails when it drifts:
 
-```
+```text
 linux_amd64         linux_arm64
 linux_amd64_musl†   linux_arm64_musl†
 osx_amd64           osx_arm64
@@ -776,6 +788,9 @@ The documentation convention is:
   those blocks are required syntax rather than new assertions.
 
 ```rust
+use libduckdb_sys::duckdb_connection;
+use quack_rs::prelude::*;
+
 // Extension author code: one `unsafe`, at the one place a caller has to vouch
 // for something — that `con` is a live connection.
 fn register(con: duckdb_connection) -> ExtResult<()> {
@@ -897,6 +912,15 @@ does not exist in the C API.
 
 If DuckDB exposes the window function API in a future C API version, `quack-rs` will
 add wrappers in the relevant release.
+
+### Aggregates crash under `agg(x) OVER ()` and `agg(x ORDER BY y)`
+
+A DuckDB defect ([duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109))
+makes **every** aggregate registered through the C API read out of bounds — usually a
+segfault — when it runs as a whole-partition window (`OVER ()`, `OVER (PARTITION BY p)`)
+or as an ordered aggregate (`agg(x ORDER BY y)`). No extension can detect or prevent it;
+tell your users to avoid those two shapes until it is fixed upstream. See
+[Pitfall L11](LESSONS.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
 
 ### VARIANT and GEOMETRY types
 

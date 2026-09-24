@@ -136,3 +136,61 @@ fn unstable_scaffold_rejects_a_release_libduckdb_sys_cannot_encode() {
         assert!(err.as_str().contains("libduckdb-sys"), "{target}: {err}");
     }
 }
+
+/// Regression: the generated project's `cargo test` ran zero tests, and its
+/// `SQLLogicTest` file held nothing but `require` and commented-out examples, so
+/// both CI steps passed whatever the extension did.
+#[test]
+fn generated_lib_rs_carries_a_real_unit_test() {
+    let files = generate_scaffold(&valid_config()).unwrap();
+    let lib = file(&files, "src/lib.rs");
+    assert!(lib.contains("#[cfg(test)]"), "{lib}");
+    assert!(lib.contains("#[test]"), "{lib}");
+    // The test exercises the function `register` actually registers.
+    assert!(lib.contains("hello_macro()"), "{lib}");
+    assert!(
+        lib.contains(
+            r#"CREATE OR REPLACE MACRO "my_analytics_hello"("name") AS (concat('Hello from my_analytics! ', name))"#
+        ),
+        "{lib}"
+    );
+}
+
+#[test]
+fn generated_sqllogictest_queries_the_hello_function_with_its_expected_output() {
+    let files = generate_scaffold(&valid_config()).unwrap();
+    let test = file(&files, "test/sql/my_analytics.test");
+    assert!(
+        test.contains(
+            "\nquery T\nSELECT my_analytics_hello('world');\n----\nHello from my_analytics! world\n"
+        ),
+        "{test}"
+    );
+    // Every uncommented statement is something the scaffold registers.
+    for line in test.lines().filter(|l| l.starts_with("SELECT")) {
+        assert!(line.contains("my_analytics_hello("), "{line}");
+    }
+}
+
+/// Regression (P4): a freshly generated project has a `.gitmodules` but no
+/// submodule gitlink, so `git submodule update --init` is a silent no-op and
+/// `make` then failed on a bare "No such file or directory" for the include.
+/// The Makefile must name the command that actually fixes it.
+#[test]
+fn makefile_explains_a_missing_extension_ci_tools_checkout() {
+    let files = generate_scaffold(&valid_config()).unwrap();
+    let makefile = file(&files, "Makefile");
+    let check = makefile
+        .find("ifeq ($(wildcard extension-ci-tools/makefiles/c_api_extensions/base.Makefile),)")
+        .expect("a check for the submodule");
+    let include = makefile
+        .find("include extension-ci-tools/")
+        .expect("the include");
+    assert!(check < include, "{makefile}");
+    assert!(
+        makefile.contains(
+            "git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools"
+        ),
+        "{makefile}"
+    );
+}

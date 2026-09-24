@@ -310,3 +310,90 @@ fn set_try_new_valid_name() {
 fn set_try_new_empty_rejected() {
     assert!(AggregateFunctionSetBuilder::try_new("").is_err());
 }
+
+/// Same up-front validation as the scalar set: the overload index is named
+/// and no `DuckDB` call is made (a null connection would crash otherwise).
+#[test]
+fn an_incomplete_aggregate_overload_is_reported_by_index_before_touching_duckdb() {
+    let set = AggregateFunctionSetBuilder::new("s")
+        .overload(
+            AggregateOverloadBuilder::new()
+                .returns(TypeId::BigInt)
+                .state_size(ss)
+                .init(si)
+                .update(su)
+                .combine(sc)
+                .finalize(sf),
+        )
+        .overload(
+            AggregateOverloadBuilder::new()
+                .param(TypeId::Double)
+                .returns(TypeId::BigInt)
+                .state_size(ss)
+                .init(si)
+                .update(su)
+                .finalize(sf),
+        );
+    // SAFETY: validation fails before `con` is used.
+    let err = unsafe { set.register(std::ptr::null_mut()) }.expect_err("no combine");
+    assert!(err.as_str().contains("overload 1"), "{err}");
+    assert!(err.as_str().contains("combine"), "{err}");
+
+    // SAFETY: as above.
+    let err = unsafe { AggregateFunctionSetBuilder::new("s").register(std::ptr::null_mut()) }
+        .expect_err("no overloads");
+    assert!(err.as_str().contains("no overloads"), "{err}");
+
+    let no_return = AggregateFunctionSetBuilder::new("s").overload(
+        AggregateOverloadBuilder::new()
+            .state_size(ss)
+            .init(si)
+            .update(su)
+            .combine(sc)
+            .finalize(sf),
+    );
+    // SAFETY: as above.
+    let err = unsafe { no_return.register(std::ptr::null_mut()) }.expect_err("no return type");
+    assert!(err.as_str().contains("overload 0"), "{err}");
+}
+
+/// `AggregateOverloadBuilder::extra_info` mirrors
+/// `AggregateFunctionBuilder::extra_info`, including ownership: an overload
+/// that never reaches `DuckDB` frees its allocation exactly once.
+#[test]
+fn an_aggregate_overloads_extra_info_is_freed_once_when_the_set_is_rejected() {
+    use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static FREED: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "C" fn free_it(p: *mut c_void) {
+        // SAFETY: allocated below by `Box::into_raw`.
+        drop(unsafe { Box::from_raw(p.cast::<u8>()) });
+        FREED.fetch_add(1, Ordering::SeqCst);
+    }
+    let data = || Box::into_raw(Box::new(7_u8)).cast::<c_void>();
+
+    // SAFETY: `free_it` frees exactly what `data` allocates.
+    let complete = unsafe {
+        AggregateOverloadBuilder::new()
+            .returns(TypeId::BigInt)
+            .state_size(ss)
+            .init(si)
+            .update(su)
+            .combine(sc)
+            .finalize(sf)
+            .extra_info(data(), Some(free_it))
+    };
+    // SAFETY: as above.
+    let incomplete = unsafe { AggregateOverloadBuilder::new().extra_info(data(), Some(free_it)) };
+    let set = AggregateFunctionSetBuilder::new("s")
+        .overload(complete)
+        .overload(incomplete);
+    // SAFETY: validation fails before `con` is used.
+    assert!(unsafe { set.register(std::ptr::null_mut()) }.is_err());
+    assert_eq!(FREED.load(Ordering::SeqCst), 2);
+
+    // Dropping an unregistered overload frees it too.
+    // SAFETY: as above.
+    drop(unsafe { AggregateOverloadBuilder::new().extra_info(data(), Some(free_it)) });
+    assert_eq!(FREED.load(Ordering::SeqCst), 3);
+}

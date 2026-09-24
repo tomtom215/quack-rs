@@ -149,7 +149,7 @@ fn invalid_version_rejected() {
     config.version = "2025120401".to_string();
     assert!(
         generate_scaffold(&config).is_ok(),
-        "a date-based build id is used by 11 of 43 published extensions"
+        "a date-based build id is used by 42 published extensions"
     );
 }
 
@@ -543,9 +543,9 @@ fn ci_workflow_builds_before_testing_and_uses_real_actions() {
 }
 
 /// The generated `description.yml` must not pin a branch: `DuckDB`'s
-/// documentation says `ref` is "the hash of the latest commit", and 41 of 43
-/// published extensions pin a full hash (the other two pin a tag; none uses a
-/// branch).
+/// documentation says `ref` is "the hash of the latest commit", and 327 of the
+/// 346 published extensions pin a full hash (the other 19 pin a tag; none uses
+/// a branch).
 #[test]
 fn generated_description_does_not_pin_a_branch() {
     let files = generate_scaffold(&valid_config()).expect("scaffold");
@@ -560,8 +560,8 @@ fn generated_description_does_not_pin_a_branch() {
     );
     assert!(yml.contains(&format!("ref: {}", crate::scaffold::REF_PLACEHOLDER)));
     assert!(yml.contains("Must be a commit hash"));
-    // Every published extension has a docs: section; it is what renders on the
-    // community-extensions documentation site.
+    // 332 of 346 published extensions have a docs: section; it is what renders
+    // on the community-extensions documentation site.
     assert!(yml.contains("docs:"), "{yml}");
     assert!(yml.contains("hello_world:"), "{yml}");
 
@@ -608,4 +608,39 @@ fn the_generated_workflow_sha_pins_every_action() {
         );
     }
     assert!(checked >= 4, "expected several actions, found {checked}");
+}
+
+/// Regression: the scaffold pinned `dtolnay/rust-toolchain` to `631a55b`, a
+/// commit of the action's regenerated `stable` branch that no ref reaches any
+/// more (so it can be garbage-collected), and gave no `toolchain:` input —
+/// which the action's `master` requires. The pin must be a `master` commit and
+/// the toolchain explicit.
+#[test]
+fn the_generated_workflow_pins_rust_toolchain_to_master_with_an_explicit_toolchain() {
+    let files = generate_scaffold(&valid_config()).expect("scaffold");
+    let workflow = &files
+        .iter()
+        .find(|f| f.path == ".github/workflows/extension-ci.yml")
+        .expect("the CI workflow")
+        .content;
+    let lines: Vec<&str> = workflow.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains("uses: dtolnay/rust-toolchain@"))
+        .expect("a rust-toolchain step");
+    assert!(
+        lines[at].contains("dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0"),
+        "{}",
+        lines[at]
+    );
+    assert!(!workflow.contains("631a55b"), "{workflow}");
+    let step: Vec<&str> = lines[at + 1..]
+        .iter()
+        .take_while(|l| !l.trim_start().starts_with("- "))
+        .copied()
+        .collect();
+    assert!(
+        step.iter().any(|l| l.trim() == "toolchain: stable"),
+        "{step:?}"
+    );
 }

@@ -60,4 +60,4 @@ be walked without knowing the width up front when `duckdb-1-5` is off.
   `append_default` is safe to call
 - [Type System](../concepts/types.md) — what a [`LogicalType`] describes
 
-[`LogicalType`]: https://docs.rs/quack-rs/latest/quack_rs/types/struct.LogicalType.html
+[`LogicalType`]: https://docs.rs/quack-rs/latest/quack_rs/types/logical_type/struct.LogicalType.html

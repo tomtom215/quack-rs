@@ -19,10 +19,14 @@ with quack-rs.
 ## Scaffolding a new project
 
 `quack_rs::scaffold::generate_scaffold` generates all required files from a
-single function call:
+single function call. It returns paths relative to the project root and writes
+nothing itself, so join them under the project directory — never write them
+relative to the current directory, which would overwrite its `Cargo.toml` and
+`src/lib.rs`:
 
-```rust
+```rust,no_run
 use quack_rs::scaffold::{ScaffoldConfig, generate_scaffold};
+use std::path::Path;
 
 let config = ScaffoldConfig {
     name: "my_extension".to_string(),
@@ -38,15 +42,21 @@ let config = ScaffoldConfig {
 };
 
 let files = generate_scaffold(&config).expect("scaffold failed");
+let root = Path::new(&config.name); // ./my_extension/
 for file in &files {
-    std::fs::create_dir_all(std::path::Path::new(&file.path).parent().unwrap()).unwrap();
-    std::fs::write(&file.path, &file.content).unwrap();
+    let path = root.join(&file.path);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, &file.content).unwrap();
 }
 ```
 
+In a new repository, add the build tooling submodule once with
+`git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools`
+(`git submodule update --init` does nothing until then — Pitfall P4).
+
 This generates:
 
-```
+```text
 my_extension/
 ├── Cargo.toml
 ├── Makefile
@@ -107,10 +117,13 @@ use quack_rs::validate::{
     validate_excluded_platforms_str,
 };
 
+# fn main() -> Result<(), quack_rs::error::ExtensionError> {
 validate_extension_name("my_extension")?;
 validate_extension_version("0.1.0")?;
 validate_spdx_license("MIT")?;
 validate_excluded_platforms_str("wasm_mvp;wasm_eh")?;
+# Ok(())
+# }
 ```
 
 ---
@@ -127,7 +140,7 @@ Extension names must satisfy **all** of the following:
 Check existing names at [community-extensions.duckdb.org](https://community-extensions.duckdb.org/)
 before choosing. Use vendor-prefixed names to avoid collisions:
 
-```
+```text
 myorg_analytics   ✓
 analytics         ✗  (likely taken or too generic)
 ```
@@ -153,6 +166,7 @@ Use `validate_extension_version` to accept all three formats, and
 ```rust
 use quack_rs::validate::semver::{classify_extension_version, ExtensionStability};
 
+# fn main() -> Result<(), quack_rs::error::ExtensionError> {
 // Returns the tier and the version string it classified.
 let (stability, _version) = classify_extension_version("0.1.0")?;
 match stability {
@@ -160,6 +174,8 @@ match stability {
     ExtensionStability::PreRelease => println!("0.y.z"),
     ExtensionStability::Stable => println!("x.y.z, x>0"),
 }
+# Ok(())
+# }
 ```
 
 ---
@@ -218,8 +234,8 @@ Validate individual platform names with `validate_platform`:
 
 ```rust
 use quack_rs::validate::validate_platform;
-validate_platform("linux_amd64")?;  // Ok
-validate_platform("invalid")?;       // Err
+assert!(validate_platform("linux_amd64").is_ok());
+assert!(validate_platform("invalid").is_err());
 ```
 
 ---
@@ -247,7 +263,7 @@ lto = "thin"
 strip = "symbols"
 ```
 
-> **Pitfall ADR-1** — Do NOT use the `duckdb` crate's `bundled` feature. A
+> **ADR-4** (in `LESSONS.md`) — Do NOT use the `duckdb` crate's `bundled` feature. A
 > loadable extension must link against the DuckDB that loads it, not bundle
 > its own copy. `libduckdb-sys` with `loadable-extension` provides lazy function
 > pointers populated by DuckDB at load time.
@@ -263,8 +279,9 @@ correctly configured:
 use quack_rs::validate::validate_release_profile;
 
 // Pass all four release profile settings from your Cargo.toml
-validate_release_profile("unwind", "true", "3", "1")?;  // Ok
-validate_release_profile("abort", "true", "3", "1")?;   // Err — see below
+assert!(validate_release_profile("unwind", "true", "3", "1").is_ok());
+// Err — see below
+assert!(validate_release_profile("abort", "true", "3", "1").is_err());
 ```
 
 `panic` must be `"unwind"`. quack-rs wraps every `extern "C"` entry point in

@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Tom F. <tomf@tomtomtech.net> (https://github.com/tomtom215)
+#
+# Compiles every Rust code block in the book and the README as a doctest,
+# against this working copy of quack-rs. Not published; not a workspace member.
+#
+#   DUCKDB_LIB_DIR=... cargo test --doc --manifest-path book/doctest/Cargo.toml
+#
+# `mdbook test` cannot do this: it passes `-L` but no `--extern quack_rs`, so
+# under the book's edition (2021, set in book.toml) every block that uses the
+# crate fails to resolve it, even with `-L target/debug/deps`.
+
+[package]
+name = "quack-rs-book-doctest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+test = false
+
+[dependencies]
+quack-rs = { path = "../..", features = ["duckdb-1-5-4", "bundled-test-prebuilt"] }
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+
+[dev-dependencies]
+proptest = "1"
+
+[workspace]

@@ -62,7 +62,7 @@ let pairs: Vec<(&str, &quack_rs::types::LogicalType)> =
 let schema = to_arrow_schema(&options, &pairs)?;
 assert_eq!(schema.format(), Some("+s")); // a record batch is a struct
 
-while let Some(chunk) = result.next_chunk() {
+while let Some(chunk) = result.next_chunk()? {
     let array = data_chunk_to_arrow(&options, &chunk)?;
     // hand `array` (plus `schema`) to any Arrow consumer
     let _ = array;
@@ -124,18 +124,49 @@ than copied.
 ## What the wrapper refuses that DuckDB would not
 
 `duckdb_data_chunk_from_arrow` indexes `arrow_array->children[i]` once per column
-in the converted schema with no bounds check, and dereferences an array without
-checking whether it was already released. Both are segfaults, not errors.
+in the converted schema with no bounds check, dereferences each child without a
+null check, reads `offset + length` rows from each child without comparing its
+length, and dereferences an array without checking whether it was already
+released. Those are segfaults or out-of-bounds reads, not errors.
 `data_chunk_from_arrow` checks them first — which is why `ArrowConvertedSchema`
-remembers the column count of the schema it was built from.
+remembers the column count of the schema it was built from — and returns an
+`InvalidInput` error instead.
 
-One thing it still cannot check: whether each child array's *buffers* match the
-type its schema declares. DuckDB reads `array.buffers[1]` for a primitive column
-without testing `n_buffers` or the pointer, so a malformed producer is a null
-dereference inside DuckDB. Arrays that came from `data_chunk_to_arrow`, from
-arrow-rs, or from any other conforming Arrow implementation are fine.
+What it cannot check, and what `data_chunk_from_arrow`'s `# Safety` section
+therefore makes the caller's job:
+
+- **The array must conform to the converted schema.** Nothing in an Arrow
+  array records its type, so DuckDB reads each child's buffers as the format
+  the *schema* declares. An `int32` child imported under a `utf8` schema has
+  its values read as string offsets into a buffer that does not exist. Arrays
+  exported with `data_chunk_to_arrow` under the schema you converted conform.
+- **The buffers must be as long as the lengths say**, and `length` must be
+  the true row count. DuckDB allocates the chunk for `length` rows before its
+  error handling starts, so an absurd length is an allocation failure that
+  aborts the process.
+
+Arrays that came from `data_chunk_to_arrow`, from arrow-rs, or from any other
+conforming Arrow implementation, paired with the schema they were produced
+with, are fine. Dictionary-encoded and run-end-encoded children are converted
+too. Every error DuckDB reports from the conversion arrives as
+`InvalidInput`.
+
+## Round trips are not always exact
+
+Two types come back different from an Arrow round trip through DuckDB's own
+converters:
+
+- `TIMETZ` comes back as `TIME` with the offset dropped:
+  `01:02:03+05:30` returns as `01:02:03`.
+- `BIT` comes back as `BLOB`.
+
+Check the converted types (`ArrowConvertedSchema`) when a round trip must be
+lossless.
 
 ## Bridging to arrow-rs
+
+This sketch uses the `arrow` crate's `FFI_ArrowArray`, which quack-rs does not
+depend on, so it is not compiled with the book:
 
 ```rust,ignore
 // quack-rs -> arrow-rs

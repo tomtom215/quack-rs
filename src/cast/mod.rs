@@ -22,17 +22,24 @@
 //!   - input:  duckdb_vector         (source values)
 //!   - output: duckdb_vector         (destination — write results here)
 //!   ↓
-//! Returns true on success, false to signal a fatal error
+//! Returns true when every row converted (see "TRY CAST vs normal CAST")
 //! ```
 //!
 //! # TRY CAST vs normal CAST
 //!
 //! When the user writes `TRY_CAST(x AS T)`, `DuckDB` passes
 //! [`CastMode::Try`] to your callback (via
-//! [`CastFunctionInfo::cast_mode`]).  In this mode, per-row conversion errors
-//! should write `NULL` into the output vector and call
-//! [`CastFunctionInfo::set_row_error`] to record what went wrong, rather than
-//! aborting the whole query.
+//! [`CastFunctionInfo::cast_mode`]). In this mode, call
+//! [`CastFunctionInfo::set_row_error`] for each row that fails to convert:
+//! it records the message **and** sets that row to `NULL`.
+//!
+//! The callback's return value only matters in a normal `CAST`, where
+//! `false` fails the query with the message you set. In `TRY_CAST` mode
+//! `DuckDB` ignores it (`src/execution/expression_executor/execute_cast.cpp`),
+//! so returning `false` does **not** turn the chunk into `NULL`s: a row you
+//! did not null keeps whatever the output vector held. See [`CastFn`] for
+//! details; [`cast_callback!`][crate::cast_callback] nulls every row for you
+//! only when the body panics.
 //!
 //! # Example: register a VARCHAR → INTEGER cast
 //!

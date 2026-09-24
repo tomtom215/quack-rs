@@ -18,8 +18,7 @@ use libduckdb_sys::{
     duckdb_scalar_function_add_parameter, duckdb_scalar_function_set_extra_info,
     duckdb_scalar_function_set_function, duckdb_scalar_function_set_name,
     duckdb_scalar_function_set_return_type, duckdb_scalar_function_set_special_handling,
-    duckdb_scalar_function_set_varargs, duckdb_scalar_function_set_volatile, duckdb_vector,
-    DuckDBSuccess,
+    duckdb_scalar_function_set_volatile, duckdb_vector, DuckDBSuccess,
 };
 
 use crate::error::ExtensionError;
@@ -90,7 +89,7 @@ pub struct ScalarFunctionBuilder {
     pub(super) function: Option<ScalarFn>,
     pub(super) null_handling: NullHandling,
     pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
-    pub(super) varargs: Option<LogicalType>,
+    pub(super) varargs: Option<super::signature::Varargs>,
     pub(super) volatile: bool,
     #[cfg(feature = "duckdb-1-5")]
     pub(super) bind: Option<ScalarBindFn>,
@@ -217,9 +216,13 @@ impl ScalarFunctionBuilder {
     /// additional arguments that match the given type. Maps to
     /// `duckdb_scalar_function_set_varargs`, part of the stable C API since
     /// v1.2.0, so no feature flag is needed.
+    ///
+    /// A composite `type_id` (see [`TypeId::is_composite`]) makes
+    /// [`register`][Self::register] return an error naming the varargs slot;
+    /// use [`varargs_logical`][Self::varargs_logical] for those types.
     #[mutants::skip] // tested via E2E
     pub fn varargs(mut self, type_id: TypeId) -> Self {
-        self.varargs = Some(LogicalType::new(type_id));
+        self.varargs = Some(super::signature::Varargs::Id(type_id));
         self
     }
 
@@ -229,7 +232,7 @@ impl ScalarFunctionBuilder {
     /// for parameterized types.
     #[mutants::skip] // tested via E2E
     pub fn varargs_logical(mut self, logical_type: LogicalType) -> Self {
-        self.varargs = Some(logical_type);
+        self.varargs = Some(super::signature::Varargs::Logical(logical_type));
         self
     }
 
@@ -274,10 +277,13 @@ impl ScalarFunctionBuilder {
 
     /// Sets the NULL handling behaviour for this function.
     ///
-    /// By default, `DuckDB` returns NULL if any argument is NULL
-    /// ([`DefaultNullHandling`][NullHandling::DefaultNullHandling]).
-    /// Set to [`SpecialNullHandling`][NullHandling::SpecialNullHandling] to receive
-    /// NULL values in your callback and handle them yourself.
+    /// Under either setting the callback receives NULL rows. With the default,
+    /// [`DefaultNullHandling`][NullHandling::DefaultNullHandling], the callback
+    /// **promises** NULL-in-NULL-out and must keep that promise itself —
+    /// `DuckDB` does not write NULL for it (pitfall L8; see [`NullHandling`] and
+    /// [`DataChunk::propagate_nulls`][crate::data_chunk::DataChunk::propagate_nulls]).
+    /// [`SpecialNullHandling`][NullHandling::SpecialNullHandling] declares that
+    /// it may return non-NULL for NULL input.
     pub const fn null_handling(mut self, handling: NullHandling) -> Self {
         self.null_handling = handling;
         self
@@ -304,6 +310,32 @@ impl ScalarFunctionBuilder {
         self
     }
 
+    /// Refuses the registration if a scalar with this name and signature
+    /// already exists; see "Name collisions" on [`register`][Self::register].
+    ///
+    /// # Safety
+    ///
+    /// `con` must be a valid, open `duckdb_connection`.
+    unsafe fn refuse_existing_signature(
+        &self,
+        con: duckdb_connection,
+    ) -> Result<(), ExtensionError> {
+        let mut signature = super::signature::merged_params(&self.params, &self.logical_params);
+        if let Some(ref varargs) = self.varargs {
+            signature.push(varargs.param_ref());
+        }
+        // SAFETY: `con` is valid per this function's contract, and every
+        // logical parameter is a live handle owned by this builder.
+        unsafe {
+            super::collision::refuse_replacing_a_scalar(
+                con,
+                &self.name.to_string_lossy(),
+                "scalar function",
+                &signature,
+            )
+        }
+    }
+
     /// Registers the scalar function on the given connection.
     ///
     /// # Errors
@@ -311,7 +343,30 @@ impl ScalarFunctionBuilder {
     /// Returns `ExtensionError` if:
     /// - The return type was not set.
     /// - The function callback was not set.
+    /// - A scalar function with this name and parameter types already exists
+    ///   (see "Name collisions").
     /// - `DuckDB` reports a registration failure.
+    ///
+    /// # Name collisions
+    ///
+    /// `DuckDB` registers scalar functions with `ALTER_ON_CONFLICT`
+    /// (`duckdb_register_scalar_function_set` in `scalar_function-c.cpp`), so a
+    /// **scalar** function that already has this name — built-in or not — never
+    /// makes `DuckDB` refuse the registration. A new signature is added as an
+    /// overload. One with the same parameter types as an existing overload
+    /// either **silently replaces it** for every connection to the database
+    /// (same return type: `FunctionSet::MergeFunctionSet` with
+    /// `override = true`) or makes every call ambiguous ("Could not choose a
+    /// best candidate function", different return type). Registering
+    /// `abs(BIGINT)` would change the built-in `abs` for `BIGINT`.
+    ///
+    /// quack-rs therefore refuses, before registering, when
+    /// `duckdb_functions()` already lists a scalar with this name and the same
+    /// parameter and varargs types. The check covers every parameter type
+    /// except `STRUCT`, `UNION`, `ENUM` and the `SQLNULL` / literal pseudo-types;
+    /// a signature containing one of those
+    /// is registered unchecked. `DuckDB` itself refuses a name that belongs to
+    /// an aggregate function or a macro (such as the built-in `list_sum`).
     ///
     /// # Safety
     ///
@@ -326,18 +381,26 @@ impl ScalarFunctionBuilder {
         if let Some(id) = self.return_type {
             LogicalType::check_slot(id, "scalar function return type")?;
         }
-        // Resolve return type: prefer explicit LogicalType over TypeId.
-        let ret_lt = if let Some(lt) = self.return_logical {
-            lt
-        } else if let Some(id) = self.return_type {
-            LogicalType::for_slot(id, "scalar function return type")?
-        } else {
+        if let Some(ref varargs) = self.varargs {
+            varargs.check("scalar function varargs")?;
+        }
+        if self.return_logical.is_none() && self.return_type.is_none() {
             return Err(ExtensionError::new("return type not set"));
-        };
-
+        }
         let function = self
             .function
             .ok_or_else(|| ExtensionError::new("function callback not set"))?;
+
+        // SAFETY: `con` is valid per this function's contract.
+        unsafe { self.refuse_existing_signature(con)? };
+
+        // Resolve return type: prefer explicit LogicalType over TypeId. One of
+        // the two is set, checked above.
+        let ret_lt = match (self.return_logical, self.return_type) {
+            (Some(lt), _) => lt,
+            (None, Some(id)) => LogicalType::for_slot(id, "scalar function return type")?,
+            (None, None) => return Err(ExtensionError::new("return type not set")),
+        };
 
         // SAFETY: duckdb_create_scalar_function allocates a new function handle.
         let mut func = unsafe { duckdb_create_scalar_function() };
@@ -418,11 +481,10 @@ impl ScalarFunctionBuilder {
         }
 
         // Set varargs type if configured (stable C API since v1.2.0)
-        if let Some(ref varargs_type) = self.varargs {
-            // SAFETY: func and varargs_type.as_raw() are valid.
-            unsafe {
-                duckdb_scalar_function_set_varargs(func, varargs_type.as_raw());
-            }
+        if let Some(ref varargs) = self.varargs {
+            // SAFETY: func is a valid scalar function handle, and the varargs
+            // type was checked above.
+            unsafe { varargs.set_on(func) };
         }
 
         // Set volatile flag if configured (stable C API since v1.2.0)

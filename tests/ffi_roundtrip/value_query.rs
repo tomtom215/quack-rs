@@ -26,7 +26,7 @@ fn owned_connection(fx: &Fixture) -> OwnedConnection {
 #[cfg(feature = "duckdb-1-5-4")]
 fn first_varchar(con: &OwnedConnection, sql: &str) -> String {
     let mut result = con.query(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: column 0 is VARCHAR and row 0 exists.
     unsafe { chunk.reader(0).read_str(0).to_owned() }
 }
@@ -232,13 +232,13 @@ fn every_getter_is_safe_on_every_value_type() {
         Value::varchar("not a number"),
         Value::varchar("1"),
         Value::date(19_000),
-        Value::time(1_000_000),
-        Value::time_tz(0),
-        Value::timestamp(1_700_000_000_000_000),
-        Value::timestamp_tz(0),
-        Value::timestamp_s(0),
-        Value::timestamp_ms(0),
-        Value::timestamp_ns(0),
+        Value::time(1_000_000).expect("in range"),
+        Value::time_tz(0).expect("in range"),
+        Value::timestamp(1_700_000_000_000_000).expect("in range"),
+        Value::timestamp_tz(0).expect("in range"),
+        Value::timestamp_s(0).expect("in range"),
+        Value::timestamp_ms(0).expect("in range"),
+        Value::timestamp_ns(0).expect("in range"),
         Value::interval(quack_rs::interval::DuckInterval {
             months: 1,
             days: 2,
@@ -252,7 +252,7 @@ fn every_getter_is_safe_on_every_value_type() {
         Value::struct_value(&struct_ty, &[Value::bigint(1)]).expect("STRUCT"),
     ];
     #[cfg(feature = "duckdb-1-5")]
-    values.push(Value::time_ns(5));
+    values.push(Value::time_ns(5).expect("in range"));
     for value in &values {
         let before = value.type_id();
         let results = all_scalar_getters(value);
@@ -342,7 +342,7 @@ fn bind_decimal_validates_width_scale_and_range() {
 
     st.bind_decimal(1, 18, 2, -12_345).expect("in range");
     let mut result = st.execute().expect("execute");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: column 0 is VARCHAR and row 0 exists.
     assert_eq!(unsafe { chunk.reader(0).read_str(0) }, "-123.45");
     drop(result);
@@ -350,7 +350,7 @@ fn bind_decimal_validates_width_scale_and_range() {
     st.bind_decimal(1, 38, 0, 10_i128.pow(37))
         .expect("in range");
     let mut result = st.execute().expect("execute");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     // SAFETY: column 0 is VARCHAR and row 0 exists.
     assert_eq!(
         unsafe { chunk.reader(0).read_str(0) },
@@ -382,6 +382,21 @@ fn error_data_reports_sequence_and_autoload_types() {
         let made = ErrorData::new(expected, "probe");
         assert_eq!(made.error_type(), expected);
     }
+}
+
+/// `ErrorData::new` replaces an interior NUL like every other error path in
+/// the crate (`callback::message_to_c_string`); it used to truncate there,
+/// dropping the rest of the message.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn error_data_keeps_the_text_after_an_interior_nul() {
+    use quack_rs::error_data::{DuckDbErrorType, ErrorData};
+
+    let _fx = Fixture::open();
+    let err = ErrorData::new(DuckDbErrorType::InvalidInput, "bad\0input\0here");
+    assert_eq!(err.message().as_deref(), Some("bad?input?here"));
+    let err = ErrorData::new(DuckDbErrorType::InvalidInput, "\0leading");
+    assert_eq!(err.message().as_deref(), Some("?leading"));
 }
 
 // ── Finding 9: DbConfig::set accepts unknown names ──────────────────────────
@@ -515,7 +530,7 @@ fn arrow_options_from_an_owned_connection_convert_a_chunk() {
     let con = owned_connection(&fx);
     let options = ArrowOptions::from_connection(&con).expect("arrow options");
     let mut result = con.query("SELECT 42::BIGINT AS a").expect("query");
-    let chunk = result.next_chunk().expect("one chunk");
+    let chunk = result.next_chunk().expect("fetch").expect("one chunk");
     let mut array = data_chunk_to_arrow(&options, &chunk).expect("to arrow");
     assert_eq!(array.len(), 1);
     array.release();

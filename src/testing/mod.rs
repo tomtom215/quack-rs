@@ -47,7 +47,7 @@
 //! # What CAN be tested with `cargo test`
 //!
 //! - **Aggregate state logic** — use [`AggregateTestHarness`]
-//! - **Callback output logic** — extract into pure Rust, test with [`MockVectorWriter`] / [`MockVectorReader`]
+//! - **Callback logic** — keep the per-row computation in plain Rust functions and test them directly; prototype row loops with [`MockVectorWriter`] / [`MockVectorReader`], which mirror a real vector's NULL and capacity behaviour (they are separate types from the real reader and writer)
 //! - **Registration structure** — use [`MockRegistrar`] (builders with only [`TypeId`][crate::types::TypeId] parameters)
 //! - **SQL macro SQL generation** — [`SqlMacro::to_sql()`][crate::sql_macro::SqlMacro::to_sql] is pure Rust
 //! - **Interval conversions** — [`interval_to_micros`][crate::interval::interval_to_micros] is pure Rust
@@ -112,7 +112,8 @@
 //! ```rust
 //! use quack_rs::testing::{MockVectorReader, MockVectorWriter};
 //!
-//! // Extract pure logic from the FFI callback into a testable function.
+//! // A row loop prototyped against the mocks. The mocks share the real
+//! // reader/writer's method names but are distinct types.
 //! fn double_values(reader: &MockVectorReader, writer: &mut MockVectorWriter) {
 //!     for i in 0..reader.row_count() {
 //!         if reader.is_valid(i) {

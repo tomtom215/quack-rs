@@ -309,10 +309,32 @@ impl CopyFunctionBuilder {
     /// it decides what a copy function supports from
     /// `info.sink != nullptr` and `copy_from_bind != nullptr` independently.
     ///
+    /// # A format name can be registered once
+    ///
+    /// `duckdb_register_copy_function` uses `ALTER_ON_CONFLICT`, and for a copy
+    /// function that means the new one is dropped while the call still
+    /// returns success (`DuckSchemaEntry::AddEntryInternal`). A second
+    /// registration of `my_format`, or a format called `csv`, would silently
+    /// leave the existing function in charge. `register` therefore refuses a
+    /// format name that already resolves.
+    ///
+    /// There is no catalog view of copy functions, so the check asks the
+    /// binder: it runs `COPY (SELECT <missing column>) TO '' (FORMAT '<name>')`.
+    /// `DuckDB` resolves the format before binding the query, so a *binder*
+    /// error (the column) means the format exists, and a *catalog* error
+    /// means it does not; nothing is ever written, and no copy callback runs.
+    /// A format name that belongs to an autoloadable extension (`parquet`,
+    /// `json`, ...) may be autoloaded by that lookup, exactly as the same
+    /// `COPY` typed by a user would; if that extension is then present, the
+    /// name counts as taken. Copy functions registered through the C API live
+    /// in the in-memory system catalog and never persist, so a name that
+    /// resolves is always a live conflict.
+    ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if neither direction is implemented, if
-    /// `COPY … TO` is only partly implemented, or if registration fails.
+    /// `COPY … TO` is only partly implemented, if the format name is already
+    /// taken (or the check cannot tell), or if registration fails.
     ///
     /// # Safety
     ///
@@ -339,6 +361,9 @@ impl CopyFunctionBuilder {
                     ))
                 }
             };
+
+        // SAFETY: `con` is valid per this function's contract.
+        unsafe { refuse_taken_format_name(con, &self.name.to_string_lossy()) }?;
 
         // SAFETY: duckdb_create_copy_function allocates a new handle.
         let func = unsafe { duckdb_create_copy_function() };
@@ -388,6 +413,13 @@ impl CopyFunctionBuilder {
 
         // SAFETY: func must be destroyed after registration.
         let mut func_mut = func;
+        // SAFETY: `func_mut` holds the `new CopyFunction` from
+        // `duckdb_create_copy_function` above, destroyed nowhere else.
+        // `duckdb_register_copy_function` copies it into the catalog
+        // (`CreateCopyFunctionInfo(copy_function_ref)`, copy_function-c.cpp; the
+        // extra info is shared through `function_info`'s `shared_ptr`) and keeps
+        // no pointer to `func`, so this single `delete` is safe whether
+        // registration succeeded or not.
         unsafe {
             duckdb_destroy_copy_function(&raw mut func_mut);
         }
@@ -400,6 +432,63 @@ impl CopyFunctionBuilder {
                 self.name.to_string_lossy()
             )))
         }
+    }
+}
+
+/// Refuses `name` if `COPY ... (FORMAT '<name>')` already resolves to a copy
+/// function. See "A format name can be registered once" on
+/// [`CopyFunctionBuilder::register`].
+///
+/// # Safety
+///
+/// `con` must be a valid, open `duckdb_connection`.
+unsafe fn refuse_taken_format_name(
+    con: duckdb_connection,
+    name: &str,
+) -> Result<(), ExtensionError> {
+    use crate::error_data::DuckDbErrorType;
+
+    // The select references a column that cannot exist (there is no FROM
+    // clause), so binding always fails — after the format lookup, which
+    // happens first in `Binder::Bind(CopyStatement &)`.
+    let sql = format!(
+        "COPY (SELECT \"quack_rs_format_probe_no_such_column\") TO '' (FORMAT '{}')",
+        name.replace('\'', "''")
+    );
+    let c_sql = std::ffi::CString::new(sql)
+        .map_err(|_| ExtensionError::new("copy function name contains null byte"))?;
+    // SAFETY: duckdb_result is a C struct for which all-zero is a valid value.
+    let mut result: libduckdb_sys::duckdb_result = unsafe { std::mem::zeroed() };
+    // SAFETY: `con` is valid per this function's contract; `c_sql` outlives
+    // the call.
+    let state = unsafe { libduckdb_sys::duckdb_query(con, c_sql.as_ptr(), &raw mut result) };
+    let error_type = if state == DuckDBSuccess {
+        None
+    } else {
+        // SAFETY: `result` was populated by `duckdb_query`.
+        Some(DuckDbErrorType::from_raw(unsafe {
+            libduckdb_sys::duckdb_result_error_type(&raw mut result)
+        }))
+    };
+    // SAFETY: `result` was populated by `duckdb_query` and is destroyed once.
+    unsafe { libduckdb_sys::duckdb_destroy_result(&raw mut result) };
+    match error_type {
+        Some(DuckDbErrorType::Binder) => Err(ExtensionError::new(format!(
+            "copy function '{name}' already exists (a built-in format, another extension's, or \
+             an earlier registration). DuckDB would drop this registration and still report \
+             success, leaving the existing format in charge. Choose a different name."
+        ))),
+        // Not found — including an autoloadable extension's format whose
+        // autoload failed.
+        Some(
+            DuckDbErrorType::Catalog
+            | DuckDbErrorType::Autoload
+            | DuckDbErrorType::MissingExtension,
+        ) => Ok(()),
+        other => Err(ExtensionError::new(format!(
+            "copy function '{name}': cannot check whether the format name is taken (the probe \
+             returned {other:?}, not a binder or catalog error)"
+        ))),
     }
 }
 
@@ -440,59 +529,38 @@ mod tests {
     }
 
     #[test]
-    fn builder_stores_bind_callback() {
-        unsafe extern "C" fn dummy_bind(_info: duckdb_copy_function_bind_info) {}
-        let builder = CopyFunctionBuilder::try_new("fmt")
-            .unwrap()
-            .bind(dummy_bind);
-        assert_eq!(builder.name(), "fmt");
-    }
-
-    #[test]
-    fn builder_stores_global_init_callback() {
-        unsafe extern "C" fn dummy_init(_info: duckdb_copy_function_global_init_info) {}
-        let builder = CopyFunctionBuilder::try_new("fmt")
-            .unwrap()
-            .global_init(dummy_init);
-        assert_eq!(builder.name(), "fmt");
-    }
-
-    #[test]
-    fn builder_stores_sink_callback() {
-        unsafe extern "C" fn dummy_sink(
-            _info: duckdb_copy_function_sink_info,
-            _chunk: duckdb_data_chunk,
-        ) {
-        }
-        let builder = CopyFunctionBuilder::try_new("fmt")
-            .unwrap()
-            .sink(dummy_sink);
-        assert_eq!(builder.name(), "fmt");
-    }
-
-    #[test]
-    fn builder_stores_finalize_callback() {
-        unsafe extern "C" fn dummy_finalize(_info: duckdb_copy_function_finalize_info) {}
-        let builder = CopyFunctionBuilder::try_new("fmt")
-            .unwrap()
-            .finalize(dummy_finalize);
-        assert_eq!(builder.name(), "fmt");
-    }
-
-    #[test]
-    fn full_builder_chain_compiles() {
+    fn each_setter_stores_only_its_own_callback() {
         unsafe extern "C" fn bind(_: duckdb_copy_function_bind_info) {}
         unsafe extern "C" fn init(_: duckdb_copy_function_global_init_info) {}
         unsafe extern "C" fn sink(_: duckdb_copy_function_sink_info, _: duckdb_data_chunk) {}
         unsafe extern "C" fn finalize(_: duckdb_copy_function_finalize_info) {}
 
-        let builder = CopyFunctionBuilder::try_new("my_format")
+        let b = CopyFunctionBuilder::try_new("fmt").unwrap().bind(bind);
+        assert!(b.bind.is_some() && b.global_init.is_none() && b.sink.is_none());
+        let b = CopyFunctionBuilder::try_new("fmt")
             .unwrap()
-            .bind(bind)
-            .global_init(init)
-            .sink(sink)
+            .global_init(init);
+        assert!(b.global_init.is_some() && b.bind.is_none() && b.finalize.is_none());
+        let b = CopyFunctionBuilder::try_new("fmt").unwrap().sink(sink);
+        assert!(b.sink.is_some() && b.bind.is_none() && b.finalize.is_none());
+        let b = CopyFunctionBuilder::try_new("fmt")
+            .unwrap()
             .finalize(finalize);
-        assert_eq!(builder.name(), "my_format");
+        assert!(b.finalize.is_some() && b.bind.is_none() && b.sink.is_none());
+    }
+
+    /// The "implements nothing" check runs before `con` is used, so a null
+    /// connection is never dereferenced.
+    #[test]
+    fn register_without_callbacks_is_refused_before_duckdb_is_called() {
+        // SAFETY: `register` returns before using `con`.
+        let err = unsafe {
+            CopyFunctionBuilder::try_new("fmt")
+                .unwrap()
+                .register(std::ptr::null_mut())
+        }
+        .expect_err("a copy function with no callbacks must be refused");
+        assert!(err.as_str().contains("implements nothing"), "{err}");
     }
 
     #[test]

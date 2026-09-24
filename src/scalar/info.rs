@@ -5,7 +5,6 @@
 
 //! Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks.
 
-use std::ffi::CString;
 use std::os::raw::c_void;
 
 #[cfg(feature = "duckdb-1-5")]
@@ -26,15 +25,6 @@ use libduckdb_sys::{
 
 #[cfg(feature = "duckdb-1-5")]
 use crate::expression::Expression;
-
-/// Converts a `&str` to `CString` without panicking.
-#[mutants::skip] // private FFI helper — tested in replacement_scan::tests
-fn str_to_cstring(s: &str) -> CString {
-    CString::new(s).unwrap_or_else(|_| {
-        let pos = s.bytes().position(|b| b == 0).unwrap_or(s.len());
-        CString::new(&s.as_bytes()[..pos]).unwrap_or_default()
-    })
-}
 
 /// Ergonomic wrapper around the `duckdb_function_info` handle provided to a
 /// scalar function callback.
@@ -93,10 +83,11 @@ impl ScalarFunctionInfo {
     /// Reports an error from the scalar function callback, causing `DuckDB`
     /// to abort the current query.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior NUL byte in `message` is replaced with `?`
+    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]).
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = crate::callback::message_to_c_string(message);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_scalar_function_set_error(self.info, c_msg.as_ptr());
@@ -262,6 +253,13 @@ impl ScalarBindInfo {
     /// A second call overwrites the pointer and destructor without running the
     /// first destructor: the first value is leaked.
     ///
+    /// # Identical calls share bind data
+    ///
+    /// `DuckDB` merges two calls with the same arguments without comparing
+    /// their bind data, so the value stored here must depend only on the
+    /// arguments, their types and `extra_info` — or the function must be
+    /// volatile. See [`ScalarBindData`][crate::scalar::ScalarBindData].
+    ///
     /// # Safety
     ///
     /// `data` must point to valid memory. `destroy` will be called by `DuckDB`
@@ -351,10 +349,11 @@ impl ScalarBindInfo {
     /// Reports an error from the scalar function bind callback, causing
     /// `DuckDB` to abort the current query.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior NUL byte in `message` is replaced with `?`
+    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]).
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = crate::callback::message_to_c_string(message);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_scalar_function_bind_set_error(self.info, c_msg.as_ptr());
@@ -466,10 +465,11 @@ impl ScalarInitInfo {
     /// Reports an error from the scalar function init callback, causing
     /// `DuckDB` to abort the current query.
     ///
-    /// If `message` contains an interior null byte it is truncated at that point.
+    /// An interior NUL byte in `message` is replaced with `?`
+    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]).
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = str_to_cstring(message);
+        let c_msg = crate::callback::message_to_c_string(message);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_scalar_function_init_set_error(self.info, c_msg.as_ptr());

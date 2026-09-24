@@ -4,24 +4,25 @@
 // and encouraging more Rust development!
 
 use std::ffi::CString;
-use std::os::raw::c_void;
 
 use libduckdb_sys::{
     duckdb_add_scalar_function_to_set, duckdb_connection, duckdb_create_scalar_function,
-    duckdb_create_scalar_function_set, duckdb_delete_callback_t, duckdb_destroy_scalar_function,
+    duckdb_create_scalar_function_set, duckdb_destroy_scalar_function,
     duckdb_destroy_scalar_function_set, duckdb_register_scalar_function_set,
     duckdb_scalar_function_add_parameter, duckdb_scalar_function_set_extra_info,
     duckdb_scalar_function_set_function, duckdb_scalar_function_set_name,
     duckdb_scalar_function_set_return_type, duckdb_scalar_function_set_special_handling,
-    DuckDBSuccess,
+    duckdb_scalar_function_set_volatile, DuckDBSuccess,
 };
+#[cfg(feature = "duckdb-1-5")]
+use libduckdb_sys::{duckdb_scalar_function_set_bind, duckdb_scalar_function_set_init};
 
 use crate::error::ExtensionError;
-use crate::types::{LogicalType, NullHandling, TypeId};
+use crate::types::{LogicalType, NullHandling};
 use crate::validate::validate_function_name;
 
+use super::overload::{ScalarOverloadBuilder, ScalarOverloadSpec};
 use super::signature::{merged_params, reject_duplicate_overloads};
-use super::single::ScalarFn;
 
 /// Builder for registering a `DuckDB` scalar function set (multiple overloads).
 ///
@@ -74,17 +75,6 @@ pub struct ScalarFunctionSetBuilder {
     pub(super) overloads: Vec<ScalarOverloadSpec>,
 }
 
-/// Specification for one overload within a scalar function set.
-pub(super) struct ScalarOverloadSpec {
-    pub(super) params: Vec<TypeId>,
-    pub(super) logical_params: Vec<(usize, LogicalType)>,
-    pub(super) return_type: Option<TypeId>,
-    pub(super) return_logical: Option<LogicalType>,
-    pub(super) function: Option<ScalarFn>,
-    pub(super) null_handling: NullHandling,
-    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
-}
-
 impl ScalarFunctionSetBuilder {
     /// Creates a new builder for a scalar function set with the given name.
     ///
@@ -123,15 +113,7 @@ impl ScalarFunctionSetBuilder {
 
     /// Adds a single overload to this function set.
     pub fn overload(mut self, builder: ScalarOverloadBuilder) -> Self {
-        self.overloads.push(ScalarOverloadSpec {
-            params: builder.params,
-            logical_params: builder.logical_params,
-            return_type: builder.return_type,
-            return_logical: builder.return_logical,
-            function: builder.function,
-            null_handling: builder.null_handling,
-            extra_info: builder.extra_info,
-        });
+        self.overloads.push(builder.into_spec());
         self
     }
 
@@ -141,19 +123,55 @@ impl ScalarFunctionSetBuilder {
     ///
     /// Returns `ExtensionError` if:
     /// - No overloads were added.
+    /// - Any overload is missing a return type or function callback. The error
+    ///   names the overload's index, and is reported before any `DuckDB`
+    ///   handle is allocated.
     /// - Two overloads declare the same argument types (compared structurally,
-    ///   so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ). `DuckDB` itself would
-    ///   accept such a set and then fail every call with "Could not choose a
-    ///   best candidate function".
-    /// - Any overload is missing a return type or function callback.
+    ///   so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ; a varargs type counts
+    ///   as part of the signature). `DuckDB` itself would accept such a set and
+    ///   then fail every call with "Could not choose a best candidate function".
+    /// - An overload's name and parameter types match a scalar function that
+    ///   already exists (see "Name collisions").
     /// - `DuckDB` reports registration failure.
+    ///
+    /// # Name collisions
+    ///
+    /// `DuckDB` registers scalar functions with `ALTER_ON_CONFLICT`
+    /// (`duckdb_register_scalar_function_set` in `scalar_function-c.cpp`), so a
+    /// **scalar** function that already has this name — built-in or not — never
+    /// makes `DuckDB` refuse the registration. A new signature is added as an
+    /// overload. One with the same parameter types as an existing overload
+    /// either **silently replaces it** for every connection to the database
+    /// (same return type: `FunctionSet::MergeFunctionSet` with
+    /// `override = true`) or makes every call ambiguous ("Could not choose a
+    /// best candidate function", different return type). Registering
+    /// `abs(BIGINT)` would change the built-in `abs` for `BIGINT`.
+    ///
+    /// quack-rs therefore refuses an overload, naming its index, before registering, when
+    /// `duckdb_functions()` already lists a scalar with this name and the same
+    /// parameter and varargs types. The check covers every parameter type
+    /// except `STRUCT`, `UNION`, `ENUM` and the `SQLNULL` / literal pseudo-types;
+    /// a signature containing one of those
+    /// is registered unchecked. `DuckDB` itself refuses a name that belongs to
+    /// an aggregate function or a macro (such as the built-in `list_sum`).
     ///
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     #[allow(clippy::too_many_lines)]
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
-        // See `ScalarFunctionBuilder::register` -- validate before allocating.
+        // Validate everything before allocating any DuckDB handle. The checks
+        // that need no DuckDB call come first, so a missing callback is
+        // reported by index without touching the engine.
+        if self.overloads.is_empty() {
+            return Err(ExtensionError::new(
+                "no overloads added to scalar function set",
+            ));
+        }
+        for (i, overload) in self.overloads.iter().enumerate() {
+            overload.check_complete(i)?;
+        }
+        // See `ScalarFunctionBuilder::register` -- reject composite TypeIds.
         for (i, overload) in self.overloads.iter().enumerate() {
             for (j, id) in overload.params.iter().enumerate() {
                 LogicalType::check_slot(*id, &format!("overload {i} parameter {j}"))?;
@@ -161,20 +179,36 @@ impl ScalarFunctionSetBuilder {
             if let Some(id) = overload.return_type {
                 LogicalType::check_slot(id, &format!("overload {i} return type"))?;
             }
-        }
-        if self.overloads.is_empty() {
-            return Err(ExtensionError::new(
-                "no overloads added to scalar function set",
-            ));
+            if let Some(ref varargs) = overload.varargs {
+                varargs.check(&format!("overload {i} varargs"))?;
+            }
         }
         let signatures: Vec<_> = self
             .overloads
             .iter()
-            .map(|o| merged_params(&o.params, &o.logical_params))
+            .map(|o| {
+                let mut params = merged_params(&o.params, &o.logical_params);
+                if let Some(ref varargs) = o.varargs {
+                    params.push(varargs.param_ref());
+                }
+                params
+            })
             .collect();
         // SAFETY: every logical parameter is a live `LogicalType` owned by this
         // builder, and the caller's contract means the C API is initialised.
         unsafe { reject_duplicate_overloads(&self.name.to_string_lossy(), &signatures)? };
+        for (i, signature) in signatures.iter().enumerate() {
+            // SAFETY: `con` is valid per this function's contract; the
+            // logical parameters are live, as above.
+            unsafe {
+                super::collision::refuse_replacing_a_scalar(
+                    con,
+                    &self.name.to_string_lossy(),
+                    &format!("overload {i}"),
+                    signature,
+                )?;
+            }
+        }
 
         // SAFETY: Creates a new scalar function set handle.
         let mut set = unsafe { duckdb_create_scalar_function_set(self.name.as_ptr()) };
@@ -184,6 +218,8 @@ impl ScalarFunctionSetBuilder {
         for overload in &self.overloads {
             // Resolve return type: prefer explicit LogicalType over TypeId.
             // `_ret_lt_owner` keeps the LogicalType alive when created from TypeId.
+            // The two `else` arms below cannot run: every overload was checked
+            // for a return type and a callback before the set was created.
             let (_ret_lt_owner, ret_raw) = if let Some(ref lt) = overload.return_logical {
                 (None, lt.as_raw())
             } else if let Some(id) = overload.return_type {
@@ -204,6 +240,11 @@ impl ScalarFunctionSetBuilder {
             let mut func = unsafe { duckdb_create_scalar_function() };
 
             // PITFALL L6: Must call this on EACH function, not just the set.
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. `self.name` is a `CString`, so NUL-terminated and live
+            // for the call; `duckdb_scalar_function_set_name` copies it into
+            // `ScalarFunction::name`.
             unsafe {
                 duckdb_scalar_function_set_name(func, self.name.as_ptr());
             }
@@ -218,6 +259,13 @@ impl ScalarFunctionSetBuilder {
                     if logical_idx < overload.logical_params.len()
                         && overload.logical_params[logical_idx].0 == pos
                     {
+                        // SAFETY: `func` is the handle `duckdb_create_scalar_function`
+                        // returned above (a fresh `new ScalarFunction`,
+                        // scalar_function-c.cpp), destroyed only at the end of this
+                        // iteration. The type is a `LogicalType` owned by
+                        // `overload.logical_params`, so its handle is live for this borrow;
+                        // `duckdb_scalar_function_add_parameter` copies it
+                        // (`arguments.push_back(*logical_type)`), keeping no pointer.
                         unsafe {
                             duckdb_scalar_function_add_parameter(
                                 func,
@@ -227,6 +275,12 @@ impl ScalarFunctionSetBuilder {
                         logical_idx += 1;
                     } else if simple_idx < overload.params.len() {
                         let lt = LogicalType::new(overload.params[simple_idx]);
+                        // SAFETY: `func` is the handle `duckdb_create_scalar_function`
+                        // returned above (a fresh `new ScalarFunction`,
+                        // scalar_function-c.cpp), destroyed only at the end of this
+                        // iteration. `lt` was created on the line above and is dropped only
+                        // after this call; `duckdb_scalar_function_add_parameter` copies
+                        // the type.
                         unsafe {
                             duckdb_scalar_function_add_parameter(func, lt.as_raw());
                         }
@@ -236,11 +290,21 @@ impl ScalarFunctionSetBuilder {
             }
 
             // Set return type
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. `ret_raw` borrows `overload.return_logical` (owned by
+            // the builder) or `_ret_lt_owner`, both alive to the end of this iteration;
+            // `SetReturnType` copies the type.
             unsafe {
                 duckdb_scalar_function_set_return_type(func, ret_raw);
             }
 
             // Set callback
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. `function` is a non-null `ScalarFn` (an `extern "C"`
+            // fn pointer with the signature DuckDB calls); DuckDB only stores it in the
+            // function's `CScalarFunctionInfo`.
             unsafe {
                 duckdb_scalar_function_set_function(func, Some(function));
             }
@@ -250,6 +314,37 @@ impl ScalarFunctionSetBuilder {
                 // SAFETY: func is a valid scalar function handle.
                 unsafe {
                     duckdb_scalar_function_set_special_handling(func);
+                }
+            }
+
+            // Set bind / init callbacks if configured (`DuckDB` 1.5.0+)
+            #[cfg(feature = "duckdb-1-5")]
+            if let Some(bind_fn) = overload.bind {
+                // SAFETY: func is a valid scalar function handle.
+                unsafe {
+                    duckdb_scalar_function_set_bind(func, Some(bind_fn));
+                }
+            }
+            #[cfg(feature = "duckdb-1-5")]
+            if let Some(init_fn) = overload.init {
+                // SAFETY: func is a valid scalar function handle.
+                unsafe {
+                    duckdb_scalar_function_set_init(func, Some(init_fn));
+                }
+            }
+
+            // Set varargs type if configured (stable C API since v1.2.0)
+            if let Some(ref varargs) = overload.varargs {
+                // SAFETY: func is a valid scalar function handle, and every
+                // overload's varargs type was checked above.
+                unsafe { varargs.set_on(func) };
+            }
+
+            // Set volatile flag if configured (stable C API since v1.2.0)
+            if overload.volatile {
+                // SAFETY: func is a valid scalar function handle.
+                unsafe {
+                    duckdb_scalar_function_set_volatile(func);
                 }
             }
 
@@ -264,17 +359,34 @@ impl ScalarFunctionSetBuilder {
             }
 
             // Add to set
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. `set` came from `duckdb_create_scalar_function_set`,
+            // which returns null only for an empty name, and this call null-checks both
+            // handles (returning `DuckDBError`). `AddFunction(T function)` takes the
+            // function by value (function_set.hpp), so the set keeps its own copy, not
+            // `func`.
             unsafe {
                 duckdb_add_scalar_function_to_set(set, func);
             }
 
             // Destroy individual function (ownership transferred to set)
+            // SAFETY: `func` is the handle `duckdb_create_scalar_function` returned above
+            // (a fresh `new ScalarFunction`, scalar_function-c.cpp), destroyed only at the
+            // end of this iteration. The set holds its own copy of the function (and shares
+            // the extra info through its `shared_ptr`), so this single destroy of `func`
+            // frees nothing the set uses; it also nulls `func`.
             unsafe {
                 duckdb_destroy_scalar_function(&raw mut func);
             }
         }
 
         if register_error.is_none() {
+            // SAFETY: `con` is a valid, open connection per this function's `# Safety`
+            // clause. `set` is the set created above, not yet destroyed (the null an empty
+            // name yields is refused by DuckDB's own null check). Registration copies the
+            // set into the catalog (`CreateScalarFunctionInfo`) and catches its own
+            // exceptions, so destroying `set` below is still ours to do.
             let result = unsafe { duckdb_register_scalar_function_set(con, set) };
             if result != DuckDBSuccess {
                 register_error = Some(ExtensionError::new(format!(
@@ -294,139 +406,11 @@ impl ScalarFunctionSetBuilder {
     }
 }
 
-/// A builder for one overload within a [`ScalarFunctionSetBuilder`].
-#[must_use]
-pub struct ScalarOverloadBuilder {
-    pub(super) params: Vec<TypeId>,
-    pub(super) logical_params: Vec<(usize, LogicalType)>,
-    pub(super) return_type: Option<TypeId>,
-    pub(super) return_logical: Option<LogicalType>,
-    pub(super) function: Option<ScalarFn>,
-    pub(super) null_handling: NullHandling,
-    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
-}
-
-impl ScalarOverloadBuilder {
-    /// Creates a new `ScalarOverloadBuilder`.
-    pub fn new() -> Self {
-        Self {
-            params: Vec::new(),
-            logical_params: Vec::new(),
-            return_type: None,
-            return_logical: None,
-            function: None,
-            null_handling: NullHandling::DefaultNullHandling,
-            extra_info: None,
-        }
-    }
-
-    /// Adds a positional parameter to this overload.
-    ///
-    /// For complex types like `LIST(BIGINT)`, use
-    /// [`param_logical`][Self::param_logical].
-    pub fn param(mut self, type_id: TypeId) -> Self {
-        self.params.push(type_id);
-        self
-    }
-
-    /// Adds a positional parameter with a complex [`LogicalType`].
-    ///
-    /// Use this for parameterized types that [`TypeId`] cannot express, such as
-    /// `LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`.
-    #[mutants::skip] // position arithmetic tested via E2E
-    pub fn param_logical(mut self, logical_type: LogicalType) -> Self {
-        let position = self.params.len() + self.logical_params.len();
-        self.logical_params.push((position, logical_type));
-        self
-    }
-
-    /// Sets the return type for this overload.
-    ///
-    /// For complex return types like `LIST(BIGINT)`, use
-    /// [`returns_logical`][Self::returns_logical] instead.
-    pub const fn returns(mut self, type_id: TypeId) -> Self {
-        self.return_type = Some(type_id);
-        self
-    }
-
-    /// Sets the return type to a complex [`LogicalType`] for this overload.
-    ///
-    /// Use this for parameterized return types that [`TypeId`] cannot express,
-    /// such as `LIST(BOOLEAN)`, `LIST(TIMESTAMP)`, `MAP(VARCHAR, INTEGER)`, etc.
-    ///
-    /// If both `returns` and `returns_logical` are called, the logical type takes
-    /// precedence.
-    #[mutants::skip] // tested via E2E
-    pub fn returns_logical(mut self, logical_type: LogicalType) -> Self {
-        self.return_logical = Some(logical_type);
-        self
-    }
-
-    /// Sets the scalar function callback for this overload.
-    pub fn function(mut self, f: ScalarFn) -> Self {
-        self.function = Some(f);
-        self
-    }
-
-    /// Sets the NULL handling behaviour for this overload.
-    ///
-    /// By default, `DuckDB` returns NULL if any argument is NULL
-    /// ([`DefaultNullHandling`][NullHandling::DefaultNullHandling]).
-    /// Set to [`SpecialNullHandling`][NullHandling::SpecialNullHandling] to receive
-    /// NULL values in your callback and handle them yourself.
-    pub const fn null_handling(mut self, handling: NullHandling) -> Self {
-        self.null_handling = handling;
-        self
-    }
-
-    /// Attaches arbitrary data to this overload.
-    ///
-    /// The data pointer is available inside the callback via
-    /// `duckdb_function_get_extra_info`. The `destroy` callback is called by
-    /// `DuckDB` when the function is dropped to free the data.
-    ///
-    /// # Safety
-    ///
-    /// `data` must point to valid memory that outlives the function registration,
-    /// or will be freed by `destroy`. The typical pattern
-    /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
-    pub unsafe fn extra_info(
-        mut self,
-        data: *mut c_void,
-        destroy: duckdb_delete_callback_t,
-    ) -> Self {
-        // SAFETY: forwarded from this method's own contract.
-        self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, destroy) });
-        self
-    }
-}
-
-impl Default for ScalarOverloadBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl core::fmt::Debug for ScalarFunctionSetBuilder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ScalarFunctionSetBuilder")
             .field("name", &self.name)
             .field("overloads", &self.overloads.len())
-            .finish()
-    }
-}
-
-impl core::fmt::Debug for ScalarOverloadBuilder {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        use crate::debug_repr::Callback;
-        f.debug_struct("ScalarOverloadBuilder")
-            .field("params", &self.params)
-            .field("logical_params", &self.logical_params.len())
-            .field("return_type", &self.return_type)
-            .field("return_logical", &self.return_logical)
-            .field("function", &Callback::of(&self.function))
-            .field("null_handling", &self.null_handling)
-            .field("extra_info", &Callback::of(&self.extra_info))
             .finish()
     }
 }

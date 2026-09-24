@@ -23,7 +23,7 @@ unstable tail is not append-only:
 |--------|-------------|------------|
 | v1.2.0 – v1.2.2 | 408 | baseline |
 | v1.3.0 – v1.3.2 | 428 | appended |
-| v1.4.0 – v1.4.4 | 459 | `duckdb_create_varint` → `duckdb_create_bignum`; appended |
+| v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` → `duckdb_create_bignum`; appended |
 | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
 | v1.5.2 – v1.5.5 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
 
@@ -42,7 +42,10 @@ directions, the Arrow C Data Interface bridge, catalog access, `ErrorData`,
 `FileSystem`, `Expression`, `SelectionVector`, config options, table descriptions
 and the client context.
 
-```rust,ignore
+The book's own test build enables `duckdb-1-5`, so this block is compiled there
+but not run:
+
+```rust,no_run
 use quack_rs::abi;
 
 // false unless `duckdb-1-5` is enabled.
@@ -108,8 +111,17 @@ point applies it according to an [`AbiPolicy`]:
 | Policy | Behaviour |
 |--------|-----------|
 | `Strict` (default) | Refuse to load, with a message naming both layouts and the fix |
+| `AllowUnknownEngine` | Refuse a layout the table knows is different; allow a release the table has no entry for |
 | `Warn` | Report through `set_error`, then load anyway |
 | `Trust` | Skip the check |
+
+`AllowUnknownEngine` and `Trust` are only as safe as your knowledge of the
+engine: calling into the unstable region of a layout the extension was not built
+for is undefined behaviour. Before DuckDB v1.4.5 was in quack-rs's table, a
+v1.5.5 build loaded into v1.4.5 under `AllowUnknownEngine` and segfaulted.
+
+The two lines below are alternatives: both define the same exported symbol, so
+they do not compile together.
 
 ```rust,ignore
 use quack_rs::abi::AbiPolicy;
@@ -122,25 +134,39 @@ quack_rs::entry_point!(my_ext_init_c_api, register);
 quack_rs::entry_point!(my_ext_init_c_api, AbiPolicy::Trust, register);
 ```
 
-A refused load looks like this:
+A refused load looks like this (a v1.5.0 build loaded into DuckDB v1.5.5):
 
 ```text
 DuckDB C extension API layout mismatch: this extension was built against a
 duckdb_ext_api_v1 with 545 slots, but DuckDB v1.5.5 provides 546. The extension
 uses the unstable region of the C API (quack-rs feature `duckdb-1-5`), whose slot
 indices differ between these releases, so loading it would dispatch to the wrong
-functions. Rebuild the extension against DuckDB v1.5.5, and stamp it with
-`--abi-type C_STRUCT_UNSTABLE --duckdb-version v1.5.5` (or `USE_UNSTABLE_C_API=1`
-with extension-ci-tools) so this is caught at install time.
+functions. Rebuild the extension against DuckDB v1.5.5. Stamp every build that
+uses the unstable region with `--abi-type C_STRUCT_UNSTABLE --duckdb-version <the
+DuckDB release it was built against>` (or `USE_UNSTABLE_C_API=1` with
+extension-ci-tools) so DuckDB refuses a mismatched binary at install time.
 ```
+
+For an engine older than v1.5.0 the advice changes: such an engine cannot run a
+`duckdb-1-5` build at all, so the message says to build a variant without those
+features or to upgrade DuckDB.
 
 ## Unknown DuckDB versions
 
 `Strict` also refuses a DuckDB release quack-rs has no verified layout for — a
 newer release, or a `-dev` build. That is deliberate: DuckDB changed the unstable
 region in every recent release, so "unknown" is not evidence of "compatible".
-Rebuild against the release you are targeting, or set `AbiPolicy::Trust` if you
-have verified the layout yourself.
+The refusal lists the fixes, best first:
+
+1. rebuild against the release you are targeting and set
+   `QUACK_RS_TARGET_DUCKDB_VERSION` to it, which turns the check into a
+   positive match without waiting for a quack-rs release;
+2. upgrade quack-rs to a version whose layout table lists that release;
+3. if the extension does not need the unstable region, build it without the
+   `duckdb-1-5` features: the stable prefix is laid out identically in every
+   DuckDB since v1.2.0.
+
+It never suggests `AllowUnknownEngine` or `Trust`, for the reason above.
 
 `scripts/check-abi-table.py` re-derives quack-rs's layout table from every
 upstream release header and runs in CI, so the table tracks DuckDB.

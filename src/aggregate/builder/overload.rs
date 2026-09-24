@@ -10,9 +10,14 @@
 //!
 //! [`AggregateFunctionSetBuilder`]: super::AggregateFunctionSetBuilder
 
+use std::os::raw::c_void;
+
+use libduckdb_sys::duckdb_delete_callback_t;
+
 use crate::aggregate::callbacks::{
     CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn,
 };
+use crate::error::ExtensionError;
 use crate::types::{LogicalType, NullHandling, TypeId};
 
 /// Specification for one overload within a function set.
@@ -36,6 +41,40 @@ pub(super) struct OverloadSpec {
     pub(super) finalize: Option<FinalizeFn>,
     pub(super) destructor: Option<DestroyFn>,
     pub(super) null_handling: NullHandling,
+    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
+}
+
+impl OverloadSpec {
+    /// Checks that overload `index` has a return type (its own, or the set's
+    /// default when `has_default_return`) and every required callback,
+    /// without any `DuckDB` call.
+    pub(super) fn check_complete(
+        &self,
+        index: usize,
+        has_default_return: bool,
+    ) -> Result<(), ExtensionError> {
+        if self.return_type.is_none() && self.return_logical.is_none() && !has_default_return {
+            return Err(ExtensionError::new(format!(
+                "overload {index} has no return type and the function set has no default \
+                 return type: call `returns`/`returns_logical` on the overload, or on \
+                 the set to cover every overload"
+            )));
+        }
+        let missing = [
+            ("state_size", self.state_size.is_none()),
+            ("init", self.init.is_none()),
+            ("update", self.update.is_none()),
+            ("combine", self.combine.is_none()),
+            ("finalize", self.finalize.is_none()),
+        ]
+        .into_iter()
+        .find_map(|(name, absent)| absent.then_some(name));
+        missing.map_or(Ok(()), |callback| {
+            Err(ExtensionError::new(format!(
+                "overload {index} has no {callback} callback: call `{callback}`"
+            )))
+        })
+    }
 }
 
 /// A builder for one overload within an [`AggregateFunctionSetBuilder`].
@@ -113,6 +152,7 @@ pub struct AggregateOverloadBuilder {
     pub(super) finalize: Option<FinalizeFn>,
     pub(super) destructor: Option<DestroyFn>,
     pub(super) null_handling: NullHandling,
+    pub(super) extra_info: Option<crate::extra_info::ExtraInfo>,
 }
 
 impl AggregateOverloadBuilder {
@@ -131,6 +171,7 @@ impl AggregateOverloadBuilder {
             finalize: None,
             destructor: None,
             null_handling: NullHandling::DefaultNullHandling,
+            extra_info: None,
         }
     }
 
@@ -221,12 +262,40 @@ impl AggregateOverloadBuilder {
 
     /// Sets the NULL handling behaviour for this overload.
     ///
-    /// By default, `DuckDB` skips NULL rows in aggregate functions
-    /// ([`DefaultNullHandling`][NullHandling::DefaultNullHandling]).
-    /// Set to [`SpecialNullHandling`][NullHandling::SpecialNullHandling] to receive
-    /// NULL values in your `update` callback.
+    /// This does **not** decide whether `update` sees NULL rows: it receives
+    /// every row under either setting, so an aggregate that ignores NULLs must
+    /// skip rows whose
+    /// [`VectorReader::is_valid`][crate::vector::VectorReader::is_valid] is
+    /// false. [`SpecialNullHandling`][NullHandling::SpecialNullHandling]
+    /// declares that the aggregate may return non-NULL for NULL input; see
+    /// [`NullHandling`] for the one planner decision that reads it.
     pub const fn null_handling(mut self, handling: NullHandling) -> Self {
         self.null_handling = handling;
+        self
+    }
+
+    /// Attaches arbitrary data to this overload.
+    ///
+    /// Mirrors
+    /// [`AggregateFunctionBuilder::extra_info`][super::AggregateFunctionBuilder::extra_info]:
+    /// the pointer is available inside this overload's callbacks via
+    /// [`AggregateFunctionInfo::get_extra_info`][crate::aggregate::AggregateFunctionInfo::get_extra_info],
+    /// and `destroy` frees it exactly once — by `DuckDB` once registration has
+    /// handed it over (whether or not registration then succeeds), or by the
+    /// builder if it is dropped, or registration is rejected, before that.
+    ///
+    /// # Safety
+    ///
+    /// `data` must point to valid memory that outlives the function registration,
+    /// or will be freed by `destroy`. The typical pattern
+    /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    pub unsafe fn extra_info(
+        mut self,
+        data: *mut c_void,
+        destroy: duckdb_delete_callback_t,
+    ) -> Self {
+        // SAFETY: forwarded from this method's own contract.
+        self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, destroy) });
         self
     }
 
@@ -244,6 +313,7 @@ impl AggregateOverloadBuilder {
             finalize: self.finalize,
             destructor: self.destructor,
             null_handling: self.null_handling,
+            extra_info: self.extra_info,
         }
     }
 }
@@ -269,6 +339,7 @@ impl core::fmt::Debug for AggregateOverloadBuilder {
             .field("finalize", &Callback::of(&self.finalize))
             .field("destructor", &Callback::of(&self.destructor))
             .field("null_handling", &self.null_handling)
+            .field("extra_info", &Callback::of(&self.extra_info))
             .finish()
     }
 }

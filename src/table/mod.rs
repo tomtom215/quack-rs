@@ -15,7 +15,8 @@
 //! ```text
 //! bind  ─── declare output schema, read parameters, hint cardinality
 //! init  ─── allocate global scan state (shared across threads)
-//! local_init ─── allocate per-thread scan state (optional, enables parallelism)
+//! local_init ─── allocate per-thread scan state (optional; parallelism comes
+//!                from InitInfo::set_max_threads in init, not from local_init)
 //! scan  ─── fill output chunk; repeat until chunk size == 0
 //! ```
 //!
@@ -39,7 +40,8 @@
 //!   execution a fresh typed scan state built from what `bind` produced, and catches panics via `catch_unwind`.
 //!   See the [`typed`] module for the full API and an end-to-end example.
 //! - Drop down to [`TableFunctionBuilder`] when you need raw control:
-//!   projection pushdown (the typed builder does not offer it), `local_init`-driven parallel scans,
+//!   projection pushdown (the typed builder does not offer it), parallel scans
+//!   (`InitInfo::set_max_threads` above 1, usually with `local_init` for per-thread state),
 //!   or any callback shape that doesn't fit the "produce state in bind, mutate it in
 //!   scan" model.
 //!
@@ -96,6 +98,7 @@
 
 pub mod bind_data;
 pub mod builder;
+pub(crate) mod cstr;
 pub mod info;
 pub mod init_data;
 pub(crate) mod type_check;

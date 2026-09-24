@@ -109,7 +109,10 @@ unsafe {
 ```
 
 Inside the cast callback, retrieve the extra info with
-`CastFunctionInfo::get_extra_info()`.
+`CastFunctionInfo::get_extra_info()`. The pointee must be `Send + Sync`: DuckDB
+passes the same pointer to the callback on every thread that runs the cast, and the
+destructor runs on whichever thread releases it (or drops an unregistered builder,
+which is `Send`).
 
 If `register` returns an error — a missing callback or type, or a source or target
 type that is or contains `ANY`/`INVALID`, which DuckDB refuses — the builder still
@@ -125,7 +128,25 @@ the two modes:
 | Mode | User wrote | Expected behaviour on error |
 |------|------------|-----------------------------|
 | `CastMode::Normal` | `CAST(x AS T)` | Call `set_error` and return `false` |
-| `CastMode::Try` | `TRY_CAST(x AS T)` | Call `set_row_error`, write `NULL`, continue |
+| `CastMode::Try` | `TRY_CAST(x AS T)` | Call `set_row_error` for **each** failed row, continue |
+
+`set_row_error` records the message **and** sets that row of the output to `NULL`
+(`FlatVector::SetNull` inside the C API); `row` must be less than the callback's
+`count` — DuckDB does not check it in release builds.
+
+> **The return value does nothing in `TRY_CAST` mode.** DuckDB discards it
+> (`execute_cast.cpp` calls the cast and ignores the result), so returning `false`
+> does **not** turn the chunk into `NULL`s: every row you did not null keeps whatever
+> the output vector held — possibly a previous chunk's value. Null each failed row
+> yourself. The one exception is a panic inside a `cast_callback!` body: the macro
+> then sets every row of the chunk to `NULL`, since nothing the body wrote can be
+> trusted.
+
+In `Normal` mode, set a message before returning `false`. A `cast_callback!` body
+that sets none fails the query with "cast function failed without reporting an
+error message"; a hand-written `extern "C"` callback that sets none makes DuckDB
+report `Conversion Error: ` followed by nothing. An empty message passed to
+`set_error` / `set_row_error` is replaced by a placeholder.
 
 ## Working example
 

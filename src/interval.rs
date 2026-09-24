@@ -32,7 +32,9 @@
 /// Microseconds per day, used for interval conversion.
 pub const MICROS_PER_DAY: i64 = 86_400 * 1_000_000;
 
-/// Microseconds per month (approximated as 30 days, matching `DuckDB`'s behaviour).
+/// Microseconds per month, approximated as 30 days — `DuckDB`'s
+/// `Interval::MICROS_PER_MONTH`, used for comparing intervals (see
+/// [`interval_to_micros`] for where `DuckDB` does and does not use it).
 pub const MICROS_PER_MONTH: i64 = 30 * MICROS_PER_DAY;
 
 /// A `DuckDB` `INTERVAL` value, matching the C struct layout exactly.
@@ -45,6 +47,14 @@ pub const MICROS_PER_MONTH: i64 = 30 * MICROS_PER_DAY;
 /// offset 8:  micros (i64)  — microseconds component
 /// total:     16 bytes
 /// ```
+///
+/// # Equality is field-by-field, not SQL equality
+///
+/// The derived `PartialEq`, `Eq` and `Hash` compare the three fields, so
+/// `{ months: 1, .. }` and `{ days: 30, .. }` are different values here while
+/// `DuckDB` says `interval '1 month' = interval '30 days'`. Comparing
+/// [`to_micros`][Self::to_micros] matches SQL when the three fields share a
+/// sign; see [`interval_to_micros`] for the mixed-sign case where it does not.
 ///
 /// # Safety
 ///
@@ -77,7 +87,8 @@ impl DuckInterval {
     ///
     /// Returns `None` if the result would overflow `i64`.
     ///
-    /// Month conversion uses 30 days/month, matching `DuckDB`'s approximation.
+    /// Month conversion uses 30 days/month; see [`interval_to_micros`] for
+    /// where that matches `DuckDB` and where it does not.
     ///
     /// # Example
     ///
@@ -119,8 +130,24 @@ impl Default for DuckInterval {
 
 /// Converts a [`DuckInterval`] to total microseconds with overflow checking.
 ///
-/// Uses the approximation: **1 month = 30 days**, which is what `DuckDB` uses
-/// internally when comparing or arithmetically combining intervals.
+/// Uses the approximation: **1 month = 30 days**. `DuckDB` uses the same
+/// approximation in exactly two places (checked on `DuckDB` 1.4.4 and 1.5.5):
+///
+/// - **Comparing intervals** — `interval '1 month' = interval '30 days'` is
+///   `true` (`Interval::DAYS_PER_MONTH = 30` in `interval.hpp`). `DuckDB`
+///   normalises the fields (`interval_t::Normalize`: micros carry into days,
+///   days into months, with truncating division) and compares them in order, so
+///   this agrees with comparing total microseconds only when the fields do
+///   not mix signs: `interval '1 month' - interval '1 day'` equals
+///   `interval '29 days'` in microseconds but compares **greater** in SQL.
+/// - **`epoch_us(interval)`** — returns exactly what this function returns;
+///   `epoch_us(interval '1 year')` is 360 days.
+///
+/// It is **not** what `DuckDB` does elsewhere: `interval + interval` keeps
+/// months, days and micros separate (`1 month 30 days`), adding an interval to
+/// a date uses calendar months (`2024-01-31 + 1 month` is `2024-02-29`), and
+/// `epoch(interval '1 year')` counts 365.25 days. Use this conversion for
+/// ordering or bucketing intervals, not for date arithmetic.
 ///
 /// # Returns
 ///
@@ -209,8 +236,20 @@ pub const unsafe fn read_interval_at(data: *const u8, idx: usize) -> DuckInterva
     // SAFETY: Each INTERVAL is exactly 16 bytes (repr(C) struct with i32, i32, i64).
     // The caller guarantees `data` points to valid INTERVAL data and `idx` is in bounds.
     let ptr = unsafe { data.add(idx * 16) };
+    // SAFETY: `ptr` is the start of the 16-byte INTERVAL at row `idx` inside the buffer
+    // `data` points to (both `# Safety` clauses), so `ptr + 0` through `+ 4` are
+    // initialised bytes of that element (`months: i32`); `read_unaligned` needs no
+    // alignment, only readable memory.
     let months = unsafe { core::ptr::read_unaligned(ptr.cast::<i32>()) };
+    // SAFETY: `ptr` is the start of the 16-byte INTERVAL at row `idx` inside the buffer
+    // `data` points to (both `# Safety` clauses), so `ptr + 4` through `+ 8` are
+    // initialised bytes of that element (`days: i32`); `read_unaligned` needs no alignment,
+    // only readable memory.
     let days = unsafe { core::ptr::read_unaligned(ptr.add(4).cast::<i32>()) };
+    // SAFETY: `ptr` is the start of the 16-byte INTERVAL at row `idx` inside the buffer
+    // `data` points to (both `# Safety` clauses), so `ptr + 8` through `+ 16` are
+    // initialised bytes of that element (`micros: i64`); `read_unaligned` needs no
+    // alignment, only readable memory.
     let micros = unsafe { core::ptr::read_unaligned(ptr.add(8).cast::<i64>()) };
     DuckInterval {
         months,
@@ -392,7 +431,52 @@ mod tests {
         assert_eq!(interval_to_micros(iv), Some(expected));
     }
 
+    /// `DuckDB`'s `Interval::MICROS_PER_MONTH` is 30 days: `epoch_us(interval
+    /// '1 month')` is `2_592_000_000_000`. Spelled out as a literal so the
+    /// constant is checked, not reused.
+    #[test]
+    fn one_month_is_thirty_days_of_micros() {
+        assert_eq!(MICROS_PER_MONTH, 2_592_000_000_000);
+        let iv = DuckInterval {
+            months: 1,
+            days: 0,
+            micros: 0,
+        };
+        assert_eq!(interval_to_micros(iv), Some(2_592_000_000_000));
+        assert_eq!(
+            interval_to_micros(iv),
+            interval_to_micros(DuckInterval {
+                months: 0,
+                days: 30,
+                micros: 0,
+            })
+        );
+    }
+
     // Mixed-sign overflow saturation tests (CRIT-5 regression tests)
+
+    /// When only the final micros addition overflows, the true total has the
+    /// sign of the micros, even though the days component is far smaller in
+    /// magnitude: one day plus `i64::MAX` micros saturates up, minus one day
+    /// plus `i64::MIN` micros saturates down.
+    #[test]
+    fn saturation_direction_follows_micros_when_micros_overflow() {
+        let up = DuckInterval {
+            months: 0,
+            days: 1,
+            micros: i64::MAX,
+        };
+        assert_eq!(interval_to_micros(up), None);
+        assert_eq!(interval_to_micros_saturating(up), i64::MAX);
+
+        let down = DuckInterval {
+            months: 0,
+            days: -1,
+            micros: i64::MIN,
+        };
+        assert_eq!(interval_to_micros(down), None);
+        assert_eq!(interval_to_micros_saturating(down), i64::MIN);
+    }
 
     #[test]
     fn saturating_positive_overflow_with_negative_days() {
@@ -430,6 +514,30 @@ mod tests {
         };
         assert_eq!(interval_to_micros(iv), None);
         assert_eq!(interval_to_micros_saturating(iv), i64::MAX);
+    }
+
+    /// The days term alone decides the direction: it overflows, outweighs
+    /// months and micros of the other sign, and is itself far past `i64`.
+    /// Only the randomized `saturating_direction_matches_i128` reached this
+    /// case before, so CI's mutation job caught `days * MICROS_PER_DAY` ->
+    /// `days + MICROS_PER_DAY` on some runs and not others.
+    #[test]
+    fn saturation_direction_follows_days_when_days_dominate() {
+        let down = DuckInterval {
+            months: 1_000_000,
+            days: i32::MIN,
+            micros: i64::MAX,
+        };
+        assert_eq!(interval_to_micros(down), None);
+        assert_eq!(interval_to_micros_saturating(down), i64::MIN);
+
+        let up = DuckInterval {
+            months: -1_000_000,
+            days: i32::MAX,
+            micros: i64::MIN,
+        };
+        assert_eq!(interval_to_micros(up), None);
+        assert_eq!(interval_to_micros_saturating(up), i64::MAX);
     }
 
     #[test]

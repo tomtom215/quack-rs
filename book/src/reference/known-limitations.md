@@ -19,12 +19,51 @@ This is not a gap in `quack-rs` or in `libduckdb-sys` — the relevant symbol
 
 **What this means for your extension:**
 
-If your extension needs window-function semantics, you can approximate them with
-aggregate functions in most cases (DuckDB will push down the window logic). True
-custom window operator registration requires writing a C++ extension.
+A custom window operator requires a C++ extension. An ordinary aggregate can be
+used *as* a window (`agg(x) OVER (...)`), but see the next section before
+recommending that to your users: two of those shapes crash every aggregate
+registered through the C API.
 
 If DuckDB exposes window registration in a future C API version, `quack-rs`
 will add wrappers in the corresponding release.
+
+## Aggregates crash under `OVER ()` and `ORDER BY` (DuckDB defect, Pitfall L11)
+
+Every aggregate registered through the C API — quack-rs's or anyone else's —
+reads out of bounds when DuckDB runs it as a whole-partition window
+(`agg(x) OVER ()`, `agg(x) OVER (PARTITION BY p)`) or as an ordered aggregate
+(`agg(x ORDER BY y)`). The usual result is a segmentation fault that takes the
+host process down. The book's own example aggregate does it:
+
+```sql
+-- with hello-ext loaded: segfaults on DuckDB 1.4.4 and 1.5.5
+SELECT max(w) FROM (SELECT word_count(s) OVER () AS w
+                    FROM (SELECT 'a b c' AS s FROM range(5000)));
+```
+
+The cause is in DuckDB (`CAPIAggregateUpdate` hands the callback a constant
+state vector), there is no way for an extension to detect or prevent it, and it
+is reported upstream as
+[duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Until it
+is fixed, tell your users not to use your aggregates in those two shapes.
+Frames that are not whole-partition (`ROWS BETWEEN 5 PRECEDING AND CURRENT ROW`)
+and `DISTINCT` windows work. See
+[Pitfall L11](pitfalls.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
+
+## Aggregate states leak when `finalize` reports an error (DuckDB behaviour)
+
+When an aggregate's `finalize` callback reports an error
+(`AggregateFunctionInfo::set_error`), DuckDB 1.5.5 does not call the destructor
+for every state the query created: an ungrouped query initialised 2 states and
+destroyed 1, a grouped one 4 and 2. When `finalize` succeeds, every state is
+destroyed. The extension cannot tell which states were abandoned, so whatever
+they own is leaked: with `FfiState<T>`, one boxed `T` per abandoned state. The
+query still fails with your message. If that leak matters (a large `T`, or a
+long-lived process whose queries often fail this way), keep what a state owns
+small. Only `finalize` was measured; errors reported from other callbacks were
+not. The behaviour is pinned by
+`aggregate_states_are_not_all_destroyed_when_finalize_fails` in
+`tests/ffi_roundtrip/lifecycle.rs`.
 
 ## COPY functions (resolved in DuckDB 1.5.0; both directions since)
 
@@ -77,7 +116,7 @@ access bind data, etc.
 | **Copy function finalize** | `CopyFinalizeInfo` | `duckdb-1-5` |
 
 All callback accessor functions are now wrapped, including `get_client_context`
-on all callback types (returns a [`ClientContext`][crate::client_context::ClientContext]).
+on all callback types (returns a `ClientContext`; see the `client_context` module).
 
 ## Complex type creation (resolved)
 
