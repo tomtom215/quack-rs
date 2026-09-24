@@ -160,7 +160,10 @@ array alongside its schema and returns `InvalidInput`, naming the node, for
   copies past a 2048-row heap mask (items 9 and 25);
 - a dictionary whose values are themselves dictionary-encoded (item 26);
 - list views that overlap or leave gaps (item 27);
-- a sparse union whose `+us:` type codes are not `0, 1, …` (item 28);
+- a sparse union whose `+us:` type codes are not `0, 1, …` (item 28), or
+  whose `null_count` is not 0 (item 32);
+- a dictionary whose `null_count` is -1 ("not computed", item 31);
+- a `geoarrow.wkb` column read as more than 2048 rows (item 33);
 - a run-end-encoded array where DuckDB reads a plain one: a fixed-size list's
   child, or another run-end array's values (item 24).
 

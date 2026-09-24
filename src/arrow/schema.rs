@@ -119,6 +119,15 @@ impl ArrowSchema {
         unsafe { CStr::from_ptr(self.0.format) }.to_str().ok()
     }
 
+    /// The raw `metadata` pointer: null when released or when there is none.
+    pub(super) const fn metadata_ptr(&self) -> *const core::ffi::c_char {
+        if self.is_released() {
+            core::ptr::null()
+        } else {
+            self.0.metadata
+        }
+    }
+
     /// The column name, or `None` when released, null, or not UTF-8.
     #[must_use]
     pub fn name(&self) -> Option<&str> {

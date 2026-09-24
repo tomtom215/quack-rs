@@ -48,6 +48,7 @@ struct Sch {
     children: Vec<Box<Self>>,
     child_ptrs: Vec<*mut RawArrowSchema>,
     dictionary: Option<Box<Self>>,
+    metadata: Vec<u8>,
 }
 
 #[allow(clippy::vec_box, reason = "as on `Sch`")]
@@ -67,6 +68,7 @@ fn sch(format: &str, children: Vec<Box<Sch>>) -> Box<Sch> {
         children,
         child_ptrs: Vec::new(),
         dictionary: None,
+        metadata: Vec::new(),
     });
     node.child_ptrs = node.children.iter_mut().map(|c| &raw mut c.raw).collect();
     node.raw.n_children = node.child_ptrs.len() as i64;
@@ -75,6 +77,19 @@ fn sch(format: &str, children: Vec<Box<Sch>>) -> Box<Sch> {
     } else {
         node.child_ptrs.as_mut_ptr()
     };
+    node
+}
+
+/// `node` tagged with the Arrow extension type `name` (metadata in the C Data
+/// Interface encoding: a pair count, then length-prefixed key and value).
+fn extension(name: &str, mut node: Box<Sch>) -> Box<Sch> {
+    let mut out = 1_i32.to_ne_bytes().to_vec();
+    for part in ["ARROW:extension:name", name] {
+        out.extend_from_slice(&i32::try_from(part.len()).expect("len").to_ne_bytes());
+        out.extend_from_slice(part.as_bytes());
+    }
+    node.metadata = out;
+    node.raw.metadata = node.metadata.as_ptr().cast();
     node
 }
 
@@ -664,4 +679,41 @@ fn an_unknown_null_count_duckdb_misreads_is_refused() {
         ),
         ["1", "4"]
     );
+}
+
+/// `geoarrow.wkb` is converted by copying its storage into one vector of
+/// `DuckDB`'s standard size (2048) before the cast to `GEOMETRY`: a batch of
+/// 4096 points wrote past it (heap corruption or SIGSEGV). Refused past 2048
+/// rows; 2048 import right.
+#[test]
+fn a_geoarrow_column_of_more_than_2048_rows_is_refused() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    let schema = || extension("geoarrow.wkb", sch("z", vec![]));
+    let points = |rows: usize| {
+        // WKB POINT(i 0): byte order, type 1, then x and y as f64.
+        let mut data = Vec::new();
+        let mut offsets = vec![0_i32];
+        for i in 0..rows {
+            data.push(1_u8);
+            data.extend_from_slice(&1_u32.to_le_bytes());
+            data.extend_from_slice(&f64::from(u32::try_from(i).expect("fits")).to_le_bytes());
+            data.extend_from_slice(&0_f64.to_le_bytes());
+            offsets.push(i32::try_from(data.len()).expect("fits"));
+        }
+        arr(
+            rows as i64,
+            0,
+            0,
+            vec![vec![], bytes(&offsets), data],
+            vec![],
+        )
+    };
+    refused(
+        import_one(&con, schema(), points(4096), 4096),
+        "geoarrow.wkb",
+    );
+    let rendered = imports(&con, schema(), points(2048), 2048, "GEOMETRY");
+    assert_eq!(rendered.len(), 2048);
+    assert_eq!(rendered[2047], "POINT (2047 0)");
 }

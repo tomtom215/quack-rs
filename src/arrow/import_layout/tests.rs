@@ -108,25 +108,25 @@ fn check_column(rows: i64, column: Box<Node>, shape: Shape) -> Result<(), String
 
 #[test]
 fn formats_map_to_the_kinds_duckdb_reads() {
-    assert_eq!(kind_of("i", 0), Kind::Leaf);
-    assert_eq!(kind_of("n", 0), Kind::Null);
-    assert_eq!(kind_of("+s", 2), Kind::Struct);
-    assert_eq!(kind_of("+l", 1), Kind::List { wide: false });
-    assert_eq!(kind_of("+m", 1), Kind::List { wide: false });
-    assert_eq!(kind_of("+L", 1), Kind::List { wide: true });
-    assert_eq!(kind_of("+vl", 1), Kind::ListView { wide: false });
-    assert_eq!(kind_of("+vL", 1), Kind::ListView { wide: true });
-    assert_eq!(kind_of("+w:4", 1), Kind::FixedList(4));
-    assert_eq!(kind_of("+w:x", 1), Kind::Leaf);
-    assert_eq!(kind_of("+r", 2), Kind::RunEnd);
-    assert_eq!(kind_of("+us:0,1", 2), Kind::SparseUnion);
-    assert_eq!(kind_of("+us:1,0", 2), Kind::RecodedUnion);
+    assert_eq!(kind_of("i", 0, None), Kind::Leaf);
+    assert_eq!(kind_of("n", 0, None), Kind::Null);
+    assert_eq!(kind_of("+s", 2, None), Kind::Struct);
+    assert_eq!(kind_of("+l", 1, None), Kind::List { wide: false });
+    assert_eq!(kind_of("+m", 1, None), Kind::List { wide: false });
+    assert_eq!(kind_of("+L", 1, None), Kind::List { wide: true });
+    assert_eq!(kind_of("+vl", 1, None), Kind::ListView { wide: false });
+    assert_eq!(kind_of("+vL", 1, None), Kind::ListView { wide: true });
+    assert_eq!(kind_of("+w:4", 1, None), Kind::FixedList(4));
+    assert_eq!(kind_of("+w:x", 1, None), Kind::Leaf);
+    assert_eq!(kind_of("+r", 2, None), Kind::RunEnd);
+    assert_eq!(kind_of("+us:0,1", 2, None), Kind::SparseUnion);
+    assert_eq!(kind_of("+us:1,0", 2, None), Kind::RecodedUnion);
     assert_eq!(
-        kind_of("+us:0,1", 3),
+        kind_of("+us:0,1", 3, None),
         Kind::RecodedUnion,
         "fewer codes than members"
     );
-    assert_eq!(kind_of("+us:0,2", 2), Kind::RecodedUnion);
+    assert_eq!(kind_of("+us:0,2", 2, None), Kind::RecodedUnion);
 }
 
 #[test]
@@ -361,4 +361,72 @@ fn an_unknown_null_count_where_duckdb_disagrees_with_itself_is_refused() {
         let err = check_column(2, union(nulls), shape.clone()).expect_err("union null count");
         assert!(err.contains("type ids"), "{nulls}: {err}");
     }
+}
+
+/// Arrow metadata in the C Data Interface encoding: an `i32` pair count,
+/// then for each pair an `i32` length and the key bytes, an `i32` length and
+/// the value bytes.
+fn metadata(pairs: &[(&str, &str)]) -> Vec<u8> {
+    let mut out = i32::try_from(pairs.len())
+        .expect("count")
+        .to_ne_bytes()
+        .to_vec();
+    for (key, value) in pairs {
+        for part in [key, value] {
+            out.extend_from_slice(&i32::try_from(part.len()).expect("len").to_ne_bytes());
+            out.extend_from_slice(part.as_bytes());
+        }
+    }
+    out
+}
+
+#[test]
+fn the_extension_name_is_read_from_arrow_metadata() {
+    let geo = metadata(&[
+        ("ARROW:extension:metadata", "{}"),
+        ("ARROW:extension:name", "geoarrow.wkb"),
+    ]);
+    // SAFETY: each buffer is well-formed metadata that outlives the call.
+    unsafe {
+        assert_eq!(
+            extension_name(geo.as_ptr().cast()).as_deref(),
+            Some("geoarrow.wkb")
+        );
+        let other = metadata(&[("ARROW:extension:name", "arrow.uuid")]);
+        assert_eq!(
+            extension_name(other.as_ptr().cast()).as_deref(),
+            Some("arrow.uuid")
+        );
+        let none = metadata(&[("key", "value")]);
+        assert_eq!(extension_name(none.as_ptr().cast()), None);
+        assert_eq!(extension_name(metadata(&[]).as_ptr().cast()), None);
+        assert_eq!(extension_name(std::ptr::null()), None);
+    }
+    assert_eq!(
+        kind_of("z", 0, Some("geoarrow.wkb")),
+        Kind::CopiedIntoOneVector
+    );
+    assert_eq!(kind_of("z", 0, Some("arrow.json")), Kind::Leaf);
+    assert_eq!(kind_of("z", 0, None), Kind::Leaf);
+}
+
+/// `geoarrow.wkb` storage is converted into a vector of `DuckDB`'s standard
+/// size (2048) before the cast, so more rows than that write past it.
+#[test]
+fn a_geoarrow_column_of_more_than_2048_rows_is_refused() {
+    let geo = of(Kind::CopiedIntoOneVector, vec![]);
+    let blobs = |rows: usize| {
+        let offsets: Vec<i32> = (0..=rows)
+            .map(|i| i32::try_from(i).expect("fits"))
+            .collect();
+        Node::new(
+            i64::try_from(rows).expect("fits"),
+            0,
+            0,
+            vec![vec![], i32s(&offsets), vec![0; rows]],
+        )
+    };
+    assert_eq!(check_column(2048, blobs(2048), geo.clone()), Ok(()));
+    let err = check_column(4096, blobs(4096), geo).expect_err("past the vector");
+    assert!(err.contains("geoarrow.wkb"), "{err}");
 }

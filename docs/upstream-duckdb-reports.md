@@ -43,6 +43,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 30 | Table-description column accessors abort on index `idx_t(-1)` from 1.5.0 | C program, below | that index refused before the call |
 | 31 | Arrow dictionary with `null_count = -1` imports its NULL rows as values | C program, below | refused |
 | 32 | Arrow sparse union with nonzero `null_count` has its type ids read as a validity bitmap | C program, below | refused |
+| 33 | Arrow import of a `geoarrow.wkb` column of more than 2048 rows writes past a vector | C program, below | refused past 2048 rows |
 
 ## Before filing
 
@@ -3442,3 +3443,124 @@ Expected: `[5] [6]` in both.
 quack-rs mitigation: `data_chunk_from_arrow` refuses a union node whose
 `null_count` is not 0 (`src/arrow/import_layout.rs`;
 `tests/ffi_roundtrip/arrow_layout.rs`).
+
+---
+
+## 33. Arrow import of a `geoarrow.wkb` column of more than 2048 rows writes past a vector
+
+`ColumnArrowToDuckDB` (`arrow_conversion.cpp`) converts an Arrow extension
+type that has an `arrow_to_duckdb` step by converting the storage first into
+`Vector input_data(arrow_type.extension_data->GetInternalType())`, whose
+capacity is the standard vector size (2048), passing `size`, the batch's row
+count. From 1.5.0 `geoarrow.wkb` is registered in core with such a step
+(`arrow_type_extension.cpp`), and its `BLOB` storage conversion writes
+`size` strings into that vector. (`arrow.bool8`, the only other core
+extension with a conversion step, is imported without a copy.)
+
+Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5, x86_64
+Linux. Build: `gcc -I<libduckdb dir> item33.c -L<libduckdb dir> -lduckdb -o
+item33`; run `item33 2048` and `item33 4096` with
+`LD_LIBRARY_PATH=<libduckdb dir>`.
+
+```c
+// duckdb_data_chunk_from_arrow on a geoarrow.wkb column of more than 2048
+// rows. ColumnArrowToDuckDB converts an extension type with an
+// arrow_to_duckdb step by first converting its storage into
+// `Vector input_data(type)`, whose capacity is STANDARD_VECTOR_SIZE (2048),
+// with `size` rows: past 2048 the BLOB conversion writes past the vector.
+// Usage: item33 <rows>
+// Build: gcc -I<libduckdb dir> item33.c -L<libduckdb dir> -lduckdb -o item33
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    int64_t rows = argc > 1 ? atoll(argv[1]) : 4096;
+    printf("Built with DuckDB %s, %lld rows\n", duckdb_library_version(), (long long)rows);
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    // WKB POINT(i 0): byte order 1, type 1, x, y.
+    uint8_t *data = malloc(21 * rows);
+    int32_t *offsets = malloc(4 * (rows + 1));
+    offsets[0] = 0;
+    for (int64_t i = 0; i < rows; i++) {
+        uint8_t *p = data + 21 * i;
+        uint32_t type = 1; double x = (double)i, y = 0;
+        p[0] = 1; memcpy(p + 1, &type, 4); memcpy(p + 5, &x, 8); memcpy(p + 13, &y, 8);
+        offsets[i + 1] = (int32_t)(21 * (i + 1));
+    }
+    const void *buf[3] = {NULL, offsets, data};
+    struct ArrowArray col = {rows, 0, 0, 3, 0, buf, NULL, NULL, noop_release, NULL};
+    struct ArrowArray *cols[1] = {&col};
+    const void *nb[1] = {NULL};
+    struct ArrowArray rb = {rows, 0, 0, 1, 1, nb, cols, NULL, noop_release, NULL};
+    // Metadata: one pair, ARROW:extension:name = geoarrow.wkb.
+    char meta[64]; int32_t n = 1, kl = 20, vl = 12;
+    memcpy(meta, &n, 4); memcpy(meta + 4, &kl, 4); memcpy(meta + 8, "ARROW:extension:name", 20);
+    memcpy(meta + 28, &vl, 4); memcpy(meta + 32, "geoarrow.wkb", 12);
+    struct ArrowSchema s_col = {"z", "g", meta, 2, 0, NULL, NULL, noop_srelease, NULL};
+    struct ArrowSchema *scols[1] = {&s_col};
+    struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)&ps, &conv);
+    if (e1) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e1)); return 1; }
+    duckdb_data_chunk out = NULL;
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)&rb, conv, &out);
+    printf("import: %s\n", e2 ? duckdb_error_data_message(e2) : "ok");
+    if (out) duckdb_destroy_data_chunk(&out);
+    duckdb_destroy_arrow_converted_schema(&conv);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    printf("done\n");
+    return 0;
+}
+```
+
+Observed. With 2048 rows, on all eight releases:
+
+```text
+Built with DuckDB v1.5.5, 2048 rows
+import: ok
+done
+exit=0
+```
+
+With 4096 rows, v1.4.4 and v1.4.5 (no `geoarrow.wkb` registration; the
+column imports as `BLOB`):
+
+```text
+Built with DuckDB v1.4.4, 4096 rows
+import: ok
+done
+exit=0
+```
+
+v1.5.0:
+
+```text
+Built with DuckDB v1.5.0, 4096 rows
+malloc(): corrupted top size
+exit=134
+```
+
+v1.5.1 to v1.5.5 (SIGSEGV):
+
+```text
+Built with DuckDB v1.5.5, 4096 rows
+exit=139
+```
+
+Expected: the rows imported, as up to 2048.
+
+quack-rs mitigation: `data_chunk_from_arrow` refuses a `geoarrow.wkb` node
+that `DuckDB` would convert as more than 2048 rows
+(`src/arrow/import_layout.rs`; `tests/ffi_roundtrip/arrow_layout.rs`, which
+crashed with SIGSEGV before the check). Extension types that other `DuckDB`
+extensions register may take the same path and are not known here.

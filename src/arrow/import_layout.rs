@@ -38,7 +38,9 @@
 //!   `+us:` code list (item 28);
 //! - `null_count = -1` ("not computed") makes a dictionary's NULL rows
 //!   import as values, and any nonzero `null_count` on a sparse union makes
-//!   its type ids read as validity (items 31 and 32).
+//!   its type ids read as validity (items 31 and 32);
+//! - a `geoarrow.wkb` array is copied into one 2048-row vector before its
+//!   cast, so more rows than that are written past it (item 33).
 //!
 //! Each is refused with the node it concerns. The walk mirrors `DuckDB`'s
 //! calls: [`Ctx`] carries what `DuckDB` passes to a node and where Arrow says
@@ -67,10 +69,21 @@ pub(super) enum Kind {
     RecodedUnion,
     /// `+r`.
     RunEnd,
+    /// A leaf whose Arrow extension type `DuckDB` converts by first copying
+    /// the storage into one vector of the standard size (2048), then casting
+    /// (`ColumnArrowToDuckDB`'s `arrow_to_duckdb` path): `geoarrow.wkb` from
+    /// 1.5.0. More rows than that are written past the vector.
+    CopiedIntoOneVector,
 }
 
-/// `kind`, read from a format string whose schema has `children` children.
-pub(super) fn kind_of(format: &str, children: usize) -> Kind {
+/// `kind`, read from a format string whose schema has `children` children and
+/// whose metadata names `extension`.
+pub(super) fn kind_of(format: &str, children: usize, extension: Option<&str>) -> Kind {
+    // `arrow.bool8`, the only other core extension with a conversion step,
+    // is converted without a copy, so its storage vector is never written.
+    if extension == Some("geoarrow.wkb") && !format.starts_with('+') {
+        return Kind::CopiedIntoOneVector;
+    }
     match format {
         "n" => Kind::Null,
         "+s" => Kind::Struct,
@@ -114,13 +127,63 @@ impl Shape {
     pub(super) fn of(schema: &ArrowSchema) -> Self {
         let count = schema.child_count();
         Self {
-            kind: kind_of(schema.format().unwrap_or(""), count),
+            // SAFETY: a live schema's metadata is null or well-formed Arrow
+            // metadata owned by the producer for as long as the schema lives.
+            kind: kind_of(
+                schema.format().unwrap_or(""),
+                count,
+                unsafe { extension_name(schema.metadata_ptr()) }.as_deref(),
+            ),
             children: (0..count)
                 .filter_map(|i| schema.child(i).map(Self::of))
                 .collect(),
             dictionary: schema.dictionary().map(|d| Box::new(Self::of(d))),
         }
     }
+}
+
+/// The value of the `ARROW:extension:name` key in Arrow C Data Interface
+/// `metadata`: an `i32` pair count, then per pair an `i32` byte length and the
+/// key, an `i32` byte length and the value, in native byte order.
+///
+/// # Safety
+///
+/// `metadata` must be null or point to well-formed metadata in that encoding.
+pub(super) unsafe fn extension_name(metadata: *const core::ffi::c_char) -> Option<String> {
+    /// Reads the `i32` at `at` and advances past it.
+    ///
+    /// # Safety
+    ///
+    /// `at` must point to four readable bytes.
+    const unsafe fn read_i32(at: &mut *const u8) -> i32 {
+        // SAFETY: forwarded from this function's contract.
+        unsafe {
+            let value = at.cast::<i32>().read_unaligned();
+            *at = at.add(4);
+            value
+        }
+    }
+    if metadata.is_null() {
+        return None;
+    }
+    let mut at = metadata.cast::<u8>();
+    // SAFETY: each read stays within the well-formed metadata the caller
+    // guarantees; lengths are checked non-negative before use.
+    unsafe {
+        let pairs = read_i32(&mut at);
+        for _ in 0..pairs.max(0) {
+            let key_len = usize::try_from(read_i32(&mut at)).ok()?;
+            let key = std::slice::from_raw_parts(at, key_len);
+            at = at.add(key_len);
+            let value_len = usize::try_from(read_i32(&mut at)).ok()?;
+            let value = std::slice::from_raw_parts(at, value_len);
+            at = at.add(value_len);
+            if key == b"ARROW:extension:name" {
+                return Some(String::from_utf8_lossy(value).into_owned());
+            }
+        }
+    }
+    None
 }
 
 /// How `DuckDB` dispatches a node.
@@ -468,7 +531,14 @@ unsafe fn check_node(
     let arrow = ctx.arrow_start(node.offset);
 
     match shape.kind {
-        Kind::Leaf | Kind::Null => Ok(()),
+        Kind::CopiedIntoOneVector if ctx.size > limit => Err(format!(
+            "a geoarrow.wkb array of {} rows would have its storage copied into a {limit}-row \
+             vector before the cast to GEOMETRY, past the end of a heap allocation. Split the \
+             batch so that no geoarrow.wkb array, including a list's child, is read as more \
+             than {limit} rows",
+            ctx.size
+        )),
+        Kind::Leaf | Kind::Null | Kind::CopiedIntoOneVector => Ok(()),
         Kind::Struct => {
             let mask = ctx.struct_nulls || ctx.broadcast_nulls || has_validity;
             for (i, s) in shape.children.iter().enumerate() {

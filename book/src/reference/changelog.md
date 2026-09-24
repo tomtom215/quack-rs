@@ -443,7 +443,7 @@ in each section below.
 - `LESSONS.md` and the book's pitfall catalogue gained L15 (`combine` must
   leave its source states unchanged) and L16 (a valid Arrow array is not
   always one `DuckDB` imports correctly): 28 documented pitfalls.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 32, and item 16 gained
+- `docs/upstream-duckdb-reports.md` gained items 20 to 33, and item 16 gained
   a `HUGEINT` reproducer.
 
 #### Fourth audit
@@ -936,7 +936,9 @@ in each section below.
   invalid accesses in `SetInvalid` past the 256-byte mask on 1.5.5); a dictionary with `null_count = -1`, whose NULL rows came back as
   values (item 31); and a sparse union with a nonzero `null_count`, whose
   type ids were read as validity, so every row came back NULL (item 32).
-  Each is refused.
+  Each is refused. So is a `geoarrow.wkb` column read as more than 2048
+  rows: `DuckDB` 1.5 copies its storage into a 2048-row vector before the
+  cast to `GEOMETRY` (SIGSEGV on 4096 rows, item 33).
 - **A null-typed field below the top level of an imported Arrow column read
   as valid** after its first row: `DuckDB` imports it as a constant vector,
   which the readers index as flat. The column is now flattened whenever its
