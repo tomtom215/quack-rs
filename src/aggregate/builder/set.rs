@@ -61,27 +61,48 @@ use crate::validate::validate_function_name;
 ///
 /// # Examples
 ///
-/// One return type shared by every arity — set it once on the set:
+/// One return type shared by every arity — set it once on the set. Each
+/// overload needs its own parameters: overloads that accept the same
+/// arguments are refused at `register`.
 ///
 /// ```rust,no_run
-/// use quack_rs::aggregate::AggregateFunctionSetBuilder;
+/// use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder};
 /// use quack_rs::types::{LogicalType, TypeId};
-/// use libduckdb_sys::duckdb_connection;
+/// use libduckdb_sys::{duckdb_aggregate_state, duckdb_connection, duckdb_data_chunk,
+///                     duckdb_function_info, duckdb_vector, idx_t};
 ///
-/// // fn register_retention(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
-/// //     AggregateFunctionSetBuilder::new("retention")
-/// //         .returns_logical(LogicalType::list(TypeId::Boolean))
-/// //         .overloads(2..=32, |_n, builder| {
-/// //             builder
-/// //                 .state_size(state_size)
-/// //                 .init(state_init)
-/// //                 .update(update)
-/// //                 .combine(combine)
-/// //                 .finalize(finalize)
-/// //                 .destructor(destroy)
-/// //         })
-/// //         .register(con)
-/// // }
+/// # unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 8 }
+/// # unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+/// # unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk,
+/// #     _: *mut duckdb_aggregate_state) {}
+/// # unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state,
+/// #     _: *mut duckdb_aggregate_state, _: idx_t) {}
+/// # unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state,
+/// #     _: duckdb_vector, _: idx_t, _: idx_t) {}
+/// # unsafe extern "C" fn destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
+/// /// # Safety
+/// ///
+/// /// `con` must be a valid, open connection.
+/// unsafe fn register_retention(
+///     con: duckdb_connection,
+/// ) -> Result<(), quack_rs::error::ExtensionError> {
+///     // SAFETY: `con` is valid per this function's contract.
+///     unsafe {
+///         AggregateFunctionSetBuilder::new("retention")
+///             .returns_logical(LogicalType::list(TypeId::Boolean))
+///             .overloads(2..=32, |n, builder: AggregateOverloadBuilder| {
+///                 (0..n)
+///                     .fold(builder, |b, _| b.param(TypeId::Boolean))
+///                     .state_size(state_size)
+///                     .init(state_init)
+///                     .update(update)
+///                     .combine(combine)
+///                     .finalize(finalize)
+///                     .destructor(destroy)
+///             })
+///             .register(con)
+///     }
+/// }
 /// ```
 ///
 /// Different return types per overload — set them on each overload:
@@ -89,29 +110,45 @@ use crate::validate::validate_function_name;
 /// ```rust,no_run
 /// use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder};
 /// use quack_rs::types::TypeId;
-///
-/// // AggregateFunctionSetBuilder::new("my_agg")
-/// //     .overload(
-/// //         AggregateOverloadBuilder::new()
-/// //             .param(TypeId::Integer)
-/// //             .returns(TypeId::Integer)
-/// //             .state_size(int_state_size)
-/// //             .init(int_init)
-/// //             .update(int_update)
-/// //             .combine(int_combine)
-/// //             .finalize(int_finalize),
-/// //     )
-/// //     .overload(
-/// //         AggregateOverloadBuilder::new()
-/// //             .param(TypeId::Varchar)
-/// //             .returns(TypeId::Varchar)
-/// //             .state_size(str_state_size)
-/// //             .init(str_init)
-/// //             .update(str_update)
-/// //             .combine(str_combine)
-/// //             .finalize(str_finalize),
-/// //     )
-/// //     .register(con)
+/// # use libduckdb_sys::{duckdb_aggregate_state, duckdb_connection, duckdb_data_chunk,
+/// #                     duckdb_function_info, duckdb_vector, idx_t};
+/// # unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 8 }
+/// # unsafe extern "C" fn init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+/// # unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk,
+/// #     _: *mut duckdb_aggregate_state) {}
+/// # unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state,
+/// #     _: *mut duckdb_aggregate_state, _: idx_t) {}
+/// # unsafe extern "C" fn int_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state,
+/// #     _: duckdb_vector, _: idx_t, _: idx_t) {}
+/// # unsafe extern "C" fn str_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state,
+/// #     _: duckdb_vector, _: idx_t, _: idx_t) {}
+/// # unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
+/// // SAFETY: `con` is a valid, open connection.
+/// unsafe {
+///     AggregateFunctionSetBuilder::new("my_agg")
+///         .overload(
+///             AggregateOverloadBuilder::new()
+///                 .param(TypeId::Integer)
+///                 .returns(TypeId::Integer)
+///                 .state_size(state_size)
+///                 .init(init)
+///                 .update(update)
+///                 .combine(combine)
+///                 .finalize(int_finalize),
+///         )
+///         .overload(
+///             AggregateOverloadBuilder::new()
+///                 .param(TypeId::Varchar)
+///                 .returns(TypeId::Varchar)
+///                 .state_size(state_size)
+///                 .init(init)
+///                 .update(update)
+///                 .combine(combine)
+///                 .finalize(str_finalize),
+///         )
+///         .register(con)
+/// }
+/// # }
 /// ```
 #[must_use]
 pub struct AggregateFunctionSetBuilder {
@@ -274,6 +311,21 @@ impl AggregateFunctionSetBuilder {
         self
     }
 
+    /// The completeness checks that need no `DuckDB` call: at least one
+    /// overload, each with a return type (its own or the set's) and every
+    /// required callback. [`MockRegistrar`][crate::testing::MockRegistrar]
+    /// runs them too.
+    pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
+        if self.overloads.is_empty() {
+            return Err(ExtensionError::new("no overloads added to function set"));
+        }
+        let has_default_return = self.return_type.is_some() || self.return_logical.is_some();
+        for (i, overload) in self.overloads.iter().enumerate() {
+            overload.check_complete(i, has_default_return)?;
+        }
+        Ok(())
+    }
+
     /// Registers the function set on the given connection.
     ///
     /// # Pitfall L6
@@ -285,13 +337,18 @@ impl AggregateFunctionSetBuilder {
     ///
     /// Returns `ExtensionError` if:
     /// - No overloads were added.
+    /// - A parameter, varargs or return type was given as a bare composite
+    ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
+    ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
+    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   names the slot.
     /// - An overload has neither its own return type nor a set-level default,
     ///   or is missing a required callback. The error names the overload's
     ///   index, and is reported before any `DuckDB` handle is allocated.
-    /// - Two overloads declare the same argument types (compared structurally,
-    ///   so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ). `DuckDB` itself would
-    ///   accept such a set and then fail every call with "Could not choose a
-    ///   best candidate function".
+    /// - Two overloads accept the same call — the same argument types,
+    ///   compared structurally, so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ.
+    ///   `DuckDB` itself would accept such a set and then fail every such call
+    ///   with "Could not choose a best candidate function".
     /// - `DuckDB` reports registration failure.
     ///
     /// # Name collisions
@@ -311,13 +368,7 @@ impl AggregateFunctionSetBuilder {
         // Validate everything before allocating any DuckDB handle. The checks
         // that need no DuckDB call come first, so a missing callback is
         // reported by index without touching the engine.
-        if self.overloads.is_empty() {
-            return Err(ExtensionError::new("no overloads added to function set"));
-        }
-        let has_default_return = self.return_type.is_some() || self.return_logical.is_some();
-        for (i, overload) in self.overloads.iter().enumerate() {
-            overload.check_complete(i, has_default_return)?;
-        }
+        self.check_parts()?;
         // See `AggregateFunctionBuilder::register` -- reject composite TypeIds.
         if let Some(id) = self.return_type {
             LogicalType::check_slot(id, "aggregate function set return type")?;
@@ -329,6 +380,18 @@ impl AggregateFunctionSetBuilder {
             if let Some(id) = overload.return_type {
                 LogicalType::check_slot(id, &format!("overload {i} return type"))?;
             }
+            // The overload's own return type, else the set-level default.
+            let (id, logical) =
+                if overload.return_logical.is_some() || overload.return_type.is_some() {
+                    (overload.return_type, overload.return_logical.as_ref())
+                } else {
+                    (self.return_type, self.return_logical.as_ref())
+                };
+            crate::table::type_check::refuse_any_return(
+                &format!("overload {i} return type"),
+                id,
+                logical,
+            )?;
         }
         let signatures: Vec<_> = self
             .overloads
@@ -462,11 +525,14 @@ impl AggregateFunctionSetBuilder {
                 );
             }
 
-            if let Some(dtor) = overload.destructor {
-                // SAFETY: func is valid and `dtor` is a 'static `extern "C" fn`.
-                unsafe {
-                    duckdb_aggregate_function_set_destructor(func, Some(dtor));
-                }
+            // Always register a destructor, a no-op if none was given (see
+            // `callbacks::no_op_destroy`).
+            let dtor = overload
+                .destructor
+                .unwrap_or(crate::aggregate::callbacks::no_op_destroy);
+            // SAFETY: func is valid and `dtor` is a 'static `extern "C" fn`.
+            unsafe {
+                duckdb_aggregate_function_set_destructor(func, Some(dtor));
             }
 
             // Set special NULL handling if requested

@@ -146,6 +146,11 @@ impl LogicalType {
     ///
     /// - Panics if `type_id` is composite, naming the constructor to use
     ///   instead. Use [`try_new`][Self::try_new] to get a `Result`.
+    /// - Panics if `type_id` is [`TypeId::IntegerLiteral`] or
+    ///   [`TypeId::StringLiteral`]: `DuckDB` accepts either in a function or
+    ///   type registration, but the first query returning one fails with an
+    ///   internal error that invalidates the database (checked on 1.4.4,
+    ///   1.5.0 and 1.5.5).
     /// - Panics if `duckdb_create_logical_type` returns a null pointer.
     ///
     /// # Example
@@ -167,7 +172,10 @@ impl LogicalType {
     /// Fallible version of [`LogicalType::new`].
     ///
     /// Returns an error instead of panicking when `type_id` is composite (see
-    /// [`LogicalType::new`]) or when the `DuckDB` C API returns a null pointer.
+    /// [`LogicalType::new`]), is [`TypeId::IntegerLiteral`] or
+    /// [`TypeId::StringLiteral`], when the `DuckDB` C API returns a null
+    /// pointer, or when the running `DuckDB` does not support the type
+    /// (`TIME_NS` before 1.5.0, whose C API returns an `INVALID` type for it).
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
         if type_id.is_composite() {
             return Err(LogicalTypeError::with_detail(
@@ -175,10 +183,37 @@ impl LogicalType {
                 composite_message(type_id),
             ));
         }
+        if matches!(type_id, TypeId::IntegerLiteral | TypeId::StringLiteral) {
+            return Err(LogicalTypeError::with_detail(
+                "duckdb_create_logical_type",
+                format!(
+                    "{type_id} is the binder's type for an unbound literal, not a column type: \
+                     DuckDB registers a function or type that uses it, but the first query \
+                     that returns it fails with an internal error that invalidates the \
+                     database, and a parameter of it can never be called. Use BIGINT or \
+                     VARCHAR"
+                ),
+            ));
+        }
         // SAFETY: any DUCKDB_TYPE value is accepted; DuckDB returns an owned
         // handle or null.
         let inner = unsafe { duckdb_create_logical_type(type_id.to_duckdb_type()) };
-        Self::owned_or(inner, "duckdb_create_logical_type")
+        let created = Self::owned_or(inner, "duckdb_create_logical_type")?;
+        // An engine whose C API does not know the id hands back an INVALID
+        // type rather than null: DuckDB 1.4.x does this for TIME_NS, which
+        // its SQL has but its C API reports as INVALID.
+        // SAFETY: `created` owns a live handle.
+        let got = unsafe { libduckdb_sys::duckdb_get_type_id(created.as_raw()) };
+        if got != type_id.to_duckdb_type() {
+            return Err(LogicalTypeError::with_detail(
+                "duckdb_create_logical_type",
+                format!(
+                    "this DuckDB's C API does not support {type_id}: it created type id {got} \
+                     instead (TIME_NS, for one, needs DuckDB 1.5.0 or later)"
+                ),
+            ));
+        }
+        Ok(created)
     }
 
     /// Builds a `LogicalType` for a named builder slot, turning a composite
@@ -403,9 +438,20 @@ impl LogicalType {
     ///
     /// # Errors
     ///
-    /// Returns an error if `DuckDB` refuses the width and scale (it requires
-    /// `1 <= width <= 38` and `scale <= width`).
+    /// Returns an error unless `1 <= width <= 38` and `scale <= width`
+    /// (`Decimal::IsValidWidthScale`). The check is made here: `DuckDB` makes
+    /// it only from v1.5.4, and before that `duckdb_create_decimal_type`
+    /// returns a `DECIMAL(0, 0)` or `DECIMAL(5, 6)` it cannot use.
     pub fn try_decimal(width: u8, scale: u8) -> Result<Self, LogicalTypeError> {
+        if !(1..=38).contains(&width) || scale > width {
+            return Err(LogicalTypeError::with_detail(
+                "duckdb_create_decimal_type",
+                format!(
+                    "DECIMAL({width}, {scale}) is not a DECIMAL type: the width must be 1 to 38 \
+                     and the scale no larger than the width"
+                ),
+            ));
+        }
         // SAFETY: plain values; DuckDB returns an owned handle or null.
         let inner = unsafe { duckdb_create_decimal_type(width, scale) };
         Self::owned_or(inner, "duckdb_create_decimal_type")
@@ -460,9 +506,19 @@ impl LogicalType {
     ///
     /// # Errors
     ///
-    /// Returns an error if `DuckDB` refuses the size: `duckdb_create_array_type`
-    /// returns null for `size >= 100_000` (`ArrayType::MAX_ARRAY_SIZE`).
+    /// Returns an error if `size` is 0, or if `DuckDB` refuses the size:
+    /// `duckdb_create_array_type` returns null for `size >= 100_000`
+    /// (`ArrayType::MAX_ARRAY_SIZE`). SQL rejects a size of 0 ("ARRAY type size
+    /// must be at least 1"), and so does a `DuckDB` built with assertions (a
+    /// null handle); a release build creates the type anyway, so it is refused
+    /// here to behave the same on both.
     pub fn try_array_from_logical(element: &Self, size: u64) -> Result<Self, LogicalTypeError> {
+        if size == 0 {
+            return Err(LogicalTypeError::with_detail(
+                "duckdb_create_array_type",
+                "an ARRAY's size must be at least 1, as in SQL".to_owned(),
+            ));
+        }
         // SAFETY: `element` is live for the call; DuckDB copies it and returns
         // an owned handle or null.
         let inner = unsafe { duckdb_create_array_type(element.as_raw(), size as idx_t) };
@@ -522,13 +578,21 @@ impl LogicalType {
     ///
     /// # Errors
     ///
-    /// Returns an error if there are more than [`MAX_UNION_MEMBERS`] members,
-    /// if two member names are equal ignoring ASCII case, if a name contains a
-    /// null byte, or if `duckdb_create_union_type` returns null. `DuckDB`'s
-    /// constructor checks none of these; its binder rejects all of them the
-    /// first time the type is used.
+    /// Returns an error if there are no members or more than
+    /// [`MAX_UNION_MEMBERS`], if two member names are equal ignoring ASCII
+    /// case, if a name contains a null byte, or if `duckdb_create_union_type`
+    /// returns null. `DuckDB`'s constructor checks none of these; its binder
+    /// rejects all but the empty union the first time the type is used. SQL
+    /// cannot write a `UNION` without members, and a `DuckDB` built with
+    /// assertions refuses one, so it is refused here too.
     pub fn try_union_type_from_logical(members: &[(&str, Self)]) -> Result<Self, LogicalTypeError> {
         const API: &str = "duckdb_create_union_type";
+        if members.is_empty() {
+            return Err(LogicalTypeError::with_detail(
+                API,
+                "a UNION needs at least one member, as in SQL".to_owned(),
+            ));
+        }
         let names = checked_names(
             "UNION member",
             API,

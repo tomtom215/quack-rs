@@ -25,8 +25,14 @@ impl ArrowSchema {
     ///
     /// # Safety
     ///
-    /// `raw` must be a record whose `release` callback this value may call
-    /// exactly once, and no other wrapper may hold the same record.
+    /// - `raw` must be a record whose `release` callback this value may call
+    ///   exactly once, and no other wrapper may hold the same record.
+    /// - It must be a valid Arrow C Data Interface schema: `format` and
+    ///   `name` null or NUL-terminated, `children` null or pointing at
+    ///   `n_children` valid child schemas, recursively. The safe accessors
+    ///   ([`format`][Self::format], [`name`][Self::name],
+    ///   [`child`][Self::child]) and `schema_from_arrow` read through those
+    ///   pointers.
     #[inline]
     #[must_use]
     pub const unsafe fn from_raw(raw: RawArrowSchema) -> Self {
@@ -46,6 +52,9 @@ impl ArrowSchema {
     ///   [`RawArrowSchema`], which every Arrow C Data Interface `ArrowSchema` is.
     /// - The caller must not use the record behind `ptr` afterwards, other than
     ///   to drop the (now released) wrapper holding it.
+    /// - The record behind `ptr` must meet [`from_raw`][Self::from_raw]'s
+    ///   contract: this value calls its `release` callback, and the safe
+    ///   accessors read through its pointers.
     #[must_use]
     pub const unsafe fn take_from(ptr: *mut RawArrowSchema) -> Self {
         // SAFETY: `ptr` is valid for reads and writes per this function's contract.

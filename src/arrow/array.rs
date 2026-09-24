@@ -45,6 +45,9 @@ impl ArrowArray {
     /// - `ptr` must be valid for reads and writes and properly aligned for
     ///   [`RawArrowArray`].
     /// - The caller must not use the record behind `ptr` afterwards.
+    /// - The record behind `ptr` must meet [`from_raw`][Self::from_raw]'s
+    ///   contract: this value calls its `release` callback, and the safe
+    ///   accessors and `data_chunk_from_arrow` read through its pointers.
     #[must_use]
     pub const unsafe fn take_from(ptr: *mut RawArrowArray) -> Self {
         // SAFETY: `ptr` is valid for reads and writes per this function's contract.

@@ -377,3 +377,92 @@ fn a_tab_before_a_hash_starts_a_comment() {
     let body = "  description: value\t# note\n";
     assert_eq!(read(body, "description").unwrap(), scalar("value"));
 }
+
+/// `PyYAML` reads `name:\n  "my_ext"` as `my_ext`; the reader kept the quotes
+/// (and so refused the name) because a value starting on the next line was
+/// always taken as plain text. Flow and block values there were read as text
+/// too.
+#[test]
+fn a_quoted_or_flow_value_on_the_line_after_its_key_is_parsed_as_such() {
+    let yml = doc("").replace("name: my_ext", "name:\n    \"my_ext\"");
+    assert_eq!(parse_description_yml(&yml).unwrap().name, "my_ext");
+    let yml = doc("").replace("ref: main", "ref:\n    'abc123' # pinned");
+    assert_eq!(parse_description_yml(&yml).unwrap().git_ref, "abc123");
+    let yml = doc("").replace(
+        "  maintainers:\n    - Jane\n",
+        "  maintainers:\n    [Jane, Bob]\n",
+    );
+    assert_eq!(
+        parse_description_yml(&yml).unwrap().maintainers,
+        ["Jane", "Bob"]
+    );
+    let yml = doc("").replace(
+        "description: d",
+        "description:\n    |\n      two\n      lines",
+    );
+    assert_eq!(
+        parse_description_yml(&yml).unwrap().description,
+        "two\nlines"
+    );
+}
+
+/// Values this parser reads as text but `PyYAML` (YAML 1.1) reads as something
+/// else draw a warning naming the field; quoting them, or a field this
+/// parser does not read, draws none. The published corpus (346 files at
+/// community-extensions `5ae7df8`) has three such values: two unquoted
+/// all-digit versions and `custom_toolchain_script: true`, which is meant as
+/// a boolean.
+#[test]
+fn unquoted_values_yaml_1_1_reads_as_non_text_are_warned_about() {
+    let warned = |yml: &str| -> Vec<String> {
+        parse_description_yml(yml)
+            .unwrap()
+            .warnings
+            .into_iter()
+            .filter(|w| w.contains("YAML 1.1"))
+            .collect()
+    };
+    for (from, to, field, kind) in [
+        ("name: my_ext", "name: yes", "extension.name", "a boolean"),
+        (
+            "version: 1.0.0",
+            "version: 0.10",
+            "extension.version",
+            "a float",
+        ),
+        (
+            "version: 1.0.0",
+            "version: 2026012700",
+            "extension.version",
+            "an integer",
+        ),
+        ("ref: main", "ref: 0123456", "repo.ref", "an integer"),
+        ("ref: main", "ref: 0x1f", "repo.ref", "an integer"),
+        ("ref: main", "ref: 1.10", "repo.ref", "a float"),
+        (
+            "ref: main",
+            "ref:\n    2024-01-01",
+            "repo.ref",
+            "a timestamp",
+        ),
+    ] {
+        let yml = doc("").replace(from, to);
+        let w = warned(&yml);
+        assert_eq!(w.len(), 1, "{to}: {w:?}");
+        assert!(
+            w[0].starts_with(field) && w[0].contains(kind),
+            "{to}: {w:?}"
+        );
+    }
+    for (from, to) in [
+        ("name: my_ext", "name: \"yes\""),
+        ("ref: main", "ref: '0123456'"),
+        ("ref: main", "ref: a1b2c3d"),
+        ("version: 1.0.0", "version: v1.0.0"),
+    ] {
+        let yml = doc("").replace(from, to);
+        assert_eq!(warned(&yml), Vec::<String>::new(), "{to}");
+    }
+    let yml = doc("  custom_toolchain_script: true\n");
+    assert_eq!(warned(&yml), Vec::<String>::new());
+}

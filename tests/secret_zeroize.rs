@@ -90,7 +90,7 @@ fn no_freed_buffer_still_holds_secret_material() {
     let (hits, _) = freed_with_marker(|| drop(secret("-control")));
     assert_eq!(hits, 1, "the allocator inspection works");
 
-    let cases: [(&str, fn()); 4] = [
+    let cases: [(&str, fn()); 5] = [
         ("drop with one field", || {
             drop(SecretEntry::new("n", "t").with_field("token", secret("-1")));
         }),
@@ -105,6 +105,17 @@ fn no_freed_buffer_still_holds_secret_material() {
                 .with_scope(secret("-bucket"))
                 .with_scope(String::from("s3://other/"));
             drop(entry);
+        }),
+        // The fourth audit's T10: only `len` bytes were zeroized, so a
+        // secret truncated before it was stored kept its tail in the spare
+        // capacity.
+        ("store a truncated secret", || {
+            // The whole marker sits past `len`, in the spare capacity.
+            let mut value = String::with_capacity(4 + MARK.len());
+            value.push_str("key=");
+            value.push_str(std::str::from_utf8(MARK).expect("ASCII"));
+            value.truncate(4);
+            drop(SecretEntry::new("n", "t").with_field("token", value));
         }),
         ("replace the provider", || {
             let entry = SecretEntry::new("n", "t")

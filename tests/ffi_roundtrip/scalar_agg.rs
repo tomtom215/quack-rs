@@ -322,8 +322,10 @@ fn a_scalar_set_with_duplicate_overloads_is_rejected_at_registration() {
     // SAFETY: `con` is open.
     let err = unsafe { set.register(fx.con()) }.expect_err("duplicate overloads");
     let msg = err.as_str();
-    assert!(msg.contains("overload 0 and overload 2"), "{msg}");
-    assert!(msg.contains("(BIGINT)"), "{msg}");
+    assert!(
+        msg.contains("overload 0 (BIGINT) and overload 2 (BIGINT)"),
+        "{msg}"
+    );
 
     // Nothing was registered.
     // SAFETY: `con` is open.
@@ -348,7 +350,11 @@ fn a_type_id_and_an_equal_logical_type_are_duplicates() {
         );
     // SAFETY: `con` is open.
     let err = unsafe { set.register(fx.con()) }.expect_err("duplicate overloads");
-    assert!(err.as_str().contains("overload 0 and overload 1"), "{err}");
+    assert!(
+        err.as_str()
+            .contains("overload 0 (BIGINT) and overload 1 (BIGINT)"),
+        "{err}"
+    );
 }
 
 /// `varargs(TypeId)` used to build its `LogicalType` inside the setter, so a
@@ -409,8 +415,11 @@ fn varargs_by_type_id_and_by_equal_logical_type_are_duplicates() {
         );
     // SAFETY: `con` is open.
     let err = unsafe { set.register(fx.con()) }.expect_err("duplicate overloads");
-    assert!(err.as_str().contains("overload 0 and overload 1"), "{err}");
-    assert!(err.as_str().contains("(BIGINT...)"), "{err}");
+    assert!(
+        err.as_str()
+            .contains("overload 0 (BIGINT...) and overload 1 (BIGINT...)"),
+        "{err}"
+    );
 }
 
 quack_rs::scalar_callback!(writes_one, |_info, input, output| {
@@ -563,6 +572,10 @@ fn an_aggregate_set_with_duplicate_overloads_is_rejected_at_registration() {
     // SAFETY: `con` is open.
     let err = unsafe { set.register(fx.con()) }.expect_err("duplicate overloads");
     let msg = err.as_str();
-    assert!(msg.contains("overload 1 and overload 2"), "{msg}");
-    assert!(msg.contains("(BOOLEAN, BOOLEAN, BOOLEAN)"), "{msg}");
+    assert!(
+        msg.contains(
+            "overload 1 (BOOLEAN, BOOLEAN, BOOLEAN) and overload 2 (BOOLEAN, BOOLEAN, BOOLEAN)"
+        ),
+        "{msg}"
+    );
 }

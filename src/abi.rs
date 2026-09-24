@@ -90,6 +90,11 @@
 //! binary into the wrong release. The runtime guard in this module is the
 //! belt-and-braces for builds where that metadata is missing or wrong — which
 //! includes every `LOAD '/path/to/ext.duckdb_extension'` during development.
+//!
+//! This holds for every released `DuckDB` (through v1.5.5). Unreleased `DuckDB`
+//! (`main`, `v2.0-cyanoptera`) sends every `C_STRUCT_UNSTABLE` binary to a new
+//! `<name>_init_c_api_v2` entry point that quack-rs does not generate, so such a
+//! binary will not load there; see `AUDIT.md` §5.4.
 
 use core::ffi::c_void;
 use core::mem::size_of;
@@ -232,6 +237,22 @@ impl AbiCheck {
                      mismatched binary at install time."
                 ))
             }
+            Self::UnknownEngineVersion {
+                engine_version,
+                compiled_slots,
+            } if parse_version(engine_version).is_none() => Some(format!(
+                "DuckDB C extension API layout cannot be verified: DuckDB reports version \
+                 '{engine_version}', which is not a release version (vX.Y.Z) — a development \
+                 build, most likely. quack-rs verifies only released layouts, and \
+                 QUACK_RS_TARGET_DUCKDB_VERSION accepts only a release version, so neither \
+                 can vouch for this engine (this extension was built against a \
+                 {compiled_slots}-slot layout). The extension uses the unstable region of the \
+                 C API (quack-rs feature `duckdb-1-5`), so loading is refused rather than \
+                 risking mis-dispatch. To load it anyway, build the extension from the same \
+                 DuckDB commit and register it with `AbiPolicy::AllowUnknownEngine`, at your \
+                 own risk; or, if it does not need the unstable region, build it without the \
+                 `duckdb-1-5` features."
+            )),
             Self::UnknownEngineVersion {
                 engine_version,
                 compiled_slots,
@@ -534,6 +555,42 @@ pub enum AbiPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A development engine version cannot be declared or looked up, so the
+    /// refusal must not offer either as the fix: before, it told the user to
+    /// set `QUACK_RS_TARGET_DUCKDB_VERSION=v1.5.6-dev123`, which the build
+    /// silently drops.
+    #[test]
+    fn an_unknown_dev_engine_is_not_offered_remedies_that_cannot_apply() {
+        for engine in ["v1.5.6-dev123", "0d3cd0e22e", ""] {
+            let msg = AbiCheck::UnknownEngineVersion {
+                engine_version: engine.to_owned(),
+                compiled_slots: 546,
+            }
+            .error_message()
+            .expect("a refusal has a message");
+            assert!(msg.contains("not a release version"), "{engine}: {msg}");
+            assert!(
+                !msg.contains("set QUACK_RS_TARGET_DUCKDB_VERSION="),
+                "{engine}: {msg}"
+            );
+            assert!(
+                msg.contains("AbiPolicy::AllowUnknownEngine"),
+                "{engine}: {msg}"
+            );
+        }
+        // A release-shaped version keeps the declaration remedy, which works.
+        let msg = AbiCheck::UnknownEngineVersion {
+            engine_version: "v1.5.6".to_owned(),
+            compiled_slots: 546,
+        }
+        .error_message()
+        .expect("a refusal has a message");
+        assert!(
+            msg.contains("set QUACK_RS_TARGET_DUCKDB_VERSION=v1.5.6"),
+            "{msg}"
+        );
+    }
 
     #[test]
     fn struct_size_is_a_whole_number_of_pointers() {

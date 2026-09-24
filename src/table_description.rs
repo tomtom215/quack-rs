@@ -227,10 +227,15 @@ impl TableDescription {
 
     /// Returns whether the column at `index` has a `DEFAULT` value.
     ///
-    /// Returns `None` if the index is out of bounds. This is what makes
+    /// Returns `None` if the index is out of bounds.
+    ///
+    /// This does **not** say whether
     /// [`Appender::append_default`][crate::appender::Appender::append_default]
-    /// safe to reach for: appending a default to a column that has none is an
-    /// error, and this is the only way to find out first.
+    /// will succeed. A column with no `DEFAULT` (`false` here) appends `NULL`
+    /// without error, while a column whose `DEFAULT` is not a constant —
+    /// `nextval('seq')`, `random()` — reports `true` here and makes
+    /// `append_default` fail, because the appender can only use defaults it
+    /// can evaluate once, up front.
     #[must_use]
     pub fn column_has_default(&self, index: idx_t) -> Option<bool> {
         let mut out = false;

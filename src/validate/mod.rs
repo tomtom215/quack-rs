@@ -70,7 +70,10 @@ pub mod spdx;
 mod spdx_exceptions;
 
 pub use extension_name::validate_extension_name;
-pub use function_name::{validate_function_name, DUCKDB_RESERVED_KEYWORDS};
+pub use function_name::{
+    validate_function_name, validate_parameter_name, DUCKDB_RESERVED_KEYWORDS,
+    DUCKDB_UNCALLABLE_KEYWORDS, DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS,
+};
 pub use platform::{
     is_opt_in_platform, validate_excluded_platforms, validate_platform, DUCKDB_CI_PLATFORMS,
     DUCKDB_OPT_IN_PLATFORMS, DUCKDB_PLATFORMS, DUCKDB_PLATFORM_GROUPS, DUCKDB_RETIRED_PLATFORMS,

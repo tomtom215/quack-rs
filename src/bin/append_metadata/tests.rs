@@ -335,11 +335,46 @@ fn unstable_and_cpp_take_a_release_or_a_commit_hash() {
 #[test]
 fn platform_is_validated() {
     parse_ok("in out --platform osx_arm64");
-    parse_ok("in out --platform wasm_eh");
+    parse_ok("in out --platform wasm_eh --wasm");
     assert!(parse_err("in out --platform Linux_AMD64").contains("--platform"));
     // Syntactically fine but not a community platform: accepted, with a warning.
     let args = parse_ok("in out --platform freebsd_amd64");
     assert_eq!(args.warnings.len(), 1, "{:?}", args.warnings);
+    // A name only older DuckDB reported: legal, but not built any more.
+    let args = parse_ok("in out --platform windows_amd64_rtools");
+    assert_eq!(args.warnings.len(), 1, "{:?}", args.warnings);
+}
+
+/// `--platform linux` stamped silently, and `DuckDB` 1.5.5 then refused the
+/// file ("built for the platform 'linux', but we can only load extensions
+/// built for platform `linux_amd64`"): group names are refused now.
+#[test]
+fn a_platform_group_is_refused() {
+    for group in ["linux", "osx", "wasm", "windows"] {
+        let err = parse_err(&format!("in out --platform {group} --wasm"));
+        assert!(err.contains("platform group"), "{group}: {err}");
+    }
+}
+
+/// `--platform wasm_eh` without `--wasm` produced a module that
+/// `WebAssembly.validate` rejects; it is refused now. `--wasm` on another
+/// platform is legal but warned about.
+#[test]
+fn a_wasm_platform_needs_the_wasm_section_header() {
+    for platform in ["wasm_eh", "wasm_mvp", "wasm_threads"] {
+        let err = parse_err(&format!("in out --platform {platform}"));
+        assert!(err.contains("pass --wasm"), "{platform}: {err}");
+        assert!(parse_ok(&format!("in out --platform {platform} --wasm"))
+            .warnings
+            .is_empty());
+    }
+    let args = parse_ok("in out --platform linux_amd64 --wasm");
+    assert_eq!(args.warnings.len(), 1, "{:?}", args.warnings);
+    assert!(
+        args.warnings[0].contains("not a wasm platform"),
+        "{:?}",
+        args.warnings
+    );
 }
 
 #[test]
@@ -378,6 +413,22 @@ fn restamping_is_refused_unless_replace_is_given() {
     assert_eq!(&twice[..100], &[7; 100][..]);
     assert_eq!(field_text(&footer, 4), "v2");
     assert_eq!(field_text(&footer, 6), "linux_arm64");
+}
+
+/// A footer whose ABI field is empty — which `DuckDB` reads as `CPP`, and
+/// which `append_extension_metadata.py --abi-type ""` writes — was not
+/// recognised, so re-stamping it appended a second footer. It is now refused
+/// without `--replace`, and replaced with it.
+#[test]
+fn a_footer_with_an_empty_abi_field_is_recognised() {
+    let mut data = vec![7; 100];
+    data.extend_from_slice(&build_metadata("", "v1", "v1.4.0", "linux_amd64").unwrap());
+    let args = parse_ok("in out --platform linux_amd64");
+    let err = stamp(data.clone(), &args).unwrap_err();
+    assert!(err.contains("--replace"), "{err}");
+    let replace = parse_ok("in out --platform linux_amd64 --replace");
+    let (out, _) = stamp(data, &replace).unwrap();
+    assert_eq!(out.len(), 100 + METADATA_SIZE);
 }
 
 /// `--wasm` writes the header `append_extension_metadata.py` writes, and

@@ -144,6 +144,34 @@ impl ConfigOptionBuilder {
         self
     }
 
+    /// The checks that need no `DuckDB` call: a concrete option type and a
+    /// default value. [`MockRegistrar`][crate::testing::MockRegistrar] runs
+    /// them too.
+    pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
+        let name = self.name.to_string_lossy();
+        let type_id = self
+            .option_type
+            .ok_or_else(|| ExtensionError::new("config option type not set"))?;
+        if matches!(
+            type_id,
+            TypeId::Any | TypeId::SqlNull | TypeId::IntegerLiteral | TypeId::StringLiteral
+        ) {
+            return Err(ExtensionError::new(format!(
+                "config option '{name}': {} cannot be the type of a config option; it is a \
+                 pseudo-type that no value is stored as. Use a concrete type such as VARCHAR.",
+                type_id.sql_name()
+            )));
+        }
+        if self.default_value.is_none() {
+            return Err(ExtensionError::new(format!(
+                "config option '{name}' has no default value. DuckDB treats an extension option \
+                 without one as unset: current_setting('{name}') fails with \"unrecognized \
+                 configuration parameter\" until it is SET. Call default_value(...)."
+            )));
+        }
+        Ok(())
+    }
+
     /// Registers this config option with `DuckDB`.
     ///
     /// # The default is converted by SQL, never inside the C API
@@ -194,26 +222,13 @@ impl ConfigOptionBuilder {
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
+        self.check_parts()?;
         let name = self.name.to_string_lossy();
         let type_id = self
             .option_type
             .ok_or_else(|| ExtensionError::new("config option type not set"))?;
-        if matches!(
-            type_id,
-            TypeId::Any | TypeId::SqlNull | TypeId::IntegerLiteral | TypeId::StringLiteral
-        ) {
-            return Err(ExtensionError::new(format!(
-                "config option '{name}': {} cannot be the type of a config option; it is a \
-                 pseudo-type that no value is stored as. Use a concrete type such as VARCHAR.",
-                type_id.sql_name()
-            )));
-        }
         let Some(ref default) = self.default_value else {
-            return Err(ExtensionError::new(format!(
-                "config option '{name}' has no default value. DuckDB treats an extension option \
-                 without one as unset: current_setting('{name}') fails with \"unrecognized \
-                 configuration parameter\" until it is SET. Call default_value(...)."
-            )));
+            return Err(ExtensionError::new("config option has no default value"));
         };
         let lt = LogicalType::for_slot(type_id, "config option type")?;
         // SAFETY: `con` is valid per this function's contract.
@@ -287,9 +302,13 @@ unsafe fn refuse_existing_setting(
     };
     // `aliases` is a VARCHAR[] column; unnesting it avoids lambda syntax,
     // whose spelling DuckDB has been changing.
-    let sql = "SELECT (SELECT count(*) FROM duckdb_settings() WHERE lower(name) = lower($1)) \
-               + (SELECT count(*) FROM (SELECT unnest(aliases) AS alias FROM duckdb_settings()) \
-                  WHERE lower(alias) = lower($1))";
+    // Every function is qualified with `system.main`, so a user macro of the
+    // same name cannot change what the check computes.
+    let sql = "SELECT (SELECT count(*) FROM system.main.duckdb_settings() \
+                  WHERE system.main.lower(name) = system.main.lower($1)) \
+               + (SELECT count(*) FROM (SELECT system.main.unnest(aliases) AS alias \
+                  FROM system.main.duckdb_settings()) \
+                  WHERE system.main.lower(alias) = system.main.lower($1))";
     // SAFETY: `con` is valid per this function's contract.
     let statement =
         unsafe { crate::query::prepare(con, sql) }.map_err(|e| context(e.to_string()))?;

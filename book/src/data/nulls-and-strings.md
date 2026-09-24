@@ -28,6 +28,13 @@ for row in 0..reader.row_count() {
 not zeroed at NULL positions. There is no bounds check or error; you get random
 bytes from the data buffer.
 
+For `VARCHAR` and `BLOB` it is worse than garbage. A NULL row's 16-byte entry
+is left as it was, and `DuckDB` reuses vector buffers between chunks, so the
+entry can still be the pointer-format record of a string from an earlier chunk
+whose memory may since have been freed or reused. `read_str` / `read_blob` on such a row
+follow that pointer: undefined behaviour, not merely a wrong answer. Their
+`# Safety` sections require the row to be valid.
+
 ### Writing NULL
 
 ```rust

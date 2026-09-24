@@ -12,6 +12,11 @@ use libduckdb_sys::{
     duckdb_function_info,
 };
 
+/// What [`AggregateFunctionInfo::set_error`] reports when given an empty
+/// message: `DuckDB` would otherwise show only an error-type prefix such as
+/// `Invalid Input Error: `.
+pub const EMPTY_ERROR_PLACEHOLDER: &str = "aggregate function reported an error without a message";
+
 /// Ergonomic wrapper around the `duckdb_function_info` handle provided to
 /// aggregate function callbacks (update, combine, finalize, etc.).
 ///
@@ -53,7 +58,9 @@ impl AggregateFunctionInfo {
     /// to abort the current query.
     ///
     /// An interior NUL byte in `message` is replaced with `?`
-    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]).
+    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]),
+    /// and an empty message by [`EMPTY_ERROR_PLACEHOLDER`], since `DuckDB`
+    /// would otherwise report only an error-type prefix.
     ///
     /// Called from `finalize`, the query fails but `DuckDB` 1.5.5 does not
     /// destroy every aggregate state it created, so whatever those states own
@@ -61,7 +68,7 @@ impl AggregateFunctionInfo {
     /// Known Limitations in the book.
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = crate::callback::message_to_c_string(message);
+        let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_aggregate_function_set_error(self.info, c_msg.as_ptr());

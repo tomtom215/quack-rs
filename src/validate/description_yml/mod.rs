@@ -88,6 +88,7 @@ mod model;
 mod parser;
 mod validator;
 mod yaml;
+mod yaml11;
 
 pub use model::DescriptionYml;
 pub use parser::parse_description_yml;

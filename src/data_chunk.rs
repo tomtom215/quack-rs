@@ -225,6 +225,11 @@ impl DataChunk {
     ///
     /// - `col_idx` must be less than [`column_count`][DataChunk::column_count].
     /// - The chunk must be a writable output chunk (not a read-only input chunk).
+    /// - The returned value borrows nothing: it must not be used after the
+    ///   underlying `duckdb_data_chunk` is destroyed — for an
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
+    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn writer(&self, col_idx: usize) -> VectorWriter {
         // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
         // first `# Safety` clause; `self.raw` is live for this wrapper's lifetime per
@@ -240,7 +245,12 @@ impl DataChunk {
     ///
     /// # Safety
     ///
-    /// `col_idx` must be less than [`column_count`][DataChunk::column_count].
+    /// - `col_idx` must be less than [`column_count`][DataChunk::column_count].
+    /// - The returned value borrows nothing: it must not be used after the
+    ///   underlying `duckdb_data_chunk` is destroyed — for an
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
+    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn reader(&self, col_idx: usize) -> VectorReader {
         // SAFETY: self.raw is valid; col_idx is in bounds per caller's contract.
         unsafe { VectorReader::new(self.raw, col_idx) }
@@ -255,6 +265,11 @@ impl DataChunk {
     ///
     /// - `col_idx` must be less than [`column_count`][Self::column_count].
     /// - The column at `col_idx` must have a STRUCT type with `field_count` fields.
+    /// - The returned value borrows nothing: it must not be used after the
+    ///   underlying `duckdb_data_chunk` is destroyed — for an
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
+    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn struct_reader(&self, col_idx: usize, field_count: usize) -> StructReader {
         // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
         // first `# Safety` clause; `self.raw` is live for this wrapper's lifetime per
@@ -273,6 +288,11 @@ impl DataChunk {
     /// - `col_idx` must be less than [`column_count`][Self::column_count].
     /// - The column at `col_idx` must have a STRUCT type.
     /// - `field_idx` must be a valid field index within the STRUCT.
+    /// - The returned value borrows nothing: it must not be used after the
+    ///   underlying `duckdb_data_chunk` is destroyed — for an
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
+    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn struct_field_reader(&self, col_idx: usize, field_idx: usize) -> VectorReader {
         // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
         // first `# Safety` clause; `self.raw` is live for this wrapper's lifetime per
@@ -292,6 +312,11 @@ impl DataChunk {
     /// - `col_idx` must be less than [`column_count`][Self::column_count].
     /// - The column at `col_idx` must have a STRUCT type with `field_count` fields.
     /// - The chunk must be a writable output chunk.
+    /// - The returned value borrows nothing: it must not be used after the
+    ///   underlying `duckdb_data_chunk` is destroyed — for an
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
+    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn struct_writer(&self, col_idx: usize, field_count: usize) -> StructWriter {
         // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
         // first `# Safety` clause; `self.raw` is live for this wrapper's lifetime per

@@ -115,7 +115,9 @@ ScalarOverloadBuilder::new()
 
 ```rust
 ScalarFunctionBuilder::new("my_fn")
-    .null_handling(NullHandling::SpecialNullHandling) // receive NULLs in callback
+    // Declares the function may return non-NULL for NULL input. The callback
+    // receives NULL rows under either setting (Pitfall L8).
+    .null_handling(NullHandling::SpecialNullHandling)
     // ...
 ```
 
@@ -197,7 +199,7 @@ unsafe extern "C" fn update(
 unsafe extern "C" fn combine(
     info: duckdb_function_info,
     source: *mut duckdb_aggregate_state, // array of count source states
-    target: *mut duckdb_aggregate_state, // array of count target states (zero-initialized!)
+    target: *mut duckdb_aggregate_state, // array of count target states, each fresh from state_init
     count: idx_t,
 );
 

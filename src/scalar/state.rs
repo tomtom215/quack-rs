@@ -211,8 +211,12 @@ impl<T: Send + Sync + 'static> ScalarBindData<T> {
     ///
     /// # Safety
     ///
-    /// The bind callback must have stored a `T` via [`set`][Self::set] — and
-    /// nothing else. Reading a different type reinterprets memory.
+    /// - The bind callback must have stored a `T` via [`set`][Self::set] — and
+    ///   nothing else. Reading a different type reinterprets memory.
+    /// - The returned reference must not outlive the callback invocation that
+    ///   `info` belongs to. The lifetime `'a` is the caller's to choose and
+    ///   nothing ties it to `info`; `DuckDB` frees the bind data when the query
+    ///   finishes, and a reference kept past that reads freed memory.
     #[must_use]
     pub unsafe fn get<'a>(info: &ScalarFunctionInfo) -> Option<&'a T> {
         // SAFETY: forwarded from this function's own contract.
@@ -286,6 +290,10 @@ impl<T: Send + 'static> ScalarLocalState<T> {
     ///
     /// - The init callback must have stored a `T` via [`set`][Self::set].
     /// - Only one borrow may be live at a time within a callback invocation.
+    /// - The returned reference must not outlive the callback invocation that
+    ///   `info` belongs to. The lifetime `'a` is the caller's to choose and
+    ///   nothing ties it to `info`; `DuckDB` frees the local state when the
+    ///   thread's execution ends.
     #[must_use]
     pub unsafe fn get_mut<'a>(info: &ScalarFunctionInfo) -> Option<&'a mut T> {
         // SAFETY: forwarded from this function's own contract.

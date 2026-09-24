@@ -73,8 +73,8 @@ pub trait AggregateState: Default + Send + 'static {}
 
 /// A generic FFI-compatible state wrapper for use with `DuckDB` aggregate functions.
 ///
-/// `FfiState<T>` is a `#[repr(C)]` struct containing a single raw pointer to a
-/// heap-allocated `T`. `DuckDB` allocates `size_of::<FfiState<T>>()` bytes per
+/// `FfiState<T>` is a `#[repr(C)]` struct holding a raw pointer to a
+/// heap-allocated `T` and a tag that marks the slot initialised. `DuckDB` allocates `size_of::<FfiState<T>>()` bytes per
 /// aggregate group via [`size_callback`][FfiState::size_callback], then calls
 /// [`init_callback`][FfiState::init_callback] to initialize each allocation.
 ///
@@ -106,8 +106,29 @@ pub trait AggregateState: Default + Send + 'static {}
 /// # Memory layout
 ///
 /// ```text
-/// FfiState<T> = { inner: *mut T }  // exactly pointer-sized, repr(C)
+/// FfiState<T> = { inner: *mut T, tag: usize }  // two words, repr(C)
 /// ```
+///
+/// # States `DuckDB` never initialised
+///
+/// When a `state_init` call fails — a panicking `T::default()`, or an
+/// allocation failure — `DuckDB` 1.4.4 to 1.5.5 still calls the destructor
+/// on every state row it had created, initialised or not
+/// (`RowOperations::InitializeStates` is not exception-safe; see
+/// `docs/upstream-duckdb-reports.md`). That includes the states of *other*
+/// aggregates in the same query whose `state_init` never ran. Those bytes
+/// are whatever the allocation held, and treating a stale `inner` as a
+/// `Box<T>` would free a wild pointer.
+///
+/// So [`init_callback`][Self::init_callback] also stores `tag`, a value
+/// derived from the slot's own address, and
+/// [`destroy_callback`][Self::destroy_callback] frees only a slot whose tag
+/// matches, clearing it first. A slot the destructor has already processed
+/// no longer matches; a stale tag can survive only in a slot that was never
+/// destroyed, whose `T` is therefore still allocated. What is left is chance:
+/// uninitialised bytes that happen to equal this slot's tag, one value in
+/// 2<sup>64</sup> on a 64-bit target. This is a mitigation of a `DuckDB` defect,
+/// not a guarantee.
 ///
 /// # Usage
 ///
@@ -131,9 +152,25 @@ pub struct FfiState<T: AggregateState> {
     /// - Set to non-null by [`init_callback`][FfiState::init_callback].
     /// - Set to null after freeing by [`destroy_callback`][FfiState::destroy_callback].
     pub inner: *mut T,
+    /// [`tag_for`][Self::tag_for] this slot's address once
+    /// [`init_callback`][FfiState::init_callback] has initialised it, and zero
+    /// once [`destroy_callback`][FfiState::destroy_callback] has processed it.
+    tag: usize,
 }
 
 impl<T: AggregateState> FfiState<T> {
+    /// Mixed into a slot's address to make its tag: an arbitrary odd constant,
+    /// so that neither a zeroed slot nor one holding its own address matches.
+    #[cfg(target_pointer_width = "64")]
+    const TAG_KEY: usize = 0x9E37_79B9_7F4A_7C15;
+    #[cfg(not(target_pointer_width = "64"))]
+    const TAG_KEY: usize = 0x9E37_79B9;
+
+    /// The tag an initialised state at `slot` carries.
+    fn tag_for(slot: *const Self) -> usize {
+        (slot as usize) ^ Self::TAG_KEY
+    }
+
     /// Returns the size of `FfiState<T>` in bytes, for use as the `state_size` callback.
     ///
     /// # Example
@@ -208,6 +245,7 @@ impl<T: AggregateState> FfiState<T> {
                 slot,
                 Self {
                     inner: core::ptr::null_mut(),
+                    tag: Self::tag_for(slot),
                 },
             );
         }
@@ -258,26 +296,51 @@ impl<T: AggregateState> FfiState<T> {
     /// discarded. Every remaining state is still freed: one bad destructor does
     /// not leak the rest of the group.
     ///
+    /// One case cannot be contained: a `T::drop` that panics while one of
+    /// `T`'s fields also panics in its own `drop` during that unwind. Rust
+    /// aborts the process for a panic raised while unwinding ("panic in a
+    /// destructor during cleanup") before any `catch_unwind` sees it.
+    ///
     /// # Safety
     ///
     /// - `states` must point to an array of `count` valid `duckdb_aggregate_state`
-    ///   pointers, each previously initialized by [`init_callback`][Self::init_callback].
+    ///   pointers, each to `size_of::<FfiState<T>>()` bytes that `DuckDB`
+    ///   allocated for this aggregate. A slot [`init_callback`][Self::init_callback]
+    ///   never initialised is skipped (see "States `DuckDB` never initialised"
+    ///   on the type).
     /// - Each state must not have been freed already (or have `inner == null`).
     pub unsafe extern "C" fn destroy_callback(states: *mut duckdb_aggregate_state, count: idx_t) {
         for i in 0..usize::try_from(count).unwrap_or(0) {
             // SAFETY: `states` is a valid array of `count` pointers.
             let state_ptr = unsafe { *states.add(i) };
             let slot = state_ptr.cast::<Self>();
-            // SAFETY: Each element was initialized by `init_callback` as `*mut Self`.
-            let inner = unsafe { (*slot).inner };
+            // SAFETY: the slot is `size_of::<Self>()` bytes DuckDB allocated
+            // for this aggregate, so both words are in bounds. They may never
+            // have been written by `init_callback`, so they are read as plain
+            // words with volatile loads, which the compiler must perform as
+            // written and cannot reason about, and only trusted once the tag
+            // matches.
+            let (tag, inner) = unsafe {
+                (
+                    core::ptr::read_volatile(core::ptr::addr_of!((*slot).tag)),
+                    core::ptr::read_volatile(core::ptr::addr_of!((*slot).inner)),
+                )
+            };
+            if tag != Self::tag_for(slot) {
+                continue;
+            }
+            // Clear the tag and null the pointer *before* dropping: if
+            // `T::drop` panics, the allocation is still released by the
+            // unwind, so leaving the slot live would make a second destructor
+            // call a double free.
+            // SAFETY: the tag matched, so `init_callback` initialised the slot.
+            unsafe {
+                (*slot).tag = 0;
+                (*slot).inner = core::ptr::null_mut();
+            }
             if inner.is_null() {
                 continue;
             }
-            // Null the pointer *before* dropping: if `T::drop` panics, the
-            // allocation is still released by the unwind, so leaving the
-            // pointer live would make a second destructor call a double free.
-            // SAFETY: `slot` was initialised by `init_callback`.
-            unsafe { (*slot).inner = core::ptr::null_mut() };
             // SAFETY: `inner` was created by `Box::into_raw(Box::new(T::default()))`.
             // We are the only owner; dropping it here is correct. The drop runs
             // arbitrary user code, so it must not be allowed to unwind out of
@@ -303,6 +366,11 @@ impl<T: AggregateState> FfiState<T> {
     /// - `state` must point to a valid `FfiState<T>` allocated by `DuckDB` and
     ///   initialized by [`init_callback`][Self::init_callback].
     /// - No other reference to the same `T` must exist simultaneously.
+    /// - The returned reference must not outlive the callback that received
+    ///   `state`. The lifetime `'a` is the caller's to choose and nothing ties
+    ///   it to `state`; `DuckDB` destroys the state — and
+    ///   [`destroy_callback`][Self::destroy_callback] frees the `T` — once it
+    ///   is finalized or merged.
     ///
     /// # Example
     ///
@@ -348,8 +416,8 @@ impl<T: AggregateState> FfiState<T> {
     }
 }
 
-// Note: The pointer-size invariant is verified in unit tests using a concrete
-// type that implements AggregateState (see tests::ffi_state_is_pointer_sized).
+// Note: The two-word layout is verified in unit tests using a concrete
+// type that implements AggregateState (see tests::ffi_state_is_two_words).
 // A const assertion is not possible here because const fn cannot use trait bounds.
 
 impl<T: AggregateState> core::fmt::Debug for FfiState<T> {
@@ -357,6 +425,7 @@ impl<T: AggregateState> core::fmt::Debug for FfiState<T> {
         f.debug_struct("FfiState")
             .field("state", &core::any::type_name::<T>())
             .field("inner", &self.inner)
+            .field("tag", &self.tag)
             .finish()
     }
 }
@@ -372,16 +441,76 @@ mod tests {
     impl AggregateState for Counter {}
 
     #[test]
-    fn ffi_state_is_pointer_sized() {
+    fn ffi_state_is_two_words() {
         assert_eq!(
             core::mem::size_of::<FfiState<Counter>>(),
-            core::mem::size_of::<*mut Counter>()
+            2 * core::mem::size_of::<usize>()
         );
     }
 
     #[test]
-    fn size_returns_pointer_size() {
-        assert_eq!(FfiState::<Counter>::size(), core::mem::size_of::<usize>());
+    fn size_returns_two_words() {
+        assert_eq!(
+            FfiState::<Counter>::size(),
+            2 * core::mem::size_of::<usize>()
+        );
+    }
+
+    /// The fourth audit's F3. `DuckDB` destroys states whose `state_init`
+    /// never ran when another init fails, so a slot can hold any bytes. A
+    /// slot whose tag does not match — here a non-null `inner` that was never
+    /// allocated — is skipped, not freed. Under Miri, freeing it would be
+    /// reported as undefined behaviour.
+    #[test]
+    fn destroy_skips_a_slot_init_never_initialised() {
+        let bogus = core::ptr::NonNull::<Counter>::dangling().as_ptr();
+        let mut raw: FfiState<Counter> = FfiState {
+            inner: bogus,
+            tag: 0x5a5a_5a5a,
+        };
+        let state_ptr = std::ptr::addr_of_mut!(raw) as duckdb_aggregate_state;
+        let mut state_arr: [duckdb_aggregate_state; 1] = [state_ptr];
+        // SAFETY: the slot is a live `FfiState<Counter>`; its contents are
+        // exactly what the destructor must refuse to trust.
+        unsafe { FfiState::<Counter>::destroy_callback(state_arr.as_mut_ptr(), 1) };
+        assert_eq!(raw.inner, bogus, "an untagged slot is left alone");
+        // A tag copied from another slot does not match this one either.
+        let other: FfiState<Counter> = FfiState {
+            inner: core::ptr::null_mut(),
+            tag: 0,
+        };
+        // Written through `state_ptr`, not `raw`: a direct write to `raw` would
+        // invalidate the pointer the destructor is about to use (Miri, Stacked
+        // Borrows).
+        // SAFETY: `state_ptr` points at `raw`, a live `FfiState<Counter>`.
+        unsafe {
+            (*state_ptr.cast::<FfiState<Counter>>()).tag =
+                FfiState::<Counter>::tag_for(std::ptr::addr_of!(other));
+        }
+        // SAFETY: as above.
+        unsafe { FfiState::<Counter>::destroy_callback(state_arr.as_mut_ptr(), 1) };
+        assert_eq!(raw.inner, bogus, "another slot's tag does not match");
+    }
+
+    /// A destroyed slot's tag is cleared, so destroying it again is a no-op
+    /// even though its bytes are otherwise unchanged.
+    #[test]
+    fn destroy_clears_the_tag() {
+        let mut raw: FfiState<Counter> = FfiState {
+            inner: core::ptr::null_mut(),
+            tag: 0,
+        };
+        let state_ptr = std::ptr::addr_of_mut!(raw) as duckdb_aggregate_state;
+        // SAFETY: a live, writable slot of the right size.
+        unsafe { FfiState::<Counter>::init_callback(core::ptr::null_mut(), state_ptr) };
+        assert_eq!(
+            raw.tag,
+            FfiState::<Counter>::tag_for(std::ptr::addr_of!(raw))
+        );
+        let mut state_arr: [duckdb_aggregate_state; 1] = [state_ptr];
+        // SAFETY: initialised above.
+        unsafe { FfiState::<Counter>::destroy_callback(state_arr.as_mut_ptr(), 1) };
+        assert_eq!((raw.tag, raw.inner), (0, core::ptr::null_mut()));
     }
 
     #[test]
@@ -395,6 +524,7 @@ mod tests {
         // Step 1: allocate
         let mut raw: FfiState<Counter> = FfiState {
             inner: core::ptr::null_mut(),
+            tag: 0,
         };
         let state_ptr = std::ptr::addr_of_mut!(raw) as duckdb_aggregate_state;
 
@@ -427,6 +557,7 @@ mod tests {
     fn destroy_null_inner_is_noop() {
         let mut raw: FfiState<Counter> = FfiState {
             inner: core::ptr::null_mut(),
+            tag: 0,
         };
         let state_ptr = std::ptr::addr_of_mut!(raw) as duckdb_aggregate_state;
         let mut state_arr: [duckdb_aggregate_state; 1] = [state_ptr];
@@ -441,6 +572,7 @@ mod tests {
     fn with_state_mut_null_inner_returns_none() {
         let mut raw: FfiState<Counter> = FfiState {
             inner: core::ptr::null_mut(),
+            tag: 0,
         };
         let state_ptr = std::ptr::addr_of_mut!(raw) as duckdb_aggregate_state;
         // SAFETY: state_ptr is valid, inner is null.
@@ -452,6 +584,7 @@ mod tests {
     fn with_state_null_inner_returns_none() {
         let raw: FfiState<Counter> = FfiState {
             inner: core::ptr::null_mut(),
+            tag: 0,
         };
         let state_ptr = std::ptr::addr_of!(raw) as duckdb_aggregate_state;
         // SAFETY: state_ptr is valid, inner is null.
@@ -460,12 +593,12 @@ mod tests {
     }
 
     #[test]
-    fn size_callback_returns_pointer_size() {
+    fn size_callback_returns_two_words() {
         // SAFETY: size_callback takes a null-ok info pointer and only reads sizeof.
         let size = unsafe { FfiState::<Counter>::size_callback(core::ptr::null_mut()) };
         assert_eq!(
             usize::try_from(size).unwrap(),
-            core::mem::size_of::<usize>()
+            2 * core::mem::size_of::<usize>()
         );
     }
 
@@ -475,6 +608,7 @@ mod tests {
         let mut states: Vec<FfiState<Counter>> = (0..4)
             .map(|_| FfiState {
                 inner: core::ptr::null_mut(),
+                tag: 0,
             })
             .collect();
 

@@ -255,6 +255,15 @@ impl AggregateOverloadBuilder {
     }
 
     /// Sets the optional destructor callback for this overload.
+    ///
+    /// When none is set, `register` installs a no-op destructor rather than
+    /// none at all. `DuckDB` evaluates an aggregate without a state destructor
+    /// as a *streaming* window for running frames
+    /// (`agg(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`), and
+    /// through the C API that path feeds `update` the first row of each chunk
+    /// in place of every later one — a wrong answer with no error (Pitfall
+    /// L13). The cost is the streaming shortcut: such windows are evaluated by
+    /// `DuckDB`'s general window operator instead.
     pub const fn destructor(mut self, f: DestroyFn) -> Self {
         self.destructor = Some(f);
         self
@@ -286,9 +295,22 @@ impl AggregateOverloadBuilder {
     ///
     /// # Safety
     ///
-    /// `data` must point to valid memory that outlives the function registration,
-    /// or will be freed by `destroy`. The typical pattern
-    /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// - `data` must stay valid until `destroy` frees it (with no `destroy`,
+    ///   for as long as the database lives), and `destroy` must be able to
+    ///   free it exactly once with no one else freeing it — so one pointer
+    ///   must not be given to two builders or overloads, each of which hands
+    ///   its `destroy` to `DuckDB` separately.
+    /// - The pointee must be `Send + Sync`. `DuckDB` hands the same pointer to
+    ///   the callbacks on every thread that executes the function, possibly at
+    ///   the same moment, and `destroy` runs on whichever thread releases the
+    ///   function — or, if the builder is dropped unregistered, the thread
+    ///   that drops it.
+    /// - `destroy` must not unwind: it is an `extern "C" fn`, so a panic
+    ///   escaping it aborts the process. Wrap a body that can panic in
+    ///   [`catch_ffi_panic`][crate::callback::catch_ffi_panic].
+    ///
+    /// The typical pattern is to box your data:
+    /// `Box::into_raw(Box::new(my_data)).cast()`.
     pub unsafe fn extra_info(
         mut self,
         data: *mut c_void,

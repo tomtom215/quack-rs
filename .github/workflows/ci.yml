@@ -3,7 +3,8 @@
 #
 # Continuous integration — enforces all quality gates.
 #
-# Jobs: check, test, test-bundled, test-bundled-prebuilt, test-duckdb-1-5,
+# Jobs: check, test, test-bundled, test-bundled-prebuilt, test-older-engines,
+#       test-duckdb-1-5,
 #       wasm, clippy, clippy-beta, fmt, doc, msrv, dependency-floor,
 #       bench-compile, example-check, scaffold-compile, symbol-check,
 #       abi-table, platform-table, spdx-list, autoload-entries, book,
@@ -26,6 +27,13 @@ on:
     branches: [main, "claude/**"]
   pull_request:
     branches: [main]
+  # Weekly, on the default branch: the abi-table, platform-table, spdx-list and
+  # autoload-entries jobs compare the checked-in tables with upstream, which
+  # changes without any commit here (a new DuckDB release, a new SPDX list),
+  # and clippy-beta / nightly track moving toolchains.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 # CI builds and executes code from pull requests (cargo test, cargo fuzz, the
 # scaffold end-to-end job) and never writes anything back to GitHub, so it gets
@@ -171,6 +179,60 @@ jobs:
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
         run: cargo clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-4 -- -D warnings
+
+  test-older-engines:
+    # Every other test job runs against the DuckDB release Cargo.lock pins
+    # (v1.5.5), but quack-rs supports every release from v1.4.4, and a
+    # `duckdb-1-5` build loads into v1.5.0 to v1.5.4 too. Their C APIs differ
+    # in places: before v1.5.5 `duckdb_scalar_function_bind_get_argument`
+    # copies outside any `try` (a subquery argument aborted the process);
+    # before v1.5.4 `duckdb_create_decimal_type` validates nothing; before
+    # v1.5.0 scalar registration cannot add an overload to an existing name,
+    # and the C API reports TIME_NS as INVALID. All of that went unnoticed
+    # until the suite ran against the oldest release of each range, which
+    # this job now does on every run.
+    name: Test against DuckDB ${{ matrix.engine }} (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: v1.4.4
+            crate: 1.4.4
+            features: bundled-test-prebuilt
+          - engine: v1.5.0
+            crate: 1.10500.0
+            features: bundled-test-prebuilt,duckdb-1-5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Pin the bindings to the engine and download its library
+        # The test shim refuses a library whose duckdb_ext_api_v1 size differs
+        # from the bindings', so both must be the same release.
+        env:
+          ENGINE: ${{ matrix.engine }}
+          CRATE: ${{ matrix.crate }}
+        run: |
+          set -euo pipefail
+          cargo update -p duckdb --precise "$CRATE"
+          cargo update -p libduckdb-sys --precise "$CRATE"
+          DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
+          test "$DUCKDB_TAG" = "$ENGINE" || { echo "::error::pinned to ${DUCKDB_TAG}, not ${ENGINE}"; exit 1; }
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip" -o "${{ runner.temp }}/libduckdb.zip"
+          mkdir -p "${{ runner.temp }}/libduckdb"
+          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+      - name: Test
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+          FEATURES: ${{ matrix.features }}
+        run: cargo test --all-targets --features "$FEATURES"
 
   test-duckdb-1-5:
     name: Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features
@@ -669,7 +731,7 @@ jobs:
           # database is running"), so it has to be the `-unsigned` startup flag
           # rather than a statement.
           test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
-            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
+            echo "::error::DuckDB CLI smoke test failed -- '-unsigned -c' did not execute SQL"
             exit 1
           }
       - name: Stamp the extension metadata footer
@@ -744,7 +806,7 @@ jobs:
           # database is running"), so it has to be the `-unsigned` startup flag
           # rather than a statement.
           test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
-            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
+            echo "::error::DuckDB CLI smoke test failed -- '-unsigned -c' did not execute SQL"
             exit 1
           }
       - name: Generate, build, stamp and load a scaffolded extension
@@ -794,6 +856,30 @@ jobs:
           cd /tmp/scaffolded
           cargo fmt -- --check
           cargo clippy --all-targets -- -D warnings
+      - name: Generated project's own make configure / release / test
+        # The steps above stamp with quack-rs's own tool. The generated CI
+        # builds through extension-ci-tools' Makefiles instead and runs the
+        # SQLLogicTest in test/sql, so run that path too, with DUCKDB_PLATFORM
+        # empty as the generated CI sets it on Linux (`linux_amd64` makes
+        # base.Makefile print "Skipping tests.." and pass). The git repository
+        # gives `make configure` a version to stamp; extension-ci-tools is
+        # pinned to the commit this was checked against.
+        env:
+          DUCKDB_PLATFORM: ""
+        run: |
+          set -euo pipefail
+          cd /tmp/scaffolded
+          git init -q
+          git -c user.name=ci -c user.email=ci@example.invalid add -A
+          git -c user.name=ci -c user.email=ci@example.invalid commit -qm scaffold
+          git clone -q https://github.com/duckdb/extension-ci-tools extension-ci-tools
+          git -C extension-ci-tools checkout -q 39ffc46ca8c70021d741c7be2e7bcadf3fd1c503
+          make configure release test 2>&1 | tee /tmp/scaffold_make.log
+          if grep -q 'Skipping tests' /tmp/scaffold_make.log; then
+            echo "::error::the generated project's SQLLogicTest was skipped"; exit 1
+          fi
+          grep -qx 'SUCCESS' /tmp/scaffold_make.log || {
+            echo "::error::the generated project's SQLLogicTest did not report SUCCESS"; exit 1; }
 
   abi-guard:
     # What this job proves is narrow: a build whose QUACK_RS_TARGET_DUCKDB_VERSION
@@ -831,7 +917,7 @@ jobs:
           # database is running"), so it has to be the `-unsigned` startup flag
           # rather than a statement.
           test "$(./duckdb -unsigned -csv -noheader -c 'SELECT 41 + 1;')" = "42" || {
-            echo "::error::DuckDB CLI smoke test failed -- `-unsigned -c` did not execute SQL"
+            echo "::error::DuckDB CLI smoke test failed -- '-unsigned -c' did not execute SQL"
             exit 1
           }
       # Regression test for the most dangerous failure mode this crate guards
@@ -912,12 +998,18 @@ jobs:
             exit 1
           }
           # And the extension must not have loaded: a refusal that still
-          # registers its functions would be worse than no guard at all.
-          ./duckdb -unsigned -csv -noheader -c "LOAD '/tmp/abi_demo/abi_demo.duckdb_extension'; SELECT abi_demo_ok(1);" \
-            > /tmp/abi_fn.log 2>&1 || true
-          if grep -q '^2$' /tmp/abi_fn.log; then
+          # registers its functions would be worse than no guard at all. The
+          # statements go through stdin, not `-c`: `-c` stops at the failed
+          # LOAD, so the SELECT would never run and this check could not fail.
+          # The marker row proves the statements after the LOAD did run.
+          printf "%s\n" "LOAD '/tmp/abi_demo/abi_demo.duckdb_extension';" \
+            "SELECT abi_demo_ok(1);" "SELECT 'after-load';" \
+            | ./duckdb -unsigned -csv -noheader > /tmp/abi_fn.log 2>&1 || true
+          cat /tmp/abi_fn.log
+          grep -qx 'after-load' /tmp/abi_fn.log || {
+            echo "::error::the statements after the refused LOAD did not run"; exit 1; }
+          if grep -qx '2' /tmp/abi_fn.log; then
             echo "::error::the refused extension still registered abi_demo_ok"
-            cat /tmp/abi_fn.log
             exit 1
           fi
 
@@ -1000,10 +1092,14 @@ jobs:
             curl -fsSL "https://github.com/duckdb/duckdb/releases/download/$v/duckdb_cli-linux-amd64.zip" -o "$dir/cli.zip"
             unzip -o -q "$dir/cli.zip" -d "$dir"
             echo "--- $("$dir/duckdb" --version), expecting $expect ---"
-            "$dir/duckdb" -unsigned -csv -noheader \
-              -c "LOAD '/tmp/abi_layout/abi_layout.duckdb_extension'; SELECT abi_layout_ok(1);" \
-              > "$dir/out.log" 2>&1 || true
+            # stdin, not `-c`: `-c` stops at a failed LOAD, so the SELECT
+            # would never run; the marker row proves it did.
+            printf "%s\n" "LOAD '/tmp/abi_layout/abi_layout.duckdb_extension';" \
+              "SELECT abi_layout_ok(1);" "SELECT 'after-load';" \
+              | "$dir/duckdb" -unsigned -csv -noheader > "$dir/out.log" 2>&1 || true
             cat "$dir/out.log"
+            grep -qx 'after-load' "$dir/out.log" || {
+              echo "::error::DuckDB $v: the statements after the LOAD did not run"; exit 1; }
             if [ "$expect" = refuse ]; then
               # The LayoutMismatch arm of AbiCheck::error_message.
               grep -q "DuckDB C extension API layout mismatch" "$dir/out.log" || {
@@ -1338,7 +1434,8 @@ jobs:
       # input in a real extension.
       #
       # A short smoke run per PR, not a campaign: it catches a newly introduced
-      # panic without holding up review. `fuzz/corpus` carries the seeds.
+      # panic without holding up review. The committed seeds live in `fuzz/seeds`;
+      # `fuzz/corpus` is generated from them.
       - name: Install cargo-fuzz
         env:
           # Do not build third-party tools with warnings-as-errors:

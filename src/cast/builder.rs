@@ -351,12 +351,31 @@ impl CastFunctionBuilder {
         self
     }
 
+    /// The completeness checks that need no `DuckDB` call: a function
+    /// callback, a source type and a target type.
+    /// [`MockRegistrar`][crate::testing::MockRegistrar] runs them too.
+    pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
+        if self.function.is_none() {
+            return Err(ExtensionError::new("cast function callback not set"));
+        }
+        if self.source.is_none() && self.source_logical.is_none() {
+            return Err(ExtensionError::new("cast source type not set"));
+        }
+        if self.target.is_none() && self.target_logical.is_none() {
+            return Err(ExtensionError::new("cast target type not set"));
+        }
+        Ok(())
+    }
+
     /// Registers the cast function on the given connection.
     ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if:
     /// - The function callback, source type or target type was not set.
+    /// - The source or target type is a bare composite [`TypeId`] (`DECIMAL`,
+    ///   `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`, `UNION`); build it as a
+    ///   [`LogicalType`] and use [`new_logical`][Self::new_logical].
     /// - `con` is null.
     /// - The source or target type is, or contains, `ANY` or `INVALID`
     ///   (`DuckDB` refuses these).
@@ -379,7 +398,8 @@ impl CastFunctionBuilder {
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.
-        // The callback check needs no DuckDB call, so it goes first.
+        // The checks that need no DuckDB call go first.
+        self.check_parts()?;
         let function = self
             .function
             .ok_or_else(|| ExtensionError::new("cast function callback not set"))?;

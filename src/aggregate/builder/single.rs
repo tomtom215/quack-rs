@@ -64,21 +64,42 @@ use crate::validate::validate_function_name;
 ///
 /// unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 8 }
 /// unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
-/// unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_aggregate_state) {}
-/// unsafe extern "C" fn combine(_: duckdb_function_info, _: duckdb_aggregate_state, _: duckdb_aggregate_state, _: idx_t) {}
-/// unsafe extern "C" fn finalize(_: duckdb_function_info, _: duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+/// unsafe extern "C" fn update(
+///     _: duckdb_function_info,
+///     _: duckdb_data_chunk,
+///     _: *mut duckdb_aggregate_state,
+/// ) {}
+/// unsafe extern "C" fn combine(
+///     _: duckdb_function_info,
+///     _: *mut duckdb_aggregate_state,
+///     _: *mut duckdb_aggregate_state,
+///     _: idx_t,
+/// ) {}
+/// unsafe extern "C" fn finalize(
+///     _: duckdb_function_info,
+///     _: *mut duckdb_aggregate_state,
+///     _: duckdb_vector,
+///     _: idx_t,
+///     _: idx_t,
+/// ) {}
 ///
-/// // fn register(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
-/// //     AggregateFunctionBuilder::new("word_count")
-/// //         .param(TypeId::Varchar)
-/// //         .returns(TypeId::BigInt)
-/// //         .state_size(state_size)
-/// //         .init(state_init)
-/// //         .update(update)
-/// //         .combine(combine)
-/// //         .finalize(finalize)
-/// //         .register(con)
-/// // }
+/// /// # Safety
+/// ///
+/// /// `con` must be a valid, open connection.
+/// unsafe fn register(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
+///     // SAFETY: `con` is valid per this function's contract.
+///     unsafe {
+///         AggregateFunctionBuilder::new("word_count")
+///             .param(TypeId::Varchar)
+///             .returns(TypeId::BigInt)
+///             .state_size(state_size)
+///             .init(state_init)
+///             .update(update)
+///             .combine(combine)
+///             .finalize(finalize)
+///             .register(con)
+///     }
+/// }
 /// ```
 #[must_use]
 pub struct AggregateFunctionBuilder {
@@ -269,7 +290,15 @@ impl AggregateFunctionBuilder {
     /// Sets the optional `destructor` callback.
     ///
     /// Required if your state allocates heap memory (e.g., when using
-    /// [`FfiState<T>`][crate::aggregate::FfiState]).
+    /// [`FfiState<T>`][crate::aggregate::FfiState]).    ///
+    /// When none is set, `register` installs a no-op destructor rather than
+    /// none at all. `DuckDB` evaluates an aggregate without a state destructor
+    /// as a *streaming* window for running frames
+    /// (`agg(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`), and
+    /// through the C API that path feeds `update` the first row of each chunk
+    /// in place of every later one — a wrong answer with no error (Pitfall
+    /// L13). The cost is the streaming shortcut: such windows are evaluated by
+    /// `DuckDB`'s general window operator instead.
     pub fn destructor(mut self, f: DestroyFn) -> Self {
         self.destructor = Some(f);
         self
@@ -297,9 +326,22 @@ impl AggregateFunctionBuilder {
     ///
     /// # Safety
     ///
-    /// `data` must point to valid memory that outlives the function registration,
-    /// or will be freed by `destroy`. The typical pattern
-    /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// - `data` must stay valid until `destroy` frees it (with no `destroy`,
+    ///   for as long as the database lives), and `destroy` must be able to
+    ///   free it exactly once with no one else freeing it — so one pointer
+    ///   must not be given to two builders or overloads, each of which hands
+    ///   its `destroy` to `DuckDB` separately.
+    /// - The pointee must be `Send + Sync`. `DuckDB` hands the same pointer to
+    ///   the callbacks on every thread that executes the function, possibly at
+    ///   the same moment, and `destroy` runs on whichever thread releases the
+    ///   function — or, if the builder is dropped unregistered, the thread
+    ///   that drops it.
+    /// - `destroy` must not unwind: it is an `extern "C" fn`, so a panic
+    ///   escaping it aborts the process. Wrap a body that can panic in
+    ///   [`catch_ffi_panic`][crate::callback::catch_ffi_panic].
+    ///
+    /// The typical pattern is to box your data:
+    /// `Box::into_raw(Box::new(my_data)).cast()`.
     pub unsafe fn extra_info(
         mut self,
         data: *mut c_void,
@@ -310,6 +352,28 @@ impl AggregateFunctionBuilder {
         self
     }
 
+    /// The completeness checks that need no `DuckDB` call: a return type and
+    /// the five required callbacks. [`MockRegistrar`][crate::testing::MockRegistrar]
+    /// runs them too, so a builder it accepts is not refused at `LOAD` for a
+    /// missing part.
+    pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
+        if self.return_type.is_none() && self.return_logical.is_none() {
+            return Err(ExtensionError::new("return type not set"));
+        }
+        let missing = [
+            ("state_size", self.state_size.is_none()),
+            ("init", self.init.is_none()),
+            ("update", self.update.is_none()),
+            ("combine", self.combine.is_none()),
+            ("finalize", self.finalize.is_none()),
+        ]
+        .into_iter()
+        .find_map(|(name, absent)| absent.then_some(name));
+        missing.map_or(Ok(()), |callback| {
+            Err(ExtensionError::new(format!("{callback} callback not set")))
+        })
+    }
+
     /// Registers the aggregate function on the given connection.
     ///
     /// # Errors
@@ -317,6 +381,11 @@ impl AggregateFunctionBuilder {
     /// Returns `ExtensionError` if:
     /// - The return type was not set.
     /// - Any required callback was not set.
+    /// - A parameter, varargs or return type was given as a bare composite
+    ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
+    ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
+    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   names the slot.
     /// - `DuckDB` reports a registration failure.
     ///
     /// # Name collisions
@@ -331,14 +400,21 @@ impl AggregateFunctionBuilder {
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.
+    #[allow(clippy::too_many_lines)]
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.
+        self.check_parts()?;
         for (i, id) in self.params.iter().enumerate() {
             LogicalType::check_slot(*id, &format!("aggregate function parameter {i}"))?;
         }
         if let Some(id) = self.return_type {
             LogicalType::check_slot(id, "aggregate function return type")?;
         }
+        crate::table::type_check::refuse_any_return(
+            "aggregate function return type",
+            self.return_type,
+            self.return_logical.as_ref(),
+        )?;
         // Resolve return type: prefer explicit LogicalType over TypeId.
         let ret_lt = if let Some(lt) = self.return_logical {
             lt
@@ -420,11 +496,15 @@ impl AggregateFunctionBuilder {
             );
         }
 
-        if let Some(dtor) = self.destructor {
-            // SAFETY: dtor is a valid extern "C" fn pointer.
-            unsafe {
-                duckdb_aggregate_function_set_destructor(func, Some(dtor));
-            }
+        // Always register a destructor, a no-op if none was given: without one
+        // DuckDB streams running-frame windows through a path that gives C API
+        // aggregates wrong answers (see `callbacks::no_op_destroy`).
+        let dtor = self
+            .destructor
+            .unwrap_or(crate::aggregate::callbacks::no_op_destroy);
+        // SAFETY: dtor is a valid extern "C" fn pointer.
+        unsafe {
+            duckdb_aggregate_function_set_destructor(func, Some(dtor));
         }
 
         // Set special NULL handling if requested

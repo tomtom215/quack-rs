@@ -141,14 +141,20 @@ use quack_rs::testing::MockRegistrar;
 use quack_rs::scalar::ScalarFunctionBuilder;
 use quack_rs::types::TypeId;
 use quack_rs::error::ExtensionError;
+use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+
+unsafe extern "C" fn upper(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
+unsafe extern "C" fn lower(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
 
 fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
     let upper = ScalarFunctionBuilder::new("upper_ext")
         .param(TypeId::Varchar)
-        .returns(TypeId::Varchar);
+        .returns(TypeId::Varchar)
+        .function(upper);
     let lower = ScalarFunctionBuilder::new("lower_ext")
         .param(TypeId::Varchar)
-        .returns(TypeId::Varchar);
+        .returns(TypeId::Varchar)
+        .function(lower);
     unsafe {
         reg.register_scalar(upper)?;
         reg.register_scalar(lower)?;
@@ -165,6 +171,12 @@ fn test_register_all() {
     assert!(mock.has_scalar("lower_ext"));
 }
 ```
+
+`MockRegistrar` refuses, with the same error, what the real registration
+refuses before it calls DuckDB: a missing return type or callback, an empty
+function set, a copy function with neither direction, a config option without a
+type or default. Checks that need DuckDB (a composite `TypeId`, a name already
+taken) are not run.
 
 > **Limitation**: `MockRegistrar` cannot be used with builders that hold
 > `LogicalType` values (created via `.returns_logical()` or `.param_logical()`),

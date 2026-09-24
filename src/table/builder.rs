@@ -356,10 +356,22 @@ impl TableFunctionBuilder {
     /// a name found there is always a live conflict — not a leftover from an
     /// earlier session that the next `LOAD` would trip over.
     ///
+    /// The check does not look in user databases. A table macro of the same
+    /// name there — `CREATE MACRO f() AS TABLE …`, persisted in the database
+    /// file — does not stop the registration, but it shadows the function
+    /// for unqualified calls from that database: `SELECT * FROM f()` runs the
+    /// macro, and only `system.main.f()` reaches the extension's function.
+    /// Refusing here would make the extension fail to load into any database
+    /// that happens to hold such a macro, so the name is left to the user.
+    ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if:
     /// - The name is already taken (see above), or the check cannot run.
+    /// - A parameter or named parameter was given as a bare composite
+    ///   [`TypeId`] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
+    ///   `UNION`); build it as a [`LogicalType`] and use the `*_logical`
+    ///   method. The error names the slot.
     /// - The bind, init, or scan callback was not set.
     /// - `DuckDB` reports a registration failure.
     ///
@@ -387,6 +399,23 @@ impl TableFunctionBuilder {
         }
     }
 
+    /// The completeness checks that need no `DuckDB` call: the bind, init and
+    /// scan callbacks. [`MockRegistrar`][crate::testing::MockRegistrar] runs
+    /// them too, so a builder it accepts is not refused at `LOAD` for a
+    /// missing part.
+    pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
+        let missing = [
+            ("bind", self.bind.is_none()),
+            ("init", self.init.is_none()),
+            ("scan", self.scan.is_none()),
+        ]
+        .into_iter()
+        .find_map(|(name, absent)| absent.then_some(name));
+        missing.map_or(Ok(()), |callback| {
+            Err(ExtensionError::new(format!("{callback} callback not set")))
+        })
+    }
+
     /// Builds a configured, unregistered `duckdb_table_function`.
     ///
     /// [`register`][Self::register] is this plus
@@ -406,6 +435,7 @@ impl TableFunctionBuilder {
     /// inside an extension).
     pub unsafe fn build_handle(self) -> Result<TableFunctionHandle, ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.
+        self.check_parts()?;
         for (i, id) in self.params.iter().enumerate() {
             LogicalType::check_slot(*id, &format!("table function parameter {i}"))?;
         }
@@ -566,10 +596,12 @@ unsafe fn refuse_taken_table_function_name(
             "table function '{name}': cannot check whether the name is taken: {detail}"
         ))
     };
-    let sql = "SELECT count(*) FROM duckdb_functions() \
+    // Every function is qualified with `system.main`, so a user macro of the
+    // same name cannot change what the check computes.
+    let sql = "SELECT count(*) FROM system.main.duckdb_functions() \
                WHERE database_name = 'system' AND schema_name = 'main' \
                AND function_type IN ('table', 'table_macro') \
-               AND lower(function_name) = lower($1)";
+               AND system.main.lower(function_name) = system.main.lower($1)";
     // SAFETY: `con` is valid per this function's contract.
     let statement =
         unsafe { crate::query::prepare(con, sql) }.map_err(|e| context(e.to_string()))?;

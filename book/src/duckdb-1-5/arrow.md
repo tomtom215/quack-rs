@@ -163,6 +163,16 @@ converters:
 Check the converted types (`ArrowConvertedSchema`) when a round trip must be
 lossless.
 
+Two more types export the wrong value with no error (checked on `DuckDB` 1.5.0
+and 1.5.5):
+
+- An `INTERVAL` whose microseconds exceed about ±106,751 days (2,562,047
+  hours) wraps, because Arrow counts nanoseconds in an `i64` and DuckDB
+  multiplies by 1000 unchecked: `INTERVAL 2562048 HOUR` exports as a negative
+  interval.
+- A `UHUGEINT` of 2^127 or more exports as a negative `decimal128(38, 0)`
+  (`2^128 - 1` becomes `-1`).
+
 ## Bridging to arrow-rs
 
 This sketch uses the `arrow` crate's `FFI_ArrowArray`, which quack-rs does not

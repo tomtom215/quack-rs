@@ -51,12 +51,13 @@ Options (each value can also be given as --option=VALUE):
                                [default: {api}]
   --platform <PLATFORM>        DuckDB platform the binary was built for, e.g. linux_amd64,
                                linux_arm64, osx_arm64, windows_amd64, wasm_eh. DuckDB
-                               refuses a file whose platform differs from its own.
+                               refuses a file whose platform differs from its own, so a
+                               group name (linux, osx, wasm, windows) is an error.
                                [default: this host, {host}]
   --wasm                       Precede the footer with the 22-byte WebAssembly custom
                                section header extension-ci-tools writes, so a .wasm
-                               module stays valid. Required for DuckDB-Wasm extensions;
-                               harmless but unnecessary for native ones.
+                               module stays valid. Required with a wasm_* platform (it
+                               is an error without it); a warning with any other.
   --replace                    The input already ends in a footer: replace it instead of
                                refusing (without this, re-stamping is an error, because
                                appending a second footer leaves the first inside the file).
@@ -161,6 +162,7 @@ pub fn parse(raw: &[String]) -> Result<Command, String> {
     check_duckdb_version(abi_type, duckdb_version, &mut warnings)?;
 
     let platform = resolve_platform(platform, &mut warnings)?;
+    check_wasm(platform, wasm, &mut warnings)?;
 
     Ok(Command::Run(Args {
         input: PathBuf::from(input),
@@ -174,6 +176,27 @@ pub fn parse(raw: &[String]) -> Result<Command, String> {
         wasm,
         warnings,
     }))
+}
+
+/// A WebAssembly module must carry the footer inside a custom section;
+/// appended bare, it is not a valid module (`WebAssembly.validate` is false)
+/// and DuckDB-Wasm cannot load it. So a `wasm_*` platform needs `--wasm`, and
+/// `--wasm` on any other platform is warned about.
+fn check_wasm(platform: &str, wasm: bool, warnings: &mut Vec<String>) -> Result<(), String> {
+    let wasm_platform = platform.starts_with("wasm");
+    if wasm_platform && !wasm {
+        return Err(format!(
+            "--platform {platform} stamps a WebAssembly module: pass --wasm, or the output is \
+             not a valid module"
+        ));
+    }
+    if wasm && !wasm_platform {
+        warnings.push(format!(
+            "--wasm wraps the footer in a WebAssembly custom section, but --platform \
+             {platform} is not a wasm platform"
+        ));
+    }
+    Ok(())
 }
 
 /// The `--platform` value, or the host's when it was not given.
@@ -196,7 +219,16 @@ fn resolve_platform<'a>(
             "--platform must be lowercase letters, digits and '_' (e.g. linux_amd64), got {platform:?}"
         ));
     }
-    if !quack_rs::validate::DUCKDB_PLATFORMS.contains(&platform) {
+    // `linux`, `osx`, `wasm` and `windows` are legal in `excluded_platforms`,
+    // where they mean "the whole group", but no DuckDB reports one as its
+    // platform, so a file stamped with one never loads.
+    if quack_rs::validate::DUCKDB_PLATFORM_GROUPS.contains(&platform) {
+        return Err(format!(
+            "--platform {platform:?} is a platform group, not a platform: DuckDB refuses a file \
+             stamped with it. Name the exact platform, e.g. {platform}_amd64 or wasm_eh"
+        ));
+    }
+    if !quack_rs::validate::DUCKDB_CI_PLATFORMS.contains(&platform) {
         warnings.push(format!(
             "platform {platform:?} is not one DuckDB's community CI builds; DuckDB only loads the \
              file if it reports exactly this platform"

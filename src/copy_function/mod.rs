@@ -70,17 +70,29 @@ use crate::types::TypeId;
 
 /// Callback type aliases for copy function phases.
 ///
-/// Bind callback — called once to configure the export.
+/// Bind callback — called when the `COPY … TO` statement is bound.
+///
+/// It configures the export: once for a plain statement, and again on every
+/// `EXECUTE` of a prepared one.
 pub type CopyBindFn = unsafe extern "C" fn(info: duckdb_copy_function_bind_info);
 
-/// Global init callback — called once to set up global state.
+/// Global init callback — called once **per output file** to set up its state.
+///
+/// That is once for a plain `COPY … TO`, and once per file with
+/// `PER_THREAD_OUTPUT` or `PARTITION_BY`. With `USE_TMP_FILE` the path is the
+/// temporary name, which `DuckDB` renames afterwards.
 pub type CopyGlobalInitFn = unsafe extern "C" fn(info: duckdb_copy_function_global_init_info);
 
-/// Sink callback — called once per data chunk to write data.
+/// Sink callback — called for each data chunk to write data, from several
+/// threads at once.
 pub type CopySinkFn =
     unsafe extern "C" fn(info: duckdb_copy_function_sink_info, chunk: duckdb_data_chunk);
 
-/// Finalize callback — called once to flush and close.
+/// Finalize callback — called once per output file, after its last sink.
+///
+/// It flushes and closes. It is **not** called when a sink reports an error:
+/// release resources in the global state's destructor, which `DuckDB` runs
+/// either way, not only here.
 pub type CopyFinalizeFn = unsafe extern "C" fn(info: duckdb_copy_function_finalize_info);
 
 /// Builder for registering a custom `COPY TO` function.
@@ -167,6 +179,13 @@ impl CopyFunctionBuilder {
     ///   a **named parameter**. An option the table function did not declare is
     ///   a bind error, so declare each one with
     ///   [`named_param`][crate::table::TableFunctionBuilder::named_param];
+    /// - those options arrive **uncast**. `CCopyFromBind` stores each option's
+    ///   value as written, not cast to the declared type: `SKIP 'abc'` reaches
+    ///   a `BIGINT`-declared `skip` as the `VARCHAR` `'abc'`, and `SKIP 3` as
+    ///   an `INTEGER`. An option written without a value (`… , FLAG)`) is not
+    ///   passed at all, so it cannot be told from an absent one. Check the
+    ///   value's [`type_id`][crate::value::Value::type_id] before trusting it:
+    ///   an `as_i64_or(0)` on `'abc'` quietly yields the default;
     /// - the **target table's schema is already fixed**, because `COPY … FROM`
     ///   loads into an existing table. `duckdb.h` is explicit that the bind
     ///   callback "should not define its own result columns using
@@ -295,6 +314,30 @@ impl CopyFunctionBuilder {
         self
     }
 
+    /// The completeness checks that need no `DuckDB` call: all of bind, sink
+    /// and finalize for `COPY ... TO`, or a `copy_from` for `COPY ... FROM`,
+    /// or both. [`MockRegistrar`][crate::testing::MockRegistrar] runs them
+    /// too.
+    pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
+        let writer_parts = [
+            self.bind.is_some(),
+            self.sink.is_some(),
+            self.finalize.is_some(),
+        ];
+        match (writer_parts, self.copy_from.is_some()) {
+            ([true, true, true], _) | ([false, false, false], true) => Ok(()),
+            (_, true) => Err(ExtensionError::new(
+                "copy function implements COPY ... TO only partially: bind, sink and finalize \
+                 must all be set. Leave all three unset for a read-only format that supports \
+                 COPY ... FROM alone.",
+            )),
+            (_, false) => Err(ExtensionError::new(
+                "copy function implements nothing: set bind, sink and finalize for \
+                 COPY ... TO, or copy_from for COPY ... FROM, or both",
+            )),
+        }
+    }
+
     /// Registers the copy function on the given connection.
     ///
     /// A copy function may implement either direction, or both:
@@ -345,22 +388,13 @@ impl CopyFunctionBuilder {
         // (`is_copy_to = info.sink != nullptr`) and the reader
         // (`is_copy_from = copy_from_bind != nullptr`), and refuses — with no
         // message — a function that implements neither. Hence the check here.
-        let writer =
-            match (self.bind, self.sink, self.finalize) {
-                (Some(bind), Some(sink), Some(finalize)) => Some((bind, sink, finalize)),
-                (None, None, None) if self.copy_from.is_some() => None,
-                (_, _, _) if self.copy_from.is_some() => return Err(ExtensionError::new(
-                    "copy function implements COPY ... TO only partially: bind, sink and finalize \
-                     must all be set. Leave all three unset for a read-only format that supports \
-                     COPY ... FROM alone.",
-                )),
-                _ => {
-                    return Err(ExtensionError::new(
-                        "copy function implements nothing: set bind, sink and finalize for \
-                     COPY ... TO, or copy_from for COPY ... FROM, or both",
-                    ))
-                }
-            };
+        self.check_parts()?;
+        // `check_parts` left two shapes: all three writer callbacks, or none
+        // of them and a `copy_from`.
+        let writer = match (self.bind, self.sink, self.finalize) {
+            (Some(bind), Some(sink), Some(finalize)) => Some((bind, sink, finalize)),
+            _ => None,
+        };
 
         // SAFETY: `con` is valid per this function's contract.
         unsafe { refuse_taken_format_name(con, &self.name.to_string_lossy()) }?;

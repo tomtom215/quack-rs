@@ -37,9 +37,8 @@
 use std::ffi::CStr;
 
 use libduckdb_sys::{
-    duckdb_catalog, duckdb_catalog_entry, duckdb_catalog_entry_get_name,
-    duckdb_catalog_entry_get_type, duckdb_catalog_entry_type,
-    duckdb_catalog_entry_type_DUCKDB_CATALOG_ENTRY_TYPE_COLLATION,
+    duckdb_catalog, duckdb_catalog_entry_get_name, duckdb_catalog_entry_get_type,
+    duckdb_catalog_entry_type, duckdb_catalog_entry_type_DUCKDB_CATALOG_ENTRY_TYPE_COLLATION,
     duckdb_catalog_entry_type_DUCKDB_CATALOG_ENTRY_TYPE_DATABASE,
     duckdb_catalog_entry_type_DUCKDB_CATALOG_ENTRY_TYPE_INDEX,
     duckdb_catalog_entry_type_DUCKDB_CATALOG_ENTRY_TYPE_INVALID,
@@ -180,11 +179,23 @@ impl CatalogEntryType {
     }
 }
 
-/// RAII wrapper for a `duckdb_catalog_entry`.
+/// A catalog entry found by [`CatalogEntry::lookup`]: its name and type, as
+/// they were at lookup time.
 ///
-/// Automatically destroyed when dropped.
+/// # Why this holds copies rather than the handle
+///
+/// A `duckdb_catalog_entry` is a plain reference to `DuckDB`'s own
+/// `CatalogEntry` (`CCatalogEntryWrapper { CatalogEntry &entry; }`,
+/// `catalog-c.cpp`), valid only while the transaction that found it lasts.
+/// Kept in a value with safe methods, it outlived that: after a
+/// `DROP TABLE` and a commit, `name()` returned the name of a different,
+/// newly created table, with valgrind reporting an invalid read in
+/// `duckdb_catalog_entry_get_name`. So the name and type are copied during
+/// [`lookup`][Self::lookup] and the handle is released there.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogEntry {
-    entry: duckdb_catalog_entry,
+    name: Option<String>,
+    entry_type: CatalogEntryType,
 }
 
 impl CatalogEntry {
@@ -245,41 +256,45 @@ impl CatalogEntry {
             )
         };
         if entry.is_null() {
-            Ok(None)
-        } else {
-            Ok(Some(Self { entry }))
+            return Ok(None);
         }
+        // SAFETY: `entry` is the fresh, non-null wrapper DuckDB just returned,
+        // and the transaction that found it is still active per this
+        // function's contract, so the entry it refers to is live. The name is
+        // copied out before the wrapper is destroyed below.
+        let (name, raw_type) = unsafe {
+            let ptr = duckdb_catalog_entry_get_name(entry);
+            let name = (!ptr.is_null())
+                .then(|| CStr::from_ptr(ptr).to_str().ok().map(str::to_owned))
+                .flatten();
+            (name, duckdb_catalog_entry_get_type(entry))
+        };
+        let mut entry = entry;
+        // SAFETY: `entry` was returned by `duckdb_catalog_get_entry` and is
+        // destroyed once; destroying the wrapper does not touch the entry.
+        unsafe { duckdb_destroy_catalog_entry(&raw mut entry) };
+        Ok(Some(Self {
+            name,
+            entry_type: CatalogEntryType::from_raw(raw_type),
+        }))
     }
 
-    /// Returns the name of this catalog entry.
+    /// Returns the name of this catalog entry, as it was at lookup time.
     ///
     /// Returns `None` if the name is not valid UTF-8.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
-        // SAFETY: self.entry is valid.
-        let ptr = unsafe { duckdb_catalog_entry_get_name(self.entry) };
-        if ptr.is_null() {
-            return None;
-        }
-        // SAFETY: `DuckDB` returns a null-terminated UTF-8 string.
-        unsafe { CStr::from_ptr(ptr) }.to_str().ok()
+        self.name.as_deref()
     }
 
-    /// Returns the type of this catalog entry.
+    /// Returns the type of this catalog entry, as it was at lookup time.
+    ///
+    /// A lookup for [`CatalogEntryType::Table`] also finds a view of that name
+    /// (`DuckDB` resolves both through the same table-or-view lookup), so
+    /// check this when the difference matters.
     #[must_use]
-    pub fn entry_type(&self) -> CatalogEntryType {
-        // SAFETY: self.entry is valid.
-        let raw = unsafe { duckdb_catalog_entry_get_type(self.entry) };
-        CatalogEntryType::from_raw(raw)
-    }
-}
-
-impl Drop for CatalogEntry {
-    fn drop(&mut self) {
-        // SAFETY: self.entry was obtained from duckdb_catalog_get_entry.
-        unsafe {
-            duckdb_destroy_catalog_entry(&raw mut self.entry);
-        }
+    pub const fn entry_type(&self) -> CatalogEntryType {
+        self.entry_type
     }
 }
 
@@ -335,6 +350,13 @@ impl Catalog {
     ///
     /// - `context` must be a valid `duckdb_client_context`.
     /// - Must be called from within an active transaction context.
+    /// - The database this catalog belongs to must still be attached, and the
+    ///   transaction in which [`ClientContext::catalog`] returned it must still
+    ///   be active. A `duckdb_catalog` is a plain reference to `DuckDB`'s
+    ///   `Catalog` (`CCatalogWrapper`, `catalog-c.cpp`): after a `DETACH`,
+    ///   a lookup through it read freed memory and crashed in testing.
+    ///
+    /// [`ClientContext::catalog`]: crate::client_context::ClientContext::catalog
     pub unsafe fn get_entry(
         &self,
         context: duckdb_client_context,
@@ -384,7 +406,7 @@ unsafe fn autoload_enabled(context: duckdb_client_context) -> bool {
     value.as_bool() != Some(false)
 }
 
-crate::debug_repr::impl_handle_debug!(CatalogEntry.entry, Catalog.catalog);
+crate::debug_repr::impl_handle_debug!(Catalog.catalog);
 
 #[cfg(test)]
 mod tests {

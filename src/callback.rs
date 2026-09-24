@@ -19,6 +19,8 @@
 //! | `scalar_callback!` | scalar function execution | `duckdb_scalar_function_set_error` |
 //! | `table_bind_callback!` | table function bind | `duckdb_bind_set_error` |
 //! | `table_init_callback!` | table function init / local init | `duckdb_init_set_error` |
+//! | `scalar_bind_callback!` | scalar function bind (`duckdb-1-5`) | `duckdb_scalar_function_bind_set_error` |
+//! | `scalar_init_callback!` | scalar function init (`duckdb-1-5`) | `duckdb_scalar_function_init_set_error` |
 //! | `table_scan_callback!` | table function scan | `duckdb_function_set_error`, then chunk size 0 |
 //! | `aggregate_update_callback!` | aggregate update | `duckdb_aggregate_function_set_error` |
 //! | `aggregate_combine_callback!` | aggregate combine | `duckdb_aggregate_function_set_error` |
@@ -115,9 +117,7 @@ macro_rules! scalar_callback {
         ) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in; `c_msg` outlives the call.
                 unsafe {
                     ::libduckdb_sys::duckdb_scalar_function_set_error($info, c_msg.as_ptr());
@@ -172,9 +172,7 @@ macro_rules! table_scan_callback {
         ) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` and `output` are the pointers DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::duckdb_function_set_error($info, c_msg.as_ptr());
@@ -191,6 +189,13 @@ macro_rules! table_scan_callback {
 /// Emits `unsafe extern "C" fn $name(info: duckdb_bind_info)`. A panic is
 /// reported through `duckdb_bind_set_error`, which fails the query during
 /// planning rather than aborting the process.
+///
+/// **Table functions only.** A scalar function's `bind` / `init` callback has
+/// the same C signature, so the compiler accepts this macro's output there
+/// too — but `duckdb_bind_set_error` casts its argument to the table
+/// function's much larger info struct and writes past the scalar one, which
+/// corrupted the stack (SIGSEGV) in testing. Use
+/// `scalar_bind_callback!` (feature `duckdb-1-5`) for scalar functions.
 ///
 /// # Example
 ///
@@ -212,9 +217,7 @@ macro_rules! table_bind_callback {
         pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_bind_info) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::duckdb_bind_set_error($info, c_msg.as_ptr());
@@ -229,6 +232,13 @@ macro_rules! table_bind_callback {
 /// Emits `unsafe extern "C" fn $name(info: duckdb_init_info)`. Use it for both
 /// the global `init` and the per-thread `local_init` callback — they share a
 /// signature. A panic is reported through `duckdb_init_set_error`.
+///
+/// **Table functions only.** A scalar function's `bind` / `init` callback has
+/// the same C signature, so the compiler accepts this macro's output there
+/// too — but `duckdb_init_set_error` casts its argument to the table
+/// function's much larger info struct and writes past the scalar one, which
+/// corrupted the stack (SIGSEGV) in testing. Use
+/// `scalar_init_callback!` (feature `duckdb-1-5`) for scalar functions.
 ///
 /// # Example
 ///
@@ -250,12 +260,94 @@ macro_rules! table_init_callback {
         pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_init_info) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::duckdb_init_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` **scalar function bind** callback
+/// (`duckdb-1-5`).
+///
+/// Emits `unsafe extern "C" fn $name(info: duckdb_bind_info)`, for
+/// [`ScalarFunctionBuilder::bind`](crate::scalar::ScalarFunctionBuilder::bind).
+/// A panic is reported through `duckdb_scalar_function_bind_set_error`, which
+/// fails the query during planning.
+///
+/// Do not use [`table_bind_callback!`](crate::table_bind_callback) here: the
+/// C signature is the same, but it reports through the table function's
+/// `duckdb_bind_set_error`, which writes past the scalar bind info.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::scalar_bind_callback!(my_bind, |info| {
+///     let bind = unsafe { quack_rs::scalar::ScalarBindInfo::new(info) };
+///     assert!(bind.argument_count() > 0, "needs an argument");
+/// });
+/// ```
+#[cfg(feature = "duckdb-1-5")]
+#[macro_export]
+macro_rules! scalar_bind_callback {
+    ($name:ident, |$info:ident| $body:block) => {
+        /// Scalar function bind callback (generated by `scalar_bind_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. `info` is provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_bind_info) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let Err(panic) = result {
+                let c_msg = $crate::callback::panic_c_message(panic);
+                // SAFETY: `info` is the scalar bind info DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_scalar_function_bind_set_error($info, c_msg.as_ptr());
+                }
+            }
+        }
+    };
+}
+
+/// Generates a panic-safe `unsafe extern "C"` **scalar function init** callback
+/// (`duckdb-1-5`).
+///
+/// Emits `unsafe extern "C" fn $name(info: duckdb_init_info)`, for
+/// [`ScalarFunctionBuilder::init`](crate::scalar::ScalarFunctionBuilder::init).
+/// A panic is reported through `duckdb_scalar_function_init_set_error`.
+///
+/// Do not use [`table_init_callback!`](crate::table_init_callback) here: the
+/// C signature is the same, but it reports through the table function's
+/// `duckdb_init_set_error`, which writes past the scalar init info.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// quack_rs::scalar_init_callback!(my_init, |info| {
+///     let _ = info;
+/// });
+/// ```
+#[cfg(feature = "duckdb-1-5")]
+#[macro_export]
+macro_rules! scalar_init_callback {
+    ($name:ident, |$info:ident| $body:block) => {
+        /// Scalar function init callback (generated by `scalar_init_callback!`).
+        ///
+        /// # Safety
+        ///
+        /// Called by DuckDB. `info` is provided by the DuckDB runtime.
+        #[allow(unused_unsafe)]
+        pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_init_info) {
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
+            if let Err(panic) = result {
+                let c_msg = $crate::callback::panic_c_message(panic);
+                // SAFETY: `info` is the scalar init info DuckDB passed in.
+                unsafe {
+                    ::libduckdb_sys::duckdb_scalar_function_init_set_error($info, c_msg.as_ptr());
                 }
             }
         }
@@ -294,9 +386,7 @@ macro_rules! aggregate_update_callback {
         ) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::duckdb_aggregate_function_set_error($info, c_msg.as_ptr());
@@ -342,9 +432,7 @@ macro_rules! aggregate_combine_callback {
         ) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::duckdb_aggregate_function_set_error($info, c_msg.as_ptr());
@@ -386,9 +474,7 @@ macro_rules! aggregate_finalize_callback {
         ) {
             let outcome = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = outcome {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::duckdb_aggregate_function_set_error($info, c_msg.as_ptr());
@@ -516,9 +602,7 @@ macro_rules! cast_callback {
             match outcome {
                 ::std::result::Result::Ok(ok) => ok,
                 ::std::result::Result::Err(panic) => {
-                    let c_msg = $crate::callback::message_to_c_string(
-                        &$crate::callback::take_panic_message(panic),
-                    );
+                    let c_msg = $crate::callback::panic_c_message(panic);
                     if try_mode {
                         // DuckDB ignores the return value of a TRY cast
                         // (execute_cast.cpp), so the rows must be nulled here.
@@ -576,9 +660,7 @@ macro_rules! replacement_scan_callback {
         ) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::duckdb_replacement_scan_set_error($info, c_msg.as_ptr());
@@ -687,9 +769,7 @@ macro_rules! __copy_callback_impl {
         pub unsafe extern "C" fn $name($info: ::libduckdb_sys::$info_ty) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let ::std::result::Result::Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::$set_error($info, c_msg.as_ptr());
@@ -730,9 +810,7 @@ macro_rules! copy_sink_callback {
         ) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let ::std::result::Result::Err(panic) = result {
-                let c_msg = $crate::callback::message_to_c_string(
-                    &$crate::callback::take_panic_message(panic),
-                );
+                let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the pointer DuckDB passed in.
                 unsafe {
                     ::libduckdb_sys::duckdb_copy_function_sink_set_error($info, c_msg.as_ptr());
@@ -756,14 +834,41 @@ macro_rules! copy_sink_callback {
 /// ```
 #[must_use]
 pub fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    payload.downcast_ref::<&str>().map_or_else(
-        || {
-            payload
-                .downcast_ref::<String>()
-                .map_or_else(|| String::from("<non-string panic payload>"), Clone::clone)
-        },
-        |s| (*s).to_string(),
-    )
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .or_else(|| payload.downcast_ref::<Box<str>>().map(ToString::to_string))
+        .unwrap_or_else(|| String::from("<non-string panic payload>"))
+}
+
+/// What the callback macros report for a panic whose message is empty
+/// (`panic!("")`).
+///
+/// `DuckDB` would otherwise show a bare error prefix such as
+/// `Invalid Input Error: ` — and a replacement scan ignores an empty error
+/// altogether and carries on with whatever the callback set up before it
+/// panicked (`replacement_scan-c.cpp` only raises a non-empty message).
+pub const EMPTY_PANIC_PLACEHOLDER: &str = "an extension callback panicked without a message";
+
+/// Turns a caught panic into the C string a callback macro reports.
+///
+/// That is the panic message, with any interior NUL replaced by `?`, or
+/// [`EMPTY_PANIC_PLACEHOLDER`] if the message is empty. The payload is
+/// disposed of as [`take_panic_message`] does.
+///
+/// # Example
+///
+/// ```rust
+/// let payload = std::panic::catch_unwind(|| panic!("")).unwrap_err();
+/// assert_eq!(
+///     quack_rs::callback::panic_c_message(payload).to_str().unwrap(),
+///     quack_rs::callback::EMPTY_PANIC_PLACEHOLDER,
+/// );
+/// ```
+#[must_use]
+pub fn panic_c_message(payload: Box<dyn std::any::Any + Send>) -> std::ffi::CString {
+    crate::table::cstr::error_cstring(&take_panic_message(payload), EMPTY_PANIC_PLACEHOLDER)
 }
 
 /// Converts a panic message into a `CString`, replacing any interior NUL.

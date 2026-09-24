@@ -244,7 +244,9 @@ macro_rules! entry_point_v2 {
 ///
 /// # Pitfall L3: No panic across FFI
 ///
-/// This function never panics. All errors are reported via `access.set_error`.
+/// This function never panics. All errors are reported via `access.set_error`
+/// (when `access` itself is null, there is nowhere to report one, and the
+/// function returns `false`).
 ///
 /// # Example
 ///
@@ -427,6 +429,9 @@ where
         ));
     }
 
+    // SAFETY: `access` is the pointer DuckDB passed; the helper only reads it.
+    unsafe { check_access(access)? };
+
     // SAFETY: info and access are valid pointers provided by DuckDB.
     let have_api = unsafe {
         duckdb_rs_extension_api_init(info, access, api_version)
@@ -505,6 +510,9 @@ where
             "api_version must not contain an interior NUL byte",
         ));
     }
+
+    // SAFETY: `access` is the pointer DuckDB passed; the helper only reads it.
+    unsafe { check_access(access)? };
 
     // SAFETY: info and access are valid pointers provided by DuckDB.
     let have_api = unsafe {
@@ -623,12 +631,37 @@ where
     }
 }
 
+/// Refuses an `access` that `duckdb_rs_extension_api_init` cannot use: it
+/// dereferences `access` and calls `get_api` through `Option::unwrap`, so a
+/// null pointer would crash and a missing `get_api` would panic across the C
+/// entry point. A released `DuckDB` always sets both for a loadable extension;
+/// unreleased `DuckDB` (`main`) passes a null `get_api` when it links a C API
+/// extension statically.
+///
+/// # Safety
+///
+/// `access` must be null or point at a live `duckdb_extension_access`.
+unsafe fn check_access(access: *const duckdb_extension_access) -> Result<(), ExtensionError> {
+    if access.is_null() {
+        return Err(ExtensionError::new(
+            "DuckDB passed a null extension access struct",
+        ));
+    }
+    // SAFETY: `access` is non-null and live per this function's contract.
+    if unsafe { (*access).get_api }.is_none() {
+        return Err(ExtensionError::new(
+            "DuckDB passed no get_api function, so the C API cannot be initialised",
+        ));
+    }
+    Ok(())
+}
+
 /// Applies an [`AbiPolicy`] to the result of [`crate::abi::check`].
 ///
-/// Returns `Err` when the policy is [`AbiPolicy::Strict`] and the running
-/// `DuckDB` does not provide the C API struct layout this extension was compiled
-/// against. Under [`AbiPolicy::Warn`] the diagnostic is pushed to `DuckDB` via
-/// `set_error` but loading continues; under [`AbiPolicy::Trust`] no check runs.
+/// Returns `Err` when [`policy_verdict`] refuses the load. Under
+/// [`AbiPolicy::Warn`] the diagnostic goes to stderr and loading continues
+/// (not through `set_error`, which would fail the load: see below); under
+/// [`AbiPolicy::Trust`] no check runs.
 ///
 /// # Safety
 ///
@@ -644,21 +677,11 @@ unsafe fn enforce_abi_policy(
     }
     // SAFETY: forwarded from this function's own contract.
     let check = unsafe { crate::abi::check() };
-
-    // `AllowUnknownEngine` suspends judgement on a release quack-rs has no entry
-    // for, but still refuses a layout it can positively identify as different.
-    if policy == AbiPolicy::AllowUnknownEngine
-        && matches!(check, crate::abi::AbiCheck::UnknownEngineVersion { .. })
-    {
-        return Ok(());
-    }
-
-    let Some(message) = check.error_message() else {
-        return Ok(());
+    let message = match policy_verdict(policy, &check) {
+        AbiVerdict::Load => return Ok(()),
+        AbiVerdict::Refuse(message) => return Err(ExtensionError::new(message)),
+        AbiVerdict::Warn(message) => message,
     };
-    if policy == AbiPolicy::Strict || policy == AbiPolicy::AllowUnknownEngine {
-        return Err(ExtensionError::new(message));
-    }
     // AbiPolicy::Warn: surface the diagnostic without failing the load.
     //
     // This deliberately does NOT go through `access.set_error`. DuckDB's loader
@@ -680,6 +703,39 @@ unsafe fn enforce_abi_policy(
     let _ = (info, access);
     let _ = writeln!(std::io::stderr(), "quack-rs warning: {message}");
     Ok(())
+}
+
+/// What an [`AbiPolicy`] makes of one [`AbiCheck`][crate::abi::AbiCheck].
+#[derive(Debug, PartialEq, Eq)]
+enum AbiVerdict {
+    Load,
+    /// Load, and print the diagnostic.
+    Warn(String),
+    /// Fail the load with the diagnostic.
+    Refuse(String),
+}
+
+/// The decision [`enforce_abi_policy`] applies, kept pure so every policy can
+/// be tested against every check result without a `DuckDB`.
+///
+/// A passing check loads under every policy. A failing one is refused, except
+/// that [`AbiPolicy::Warn`] only warns, [`AbiPolicy::AllowUnknownEngine`]
+/// loads on an engine release the table has no entry for (it still refuses a
+/// layout it can identify as different), and [`AbiPolicy::Trust`] loads.
+fn policy_verdict(policy: AbiPolicy, check: &crate::abi::AbiCheck) -> AbiVerdict {
+    let Some(message) = check.error_message() else {
+        return AbiVerdict::Load;
+    };
+    match policy {
+        AbiPolicy::Trust => AbiVerdict::Load,
+        AbiPolicy::Warn => AbiVerdict::Warn(message),
+        AbiPolicy::AllowUnknownEngine
+            if matches!(check, crate::abi::AbiCheck::UnknownEngineVersion { .. }) =>
+        {
+            AbiVerdict::Load
+        }
+        AbiPolicy::Strict | AbiPolicy::AllowUnknownEngine => AbiVerdict::Refuse(message),
+    }
 }
 
 /// Reports an `ExtensionError` back to `DuckDB` via `access.set_error`.
@@ -712,9 +768,65 @@ mod tests {
     // tests/integration_test.rs. Unit tests here verify pure-Rust logic.
 
     use super::{
-        catch_registration_panic, database_from_access, init_extension_internal, AbiPolicy,
+        catch_registration_panic, database_from_access, init_extension_internal, policy_verdict,
+        AbiPolicy, AbiVerdict,
     };
     use crate::error::ExtensionError;
+
+    /// Every policy against every kind of check result. `Trust` skips the
+    /// check entirely in `enforce_abi_policy`; its row here pins that it
+    /// would load anyway.
+    #[test]
+    fn every_policy_against_every_check_result() {
+        use crate::abi::AbiCheck;
+        let checks = [
+            AbiCheck::Compatible {
+                engine_version: "v1.5.5".into(),
+                slots: 546,
+            },
+            AbiCheck::StableOnly,
+            AbiCheck::LayoutMismatch {
+                engine_version: "v1.5.0".into(),
+                engine_slots: 545,
+                compiled_slots: 546,
+            },
+            AbiCheck::UnknownEngineVersion {
+                engine_version: "v9.9.9".into(),
+                compiled_slots: 546,
+            },
+            AbiCheck::EngineVersionUnavailable {
+                compiled_slots: 546,
+            },
+            AbiCheck::DeclaredVersionMismatch {
+                declared_version: "v1.2.0".into(),
+                declared_slots: 0,
+                compiled_slots: 546,
+            },
+        ];
+        // Expected verdict per check, in the order above: L = load,
+        // W = warn and load, R = refuse.
+        let table: [(AbiPolicy, [char; 6]); 4] = [
+            (AbiPolicy::Strict, ['L', 'L', 'R', 'R', 'R', 'R']),
+            (AbiPolicy::Warn, ['L', 'L', 'W', 'W', 'W', 'W']),
+            (
+                AbiPolicy::AllowUnknownEngine,
+                ['L', 'L', 'R', 'L', 'R', 'R'],
+            ),
+            (AbiPolicy::Trust, ['L', 'L', 'L', 'L', 'L', 'L']),
+        ];
+        for (policy, row) in table {
+            for (check, want) in checks.iter().zip(row) {
+                let got = policy_verdict(policy, check);
+                let message = check.error_message();
+                let expected = match want {
+                    'L' => AbiVerdict::Load,
+                    'W' => AbiVerdict::Warn(message.expect("a failing check has a message")),
+                    _ => AbiVerdict::Refuse(message.expect("a failing check has a message")),
+                };
+                assert_eq!(got, expected, "{policy:?} on {check:?}");
+            }
+        }
+    }
 
     #[test]
     fn extension_error_to_c_string() {
@@ -879,6 +991,51 @@ mod tests {
         }
         let reported = REPORTED.lock().ok().and_then(|mut s| s.take());
         assert_eq!(reported.as_deref(), Some("bad config?: key `x` missing"));
+    }
+
+    static REPORTED_NO_API: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    unsafe extern "C" fn capture_no_api(_: duckdb_extension_info, msg: *const c_char) {
+        // SAFETY: `report_error` passes a live NUL-terminated string.
+        let text = unsafe { std::ffi::CStr::from_ptr(msg) }
+            .to_string_lossy()
+            .into_owned();
+        if let Ok(mut slot) = REPORTED_NO_API.lock() {
+            *slot = Some(text);
+        }
+    }
+
+    /// `duckdb_rs_extension_api_init` unwraps `get_api`: a null one panicked
+    /// across the C entry point (an abort in a real load), and a null
+    /// `access` was dereferenced. Both now fail the load cleanly.
+    #[test]
+    fn a_missing_get_api_or_access_fails_the_load_without_panicking() {
+        let access = duckdb_extension_access {
+            set_error: Some(capture_no_api),
+            get_database: Some(null_database),
+            get_api: None,
+        };
+        // SAFETY: `access` is a valid struct; `info` is never dereferenced.
+        let loaded = unsafe {
+            super::init_extension(core::ptr::null_mut(), &raw const access, "v1.2.0", |_| {
+                Ok(())
+            })
+        };
+        assert!(!loaded);
+        let reported = REPORTED_NO_API.lock().ok().and_then(|mut s| s.take());
+        assert!(
+            reported
+                .as_deref()
+                .is_some_and(|m| m.contains("no get_api")),
+            "{reported:?}"
+        );
+        // SAFETY: a null `access` is what is being tested; nothing reads it.
+        let loaded = unsafe {
+            super::init_extension(core::ptr::null_mut(), core::ptr::null(), "v1.2.0", |_| {
+                Ok(())
+            })
+        };
+        assert!(!loaded);
     }
 
     #[test]

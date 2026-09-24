@@ -91,6 +91,54 @@ def fetch(tag: str, *, attempts: int = 3) -> tuple[str, str | None]:
     return "error", last
 
 
+def normalise(declaration: str) -> str:
+    """A declaration with formatting that cannot change the ABI removed:
+    comments, runs of whitespace, spaces next to punctuation, and `(void)`
+    parameter lists, which C treats as `()` here (DuckDB `main` rewrote every
+    `()` as `(void)` without changing a signature)."""
+    text = re.sub(r"/\*.*?\*/", " ", declaration, flags=re.S)
+    text = re.sub(r"//[^\n]*", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s*([(),*;])\s*", r"\1", text)
+    return text.replace("(void)", "()")
+
+
+def struct_declarations(header: str, *, unstable: bool) -> list[str]:
+    """Ordered, normalised function-pointer declarations in `duckdb_ext_api_v1`.
+
+    The layout fingerprint is taken over these rather than over the names
+    alone, so a release that changes a signature but keeps every name is
+    caught too.
+    """
+    start = header.index("typedef struct {")
+    end = header.index("} duckdb_ext_api_v1;")
+    decls: list[str] = []
+    buf = ""
+    stack: list[bool] = []
+    for line in header[start:end].split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("#ifdef DUCKDB_EXTENSION_API_VERSION_UNSTABLE"):
+            stack.append(unstable)
+            continue
+        if stripped.startswith("#if"):
+            stack.append(True)
+            continue
+        if stripped.startswith("#endif"):
+            if stack:
+                stack.pop()
+            continue
+        if stripped.startswith("#"):
+            continue
+        if not all(stack):
+            continue
+        buf += "\n" + stripped
+        if buf.strip().endswith(";"):
+            if FN_PTR.search(buf):
+                decls.append(normalise(buf))
+            buf = ""
+    return decls
+
+
 def struct_fields(header: str, *, unstable: bool) -> list[str]:
     """Ordered function-pointer names in `duckdb_ext_api_v1`.
 
@@ -236,7 +284,12 @@ def main() -> int:
             continue
         full = struct_fields(header, unstable=True)
         stable = struct_fields(header, unstable=False)
-        digest = hashlib.sha256("\n".join(full).encode()).hexdigest()[:12]
+        # Over whole declarations, not names: two layouts with the same slot
+        # count and names but a changed signature must not look the same.
+        declarations = struct_declarations(header, unstable=True)
+        if [FN_PTR.search(d).group(1) for d in declarations] != full:
+            problems.append(f"{tag}: declarations and field names disagree")
+        digest = hashlib.sha256("\n".join(declarations).encode()).hexdigest()[:12]
 
         if full[: len(stable)] != stable:
             problems.append(f"{tag}: the stable prefix is not a prefix of the full struct")

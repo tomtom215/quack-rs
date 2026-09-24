@@ -143,6 +143,9 @@ impl StructReader {
     ///
     /// - `row` must be less than the row count.
     /// - The field at `field_idx` must have `VARCHAR` type.
+    /// - The field must not be NULL at `row` (check [`is_valid`][Self::is_valid]
+    ///   first): a NULL row may hold a stale pointer; see
+    ///   [`VectorReader::read_str`].
     ///
     /// # Panics
     ///
@@ -389,7 +392,9 @@ impl StructReader {
     ///
     /// # Safety
     ///
-    /// See [`read_bool`][Self::read_bool].
+    /// As for [`read_bool`][Self::read_bool], and the field must not be NULL at
+    /// `row` (check [`is_valid`][Self::is_valid] first): a NULL row may hold a
+    /// stale pointer; see [`VectorReader::read_blob`].
     #[inline]
     pub unsafe fn read_blob(&self, row: usize, field_idx: usize) -> &[u8] {
         // SAFETY: `VectorReader::read_blob` needs `row` below its row count and a

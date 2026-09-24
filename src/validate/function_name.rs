@@ -33,10 +33,10 @@ const MAX_FUNCTION_NAME_LEN: usize = 256;
 ///
 /// A function with one of these names cannot be called without quoting it —
 /// `SELECT order(1)` is a parser error, only `"order"(1)` works — so
-/// [`validate_function_name`] rejects them (case-insensitively). The other
-/// keyword categories (`unreserved`, `column_name`, `type_function`) are
-/// callable unquoted and stay allowed: `DuckDB` itself ships `left`, `similar`
-/// and `year`.
+/// [`validate_function_name`] rejects them (case-insensitively). Most of the
+/// other keywords (`unreserved`, `column_name`, `type_function`) are callable
+/// unquoted and stay allowed — `DuckDB` itself ships `left`, `similar` and
+/// `year` — but not all: see [`DUCKDB_UNCALLABLE_KEYWORDS`].
 ///
 /// Taken from `SELECT keyword_name FROM duckdb_keywords() WHERE
 /// keyword_category = 'reserved'`, which returns this identical list on
@@ -120,6 +120,172 @@ pub const DUCKDB_RESERVED_KEYWORDS: [&str; 75] = [
     "with",
 ];
 
+/// Non-reserved keywords that still cannot be a function's name, lowercase
+/// and sorted.
+///
+/// `SELECT between(1)`, `SELECT values(1)` and `SELECT time(1)` are parser
+/// errors whatever function is registered under the name, and some calls are
+/// taken by the grammar before any function lookup: `coalesce(x)` is the
+/// `COALESCE` operator, so a function called `coalesce` is never called.
+///
+/// Measured, not taken from a keyword category: for each keyword `kw` in
+/// `duckdb_keywords()` and each argument count from 0 to 3, a macro `"kw"`
+/// taking that many arguments is created and called as `kw(41, …)`. These
+/// are the non-reserved keywords for which no such call reaches the macro —
+/// the same 53 on `DuckDB` 1.4.4, 1.5.0 and 1.5.5 (`duckdb_keywords()` lists
+/// 489 keywords on each). `nullif` is the one keyword that fails with one
+/// argument but works with two, so it is not refused. `position` is listed
+/// although `DuckDB` ships a function of that name: it is reachable only
+/// through the `position(a IN b)` syntax, never as `position(a, b)`. The
+/// sweep calls the name as a scalar; a table function of the same name is
+/// refused too. An end-to-end test repeats the sweep against the linked
+/// engine.
+pub const DUCKDB_UNCALLABLE_KEYWORDS: [&str; 53] = [
+    "anti",
+    "between",
+    "bigint",
+    "bit",
+    "boolean",
+    "by",
+    "char",
+    "character",
+    "coalesce",
+    "columns",
+    "dec",
+    "decimal",
+    "exists",
+    "extract",
+    "float",
+    "grouping",
+    "grouping_id",
+    "if",
+    "inout",
+    "int",
+    "integer",
+    "interval",
+    "national",
+    "nchar",
+    "none",
+    "numeric",
+    "operator",
+    "out",
+    "overlay",
+    "position",
+    "precision",
+    "real",
+    "semi",
+    "setof",
+    "smallint",
+    "time",
+    "timestamp",
+    "treat",
+    "try_cast",
+    "unpack",
+    "values",
+    "varchar",
+    "xmlattributes",
+    "xmlconcat",
+    "xmlelement",
+    "xmlexists",
+    "xmlforest",
+    "xmlnamespaces",
+    "xmlparse",
+    "xmlpi",
+    "xmlroot",
+    "xmlserialize",
+    "xmltable",
+];
+
+/// Non-reserved keywords that cannot be a macro parameter's name, lowercase
+/// and sorted.
+///
+/// A parameter is referred to by name in the macro's body, and
+/// `CREATE MACRO m(left) AS left + 1` fails to parse, as do `join`, `like`,
+/// `row` and the rest of this list. Measured the same way as
+/// [`DUCKDB_UNCALLABLE_KEYWORDS`] — `CREATE MACRO m(kw) AS kw + 1` then
+/// `SELECT m(41)` — and the same 79 on `DuckDB` 1.4.4, 1.5.0 and 1.5.5.
+pub const DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS: [&str; 79] = [
+    "anti",
+    "asof",
+    "at",
+    "authorization",
+    "between",
+    "bigint",
+    "binary",
+    "bit",
+    "boolean",
+    "by",
+    "char",
+    "character",
+    "coalesce",
+    "collation",
+    "concurrently",
+    "cross",
+    "dec",
+    "decimal",
+    "exists",
+    "extract",
+    "float",
+    "freeze",
+    "full",
+    "glob",
+    "grouping",
+    "grouping_id",
+    "ilike",
+    "inner",
+    "inout",
+    "int",
+    "integer",
+    "interval",
+    "is",
+    "isnull",
+    "join",
+    "left",
+    "like",
+    "national",
+    "natural",
+    "nchar",
+    "none",
+    "notnull",
+    "nullif",
+    "numeric",
+    "out",
+    "outer",
+    "overlaps",
+    "overlay",
+    "position",
+    "positional",
+    "precision",
+    "real",
+    "right",
+    "row",
+    "semi",
+    "setof",
+    "similar",
+    "smallint",
+    "substring",
+    "tablesample",
+    "time",
+    "timestamp",
+    "treat",
+    "trim",
+    "unpack",
+    "values",
+    "varchar",
+    "verbose",
+    "xmlattributes",
+    "xmlconcat",
+    "xmlelement",
+    "xmlexists",
+    "xmlforest",
+    "xmlnamespaces",
+    "xmlparse",
+    "xmlpi",
+    "xmlroot",
+    "xmlserialize",
+    "xmltable",
+];
+
 /// Validates a `DuckDB` function name.
 ///
 /// # Rules
@@ -129,8 +295,8 @@ pub const DUCKDB_RESERVED_KEYWORDS: [&str; 75] = [
 /// - Must start with an ASCII letter or underscore
 /// - Must contain only ASCII letters, digits, or underscores
 /// - Must not contain interior null bytes
-/// - Must not be one of [`DUCKDB_RESERVED_KEYWORDS`] (compared
-///   case-insensitively)
+/// - Must not be one of [`DUCKDB_RESERVED_KEYWORDS`] or
+///   [`DUCKDB_UNCALLABLE_KEYWORDS`] (compared case-insensitively)
 ///
 /// Every one of these is something that would actually break: a name needing
 /// quotes in SQL (including a reserved keyword such as `order`), a name
@@ -159,7 +325,8 @@ pub const DUCKDB_RESERVED_KEYWORDS: [&str; 75] = [
 /// assert!(validate_function_name("1func").is_err());    // parsed as a number
 /// assert!(validate_function_name("my func").is_err());  // needs quoting in SQL
 /// assert!(validate_function_name("order").is_err());    // reserved keyword
-/// assert!(validate_function_name("left").is_ok());      // keyword, but not reserved
+/// assert!(validate_function_name("coalesce").is_err()); // the COALESCE operator takes the call
+/// assert!(validate_function_name("left").is_ok());      // keyword, but callable
 /// ```
 pub fn validate_function_name(name: &str) -> Result<(), ExtensionError> {
     if name.is_empty() {
@@ -210,7 +377,66 @@ pub fn validate_function_name(name: &str) -> Result<(), ExtensionError> {
              choose another name"
         )));
     }
+    if DUCKDB_UNCALLABLE_KEYWORDS
+        .binary_search(&lower.as_str())
+        .is_ok()
+    {
+        return Err(ExtensionError::new(format!(
+            "function name '{name}' is a DuckDB keyword that cannot be called as a function: \
+             `SELECT {lower}(...)` either fails to parse or is taken by the grammar before any \
+             function is looked up; choose another name"
+        )));
+    }
 
+    Ok(())
+}
+
+/// Validates a macro parameter name.
+///
+/// The rules of [`validate_function_name`], except that the keywords refused
+/// are [`DUCKDB_RESERVED_KEYWORDS`] and
+/// [`DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS`] — the names a macro body
+/// cannot refer to unquoted — rather than [`DUCKDB_UNCALLABLE_KEYWORDS`]. A
+/// parameter named `columns` or `if` is fine; one named `left` is not.
+///
+/// # Errors
+///
+/// Returns `ExtensionError` describing the first rule violation found.
+///
+/// # Example
+///
+/// ```rust
+/// use quack_rs::validate::validate_parameter_name;
+///
+/// assert!(validate_parameter_name("threshold").is_ok());
+/// assert!(validate_parameter_name("columns").is_ok());
+/// assert!(validate_parameter_name("left").is_err());
+/// assert!(validate_parameter_name("order").is_err());
+/// ```
+pub fn validate_parameter_name(name: &str) -> Result<(), ExtensionError> {
+    match validate_function_name(name) {
+        Ok(()) => {}
+        Err(e) => {
+            let lower = name.to_ascii_lowercase();
+            // Only the name-specific keyword rule is lifted for a parameter.
+            if DUCKDB_UNCALLABLE_KEYWORDS
+                .binary_search(&lower.as_str())
+                .is_err()
+            {
+                return Err(e);
+            }
+        }
+    }
+    let lower = name.to_ascii_lowercase();
+    if DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS
+        .binary_search(&lower.as_str())
+        .is_ok()
+    {
+        return Err(ExtensionError::new(format!(
+            "parameter name '{name}' is a DuckDB keyword a macro body cannot refer to unquoted \
+             (`CREATE MACRO m({lower}) AS {lower} + 1` fails to parse); choose another name"
+        )));
+    }
     Ok(())
 }
 
@@ -296,6 +522,51 @@ mod tests {
         ] {
             assert!(validate_function_name(name).is_ok(), "{name}");
         }
+    }
+
+    #[test]
+    fn uncallable_keywords_are_refused_as_function_names_only() {
+        for name in ["coalesce", "Between", "VALUES", "time", "if", "try_cast"] {
+            let err = validate_function_name(name).expect_err(name);
+            assert!(err.as_str().contains("cannot be called"), "{name}: {err}");
+        }
+        // `if` and `columns` cannot name a function but can name a parameter.
+        assert!(validate_parameter_name("if").is_ok());
+        assert!(validate_parameter_name("columns").is_ok());
+    }
+
+    #[test]
+    fn unreferenceable_keywords_are_refused_as_parameter_names_only() {
+        for name in ["left", "JOIN", "like", "row", "between"] {
+            let err = validate_parameter_name(name).expect_err(name);
+            assert!(err.as_str().contains("cannot refer to"), "{name}: {err}");
+        }
+        // `left` and `like` stay valid function names: both are callable.
+        assert!(validate_function_name("left").is_ok());
+        assert!(validate_function_name("like").is_ok());
+        // A parameter name gets every other rule of a function name.
+        assert!(validate_parameter_name("order").is_err());
+        assert!(validate_parameter_name("my-param").is_err());
+        assert!(validate_parameter_name("").is_err());
+        assert!(validate_parameter_name("threshold").is_ok());
+    }
+
+    #[test]
+    fn keyword_lists_are_sorted_unique_lowercase_and_non_reserved() {
+        for list in [
+            &DUCKDB_UNCALLABLE_KEYWORDS[..],
+            &DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS[..],
+        ] {
+            assert!(list.windows(2).all(|w| w[0] < w[1]));
+            assert!(list
+                .iter()
+                .all(|k| k.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')));
+            assert!(list
+                .iter()
+                .all(|k| DUCKDB_RESERVED_KEYWORDS.binary_search(k).is_err()));
+        }
+        assert_eq!(DUCKDB_UNCALLABLE_KEYWORDS.len(), 53);
+        assert_eq!(DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS.len(), 79);
     }
 
     /// Pins the list's shape: sorted, unique, lowercase, and the size `DuckDB`

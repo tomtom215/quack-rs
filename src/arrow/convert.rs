@@ -102,6 +102,22 @@ pub fn to_arrow_schema(
 /// Pair it with the schema [`to_arrow_schema`] produces from the same column
 /// types and the same [`ArrowOptions`] — an Arrow consumer needs both.
 ///
+/// # Values `DuckDB` exports wrongly, without an error
+///
+/// Checked on `DuckDB` 1.5.0 and 1.5.5 (`docs/upstream-duckdb-reports.md`):
+///
+/// - `INTERVAL`: Arrow's `month_day_nano` counts nanoseconds in an `i64`, and
+///   `DuckDB` multiplies the microseconds by 1000 with no overflow check. An
+///   interval whose microsecond field is beyond ±`i64::MAX / 1000` (about
+///   ±106,751 days, or 2,562,047 hours) wraps: `INTERVAL 2562048 HOUR` exports
+///   as a negative interval.
+/// - `UHUGEINT`: exported as a signed `decimal128(38, 0)`, so a value of
+///   2^127 or more comes back negative (`2^128 - 1` as `-1`), and importing it
+///   back fails later with "Negation of HUGEINT is out of range".
+///
+/// Check such values before exporting them when the consumer must see them
+/// exactly.
+///
 /// # Errors
 ///
 /// Whatever `DuckDB` reports for a type it cannot render as Arrow.
@@ -198,20 +214,38 @@ pub unsafe fn schema_from_arrow(
 /// claim it (a zero-column converted schema, where the loop never runs).
 ///
 /// The resulting chunk keeps the Arrow buffers alive, so the data is shared, not
-/// copied. Dictionary-encoded and run-end-encoded children are converted
-/// (`ColumnArrowToDuckDBDictionary` / `…RunEndEncoded`) as well as plain ones.
+/// copied — with two exceptions, which are copied so that the chunk is flat
+/// and every [`VectorReader`](crate::vector::VectorReader) reads it
+/// correctly. `DuckDB` imports a column that is dictionary-encoded at any
+/// depth as a *dictionary* vector, and an Arrow null-type column as a
+/// *constant* vector; a flat read of either returns wrong values (and, for a
+/// dictionary, reads past the end of its buffer). Those columns are copied
+/// into fresh flat vectors before this function returns. Run-end-encoded
+/// children are expanded by `DuckDB` itself.
 ///
 /// # Errors
 ///
 /// [`DuckDbErrorType::InvalidInput`], checked here because `DuckDB` does not
 /// check them and would read out of bounds or through a null pointer:
 ///
-/// - `array` has already been released, has a negative `length` or `offset`,
-///   or has no rows (see below);
+/// - `array` has already been released, has a negative `length`, has a
+///   nonzero `offset` (`DuckDB` ignores the top-level offset and imports the
+///   wrong rows, see `docs/upstream-duckdb-reports.md`), or has no rows (see
+///   below);
 /// - its child count does not match `converted`'s column count;
 /// - its `children` pointer, or one of the child pointers, is null;
-/// - a child is shorter than `offset + length` (the Arrow specification
-///   requires every child of a struct array to hold that many rows).
+/// - a child is shorter than `length` (the Arrow specification requires
+///   every child of a struct array to hold `offset + length` rows);
+/// - a dictionary-encoded array anywhere in `array` has a validity buffer, a
+///   nonzero null count and more than
+///   [`duckdb_vector_size`](libduckdb_sys::duckdb_vector_size) (2048)
+///   entries. `DuckDB` imports that shape by writing past a heap allocation
+///   (see `docs/upstream-duckdb-reports.md`); a `LIST` of 1025 or more rows
+///   whose two-element lists are dictionary-encoded is enough to reach it.
+///   Split such batches before importing them.
+///
+/// [`DuckDbErrorType::Internal`] if copying a non-flat column into a flat
+/// vector fails (see above), which needs an allocation failure.
 ///
 /// Every error `DuckDB` itself reports from the conversion also arrives as
 /// [`DuckDbErrorType::InvalidInput`]: `duckdb_data_chunk_from_arrow` maps all
@@ -267,6 +301,24 @@ pub unsafe fn data_chunk_from_arrow(
             &format!("data_chunk_from_arrow: {message}"),
         ));
     }
+    // SAFETY: `array` is a valid, unreleased Arrow array per this function's
+    // contract.
+    if let Err(message) = unsafe { check_dictionary_validity(&array.0) } {
+        return Err(ErrorData::new(
+            DuckDbErrorType::InvalidInput,
+            &format!("data_chunk_from_arrow: {message}"),
+        ));
+    }
+    // Which columns come back non-flat, decided before `DuckDB` claims the
+    // array (its buffers stay alive in the chunk, but the record is `DuckDB`'s
+    // afterwards).
+    let dictionary_columns: Vec<bool> = (0..children)
+        .map(|index| {
+            // SAFETY: `check_struct_children` confirmed `children` holds
+            // `children` non-null pointers to live records.
+            unsafe { has_dictionary(&**array.0.children.add(index)) }
+        })
+        .collect();
     if array.is_empty() {
         return Err(ErrorData::new(
             DuckDbErrorType::InvalidInput,
@@ -306,19 +358,197 @@ pub unsafe fn data_chunk_from_arrow(
         ));
     }
     // SAFETY: `out` is a fresh chunk this value now owns.
-    Ok(unsafe { OwnedDataChunk::from_raw(out) })
+    let chunk = unsafe { OwnedDataChunk::from_raw(out) };
+    for (column, &dictionary) in dictionary_columns.iter().enumerate() {
+        // SAFETY: `column` is below the chunk's column count, which is
+        // `converted`'s, which matched the array's child count above.
+        unsafe { flatten_if_needed(chunk.vector(column), chunk.size(), dictionary) }.map_err(
+            |e| {
+                ErrorData::new(
+                    DuckDbErrorType::Internal,
+                    &format!("data_chunk_from_arrow: flattening column {column}: {e}"),
+                )
+            },
+        )?;
+    }
+    Ok(chunk)
+}
+
+/// Rewrites a column `DuckDB` imported as a non-flat vector into a flat one.
+///
+/// Every reader in this crate indexes `duckdb_vector_get_data` directly, which
+/// is only correct for a flat vector, and the C API has no call that reports a
+/// vector's physical layout. The import makes two kinds of non-flat vector:
+///
+/// - a **dictionary** vector for a dictionary-encoded array, at any depth
+///   (`ColumnArrowToDuckDBDictionary` ends in `vector.Slice(...)`, and nested
+///   dictionaries go through the same function). Its data buffer holds the
+///   dictionary, not one entry per row, so a flat read of row `i` returns the
+///   wrong value and, past the dictionary's length, reads out of bounds;
+/// - a **constant** vector for an Arrow null-type array
+///   (`vector.Reference(Value())`), whose validity describes row 0 only.
+///
+/// Both are copied through an identity selection into a fresh flat vector,
+/// which the column then references. `VectorOperations::Copy` resolves the
+/// dictionary at every level and copies string payloads into the new
+/// vector's own heap (`vector_copy.cpp`), so the result does not depend on
+/// the Arrow buffers.
+///
+/// # Safety
+///
+/// `vector` must be a live column of an imported chunk holding `rows` rows.
+unsafe fn flatten_if_needed(
+    vector: libduckdb_sys::duckdb_vector,
+    rows: usize,
+    dictionary: bool,
+) -> Result<(), crate::error::ExtensionError> {
+    use crate::selection_vector::SelectionVector;
+    use crate::vector::ops::{copy_selected, reference_vector, OwnedVector};
+
+    // SAFETY: `vector` is live per the contract; the returned type is owned.
+    let logical_type =
+        unsafe { LogicalType::from_raw(libduckdb_sys::duckdb_vector_get_column_type(vector)) };
+    // SAFETY: `logical_type` is a live, owned handle.
+    let null_type =
+        unsafe { logical_type.try_get_type_id() } == Some(crate::types::TypeId::SqlNull);
+    if !dictionary && !null_type {
+        return Ok(());
+    }
+    let flat = OwnedVector::new(&logical_type, rows)?;
+    let mut identity = SelectionVector::new(rows)?;
+    for (row, slot) in identity.as_mut_slice().iter_mut().enumerate() {
+        // `SelectionVector::new` refused any `rows` whose indices `sel_t`
+        // cannot hold, so this conversion cannot fail.
+        *slot = libduckdb_sys::sel_t::try_from(row).map_err(|_| {
+            crate::error::ExtensionError::new("row index does not fit a selection vector")
+        })?;
+    }
+    // SAFETY: both vectors are live and of `logical_type`; the identity
+    // selection names rows `0..rows` of `vector`, and `flat` has room for
+    // `rows`. `flat`'s data is shared with `vector` by the reference, so it
+    // stays alive after `flat` is dropped.
+    unsafe {
+        copy_selected(vector, flat.as_raw(), &identity, rows, 0, 0);
+        reference_vector(vector, flat.as_raw());
+    }
+    Ok(())
+}
+
+/// Whether `raw`, or any array beneath it, is dictionary-encoded.
+///
+/// # Safety
+///
+/// `raw` must be a valid, unreleased Arrow array.
+unsafe fn has_dictionary(raw: &RawArrowArray) -> bool {
+    let mut found = false;
+    // SAFETY: forwarded from this function's own contract.
+    let _ = unsafe {
+        walk(raw, &mut |node| {
+            found |= !node.dictionary.is_null();
+            Ok(())
+        })
+    };
+    found
+}
+
+/// Refuses the one dictionary shape `DuckDB` imports by overflowing the heap.
+///
+/// `ColumnArrowToDuckDBDictionary` (`arrow_conversion.cpp`) copies the
+/// indices' validity into a default-constructed `ValidityMask`, which
+/// `EnsureWritable` sizes for `STANDARD_VECTOR_SIZE` rows, with a `memcpy` of
+/// as many bits as it is converting. A dictionary-encoded array with a
+/// validity buffer, a nonzero null count and more than
+/// [`duckdb_vector_size`](libduckdb_sys::duckdb_vector_size) entries writes
+/// past that allocation. A `LIST` whose child is dictionary-encoded reaches it
+/// with a chunk of only 1025 rows of two elements each. The condition below is
+/// the one `GetValidityMask` copies under, applied to every dictionary-encoded
+/// node, since the number of entries converted is at most the node's length.
+///
+/// # Safety
+///
+/// `raw` must be a valid, unreleased Arrow array.
+unsafe fn check_dictionary_validity(raw: &RawArrowArray) -> Result<(), String> {
+    // SAFETY: takes no arguments and reads a compile-time constant.
+    let limit = unsafe { libduckdb_sys::duckdb_vector_size() };
+    // SAFETY: forwarded from this function's own contract.
+    unsafe {
+        walk(raw, &mut |node| {
+            let copies_validity = !node.dictionary.is_null()
+                && node.null_count != 0
+                && node.n_buffers > 0
+                && !node.buffers.is_null()
+                // SAFETY: `buffers` is non-null and holds `n_buffers > 0`
+                // entries.
+                && !(*node.buffers).is_null();
+            let entries = u64::try_from(node.length).unwrap_or(0);
+            if copies_validity && entries > limit {
+                return Err(format!(
+                    "a dictionary-encoded Arrow array with {entries} entries and nulls cannot be \
+                    imported: DuckDB copies the validity of more than {limit} dictionary \
+                    indices into a {limit}-row mask and overflows the heap \
+                    (`ColumnArrowToDuckDBDictionary`, `arrow_conversion.cpp`). Split the \
+                    batch so that no dictionary-encoded array, including a list's child, holds \
+                    more than {limit} entries, or decode the dictionary before importing"
+                ));
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Calls `visit` on `raw` and on every array reachable from it through
+/// `children` and `dictionary`, depth first, stopping at the first error.
+/// Null child and dictionary pointers are skipped.
+///
+/// # Safety
+///
+/// `raw` must be a valid, unreleased Arrow array: every non-null pointer in
+/// `children[..n_children]` and `dictionary` points at a live record.
+unsafe fn walk(
+    raw: &RawArrowArray,
+    visit: &mut dyn FnMut(&RawArrowArray) -> Result<(), String>,
+) -> Result<(), String> {
+    visit(raw)?;
+    let children = usize::try_from(raw.n_children).unwrap_or(0);
+    if !raw.children.is_null() {
+        for index in 0..children {
+            // SAFETY: `children` holds `n_children` pointers per the contract.
+            let child = unsafe { *raw.children.add(index) };
+            if !child.is_null() {
+                // SAFETY: a non-null child of a valid array is a live record.
+                unsafe { walk(&*child, visit)? };
+            }
+        }
+    }
+    if !raw.dictionary.is_null() {
+        // SAFETY: a non-null dictionary of a valid array is a live record.
+        unsafe { walk(&*raw.dictionary, visit)? };
+    }
+    Ok(())
 }
 
 /// The structural checks `duckdb_data_chunk_from_arrow` skips before it reads
 /// `arrow_array->children[i]` for every column: a negative length or offset,
-/// a null `children` array or child, and a child with fewer than the parent's
-/// `offset + length` rows. `array` must not be released.
+/// a nonzero offset (which `DuckDB` ignores), a null `children` array or
+/// child, and a child with fewer than the parent's `length` rows. `array` must
+/// not be released.
 fn check_struct_children(array: &ArrowArray) -> Result<(), String> {
     let raw = &array.0;
     if raw.length < 0 || raw.offset < 0 {
         return Err(format!(
             "the Arrow array has a negative length ({}) or offset ({})",
             raw.length, raw.offset
+        ));
+    }
+    // `DuckDB` reads a column from row 0 of its child, not from the parent's
+    // `offset`: a struct array of 3 rows at offset 2 imports child rows 0..3
+    // instead of 2..5 (wrong rows, no error; `docs/upstream-duckdb-reports.md`).
+    if raw.offset != 0 {
+        return Err(format!(
+            "the Arrow struct array has offset {}: DuckDB ignores a top-level offset and would \
+             import the wrong rows. Export the batch without an offset (slice its children \
+             instead)",
+            raw.offset
         ));
     }
     let children = array.child_count();
@@ -331,12 +561,7 @@ fn check_struct_children(array: &ArrowArray) -> Result<(), String> {
              null"
         ));
     }
-    let needed = raw.length.checked_add(raw.offset).ok_or_else(|| {
-        format!(
-            "the Arrow array's offset ({}) plus length ({}) overflows",
-            raw.offset, raw.length
-        )
-    })?;
+    let needed = raw.length;
     for index in 0..children {
         // SAFETY: `children` is non-null and, per `ArrowArray::from_raw`'s
         // contract, points at `n_children` child pointers.
@@ -350,7 +575,7 @@ fn check_struct_children(array: &ArrowArray) -> Result<(), String> {
         if child_length < needed {
             return Err(format!(
                 "child {index} of the Arrow array has {child_length} row(s), but the struct \
-                 array's offset + length needs {needed}"
+                 array's length needs {needed}"
             ));
         }
     }
@@ -421,20 +646,30 @@ mod tests {
         check_struct_children(&array)
     }
 
-    /// `DuckDB` reads rows `offset..offset + length` of every child, so a
-    /// child must hold at least that many: exactly enough or more is
-    /// accepted, one short is refused by name.
+    /// A child must hold at least the parent's `length` rows: exactly
+    /// enough or more is accepted, one short is refused by name.
     #[test]
-    fn a_child_must_cover_the_parents_offset_plus_length() {
-        // length 3 at offset 2 reads child rows 0..5.
-        assert_eq!(check_one_child(3, 2, 5), Ok(()), "exactly enough rows");
-        assert_eq!(check_one_child(3, 2, 6), Ok(()), "more rows than needed");
-        let err = check_one_child(3, 2, 4).expect_err("one row short");
+    fn a_child_must_cover_the_parents_length() {
+        assert_eq!(check_one_child(3, 0, 3), Ok(()), "exactly enough rows");
+        assert_eq!(check_one_child(3, 0, 4), Ok(()), "more rows than needed");
+        let err = check_one_child(3, 0, 2).expect_err("one row short");
         assert!(
-            err.contains("child 0 of the Arrow array has 4 row(s)") && err.contains("needs 5"),
+            err.contains("child 0 of the Arrow array has 2 row(s)") && err.contains("needs 3"),
             "{err}"
         );
         // An empty struct array at offset 0 needs nothing from its child.
         assert_eq!(check_one_child(0, 0, 0), Ok(()));
+    }
+
+    /// `DuckDB` imports child rows `0..length` whatever the parent's offset,
+    /// so any nonzero offset is refused, even with children long enough for
+    /// it; offset 0 is not.
+    #[test]
+    fn a_nonzero_parent_offset_is_refused_by_name() {
+        for offset in [1, 2, i64::MAX] {
+            let err = check_one_child(3, offset, 10).expect_err("nonzero offset");
+            assert!(err.contains(&format!("has offset {offset}")), "{err}");
+        }
+        assert_eq!(check_one_child(3, 0, 10), Ok(()));
     }
 }

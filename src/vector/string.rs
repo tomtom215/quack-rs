@@ -285,7 +285,9 @@ impl<'a> DuckStringView<'a> {
 /// - `data` must point to a `DuckDB` VARCHAR vector's data buffer.
 /// - `idx` must be within bounds of the vector.
 /// - For pointer-format strings, the heap data pointed to must be valid for the
-///   duration of this function call and the returned `&str` slice.
+///   duration of this function call and the returned `&str` slice. A NULL row
+///   cannot promise that — `DuckDB` leaves a NULL row's payload as it was,
+///   which can be a pointer from an earlier chunk — so do not read NULL rows.
 /// - The returned `&str` borrows from the `DuckDB` vector — do not destroy the
 ///   data chunk while the returned reference is live.
 ///
@@ -327,7 +329,9 @@ pub unsafe fn read_duck_string<'a>(data: *const u8, idx: usize) -> &'a str {
 /// - `data` must point at a `DuckDB` BLOB (or VARCHAR) vector's data buffer.
 /// - `idx` must be within bounds of the vector.
 /// - For pointer-format blobs, the heap data must be valid for the lifetime of
-///   the returned slice.
+///   the returned slice. A NULL row cannot promise that — `DuckDB` leaves a
+///   NULL row's payload as it was, which can be a pointer from an earlier
+///   chunk — so do not read NULL rows.
 /// - The returned slice can borrow from the vector's own data buffer (an inline
 ///   blob of 12 bytes or fewer is stored there), so the vector must also
 ///   outlive it — do not destroy the data chunk while the slice is live.

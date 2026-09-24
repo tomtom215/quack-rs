@@ -94,6 +94,7 @@ use std::fmt;
 use libduckdb_sys::duckdb_connection;
 
 use crate::error::ExtensionError;
+use crate::vector::complex::ListVector;
 
 /// Metadata about one secret the user has configured in `DuckDB`.
 ///
@@ -160,60 +161,66 @@ pub struct DuckDbSecretInfo {
 pub unsafe fn list_duckdb_secrets(
     connection: duckdb_connection,
 ) -> Result<Vec<DuckDbSecretInfo>, ExtensionError> {
-    // `scope` is VARCHAR[]; cast it to a string here rather than walking a LIST
-    // vector, then split. `list_aggregate(..., 'string_agg')` would need a
-    // separator that cannot appear in a URI prefix, so the array literal syntax
-    // is parsed instead — DuckDB renders it as ['a', 'b'].
-    const SQL: &str = "SELECT name, type, provider, persistent, storage,                        scope::VARCHAR, secret_string FROM duckdb_secrets()";
+    // `scope` is read as the VARCHAR[] it is. Casting it to VARCHAR and
+    // splitting the rendering lost elements: DuckDB renders
+    // ['http://a/, b', 'http://it\'s/'], and a split on ", " cannot tell the
+    // separator from a comma inside an element. The table function is
+    // qualified so that a user macro of the same name cannot stand in for it.
+    const SQL: &str = "SELECT name, type, provider, persistent, storage, scope, secret_string \
+                       FROM system.main.duckdb_secrets()";
 
     // SAFETY: `connection` is valid per this function's contract.
     let mut result = unsafe { crate::query::query(connection, SQL) }?;
 
     let mut secrets = Vec::new();
     while let Some(chunk) = result.next_chunk()? {
-        for row in 0..chunk.size() {
-            // SAFETY: the column types are fixed by the SELECT above, and `row`
-            // is within the chunk.
-            unsafe {
+        if chunk.column_count() != 7 {
+            return Err(ExtensionError::new(
+                "duckdb_secrets() returned an unexpected number of columns",
+            ));
+        }
+        // SAFETY: the column types are fixed by the SELECT above (six VARCHAR
+        // or BOOLEAN columns and one VARCHAR[]); every row index is within the
+        // chunk, and every string is read only after its row is checked valid.
+        unsafe {
+            let text = |col: usize, row: usize| {
+                let reader = chunk.reader(col);
+                if reader.is_valid(row) {
+                    reader.read_str(row).to_owned()
+                } else {
+                    String::new()
+                }
+            };
+            let scopes = chunk.vector(5);
+            let elements = ListVector::child_reader(scopes, ListVector::get_size(scopes));
+            let scope_valid = chunk.reader(5);
+            let persistent = chunk.reader(3);
+            for row in 0..chunk.size() {
+                let mut scope = Vec::new();
+                if scope_valid.is_valid(row) {
+                    let entry = ListVector::get_entry(scopes, row);
+                    for k in 0..entry.length {
+                        let Ok(at) = usize::try_from(entry.offset + k) else {
+                            break;
+                        };
+                        if elements.is_valid(at) {
+                            scope.push(elements.read_str(at).to_owned());
+                        }
+                    }
+                }
                 secrets.push(DuckDbSecretInfo {
-                    name: chunk.reader(0).read_str(row).to_owned(),
-                    secret_type: chunk.reader(1).read_str(row).to_owned(),
-                    provider: chunk.reader(2).read_str(row).to_owned(),
-                    persistent: chunk.reader(3).read_bool(row),
-                    storage: chunk.reader(4).read_str(row).to_owned(),
-                    scope: parse_scope_array(chunk.reader(5).read_str(row)),
-                    secret_string: chunk.reader(6).read_str(row).to_owned(),
+                    name: text(0, row),
+                    secret_type: text(1, row),
+                    provider: text(2, row),
+                    persistent: persistent.is_valid(row) && persistent.read_bool(row),
+                    storage: text(4, row),
+                    scope,
+                    secret_string: text(6, row),
                 });
             }
         }
     }
     Ok(secrets)
-}
-
-/// Parses `DuckDB`'s rendering of a `VARCHAR[]`, e.g. `['s3://', 's3n://']`.
-///
-/// Returns an empty vector for `[]`, and treats anything that is not a bracketed
-/// list as a single element rather than losing it.
-fn parse_scope_array(rendered: &str) -> Vec<String> {
-    let Some(inner) = rendered.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
-        return if rendered.is_empty() {
-            Vec::new()
-        } else {
-            vec![rendered.to_owned()]
-        };
-    };
-    if inner.trim().is_empty() {
-        return Vec::new();
-    }
-    inner
-        .split(", ")
-        .map(|item| {
-            item.strip_prefix('\'')
-                .and_then(|s| s.strip_suffix('\''))
-                .unwrap_or(item)
-                .to_owned()
-        })
-        .collect()
 }
 
 /// A single secret entry retrieved from the secrets manager.
@@ -363,20 +370,27 @@ impl SecretEntry {
     }
 }
 
-/// Zeroize a `String`'s buffer using volatile writes, then clear it.
+/// Zeroize a `String`'s whole allocation using volatile writes, then clear
+/// it.
 ///
 /// Uses [`std::ptr::write_volatile`] to ensure the compiler cannot elide the
 /// zeroing even if the memory is about to be freed. This is the standard
 /// approach used by the `zeroize` crate, implemented inline to avoid adding
-/// a dependency.
+/// a dependency — and like the `zeroize` crate it covers the spare capacity
+/// too, not just `len` bytes: a secret that was truncated, or a buffer reused
+/// for a shorter value, keeps its old bytes past the end.
 fn zeroize_string(s: &mut String) {
-    // SAFETY: `as_mut_vec()` gives us mutable access to the String's backing
-    // buffer. We only write `0u8` bytes, which is valid UTF-8 (NUL chars).
-    // The string is cleared immediately after, so no invalid-UTF-8 state
-    // is observable.
+    // SAFETY: `as_mut_vec()` gives mutable access to the String's backing
+    // buffer, whose allocation is `capacity()` bytes; every byte in
+    // `0..capacity` is inside it and `u8` has no invalid bit patterns, so
+    // writing through the raw pointer is sound even past `len`. Only `0u8`
+    // is written, which is valid UTF-8, and the string is cleared right
+    // after.
     unsafe {
-        for byte in s.as_mut_vec().iter_mut() {
-            std::ptr::write_volatile(byte, 0);
+        let buffer = s.as_mut_vec();
+        let base = buffer.as_mut_ptr();
+        for i in 0..buffer.capacity() {
+            std::ptr::write_volatile(base.add(i), 0);
         }
     }
     s.clear();
@@ -524,39 +538,6 @@ pub trait SecretsManager: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    // `parse_scope_array` reads DuckDB's rendering of a VARCHAR[] out of
-    // `duckdb_secrets()`. It is pure string handling and the only part of this
-    // module that does not need a database, so pin its shape here rather than
-    // relying on whatever a live secret happens to carry.
-
-    #[test]
-    fn a_scope_array_round_trips_its_elements() {
-        assert_eq!(
-            parse_scope_array("['s3://', 's3n://']"),
-            vec!["s3://".to_owned(), "s3n://".to_owned()]
-        );
-        assert_eq!(parse_scope_array("['only']"), vec!["only".to_owned()]);
-    }
-
-    #[test]
-    fn an_empty_scope_array_yields_no_elements() {
-        assert_eq!(parse_scope_array("[]"), [] as [String; 0]);
-        assert_eq!(parse_scope_array("[ ]"), [] as [String; 0]);
-        assert_eq!(parse_scope_array(""), [] as [String; 0]);
-    }
-
-    #[test]
-    fn an_unbracketed_scope_is_kept_as_a_single_element_rather_than_lost() {
-        assert_eq!(parse_scope_array("s3://"), vec!["s3://".to_owned()]);
-    }
-
-    #[test]
-    fn scope_elements_keep_their_contents_when_unquoted() {
-        // DuckDB quotes each element; anything that is not quoted is taken
-        // verbatim rather than having its first and last character stripped.
-        assert_eq!(parse_scope_array("[bare]"), vec!["bare".to_owned()]);
-    }
-
     use super::*;
 
     #[test]

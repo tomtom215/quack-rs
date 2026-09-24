@@ -484,7 +484,10 @@ impl StructWriter {
     ///
     /// # Safety
     ///
-    /// See [`write_i8`][Self::write_i8].
+    /// See [`write_i8`][Self::write_i8]. Also, `micros_since_midnight` must be
+    /// in `0..=86_400_000_000`: see
+    /// [`VectorWriter::write_time`][crate::vector::VectorWriter::write_time],
+    /// whose out-of-range values crash `DuckDB` when it renders them.
     #[inline]
     pub unsafe fn write_time(&mut self, row: usize, field_idx: usize, micros_since_midnight: i64) {
         // SAFETY: `write_i64` needs `row` within capacity and a field of 8-byte

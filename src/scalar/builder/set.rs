@@ -123,15 +123,22 @@ impl ScalarFunctionSetBuilder {
     ///
     /// Returns `ExtensionError` if:
     /// - No overloads were added.
+    /// - A parameter, varargs or return type was given as a bare composite
+    ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
+    ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
+    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   names the slot.
     /// - Any overload is missing a return type or function callback. The error
     ///   names the overload's index, and is reported before any `DuckDB`
     ///   handle is allocated.
-    /// - Two overloads declare the same argument types (compared structurally,
-    ///   so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ; a varargs type counts
-    ///   as part of the signature). `DuckDB` itself would accept such a set and
-    ///   then fail every call with "Could not choose a best candidate function".
-    /// - An overload's name and parameter types match a scalar function that
-    ///   already exists (see "Name collisions").
+    /// - Two overloads accept the same call: the same argument types
+    ///   (compared structurally, so `DECIMAL(18,2)` and `DECIMAL(18,3)`
+    ///   differ), or, with varargs, the same types at some argument count
+    ///   (`f(BIGINT)` and `f(BIGINT, BIGINT...)` both take `f(1)`). `DuckDB`
+    ///   itself would accept such a set and then fail every such call with
+    ///   "Could not choose a best candidate function".
+    /// - An overload accepts the same call as a scalar function that already
+    ///   exists (see "Name collisions").
     /// - `DuckDB` reports registration failure.
     ///
     /// # Name collisions
@@ -147,22 +154,33 @@ impl ScalarFunctionSetBuilder {
     /// best candidate function", different return type). Registering
     /// `abs(BIGINT)` would change the built-in `abs` for `BIGINT`.
     ///
-    /// quack-rs therefore refuses an overload, naming its index, before registering, when
-    /// `duckdb_functions()` already lists a scalar with this name and the same
-    /// parameter and varargs types. The check covers every parameter type
-    /// except `STRUCT`, `UNION`, `ENUM` and the `SQLNULL` / literal pseudo-types;
-    /// a signature containing one of those
-    /// is registered unchecked. `DuckDB` itself refuses a name that belongs to
-    /// an aggregate function or a macro (such as the built-in `list_sum`).
+    /// quack-rs therefore refuses an overload, naming its index, before
+    /// registering, when `duckdb_functions()` already lists a scalar with this
+    /// name that accepts the same call — the rule and its coverage are those of
+    /// [`ScalarFunctionBuilder::register`][super::ScalarFunctionBuilder::register],
+    /// including its cost: one catalog scan per call, or one per extension load
+    /// through the entry point's [`Connection`](crate::connection::Connection).
+    /// `DuckDB` itself refuses a name that belongs to an aggregate function or
+    /// a macro (such as the built-in `list_sum`).
     ///
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.
-    #[allow(clippy::too_many_lines)]
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
-        // Validate everything before allocating any DuckDB handle. The checks
-        // that need no DuckDB call come first, so a missing callback is
-        // reported by index without touching the engine.
+        // SAFETY: forwarded from this function's own contract.
+        unsafe { self.register_with(con, None) }
+    }
+
+    /// [`register`][Self::register], checking signatures against `snapshot`
+    /// (listed on first use) instead of listing the catalog for this call.
+    ///
+    /// # Safety
+    ///
+    /// As [`register`][Self::register].
+    /// The completeness checks that need no `DuckDB` call: at least one
+    /// overload, each with a return type and a function callback.
+    /// [`MockRegistrar`][crate::testing::MockRegistrar] runs them too.
+    pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
         if self.overloads.is_empty() {
             return Err(ExtensionError::new(
                 "no overloads added to scalar function set",
@@ -170,6 +188,26 @@ impl ScalarFunctionSetBuilder {
         }
         for (i, overload) in self.overloads.iter().enumerate() {
             overload.check_complete(i)?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) unsafe fn register_with(
+        self,
+        con: duckdb_connection,
+        snapshot: Option<&std::cell::RefCell<Option<super::collision::ExistingScalars>>>,
+    ) -> Result<(), ExtensionError> {
+        // Validate everything before allocating any DuckDB handle. The checks
+        // that need no DuckDB call come first, so a missing callback is
+        // reported by index without touching the engine.
+        self.check_parts()?;
+        for (i, overload) in self.overloads.iter().enumerate() {
+            crate::table::type_check::refuse_any_return(
+                &format!("overload {i} return type"),
+                overload.return_type,
+                overload.return_logical.as_ref(),
+            )?;
         }
         // See `ScalarFunctionBuilder::register` -- reject composite TypeIds.
         for (i, overload) in self.overloads.iter().enumerate() {
@@ -197,18 +235,19 @@ impl ScalarFunctionSetBuilder {
         // SAFETY: every logical parameter is a live `LogicalType` owned by this
         // builder, and the caller's contract means the C API is initialised.
         unsafe { reject_duplicate_overloads(&self.name.to_string_lossy(), &signatures)? };
-        for (i, signature) in signatures.iter().enumerate() {
-            // SAFETY: `con` is valid per this function's contract; the
-            // logical parameters are live, as above.
-            unsafe {
-                super::collision::refuse_replacing_a_scalar(
-                    con,
-                    &self.name.to_string_lossy(),
-                    &format!("overload {i}"),
-                    signature,
-                )?;
-            }
-        }
+        let name = self.name.to_string_lossy().into_owned();
+        let rendered: Vec<_> = signatures
+            .iter()
+            .enumerate()
+            .map(|(i, signature)| {
+                // SAFETY: the logical parameters are live, as above.
+                (format!("overload {i}"), unsafe {
+                    super::collision::render_signature(signature)
+                })
+            })
+            .collect();
+        // SAFETY: `con` is valid per this function's contract.
+        unsafe { super::collision::refuse_taken_signatures(con, snapshot, &name, &rendered)? };
 
         // SAFETY: Creates a new scalar function set handle.
         let mut set = unsafe { duckdb_create_scalar_function_set(self.name.as_ptr()) };
@@ -391,7 +430,6 @@ impl ScalarFunctionSetBuilder {
             if result != DuckDBSuccess {
                 register_error = Some(ExtensionError::new(format!(
                     "duckdb_register_scalar_function_set failed for '{name}': {hint}",
-                    name = self.name.to_string_lossy(),
                     hint = crate::error::REGISTRATION_FAILURE_HINT
                 )));
             }
@@ -402,7 +440,13 @@ impl ScalarFunctionSetBuilder {
             duckdb_destroy_scalar_function_set(&raw mut set);
         }
 
-        register_error.map_or(Ok(()), Err)
+        register_error.map_or_else(
+            || {
+                super::collision::record_registered(snapshot, &name, rendered);
+                Ok(())
+            },
+            Err,
+        )
     }
 }
 

@@ -41,7 +41,23 @@
 //! details; [`cast_callback!`][crate::cast_callback] nulls every row for you
 //! only when the body panics.
 //!
+//! # A cast replaces `DuckDB`'s own for that pair
+//!
+//! Registering a cast for a source/target pair `DuckDB` already converts —
+//! `VARCHAR → INTEGER`, say — **replaces the built-in conversion for the whole
+//! database**: every connection, `TRY_CAST`, and the implicit casts `DuckDB`
+//! inserts, such as the one an `INSERT` of a string into an `INTEGER` column
+//! performs. Registering the same pair again replaces it again. Neither is
+//! refused or reported (`CastFunctionSet::RegisterCastFunction`), and the C API
+//! offers no way to ask whether a pair is already cast. Overriding is sometimes
+//! the point; when it is not, register casts to or from a type the extension
+//! owns (a named type from [`LogicalType::register`][crate::types::LogicalType::register]).
+//! `tests/ffi_roundtrip/table_cast.rs` pins this behaviour.
+//!
 //! # Example: register a VARCHAR → INTEGER cast
+//!
+//! This replaces the built-in `VARCHAR → INTEGER` cast (see above); it is here
+//! to show the callback's shape.
 //!
 //! ```rust,no_run
 //! use quack_rs::cast::{CastFunctionBuilder, CastFunctionInfo, CastMode};

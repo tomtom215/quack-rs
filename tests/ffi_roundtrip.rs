@@ -201,6 +201,45 @@ fn register_echo(
     }
 }
 
+/// Whether the linked `DuckDB` merges a scalar registration into an existing
+/// name as a new overload: v1.5.0 and later. Before it the C API registers
+/// with `CREATE`, so quack-rs refuses any name already taken.
+fn engine_merges_scalar_overloads(fx: &Fixture) -> bool {
+    let version = fx
+        .scalar("SELECT version()", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .expect("version() is never NULL");
+    quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 0))
+}
+
+/// Whether the linked `DuckDB` lets a scalar bind callback inspect its
+/// arguments: v1.5.5 and later. Before it, `ScalarBindInfo::argument` asks
+/// for nothing (`DuckDB` would abort on a subquery argument) and fails the
+/// bind; this asserts that `probe` fails that way and returns `false`, so a
+/// test of what a bind callback does with an argument checks the refusal on
+/// those engines instead.
+#[cfg(feature = "duckdb-1-5")]
+fn inspects_arguments_or_refuses(fx: &Fixture, probe: &str) -> bool {
+    let version = fx
+        .scalar("SELECT version()", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .expect("version() is never NULL");
+    if quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 5)) {
+        return true;
+    }
+    // SAFETY: the fixture's connection is open.
+    let message = unsafe { quack_rs::query::query(fx.con(), probe) }
+        .map(|_| String::from("(the query succeeded)"))
+        .unwrap_or_else(|e| e.to_string());
+    assert!(
+        message.contains("before v1.5.5"),
+        "{version}: {probe}: {message}"
+    );
+    false
+}
+
 #[test]
 fn every_integer_width_round_trips_through_real_vectors() {
     let fx = Fixture::open();
@@ -2655,6 +2694,31 @@ fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
     assert!(http.scope.is_empty(), "unexpected scope: {:?}", http.scope);
 }
 
+/// The fourth audit's T2. The scope list was read by casting it to `VARCHAR`
+/// and splitting `DuckDB`'s rendering on `", "`, so a scope containing a comma
+/// or a quote came back wrong: the scope `http://a/, b` came back as two
+/// elements, `'http://a/` and `b'`, and a quote kept its escaping backslash.
+/// It is now read as the list it is.
+#[test]
+fn secret_scopes_with_commas_and_quotes_round_trip() {
+    use quack_rs::secrets::list_duckdb_secrets;
+
+    let fx = Fixture::open();
+    fx.query(
+        "CREATE SECRET odd_scopes (TYPE http, \
+         SCOPE ['http://a/, b', 'http://it''s/', 'http://plain/'])",
+    );
+    // SAFETY: `con` is open for the fixture's lifetime.
+    let secrets = unsafe { list_duckdb_secrets(fx.con()) }.expect("query duckdb_secrets()");
+    let odd = secrets
+        .iter()
+        .find(|s| s.name == "odd_scopes")
+        .expect("the secret");
+    let mut scope = odd.scope.clone();
+    scope.sort();
+    assert_eq!(scope, ["http://a/, b", "http://it's/", "http://plain/"]);
+}
+
 // ---------------------------------------------------------------------------
 // Name validation, checked against what DuckDB actually accepts
 // ---------------------------------------------------------------------------
@@ -2725,6 +2789,16 @@ fn the_name_validator_accepts_every_name_duckdb_does() {
                     |r, i| unsafe { r.read_str(i).to_owned() },
                 );
                 assert_eq!(kind.as_deref(), Some("pragma"), "{name:?}");
+                continue;
+            }
+            // One shipped name is refused on purpose too: `position` is only
+            // reachable through the `position(a IN b)` syntax, so a function an
+            // extension registers under it could never be called.
+            if quack_rs::validate::DUCKDB_UNCALLABLE_KEYWORDS
+                .contains(&name.to_ascii_lowercase().as_str())
+            {
+                assert_eq!(name, "position", "a shipped name the validator refuses");
+                assert!(validate_function_name(&name).is_err(), "{name:?}");
                 continue;
             }
             checked += 1;
@@ -2884,6 +2958,57 @@ fn a_replacement_scan_redirects_an_unknown_table() {
     );
 }
 
+/// Names the `record_names` replacement scan was called with.
+static REPLACEMENT_SCAN_NAMES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+quack_rs::replacement_scan_callback!(record_names, |info, table_name, _data| {
+    // SAFETY: DuckDB passes a valid NUL-terminated identifier.
+    let name = unsafe { std::ffi::CStr::from_ptr(table_name) }
+        .to_string_lossy()
+        .into_owned();
+    if name.ends_with(".recorded") {
+        REPLACEMENT_SCAN_NAMES
+            .lock()
+            .expect("not poisoned")
+            .push(name);
+        // SAFETY: `info` is the pointer DuckDB passed in.
+        unsafe {
+            quack_rs::replacement_scan::ReplacementScanInfo::new(info)
+                .set_function("range")
+                .add_i64_parameter(2);
+        }
+    }
+});
+
+/// The fourth audit's T12, pinned so the module docs stay true: the callback
+/// is given only the last part of a qualified reference, so a schema the
+/// query names is invisible to it (and need not exist).
+#[test]
+fn a_replacement_scan_sees_only_the_unqualified_name() {
+    use quack_rs::replacement_scan::ReplacementScanBuilder;
+
+    let fx = Fixture::open();
+    // SAFETY: `db` is open; no extra data to clean up.
+    unsafe {
+        ReplacementScanBuilder::register(fx.db(), record_names, std::ptr::null_mut(), None);
+    }
+    REPLACEMENT_SCAN_NAMES.lock().expect("not poisoned").clear();
+    for sql in [
+        "SELECT count(*) FROM nosuchschema.\"a.recorded\"",
+        "SELECT count(*) FROM memory.main.\"b.recorded\"",
+    ] {
+        assert_eq!(
+            fx.scalar(sql, |r, i| unsafe { r.read_i64(i) }),
+            Some(2),
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        *REPLACEMENT_SCAN_NAMES.lock().expect("not poisoned"),
+        ["a.recorded", "b.recorded"]
+    );
+}
+
 /// A panic inside a replacement scan must reach SQL as an error, not abort.
 #[test]
 fn a_panicking_replacement_scan_becomes_a_sql_error() {
@@ -2989,7 +3114,7 @@ quack_rs::copy_bind_callback!(my_format_bind, |info| {
 quack_rs::copy_global_init_callback!(my_format_init, |info| {
     let init = unsafe { quack_rs::copy_function::CopyGlobalInitInfo::new(info) };
     // SAFETY: DuckDB provides the destination path for this COPY.
-    let path = unsafe { init.get_file_path() };
+    let path = unsafe { init.get_file_path() }.expect("a UTF-8 destination path");
     let state = Box::new(copy_fn::GlobalState {
         path,
         rows: 0,
@@ -3240,6 +3365,9 @@ fn scalar_bind_data_and_local_state_survive_a_real_query() {
             .function(scaled_exec)
             .register(fx.con())
             .expect("register scaled");
+    }
+    if !inspects_arguments_or_refuses(&fx, "SELECT scaled(21, 2)") {
+        return;
     }
 
     // The second argument is a constant, so bind folds it once.
@@ -4532,6 +4660,18 @@ fn a_custom_logical_type_is_registered_and_usable_from_sql() {
     }
     .expect_err("the name is taken");
     assert!(err.as_str().contains("mood"), "{err}");
+
+    // A type containing ANY failed with the same bare code, and the error
+    // blamed a taken name; it now names the cause, for a fresh name too.
+    let with_any = LogicalType::list(TypeId::Any);
+    // SAFETY: the type is live, and `con` is open.
+    let err = unsafe {
+        with_any.set_alias("list_of_any");
+        with_any.register(fx.con())
+    }
+    .expect_err("DuckDB refuses ANY");
+    assert!(err.as_str().contains("ANY or INVALID"), "{err}");
+    assert!(!err.as_str().contains("taken"), "{err}");
 }
 
 // ---------------------------------------------------------------------------
@@ -4945,6 +5085,9 @@ fn typed_scalar_bind_data_and_local_state_need_no_hand_written_destructor() {
             .function(typed_scaled)
             .register(fx.con())
             .expect("register typed_scaled");
+    }
+    if !inspects_arguments_or_refuses(&fx, "SELECT typed_scaled(21::BIGINT, 2::BIGINT)") {
+        return;
     }
 
     // The second argument is constant-folded at bind time, so the row loop never
@@ -5469,6 +5612,71 @@ mod copy_from {
         unsafe { copy.register(con) }.expect("register the lines format");
     }
 
+    /// What the `optprobe` reader saw for its two options, per bind.
+    static SEEN_OPTIONS: std::sync::Mutex<Vec<(Option<TypeId>, bool)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// The fourth audit's T4, pinned so the documentation stays true.
+    /// `CCopyFromBind` hands COPY options to the reader **uncast**: a
+    /// `BIGINT`-declared `skip` given as `'abc'` arrives as the `VARCHAR`
+    /// `'abc'` (a `FROM optprobe_reader(…, skip := 'abc')` call would fail to
+    /// cast instead), `SKIP 3` arrives as an `INTEGER`, and an option written
+    /// with no value (`FLAG`) does not arrive at all. If `DuckDB` starts
+    /// casting, this fails and the `copy_from` docs need updating.
+    #[test]
+    fn copy_options_reach_the_reader_uncast() {
+        let fx = Fixture::open();
+        let reader = TableFunctionBuilder::new("optprobe_reader")
+            .param(TypeId::Varchar)
+            .named_param("skip", TypeId::BigInt)
+            .named_param("flag", TypeId::Boolean)
+            .with_state::<(), _>(|bind| {
+                // SAFETY: both options are declared above.
+                let (skip, flag) = unsafe {
+                    (
+                        bind.get_named_parameter_value("skip"),
+                        bind.get_named_parameter_value("flag"),
+                    )
+                };
+                SEEN_OPTIONS
+                    .lock()
+                    .expect("not poisoned")
+                    .push((skip.type_id(), flag.is_null()));
+                Ok(())
+            })
+            .scan(|(), chunk| {
+                // SAFETY: ending the scan.
+                unsafe { chunk.set_size(0) };
+                Ok(())
+            })
+            .build()
+            .expect("build optprobe_reader");
+        // SAFETY: every callback matches its declared signature.
+        let handle = unsafe { reader.build_handle() }.expect("build_handle");
+        let copy = CopyFunctionBuilder::try_new("optprobe")
+            .expect("copy function name")
+            .copy_from(handle)
+            .expect("attach the reader");
+        // SAFETY: `con` is open.
+        unsafe { copy.register(fx.con()) }.expect("register optprobe");
+        let dir = write_fixture_file("empty.x", "");
+        let path = dir.path().join("empty.x");
+        let path = path.to_str().expect("utf-8 path");
+        fx.query("CREATE TABLE opt_target (i INTEGER)");
+        SEEN_OPTIONS.lock().expect("not poisoned").clear();
+        fx.query(&format!(
+            "COPY opt_target FROM '{path}' (FORMAT optprobe, SKIP 'abc', FLAG)"
+        ));
+        fx.query(&format!(
+            "COPY opt_target FROM '{path}' (FORMAT optprobe, SKIP 3)"
+        ));
+        let seen = SEEN_OPTIONS.lock().expect("not poisoned").clone();
+        assert_eq!(
+            seen,
+            [(Some(TypeId::Varchar), true), (Some(TypeId::Integer), true)]
+        );
+    }
+
     fn write_fixture_file(name: &str, contents: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join(name), contents).expect("write fixture");
@@ -5697,3 +5905,18 @@ mod query_docs;
 
 #[path = "ffi_roundtrip/lifecycle.rs"]
 mod lifecycle;
+
+#[path = "ffi_roundtrip/agg_window.rs"]
+mod agg_window;
+
+#[path = "ffi_roundtrip/nested_validity.rs"]
+mod nested_validity;
+
+#[path = "ffi_roundtrip/panic_guards.rs"]
+mod panic_guards;
+
+#[path = "ffi_roundtrip/collision.rs"]
+mod collision;
+
+#[path = "ffi_roundtrip/temporal_binds.rs"]
+mod temporal_binds;

@@ -20,12 +20,10 @@
 //! use quack_rs::connection::{Connection, Registrar};
 //! use quack_rs::error::ExtensionError;
 //! use quack_rs::scalar::ScalarFunctionBuilder;
-//! use quack_rs::types::TypeId;
 //!
 //! unsafe fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
-//!     let builder = ScalarFunctionBuilder::try_new("my_fn")?
-//!         .returns(TypeId::BigInt);
-//!     unsafe { reg.register_scalar(builder) }
+//!     let builder = ScalarFunctionBuilder::map1("my_fn", |x: i64| x + 1)?;
+//!     unsafe { reg.register_typed_scalar(builder) }
 //! }
 //!
 //! quack_rs::entry_point_v2!(my_extension_init_c_api, |con| {
@@ -90,7 +88,6 @@ use crate::table::TableFunctionBuilder;
 /// use quack_rs::connection::Registrar;
 /// use quack_rs::error::ExtensionError;
 /// use quack_rs::scalar::ScalarFunctionBuilder;
-/// use quack_rs::types::TypeId;
 ///
 /// /// Register all functions for this extension.
 /// ///
@@ -98,9 +95,8 @@ use crate::table::TableFunctionBuilder;
 /// ///
 /// /// `reg` must provide a valid `DuckDB` connection for the duration of this call.
 /// unsafe fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
-///     let builder = ScalarFunctionBuilder::try_new("my_fn")?
-///         .returns(TypeId::BigInt);
-///     unsafe { reg.register_scalar(builder) }
+///     let builder = ScalarFunctionBuilder::map1("my_fn", |x: i64| x + 1)?;
+///     unsafe { reg.register_typed_scalar(builder) }
 /// }
 /// ```
 pub trait Registrar {
@@ -239,19 +235,39 @@ pub trait Registrar {
 pub struct Connection {
     con: duckdb_connection,
     db: duckdb_database,
+    /// The catalog's scalar signatures, listed on the first scalar
+    /// registration and kept up to date with this connection's own, so the
+    /// collision check costs one catalog scan per extension load rather than
+    /// one per function (see [`ScalarFunctionBuilder::register`]).
+    ///
+    /// SQL run directly on the raw handle during registration — a
+    /// `CREATE MACRO`, another extension's `LOAD` — is not seen by it. A macro
+    /// name cannot take a scalar signature (`DuckDB` refuses the scalar
+    /// instead), so what can go unseen is a scalar function registered by
+    /// other code in between, whose collision the check would then miss.
+    scalars: core::cell::RefCell<Option<crate::scalar::builder::collision::ExistingScalars>>,
 }
 
 impl Connection {
     /// Create a `Connection` from raw `DuckDB` handles.
     ///
+    /// [`init_extension_v2`][crate::entry_point::init_extension_v2] makes the
+    /// one an extension registers through. This constructor lets other code —
+    /// a test of an extension's registration function against a real
+    /// database, say — drive the same [`Registrar`] implementation.
+    ///
     /// # Safety
     ///
     /// Both `con` and `db` must be valid, non-null handles for the duration of
-    /// the `Connection`'s lifetime. Intended for internal use by
-    /// [`init_extension_v2`][crate::entry_point::init_extension_v2].
+    /// the `Connection`'s lifetime, and `con` must be a connection to `db`.
     #[inline]
-    pub(crate) const unsafe fn from_raw(con: duckdb_connection, db: duckdb_database) -> Self {
-        Self { con, db }
+    #[must_use]
+    pub const unsafe fn from_raw(con: duckdb_connection, db: duckdb_database) -> Self {
+        Self {
+            con,
+            db,
+            scalars: core::cell::RefCell::new(None),
+        }
     }
 
     /// Return the raw `duckdb_connection` handle.
@@ -396,7 +412,7 @@ impl Connection {
 impl Registrar for Connection {
     unsafe fn register_scalar(&self, builder: ScalarFunctionBuilder) -> Result<(), ExtensionError> {
         // SAFETY: self.con is valid per Connection invariant; caller upholds builder contract.
-        unsafe { builder.register(self.con) }
+        unsafe { builder.register_with(self.con, Some(&self.scalars)) }
     }
 
     unsafe fn register_typed_scalar(
@@ -404,7 +420,11 @@ impl Registrar for Connection {
         builder: TypedScalarFunctionBuilder,
     ) -> Result<(), ExtensionError> {
         // SAFETY: self.con is valid per Connection invariant.
-        unsafe { builder.register(self.con) }
+        unsafe {
+            builder
+                .into_inner()
+                .register_with(self.con, Some(&self.scalars))
+        }
     }
 
     unsafe fn register_scalar_set(
@@ -412,7 +432,7 @@ impl Registrar for Connection {
         builder: ScalarFunctionSetBuilder,
     ) -> Result<(), ExtensionError> {
         // SAFETY: self.con is valid per Connection invariant.
-        unsafe { builder.register(self.con) }
+        unsafe { builder.register_with(self.con, Some(&self.scalars)) }
     }
 
     unsafe fn register_aggregate(

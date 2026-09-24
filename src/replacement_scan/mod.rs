@@ -29,6 +29,14 @@
 //!   - Errors: duckdb_replacement_scan_set_error
 //! ```
 //!
+//! # The callback sees only the table name
+//!
+//! `table_name` is the last part of the reference, with any catalog or schema
+//! stripped: `SELECT * FROM nosuchschema."s.xyz"` and
+//! `SELECT * FROM memory.main."s.xyz"` both reach the callback as `s.xyz`,
+//! and a redirect answers either. A callback that must honour a schema cannot
+//! tell it from here.
+//!
 //! # Example: Route all `.xyz` files to a custom table function
 //!
 //! ```rust,no_run

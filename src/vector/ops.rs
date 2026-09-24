@@ -22,9 +22,15 @@
 //! quack-rs's readers are flat readers, which is correct everywhere `DuckDB`
 //! hands an extension a vector — `CAPIScalarFunction`, `CAPIAggregateUpdate`,
 //! the cast bridge and the copy sink all call `Flatten()` on their inputs first
-//! (verified in `DuckDB` 1.5.4's `src/main/capi/*.cpp`). [`slice()`] is the one
-//! way an extension can produce a non-flat vector for itself, so it is the one
-//! place that guarantee has to be re-established by hand.
+//! (verified in `DuckDB` 1.5.4's `src/main/capi/*.cpp`), and
+//! `duckdb_fetch_chunk` flattens query results. Three operations can make a
+//! vector non-flat, and after each the guarantee has to be re-established by
+//! hand: [`slice()`] (a dictionary vector), [`reference_value()`] (a constant
+//! vector) and [`reference_vector()`] from a non-flat source (the target takes
+//! the source's layout). `arrow::data_chunk_from_arrow` also receives non-flat
+//! vectors from `DuckDB` — dictionary vectors for dictionary-encoded columns,
+//! constant vectors for null-typed ones — and flattens them itself before
+//! returning.
 //!
 //! Prefer [`copy_selected()`]: it writes the selected rows into a flat
 //! destination, which every reader in this crate can then read normally.
@@ -293,6 +299,14 @@ pub unsafe fn copy_selected(
 ///   [`VectorWriter`][crate::vector::VectorWriter] over `vector` may be used
 ///   afterwards: both cache the pre-slice data pointer and both assume flat
 ///   indexing.
+/// - `sel` must not be modified while `vector` is in use. `DuckDB` copies a
+///   `SelectionVector` by sharing its buffer (`selection_vector.hpp`), so the
+///   sliced vector reads through `sel`'s indices, not a copy of them: a later
+///   write through [`SelectionVector::as_mut_slice`] silently changes which
+///   rows `vector` holds. Dropping `sel` is fine — the shared buffer is
+///   reference-counted.
+///
+/// [`SelectionVector::as_mut_slice`]: crate::selection_vector::SelectionVector::as_mut_slice
 pub unsafe fn slice(vector: duckdb_vector, sel: &SelectionVector, len: usize) {
     // SAFETY: forwarded from this function's own contract.
     unsafe {

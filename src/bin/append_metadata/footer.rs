@@ -86,13 +86,16 @@ pub fn field_text(footer: &[u8], index: usize) -> &str {
 /// not end in one.
 ///
 /// A footer is recognised the way `DuckDB` recognises it (magic field `"4"`)
-/// plus a known ABI type in field 3; 64 specific bytes matching by chance at
-/// the end of a real library is not a practical concern.
+/// plus a known ABI type in field 3 — or an empty one, which `DuckDB` reads as
+/// `CPP` (`ParseExtensionMetaData`, `extension_load.cpp`), so a file stamped
+/// that way by other tooling is recognised too. 64 specific bytes matching by
+/// chance at the end of a real library is not a practical concern.
 pub fn existing_stamp_len(data: &[u8]) -> Option<usize> {
     let footer = data.get(data.len().checked_sub(METADATA_SIZE)?..)?;
     let magic = &footer[7 * FIELD_SIZE..8 * FIELD_SIZE];
     let magic_ok = magic[0] == b'4' && magic[1..].iter().all(|&b| b == 0);
-    if !magic_ok || !VALID_ABI_TYPES.contains(&field_text(footer, 3)) {
+    let abi = field_text(footer, 3);
+    if !magic_ok || !(abi.is_empty() || VALID_ABI_TYPES.contains(&abi)) {
         return None;
     }
     let header_start = data.len() - METADATA_SIZE;

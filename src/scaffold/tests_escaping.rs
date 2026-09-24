@@ -344,8 +344,77 @@ fn git_ref_must_be_a_hash_or_tag() {
         };
         let files = generate_scaffold(&cfg).unwrap_or_else(|e| panic!("{git_ref:?}: {e}"));
         assert!(
-            file(&files, "description.yml").contains(&format!("\n  ref: {git_ref}\n")),
+            file(&files, "description.yml").contains(&format!("\n  ref: \"{git_ref}\"\n")),
             "{git_ref:?}"
         );
     }
+}
+
+/// Names and refs that YAML 1.1 reads as something other than text: `PyYAML`
+/// (the community build's reader) loaded `name: yes` as `True` and
+/// `ref: 0123456` as the integer 42798. Every text field is now quoted, so
+/// the generated file reads back as written, with no YAML 1.1 warning.
+#[test]
+fn names_and_refs_that_yaml_1_1_retypes_are_quoted() {
+    for (name, git_ref) in [("yes", "0123456"), ("null", "1.10"), ("off", "0x1f")] {
+        let cfg = ScaffoldConfig {
+            name: name.to_string(),
+            git_ref: git_ref.to_string(),
+            ..config("d", "Jane")
+        };
+        let files = generate_scaffold(&cfg).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let yml = file(&files, "description.yml");
+        assert!(yml.contains(&format!("\n  name: \"{name}\"\n")), "{yml}");
+        assert!(yml.contains(&format!("\n  ref: \"{git_ref}\"\n")), "{yml}");
+        let desc = crate::validate::description_yml::parse_description_yml(yml)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!((desc.name.as_str(), desc.git_ref.as_str()), (name, git_ref));
+        assert!(
+            !desc.warnings.iter().any(|w| w.contains("YAML 1.1")),
+            "{:?}",
+            desc.warnings
+        );
+    }
+}
+
+/// The generated `src/lib.rs` must pass `cargo fmt --check`, which the
+/// generated CI's Lint step runs. `rustfmt` keeps a call's arguments on one
+/// line while they fit in 60 columns: the `SqlMacro::scalar` call was always
+/// written across lines (so names of 4 characters or fewer failed) and the
+/// `entry_point!` call always on one (so names of 40 or more failed). Each is
+/// now laid out as `rustfmt` 1.8.0 lays it out; `rustfmt --check` passes for
+/// every name length from 1 to 64.
+#[test]
+fn generated_calls_are_laid_out_as_rustfmt_lays_them_out() {
+    let lib = |name: &str| {
+        let cfg = ScaffoldConfig {
+            name: name.to_string(),
+            ..config("d", "Jane")
+        };
+        file(&generate_scaffold(&cfg).unwrap(), "src/lib.rs").to_string()
+    };
+    let short = lib("abcd");
+    assert!(
+        short.contains(
+            "    SqlMacro::scalar(\"abcd_hello\", &[\"name\"], \"concat('Hello from abcd! ', name)\")\n"
+        ),
+        "{short}"
+    );
+    assert!(
+        short.contains("\nquack_rs::entry_point!(abcd_init_c_api, register);\n"),
+        "{short}"
+    );
+    let five = lib("abcde");
+    assert!(
+        five.contains("    SqlMacro::scalar(\n        \"abcde_hello\",\n"),
+        "{five}"
+    );
+    let n39 = "a".repeat(39);
+    assert!(lib(&n39).contains(&format!(
+        "\nquack_rs::entry_point!({n39}_init_c_api, register);\n"
+    )));
+    let n40 = "a".repeat(40);
+    assert!(lib(&n40).contains(&format!(
+        "\nquack_rs::entry_point!(\n    {n40}_init_c_api,\n    register\n);\n"
+    )));
 }

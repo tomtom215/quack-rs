@@ -293,7 +293,7 @@ The 70 newly wrapped entries are the ones an extension actually reaches for:
   `LIST`, `ARRAY`, `ENUM`; `MAP` and `UNION` behind `duckdb-1-5`). Plus
   `is_sql_null`, which is a different question from `is_null` — the latter asks
   about the *handle* — and `as_enum_index`.
-- **`PreparedStatement`** went from 6 typed binds to 24, including `bind_value`,
+- **`PreparedStatement`** went from 6 binds to 23: 16 more typed binds and `bind_value`,
   which is the escape hatch for every composite and for anything a future DuckDB
   adds.
 - **Cancellation.** An extension that ran its own SQL had no way to stop it.
@@ -510,6 +510,13 @@ if nobody wrote down that they were checked.
   > sorted-aggregate executors pass a constant state vector with `count > 1`.
   > That is Pitfall L11: every C API aggregate reads out of bounds under
   > `agg(x) OVER ()` and `agg(x ORDER BY y)`. See section 7.
+  >
+  > **Corrected again in the fourth audit (section 9).** `slice` is not the
+  > one way: `duckdb_data_chunk_from_arrow` returns dictionary and constant
+  > vectors for dictionary-encoded and null-type Arrow columns (quack-rs now
+  > flattens them), and the in-place `Flatten` in `CAPIAggregateUpdate` is
+  > itself what breaks a streaming window over a destructor-less aggregate
+  > (Pitfall L13).
 - **The ABI layout table is right.** `STABLE_API_SLOT_COUNT = 357` and every row
   of `KNOWN_LAYOUTS` (408 / 428 / 459 / 545 / 546) re-derived independently from
   the release headers and matched exactly, including v1.5.5.
@@ -607,9 +614,12 @@ this; it is a real piece of work.
 
 An extension built against a 546-slot layout refuses to load into any DuckDB
 whose version is not in `KNOWN_LAYOUTS`. That is right when the layout actually
-differs, and it will differ for 1.5.6 (548 slots). But it also means an extension
-shipped today refuses a future patch release that happens to be
-layout-compatible, until quack-rs cuts a release. The escape hatches
+differs. But it also means an extension shipped today refuses a future patch
+release that happens to be layout-compatible, until quack-rs cuts a release —
+and 1.5.6 looks like one: the `v1.5-variegata` branch head, fetched 2026-09-24,
+compiles to 546 slots, the v1.5.5 layout (`sizeof(duckdb_ext_api_v1)` with the
+unstable region enabled). An earlier version of this section said 1.5.6 would
+have 548 slots; that is the `main` header (5.4), not the 1.5 branch. The escape hatches
 (`QUACK_RS_TARGET_DUCKDB_VERSION`, `AbiPolicy::AllowUnknownEngine`) exist and are
 documented; the trade-off is sound, but it should be a conscious release-cadence
 commitment rather than an implicit one.
@@ -618,7 +628,9 @@ commitment rather than an implicit one.
 
 This is the largest single item on the horizon, and it is not yet released.
 
-DuckDB `main` (`v1.5.6`-dev) reworks `src/include/duckdb_extension.h`:
+DuckDB `main`, and the `v2.0-cyanoptera` branch whose `duckdb_extension.h` is
+byte-identical to it (both fetched 2026-09-24), rework
+`src/include/duckdb_extension.h`:
 
 - `DUCKDB_EXTENSION_API_VERSION` goes from **1.2.0 to 1.5.6**. quack-rs's
   `DUCKDB_API_VERSION` constant, pitfall **P2**, the scaffold, and the
@@ -632,6 +644,20 @@ DuckDB `main` (`v1.5.6`-dev) reworks `src/include/duckdb_extension.h`:
   `#if DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`. Two new entries
   (`duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns`) bring the total
   to 548.
+
+- The loader routes by ABI type (`UsesCAPIV2` in
+  `src/main/extension/extension_load.cpp`): **every `C_STRUCT_UNSTABLE`
+  binary**, and every `C_STRUCT` binary declaring a C API v2.x.y, must export
+  `<name>_init_c_api_v2` from `duckdb_extension_v2.h`. A V1 extension instead
+  pins C API v1.5.6, into which that file says everything unstable in V1 was
+  stabilised. quack-rs has no `_init_c_api_v2` entry point (its
+  `entry_point_v2!` is the `Connection`-facade macro, unrelated), and
+  `append_metadata` refuses `C_STRUCT` above `v1.2.0` — so a `duckdb-1-5`
+  build stamped `C_STRUCT_UNSTABLE`, as recommended today, will fail to `LOAD`
+  in a DuckDB built from that code, with DuckDB's own "did not contain function
+  `<name>_init_c_api_v2`" error. Not changed yet: no released DuckDB routes this
+  way (v1.5.5 is the newest tag, and the 1.5 branch has no `UsesCAPIV2`), so
+  neither a V2 entry point nor a v1.5.6 pin can be tested against one.
 
 If this lands as designed it *fixes* the problem `abi.rs` exists to guard
 against, from 1.5.6 onward. Until then `abi.rs` is doing necessary work. When it
@@ -833,7 +859,8 @@ README assertion that panicked — are fixed and were recompiled.
    URLs, since the mirror lives in `book/src/reference/`.
 6. ~~AddressSanitizer is informational~~ — made blocking in this pass: green on
    `main` (84 tests) and locally over the merged 125-test suite, no suppressions.
-7. `src/value.rs` (~1,100 lines) and `src/aggregate/builder/set.rs` (~508) exceed
+7. `src/value.rs` (~1,100 lines at the time; split into `src/value/` in the
+   third pass) and `src/aggregate/builder/set.rs` (~508) exceed
    the 500-line guideline.
 
 ### 7.6 How this pass was verified
@@ -1045,7 +1072,12 @@ converter (derived from source; not built).
 
 ### 8.6 How this pass was verified
 
-All at `fcebab5` against DuckDB 1.5.5 unless stated, x86-64 Linux:
+All at `fcebab5` against DuckDB 1.5.5 unless stated, x86-64 Linux. `fcebab5` and
+`3ddd9b8` (below) are commits of the branch that was squash-merged as `52dc2fd`,
+so they are not in this repository's history and these figures cannot be
+re-run at them. At `52dc2fd` itself the library has 761 tests with default
+features and 916 with `bundled-test-prebuilt,duckdb-1-5-4` (counted in the
+fourth audit, section 9), not 759 and 913:
 
 - **Tests:** 759 library tests with default features; with
   `bundled-test-prebuilt,duckdb-1-5-4`, 913 library, 187 end-to-end
@@ -1084,3 +1116,160 @@ All at `fcebab5` against DuckDB 1.5.5 unless stated, x86-64 Linux:
   these at `time.cpp:326`, in the test named in 8.2. CI's mutation invocation
   on the two files that fix changed: 128 mutants, 124 caught, 4 unviable,
   **0 missed**.
+
+## 9. Fourth audit, September 2026 (0.18.0, before release)
+
+### 9.1 Method
+
+Six areas were audited in parallel — vectors and Arrow; functions and
+aggregates; tables, catalog and copy functions; values, queries and the
+appender; tooling and CI; documentation — each finding re-run by hand before
+it was accepted, then fixed with a regression test shown failing
+without the fix (by reverting or disabling the fix and re-running). DuckDB
+behaviour was reproduced in plain C against the prebuilt v1.4.4, v1.5.0 and
+v1.5.5 libraries, and against v1.5.5 built from source with assertions and
+ASan where a build-dependent answer mattered. Late in the pass the whole suite
+was run against DuckDB 1.4.4 (default features) and 1.5.0 (`duckdb-1-5`), the
+oldest release each build can load into; that found four more defects (9.2,
+"Engine-specific") and is now a CI job.
+
+Severity, assigned in this write-up by one rule: **Critical** — a process
+abort or memory corruption reachable from SQL; **High** — the same not
+reachable from SQL alone, or a silent wrong answer; **Medium** — a wrong
+answer in a narrow case, or a failure with a misleading message; **Low** —
+tooling, validation and documentation. Labels: VALIDATED (reproduced and
+pinned by a test), PROVEN (derived from DuckDB's source, cited), CONTRACT (a
+Safety or documentation obligation).
+
+### 9.2 Defects found and fixed
+
+**Critical**
+
+- *Arrow import heap overflow* (VALIDATED). A dictionary array with NULLs and
+  more than 2048 entries made `DuckDB` write past a validity mask
+  (upstream item 9); refused before the call.
+- *Arrow import out-of-bounds read* (VALIDATED). Dictionary and constant
+  vectors came back from `duckdb_data_chunk_from_arrow` and were read as flat
+  (upstream item 8); they are flattened on import.
+- *Rendering an SQL-built timestamp aborted* (VALIDATED). `Value::as_str`,
+  `display_string`, `Debug` on `make_timestamp(-9223372036854775808)` and the
+  like, also nested (upstream item 13); every payload is checked first. The
+  converting getters no longer pass such a payload to `DuckDB`'s cast.
+- *Subquery argument at bind time aborted on 1.5.0–1.5.4* (VALIDATED against
+  1.5.0; PROVEN for 1.5.1–1.5.4 from the source at each tag).
+  `ScalarBindInfo::argument` asks for nothing before 1.5.5 (upstream item 12).
+- *Out-of-range TIME crashed rendering* (VALIDATED). Bind and append refuse
+  it; `VectorWriter::write_time` has a Safety clause (upstream item 14).
+- *Literal types invalidated the database* (VALIDATED). Refused by
+  `LogicalType::try_new` (upstream item 17).
+- *Panics in scalar bind/init callbacks aborted* (VALIDATED). New
+  `scalar_bind_callback!` / `scalar_init_callback!` macros.
+
+**High**
+
+- *Running window over a destructor-less aggregate* returned wrong values
+  (VALIDATED; upstream item 7, Pitfall L13). Every aggregate registers a
+  destructor.
+- *Nonzero Arrow parent offset* imported the wrong rows (VALIDATED; upstream
+  item 15). Refused.
+- *`destroy` on never-initialised states* (VALIDATED; upstream item 10).
+  `FfiState` carries an address-derived tag.
+- *4 GiB and over* stored modulo 2^32 by `append_bytes`, `bind_str`,
+  `bind_blob` (VALIDATED for append; bind source-traced). Refused.
+- *Catalog entry handle lifetime* (VALIDATED). `CatalogEntry` owns its data.
+
+**Medium**
+
+- Scalar collision check: aliases, macro shadowing (`system.main.`
+  qualification), varargs overlap (VALIDATED against `DuckDB`'s binder).
+- `ListBuilder` over existing list entries; `set_valid` and nested children;
+  secret scopes; `get_file_path` at a NUL; `interval_to_micros` intermediate
+  overflow; the appender's false "poisoned" after a failed automatic flush;
+  `LogicalType::register`'s message for `ANY`; `SecretEntry` spare capacity
+  (all VALIDATED).
+- Zero-size ARRAY / empty UNION built by release `DuckDB` only (VALIDATED on
+  release and assertion builds; upstream item 18). Refused.
+- `MockRegistrar` accepted builders `LOAD` refuses (VALIDATED); it runs the
+  same checks.
+
+**Engine-specific** (found by running the suite against 1.4.4 and 1.5.0)
+
+- `duckdb_create_decimal_type` validates nothing before 1.5.4 (PROVEN from the
+  source at each tag; VALIDATED on 1.4.4 and 1.5.0): `try_decimal` checks
+  itself.
+- Before 1.5.0 a scalar cannot take an existing name (no `ALTER_ON_CONFLICT`;
+  PROVEN; VALIDATED on 1.4.4): refused first, with the reason.
+- 1.4.x's C API reports `TIME_NS` as `INVALID` (VALIDATED): `try_new` refuses
+  a type the engine hands back changed.
+- The subquery-argument abort above.
+
+These were present at `52dc2fd` (run against 1.4.4 there: four of the same
+tests failed) and invisible to CI, which ran the end-to-end suite only against
+the pinned 1.5.5. Pitfall L14.
+
+**Low (tooling, validation, documentation)**
+
+- CI's "refused extension registered nothing" checks could not fail (`-c`
+  stops at the failed `LOAD`); fixed and run locally end to end.
+- `AbiPolicy` branches untested: pure `policy_verdict`, full matrix test,
+  shown to catch a mutated arm.
+- Generated project: `lib.rs` not `rustfmt`-stable for names of 1–4 or 40–64
+  characters (checked for all 64 lengths); Linux SQLLogicTest skipped by
+  extension-ci-tools; `description.yml` fields `PyYAML` retypes (a matcher for
+  its YAML 1.1 resolvers, checked against `PyYAML` 6.0.1 on 231,758 strings
+  with 0 differences; 3 of the 346 published descriptors are warned about).
+- `description.yml` reader kept the quotes of a value on the line after its
+  key.
+- `append_metadata`: platform groups, `wasm_*` without `--wasm`, empty-ABI
+  footers. `validate_semver`: leading zeros (0 differences from the `semver`
+  crate over 232,615 strings but one above `u64::MAX`). SPDX message and doc
+  claim. Keyword names. Dev-engine ABI message and `build.rs` warning. Null
+  `get_api`. `check-abi-table.py` fingerprints signatures, not names.
+- A Stacked Borrows violation Miri found in one of this pass's own new
+  `FfiState` unit tests (test code only): the tag is now written through the
+  pointer the destructor uses, not the local.
+- Documentation corrections listed in 9.4.
+
+### 9.3 Not changed, deliberately
+
+- *Arrow export of large INTERVAL / UHUGEINT* (upstream item 16): documented,
+  not checked at run time. A check covering nested children means walking
+  every column; one covering only top-level columns would miss cases while
+  implying it catches them.
+- *ARRAY and UNION of a temporal type* cannot be rendered by `as_str` even in
+  range: the C API cannot read their elements, so the payload cannot be
+  checked, and the rendering is refused rather than risked.
+- *Argument inspection on 1.5.0–1.5.4* is refused outright. Rust cannot catch
+  the exception, and no C API call tells a copyable argument from one that is
+  not. `get_argument` stays available, with the requirement in its Safety
+  section.
+- *DuckDB's `C_STRUCT_UNSTABLE` → V2 entry point* (5.4): not implemented; no
+  released `DuckDB` has it, so nothing could test it.
+- *`interval_to_micros`* returns totals `epoch_us` fails on (upstream item
+  19); documented.
+
+### 9.4 Corrections to earlier sections
+
+- 4, flat-vector bullet: `slice` is not the only source of non-flat vectors
+  (annotated in place).
+- 5.3: 1.5.6 is not 548 slots; the 1.5 branch head is 546 (annotated in place).
+- 5.4: `main` is 2.0 development, with the V2 entry-point routing (updated in
+  place).
+- 3 (API coverage): `PreparedStatement` went from 6 binds to 23, not 24.
+- 7.5 item 7: `src/value.rs` has since been split.
+- 8.6: `fcebab5` / `3ddd9b8` are pre-squash commits; the library counts at
+  `52dc2fd` are 761 / 916.
+- `CHANGELOG`: the "AUDIT.md does not cover" line, 47 (not 42) checkouts,
+  16 (not 18) new typed binds, the ASAN job's status.
+
+### 9.5 Upstream
+
+`docs/upstream-duckdb-reports.md` items 7 to 19, each with a plain-C
+reproducer and the output observed on the stated releases. None filed. Two
+DuckDB changes found on the way are already fixed upstream and so are not
+reports: the `try` in `duckdb_scalar_function_bind_get_argument` (1.5.5) and
+the width/scale check in `duckdb_create_decimal_type` (1.5.4).
+
+### 9.6 How this pass was verified
+
+VERIFICATION_PLACEHOLDER

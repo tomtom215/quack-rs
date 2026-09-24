@@ -26,6 +26,11 @@ use libduckdb_sys::{
 #[cfg(feature = "duckdb-1-5")]
 use crate::expression::Expression;
 
+/// What the scalar `set_error` methods report when given an empty message:
+/// `DuckDB` would otherwise show only an error-type prefix such as
+/// `Invalid Input Error: `.
+pub const EMPTY_ERROR_PLACEHOLDER: &str = "scalar function reported an error without a message";
+
 /// Ergonomic wrapper around the `duckdb_function_info` handle provided to a
 /// scalar function callback.
 ///
@@ -84,10 +89,12 @@ impl ScalarFunctionInfo {
     /// to abort the current query.
     ///
     /// An interior NUL byte in `message` is replaced with `?`
-    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]).
+    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]),
+    /// and an empty message by [`EMPTY_ERROR_PLACEHOLDER`], since `DuckDB`
+    /// would otherwise report only an error-type prefix.
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = crate::callback::message_to_c_string(message);
+        let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_scalar_function_set_error(self.info, c_msg.as_ptr());
@@ -171,9 +178,14 @@ impl ScalarBindInfo {
     ///
     /// # Safety
     ///
-    /// `index` must be less than [`argument_count`][Self::argument_count].
-    /// The returned `duckdb_expression` handle is owned by the caller and
-    /// must be used according to `DuckDB` expression API rules.
+    /// - `index` must be less than [`argument_count`][Self::argument_count].
+    ///   The returned `duckdb_expression` handle is owned by the caller and
+    ///   must be used according to `DuckDB` expression API rules.
+    /// - On `DuckDB` before v1.5.5 the argument must be one `DuckDB` can copy.
+    ///   Those releases copy the expression outside any `try`, and copying a
+    ///   scalar subquery (`f((SELECT 1))`) throws a C++ exception through
+    ///   this call, which aborts the process. [`argument`][Self::argument]
+    ///   checks the engine version for you.
     #[must_use]
     pub unsafe fn get_argument(&self, index: u64) -> duckdb_expression {
         // SAFETY: self.info is valid per constructor contract; caller guarantees index.
@@ -187,14 +199,62 @@ impl ScalarBindInfo {
     /// the returned [`Expression`] is destroyed automatically on drop and exposes
     /// safe accessors for the argument's return type and constant folding.
     ///
+    /// # Asking for an argument can fail the query
+    ///
+    /// `DuckDB` copies the argument's expression to hand it out, and some
+    /// expressions cannot be copied — a scalar subquery, as in
+    /// `f((SELECT 'x'))`, for one. `duckdb_scalar_function_bind_get_argument`
+    /// then marks the bind as failed itself (`scalar_function-c.cpp`) and
+    /// returns null, so the query fails whatever the callback does next, and
+    /// the C API has no way to ask first. This returns `None` in that case and
+    /// replaces `DuckDB`'s message — a raw JSON exception such as
+    /// `{"exception_type":"Serialization",…}` — with one that says what
+    /// happened. A bind callback that can do without an argument should not
+    /// ask for it.
+    ///
+    /// That holds from `DuckDB` v1.5.5. Releases v1.5.0 to v1.5.4 copy the
+    /// expression outside any `try`, so the same subquery throws a C++
+    /// exception through the C API, which aborts a Rust process. On those
+    /// releases (and on development builds that predate v1.5.5's fix) this
+    /// therefore asks for no argument at all: it fails the bind with a message
+    /// saying why and returns `None`.
+    ///
     /// # Safety
     ///
     /// `index` must be less than [`argument_count`][Self::argument_count].
     #[must_use]
     pub unsafe fn argument(&self, index: u64) -> Option<Expression> {
+        // SAFETY: a bind callback runs with the dispatch table initialised.
+        let engine = unsafe { crate::abi::engine_version() };
+        if !engine
+            .as_deref()
+            .is_some_and(get_argument_catches_copy_failures)
+        {
+            self.set_error(&format!(
+                "argument {index} of this scalar function cannot be inspected at bind time on \
+                 DuckDB {}: before v1.5.5, DuckDB aborts the process when the argument is a \
+                 scalar subquery, and there is no way to tell first. Upgrade to DuckDB v1.5.5 \
+                 or later, or do not inspect arguments in the bind callback",
+                engine.as_deref().unwrap_or("(unknown version)")
+            ));
+            return None;
+        }
         // SAFETY: self.info is valid per constructor contract; caller guarantees index.
+        // The engine catches a failed copy (checked above), so nothing throws.
         let raw = unsafe { duckdb_scalar_function_bind_get_argument(self.info, index) };
         if raw.is_null() {
+            // DuckDB returns null without an error only for an index out of
+            // range; for any other index a null means the copy threw and the
+            // bind is already failed. Its error is a plain assignment, so this
+            // message replaces the JSON one.
+            if index < self.argument_count() {
+                self.set_error(&format!(
+                    "argument {index} of this scalar function cannot be inspected at bind \
+                     time: DuckDB could not copy its expression (a scalar subquery cannot be \
+                     copied), and it fails the query when a bind callback asks for such an \
+                     argument"
+                ));
+            }
             None
         } else {
             // SAFETY: raw is a non-null, owned duckdb_expression handle.
@@ -267,6 +327,15 @@ impl ScalarBindInfo {
     /// your data: `Box::into_raw(Box::new(my_data)).cast()`. `DuckDB` reads the
     /// data from every executing thread at once, so it must be safe to share
     /// across threads (`Sync`) and to free from any of them (`Send`).
+    ///
+    /// A copy callback registered earlier in this bind — by
+    /// [`set_bind_data_copy`][Self::set_bind_data_copy], or by
+    /// [`ScalarBindData::set`][crate::scalar::ScalarBindData::set] — stays in
+    /// effect: this call replaces only the pointer and the destructor
+    /// (`duckdb_scalar_function_set_bind_data`), and `DuckDB` applies the old
+    /// copy callback to the new `data` whenever it copies the expression. So
+    /// `data` must be of the type that callback expects, or a matching copy
+    /// callback must be registered after this call.
     pub unsafe fn set_bind_data(&self, data: *mut c_void, destroy: duckdb_delete_callback_t) {
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
@@ -350,10 +419,12 @@ impl ScalarBindInfo {
     /// `DuckDB` to abort the current query.
     ///
     /// An interior NUL byte in `message` is replaced with `?`
-    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]).
+    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]),
+    /// and an empty message by [`EMPTY_ERROR_PLACEHOLDER`], since `DuckDB`
+    /// would otherwise report only an error-type prefix.
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = crate::callback::message_to_c_string(message);
+        let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_scalar_function_bind_set_error(self.info, c_msg.as_ptr());
@@ -466,10 +537,12 @@ impl ScalarInitInfo {
     /// `DuckDB` to abort the current query.
     ///
     /// An interior NUL byte in `message` is replaced with `?`
-    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]).
+    /// (see [`message_to_c_string`][crate::callback::message_to_c_string]),
+    /// and an empty message by [`EMPTY_ERROR_PLACEHOLDER`], since `DuckDB`
+    /// would otherwise report only an error-type prefix.
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
-        let c_msg = crate::callback::message_to_c_string(message);
+        let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_scalar_function_init_set_error(self.info, c_msg.as_ptr());
@@ -510,8 +583,59 @@ crate::debug_repr::impl_handle_debug!(ScalarFunctionInfo.info);
 #[cfg(feature = "duckdb-1-5")]
 crate::debug_repr::impl_handle_debug!(ScalarBindInfo.info, ScalarInitInfo.info);
 
+/// Whether `duckdb_scalar_function_bind_get_argument` in the engine reporting
+/// `engine` catches a failed copy of the argument. It does from v1.5.5: the
+/// function body has no `try` at tags v1.5.0 to v1.5.4 and one at v1.5.5
+/// (`src/main/capi/scalar_function-c.cpp`). A pre-release or development build
+/// (`v1.5.5-dev42`) precedes its release, so it counts only if its base is
+/// later than v1.5.5; an engine version that does not parse does not count.
+#[cfg(feature = "duckdb-1-5")]
+fn get_argument_catches_copy_failures(engine: &str) -> bool {
+    const FIXED: (u64, u64, u64) = (1, 5, 5);
+    let (base, pre_release) = engine
+        .split_once('-')
+        .map_or((engine, false), |(b, _)| (b, true));
+    crate::abi::parse_version(base).is_some_and(|version| {
+        if pre_release {
+            version > FIXED
+        } else {
+            version >= FIXED
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// `duckdb_scalar_function_bind_get_argument` has no `try` at DuckDB tags
+    /// v1.5.0 to v1.5.4 and one at v1.5.5, so only v1.5.5 and later, or a
+    /// development build of a later release, may be asked for an argument.
+    #[cfg(feature = "duckdb-1-5")]
+    #[test]
+    fn only_engines_that_catch_a_failed_copy_are_asked_for_an_argument() {
+        use super::get_argument_catches_copy_failures as catches;
+        for engine in [
+            "v1.5.5",
+            "v1.5.6",
+            "v1.6.0",
+            "v2.0.0",
+            "v1.5.6-dev42",
+            "1.5.5",
+        ] {
+            assert!(catches(engine), "{engine}");
+        }
+        for engine in [
+            "v1.5.0",
+            "v1.5.4",
+            "v1.4.4",
+            "v1.5.5-dev42",
+            "v1.5.5-rc1",
+            "0d3cd0e22e",
+            "",
+        ] {
+            assert!(!catches(engine), "{engine}");
+        }
+    }
     use super::*;
 
     #[test]

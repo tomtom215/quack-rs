@@ -173,7 +173,9 @@ impl ChunkWriter {
     ///
     /// # Safety
     ///
-    /// `col_idx` must be less than the chunk's column count.
+    /// - `col_idx` must be less than the chunk's column count.
+    /// - The returned writer borrows nothing and caches pointers into the
+    ///   chunk's buffers: it must not be used after the scan callback returns.
     pub unsafe fn writer(&self, col_idx: usize) -> VectorWriter {
         // SAFETY: self.raw is valid per constructor. col_idx is in bounds per caller.
         let vec =
@@ -188,6 +190,8 @@ impl ChunkWriter {
     ///
     /// - `col_idx` must be less than the chunk's column count.
     /// - The column at `col_idx` must have a STRUCT type with `field_count` fields.
+    /// - The returned writer borrows nothing and caches pointers into the
+    ///   chunk's buffers: it must not be used after the scan callback returns.
     pub unsafe fn struct_writer(&self, col_idx: usize, field_count: usize) -> StructWriter {
         // SAFETY: `self.raw` is the valid output chunk of the scan callback in progress,
         // per the first `# Safety` clause of `ChunkWriter::new` / `with_capacity`.

@@ -142,11 +142,15 @@
 //! use quack_rs::scalar::ScalarFunctionBuilder;
 //! use quack_rs::types::TypeId;
 //! use quack_rs::error::ExtensionError;
+//! use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
+//!
+//! unsafe extern "C" fn my_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
 //!
 //! fn register_all(reg: &impl Registrar) -> Result<(), ExtensionError> {
 //!     let f = ScalarFunctionBuilder::new("my_fn")
 //!         .param(TypeId::BigInt)
-//!         .returns(TypeId::BigInt);
+//!         .returns(TypeId::BigInt)
+//!         .function(my_fn);
 //!     unsafe { reg.register_scalar(f) }
 //! }
 //!

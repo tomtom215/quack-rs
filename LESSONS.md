@@ -386,6 +386,61 @@ Pinned by `a_count_like_aggregate_in_a_correlated_subquery_is_null_for_an_unmatc
 
 ---
 
+## L13: A C API aggregate without a destructor is wrong in a running window
+
+**Status**: Fixed in quack-rs: every aggregate builder registers a destructor,
+a no-op when none is given. Pinned by
+`an_aggregate_without_a_destructor_is_right_in_a_running_window` in
+`tests/ffi_roundtrip/agg_window.rs`. Reported in
+`docs/upstream-duckdb-reports.md`, item 7.
+
+**Symptom**: `agg(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`
+with no `PARTITION BY` or `ORDER BY` returns the wrong running value, with no
+error: a sum over `1..5` reads `1 2 3 4 5`. The same aggregate is right with
+`ORDER BY`, ungrouped, grouped, and in DuckDB's own `sum`.
+
+**Root cause**: DuckDB streams such a window only for an aggregate with no
+destructor (`PhysicalStreamingWindow::IsStreamingFunction`). Streaming calls
+`update` once per row, count 1, on a one-row dictionary slice it moves along,
+and `CAPIAggregateUpdate` flattens that input vector in place, so the slice
+becomes row 0's value for the rest of the chunk. Checked against 1.4.4, 1.5.0
+and 1.5.5.
+
+**Fix**: register a destructor, even an empty one. quack-rs does this for you;
+with the raw C API, call `duckdb_aggregate_function_set_destructor`.
+
+---
+
+## L14: The C API behaves differently across the releases one build loads into
+
+**Status**: Four cases fixed in quack-rs (`ScalarBindInfo::argument`,
+`LogicalType::try_decimal`, `LogicalType::try_new`, the scalar collision
+check); CI job `test-older-engines` runs the suite against DuckDB 1.4.4 (default
+features) and 1.5.0 (`duckdb-1-5`).
+
+**Symptom**: code tested against the release `Cargo.lock` pins (1.5.5) aborts
+or misbehaves in an older release the same binary loads into. A default-feature
+extension loads into every release from 1.4.4; a `duckdb-1-5` one built against
+the 1.5.4 bindings has the 546-slot layout of 1.5.2 to 1.5.5, so the ABI guard
+rightly lets it load into all four.
+
+**Root cause**: a C function's *contract* can change in a release while its
+slot stays put. `duckdb_scalar_function_bind_get_argument` gained its `try`
+only in 1.5.5 (before it, a subquery argument throws through the extension's
+callback: an abort in Rust); `duckdb_create_decimal_type` its width/scale
+check only in 1.5.4 (before it, `DECIMAL(0, 0)` comes back as a type);
+`duckdb_register_scalar_function` its `ALTER_ON_CONFLICT` only in 1.5.0 (before
+it, no existing name can take another overload); and 1.4.x's C API reports
+`TIME_NS`, which its SQL has, as `INVALID`. All four were found only by running
+the whole suite against the oldest release of each range.
+
+**Fix**: when a wrapper relies on C API behaviour, find the release that
+introduced it (the source at each tag answers that), and either check the
+engine version at run time (`abi::engine_version`) or make the check in Rust.
+Test against the oldest release a build can load into, not only the pinned one.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured manually in `Cargo.toml`.

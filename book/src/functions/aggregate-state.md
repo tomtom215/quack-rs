@@ -37,23 +37,35 @@ create fresh states.
 
 ## `FfiState<T>`
 
-`FfiState<T>` is a `#[repr(C)]` struct containing a single raw pointer:
+`FfiState<T>` is a `#[repr(C)]` struct holding a raw pointer and a tag:
 
 ```rust
 #[repr(C)]
 pub struct FfiState<T> {
     inner: *mut T,
+    tag: usize,
 }
 ```
 
 This matches DuckDB's expectation: DuckDB allocates `state_size()` bytes per group,
 and your state lives in a `Box<T>` heap allocation whose pointer is stored in that space.
 
+The tag marks the slot initialised. When one `state_init` call fails — a
+panicking `T::default()`, say — DuckDB 1.4.4 to 1.5.5 still runs the
+destructor over every state it created, including states whose `state_init`
+never ran, so a slot can hold arbitrary bytes. `destroy_callback` frees only a
+slot carrying the tag `init_callback` wrote, derived from the slot's address,
+and clears it before freeing. That makes freeing a stale pointer a matter of
+chance — uninitialised bytes equal to the slot's tag — rather than a
+certainty; see `docs/upstream-duckdb-reports.md` for the DuckDB defect.
+
 ### Memory layout
 
 ```text
-DuckDB-allocated slot (state_size bytes = sizeof(*mut T)):
-  [ inner: *mut T ]  ──→  Box<T>  (on the Rust heap)
+DuckDB-allocated slot (state_size bytes = 2 * sizeof(usize)):
+  [ inner: *mut T ][ tag: usize ]
+       │
+       └──→  Box<T>  (on the Rust heap)
 ```
 
 ### Lifecycle callbacks
@@ -68,15 +80,16 @@ DuckDB-allocated slot (state_size bytes = sizeof(*mut T)):
 #     state: duckdb_aggregate_state, states: *mut duckdb_aggregate_state, count: idx_t) {
 // state_size: DuckDB calls this whenever an operator sizes its state buffers
 FfiState::<MyState>::size_callback(_info);
-// Returns: size_of::<*mut MyState>()
+// Returns: size_of::<FfiState<MyState>>() (two words)
 
 // state_init: DuckDB calls this for every state slot it allocates, combine
 // targets included
 FfiState::<MyState>::init_callback(info, state);
 // Effect: writes Box::into_raw(Box::new(MyState::default())) into the slot
 
-// state_destroy: DuckDB calls this for every initialized state — after finalize,
-// and on combine's source states once they have been merged
+// state_destroy: DuckDB calls this for every state it created — after finalize,
+// on combine's source states once merged, and (after a failed state_init) on
+// states never initialised, which the tag makes it skip
 FfiState::<MyState>::destroy_callback(states, count);
 // Effect: for each state: drop(Box::from_raw(inner)); inner = null
 # }

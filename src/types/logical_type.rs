@@ -91,7 +91,9 @@ fn composite_message(type_id: TypeId) -> String {
         "{} carries parameters that a bare TypeId cannot express, so \
          duckdb_create_logical_type would return an invalid (non-null) type. \
          Build it with {hint} and pass the result through the `*_logical` \
-         variant of this method (e.g. `param_logical` / `returns_logical`).",
+         variant of this method (`param_logical` / `returns_logical` / \
+         `varargs_logical` on a function builder, \
+         `CastFunctionBuilder::new_logical` for a cast).",
         type_id.sql_name()
     )
 }
@@ -581,8 +583,10 @@ impl LogicalType {
     ///
     /// # Errors
     ///
-    /// Returns an error if `DuckDB` rejects the registration — no alias, or a
-    /// name that already exists in the catalog.
+    /// Returns an error if the type is or contains `ANY` or `INVALID` (checked
+    /// here, since `DuckDB` reports it the same way as a taken name), or if
+    /// `DuckDB` rejects the registration — no alias, or a name that already
+    /// exists in the catalog.
     ///
     /// # Safety
     ///
@@ -608,6 +612,15 @@ impl LogicalType {
         &self,
         con: libduckdb_sys::duckdb_connection,
     ) -> Result<(), crate::error::ExtensionError> {
+        // `duckdb_register_logical_type` refuses such a type before it looks
+        // at the catalog, with the same bare error as a taken name.
+        // SAFETY: `self.inner` is a live logical type.
+        if unsafe { crate::table::type_check::contains_any_or_invalid(self.inner) } {
+            return Err(crate::error::ExtensionError::new(
+                "duckdb_register_logical_type: the type is or contains ANY or INVALID, which \
+                 DuckDB refuses to register",
+            ));
+        }
         // SAFETY: `con` is valid per the caller's contract, `self.inner` is a
         // live logical type, and the info handle has no C API constructor.
         let state = unsafe {
@@ -749,6 +762,23 @@ mod tests {
         );
     }
 
+    /// `DuckDB` registers a function whose parameter or return type is a
+    /// literal type, then invalidates the database on the first query that
+    /// returns one. Both are refused before any `DuckDB` call.
+    #[test]
+    fn check_slot_rejects_the_literal_types_before_touching_duckdb() {
+        for (ty, name) in [
+            (TypeId::IntegerLiteral, "INTEGER_LITERAL"),
+            (TypeId::StringLiteral, "STRING_LITERAL"),
+        ] {
+            let err = LogicalType::check_slot(ty, "return type").expect_err("literal type");
+            let msg = err.as_str();
+            assert!(msg.contains("return type"), "names the slot: {msg}");
+            assert!(msg.contains(name), "names the type: {msg}");
+            assert!(msg.contains("invalidates the database"), "{msg}");
+        }
+    }
+
     #[test]
     fn the_composite_message_names_the_type_and_its_constructor() {
         let msg = composite_message(TypeId::Decimal);
@@ -830,7 +860,10 @@ mod live_tests {
     /// Regression: these six type ids exist in every `DuckDB` this crate
     /// supports (all are in libduckdb-sys 1.4.4), but their `TypeId` variants
     /// were gated behind `duckdb-1-5`. Without that feature, `get_type_id` on a
-    /// `TIME_NS` or `BIGNUM` column — which `DuckDB` 1.4.4 produces — panicked.
+    /// `TIME_NS` or `BIGNUM` column panicked. (`DuckDB` 1.4.4's C API reports a
+    /// `TIME_NS` column as `INVALID`, so on 1.4.x only `BIGNUM` reaches the
+    /// mapping; the fourth audit ran this against 1.4.4 and found the earlier
+    /// wording wrong.)
     #[test]
     fn type_ids_from_duckdb_1_4_resolve_without_any_feature() {
         use libduckdb_sys::{
@@ -848,6 +881,16 @@ mod live_tests {
             // SAFETY: a valid DUCKDB_TYPE for a non-composite type; the handle
             // is owned by the returned `LogicalType`.
             let ty = unsafe { LogicalType::from_raw(duckdb_create_logical_type(raw)) };
+            // DuckDB 1.4.x's C API does not know TIME_NS: it hands back an
+            // INVALID type (and reports a TIME_NS column as INVALID), so there
+            // is no id to resolve. Any other mismatch is a failure.
+            // SAFETY: `ty` wraps a valid logical type.
+            let got = unsafe { libduckdb_sys::duckdb_get_type_id(ty.as_raw()) };
+            if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS
+                && got == libduckdb_sys::DUCKDB_TYPE_DUCKDB_TYPE_INVALID
+            {
+                continue;
+            }
             // SAFETY: `ty` wraps a valid logical type.
             unsafe {
                 assert_eq!(ty.try_get_type_id(), Some(want));
@@ -890,7 +933,10 @@ mod live_tests {
     }
 
     /// The fallible forms of the four constructors that had none (AUDIT.md
-    /// section 5.5) report `DuckDB`'s refusals instead of panicking.
+    /// section 5.5) report `DuckDB`'s refusals instead of panicking. The
+    /// DECIMAL cases failed against `DuckDB` 1.5.0, whose
+    /// `duckdb_create_decimal_type` accepts any width and scale; quack-rs
+    /// checks them itself now (fourth audit).
     #[test]
     fn decimal_and_array_have_fallible_forms() {
         let _db = crate::testing::InMemoryDb::open().expect("open in-memory DuckDB");

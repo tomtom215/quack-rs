@@ -248,3 +248,127 @@ fn append_chunk_in_the_middle_of_a_row_is_refused() {
     // row buffer.
     assert_eq!(order.as_deref(), Some("5,1,2"));
 }
+
+/// The fourth audit's DOC-1, pinned. `append_default` on a column with no
+/// `DEFAULT` appends `NULL` (the docs said it was an error), and it is a
+/// non-constant `DEFAULT` that fails — one `column_has_default` reports as
+/// `true`. (`clear`, which recovers the poisoned appender, needs `duckdb-1-5`.)
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn append_default_fills_null_without_a_default_and_fails_for_a_non_constant_one() {
+    use quack_rs::table_description::TableDescription;
+
+    let fx = Fixture::open();
+    fx.query("CREATE SEQUENCE ap_seq");
+    fx.query(
+        "CREATE TABLE ap_defaults (a INTEGER, b INTEGER DEFAULT 7, \
+         c BIGINT DEFAULT nextval('ap_seq'))",
+    );
+    // SAFETY: `con` is open and the table exists.
+    let description =
+        unsafe { TableDescription::create(fx.con(), "main", "ap_defaults") }.expect("describe");
+    assert_eq!(
+        (0..3)
+            .map(|i| description.column_has_default(i))
+            .collect::<Vec<_>>(),
+        [Some(false), Some(true), Some(true)]
+    );
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"ap_defaults") }.expect("create");
+    appender
+        .row(|row| {
+            row.append_default()?;
+            row.append_default()?;
+            row.append_i64(1)
+        })
+        .expect("no DEFAULT gives NULL; a constant DEFAULT gives its value");
+    // Flushed, so the `clear` below (which drops every buffered row) keeps it.
+    appender.flush().expect("flush");
+    let err = appender
+        .row(|row| {
+            row.append_i32(1)?;
+            row.append_i32(2)?;
+            row.append_default()
+        })
+        .expect_err("a non-constant DEFAULT cannot be appended");
+    assert!(
+        err.to_string().contains("AppendDefault is not supported"),
+        "{err}"
+    );
+    appender.clear().expect("clear the half-written row");
+    appender.close().expect("close");
+    drop(appender);
+    assert_eq!(
+        fx.scalar(
+            "SELECT (a IS NULL AND b = 7)::BIGINT FROM ap_defaults",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(1)
+    );
+}
+
+/// `DuckDB`'s `EndRow` ends the row (its column counter back to 0, the row
+/// counted) *before* the automatic flush every 204,800 rows, so a flush that
+/// fails there — a `NOT NULL` violation in any buffered row — leaves no row
+/// half-written. `row` still took the failure for a half-written row: it
+/// poisoned the appender and blamed "a row failed after 1 of its values",
+/// and every later append was refused. Now the row counts as ended, the
+/// constraint error is reported as it is, and appending carries on.
+#[test]
+fn a_failing_automatic_flush_does_not_poison_the_appender() {
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE ap_autoflush (x INTEGER NOT NULL)");
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"ap_autoflush") }.expect("create");
+    appender
+        .row(|row| row.append_null())
+        .expect("the NULL is only buffered; DuckDB checks NOT NULL at flush time");
+    let mut failure = None;
+    for i in 1..300_000_u32 {
+        if let Err(e) = appender.row(|row| row.append_i32(1)) {
+            failure = Some((i, e.to_string()));
+            break;
+        }
+    }
+    let (at, err) = failure.expect("the automatic flush fails on the NULL");
+    assert_eq!(at, 204_799, "the 204,800th row triggers the flush: {err}");
+    assert!(err.contains("NOT NULL"), "{err}");
+    assert!(!err.contains("poisoned"), "{err}");
+
+    appender
+        .row(|row| row.append_i32(2))
+        .expect("the appender is not poisoned");
+    let err = appender
+        .close()
+        .expect_err("the NULL row is still buffered");
+    let text = err.to_string();
+    assert!(text.contains("NOT NULL"), "{text}");
+    assert!(!text.contains("poisoned"), "{text}");
+}
+
+/// Nothing ties an appender to its connection's lifetime. `DuckDB`'s appender
+/// buffers into its own chunk and holds only a weak reference to the client
+/// context, which it checks before writing (`Appender::FlushInternal`), so
+/// appending after the connection closes is not a use-after-free, but the
+/// rows can no longer be written: `close`
+/// reports `DuckDB`'s "closed connection" error and the rows are gone. Pinned
+/// so the documented consequence stays accurate.
+#[test]
+fn rows_buffered_after_the_connection_closes_are_lost_with_an_error() {
+    use quack_rs::query::OwnedConnection;
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE ap_closed_con (x INTEGER)");
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(con.as_raw(), None, c"ap_closed_con") }.expect("create");
+    appender.row(|row| row.append_i32(1)).expect("buffered");
+    drop(con);
+    appender
+        .row(|row| row.append_i32(2))
+        .expect("appends still succeed: the rows are only buffered");
+    let err = appender.close().expect_err("the rows cannot be written");
+    assert!(err.to_string().contains("closed connection"), "{err}");
+    drop(appender);
+    assert_eq!(count(&fx, "ap_closed_con"), 0);
+}

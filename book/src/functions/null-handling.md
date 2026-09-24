@@ -116,7 +116,9 @@ ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?
 # } Ok(()) };
 # run().unwrap();
 # assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
-# assert_eq!(query_i64(con, "SELECT double_it(NULL::BIGINT)"), None);
+# // From a column, not a literal: `double_it(NULL::BIGINT)` is constant-folded
+# // to NULL whatever the function does, so it cannot tell a broken one apart.
+# assert_eq!(query_i64(con, "SELECT double_it(i) FROM (VALUES (NULL::BIGINT)) t(i)"), None);
 ```
 
 Use `map1_opt` / `map2_opt` when the function needs to *see* NULLs; those
@@ -154,14 +156,16 @@ quack_rs::scalar_callback!(double_it, |_info, input, output| {
     for row in 0..chunk.size() {
         unsafe { writer.write_i64(row, reader.read_i64(row) * 2) };
     }
-    // Without this, double_it(NULL) is 0, not NULL.
+    // Without this, double_it(i) for a NULL `i` from a column is 0, not NULL.
     unsafe { chunk.propagate_nulls(&mut writer) };
 });
 # let con = live_connection();
 # unsafe { ScalarFunctionBuilder::new("double_it").param(TypeId::BigInt).returns(TypeId::BigInt)
 #     .function(double_it).register(con).unwrap(); }
 # assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
-# assert_eq!(query_i64(con, "SELECT double_it(NULL::BIGINT)"), None);
+# // From a column, not a literal: `double_it(NULL::BIGINT)` is constant-folded
+# // to NULL whatever the function does, so it cannot tell a broken one apart.
+# assert_eq!(query_i64(con, "SELECT double_it(i) FROM (VALUES (NULL::BIGINT)) t(i)"), None);
 ```
 
 `propagate_nulls` resolves each column's validity pointer once and marks the

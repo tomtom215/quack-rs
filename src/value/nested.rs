@@ -69,9 +69,12 @@ impl Value {
     /// double-free (pitfall P11). This does the walk without exposing it.
     ///
     /// Returns an empty vector for a null handle or a value whose type has no
-    /// struct children. A `UNION` value is stored as a struct of its tag and
-    /// its members, so it returns `""` for the tag followed by the member
-    /// names — positions that line up with `struct_child`.
+    /// struct children. A `UNION` type is stored as a struct of its tag and
+    /// its members, so for a `UNION` value it returns `""` for the tag
+    /// followed by the member names. Those names cannot be paired with
+    /// values: [`struct_child`][Self::struct_child] returns `None` for every
+    /// index of a `UNION` value, and the C API has no other way to read its
+    /// member.
     ///
     /// Pair it with [`struct_child`][Self::struct_child], which is positional:
     ///

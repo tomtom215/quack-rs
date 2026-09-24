@@ -92,7 +92,10 @@ without value.
 
 Use `?`, `map_err`, `ok_or_else`, or explicit `match`. `expect()` is also
 forbidden unless the message explains an invariant that is *impossible* to
-violate at runtime (documented with `// SAFETY:` style comment).
+violate at runtime (documented with `// SAFETY:` style comment), or the panic
+is the function's documented contract: a `# Panics` section states it and a
+fallible alternative exists (the builders' `new(name)` panics on an interior
+NUL; `try_new(name)` returns the error instead).
 
 ---
 
@@ -395,11 +398,11 @@ quack-rs/
 │   │   ├── typed.rs                   # Scalar functions written as ordinary Rust closures
 │   │   ├── typed_builder.rs           # The builder the closure-based scalar constructors return, and the one `extern "C"` trampoline they all share
 │   │   └── builder/
-│   │       ├── collision.rs           # Refusing a scalar signature that would silently replace an existing one
+│   │       ├── collision.rs           # Refusing a scalar signature that would replace an existing one or make calls ambiguous
 │   │       ├── mod.rs                 # Builder for registering `DuckDB` scalar functions
 │   │       ├── overload.rs            # One overload within a [`ScalarFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` scalar function set (multiple overloads)
-│   │       ├── signature.rs           # Detecting overloads that declare the same argument types
+│   │       ├── signature.rs           # Detecting overloads that accept the same call
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` scalar function
 │   │       └── tests.rs               # Unit tests
 │   ├── table/
@@ -449,6 +452,7 @@ quack-rs/
 │   │       ├── tests_yaml.rs          # Unit tests
 │   │       ├── validator.rs           # Validates a `description.yml` string and returns `Ok(())` if it passes all checks
 │   │       ├── yaml.rs                # A reader for the subset of YAML that `description.yml` files use
+│   │       ├── yaml11.rs              # Which plain scalars PyYAML (YAML 1.1) reads as booleans, numbers, dates or null
 │   │       └── yaml/
 │   │           └── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
 │   ├── value/
@@ -459,6 +463,7 @@ quack-rs/
 │   │   ├── getters.rs                 # The typed scalar accessors — `Value::as_i64`, `as_timestamp`, `as_decimal`, …
 │   │   ├── hugeint.rs                 # Conversions between Rust's 128-bit integers and `DuckDB`'s split-word `HUGEINT` / `UHUGEINT` records
 │   │   ├── nested.rs                  # Reading nested values: `LIST` elements, `STRUCT` fields, `MAP` entries
+│   │   ├── render_guard.rs            # Refusing to render a value `DuckDB` would throw on (an out-of-range timestamp from SQL)
 │   │   ├── scalars.rs                 # The non-temporal scalar constructors
 │   │   ├── temporal.rs                # Temporal constructors, validated against `DuckDB`'s ranges
 │   │   └── temporal_checks.rs         # Pure-Rust range checks for the temporal types, derived from `DuckDB`'s source
@@ -480,13 +485,18 @@ quack-rs/
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
+│       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
+│       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
+│       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
+│       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
 │       ├── table_cast.rs              # Table function, cast, replacement scan, SQL macro and COPY regressions
+│       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
@@ -508,7 +518,7 @@ quack-rs/
 │   ├── benchmarks.yml             # Criterion benchmark execution
 │   └── README.md                  # Workflow overview and quality gate summary
 ├── CONTRIBUTING.md                # This file
-├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L11, P1–P12), documented in full
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L14, P1–P12), documented in full
 └── README.md                      # Quick start, SDK overview, badge table
 ```
 

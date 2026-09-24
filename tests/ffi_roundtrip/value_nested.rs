@@ -98,3 +98,28 @@ fn list_items_and_map_entries_read_back_in_order() {
     assert_eq!(scalar.list_items().len(), 0);
     assert_eq!(scalar.map_len(), 0);
 }
+
+/// An `ARRAY` of size 0, a `UNION` with no members and an empty
+/// `array_value` are types SQL cannot write. A release `DuckDB` built them
+/// (they could only ever hold `NULL`); one with assertions returned a null
+/// handle for the same call. All three are now refused, on every build.
+#[test]
+fn empty_array_and_union_shapes_are_refused_as_in_sql() {
+    let _fx = Fixture::open();
+    let err = LogicalType::try_array(TypeId::Integer, 0).expect_err("size 0");
+    assert!(err.to_string().contains("at least 1"), "{err}");
+    let int = LogicalType::new(TypeId::Integer);
+    let err = LogicalType::try_array_from_logical(&int, 0).expect_err("size 0");
+    assert!(err.to_string().contains("at least 1"), "{err}");
+    assert!(LogicalType::try_array(TypeId::Integer, 1).is_ok());
+
+    let err = LogicalType::try_union_type(&[]).expect_err("no members");
+    assert!(err.to_string().contains("at least one member"), "{err}");
+    let err = LogicalType::try_union_type_from_logical(&[]).expect_err("no members");
+    assert!(err.to_string().contains("at least one member"), "{err}");
+    assert!(LogicalType::try_union_type(&[("n", TypeId::Integer)]).is_ok());
+
+    let err = Value::array_value(&int, &[]).expect_err("no elements");
+    assert!(err.as_str().contains("at least one element"), "{err}");
+    assert!(Value::array_value(&int, &[Value::integer(1)]).is_ok());
+}

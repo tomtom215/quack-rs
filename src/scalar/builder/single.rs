@@ -3,6 +3,7 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
+use std::cell::RefCell;
 use std::ffi::CString;
 
 #[cfg(feature = "duckdb-1-5")]
@@ -255,6 +256,13 @@ impl ScalarFunctionBuilder {
     /// the function arguments and store per-query data via
     /// `duckdb_scalar_function_bind_set_bind_data`. This data can later be
     /// retrieved during execution via `duckdb_scalar_function_get_bind_data`.
+    ///
+    /// Guard it against panics with
+    /// [`scalar_bind_callback!`](crate::scalar_bind_callback), **not**
+    /// `table_bind_callback!`: the two share a C signature, so the compiler
+    /// accepts either, but the table macro reports a panic through the table
+    /// function's `duckdb_bind_set_error`, which writes past the smaller scalar
+    /// bind info and corrupts the stack.
     #[cfg(feature = "duckdb-1-5")]
     #[mutants::skip] // DuckDB 1.5+ feature, tested via E2E
     pub fn bind(mut self, f: ScalarBindFn) -> Self {
@@ -268,6 +276,13 @@ impl ScalarFunctionBuilder {
     /// Use it to allocate per-thread local state via
     /// `duckdb_scalar_function_init_set_state`. The state pointer can later be
     /// retrieved during execution via `duckdb_scalar_function_get_state`.
+    ///
+    /// Guard it against panics with
+    /// [`scalar_init_callback!`](crate::scalar_init_callback), **not**
+    /// `table_init_callback!`: the two share a C signature, so the compiler
+    /// accepts either, but the table macro reports a panic through the table
+    /// function's `duckdb_init_set_error`, which writes past the smaller scalar
+    /// init info and corrupts the stack.
     #[cfg(feature = "duckdb-1-5")]
     #[mutants::skip] // DuckDB 1.5+ feature, tested via E2E
     pub fn init(mut self, f: ScalarInitFn) -> Self {
@@ -297,9 +312,22 @@ impl ScalarFunctionBuilder {
     ///
     /// # Safety
     ///
-    /// `data` must point to valid memory that outlives the function registration,
-    /// or will be freed by `destroy`. The typical pattern
-    /// is to box your data: `Box::into_raw(Box::new(my_data)).cast()`.
+    /// - `data` must stay valid until `destroy` frees it (with no `destroy`,
+    ///   for as long as the database lives), and `destroy` must be able to
+    ///   free it exactly once with no one else freeing it — so one pointer
+    ///   must not be given to two builders or overloads, each of which hands
+    ///   its `destroy` to `DuckDB` separately.
+    /// - The pointee must be `Send + Sync`. `DuckDB` hands the same pointer to
+    ///   the callbacks on every thread that executes the function, possibly at
+    ///   the same moment, and `destroy` runs on whichever thread releases the
+    ///   function — or, if the builder is dropped unregistered, the thread
+    ///   that drops it.
+    /// - `destroy` must not unwind: it is an `extern "C" fn`, so a panic
+    ///   escaping it aborts the process. Wrap a body that can panic in
+    ///   [`catch_ffi_panic`][crate::callback::catch_ffi_panic].
+    ///
+    /// The typical pattern is to box your data:
+    /// `Box::into_raw(Box::new(my_data)).cast()`.
     pub unsafe fn extra_info(
         mut self,
         data: *mut c_void,
@@ -310,30 +338,53 @@ impl ScalarFunctionBuilder {
         self
     }
 
-    /// Refuses the registration if a scalar with this name and signature
-    /// already exists; see "Name collisions" on [`register`][Self::register].
+    /// Checks everything that needs no `DuckDB` call, returning the callback.
     ///
-    /// # Safety
-    ///
-    /// `con` must be a valid, open `duckdb_connection`.
-    unsafe fn refuse_existing_signature(
-        &self,
-        con: duckdb_connection,
-    ) -> Result<(), ExtensionError> {
+    /// Composite `TypeId`s are rejected before any `DuckDB` handle exists, so
+    /// the diagnostic names the offending slot instead of surfacing as an
+    /// opaque `duckdb_register_scalar_function failed`. See
+    /// `TypeId::is_composite`.
+    /// The completeness checks that need no `DuckDB` call: a return type and
+    /// a function callback. [`MockRegistrar`][crate::testing::MockRegistrar]
+    /// runs them too, so a builder it accepts is not refused at `LOAD` for a
+    /// missing part.
+    pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
+        if self.return_logical.is_none() && self.return_type.is_none() {
+            return Err(ExtensionError::new("return type not set"));
+        }
+        if self.function.is_none() {
+            return Err(ExtensionError::new("function callback not set"));
+        }
+        Ok(())
+    }
+
+    fn check_complete(&self) -> Result<ScalarFn, ExtensionError> {
+        self.check_parts()?;
+        for (i, id) in self.params.iter().enumerate() {
+            LogicalType::check_slot(*id, &format!("scalar function parameter {i}"))?;
+        }
+        if let Some(id) = self.return_type {
+            LogicalType::check_slot(id, "scalar function return type")?;
+        }
+        if let Some(ref varargs) = self.varargs {
+            varargs.check("scalar function varargs")?;
+        }
+        self.function
+            .ok_or_else(|| ExtensionError::new("function callback not set"))
+    }
+
+    /// This function's signature, rendered as `duckdb_functions()` prints it
+    /// (`None` if a type is not rendered), labelled for error messages.
+    fn rendered_signature(&self) -> Vec<(String, Option<super::collision::Rendered>)> {
         let mut signature = super::signature::merged_params(&self.params, &self.logical_params);
         if let Some(ref varargs) = self.varargs {
             signature.push(varargs.param_ref());
         }
-        // SAFETY: `con` is valid per this function's contract, and every
-        // logical parameter is a live handle owned by this builder.
-        unsafe {
-            super::collision::refuse_replacing_a_scalar(
-                con,
-                &self.name.to_string_lossy(),
-                "scalar function",
-                &signature,
-            )
-        }
+        // SAFETY: every logical parameter is a live handle owned by this
+        // builder, and rendering one needs only the C API, which the
+        // `register` caller's contract initialises.
+        let rendered = unsafe { super::collision::render_signature(&signature) };
+        vec![(String::from("scalar function"), rendered)]
     }
 
     /// Registers the scalar function on the given connection.
@@ -343,6 +394,11 @@ impl ScalarFunctionBuilder {
     /// Returns `ExtensionError` if:
     /// - The return type was not set.
     /// - The function callback was not set.
+    /// - A parameter, varargs or return type was given as a bare composite
+    ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
+    ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
+    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   names the slot.
     /// - A scalar function with this name and parameter types already exists
     ///   (see "Name collisions").
     /// - `DuckDB` reports a registration failure.
@@ -361,38 +417,56 @@ impl ScalarFunctionBuilder {
     /// `abs(BIGINT)` would change the built-in `abs` for `BIGINT`.
     ///
     /// quack-rs therefore refuses, before registering, when
-    /// `duckdb_functions()` already lists a scalar with this name and the same
-    /// parameter and varargs types. The check covers every parameter type
-    /// except `STRUCT`, `UNION`, `ENUM` and the `SQLNULL` / literal pseudo-types;
-    /// a signature containing one of those
-    /// is registered unchecked. `DuckDB` itself refuses a name that belongs to
-    /// an aggregate function or a macro (such as the built-in `list_sum`).
+    /// `duckdb_functions()` already lists a scalar with this name whose
+    /// parameter and varargs types accept the same call — the same types, or,
+    /// with varargs, the same types at some argument count (`f(BIGINT)` beside
+    /// an existing `f(BIGINT, BIGINT...)`: `DuckDB` would find `f(1)`
+    /// ambiguous). Types are compared as `DuckDB` prints them, aliases
+    /// included, so `abs(myint)` for `CREATE TYPE myint AS INTEGER` is its own
+    /// overload. The check covers every parameter type except `STRUCT`,
+    /// `UNION`, `ENUM` and the `SQLNULL` / literal pseudo-types; a signature
+    /// containing one of those is registered unchecked. `DuckDB` itself
+    /// refuses a name that belongs to an aggregate function or a macro (such
+    /// as the built-in `list_sum`).
+    ///
+    /// # Cost
+    ///
+    /// Each call lists the catalog once — one scan of `duckdb_functions()`,
+    /// 17–21 ms per call in a release build against `DuckDB` 1.5.5 (measured
+    /// over 300 registrations). Registering through the entry point's
+    /// [`Connection`](crate::connection::Connection) instead (its
+    /// [`Registrar`](crate::connection::Registrar) methods) lists the catalog
+    /// once per extension load: 300 registrations took 19–36 ms in all.
     ///
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
-        // Reject composite TypeIds before any DuckDB handle exists, so the
-        // diagnostic names the offending slot instead of surfacing as an opaque
-        // `duckdb_register_scalar_function failed`. See `TypeId::is_composite`.
-        for (i, id) in self.params.iter().enumerate() {
-            LogicalType::check_slot(*id, &format!("scalar function parameter {i}"))?;
-        }
-        if let Some(id) = self.return_type {
-            LogicalType::check_slot(id, "scalar function return type")?;
-        }
-        if let Some(ref varargs) = self.varargs {
-            varargs.check("scalar function varargs")?;
-        }
-        if self.return_logical.is_none() && self.return_type.is_none() {
-            return Err(ExtensionError::new("return type not set"));
-        }
-        let function = self
-            .function
-            .ok_or_else(|| ExtensionError::new("function callback not set"))?;
+        // SAFETY: forwarded from this function's own contract.
+        unsafe { self.register_with(con, None) }
+    }
 
+    /// [`register`][Self::register], checking signatures against `snapshot`
+    /// (listed on first use) instead of listing the catalog for this call.
+    ///
+    /// # Safety
+    ///
+    /// As [`register`][Self::register].
+    pub(crate) unsafe fn register_with(
+        self,
+        con: duckdb_connection,
+        snapshot: Option<&RefCell<Option<super::collision::ExistingScalars>>>,
+    ) -> Result<(), ExtensionError> {
+        let function = self.check_complete()?;
+        crate::table::type_check::refuse_any_return(
+            "scalar function return type",
+            self.return_type,
+            self.return_logical.as_ref(),
+        )?;
+        let name = self.name.to_string_lossy().into_owned();
+        let rendered = self.rendered_signature();
         // SAFETY: `con` is valid per this function's contract.
-        unsafe { self.refuse_existing_signature(con)? };
+        unsafe { super::collision::refuse_taken_signatures(con, snapshot, &name, &rendered)? };
 
         // Resolve return type: prefer explicit LogicalType over TypeId. One of
         // the two is set, checked above.
@@ -513,11 +587,11 @@ impl ScalarFunctionBuilder {
         }
 
         if result == DuckDBSuccess {
+            super::collision::record_registered(snapshot, &name, rendered);
             Ok(())
         } else {
             Err(ExtensionError::new(format!(
                 "duckdb_register_scalar_function failed for '{name}': {hint}",
-                name = self.name.to_string_lossy(),
                 hint = crate::error::REGISTRATION_FAILURE_HINT
             )))
         }

@@ -340,7 +340,7 @@ ScalarOverloadBuilder::new()
 ## Key points
 
 - **`VectorReader::new(input, column_index)`** — the column index is zero-based
-- **Always check `is_valid(row)` before reading** — skipping this reads garbage for NULL rows
+- **Always check `is_valid(row)` before reading** — skipping this reads garbage for NULL rows, and for `VARCHAR`/`BLOB` can follow a stale pointer
 - **`set_null` must be called for NULL outputs** — it calls `ensure_validity_writable`
   automatically ([Pitfall L4](../reference/pitfalls.md#l4-ensure_validity_writable-is-required-before-null-output))
 - **`read_bool` returns `bool`** — handles DuckDB's non-0/1 boolean bytes correctly

@@ -221,13 +221,12 @@ fn init_dispatch_table_once() {
             get_api: Some(get_api_fn),
         };
 
-        // SAFETY: api_ptr is a valid, non-null pointer to a
-        // duckdb_ext_api_v1 that lives for the duration of the process.
-        // duckdb_rs_extension_api_init reads each field and stores it into
-        // the corresponding AtomicPtr, then returns.  The access struct
-        // lives on this stack frame and outlives the call.
-        // SAFETY: same as above.  std::ptr::addr_of!(access) yields a raw
-        // pointer without creating an intermediate reference.
+        // SAFETY: `api_ptr` points at `api`, a local of this closure that
+        // outlives the call: duckdb_rs_extension_api_init reads each field
+        // through it, stores the function pointers (valid for the process's
+        // lifetime, see above) into its own AtomicPtrs, and keeps no
+        // reference. `access` is also a local of this frame, and its
+        // `get_api` is set, so the function's `unwrap` cannot panic.
         unsafe {
             libduckdb_sys::duckdb_rs_extension_api_init(
                 std::ptr::null_mut(),

@@ -116,9 +116,11 @@ unsafe { drop(Box::from_raw(ffi.inner)) };
 
 ### No panics across FFI
 
-`unwrap()`, `expect()`, and `panic!()` are forbidden in any function that may
-be called by DuckDB (callbacks and entry points). Use `Option`/`Result` and `?`
-throughout.
+A panic must never escape a function DuckDB calls (callbacks and entry
+points): every callback kind runs under `catch_unwind`. Beyond that, library code
+uses `Option`/`Result` and `?`, and panics only where its `# Panics` section says
+so — `VectorWriter::write_varchar` on a string over 4 GiB, or a builder's
+`new(name)` on an interior NUL, which has `try_new(name)` beside it.
 
 ### Clippy lint policy
 
@@ -247,11 +249,11 @@ quack-rs/
 │   │   ├── typed.rs                   # Scalar functions written as ordinary Rust closures
 │   │   ├── typed_builder.rs           # The builder the closure-based scalar constructors return, and the one `extern "C"` trampoline they all share
 │   │   └── builder/
-│   │       ├── collision.rs           # Refusing a scalar signature that would silently replace an existing one
+│   │       ├── collision.rs           # Refusing a scalar signature that would replace an existing one or make calls ambiguous
 │   │       ├── mod.rs                 # Builder for registering `DuckDB` scalar functions
 │   │       ├── overload.rs            # One overload within a [`ScalarFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` scalar function set (multiple overloads)
-│   │       ├── signature.rs           # Detecting overloads that declare the same argument types
+│   │       ├── signature.rs           # Detecting overloads that accept the same call
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` scalar function
 │   │       └── tests.rs               # Unit tests
 │   ├── table/
@@ -301,6 +303,7 @@ quack-rs/
 │   │       ├── tests_yaml.rs          # Unit tests
 │   │       ├── validator.rs           # Validates a `description.yml` string and returns `Ok(())` if it passes all checks
 │   │       ├── yaml.rs                # A reader for the subset of YAML that `description.yml` files use
+│   │       ├── yaml11.rs              # Which plain scalars PyYAML (YAML 1.1) reads as booleans, numbers, dates or null
 │   │       └── yaml/
 │   │           └── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
 │   ├── value/
@@ -311,6 +314,7 @@ quack-rs/
 │   │   ├── getters.rs                 # The typed scalar accessors — `Value::as_i64`, `as_timestamp`, `as_decimal`, …
 │   │   ├── hugeint.rs                 # Conversions between Rust's 128-bit integers and `DuckDB`'s split-word `HUGEINT` / `UHUGEINT` records
 │   │   ├── nested.rs                  # Reading nested values: `LIST` elements, `STRUCT` fields, `MAP` entries
+│   │   ├── render_guard.rs            # Refusing to render a value `DuckDB` would throw on (an out-of-range timestamp from SQL)
 │   │   ├── scalars.rs                 # The non-temporal scalar constructors
 │   │   ├── temporal.rs                # Temporal constructors, validated against `DuckDB`'s ranges
 │   │   └── temporal_checks.rs         # Pure-Rust range checks for the temporal types, derived from `DuckDB`'s source
@@ -332,13 +336,18 @@ quack-rs/
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
+│       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
+│       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
+│       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
+│       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
 │       ├── table_cast.rs              # Table function, cast, replacement scan, SQL macro and COPY regressions
+│       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
@@ -354,7 +363,7 @@ quack-rs/
 ├── .github/workflows/ci.yml       # CI pipeline
 ├── .github/workflows/docs.yml     # GitHub Pages deployment
 ├── CONTRIBUTING.md
-├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L11, P1–P12)
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L14, P1–P12)
 ├── CHANGELOG.md
 └── README.md
 ```

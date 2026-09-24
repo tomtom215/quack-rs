@@ -88,7 +88,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **24 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **26 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```text
@@ -109,6 +109,10 @@ L11 C API aggregates crash under agg(x) OVER () and agg(x ORDER BY y) →
     a DuckDB defect; documented, not preventable from an extension
 L12 Aggregate update receives NULL rows under DEFAULT_NULL_HANDLING →
     skip rows where is_valid is false; documented on NullHandling
+L13 A C API aggregate without a destructor is wrong in a running window →
+    every aggregate builder registers a destructor
+L14 The C API behaves differently across the releases one build loads into →
+    version-dependent wrappers check the engine; CI tests 1.4.4 and 1.5.0 too
 
 P1  Library name must match [lib] name in Cargo.toml exactly
 P2  C API version ("v1.2.0") ≠ DuckDB release version ("v1.4.4" / "v1.5.0")
@@ -331,7 +335,7 @@ append_metadata target/release/libmy_extension.so \
 | [`vector::struct_writer`] | Batched typed writer for STRUCT output vectors | `StructWriter` |
 | [`vector::struct_reader`] | Batched typed reader for STRUCT input vectors | `StructReader` |
 | [`vector::string`] | 16-byte DuckDB string format | `DuckStringView`, `read_duck_string` |
-| [`types`] | DuckDB type system wrappers, incl. registering custom types | `TypeId`, `LogicalType` (`register`, `is_composite`), `NullHandling` |
+| [`types`] | DuckDB type system wrappers, incl. registering custom types | `TypeId` (`is_composite`), `LogicalType` (`register`), `NullHandling` |
 | [`interval`] | INTERVAL ↔ microseconds conversion | `DuckInterval`, `interval_to_micros` |
 | [`datetime`] | DATE/TIME/TIMESTAMP calendar conversions, HUGEINT/DECIMAL helpers | `Date`, `Time`, `Timestamp`, `date_from_days`, `is_finite_date` |
 | [`query`] | Running SQL from an extension, incl. streaming¹ and cancellation | `QueryResult`, `PreparedStatement`, `OwnedConnection`, `OwnedDataChunk`, `InterruptHandle`, `QueryProgress` |
@@ -449,6 +453,8 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L10** | Scalar bind data dropped when `DuckDB` copies the expression | Bind data reads as null for some queries (e.g. a filter pushed through a projection) — a wrong answer, not a crash | `ScalarBindData::set` registers a copy callback; raw API: `ScalarBindInfo::set_bind_data_copy` |
 | **L11** | C API aggregates under `agg(x) OVER ()` / `agg(x ORDER BY y)` | Segfault or memory corruption in `update` | A `DuckDB` defect (`CAPIAggregateUpdate` does not flatten the state vector), reported as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109); documented, cannot be prevented from an extension |
 | **L12** | Aggregate `update` receives NULL rows under `DEFAULT_NULL_HANDLING` | A wrong answer when the input has NULLs: `update` reads whatever the NULL slot holds | Skip rows where `is_valid` is false in `update`, whatever the null handling; documented on `NullHandling` and the aggregate builders |
+| **L13** | A C API aggregate without a destructor in a running window | A wrong running value, no error: `DuckDB` streams the window and re-reads the first row | Every aggregate builder registers a destructor (a no-op when none is given) |
+| **L14** | The C API differs across the releases one build loads into | An abort, a bad type or an unexplained registration failure on an older release that loads the same binary | `argument`, `try_decimal`, `try_new` and the collision check do not rely on newer behaviour; CI runs the suite against DuckDB 1.4.4 and 1.5.0 |
 
 ### Practical Pitfalls (P)
 
@@ -756,11 +762,18 @@ flowchart TB
 1. **Thin wrapper mandate**: Every abstraction must pay for itself in reduced boilerplate
    or improved safety. When in doubt, prefer simplicity over cleverness.
 
-2. **No panics across FFI**: `unwrap()` and `panic!()` are forbidden in any code path that
-   crosses the FFI boundary. All errors propagate as `Result<T, ExtensionError>`.
+2. **No panics across FFI**: every callback kind runs under `catch_unwind`, so a panic
+   in extension code becomes a SQL error instead of aborting the process (this needs
+   `panic = "unwind"`). Library code panics only where its `# Panics` section says so —
+   `VectorWriter::write_varchar` on a string over 4 GiB, for one — and such a panic is
+   caught at the callback boundary like any other. Errors otherwise propagate as
+   `Result<T, ExtensionError>`.
 
 3. **Bounded version range**: `libduckdb-sys = ">=1.4.4, <2"` is deliberate.
-   The C API is stable across DuckDB 1.4.x and 1.5.x (verified by E2E tests on both).
+   The stable part of the C API (357 functions, what the default features use) is
+   unchanged from DuckDB v1.2.0 through v1.5.5; the unstable region the `duckdb-1-5*`
+   features reach into differs between releases (459 functions in 1.4.x, 545 in
+   1.5.0–1.5.1, 546 in 1.5.2–1.5.5), which the ABI guard in `abi.rs` checks at load.
    The upper bound prevents silent adoption of a future major release. When the C API
    version changes, `quack-rs` will be updated.
 
@@ -783,9 +796,10 @@ The documentation convention is:
 - Every `unsafe fn` states what the caller must guarantee under `# Safety`.
 - Every `unsafe` block **inside a safe function** carries a `// SAFETY:` comment —
   there the crate, not the caller, is asserting the invariant.
-- Inside an `unsafe fn`, blocks that simply forward the function's own documented
-  contract are not re-annotated. `unsafe_op_in_unsafe_fn` is denied crate-wide, so
-  those blocks are required syntax rather than new assertions.
+- Every `unsafe` block inside an `unsafe fn` carries one too, naming the clause of
+  the function's own contract it relies on (`unsafe_op_in_unsafe_fn` is denied
+  crate-wide, so such blocks are required syntax). `clippy::undocumented_unsafe_blocks`
+  enforces both in library code.
 
 ```rust
 use libduckdb_sys::duckdb_connection;
@@ -813,9 +827,11 @@ use `libduckdb-sys` directly — the two libraries compose without conflict.
 
 **ADR-2: Bounded Version Range**
 
-`libduckdb-sys = ">=1.4.4, <2"` is intentional. The DuckDB C Extension API is stable
-across 1.4.x and 1.5.x — verified by E2E tests against DuckDB 1.4.4 and DuckDB 1.5.0.
-Both releases use C API version `v1.2.0`. The upper bound `<2` prevents silent adoption
+`libduckdb-sys = ">=1.4.4, <2"` is intentional. Every release from DuckDB 1.4.4 to 1.5.5
+declares C extension API version `v1.2.0`, and the stable part of that API (357
+functions) is unchanged across them; the unstable region differs between releases and is
+checked at load by the ABI guard (`abi.rs`). CI loads the example extension into 1.4.4,
+1.5.0 and 1.5.5. The upper bound `<2` prevents silent adoption
 of a future major-band release that may change the C API version or callback signatures.
 When a future DuckDB release bumps the C API version, `quack-rs` will need to be updated
 to match.
@@ -827,8 +843,8 @@ the process (before 1.81 it was undefined behavior). `quack-rs` enforces this
 architecturally: `init_extension` converts `Result::Err` into a DuckDB error report via
 `set_error`, and every callback kind runs under `catch_unwind`, reporting a panic as a SQL
 error — which requires `panic = "unwind"` in the release profile.
-No `unwrap()`, `expect()`, or `panic!()` appears in any code path reachable from a DuckDB
-callback.
+Library code panics only where a `# Panics` section documents it, and a panic raised
+inside a callback is caught there like any other.
 
 ---
 
@@ -964,6 +980,22 @@ functions themselves are present from 1.5.0.
 ## Changelog
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
+
+**Unreleased (0.18.0)** — Fixes from three further production-readiness audits
+(`AUDIT.md`, sections 7–9): soundness holes in the safe API, process aborts, wrong
+answers and leaks, each reproduced against a real DuckDB or derived from its source
+before it was fixed. Breaking; see the CHANGELOG.
+
+**v0.16.0** (2026-08-19) — New `abi` module: the extension checks, at load, that
+the running DuckDB's `duckdb_ext_api_v1` layout matches the one it was compiled
+against, instead of calling the wrong function pointers in the unstable region.
+Production-readiness review: 24 defects fixed, including two heap-corruption paths.
+
+**v0.15.0** (2026-07-16) — `Value::as_blob()`; `VectorReader::read_blob()` keeps
+non-UTF-8 bytes instead of returning an empty slice. DuckDB 1.5.4.
+
+**v0.14.0** (2026-06-07) — `wasm32-unknown-emscripten` support and the
+`bundled-test-prebuilt` feature (link a pre-built libduckdb in tests).
 
 **v0.13.0** (2026-05-24) — DuckDB **1.5.3** bump (`libduckdb-sys`/`duckdb`
 1.10503.1), MSRV corrected to **1.86.0**, and six new `duckdb-1-5`-gated modules

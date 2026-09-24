@@ -160,8 +160,10 @@ fn duckdb_utf8_validation_matches_rust() {
 }
 
 /// F-V9d: a `UNION` value is stored as a struct of its tag and members, so
-/// `struct_field_names` returns `""` for the tag, then the member names —
-/// positionally aligned with `struct_child`.
+/// `struct_field_names` returns `""` for the tag, then the member names. The
+/// docs used to say those line up with `struct_child`; `struct_child` returns
+/// `None` for every index of a `UNION` value (`duckdb_get_struct_child` reads
+/// STRUCT values only), which is pinned here too.
 #[cfg(feature = "duckdb-1-5")]
 #[test]
 fn struct_field_names_of_a_union_include_its_tag() {
@@ -169,6 +171,7 @@ fn struct_field_names_of_a_union_include_its_tag() {
     let union_type = LogicalType::union_type(&[("a", TypeId::Integer), ("b", TypeId::Varchar)]);
     let value = Value::union_value(&union_type, 1, &Value::varchar("x")).expect("union");
     assert_eq!(value.struct_field_names(), ["", "a", "b"]);
+    assert!((0..3).all(|i| value.struct_child(i).is_none()));
     assert_eq!(Value::bigint(1).struct_field_names(), Vec::<String>::new());
     let list = Value::list_value(&LogicalType::new(TypeId::BigInt), &[]).expect("list");
     assert_eq!(list.struct_field_names(), Vec::<String>::new());

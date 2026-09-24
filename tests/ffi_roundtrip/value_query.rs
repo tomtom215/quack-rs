@@ -495,6 +495,9 @@ fn fold_of_a_non_foldable_expression_is_an_error() {
             .register(fx.con())
             .expect("register vq_foldprobe");
     }
+    if !super::inspects_arguments_or_refuses(&fx, "SELECT vq_foldprobe(1, 20 + 1)") {
+        return;
+    }
     let run = |sql: &str| -> String {
         fold_probe::OUTCOMES.lock().expect("lock").clear();
         drop(fx.query(sql));
