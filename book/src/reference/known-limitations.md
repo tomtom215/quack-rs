@@ -50,6 +50,21 @@ Frames that are not whole-partition (`ROWS BETWEEN 5 PRECEDING AND CURRENT ROW`)
 and `DISTINCT` windows work. See
 [Pitfall L11](pitfalls.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
 
+## Aggregate states leak when `finalize` reports an error (DuckDB behaviour)
+
+When an aggregate's `finalize` callback reports an error
+(`AggregateFunctionInfo::set_error`), DuckDB 1.5.5 does not call the destructor
+for every state the query created: an ungrouped query initialised 2 states and
+destroyed 1, a grouped one 4 and 2. When `finalize` succeeds, every state is
+destroyed. The extension cannot tell which states were abandoned, so whatever
+they own is leaked: with `FfiState<T>`, one boxed `T` per abandoned state. The
+query still fails with your message. If that leak matters (a large `T`, or a
+long-lived process whose queries often fail this way), keep what a state owns
+small. Only `finalize` was measured; errors reported from other callbacks were
+not. The behaviour is pinned by
+`aggregate_states_are_not_all_destroyed_when_finalize_fails` in
+`tests/ffi_roundtrip/lifecycle.rs`.
+
 ## COPY functions (resolved in DuckDB 1.5.0; both directions since)
 
 DuckDB 1.5.0 added `duckdb_create_copy_function` and related symbols to the public

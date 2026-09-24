@@ -800,6 +800,122 @@ fn an_aggregate_overloads_extra_info_reaches_its_callbacks_and_is_freed_once() {
     );
 }
 
+// ─── Aggregate states when finalize fails ───────────────────────────────────
+
+/// An 8-byte aggregate state that `DuckDB` allocates and that owns nothing, with
+/// `init` / `destroy` callbacks that only count, so a state `DuckDB` never
+/// destroys is visible without leaking anything.
+mod raw_state {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
+    use quack_rs::aggregate::AggregateFunctionInfo;
+    use quack_rs::vector::VectorWriter;
+
+    pub static INITS: AtomicUsize = AtomicUsize::new(0);
+    pub static DESTROYED: AtomicUsize = AtomicUsize::new(0);
+
+    pub const unsafe extern "C" fn size(_info: duckdb_function_info) -> idx_t {
+        8
+    }
+
+    pub const unsafe extern "C" fn init_nothing(
+        _info: duckdb_function_info,
+        _state: duckdb_aggregate_state,
+    ) {
+    }
+
+    pub unsafe extern "C" fn init_counted(
+        _info: duckdb_function_info,
+        _state: duckdb_aggregate_state,
+    ) {
+        INITS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub unsafe extern "C" fn destroy_counted(_states: *mut duckdb_aggregate_state, count: idx_t) {
+        DESTROYED.fetch_add(usize::try_from(count).unwrap_or(0), Ordering::SeqCst);
+    }
+
+    quack_rs::aggregate_update_callback!(update_nothing, |_info, _input, _states| {});
+    quack_rs::aggregate_combine_callback!(combine_nothing, |_info, _source, _target, _count| {});
+
+    quack_rs::aggregate_finalize_callback!(
+        finalize_fails,
+        |info, _source, _result, _count, _offset| {
+            // SAFETY: DuckDB passes a valid function info.
+            unsafe { AggregateFunctionInfo::new(info) }.set_error("finalize failed on purpose");
+        }
+    );
+
+    quack_rs::aggregate_finalize_callback!(
+        finalize_ones,
+        |_info, _source, result, count, offset| {
+            // SAFETY: `result` is the BIGINT output vector for this batch.
+            let mut writer = unsafe { VectorWriter::from_vector(result) };
+            for i in 0..count as usize {
+                // SAFETY: `offset + i` is a row of this batch.
+                unsafe { writer.write_i64(offset as usize + i, 1) };
+            }
+        }
+    );
+}
+
+/// `DuckDB` 1.5.5 does not call the destructor for every aggregate state of a
+/// query whose `finalize` reports an error: ungrouped, 2 states are
+/// initialised and 1 destroyed; grouped, 4 and 2. When `finalize` succeeds
+/// every state is destroyed. An extension cannot tell which states were
+/// abandoned, so anything a state owns leaks (an `FfiState<T>` box, for
+/// one). Pins the behaviour documented under Known Limitations: if `DuckDB`
+/// starts destroying them, the first assertion fails.
+#[test]
+fn aggregate_states_are_not_all_destroyed_when_finalize_fails() {
+    use std::sync::atomic::Ordering;
+
+    let counts = |finalize: quack_rs::aggregate::FinalizeFn, sql: &str| {
+        raw_state::INITS.store(0, Ordering::SeqCst);
+        raw_state::DESTROYED.store(0, Ordering::SeqCst);
+        {
+            let fx = Fixture::open();
+            // SAFETY: `con` is open; every callback matches its declared signature.
+            unsafe {
+                AggregateFunctionBuilder::try_new("counted_agg")
+                    .expect("valid name")
+                    .param(TypeId::BigInt)
+                    .returns(TypeId::BigInt)
+                    .state_size(raw_state::size)
+                    .init(raw_state::init_counted)
+                    .update(raw_state::update_nothing)
+                    .combine(raw_state::combine_nothing)
+                    .finalize(finalize)
+                    .destructor(raw_state::destroy_counted)
+                    .register(fx.con())
+                    .expect("register counted_agg");
+                let _ = quack_rs::query::query(fx.con(), sql);
+            }
+        }
+        (
+            raw_state::INITS.load(Ordering::SeqCst),
+            raw_state::DESTROYED.load(Ordering::SeqCst),
+        )
+    };
+    for sql in [
+        "SELECT counted_agg(i::BIGINT) FROM range(3) t(i)",
+        "SELECT i % 2, counted_agg(i::BIGINT) FROM range(3) t(i) GROUP BY 1",
+    ] {
+        let (inits, destroyed) = counts(raw_state::finalize_fails, sql);
+        assert!(
+            inits > destroyed,
+            "{sql}: DuckDB now destroys every state after a failed finalize \
+             ({inits} initialised, {destroyed} destroyed); update Known Limitations"
+        );
+        let (inits, destroyed) = counts(raw_state::finalize_ones, sql);
+        assert_eq!(
+            inits, destroyed,
+            "{sql}: a successful finalize destroys every state"
+        );
+    }
+}
+
 // ─── Error messages with an interior NUL ────────────────────────────────────
 
 mod nul_errors {
@@ -859,12 +975,15 @@ fn set_error_keeps_the_text_after_an_interior_nul() {
             .expect("valid name")
             .param(TypeId::BigInt)
             .returns(TypeId::BigInt)
-            .state_size(FfiState::<RowCounts>::size_callback)
-            .init(FfiState::<RowCounts>::init_callback)
-            .update(row_counts_update)
-            .combine(row_counts_combine)
+            // A state DuckDB allocates and nothing here does: DuckDB does not
+            // destroy every state of a query whose finalize fails (see
+            // `aggregate_states_are_not_all_destroyed_when_finalize_fails`),
+            // so an `FfiState` here would leak its box.
+            .state_size(raw_state::size)
+            .init(raw_state::init_nothing)
+            .update(raw_state::update_nothing)
+            .combine(raw_state::combine_nothing)
             .finalize(nul_errors::agg_fails)
-            .destructor(FfiState::<RowCounts>::destroy_callback)
             .register(fx.con())
             .expect("register nul_agg");
     }

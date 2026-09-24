@@ -54,6 +54,11 @@ impl AggregateFunctionInfo {
     ///
     /// An interior NUL byte in `message` is replaced with `?`
     /// (see [`message_to_c_string`][crate::callback::message_to_c_string]).
+    ///
+    /// Called from `finalize`, the query fails but `DuckDB` 1.5.5 does not
+    /// destroy every aggregate state it created, so whatever those states own
+    /// (an [`FfiState`][crate::aggregate::FfiState] box, for one) leaks. See
+    /// Known Limitations in the book.
     #[mutants::skip]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::callback::message_to_c_string(message);

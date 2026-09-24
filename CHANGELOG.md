@@ -717,6 +717,14 @@ the 0.17.0 notes about aggregates and NULL rows (see Fixed).
     written, so a larger size made DuckDB read past the child vectors.
   - `read_duck_blob` did not require the vector to outlive the returned slice,
     which borrows the vector's own buffer for a blob of 12 bytes or fewer.
+- Documented: when an aggregate's `finalize` reports an error, DuckDB 1.5.5
+  does not destroy every state the query created (ungrouped: 2 initialised, 1
+  destroyed; grouped: 4 and 2), so whatever those states own leaks — an
+  `FfiState<T>` box per abandoned state. Nothing in an extension can detect it;
+  Known Limitations and `AggregateFunctionInfo::set_error` now say so, and an
+  end-to-end test pins it. Two of this release's own tests leaked on these
+  paths and made the LeakSanitizer job fail; both now use states that own
+  nothing.
 - `cargo doc` failed with default features on a link to
   `PreparedStatement::execute_streaming`, which needs `duckdb-1-5`. CI now also
   builds the docs with default features, the set a dependent crate documents.
