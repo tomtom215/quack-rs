@@ -183,11 +183,23 @@ impl TableDescription {
         unsafe { duckdb_table_description_get_column_count(self.desc) }
     }
 
+    /// Whether `index` may be passed to `DuckDB`, which bounds-checks every
+    /// index but one: from 1.5.0 the column accessors convert it to an
+    /// `optional_idx`, whose constructor throws for `idx_t::MAX`
+    /// (`optional_idx.hpp`) outside any `try` (`table_description-c.cpp`),
+    /// which aborts the process. That value names no column in any release.
+    const fn in_range(index: idx_t) -> bool {
+        index != idx_t::MAX
+    }
+
     /// Returns the name of the column at the given index.
     ///
     /// Returns `None` if the index is out of bounds or the name is not valid UTF-8.
     #[must_use]
     pub fn column_name(&self, index: idx_t) -> Option<String> {
+        if !Self::in_range(index) {
+            return None;
+        }
         // SAFETY: self.desc is valid. `DuckDB` returns a newly allocated string.
         let ptr = unsafe { duckdb_table_description_get_column_name(self.desc, index) };
         if ptr.is_null() {
@@ -215,6 +227,9 @@ impl TableDescription {
     #[cfg(feature = "duckdb-1-5")]
     #[must_use]
     pub fn column_type(&self, index: idx_t) -> Option<LogicalType> {
+        if !Self::in_range(index) {
+            return None;
+        }
         // SAFETY: self.desc is valid.
         let lt = unsafe { duckdb_table_description_get_column_type(self.desc, index) };
         if lt.is_null() {
@@ -238,9 +253,11 @@ impl TableDescription {
     /// can evaluate once, up front.
     #[must_use]
     pub fn column_has_default(&self, index: idx_t) -> Option<bool> {
+        if !Self::in_range(index) {
+            return None;
+        }
         let mut out = false;
-        // SAFETY: self.desc is valid; DuckDB bounds-checks `index` and reports
-        // failure through the return state rather than writing `out`.
+        // SAFETY: self.desc is valid and `index` is in range.
         let state = unsafe { duckdb_column_has_default(self.desc, index, &raw mut out) };
         if state == DuckDBSuccess {
             Some(out)
@@ -401,3 +418,16 @@ mod tests {
 }
 
 crate::debug_repr::impl_handle_debug!(TableDescription.desc);
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_index_duckdb_throws_on_is_refused() {
+        assert!(!TableDescription::in_range(idx_t::MAX));
+        for index in [0, 1, 1 << 40, idx_t::MAX - 1] {
+            assert!(TableDescription::in_range(index), "{index}");
+        }
+    }
+}

@@ -40,6 +40,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 27 | Arrow list-view import scans `sum(sizes)` child rows from the lowest offset, reading past the child | C program, below (valgrind) | overlapping or gapped list views refused |
 | 28 | Arrow sparse-union import uses the type codes as member indices, ignoring the `+us:` code list | C program, below | non-identity union type codes refused |
 | 29 | Arrow dictionary import points NULL indices one past a zero-copied values buffer; copying the vector reads past it | C program, below (valgrind) | Safety clause on `data_chunk_from_arrow` |
+| 30 | Table-description column accessors abort on index `idx_t(-1)` from 1.5.0 | C program, below | that index refused before the call |
 
 ## Before filing
 
@@ -3181,3 +3182,78 @@ to be readable for one element past `offset + length`. Found by running
 `tests/ffi_roundtrip/arrow_layout.rs` against a `libduckdb` built with
 AddressSanitizer (heap-buffer-overflow in `TemplatedCopy<int>`); that test's
 dictionaries are now padded as the Safety section requires.
+
+---
+
+## 30. Table-description column accessors abort the process on index `idx_t(-1)`
+
+From 1.5.0, `duckdb_table_description_get_column_name`,
+`duckdb_table_description_get_column_type` and `duckdb_column_has_default`
+pass their `idx_t index` to `GetTableDescription(TableDescriptionWrapper *,
+duckdb::optional_idx)` (`table_description-c.cpp`). The implicit
+`optional_idx(idx_t)` constructor throws `InternalException` for
+`INVALID_INDEX`, which is `idx_t(-1)` (`optional_idx.hpp`), and none of the
+three functions has a `try`, so the exception leaves the C API. Every other
+out-of-range index is reported as an error. 1.4.4 and 1.4.5 take a plain
+`idx_t` and return NULL.
+
+Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5, x86_64
+Linux. Build: `gcc -I<libduckdb dir> item30.c -L<libduckdb dir> -lduckdb -o
+item30`, then run with `LD_LIBRARY_PATH=<libduckdb dir>`.
+
+```c
+// duckdb_table_description_get_column_name (and _get_column_type,
+// duckdb_column_has_default) convert the index to duckdb::optional_idx, whose
+// constructor throws InternalException for idx_t(-1), outside any try.
+// Build: gcc -I<libduckdb dir> item30.c -L<libduckdb dir> -lduckdb -o item30
+#include <stdio.h>
+#include <stdint.h>
+#include <duckdb.h>
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    printf("Built with DuckDB %s\n", duckdb_library_version());
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    duckdb_query(con, "CREATE TABLE t(a INTEGER)", NULL);
+    duckdb_table_description desc;
+    if (duckdb_table_description_create(con, "main", "t", &desc) != DuckDBSuccess) { printf("create failed\n"); return 1; }
+    char *in_range = duckdb_table_description_get_column_name(desc, 0);
+    printf("index 0: %s\n", in_range ? in_range : "NULL");
+    duckdb_free(in_range);
+    char *past = duckdb_table_description_get_column_name(desc, 5);
+    printf("index 5: %s\n", past ? past : "NULL");
+    printf("index UINT64_MAX:\n");
+    char *max = duckdb_table_description_get_column_name(desc, UINT64_MAX);
+    printf("returned %s\n", max ? max : "NULL");
+    duckdb_table_description_destroy(&desc);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Observed, in two groups (output compared with `md5sum`, the version line
+and the stack-trace pointers set aside). v1.4.4 and v1.4.5, exit status 0:
+
+```text
+Built with DuckDB v1.4.4
+index 0: a
+index 5: NULL
+index UINT64_MAX:
+returned NULL
+```
+
+v1.5.0 to v1.5.5, exit status 134 (SIGABRT); this is v1.5.5:
+
+```text
+Built with DuckDB v1.5.5
+index 0: a
+index 5: NULL
+index UINT64_MAX:
+terminate called after throwing an instance of 'duckdb::InternalException'
+  what():  {"exception_type":"INTERNAL","exception_message":"optional_idx cannot be initialized with an invalid index","stack_trace_pointers":"…"}
+```
+
+Expected: an error state, as for index 5.
+
+quack-rs mitigation: `TableDescription::column_name`, `column_type` and
+`column_has_default` return `None` for `idx_t::MAX` without calling `DuckDB`
+(`tests/ffi_roundtrip/table_description.rs` aborted before the fix).

@@ -5914,6 +5914,9 @@ mod arrow_layout;
 #[path = "ffi_roundtrip/query_docs.rs"]
 mod query_docs;
 
+#[path = "ffi_roundtrip/table_description.rs"]
+mod table_description;
+
 #[path = "ffi_roundtrip/agg_states.rs"]
 mod agg_states;
 #[path = "ffi_roundtrip/chunk_writer.rs"]

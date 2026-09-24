@@ -443,7 +443,7 @@ in each section below.
 - `LESSONS.md` and the book's pitfall catalogue gained L15 (`combine` must
   leave its source states unchanged) and L16 (a valid Arrow array is not
   always one `DuckDB` imports correctly): 28 documented pitfalls.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 29, and item 16 gained
+- `docs/upstream-duckdb-reports.md` gained items 20 to 30, and item 16 gained
   a `HUGEINT` reproducer.
 
 #### Fourth audit
@@ -895,6 +895,11 @@ in each section below.
   under `LIMIT 10` over 300,000 groups, 297,952 boxed `T`s leaked. A small
   `T` is now stored in `DuckDB`'s own state bytes, so it leaks nothing unless
   it owns heap memory itself.
+- **`TableDescription::column_name`, `column_type` and `column_has_default`
+  aborted the process for index `u64::MAX`** on `DuckDB` 1.5.0 to 1.5.5: the C
+  API converts the index to an `optional_idx`, whose constructor throws for
+  that value outside any `try` (upstream item 30). They return `None` for it
+  without calling `DuckDB`, as for any other index past the last column.
 - **`data_chunk_to_arrow` exported different values without an error.** An
   `INTERVAL` of more than `i64::MAX / 1000` microseconds wrapped when
   `DuckDB` converted it to nanoseconds; a `UHUGEINT` of 2^127 or more came out

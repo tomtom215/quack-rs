@@ -513,6 +513,7 @@ quack-rs/
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
 │       ├── table_cast.rs              # Table function, cast, replacement scan, SQL macro and COPY regressions
+│       ├── table_description.rs       # `TableDescription` accessors on an index `DuckDB` cannot hold
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
