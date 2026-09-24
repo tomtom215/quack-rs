@@ -356,3 +356,37 @@ fn check_struct_children(array: &ArrowArray) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{check_struct_children, ArrowArray, RawArrowArray};
+
+    unsafe extern "C" fn no_op_release(array: *mut RawArrowArray) {
+        // SAFETY: `array` is the live record `ArrowArray`
+        // passes to its own release callback.
+        unsafe { (*array).release = None };
+    }
+
+    /// A negative length is refused by the structural check, which
+    /// `data_chunk_from_arrow` runs before its zero-row check, so the error
+    /// names the negative length rather than calling the array empty
+    /// (`ArrowArray::len` maps a negative length to 0). `DuckDB` itself
+    /// aborts on it: `NumericCast<idx_t>(arrow_array->length)` runs before
+    /// its try block.
+    #[test]
+    fn a_negative_length_or_offset_is_refused_by_name() {
+        for (length, offset) in [(-1, 0), (1, -1)] {
+            let mut raw = RawArrowArray::empty();
+            raw.length = length;
+            raw.offset = offset;
+            raw.release = Some(no_op_release);
+            // SAFETY: no buffers or children; `no_op_release` frees nothing.
+            let array = unsafe { ArrowArray::from_raw(raw) };
+            let err = check_struct_children(&array).expect_err("negative length or offset");
+            assert!(
+                err.contains(&format!("negative length ({length}) or offset ({offset})")),
+                "{err}"
+            );
+        }
+    }
+}
