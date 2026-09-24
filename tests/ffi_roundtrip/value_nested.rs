@@ -54,3 +54,47 @@ fn passing_the_container_type_by_mistake_is_still_explained() {
         .expect_err("a BIGINT does not cast to BIGINT[2]");
     assert!(err.to_string().contains("element"), "{err}");
 }
+
+/// `list_items`, `map_len`, `map_key` and `map_value` call `DuckDB` directly,
+/// so the unit-test mutation gate excludes them (`.cargo/mutants.toml`); this
+/// is the test that exercises them: every item in order, each key and value
+/// at its index, and `None` one past the end.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn list_items_and_map_entries_read_back_in_order() {
+    let _fx = Fixture::open();
+    let bigint = LogicalType::new(TypeId::BigInt);
+    let list = Value::list_value(
+        &bigint,
+        &[Value::bigint(10), Value::bigint(20), Value::bigint(30)],
+    )
+    .expect("[10, 20, 30]");
+    let items: Vec<Option<i64>> = list.list_items().iter().map(Value::as_i64).collect();
+    assert_eq!(items, [Some(10), Some(20), Some(30)]);
+    assert!(list.list_child(3).is_none(), "one past the end");
+
+    let map = Value::map(
+        &LogicalType::map(TypeId::Varchar, TypeId::BigInt),
+        &[Value::varchar("a"), Value::varchar("b")],
+        &[Value::bigint(1), Value::bigint(2)],
+    )
+    .expect("MAP {a: 1, b: 2}");
+    assert_eq!(map.map_len(), 2);
+    let entry = |i: usize| {
+        (
+            map.map_key(i).and_then(|k| k.as_str().ok()),
+            map.map_value(i).and_then(|v| v.as_i64()),
+        )
+    };
+    assert_eq!(entry(0), (Some("a".to_owned()), Some(1)));
+    assert_eq!(entry(1), (Some("b".to_owned()), Some(2)));
+    assert!(
+        map.map_key(2).is_none() && map.map_value(2).is_none(),
+        "one past the end"
+    );
+
+    // A non-list, non-map value has no items and no entries.
+    let scalar = Value::bigint(7);
+    assert!(scalar.list_items().is_empty());
+    assert_eq!(scalar.map_len(), 0);
+}
