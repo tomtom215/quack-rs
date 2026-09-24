@@ -298,3 +298,67 @@ fn a_shape_count_that_differs_from_the_column_count_is_refused() {
     let err = unsafe { check(&batch.raw, &[], 2048) }.expect_err("no shapes");
     assert!(err.contains("1 column(s) but 0 schema shape(s)"), "{err}");
 }
+
+/// A fixed-size list's NULLs (its own, or an enclosing struct's) are
+/// broadcast into its child's validity (`ArrowToDuckDBArray`); a `STRUCT`
+/// child passes that validity on to its fields as `parent_mask`, so a
+/// dictionary field of more than 2048 rows overflows the mask even though
+/// neither the struct nor the dictionary has a NULL of its own. A dictionary
+/// directly under the fixed-size list gets no `parent_mask` and is fine.
+#[test]
+fn fixed_list_nulls_reach_a_dictionary_through_a_struct() {
+    let dict_shape = Shape {
+        kind: Kind::Leaf,
+        children: vec![],
+        dictionary: Some(Box::new(leaf())),
+    };
+    let dict =
+        || Node::new(2200, 0, 0, vec![vec![], i32s(&vec![0; 2200])]).with_dictionary(ints(1, 0));
+    let fixed = |nulls, child: Box<Node>| {
+        let valid = if nulls == 0 { vec![] } else { bits(1100) };
+        Node::new(1100, 0, nulls, vec![valid]).with_children(vec![child])
+    };
+    let through_struct = of(
+        Kind::FixedList(2),
+        vec![of(Kind::Struct, vec![dict_shape.clone()])],
+    );
+    let strukt = || Node::new(2200, 0, 0, vec![vec![]]).with_children(vec![dict()]);
+    assert_eq!(
+        check_column(1100, fixed(0, strukt()), through_struct.clone()),
+        Ok(())
+    );
+    let err = check_column(1100, fixed(1, strukt()), through_struct).expect_err("broadcast");
+    assert!(err.contains("2048-row mask"), "{err}");
+    let direct = of(Kind::FixedList(2), vec![dict_shape]);
+    assert_eq!(check_column(1100, fixed(1, dict()), direct), Ok(()));
+}
+
+/// `null_count = -1` ("not computed") makes `GetValidityMask` copy the
+/// bitmap (it tests `!= 0`) while the dictionary path's `CanContainNull`
+/// tests `> 0` and ignores it: the NULL rows' indices are used as values.
+/// A union has no validity bitmap, so any nonzero `null_count` makes `DuckDB`
+/// read its type ids as one.
+#[test]
+fn an_unknown_null_count_where_duckdb_disagrees_with_itself_is_refused() {
+    let dict_shape = Shape {
+        kind: Kind::Leaf,
+        children: vec![],
+        dictionary: Some(Box::new(leaf())),
+    };
+    let dict = |nulls| {
+        Node::new(3, 0, nulls, vec![vec![0b101], i32s(&[0, 7, 1])]).with_dictionary(ints(2, 0))
+    };
+    assert_eq!(check_column(3, dict(1), dict_shape.clone()), Ok(()));
+    let err = check_column(3, dict(-1), dict_shape).expect_err("unknown dictionary nulls");
+    assert!(err.contains("null_count -1"), "{err}");
+
+    let shape = of(Kind::SparseUnion, vec![leaf(), leaf()]);
+    let union = |nulls| {
+        Node::new(2, 0, nulls, vec![vec![0, 0]]).with_children(vec![ints(2, 0), ints(2, 0)])
+    };
+    assert_eq!(check_column(2, union(0), shape.clone()), Ok(()));
+    for nulls in [-1, 1] {
+        let err = check_column(2, union(nulls), shape.clone()).expect_err("union null count");
+        assert!(err.contains("type ids"), "{nulls}: {err}");
+    }
+}

@@ -35,7 +35,10 @@
 //! - a list view scans `sum(sizes)` child elements from its lowest offset,
 //!   which reads past the child when views overlap or leave gaps (item 27);
 //! - a sparse union's type codes are used as member indices, ignoring the
-//!   `+us:` code list (item 28).
+//!   `+us:` code list (item 28);
+//! - `null_count = -1` ("not computed") makes a dictionary's NULL rows
+//!   import as values, and any nonzero `null_count` on a sparse union makes
+//!   its type ids read as validity (items 31 and 32).
 //!
 //! Each is refused with the node it concerns. The walk mirrors `DuckDB`'s
 //! calls: [`Ctx`] carries what `DuckDB` passes to a node and where Arrow says
@@ -151,6 +154,10 @@ pub(super) struct Ctx {
     /// Whether an enclosing struct's validity mask reaches the node
     /// (`parent_mask` not all valid).
     pub struct_nulls: bool,
+    /// Whether an enclosing fixed-size list's NULLs were broadcast into the
+    /// node's own validity (`ArrowToDuckDBArray`). Only a `STRUCT` passes its
+    /// validity on, so only a `STRUCT` reads this.
+    pub broadcast_nulls: bool,
     pub route: Route,
 }
 
@@ -164,6 +171,7 @@ impl Ctx {
             inherited: 0,
             size: rows,
             struct_nulls: false,
+            broadcast_nulls: false,
             route: Route::Physical,
         }
     }
@@ -368,6 +376,17 @@ unsafe fn check_node(
         }
         // SAFETY: `node` is a valid array.
         let own_nulls = unsafe { copies_validity(node) };
+        // `GetValidityMask` copies a bitmap when `null_count != 0`, but
+        // `CanContainNull` (which decides whether the indices consult it)
+        // tests `null_count > 0`.
+        if own_nulls && node.null_count < 0 {
+            return Err(format!(
+                "a dictionary-encoded array with null_count {} (not computed) would have its \
+                 NULL rows imported as values: DuckDB builds the selection without its \
+                 validity. Set null_count to the number of NULLs",
+                node.null_count
+            ));
+        }
         // `GetValidityMask` is passed `parent_offset` but not `nested_offset`.
         if own_nulls && ctx.size > 0 && node.offset + ctx.parent != ctx.arrow_start(node.offset) {
             return Err(format!(
@@ -403,6 +422,16 @@ unsafe fn check_node(
         // SAFETY: the dictionary conforms to `values`.
         return unsafe { check_node(dict, values, dict_ctx, limit) }
             .map_err(|e| format!("dictionary: {e}"));
+    }
+
+    // A union has no validity bitmap; with any nonzero `null_count`,
+    // `GetValidityMask` reads a sparse union's type ids (its buffer 0) as one.
+    if matches!(shape.kind, Kind::SparseUnion | Kind::RecodedUnion) && node.null_count != 0 {
+        return Err(format!(
+            "a union with null_count {} would have its type ids read as a validity bitmap \
+             (a union has none, so its null_count must be 0)",
+            node.null_count
+        ));
     }
 
     // Union members that are run-end encoded convert from row 0 too.
@@ -441,7 +470,7 @@ unsafe fn check_node(
     match shape.kind {
         Kind::Leaf | Kind::Null => Ok(()),
         Kind::Struct => {
-            let mask = ctx.struct_nulls || has_validity;
+            let mask = ctx.struct_nulls || ctx.broadcast_nulls || has_validity;
             for (i, s) in shape.children.iter().enumerate() {
                 let c = Ctx {
                     nested: ctx.nested,
@@ -450,6 +479,7 @@ unsafe fn check_node(
                     inherited: arrow,
                     size: ctx.size,
                     struct_nulls: mask,
+                    broadcast_nulls: false,
                     route: Route::Physical,
                 };
                 // SAFETY: the child conforms to `s`.
@@ -495,6 +525,7 @@ unsafe fn check_node(
                 inherited: first,
                 size: total,
                 struct_nulls: false,
+                broadcast_nulls: false,
                 route: if empty { Route::Plain } else { Route::Physical },
             };
             // SAFETY: the child conforms to the list's child shape.
@@ -515,6 +546,9 @@ unsafe fn check_node(
                 inherited: arrow.checked_mul(n).ok_or("child offset out of range")?,
                 size: total,
                 struct_nulls: false,
+                // Its own NULLs and an enclosing struct's are broadcast into
+                // the child's validity.
+                broadcast_nulls: ctx.struct_nulls || ctx.broadcast_nulls || has_validity,
                 route: if empty {
                     Route::Plain
                 } else {
@@ -534,6 +568,7 @@ unsafe fn check_node(
                     inherited: arrow,
                     size: ctx.size,
                     struct_nulls: false,
+                    broadcast_nulls: false,
                     route: Route::UnionMember,
                 };
                 // SAFETY: the member conforms to `s`.

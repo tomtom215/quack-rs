@@ -443,7 +443,7 @@ in each section below.
 - `LESSONS.md` and the book's pitfall catalogue gained L15 (`combine` must
   leave its source states unchanged) and L16 (a valid Arrow array is not
   always one `DuckDB` imports correctly): 28 documented pitfalls.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 30, and item 16 gained
+- `docs/upstream-duckdb-reports.md` gained items 20 to 32, and item 16 gained
   a `HUGEINT` reproducer.
 
 #### Fourth audit
@@ -928,6 +928,15 @@ in each section below.
   aborted with glibc's `corrupted size vs. prev_size`. Each layout is
   refused, naming the node, and the neighbouring layouts `DuckDB` does import
   correctly are still accepted (`tests/ffi_roundtrip/arrow_layout.rs`).
+- **`data_chunk_from_arrow` accepted three more layouts `DuckDB` imports
+  wrongly**, found by the fifth audit's review of the new layout walker: a
+  fixed-size list with NULLs whose child is a `STRUCT` with a dictionary
+  field of more than 2048 rows (the list's NULLs are broadcast into the
+  struct and reach the 2048-row mask of item 25; valgrind reports 156
+  invalid accesses in `SetInvalid` past the 256-byte mask on 1.5.5); a dictionary with `null_count = -1`, whose NULL rows came back as
+  values (item 31); and a sparse union with a nonzero `null_count`, whose
+  type ids were read as validity, so every row came back NULL (item 32).
+  Each is refused.
 - **A null-typed field below the top level of an imported Arrow column read
   as valid** after its first row: `DuckDB` imports it as a constant vector,
   which the readers index as flat. The column is now flattened whenever its

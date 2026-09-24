@@ -608,3 +608,60 @@ fn null_type_children_read_null_in_every_row() {
         assert!(!unsafe { field.is_valid(row) }, "row {row}");
     }
 }
+
+/// `null_count = -1` ("not computed") where `DuckDB` reads it two ways: a
+/// dictionary's NULL rows came back as values (a garbage integer from past
+/// the dictionary), and a union's type ids were read as a validity bitmap
+/// (every row NULL). Both are refused; the same arrays with the true count
+/// import right (upstream items 31 and 32).
+#[test]
+fn an_unknown_null_count_duckdb_misreads_is_refused() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    let dict_schema = || dict_sch("i", sch("i", vec![]));
+    let dict = |nulls| {
+        let indices = arr(
+            3,
+            0,
+            nulls,
+            vec![vec![0b101], bytes(&[0_i32, 1, 1])],
+            vec![],
+        );
+        with_dict(indices, padded_dictionary())
+    };
+    refused(
+        import_one(&con, dict_schema(), dict(-1), 3),
+        "null_count -1",
+    );
+    assert_eq!(
+        imports(&con, dict_schema(), dict(1), 3, "INTEGER"),
+        ["5", "NULL", "6"]
+    );
+
+    let union_schema = || {
+        sch(
+            "+us:0,1",
+            vec![named("a", sch("i", vec![])), named("b", sch("i", vec![]))],
+        )
+    };
+    let union = |nulls| {
+        arr(
+            2,
+            0,
+            nulls,
+            vec![bytes(&[0_i8, 1])],
+            vec![ints(&[1, 2], 0), ints(&[3, 4], 0)],
+        )
+    };
+    refused(import_one(&con, union_schema(), union(-1), 2), "type ids");
+    assert_eq!(
+        imports(
+            &con,
+            union_schema(),
+            union(0),
+            2,
+            "UNION(a INTEGER, b INTEGER)"
+        ),
+        ["1", "4"]
+    );
+}

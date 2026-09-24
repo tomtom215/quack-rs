@@ -41,6 +41,8 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 28 | Arrow sparse-union import uses the type codes as member indices, ignoring the `+us:` code list | C program, below | non-identity union type codes refused |
 | 29 | Arrow dictionary import points NULL indices one past a zero-copied values buffer; copying the vector reads past it | C program, below (valgrind) | Safety clause on `data_chunk_from_arrow` |
 | 30 | Table-description column accessors abort on index `idx_t(-1)` from 1.5.0 | C program, below | that index refused before the call |
+| 31 | Arrow dictionary with `null_count = -1` imports its NULL rows as values | C program, below | refused |
+| 32 | Arrow sparse union with nonzero `null_count` has its type ids read as a validity bitmap | C program, below | refused |
 
 ## Before filing
 
@@ -3257,3 +3259,186 @@ Expected: an error state, as for index 5.
 quack-rs mitigation: `TableDescription::column_name`, `column_type` and
 `column_has_default` return `None` for `idx_t::MAX` without calling `DuckDB`
 (`tests/ffi_roundtrip/table_description.rs` aborted before the fix).
+
+---
+
+## 31. An Arrow dictionary with `null_count = -1` imports its NULL rows as values
+
+The Arrow C Data Interface lets a producer set `null_count` to -1 when it has
+not computed it. `GetValidityMask` (`arrow_conversion.cpp`) copies the
+validity bitmap whenever `null_count != 0`, but `CanContainNull`, which
+decides whether `ColumnArrowToDuckDBDictionary` builds the selection with
+the indices' validity, tests `null_count > 0`. With -1 the selection is built
+from the raw indices, so a NULL row's index, whatever the producer left in
+that slot, is looked up in the dictionary: out of range here, so the value
+comes from past the dictionary's buffer.
+
+Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5, x86_64
+Linux. Build: `gcc -I<libduckdb dir> item31.c -L<libduckdb dir> -lduckdb -o
+item31`; run `item31 dict 1`, `item31 dict -1`, `item31 union 0` and
+`item31 union -1` with `LD_LIBRARY_PATH=<libduckdb dir>`. The same program
+reproduces item 32.
+
+```c
+// duckdb_data_chunk_from_arrow with null_count = -1 ("not computed", which the
+// Arrow C Data Interface allows):
+//   dict  : a dictionary-encoded INTEGER column, indices [0, 7, 1] with row 1
+//           NULL (validity 0b101), dictionary [100, 200]. GetValidityMask
+//           copies the bitmap (it tests null_count != 0), but CanContainNull
+//           tests null_count > 0, so the selection is built from the raw
+//           indices: row 1 reads dictionary entry 7.
+//   union : a sparse union <a: INTEGER[], b: INTEGER> with type ids [0, 0].
+//           A union has no validity bitmap, but with null_count != 0
+//           GetValidityMask reads buffer 0 (the type ids) as one.
+// Usage: item31 dict|union <null_count>
+// Build: gcc -I<libduckdb dir> item31.c -L<libduckdb dir> -lduckdb -o item31
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+
+static void run(duckdb_connection con, struct ArrowSchema *col_schema, struct ArrowArray *col, int64_t rows,
+                const char *sql_type) {
+    struct ArrowSchema *scols[1] = {col_schema};
+    struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+    struct ArrowArray *cols[1] = {col};
+    const void *nb[1] = {NULL};
+    struct ArrowArray rb = {rows, 0, 0, 1, 1, nb, cols, NULL, noop_release, NULL};
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)&ps, &conv);
+    if (e1) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e1)); return; }
+    duckdb_data_chunk out = NULL;
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)&rb, conv, &out);
+    if (e2) { printf("from_arrow: %s\n", duckdb_error_data_message(e2)); return; }
+    char sql[128];
+    snprintf(sql, sizeof sql, "CREATE TABLE t(v %s)", sql_type);
+    duckdb_query(con, sql, NULL);
+    duckdb_appender ap; duckdb_appender_create(con, NULL, "t", &ap);
+    if (duckdb_append_data_chunk(ap, out) != DuckDBSuccess) { printf("append: %s\n", duckdb_appender_error(ap)); return; }
+    duckdb_appender_close(ap); duckdb_appender_destroy(&ap);
+    duckdb_result res; duckdb_query(con, "SELECT coalesce(v::VARCHAR, 'NULL') FROM t ORDER BY rowid", &res);
+    printf("rows:");
+    for (idx_t i = 0; i < duckdb_row_count(&res); i++) {
+        char *s = duckdb_value_varchar(&res, 0, i);
+        printf(" %s", s);
+        duckdb_free(s);
+    }
+    printf("\n");
+    duckdb_destroy_result(&res);
+    duckdb_destroy_data_chunk(&out);
+    duckdb_destroy_arrow_converted_schema(&conv);
+}
+
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    if (argc < 3) return 2;
+    int64_t null_count = atoll(argv[2]);
+    printf("Built with DuckDB %s, %s, null_count %lld\n", duckdb_library_version(), argv[1], (long long)null_count);
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    if (strcmp(argv[1], "dict") == 0) {
+        int32_t *values = malloc(2 * sizeof(int32_t));
+        values[0] = 100; values[1] = 200;
+        const void *vbuf[2] = {NULL, values};
+        struct ArrowArray dict = {2, 0, 0, 2, 0, vbuf, NULL, NULL, noop_release, NULL};
+        uint8_t valid = 0x05;
+        int32_t idx[3] = {0, 7, 1};
+        const void *ibuf[2] = {&valid, idx};
+        struct ArrowArray col = {3, null_count, 0, 2, 0, ibuf, NULL, &dict, noop_release, NULL};
+        struct ArrowSchema s_values = {"i", "v", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema s_col = {"i", "v", NULL, 2, 0, NULL, &s_values, noop_srelease, NULL};
+        run(con, &s_col, &col, 3, "INTEGER");
+        free(values);
+    } else {
+        // Member a: INTEGER[] with rows [5] and [6]; member b: INTEGER.
+        int32_t items[2] = {5, 6};
+        const void *ibuf[2] = {NULL, items};
+        struct ArrowArray item = {2, 0, 0, 2, 0, ibuf, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *item_children[1] = {&item};
+        int32_t offsets[3] = {0, 1, 2};
+        const void *lbuf[2] = {NULL, offsets};
+        struct ArrowArray list = {2, 0, 0, 2, 1, lbuf, item_children, NULL, noop_release, NULL};
+        int32_t bvals[2] = {0, 0};
+        const void *bbuf[2] = {NULL, bvals};
+        struct ArrowArray b = {2, 0, 0, 2, 0, bbuf, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *members[2] = {&list, &b};
+        int8_t type_ids[2] = {0, 0};
+        const void *ubuf[1] = {type_ids};
+        struct ArrowArray col = {2, null_count, 0, 1, 2, ubuf, members, NULL, noop_release, NULL};
+        struct ArrowSchema s_item = {"i", "item", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *s_item_children[1] = {&s_item};
+        struct ArrowSchema s_a = {"+l", "a", NULL, 2, 1, s_item_children, NULL, noop_srelease, NULL};
+        struct ArrowSchema s_b = {"i", "b", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *s_members[2] = {&s_a, &s_b};
+        struct ArrowSchema s_col = {"+us:0,1", "v", NULL, 2, 2, s_members, NULL, noop_srelease, NULL};
+        run(con, &s_col, &col, 2, "UNION(a INTEGER[], b INTEGER)");
+    }
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Observed. `item31 dict 1`, identical on all eight releases apart from the
+version line:
+
+```text
+Built with DuckDB v1.5.5, dict, null_count 1
+rows: 100 NULL 200
+```
+
+`item31 dict -1`: row 1 is never NULL; its value is whatever lies past the
+dictionary, and differs by release (`md5sum` puts v1.5.4 and v1.5.5 in one
+group, each other release alone):
+
+```text
+Built with DuckDB v1.4.4, dict, null_count -1
+rows: 100 22086 200
+```
+
+```text
+Built with DuckDB v1.5.5, dict, null_count -1
+rows: 100 0 200
+```
+
+Expected: `100 NULL 200`, as with the count set.
+
+quack-rs mitigation: `data_chunk_from_arrow` refuses a dictionary-encoded
+array whose `null_count` is negative while it has a validity buffer
+(`src/arrow/import_layout.rs`; `tests/ffi_roundtrip/arrow_layout.rs`).
+
+---
+
+## 32. An Arrow sparse union with a nonzero `null_count` has its type ids read as a validity bitmap
+
+A union array has no validity bitmap: a sparse union's buffer 0 holds its
+type ids. `GetValidityMask` (`arrow_conversion.cpp`) still copies buffer 0 as
+a bitmap whenever `null_count != 0`, including the -1 the C Data Interface
+allows for "not computed", and the union's rows take NULLs from its type
+ids.
+
+Reproducer: the program in item 31, modes `union 0` and `union -1`.
+
+Observed, identical on all eight releases apart from the version line
+(`md5sum`):
+
+```text
+Built with DuckDB v1.5.5, union, null_count 0
+rows: [5] [6]
+```
+
+```text
+Built with DuckDB v1.5.5, union, null_count -1
+rows: NULL NULL
+```
+
+Expected: `[5] [6]` in both.
+
+quack-rs mitigation: `data_chunk_from_arrow` refuses a union node whose
+`null_count` is not 0 (`src/arrow/import_layout.rs`;
+`tests/ffi_roundtrip/arrow_layout.rs`).
