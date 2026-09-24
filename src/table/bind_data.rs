@@ -80,6 +80,11 @@ impl<T: 'static> FfiBindData<T> {
     ///
     /// - `info` must be a valid `duckdb_bind_info` provided by `DuckDB` in a bind callback.
     /// - Must be called at most once per bind invocation; calling twice leaks the first allocation.
+    ///   The bind of a typed table function
+    ///   ([`TableFunctionBuilder::with_state`][crate::table::TableFunctionBuilder::with_state])
+    ///   sets the bind data itself after the closure returns, so a call from the
+    ///   closure (through [`BindInfo::as_raw`][crate::table::BindInfo::as_raw]) is
+    ///   the first of two.
     pub unsafe fn set(info: duckdb_bind_info, data: T)
     where
         T: Send + Sync,

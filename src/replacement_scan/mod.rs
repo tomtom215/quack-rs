@@ -266,15 +266,18 @@ impl ReplacementScanBuilder {
     /// - `callback` — your replacement scan function.
     /// - `extra_data` — user data passed as the third argument to `callback`.
     ///   Pass `std::ptr::null_mut()` if you need no extra data.
-    /// - `delete_callback` — called by `DuckDB` when the replacement scan is
-    ///   removed (e.g., database closed). Pass `None` if `extra_data` needs
-    ///   no special cleanup.
+    /// - `delete_callback` — called by `DuckDB` with `extra_data` when the
+    ///   replacement scan is removed (e.g., database closed). Pass `None` if
+    ///   `extra_data` needs no special cleanup. Unlike `DuckDB`'s other
+    ///   destructor slots, it is called even when `extra_data` is null.
     ///
     /// # Safety
     ///
     /// - `db` must be a valid, open `duckdb_database`.
     /// - `extra_data` must remain valid until `delete_callback` is called
     ///   (or until the database is closed if `delete_callback` is `None`).
+    /// - `delete_callback`, if set, must accept a null argument when
+    ///   `extra_data` is null.
     /// - `extra_data` must be safe to share between threads: `DuckDB` passes it
     ///   to `callback` from any connection's thread, concurrently, and calls
     ///   `delete_callback` from whichever thread closes the database. Treat it

@@ -3008,6 +3008,41 @@ fn a_replacement_scan_sees_only_the_unqualified_name() {
     );
 }
 
+/// Calls of `count_null_deletes` with a null pointer.
+static NULL_DELETES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe extern "C" fn count_null_deletes(data: *mut std::os::raw::c_void) {
+    if data.is_null() {
+        NULL_DELETES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Unlike every other C API destructor slot, a replacement scan's
+/// `delete_callback` runs even when its extra data is null
+/// (`~CAPIReplacementScanData` has no null check), so a callback that frees
+/// its argument must handle null.
+#[test]
+fn a_replacement_scans_delete_callback_runs_with_null_extra_data() {
+    use quack_rs::replacement_scan::ReplacementScanBuilder;
+
+    let before = NULL_DELETES.load(std::sync::atomic::Ordering::SeqCst);
+    let fx = Fixture::open();
+    // SAFETY: `db` is open; the callback accepts null.
+    unsafe {
+        ReplacementScanBuilder::register(
+            fx.db(),
+            record_names,
+            std::ptr::null_mut(),
+            Some(count_null_deletes),
+        );
+    }
+    drop(fx); // closes the database
+    assert_eq!(
+        NULL_DELETES.load(std::sync::atomic::Ordering::SeqCst),
+        before + 1
+    );
+}
+
 /// A panic inside a replacement scan must reach SQL as an error, not abort.
 #[test]
 fn a_panicking_replacement_scan_becomes_a_sql_error() {

@@ -45,6 +45,9 @@ unsafe {
 > **Note:** Replacement scans are registered on a **database** handle
 > (`duckdb_database`), not a connection. Register them before opening connections.
 
+A raw `delete_callback` must accept a null argument: unlike DuckDB's other
+destructor slots, it is called with `extra_data` even when that is null.
+
 ## Callback signature
 
 The raw callback receives `duckdb_replacement_scan_info`, but you can wrap it

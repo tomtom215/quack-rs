@@ -482,6 +482,13 @@ in each section below.
   by failing each allocation in turn).
 - `ClientContext::config_option` documents that `DuckDB`'s function has no
   `try`, and why no built-in setting's getter throws through it in practice.
+- `FfiInitData::set` and `FfiLocalInitData::set` name the callback each must
+  be called from: both store through `duckdb_init_set_init_data`, so the
+  wrong one sets the other kind of init data, which the other `get` then
+  reads as the wrong type. `FfiBindData::set` says a typed table function's
+  bind sets the bind data itself. `ReplacementScanBuilder::register` says
+  `DuckDB` calls `delete_callback` even when `extra_data` is null, unlike its
+  other destructor slots (a new test observes the call).
 - `OwnedConnection`'s `Send` justification said `DuckDB` forbids concurrent
   use of one connection; it serialises it. The comment now gives the real
   reasons, and a test queries and drops a connection on another thread.
