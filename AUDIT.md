@@ -1289,4 +1289,58 @@ the width/scale check in `duckdb_create_decimal_type` (1.5.4).
 
 ### 9.6 How this pass was verified
 
-VERIFICATION_PLACEHOLDER
+The code is the eight commits from `49c669a` to `409dfc4` on top of `52dc2fd`;
+the commit after them adds this section. Local runs are x86-64 Linux against
+the prebuilt DuckDB 1.5.5 unless stated.
+
+- **Tests, at `409dfc4`:** with `bundled-test-prebuilt,duckdb-1-5-4`
+  (`--all-targets`), 955 library, 37 `append_metadata`, 225 end-to-end
+  (`tests/ffi_roundtrip`), 70 integration and 1 `secret_zeroize` test; 199
+  doctests with `duckdb-1-5-4` (3 ignored); with default features, 796 library
+  tests and 173 doctests (1 ignored).
+- **Lints:** `cargo fmt --check`; clippy `-D warnings` on default features,
+  `duckdb-1-5`, `duckdb-1-5-3`, `bundled-test-prebuilt`,
+  `bundled-test-prebuilt,duckdb-1-5` and `bundled-test-prebuilt,duckdb-1-5-4`;
+  beta clippy (1.99) on CI's two configurations. The first push (`49c669a`)
+  failed CI on three clippy lints and one new beta lint: the local clippy run
+  on record predated the last edits. `1278c56` and `44701bb` fix them.
+- **CI:** all 47 jobs of the CI workflow passed at `409dfc4` (run 563), as
+  they had at `963fd9e`; the three commits after it change only test code,
+  `.cargo/mutants.toml` and this file. The 47 jobs include the end-to-end
+  suite against DuckDB 1.4.4 (146 tests) and 1.5.0 (202), each with 70
+  integration tests; DuckDB built from source with `bundled-test` on Linux,
+  macOS and Windows; Miri over the library (882 passed, 1 ignored);
+  LeakSanitizer and AddressSanitizer; hello-ext on three platforms and its
+  load tests on 1.4.4, 1.5.0, 1.5.5 and the latest release; the scaffold
+  end-to-end job; both ABI guards; MSRV; the dependency floor; the book;
+  clippy on beta.
+- **Mutation testing,** CI's incremental invocation (`--features duckdb-1-5-4
+  --cargo-arg=--lib`, config exclusions re-applied, `--timeout 120 --jobs 4`,
+  cargo-mutants 27.1.0). On the 80 changed `src` files of `49c669a` (run on
+  its tree less one comment edit): 975 mutants, 732 caught, 171 unviable, 0
+  timeouts, **72 missed** (9.2). After the fixes, on the ten files involved:
+  356 mutants, 286 caught, 51 unviable, 19 missed: two date checks the new
+  table did not yet reach (rows were added, and the test was shown to fail
+  under each mutant) and the 17 that need a live `DuckDB`. Those 17 run
+  against `tests/ffi_roundtrip` with libduckdb 1.5.5: 16 caught (10 by the
+  abort the guard prevents, 6 by assertions), 1 missed and then killed by the
+  `NULL` rendering test; `.cargo/mutants.toml` excludes them from the `--lib`
+  gate with that evidence. Finally the whole incremental job replayed at
+  `ac13445` (source identical at `409dfc4`), changed-file detection and
+  `scripts/mutants-report.sh` included: 82 files, 1,032 mutants, 858 caught,
+  174 unviable, **0 missed**, 0 timeouts, score 100%. No mutant log contains
+  the `rustc` probe failure of 8.4.
+- **`description.yml` reader:** the YAML 1.1 matcher agreed with `PyYAML`
+  6.0.1 on 231,758 generated strings (0 differences); 123 values are now
+  pinned in the suite. The reader's output for 169 generated documents and the
+  346 published descriptors is byte-identical before and after the
+  `parse_value` change (`6d0c062` vs `963fd9e`), and all 346 agree with
+  `PyYAML`.
+- **Earlier in the pass, on the fixes themselves:** each regression test was
+  shown failing without its fix; hello-ext passed all 31 README statements on
+  DuckDB 1.4.4, 1.5.0 and 1.5.5; the scaffold end-to-end job and both ABI
+  guard jobs were run locally in full; `scripts/check-abi-table.py` over 18
+  releases; the book built with mdBook 0.4.40, its links checked, 239 blocks
+  compiled (4 ignored). Miri over the library found the test-code violation in
+  9.2; after its fix the `aggregate::state` tests, the new adjacent-slot test
+  included, pass under Miri.
