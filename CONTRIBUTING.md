@@ -416,7 +416,11 @@ quack-rs/
 │   │   ├── in_memory_db.rs            # In-memory `DuckDB` helper for integration tests
 │   │   ├── mock_registrar.rs          # [`MockRegistrar`] — a [`Registrar`] implementation for testing
 │   │   ├── mock_vector.rs             # In-memory mock types for `DuckDB` vectors
-│   │   └── mod.rs                     # Test utilities for `DuckDB` extension development
+│   │   ├── mod.rs                     # Test utilities for `DuckDB` extension development
+│   │   └── mock_vector/
+│   │       ├── reader.rs              # `MockVectorReader` — an in-memory mock input vector
+│   │       ├── tests.rs               # Unit tests
+│   │       └── writer.rs              # `MockVectorWriter` — an in-memory mock output vector
 │   ├── types/
 │   │   ├── logical_type.rs            # RAII wrapper for `duckdb_logical_type`
 │   │   ├── mod.rs                     # `DuckDB` type system wrappers
