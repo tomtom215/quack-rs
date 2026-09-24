@@ -887,8 +887,9 @@ Reviewed on `claude/busy-lamport-19hxye`, starting from `main` at `82b96fc`
 x86-64 Linux, `libduckdb-sys 1.10505.0`) with the v1.5.5 source tree as the
 reference, the 1.4.4 and 1.5.0 CLIs for cross-version checks, and DuckDB `main`
 at `30c64e17` (2026-09-23, source only, not built) for the upstream checks.
-Nothing from this pass has been published: 0.17.0 was never tagged, crates.io's
-latest is 0.16.0, and every entry below lands in the unreleased 0.18.0.
+Nothing from this pass has been published. 0.17.0 was prepared but never
+tagged or published (crates.io's latest is 0.16.0); it has been folded into the
+unreleased 0.18.0, where every entry below also lands.
 
 ### 8.1 Method
 

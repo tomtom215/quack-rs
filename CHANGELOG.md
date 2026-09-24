@@ -129,7 +129,8 @@ Fixed).
   first. `data_chunk_from_arrow` also returns `InvalidInput` for a negative
   length or offset, a null `children` pointer, a null child, and a child
   shorter than its parent's offset + length, each of which DuckDB would
-  dereference or read out of bounds. Its Safety section requires that the array
+  dereference or read out of bounds, and for a zero-row array, which DuckDB
+  passes on as a zero-byte allocation that a debug build asserts against. Its Safety section requires that the array
   conform to the schema — nothing in an Arrow array records its type, so a child
   whose buffers do not match the type its schema declares cannot be checked —
   and documents that an absurd array length still aborts the process, because
@@ -381,27 +382,6 @@ Fixed).
   counter: `extra_info` carries it in the allocation, and `arrow` carries it in
   the record's own `private_data`, which is what that field is for. Verified
   with 100 repeat runs, zero failures.
-
-- **`data_chunk_from_arrow` aborted a debug `DuckDB` on a zero-row array.**
-  `duckdb_data_chunk_from_arrow` passes `arrow_array->length` straight through
-  as the chunk's *capacity* (`dchunk->Initialize(alloc, types, length)`), and
-  `VectorCacheBuffer` turns a capacity of zero into
-  `Allocator::AllocateData(0)`, whose `D_ASSERT(size > 0)` aborts a debug build.
-  A release build allocates nothing and carries on — so whether an empty batch
-  worked depended on how the engine happened to be compiled. Zero-row arrays are
-  now refused with a message that says why. Caught by CI's coverage job, which
-  compiles DuckDB from source in debug; every local run linked a release
-  prebuilt libduckdb, where the assertion does not exist.
-
-- **`ExtraInfo` silently removed `RefUnwindSafe` from four public builders.**
-  Its `transferred` flag was a `Cell<bool>`, and `Cell` contains an
-  `UnsafeCell`, which is `!RefUnwindSafe` — so `ScalarFunctionBuilder`,
-  `TableFunctionBuilder`, `AggregateFunctionBuilder` and `CopyFunctionBuilder`
-  all lost the auto trait. It is an `AtomicBool` now, which offers the same
-  shared-reference mutation and restores the trait. (`RefUnwindSafe` only — the
-  same `extra_info` field is also one of the two that make `CopyFunctionBuilder`
-  `!Send + !Sync`, which is a separate and deliberate break; see the entry
-  above.)
 
 - **128-bit splitting and reassembly was open-coded at eight call sites.**
   `Value::as_i128` / `as_u128` / `as_uuid` / `as_decimal` / `uuid` and
