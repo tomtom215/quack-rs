@@ -71,9 +71,10 @@ struct NullState {
     ///
     /// `duckdb_vector_ensure_validity_writable` allocates the mask on first use
     /// and is a no-op afterwards, and the resulting pointer is stable until the
-    /// vector's buffers are reallocated — which only a `reserve` on the parent
-    /// of a `LIST`/`MAP` child does, and which `from_vector`'s contract rules
-    /// out while the writer is in use. Caching it turns "two FFI calls per NULL" into "two
+    /// vector's buffers are reallocated — which only a `reserve` on a `LIST` or
+    /// `MAP` whose child holds this vector (directly, or through STRUCT fields
+    /// and ARRAY elements) does, and which `from_vector`'s contract rules out
+    /// while the writer is in use. Caching it turns "two FFI calls per NULL" into "two
     /// FFI calls per vector", which matters when a column is mostly NULL: a full
     /// 2048-row vector went from 4096 calls to 2.
     validity: *mut u64,
@@ -111,10 +112,13 @@ impl VectorWriter {
     /// # Safety
     ///
     /// `vector` must be a valid, writable `duckdb_vector`. The vector must not be
-    /// destroyed while this writer is live. If `vector` is the child of a `LIST`
-    /// or `MAP` vector, the writer must not be used after that parent is grown
-    /// with a `reserve`: growing reallocates the child's data and validity
-    /// buffers, and the writer caches pointers to both.
+    /// destroyed while this writer is live. If `vector` lies inside the child
+    /// of a `LIST` or `MAP` vector — is that child, or a STRUCT field or ARRAY
+    /// element vector below it with no other `LIST` or `MAP` in between — the
+    /// writer must not be used after that `LIST` or `MAP` is grown with a
+    /// `reserve`: growing reallocates the data and validity buffers of every
+    /// such vector, and the writer caches pointers to both. (Measured by
+    /// `tests/ffi_roundtrip/nested_reserve.rs`.)
     pub unsafe fn from_vector(vector: duckdb_vector) -> Self {
         // SAFETY: caller guarantees vector is valid.
         let data = unsafe { duckdb_vector_get_data(vector) }.cast::<u8>();

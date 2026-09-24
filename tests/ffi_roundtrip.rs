@@ -5948,3 +5948,7 @@ mod temporal_binds;
 
 #[path = "ffi_roundtrip/mock_parity.rs"]
 mod mock_parity;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/nested_reserve.rs"]
+mod nested_reserve;

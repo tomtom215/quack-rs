@@ -1024,6 +1024,13 @@ in each section below.
   return type. Its module doc said these checks need `DuckDB`; they do not.
   Each builder now runs one sequence of type checks, with `DuckDB` when
   registering and without it in the mock, so the messages are the same.
+- **Four writer contracts named only a `LIST`/`MAP` vector's direct child**
+  as moved by a `reserve` on that `LIST`/`MAP`. `VectorWriter::from_vector`,
+  `StructWriter::new`, `StructVector::field_writer` and
+  `ValidityBitmap::ensure_writable` now say the same about every STRUCT field
+  and ARRAY element vector below that child, down to the next `LIST` or `MAP`:
+  `DuckDB` 1.5.5 reallocates all of their data and validity buffers
+  (`tests/ffi_roundtrip/nested_reserve.rs` measures which move).
 
 #### Fourth audit
 

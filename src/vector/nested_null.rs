@@ -81,8 +81,11 @@ impl NullTarget {
 /// Collects every descendant mask that `FlatVector::SetNull` would clear.
 ///
 /// Each mask is made writable first, so the returned pointers are non-null
-/// and stable for the vector's lifetime (a `LIST`/`MAP` child is never
-/// collected, so a later `reserve` cannot move any of them).
+/// and stable until a `reserve` on a `LIST` or `MAP` whose child holds
+/// `vector` (directly, or through STRUCT fields and ARRAY elements) moves
+/// them; the owning writer's contract rules that out. A `LIST`/`MAP` child
+/// below `vector` is never collected, so reserving one of those cannot move
+/// any of them.
 ///
 /// # Safety
 ///

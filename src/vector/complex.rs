@@ -110,6 +110,11 @@ impl StructVector {
     ///
     /// - `vector` must be a valid `DuckDB` STRUCT vector.
     /// - `field_idx` must be a valid field index.
+    /// - If `vector` lies inside the child of a `LIST` or `MAP` vector — is
+    ///   that child, or a STRUCT field or ARRAY element vector below it with no
+    ///   other `LIST` or `MAP` in between — the writer must not be used after
+    ///   that `LIST` or `MAP` is grown with a `reserve`, as for
+    ///   [`VectorWriter::from_vector`].
     pub unsafe fn field_writer(vector: duckdb_vector, field_idx: usize) -> VectorWriter {
         // SAFETY: `StructVector::get_child` needs a live STRUCT vector and
         // `field_idx` < its field count; those are this function's first two

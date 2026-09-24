@@ -58,6 +58,12 @@ impl StructWriter {
     /// - `vector` must be a valid, writable `DuckDB` STRUCT vector.
     /// - `field_count` must match the number of fields in the STRUCT type.
     /// - The vector must remain valid for the lifetime of this writer.
+    /// - If `vector` lies inside the child of a `LIST` or `MAP` vector — is
+    ///   that child, or a STRUCT field or ARRAY element vector below it with no
+    ///   other `LIST` or `MAP` in between — the writer must not be used after
+    ///   that `LIST` or `MAP` is grown with a `reserve`: growing reallocates
+    ///   the fields' data and validity buffers, and the writer caches pointers
+    ///   to them.
     pub unsafe fn new(vector: duckdb_vector, field_count: usize) -> Self {
         let mut fields = Vec::with_capacity(field_count);
         for idx in 0..field_count {
