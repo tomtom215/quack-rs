@@ -499,7 +499,7 @@ requires `Sync` for the same reason.
 **Status**: Fixed in quack-rs: `data_chunk_from_arrow` walks the array with its
 schema and refuses the layouts `DuckDB` 1.4.4 to 1.5.5 mishandles
 (`src/arrow/import_layout.rs`, `tests/ffi_roundtrip/arrow_layout.rs`;
-`docs/upstream-duckdb-reports.md`, items 9 and 24 to 29).
+`docs/upstream-duckdb-reports.md`, items 9, 24 to 29 and 31 to 33).
 
 **Symptom**: an array that arrow-rs or another producer built, valid by the
 Arrow specification, imports with values from the wrong rows, reads past a
@@ -515,6 +515,50 @@ union type ids and nested dictionaries are mishandled too.
 **Fix**: never assume a producer's layout matches the one `DuckDB` writes.
 Test an importer with hand-built arrays that put offsets at every level, and
 refuse what the engine cannot import rather than return wrong values.
+
+---
+
+## L17: A `COPY … FROM` reader must not declare result columns
+
+**Status**: Refused for typed table functions (their bind fails with a
+message); documented for raw ones on `CopyFunctionBuilder::copy_from` and
+`BindInfo::add_result_column`. Pinned by
+`tests/ffi_roundtrip/copy_from_columns.rs`;
+`docs/upstream-duckdb-reports.md`, item 37.
+
+**Symptom**: on a `DuckDB` built with assertions, `COPY t FROM …` fails with
+`chunk.ColumnCount() == types.size()` and the database is invalidated. A
+release build silently drops the extra column, so the bug hides in testing.
+
+**Root cause**: `CCopyFromBind` hands the reader's bind the `INSERT`'s own list
+of expected types as its result types, and `duckdb_bind_add_result_column`
+appends to that list, so every chunk the `INSERT` receives is wider than the
+table. `duckdb.h` says the reader "should not" declare columns; nothing
+enforces it.
+
+**Fix**: in a `COPY … FROM` reader's bind, read the target's columns with
+`BindInfo::result_column_count` and its siblings, and declare none.
+
+---
+
+## L18: A `LIST` reserve moves every buffer below its child
+
+**Status**: Documented in the `# Safety` sections of `VectorWriter::from_vector`,
+`StructWriter::new`, `StructVector::field_writer` and
+`ValidityBitmap::ensure_writable`; measured by
+`tests/ffi_roundtrip/nested_reserve.rs`.
+
+**Symptom**: a writer on a STRUCT field of a list's elements writes into freed
+memory after the list is grown, although it was never a direct child of the
+list.
+
+**Root cause**: `duckdb_list_vector_reserve` resizes the child with
+`Vector::Resize`, which reallocates the data and validity buffers of the child
+and of every STRUCT field and ARRAY element vector below it, down to the next
+`LIST` (whose child has its own buffer). Writers cache both pointers.
+
+**Fix**: fetch every writer and bitmap below a list's child again after each
+`reserve` on that list (a `ListBuilder` row that grows it counts).
 
 ---
 
@@ -872,6 +916,10 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 | L12: aggregate `update` sees NULL rows | Documented | Skip rows where `is_valid` is false |
 | L13: running window without a destructor | Prevented | Every aggregate builder registers a destructor |
 | L14: C API differs across releases | Prevented | Wrappers that rely on newer behaviour check the engine version or check in Rust |
+| L15: `combine` consumes its source | Documented | Read the source states; copy what the target needs |
+| L16: Arrow layouts DuckDB misimports | Prevented | `data_chunk_from_arrow` refuses them |
+| L17: `COPY … FROM` reader declares columns | Prevented (typed) / Documented | Read the target's columns; declare none |
+| L18: `LIST` reserve moves nested buffers | Documented | Fetch writers again after each reserve |
 | P1: lib name mismatch | Scaffold | Set `[lib] name` in `Cargo.toml` |
 | P2: API version string | Constant | Use `DUCKDB_API_VERSION` |
 | P3: unit tests insufficient | Documented | Write SQLLogicTest E2E tests |

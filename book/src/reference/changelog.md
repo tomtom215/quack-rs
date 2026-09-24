@@ -472,8 +472,11 @@ in each section below.
   1.5.2 to 1.5.5 are byte-identical); it was not changed by middle insertions
   "in four of the last four" versions (two).
 - `LESSONS.md` and the book's pitfall catalogue gained L15 (`combine` must
-  leave its source states unchanged) and L16 (a valid Arrow array is not
-  always one `DuckDB` imports correctly): 28 documented pitfalls.
+  leave its source states unchanged), L16 (a valid Arrow array is not
+  always one `DuckDB` imports correctly), L17 (a `COPY … FROM` reader must not
+  declare result columns) and L18 (a `LIST` reserve moves every buffer below
+  its child): 30 documented pitfalls. The README's and the book's summary
+  tables, which stopped at L14, list all 30.
 - `DestroyFn`, `FfiState` and the book's known limitations document that
   `DuckDB` never destroys one aggregate state per row of a window frame with
   `EXCLUDE` (item 35: 5000 of a 5000-row window, every release from 1.4.4).

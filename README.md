@@ -88,7 +88,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **28 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **30 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```text
@@ -452,7 +452,11 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L11** | C API aggregates under `agg(x) OVER ()` / `agg(x ORDER BY y)` | Segfault or memory corruption in `update` | A `DuckDB` defect (`CAPIAggregateUpdate` does not flatten the state vector), reported as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109); documented, cannot be prevented from an extension |
 | **L12** | Aggregate `update` receives NULL rows under `DEFAULT_NULL_HANDLING` | A wrong answer when the input has NULLs: `update` reads whatever the NULL slot holds | Skip rows where `is_valid` is false in `update`, whatever the null handling; documented on `NullHandling` and the aggregate builders |
 | **L13** | A C API aggregate without a destructor in a running window | A wrong running value, no error: `DuckDB` streams the window and re-reads the first row | Every aggregate builder registers a destructor (a no-op when none is given) |
-| **L14** | The C API differs across the releases one build loads into | An abort, a bad type or an unexplained registration failure on an older release that loads the same binary | `argument`, `try_decimal`, `try_new` and the collision check do not rely on newer behaviour; CI runs the suite against DuckDB 1.4.4 and 1.5.0 |
+| **L14** | The C API differs across the releases one build loads into | An abort, a bad type or an unexplained registration failure on an older release that loads the same binary | `argument`, `try_decimal`, `try_new` and the collision check do not rely on newer behaviour; CI runs the suite against DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4 and 1.5.5 |
+| **L15** | `combine` consumes its source states | Right in `GROUP BY`, wrong in a sliding window | Documented on `CombineFn`; `AggregateState` requires `Sync` |
+| **L16** | Valid Arrow layouts `DuckDB` misimports | Wrong rows, reads past a buffer, heap corruption | `data_chunk_from_arrow` walks the array with its schema and refuses them |
+| **L17** | A `COPY … FROM` reader declares result columns | Database invalidated (assertion builds); column silently dropped (release) | Typed readers refused at bind; documented for raw binds |
+| **L18** | A `LIST` reserve moves every buffer below its child | Writes into freed memory through a cached writer | Documented in the writers' `# Safety` sections |
 
 ### Practical Pitfalls (P)
 
