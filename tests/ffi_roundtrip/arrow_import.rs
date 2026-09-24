@@ -393,7 +393,10 @@ fn a_dictionary_array_duckdb_would_overflow_on_is_refused() {
         .expect_err("a 4096-entry dictionary child with NULLs");
     assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
     let message = err.message().unwrap_or_default();
-    assert!(message.contains("4096 entries and nulls"), "{message}");
+    assert!(
+        message.contains("4096 rows that can hold NULLs"),
+        "{message}"
+    );
 }
 
 /// An Arrow null-type column imports as a *constant* NULL vector

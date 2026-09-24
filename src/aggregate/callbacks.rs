@@ -123,8 +123,20 @@ pub type UpdateFn = unsafe extern "C" fn(
 /// `T::default()`) and may have seen no `update` at all. All configuration
 /// fields must be copied from `source`, not just accumulated data values.
 ///
+/// # Leave `source` unchanged
+///
+/// Read the `source` states; do not modify them. A window's segment tree
+/// combines one of its shared node states into every frame that covers it,
+/// from several threads at once (`WindowSegmentTreePart::WindowSegmentValue`
+/// and `FlushStates`, `window_segment_tree.cpp`), so
+/// a `combine` that consumes its source is right for the first frame that
+/// reads it and wrong for the rest: a sum that moved its value out gave 4985
+/// of 5000 rows wrong over `ROWS BETWEEN 100 PRECEDING AND CURRENT ROW` in
+/// the fifth audit's regression test. Writing to a source another thread is
+/// reading is also a data race. Copy or clone what the target needs.
+///
 /// After `combine` returns, `DuckDB` may call [`DestroyFn`] on the `source`
-/// states, so move out of them rather than keeping pointers into them.
+/// states, so do not keep pointers into them either.
 pub type CombineFn = unsafe extern "C" fn(
     info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,

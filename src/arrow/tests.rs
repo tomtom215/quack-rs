@@ -335,10 +335,69 @@ fn debug_says_released_without_touching_the_other_fields() {
 }
 
 #[test]
-fn a_converted_schema_remembers_its_column_count() {
+fn a_converted_schema_remembers_its_column_count_and_shapes() {
+    use super::import_layout::Kind;
+
+    let strings: Vec<CString> = ["+s", "i", "+l", "+us:1,0", "u"]
+        .iter()
+        .map(|s| CString::new(*s).expect("no interior NUL"))
+        .collect();
+    let mut leaves = [
+        RawArrowSchema::empty(),
+        RawArrowSchema::empty(),
+        RawArrowSchema::empty(),
+    ];
+    leaves[0].format = strings[1].as_ptr();
+    leaves[1].format = strings[1].as_ptr();
+    leaves[2].format = strings[4].as_ptr();
+    // Every record in a live schema carries a release callback; one without
+    // reads as released.
+    for leaf in &mut leaves {
+        leaf.release = Some(count_schema_release);
+    }
+    let [item, member_a, member_b] = &mut leaves;
+    let mut list_children = [std::ptr::from_mut(item)];
+    let mut union_children = [std::ptr::from_mut(member_a), std::ptr::from_mut(member_b)];
+    let mut columns = [
+        RawArrowSchema::empty(),
+        RawArrowSchema::empty(),
+        RawArrowSchema::empty(),
+    ];
+    columns[0].format = strings[1].as_ptr();
+    columns[1].format = strings[2].as_ptr();
+    columns[1].n_children = 1;
+    columns[1].children = list_children.as_mut_ptr();
+    columns[2].format = strings[3].as_ptr();
+    columns[2].n_children = 2;
+    columns[2].children = union_children.as_mut_ptr();
+    for column in &mut columns {
+        column.release = Some(count_schema_release);
+    }
+    let [c0, c1, c2] = &mut columns;
+    let mut column_ptrs = [
+        std::ptr::from_mut(c0),
+        std::ptr::from_mut(c1),
+        std::ptr::from_mut(c2),
+    ];
+    let mut raw = RawArrowSchema::empty();
+    raw.format = strings[0].as_ptr();
+    raw.n_children = 3;
+    raw.children = column_ptrs.as_mut_ptr();
+    raw.release = Some(count_schema_release);
+    // SAFETY: `count_schema_release` frees nothing and nulls itself, and every
+    // pointer above targets a local declared before `root`.
+    let root = unsafe { ArrowSchema::from_raw(raw) };
+
     // SAFETY: a null handle is what `duckdb_destroy_arrow_converted_schema`
     // ignores, so this never calls into DuckDB.
-    let converted = unsafe { ArrowConvertedSchema::from_raw(ptr::null_mut(), 3) };
+    let converted = unsafe { ArrowConvertedSchema::from_raw(ptr::null_mut(), &root) };
     assert_eq!(converted.column_count(), 3);
+    let kinds: Vec<Kind> = converted.shapes().iter().map(|s| s.kind).collect();
+    assert_eq!(
+        kinds,
+        [Kind::Leaf, Kind::List { wide: false }, Kind::RecodedUnion]
+    );
+    assert_eq!(converted.shapes()[1].children[0].kind, Kind::Leaf);
+    assert_eq!(converted.shapes()[2].children.len(), 2);
     assert!(format!("{converted:?}").contains("column_count"));
 }

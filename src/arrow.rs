@@ -166,6 +166,9 @@
 mod array;
 mod convert;
 mod converted;
+mod export_check;
+mod import_check;
+mod import_layout;
 mod options;
 mod schema;
 #[cfg(test)]
@@ -291,7 +294,15 @@ pub struct ArrowArray(RawArrowArray);
 /// the source schema's `n_children` — which is exactly what
 /// `PopulateArrowTableSchema` iterates — lets [`data_chunk_from_arrow`] reject a
 /// mismatched array instead of reading past its children.
+///
+/// # Why it remembers the schema's shape
+///
+/// `duckdb_data_chunk_from_arrow` imports some valid layouts wrongly (see
+/// [`data_chunk_from_arrow`]), and the array alone does not say which type each
+/// node has. The converted schema keeps the formats of the schema it was built
+/// from, so the array can be checked against them before the import.
 pub struct ArrowConvertedSchema {
     raw: duckdb_arrow_converted_schema,
     column_count: usize,
+    shapes: Vec<import_layout::Shape>,
 }

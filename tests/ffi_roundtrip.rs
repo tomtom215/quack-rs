@@ -5902,8 +5902,14 @@ mod query_stream;
 mod value_nested;
 
 #[cfg(feature = "duckdb-1-5-4")]
+#[path = "ffi_roundtrip/arrow_export.rs"]
+mod arrow_export;
+#[cfg(feature = "duckdb-1-5-4")]
 #[path = "ffi_roundtrip/arrow_import.rs"]
 mod arrow_import;
+#[cfg(feature = "duckdb-1-5-4")]
+#[path = "ffi_roundtrip/arrow_layout.rs"]
+mod arrow_layout;
 
 #[path = "ffi_roundtrip/query_docs.rs"]
 mod query_docs;

@@ -204,6 +204,11 @@ quack-rs/
 │   │   ├── array.rs                   # `ArrowArray` — an owned Arrow C Data Interface array
 │   │   ├── convert.rs                 # The four conversions between `DuckDB` data chunks and the Arrow C Data Interface
 │   │   ├── converted.rs               # `ArrowConvertedSchema` — an Arrow schema translated into `DuckDB`'s own type descriptors
+│   │   ├── export_check.rs            # Values `DuckDB` would export as different values, found before the export
+│   │   ├── import_check.rs            # Structural checks on an imported array, and flattening what the readers cannot index
+│   │   ├── import_layout/
+│   │   │   └── tests.rs               # Unit tests
+│   │   ├── import_layout.rs           # Arrow layouts `DuckDB` imports wrongly, found by walking the array with its schema
 │   │   ├── options.rs                 # `ArrowOptions` — the Arrow production settings of a connection or a result
 │   │   ├── schema.rs                  # `ArrowSchema` — an owned Arrow C Data Interface schema
 │   │   └── tests.rs                   # Unit tests
@@ -333,6 +338,7 @@ quack-rs/
 │       └── writer.rs                  # Safe typed writing to `DuckDB` result vectors
 ├── tests/
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
+│   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
@@ -341,7 +347,9 @@ quack-rs/
 │       ├── agg_states.rs              # Every aggregate state is dropped, including the ones `DuckDB` moves
 │       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
+│       ├── arrow_export.rs            # `arrow::data_chunk_to_arrow` refuses values `DuckDB` would export wrongly
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
+│       ├── arrow_layout.rs            # Valid Arrow layouts `DuckDB` imports wrongly, refused, and their correct neighbours
 │       ├── bind_expressions.rs        # What a bind callback learns about its arguments from `Expression`
 │       ├── chunk_writer.rs            # `ChunkWriter` against a chunk `DuckDB` allocated
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder

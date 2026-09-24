@@ -166,6 +166,18 @@ impl ArrowSchema {
         // child lives as long as this schema does.
         Some(unsafe { &*child.cast::<Self>() })
     }
+
+    /// Borrows the dictionary (value) schema of a dictionary-encoded type, or
+    /// `None` for any other type or once released.
+    #[must_use]
+    pub(super) fn dictionary(&self) -> Option<&Self> {
+        if self.is_released() || self.0.dictionary.is_null() {
+            return None;
+        }
+        // SAFETY: as for `child`: `repr(transparent)`, and the dictionary lives
+        // as long as this schema does.
+        Some(unsafe { &*self.0.dictionary.cast::<Self>() })
+    }
 }
 
 impl Drop for ArrowSchema {

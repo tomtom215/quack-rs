@@ -413,7 +413,25 @@ in each section below.
   payload `DuckDB` can render; everything else (`VARIANT`, `GEOMETRY`, a type
   quack-rs does not know, and `ARRAY` / `UNION` values that could hold one)
   gets `UNRENDERABLE`. See Fixed.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 23.
+- **Breaking: `ArrowConvertedSchema::from_raw` takes the Arrow schema** the
+  handle was built from (`&ArrowSchema`) instead of a column count, and is no
+  longer `const`: `data_chunk_from_arrow` checks each array against that
+  schema's shape (see Fixed).
+- `data_chunk_to_arrow` refuses a chunk holding a value `DuckDB` would export
+  as a different value (see Fixed).
+- **Breaking: catalog lookups are refused in a catalog `DuckDB` does not
+  implement itself.** For a catalog a storage extension attaches,
+  `duckdb_catalog_get_entry` starts that extension's transaction and runs its
+  schema lookup with no `try`, so an exception there would abort the process.
+  `CatalogEntry::lookup` and `Catalog::get_entry` now return an error for any
+  catalog whose type is not `"duckdb"`. `DuckDB`'s own catalogs (the
+  database's, `temp` and `system`) all have that type and are unaffected.
+- `CombineFn` documents that `combine` must leave its source states
+  unchanged (see Fixed), and no longer advises moving out of them.
+- `Catalog::type_name` no longer gives `"system"` as an example type: the
+  `system` and `temp` catalogs are of type `"duckdb"`.
+- `docs/upstream-duckdb-reports.md` gained items 20 to 28, and item 16 gained
+  a `HUGEINT` reproducer.
 
 #### Fourth audit
 
@@ -864,6 +882,53 @@ in each section below.
   under `LIMIT 10` over 300,000 groups, 297,952 boxed `T`s leaked. A small
   `T` is now stored in `DuckDB`'s own state bytes, so it leaks nothing unless
   it owns heap memory itself.
+- **`data_chunk_to_arrow` exported different values without an error.** An
+  `INTERVAL` of more than `i64::MAX / 1000` microseconds wrapped when
+  `DuckDB` converted it to nanoseconds; a `UHUGEINT` of 2^127 or more came out
+  negative; a `HUGEINT` or `UHUGEINT` of 39 digits was exported as a
+  `decimal128(38, 0)` it does not fit. Each is now refused, at any nesting
+  depth; a `HUGEINT` is accepted when `arrow_lossless_conversion` exports it
+  as a 16-byte binary.
+- **`data_chunk_from_arrow` imported valid Arrow arrays from the wrong rows,
+  or read and wrote out of bounds.** `DuckDB` mishandles offsets below the
+  top level: a struct inside an offset struct or list, a union's members, a
+  run-end-encoded array's value validity, and a dictionary's validity under a
+  list. It also mishandles overlapping or gapped list views, dictionaries
+  whose values are dictionary-encoded, sparse unions whose type codes are not
+  `0, 1, …`, and a run-end-encoded array where it reads a plain one. A
+  dictionary-encoded array of more than 2048 rows under a struct with NULL rows
+  had its validity copied past a 2048-row heap mask; the regression test
+  aborted with glibc's `corrupted size vs. prev_size`. Each layout is
+  refused, naming the node, and the neighbouring layouts `DuckDB` does import
+  correctly are still accepted (`tests/ffi_roundtrip/arrow_layout.rs`).
+- **A null-typed field below the top level of an imported Arrow column read
+  as valid** after its first row: `DuckDB` imports it as a constant vector,
+  which the readers index as flat. The column is now flattened whenever its
+  type holds `NULL` at any depth, not only at the top.
+- **The `CombineFn` documentation advised a `combine` that gave wrong window
+  results.** It said to move out of the source states. A window's segment
+  tree combines one state into every frame that covers it, so a `combine`
+  that consumed its source gave 4985 of 5000 rows wrong over
+  `ROWS BETWEEN 100 PRECEDING AND CURRENT ROW` (pinned by
+  `tests/ffi_roundtrip/agg_window.rs`). It now says to leave the source
+  unchanged.
+- **A typed table function answered with the wrong column under projection
+  pushdown switched on after `build()`.** `build` refused pushdown switched
+  on before `with_state`, but not on the raw builder it returns, and
+  `SELECT b` then returned column `a`'s value. Registering such a builder
+  (and `MockRegistrar::register_table`) now fails.
+- **A `row` closure that panicked after its first value left the appender
+  unpoisoned**, so finishing the row by hand committed a row half written by
+  the closure that panicked. It is poisoned, as an error there poisons it.
+- **Dropping a `FileHandle` could abort the process** when the close threw:
+  `duckdb_destroy_file_handle` calls `Close()` with no `try`. Only an
+  extension's file system can throw there; `DuckDB`'s local close cannot.
+  The drop now closes through `duckdb_file_handle_close`, which catches, and
+  destroys the handle only if that succeeded; after a failed close it leaks
+  the handle rather than retry the close unguarded.
+- **`append_metadata` named the wrong default platform on OpenHarmony**
+  (`*-linux-ohos`): `DuckDB` appends `_musl` there, as for any musl-based
+  Linux, and the tool did not.
 
 #### Fourth audit
 

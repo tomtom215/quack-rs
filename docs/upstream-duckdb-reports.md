@@ -26,7 +26,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 13 | `duckdb_get_varchar` / `duckdb_value_to_string` let an exception escape | C program, below | payloads checked before rendering |
 | 14 | Out-of-range TIME accepted by bind, append and vectors; rendering crashes | C program, below | bind and append refuse; Safety clause |
 | 15 | Arrow import ignores the parent's offset for values | C program, below | nonzero offset refused |
-| 16 | Arrow export corrupts large INTERVAL and UHUGEINT values | C program, below | documented |
+| 16 | Arrow export corrupts large INTERVAL and UHUGEINT values, and exports 39-digit HUGEINTs as `decimal128(38, 0)` | C program, below | such values refused by `data_chunk_to_arrow` |
 | 17 | Literal types accepted; first use invalidates the database | C program, below | refused by `LogicalType::try_new` |
 | 18 | Zero-size ARRAY / empty UNION depend on the build | C program, below | refused |
 | 19 | `epoch_us(interval)` fails when one field overflows | SQL, below | exact total computed in `i128` |
@@ -34,6 +34,11 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 21 | Arrow import reads one byte past a validity bitmap at an unaligned bit offset | C program, below (valgrind) | Safety clause on `data_chunk_from_arrow` |
 | 22 | `duckdb_get_varchar` / `duckdb_value_to_string` fail on DECIMAL, VARIANT and GEOMETRY values SQL builds | C program, below | render guard is an allow-list; DECIMAL checked against its width; VARIANT and GEOMETRY refused |
 | 23 | `duckdb_list_vector_reserve` aborts below `MAX_VECTOR_SIZE` elements when the child buffer passes 2^37 bytes | C program, below | `ListBuilder` limit: the largest power of two whose bytes fit |
+| 24 | Arrow import applies offsets below the top level wrongly (struct fields, union members, run-end arrays) | C program, below | offsets below the top level, and run-end arrays under an offset, refused |
+| 25 | Arrow dictionary import reads validity without the list's start offset, and copies an enclosing struct's NULLs into a 2048-row mask past a heap buffer | C program, below (valgrind) | such dictionaries refused before import |
+| 26 | Arrow import of a dictionary whose values are dictionary-encoded shares one dictionary cache and returns garbage | C program, below | nested dictionaries refused |
+| 27 | Arrow list-view import scans `sum(sizes)` child rows from the lowest offset, reading past the child | C program, below (valgrind) | overlapping or gapped list views refused |
+| 28 | Arrow sparse-union import uses the type codes as member indices, ignoring the `+us:` code list | C program, below | non-identity union type codes refused |
 
 ## Before filing
 
@@ -1219,8 +1224,73 @@ append=0 close=0
 select err: Out of Range Error: Negation of HUGEINT is out of range!
 ```
 
+HUGEINT has the same problem unless `arrow_lossless_conversion` is set:
+`DuckDB` exports it as `decimal128(38, 0)`, whose values have at most 38
+digits, even when it holds 39 (`i128::MIN` and `i128::MAX` do). The bits
+survive, but the array violates its declared precision, and importing it back
+gives a `DECIMAL(38, 0)` wider than its type (item 22).
+
+```c
+// duckdb_data_chunk_to_arrow exports a 39-digit HUGEINT as decimal128(38, 0).
+// Usage: hugeint_export [lossless]
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    duckdb_database db; duckdb_connection con; duckdb_result r;
+    duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    if (argc > 1 && strcmp(argv[1], "lossless") == 0) duckdb_query(con, "SET arrow_lossless_conversion = true", NULL);
+    duckdb_query(con, "SELECT * FROM (VALUES ('-170141183460469231731687303715884105728'::HUGEINT), ('170141183460469231731687303715884105727'::HUGEINT), ('99999999999999999999999999999999999999'::HUGEINT)) t(v)", &r);
+    duckdb_data_chunk chunk = duckdb_fetch_chunk(r);
+    duckdb_arrow_options opts; duckdb_connection_get_arrow_options(con, &opts);
+    duckdb_logical_type t = duckdb_column_logical_type(&r, 0); const char *name = "v";
+    struct ArrowSchema sch = {0};
+    duckdb_error_data e1 = duckdb_to_arrow_schema(opts, &t, &name, 1, (void *)&sch);
+    printf("schema err=%s format=%s\n", e1 ? duckdb_error_data_message(e1) : "none", sch.children[0]->format);
+    struct ArrowArray arr = {0};
+    duckdb_error_data err = duckdb_data_chunk_to_arrow(opts, chunk, (void *)&arr);
+    printf("array err=%s\n", err ? duckdb_error_data_message(err) : "none");
+    const int64_t *v = arr.children[0]->buffers[1];
+    for (int i = 0; i < arr.length; i++) {
+        __int128 x = ((__int128)v[2*i+1] << 64) | (unsigned __int128)(uint64_t)v[2*i];
+        unsigned __int128 m = x < 0 ? -(unsigned __int128)x : (unsigned __int128)x; int digits = 0;
+        do { digits++; m /= 10; } while (m);
+        printf("row %d: stored value has %d digits\n", i, digits);
+    }
+    return 0;
+}
+```
+
+Observed on v1.4.4, v1.5.0 and v1.5.5, identical (without, then with,
+`lossless`):
+
+```text
+schema err=none format=d:38,0
+array err=none
+row 0: stored value has 39 digits
+row 1: stored value has 39 digits
+row 2: stored value has 38 digits
+```
+
+```text
+schema err=none format=w:16
+array err=none
+row 0: stored value has 39 digits
+row 1: stored value has 39 digits
+row 2: stored value has 38 digits
+```
+
 Expected: an error for a value the target type cannot hold. quack-rs
-mitigation: documented on `data_chunk_to_arrow` and in the book.
+mitigation: `data_chunk_to_arrow` checks the chunk first and refuses an
+`INTERVAL` whose nanoseconds overflow, and a `HUGEINT` or `UHUGEINT` with more
+than 38 digits when its format is a decimal, at any nesting depth
+(`src/arrow/export_check.rs`, `tests/ffi_roundtrip/arrow_export.rs`).
 
 ---
 
@@ -2045,3 +2115,934 @@ largest power of two whose elements fit, 2^25 for `INTEGER[1000]`. (The
 fifth audit's first version divided 2^37 by the element size, 34,359,738
 for `INTEGER[1000]`, so the reservation in the program above still aborted;
 `tests/ffi_roundtrip/list_limits.rs` now covers it.)
+
+---
+
+## 24. `duckdb_data_chunk_from_arrow` applies offsets below the top level to the wrong rows
+
+DuckDB's conversion (`ArrowToDuckDBConversion`, `arrow_conversion.cpp`, the
+same in v1.4.4 and v1.5.5 where cited) locates each node's rows from two
+parameters its caller passes: a `parent_offset` and a `nested_offset`.
+`GetEffectiveOffset` (`arrow_conversion.cpp:29`) returns `array.offset +
+nested_offset` inside a `LIST` and `array.offset + parent_offset + chunk_offset`
+otherwise. Several node kinds pass the wrong value to their children, so a
+valid array other producers make imports rows from the wrong place with no
+error:
+
+- **A `STRUCT` passes only its own `offset` to its children.** In the `STRUCT`
+  case (`arrow_conversion.cpp:1155`) each field is converted with
+  `parent_offset = array.offset` (this struct's own offset), not the offset
+  inherited from above (`SetValidityMask(child_entry, child_array, chunk_offset,
+  size, array.offset, nested_offset)`, ~`:1165`). So a struct with a nonzero
+  offset *inside a struct* drops the outer struct's offset, and a struct with a
+  nonzero offset *inside a list* drops the struct's own offset (the
+  `nested_offset` path at `arrow_conversion.cpp:33` ignores `parent_offset`).
+- **A sparse `UNION`'s members are read from the wrong row.** The type ids are
+  read at the effective offset, but each member is converted without the
+  union's own `offset` (`arrow_conversion.cpp:1199`; members dispatched at
+  ~`:1222`-`1231` with `parent_offset` unset), so the type ids and the member
+  values come from different rows.
+- **A run-end-encoded array reads its values' validity from the logical
+  offset.** `ColumnArrowToDuckDBRunEndEncoded` sets the *values'* validity mask
+  with `parent_offset`/`nested_offset` (`SetValidityMask(values, values_array,
+  chunk_offset, compressed_size, parent_offset, nested_offset)`,
+  `arrow_conversion.cpp:723`), although the run values are indexed by run, not
+  by logical row, so a REE under a list or an offset struct reads their
+  validity from the wrong bits.
+- **A run-end-encoded array under a fixed-size list is read as a plain array.**
+  `ArrowToDuckDBArray` (`arrow_conversion.cpp:257`) dispatches only on
+  dictionary-encoded and default children (~`:302`-`309`), so a
+  `RUN_END_ENCODED` child falls through to `ColumnArrowToDuckDB` and is read as
+  a plain array from buffers it does not have (the same happens for a REE inside
+  another encoded array's values).
+
+The line numbers in v1.4.4 are `29`, `257`, `672`, `1076`, `1120`; the code is
+otherwise identical.
+
+Built with `gcc -O1 -g -Wall -I/opt/duckdb/<ver> item24.c -L/opt/duckdb/<ver> -lduckdb -Wl,-rpath,/opt/duckdb/<ver>` against each prebuilt library, and run under valgrind 3.22 for the `fixedlist_ree` crash.
+```c
+// duckdb_data_chunk_from_arrow applies offsets below the top level to the
+// wrong rows. One program, one mode argument:
+//   struct_struct  a struct at offset 2 inside a struct (outer offset dropped)
+//   list_struct    a struct at offset 3 inside a list (struct offset dropped)
+//   union          a sparse union at offset 1 (members / type ids off)
+//   list_ree       a run-end-encoded array under a list (values' validity off)
+//   struct_ree     the same under a struct at offset 2
+//   fixedlist_ree  a run-end-encoded array under a fixed-size list (read plain)
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+
+static duckdb_connection con;
+
+// Import record-batch struct `parent` described by `ps`, put the chunk in *out.
+static int import(struct ArrowArray *parent, struct ArrowSchema *ps, duckdb_data_chunk *out) {
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)ps, &conv);
+    if (e1) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e1)); return 1; }
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)parent, conv, out);
+    if (e2) { printf("from_arrow: %s\n", duckdb_error_data_message(e2)); duckdb_destroy_arrow_converted_schema(&conv); return 1; }
+    duckdb_destroy_arrow_converted_schema(&conv);
+    return 0;
+}
+
+static void print_int(duckdb_vector v, idx_t n) {
+    int32_t *d = duckdb_vector_get_data(v);
+    uint64_t *val = duckdb_vector_get_validity(v);
+    for (idx_t i = 0; i < n; i++) {
+        if (i) printf(" / ");
+        if (val && !duckdb_validity_row_is_valid(val, i)) printf("NULL");
+        else printf("%d", d[i]);
+    }
+}
+
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    if (argc < 2) { printf("usage: %s <mode>\n", argv[0]); return 2; }
+    const char *mode = argv[1];
+    duckdb_database db; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    duckdb_data_chunk out = NULL;
+
+    if (!strcmp(mode, "struct_struct")) {
+        // outer STRUCT(offset 2) { inner STRUCT { a INT } }; 3 rows.
+        int32_t data[5]; for (int i = 0; i < 5; i++) data[i] = i * 10; // 0 10 20 30 40
+        const void *ibuf[2] = {NULL, data};
+        struct ArrowArray ci = {5, 0, 0, 2, 0, ibuf, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *inner_ch[1] = {&ci};
+        const void *nb[1] = {NULL};
+        struct ArrowArray inner = {5, 0, 0, 1, 1, nb, inner_ch, NULL, noop_release, NULL};
+        struct ArrowArray *outer_ch[1] = {&inner};
+        const void *nb2[1] = {NULL};
+        struct ArrowArray outer = {3, 0, 2, 1, 1, nb2, outer_ch, NULL, noop_release, NULL}; // offset 2
+        struct ArrowArray *cols[1] = {&outer};
+        const void *nb3[1] = {NULL};
+        struct ArrowArray rb = {3, 0, 0, 1, 1, nb3, cols, NULL, noop_release, NULL};
+        struct ArrowSchema si = {"i", "a", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sinner_ch[1] = {&si};
+        struct ArrowSchema s_inner = {"+s", "t", NULL, 0, 1, sinner_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *souter_ch[1] = {&s_inner};
+        struct ArrowSchema s_outer = {"+s", "s", NULL, 0, 1, souter_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *scols[1] = {&s_outer};
+        struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+        if (import(&rb, &ps, &out)) return 1;
+        duckdb_vector ov = duckdb_data_chunk_get_vector(out, 0);
+        duckdb_vector iv = duckdb_struct_vector_get_child(ov, 0);
+        duckdb_vector av = duckdb_struct_vector_get_child(iv, 0);
+        printf("struct_struct: "); print_int(av, duckdb_data_chunk_get_size(out)); printf("\n");
+    } else if (!strcmp(mode, "list_struct")) {
+        // LIST< STRUCT(offset 3){ a INT } >, 2 list rows, offsets [0,2,4].
+        int32_t data[10]; for (int i = 0; i < 10; i++) data[i] = i * 10;
+        const void *ibuf[2] = {NULL, data};
+        struct ArrowArray ci = {10, 0, 0, 2, 0, ibuf, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *st_ch[1] = {&ci};
+        const void *nb[1] = {NULL};
+        struct ArrowArray st = {7, 0, 3, 1, 1, nb, st_ch, NULL, noop_release, NULL}; // struct offset 3
+        struct ArrowArray *list_ch[1] = {&st};
+        int32_t offs[3] = {0, 2, 4};
+        const void *lbuf[2] = {NULL, offs};
+        struct ArrowArray list = {2, 0, 0, 2, 1, lbuf, list_ch, NULL, noop_release, NULL};
+        struct ArrowArray *cols[1] = {&list};
+        const void *nb3[1] = {NULL};
+        struct ArrowArray rb = {2, 0, 0, 1, 1, nb3, cols, NULL, noop_release, NULL};
+        struct ArrowSchema si = {"i", "a", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sst_ch[1] = {&si};
+        struct ArrowSchema s_st = {"+s", "item", NULL, 0, 1, sst_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sl_ch[1] = {&s_st};
+        struct ArrowSchema s_list = {"+l", "l", NULL, 0, 1, sl_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *scols[1] = {&s_list};
+        struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+        if (import(&rb, &ps, &out)) return 1;
+        duckdb_vector lv = duckdb_data_chunk_get_vector(out, 0);
+        duckdb_list_entry *ent = duckdb_vector_get_data(lv);
+        duckdb_vector sv = duckdb_list_vector_get_child(lv);
+        duckdb_vector av = duckdb_struct_vector_get_child(sv, 0);
+        int32_t *d = duckdb_vector_get_data(av);
+        idx_t n = duckdb_data_chunk_get_size(out);
+        printf("list_struct: ");
+        for (idx_t r = 0; r < n; r++) {
+            if (r) printf(" / ");
+            printf("[");
+            for (idx_t k = 0; k < ent[r].length; k++) printf("%s{'a':%d}", k ? "," : "", d[ent[r].offset + k]);
+            printf("]");
+        }
+        printf("\n");
+    } else if (!strcmp(mode, "union")) {
+        // sparse UNION +us:0,1 at offset 1, 3 rows. members m0=100+i, m1=10*i.
+        int32_t m0[5] = {100, 101, 102, 103, 104};
+        int32_t m1[5] = {0, 10, 20, 30, 40};
+        const void *b0[2] = {NULL, m0};
+        const void *b1[2] = {NULL, m1};
+        struct ArrowArray a0 = {5, 0, 0, 2, 0, b0, NULL, NULL, noop_release, NULL};
+        struct ArrowArray a1 = {5, 0, 0, 2, 0, b1, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *members[2] = {&a0, &a1};
+        int8_t tids[5] = {1, 0, 1, 0, 0};
+        const void *ubuf[1] = {tids};
+        struct ArrowArray uni = {3, 0, 1, 1, 2, ubuf, members, NULL, noop_release, NULL}; // offset 1
+        struct ArrowArray *cols[1] = {&uni};
+        const void *nb3[1] = {NULL};
+        struct ArrowArray rb = {3, 0, 0, 1, 1, nb3, cols, NULL, noop_release, NULL};
+        struct ArrowSchema s0 = {"i", "a", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema s1 = {"i", "b", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *um[2] = {&s0, &s1};
+        struct ArrowSchema s_uni = {"+us:0,1", "u", NULL, 0, 2, um, NULL, noop_srelease, NULL};
+        struct ArrowSchema *scols[1] = {&s_uni};
+        struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+        if (import(&rb, &ps, &out)) return 1;
+        duckdb_vector uv = duckdb_data_chunk_get_vector(out, 0);
+        duckdb_vector tagv = duckdb_struct_vector_get_child(uv, 0);
+        uint8_t *tag = duckdb_vector_get_data(tagv);
+        duckdb_vector mv0 = duckdb_struct_vector_get_child(uv, 1);
+        duckdb_vector mv1 = duckdb_struct_vector_get_child(uv, 2);
+        int32_t *dd0 = duckdb_vector_get_data(mv0);
+        int32_t *dd1 = duckdb_vector_get_data(mv1);
+        idx_t n = duckdb_data_chunk_get_size(out);
+        printf("union: ");
+        for (idx_t i = 0; i < n; i++) { if (i) printf(" / "); printf("%d", tag[i] == 0 ? dd0[i] : dd1[i]); }
+        printf("\n");
+    } else if (!strcmp(mode, "list_ree") || !strcmp(mode, "struct_ree")) {
+        // REE: run_ends=[2,4,5] int32, values=[NULL,20,30]. Logical rows
+        // 0,1=NULL 2,3=20 4=30. Seen (list offsets [2,4]) / (struct offset 2)
+        // as logical rows 2,3 -> value 20,20.
+        int32_t rends[3] = {2, 4, 5};
+        const void *rbuf[2] = {NULL, rends};
+        struct ArrowArray ra = {3, 0, 0, 2, 0, rbuf, NULL, NULL, noop_release, NULL};
+        int32_t vals[3] = {10, 20, 30};
+        // Runs 0..2 are all valid (bits 0,1,2 = 1). Bit 3 is 0: DuckDB copies
+        // this mask from the logical offset (bit 2 for both modes below), so
+        // run 1's validity is read from bit 3 (NULL) instead of bit 1 (valid).
+        uint8_t vvalid = 0xF7; // 1111 0111 : only bit 3 is 0
+        const void *vbuf[2] = {&vvalid, vals};
+        struct ArrowArray va = {3, 1, 0, 2, 0, vbuf, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *ree_ch[2] = {&ra, &va};
+        struct ArrowArray ree = {5, 0, 0, 0, 2, NULL, ree_ch, NULL, noop_release, NULL};
+        struct ArrowSchema s_re = {"i", "run_ends", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema s_va = {"i", "values", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sree_ch[2] = {&s_re, &s_va};
+        struct ArrowSchema s_ree = {"+r", "ree", NULL, 0, 2, sree_ch, NULL, noop_srelease, NULL};
+        if (!strcmp(mode, "list_ree")) {
+            struct ArrowArray *list_ch[1] = {&ree};
+            int32_t offs[2] = {2, 4};
+            const void *lbuf[2] = {NULL, offs};
+            struct ArrowArray list = {1, 0, 0, 2, 1, lbuf, list_ch, NULL, noop_release, NULL};
+            struct ArrowArray *cols[1] = {&list};
+            const void *nb3[1] = {NULL};
+            struct ArrowArray rb = {1, 0, 0, 1, 1, nb3, cols, NULL, noop_release, NULL};
+            struct ArrowSchema *sl_ch[1] = {&s_ree};
+            struct ArrowSchema s_list = {"+l", "l", NULL, 0, 1, sl_ch, NULL, noop_srelease, NULL};
+            struct ArrowSchema *scols[1] = {&s_list};
+            struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+            if (import(&rb, &ps, &out)) return 1;
+            duckdb_vector lv = duckdb_data_chunk_get_vector(out, 0);
+            duckdb_list_entry *ent = duckdb_vector_get_data(lv);
+            duckdb_vector cv = duckdb_list_vector_get_child(lv);
+            int32_t *d = duckdb_vector_get_data(cv);
+            uint64_t *val = duckdb_vector_get_validity(cv);
+            printf("list_ree: [");
+            for (idx_t k = 0; k < ent[0].length; k++) {
+                if (k) printf(", ");
+                idx_t j = ent[0].offset + k;
+                if (val && !duckdb_validity_row_is_valid(val, j)) printf("NULL"); else printf("%d", d[j]);
+            }
+            printf("]\n");
+        } else {
+            struct ArrowArray *st_ch[1] = {&ree};
+            const void *nb[1] = {NULL};
+            struct ArrowArray st = {2, 0, 2, 1, 1, nb, st_ch, NULL, noop_release, NULL}; // struct offset 2
+            struct ArrowArray *cols[1] = {&st};
+            const void *nb3[1] = {NULL};
+            struct ArrowArray rb = {2, 0, 0, 1, 1, nb3, cols, NULL, noop_release, NULL};
+            struct ArrowSchema *sst_ch[1] = {&s_ree};
+            struct ArrowSchema s_st = {"+s", "r", NULL, 0, 1, sst_ch, NULL, noop_srelease, NULL};
+            struct ArrowSchema *scols[1] = {&s_st};
+            struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+            if (import(&rb, &ps, &out)) return 1;
+            duckdb_vector sv = duckdb_data_chunk_get_vector(out, 0);
+            duckdb_vector rv = duckdb_struct_vector_get_child(sv, 0);
+            int32_t *d = duckdb_vector_get_data(rv);
+            uint64_t *val = duckdb_vector_get_validity(rv);
+            idx_t n = duckdb_data_chunk_get_size(out);
+            printf("struct_ree: ");
+            for (idx_t i = 0; i < n; i++) {
+                if (i) printf(" / ");
+                if (val && !duckdb_validity_row_is_valid(val, i)) printf("{'r': NULL}"); else printf("{'r': %d}", d[i]);
+            }
+            printf("\n");
+        }
+    } else if (!strcmp(mode, "fixedlist_ree")) {
+        // FIXED-SIZE LIST INT[2] whose child is run-end encoded (run_ends=[2],
+        // values=[NULL]); 1 row -> logical [NULL, NULL]. DuckDB reads the REE
+        // child as a plain INT array from buffers it does not have.
+        int32_t rends[1] = {2};
+        const void *rbuf[2] = {NULL, rends};
+        struct ArrowArray ra = {1, 0, 0, 2, 0, rbuf, NULL, NULL, noop_release, NULL};
+        int32_t vals[1] = {0};
+        uint8_t vvalid = 0x00; // values[0] NULL
+        const void *vbuf[2] = {&vvalid, vals};
+        struct ArrowArray va = {1, 1, 0, 2, 0, vbuf, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *ree_ch[2] = {&ra, &va};
+        struct ArrowArray ree = {2, 0, 0, 0, 2, NULL, ree_ch, NULL, noop_release, NULL};
+        struct ArrowArray *fl_ch[1] = {&ree};
+        const void *nb[1] = {NULL};
+        struct ArrowArray fl = {1, 0, 0, 1, 1, nb, fl_ch, NULL, noop_release, NULL};
+        struct ArrowArray *cols[1] = {&fl};
+        const void *nb3[1] = {NULL};
+        struct ArrowArray rb = {1, 0, 0, 1, 1, nb3, cols, NULL, noop_release, NULL};
+        struct ArrowSchema s_re = {"i", "run_ends", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema s_va = {"i", "values", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sree_ch[2] = {&s_re, &s_va};
+        struct ArrowSchema s_ree = {"+r", "item", NULL, 0, 2, sree_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sfl_ch[1] = {&s_ree};
+        struct ArrowSchema s_fl = {"+w:2", "fl", NULL, 0, 1, sfl_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *scols[1] = {&s_fl};
+        struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+        if (import(&rb, &ps, &out)) return 1;
+        printf("fixedlist_ree: imported ok, reading child...\n");
+        duckdb_vector av = duckdb_data_chunk_get_vector(out, 0);
+        duckdb_vector cv = duckdb_array_vector_get_child(av);
+        int32_t *d = duckdb_vector_get_data(cv);
+        uint64_t *val = duckdb_vector_get_validity(cv);
+        printf("fixedlist_ree: [");
+        for (idx_t k = 0; k < 2; k++) {
+            if (k) printf(", ");
+            if (val && !duckdb_validity_row_is_valid(val, k)) printf("NULL"); else printf("%d", d[k]);
+        }
+        printf("]\n");
+    } else {
+        printf("unknown mode %s\n", mode); return 2;
+    }
+    if (out) duckdb_destroy_data_chunk(&out);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Observed. `struct_struct` (a struct at offset 2 inside a struct), identical on
+all eight releases v1.4.4, v1.4.5 and v1.5.0-v1.5.5:
+```text
+struct_struct: 0 / 10 / 20
+```
+
+`list_struct` (a struct with offset 3 inside a list), identical on all eight:
+```text
+list_struct: [{'a':0},{'a':10}] / [{'a':20},{'a':30}]
+```
+
+`union` (a sparse union with offset 1). Two behaviours, both wrong. On v1.4.4,
+v1.5.0 and v1.5.1 the type ids are read from row 0 as well:
+```text
+union: 0 / 101 / 20
+```
+
+On v1.4.5, v1.5.2, v1.5.3, v1.5.4 and v1.5.5 the type ids get the offset but the members do not:
+```text
+union: 100 / 10 / 102
+```
+
+`list_ree` (a run-end-encoded array whose runs are all valid, seen through a
+list as logical rows 2..4) and `struct_ree` (the same under a struct at offset
+2), each identical on all eight -- the values are right but their validity is
+read from the wrong run, so every row reads NULL:
+```text
+list_ree: [NULL, NULL]
+```
+```text
+struct_ree: {'r': NULL} / {'r': NULL}
+```
+
+`fixedlist_ree` (a fixed-size list `INT[2]` whose child is run-end encoded)
+crashes during the import itself on all eight (`SIGSEGV`, exit 139, no output),
+because the run-end-encoded child is read as a plain `INT` array from the REE
+array's absent data buffer. Under valgrind the read is byte-for-byte identical
+on all eight releases (only the library path in each frame differs):
+```text
+==PID== Invalid read of size 8
+==PID==    at 0x…: duckdb::DirectConversion(duckdb::Vector&, ArrowArray&, unsigned long, long, unsigned long) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb_data_chunk_from_arrow (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: import (item24.c:28)
+==PID==    by 0x…: main (item24.c:243)
+==PID==  Address 0x… is not stack'd, malloc'd or (recently) free'd
+==PID== 
+```
+
+Expected: `20 / 30 / 40`; `[{'a':30},{'a':40}] / [{'a':50},{'a':60}]`;
+`101 / 20 / 103`; `[20, 20]`; `{'r': 20}` twice; and, for `fixedlist_ree`,
+`[NULL, NULL]` read back without a crash. quack-rs mitigation:
+`data_chunk_from_arrow` walks the array beside its schema and refuses a struct
+or union with an offset below the top level, a run-end-encoded array read under
+an offset, and a run-end-encoded array in a place DuckDB reads as a plain array
+(a fixed-size list's child or another encoded array's values);
+`src/arrow/import_layout.rs`, exercised end-to-end by
+`tests/ffi_roundtrip/arrow_layout.rs`.
+
+---
+## 25. Arrow dictionary import reads validity without the list's offset, and overflows a 2048-row mask from an enclosing struct's NULLs
+
+`ColumnArrowToDuckDBDictionary` (`arrow_conversion.cpp:1391`; `:1310` in v1.4.4)
+reads a dictionary-encoded array's index validity with
+`GetValidityMask(indices_validity, array, chunk_offset, size, parent_offset)`
+(~`:1440`; `:1354` in v1.4.4) -- using `parent_offset` but not the list's
+`nested_offset` (the `LIST` path passes `start_offset` as the dictionary's
+`nested_offset` but the validity read ignores it; "TODO: add support for
+offsets", `arrow_conversion.cpp:238`). Two consequences, both without an error:
+
+- **Under a list that starts past row 0, the indices are read from the list's
+  offset but their validity from row 0**, so rows come back NULL that are not.
+- **The `indices_validity` mask is default-constructed and sized for
+  `STANDARD_VECTOR_SIZE` (2048) rows** by `EnsureWritable`. When the dictionary
+  is converted as more than 2048 rows and NULLs must be applied -- whether the
+  array's own or, via the `parent_mask` loop, an enclosing struct's NULL rows
+  (`CanContainNull`, `arrow_conversion.cpp:1381`) -- `SetInvalid(i)` for
+  `i > 2048` reads and writes past the end of that heap allocation. Item 9
+  covers the dictionary's *own* NULLs (its `GetValidityMask` `memcpy`); this
+  extends it to NULLs *inherited from an enclosing struct*, which reach the
+  overflow through the `parent_mask` loop instead.
+
+A dictionary column imports as a DuckDB dictionary vector the flat C API cannot
+resolve (item 8), so `list_dict` appends the imported chunk to a table and
+reads it back through a result, which materialises the logical rows.
+
+Built with `gcc -O1 -g -Wall -I/opt/duckdb/<ver> item25.c -L/opt/duckdb/<ver> -lduckdb -Wl,-rpath,/opt/duckdb/<ver>` against each prebuilt library, and run under valgrind 3.22 for the overflow.
+```c
+// duckdb_data_chunk_from_arrow, dictionary import. Two modes:
+//   list_dict            a dictionary under a list starting past row 0: the
+//                        index validity is read from row 0, not the list's
+//                        offset, so rows come back NULL that are not.
+//   struct_dict_big <n>  a dictionary with no NULLs of its own under a struct
+//                        whose every third row is NULL, n (default 4096) rows:
+//                        the enclosing struct's NULLs are written into a
+//                        2048-row index-validity mask, past its heap block.
+// A dictionary column imports as a DuckDB dictionary vector the flat C API
+// cannot resolve (item 8), so list_dict appends the imported chunk to a table
+// and reads it back through a result, which materialises the logical rows.
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+
+static duckdb_connection con;
+static int import(struct ArrowArray *parent, struct ArrowSchema *ps, duckdb_data_chunk *out) {
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)ps, &conv);
+    if (e1) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e1)); return 1; }
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)parent, conv, out);
+    if (e2) { printf("from_arrow: %s\n", duckdb_error_data_message(e2)); duckdb_destroy_arrow_converted_schema(&conv); return 2; }
+    duckdb_destroy_arrow_converted_schema(&conv);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    if (argc < 2) { printf("usage: %s <mode>\n", argv[0]); return 2; }
+    const char *mode = argv[1];
+    duckdb_database db; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    duckdb_data_chunk out = NULL;
+
+    if (!strcmp(mode, "list_dict")) {
+        int32_t dvals[6] = {100, 200, 300, 400, 500, 600};
+        const void *dbuf[2] = {NULL, dvals};
+        struct ArrowArray dict = {6, 0, 0, 2, 0, dbuf, NULL, NULL, noop_release, NULL};
+        int32_t idx[6] = {0, 1, 2, 3, 4, 5};
+        uint8_t ivalid = 0xFC; // 1111 1100 : child rows 0,1 NULL, 2..5 valid
+        const void *ibuf[2] = {&ivalid, idx};
+        struct ArrowArray indices = {6, 2, 0, 2, 0, ibuf, NULL, &dict, noop_release, NULL};
+        struct ArrowArray *list_ch[1] = {&indices};
+        int32_t offs[3] = {2, 4, 6}; // list starts at child 2
+        const void *lbuf[2] = {NULL, offs};
+        struct ArrowArray list = {2, 0, 0, 2, 1, lbuf, list_ch, NULL, noop_release, NULL};
+        struct ArrowArray *cols[1] = {&list};
+        const void *nb[1] = {NULL};
+        struct ArrowArray rb = {2, 0, 0, 1, 1, nb, cols, NULL, noop_release, NULL};
+        struct ArrowSchema s_dict = {"i", "item", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema s_idx = {"i", "item", NULL, 2, 0, NULL, &s_dict, noop_srelease, NULL};
+        struct ArrowSchema *sl_ch[1] = {&s_idx};
+        struct ArrowSchema s_list = {"+l", "l", NULL, 0, 1, sl_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *scols[1] = {&s_list};
+        struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+        if (import(&rb, &ps, &out)) return 1;
+        // Materialise: the imported LIST<dict> child is a dictionary vector; the
+        // flat C API returns its unresolved base buffer and a NULL validity
+        // pointer (item 8). Append to a table and read it back as a result.
+        duckdb_result r0; duckdb_query(con, "CREATE TABLE t(l INTEGER[])", &r0); duckdb_destroy_result(&r0);
+        duckdb_appender ap; duckdb_appender_create(con, NULL, "t", &ap);
+        duckdb_state st = duckdb_append_data_chunk(ap, out);
+        if (st != DuckDBSuccess) { printf("append: %s\n", duckdb_appender_error(ap)); return 1; }
+        duckdb_appender_close(ap); duckdb_appender_destroy(&ap);
+        duckdb_result res; duckdb_query(con, "SELECT l::VARCHAR FROM t", &res);
+        idx_t n = duckdb_row_count(&res);
+        printf("list_dict: ");
+        for (idx_t i = 0; i < n; i++) {
+            char *s = duckdb_value_varchar(&res, 0, i);
+            printf("%s%s", i ? " / " : "", s ? s : "NULL");
+            duckdb_free(s);
+        }
+        printf("\n");
+        duckdb_destroy_result(&res);
+    } else if (!strcmp(mode, "struct_dict_big")) {
+        int64_t rows = argc >= 3 ? strtoll(argv[2], NULL, 10) : 4096;
+        int32_t dvals[1] = {42};
+        const void *dbuf[2] = {NULL, dvals};
+        struct ArrowArray dict = {1, 0, 0, 2, 0, dbuf, NULL, NULL, noop_release, NULL};
+        int32_t *idx = calloc((size_t)rows, sizeof(int32_t)); // all index 0
+        const void *ibuf[2] = {NULL, idx};                    // no own validity
+        struct ArrowArray indices = {rows, 0, 0, 2, 0, ibuf, NULL, &dict, noop_release, NULL};
+        struct ArrowArray *st_ch[1] = {&indices};
+        size_t vbytes = (size_t)((rows + 7) / 8);
+        uint8_t *svalid = malloc(vbytes);
+        memset(svalid, 0xFF, vbytes);
+        int64_t nulls = 0;
+        for (int64_t i = 0; i < rows; i++) if (i % 3 == 0) { svalid[i / 8] &= ~(1u << (i % 8)); nulls++; }
+        const void *sbuf[1] = {svalid};
+        struct ArrowArray st = {rows, nulls, 0, 1, 1, sbuf, st_ch, NULL, noop_release, NULL};
+        struct ArrowArray *cols[1] = {&st};
+        const void *nb[1] = {NULL};
+        struct ArrowArray rb = {rows, 0, 0, 1, 1, nb, cols, NULL, noop_release, NULL};
+        struct ArrowSchema s_dict = {"i", "d", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema s_idx = {"i", "d", NULL, 2, 0, NULL, &s_dict, noop_srelease, NULL};
+        struct ArrowSchema *sst_ch[1] = {&s_idx};
+        struct ArrowSchema s_st = {"+s", "s", NULL, 2, 1, sst_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *scols[1] = {&s_st};
+        struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+        int rc = import(&rb, &ps, &out);
+        if (rc == 0) printf("struct_dict_big %lld: import: ok, %llu rows\n", (long long)rows,
+                            (unsigned long long)duckdb_data_chunk_get_size(out));
+        // No free() of idx/svalid: after the overflow the heap is corrupt and
+        // touching it can abort; the import result is what matters.
+        if (rc) return 1;
+        return 0; // exit before any further heap activity
+    } else { printf("unknown mode %s\n", mode); return 2; }
+    if (out) duckdb_destroy_data_chunk(&out);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Observed. `list_dict` (a dictionary under a list starting at child row 2, whose
+index validity marks child rows 0 and 1 NULL and 2..5 valid), identical on all
+eight releases:
+```text
+list_dict: [NULL, NULL] / [500, 600]
+```
+
+`struct_dict_big 4096` (a dictionary with no NULLs of its own under a struct
+whose every third row is NULL, 4096 rows). The overflow happens inside the
+import. Without valgrind the outcome depends on the heap layout: on v1.4.4 and
+v1.4.5 the process prints `import: ok` and then aborts in `free()`
+(`free(): corrupted unsorted chunks`, exit 134):
+```text
+struct_dict_big 4096: import: ok, 4096 rows
+free(): corrupted unsorted chunks
+```
+
+on v1.5.0 and v1.5.1 it crashes during the import (`SIGSEGV`, exit 139, no
+output); on v1.5.2-v1.5.5 it prints `import: ok` and exits cleanly:
+```text
+struct_dict_big 4096: import: ok, 4096 rows
+```
+
+Under valgrind, however, all eight releases report the same out-of-bounds
+access, byte-for-byte identical except the library path in each frame:
+```text
+==PID== Invalid read of size 8
+==PID==    at 0x…: duckdb::TemplatedValidityMask<unsigned long>::SetInvalid(unsigned long) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb::ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(duckdb::Vector&, ArrowArray&, unsigned long, duckdb::ArrowArrayScanState&, unsigned long, duckdb::ArrowType const&, long, duckdb::ValidityMask const*, unsigned long) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb::ArrowToDuckDBConversion::ColumnArrowToDuckDB(duckdb::Vector&, ArrowArray&, unsigned long, duckdb::ArrowArrayScanState&, unsigned long, duckdb::ArrowType const&, long, duckdb::ValidityMask*, unsigned long, bool) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb_data_chunk_from_arrow (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: import (item25.c:29)
+==PID==    by 0x…: main (item25.c:107)
+==PID==  Address 0x… is 0 bytes after a block of size 256 alloc'd
+==PID==    at 0x…: operator new[](unsigned long) (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==PID==    by 0x…: duckdb::TemplatedValidityMask<unsigned long>::SetInvalid(unsigned long) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb::ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(duckdb::Vector&, ArrowArray&, unsigned long, duckdb::ArrowArrayScanState&, unsigned long, duckdb::ArrowType const&, long, duckdb::ValidityMask const*, unsigned long) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb::ArrowToDuckDBConversion::ColumnArrowToDuckDB(duckdb::Vector&, ArrowArray&, unsigned long, duckdb::ArrowArrayScanState&, unsigned long, duckdb::ArrowType const&, long, duckdb::ValidityMask*, unsigned long, bool) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb_data_chunk_from_arrow (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: import (item25.c:29)
+==PID==    by 0x…: main (item25.c:107)
+==PID== 
+```
+
+(The 256-byte block is the 2048-bit mask; the struct's NULLs at rows past 2048
+are written into it. This path flags an invalid *read* -- `SetInvalid` is a
+read-modify-write of a mask word -- where item 9's own-NULL `memcpy` path flags
+an invalid write.) Expected: `[300, 400] / [500, 600]`, and a mask sized for the
+number of rows converted. quack-rs mitigation: `data_chunk_from_arrow` refuses a
+dictionary-encoded array whose indices are read under a list offset with NULLs,
+and any dictionary converted as more than `duckdb_vector_size()` rows that can
+hold NULLs (its own or an enclosing struct's); `src/arrow/import_layout.rs`,
+exercised end-to-end by `tests/ffi_roundtrip/arrow_layout.rs`.
+
+---
+## 26. Arrow import of a dictionary whose values are dictionary-encoded shares one dictionary cache and returns garbage
+
+When a dictionary-encoded array's *values* are themselves dictionary-encoded,
+`ColumnArrowToDuckDBDictionary` recurses into
+`ColumnArrowToDuckDBDictionary(*base_vector, *array.dictionary, chunk_offset,
+array_state, ...)` (`arrow_conversion.cpp:1415`; `:1329` in v1.4.4) passing the
+**same `ArrowArrayScanState`**. Both levels share that state's one dictionary
+cache (`array_state.CacheOutdated` / `GetDictionary` / `AddDictionary`,
+`arrow_conversion.cpp:1400`), so the inner dictionary overwrites the cache the
+outer level then slices against, and the rows come back as garbage. The outer
+column imports as a dictionary vector; here it is appended to a table and read
+back so the logical rows are materialised.
+
+Built with `gcc -O1 -g -Wall -I/opt/duckdb/<ver> item26.c -L/opt/duckdb/<ver> -lduckdb -Wl,-rpath,/opt/duckdb/<ver>` against each prebuilt library.
+```c
+// duckdb_data_chunk_from_arrow: a dictionary whose values are themselves
+// dictionary-encoded. ColumnArrowToDuckDBDictionary recurses into the values'
+// dictionary with the SAME ArrowArrayScanState, so both levels share one
+// dictionary cache; the inner dictionary overwrites the cache the outer level
+// then slices against and the rows come back as garbage.
+//
+//   inner strings : ['p','q']                (index 0='p', 1='q')
+//   mid dict      : indices [1,0] -> ['q','p']  (dictionary = inner strings)
+//   outer dict    : indices [0,1,0,0] -> mid   (dictionary = mid dict)
+//   logical rows  : q / p / q / q
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+
+    // inner VARCHAR values "p","q"
+    char sdata[] = "pq";
+    int32_t soff[3] = {0, 1, 2};
+    const void *sbuf[3] = {NULL, soff, sdata};
+    struct ArrowArray inner = {2, 0, 0, 3, 0, sbuf, NULL, NULL, noop_release, NULL};
+    // mid dictionary: indices [1,0], dictionary=inner
+    int32_t midx[2] = {1, 0};
+    const void *mbuf[2] = {NULL, midx};
+    struct ArrowArray mid = {2, 0, 0, 2, 0, mbuf, NULL, &inner, noop_release, NULL};
+    // outer dictionary: indices [0,1,0,0], dictionary=mid
+    int32_t oidx[4] = {0, 1, 0, 0};
+    const void *obuf[2] = {NULL, oidx};
+    struct ArrowArray outer = {4, 0, 0, 2, 0, obuf, NULL, &mid, noop_release, NULL};
+    struct ArrowArray *cols[1] = {&outer};
+    const void *nb[1] = {NULL};
+    struct ArrowArray rb = {4, 0, 0, 1, 1, nb, cols, NULL, noop_release, NULL};
+
+    struct ArrowSchema s_inner = {"u", "v", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+    struct ArrowSchema s_mid = {"i", "v", NULL, 0, 0, NULL, &s_inner, noop_srelease, NULL};
+    struct ArrowSchema s_outer = {"i", "v", NULL, 0, 0, NULL, &s_mid, noop_srelease, NULL};
+    struct ArrowSchema *scols[1] = {&s_outer};
+    struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)&ps, &conv);
+    if (e1) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e1)); return 1; }
+    duckdb_data_chunk out = NULL;
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)&rb, conv, &out);
+    if (e2) { printf("from_arrow: %s\n", duckdb_error_data_message(e2)); return 1; }
+
+    // The outer column is a dictionary vector; append to a VARCHAR table and
+    // read it back so the logical rows are materialised.
+    duckdb_result r0; duckdb_query(con, "CREATE TABLE t(v VARCHAR)", &r0); duckdb_destroy_result(&r0);
+    duckdb_appender ap; duckdb_appender_create(con, NULL, "t", &ap);
+    duckdb_state st = duckdb_append_data_chunk(ap, out);
+    if (st != DuckDBSuccess) { printf("append: %s\n", duckdb_appender_error(ap)); return 1; }
+    duckdb_appender_close(ap); duckdb_appender_destroy(&ap);
+    duckdb_result res; duckdb_query(con, "SELECT v FROM t", &res);
+    idx_t n = duckdb_row_count(&res);
+    printf("nested_dict: ");
+    for (idx_t i = 0; i < n; i++) {
+        char *s = duckdb_value_varchar(&res, 0, i);
+        printf("%s%s", i ? " / " : "", s ? s : "NULL");
+        duckdb_free(s);
+    }
+    printf("\n");
+    duckdb_destroy_result(&res);
+    duckdb_destroy_data_chunk(&out);
+    duckdb_destroy_arrow_converted_schema(&conv);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Observed, identical on all eight releases -- the outer dictionary's values come
+back as the raw mid-level index numbers (mid = `[1,0]`, indexed by the outer
+indices `[0,1,0,0]`), not the strings they encode:
+```text
+nested_dict: 1 / 0 / 1 / 1
+```
+
+Expected: `q / p / q / q`. quack-rs mitigation: `data_chunk_from_arrow` refuses
+a dictionary whose values are themselves dictionary-encoded;
+`src/arrow/import_layout.rs`, exercised end-to-end by
+`tests/ffi_roundtrip/arrow_layout.rs`.
+
+---
+## 27. Arrow list-view import scans `sum(sizes)` child rows from the lowest offset, reading past the child
+
+`ConvertArrowListViewOffsetsTemplated` (`arrow_conversion.cpp:139`) sets
+`list_size` to the sum of the view's `sizes` and `start_offset` to the lowest
+`offset` among rows with a nonzero size, then `ArrowToDuckDBList` converts
+`list_size` child elements starting at `start_offset`. A list view's entries
+may overlap or leave gaps (unlike a plain list, whose offsets are sequential),
+so `start_offset + list_size` can exceed the child's real length and can name
+child rows that no view actually covers. DuckDB converts the child over that
+range and reads past its buffers, and individual entries whose `offset` lies
+outside `[start_offset, start_offset + list_size)` read the wrong rows.
+
+Built with `gcc -O1 -g -Wall -I/opt/duckdb/<ver> item27.c -L/opt/duckdb/<ver> -lduckdb -Wl,-rpath,/opt/duckdb/<ver>` against each prebuilt library, and run under valgrind 3.22.
+```c
+// duckdb_data_chunk_from_arrow, list-view import. A LIST-VIEW (+vl) has an
+// offsets buffer and a sizes buffer; its entries may overlap or leave gaps.
+// ConvertArrowListViewOffsetsTemplated sets list_size = sum(sizes) and
+// start_offset = lowest offset among nonzero-size rows, then converts
+// list_size child elements from start_offset. Modes:
+//   overlap  two rows each viewing all 3 strings: sum(sizes)=6 over a 3-string
+//            child, so DuckDB reads child rows 3..6 that do not exist.
+//   gap      offsets {0,2}, sizes {1,1}: the second row's element (child 2) is
+//            outside the scanned range [0,2), so it reads the wrong row.
+//   ok       sequential (control): offsets {0,1}, sizes {1,2}.
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    if (argc < 2) { printf("usage: %s <overlap|gap|ok>\n", argv[0]); return 2; }
+    const char *mode = argv[1];
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+
+    // child VARCHAR ['aaa','bbb','ccc']. Heap-allocated and sized exactly for
+    // the 3 strings, so an over-read of the offsets buffer is a heap error
+    // valgrind can see.
+    char *cdata = malloc(9); memcpy(cdata, "aaabbbccc", 9);
+    int32_t *coff = malloc(4 * sizeof(int32_t)); coff[0] = 0; coff[1] = 3; coff[2] = 6; coff[3] = 9;
+    const void *cbuf[3] = {NULL, coff, cdata};
+    struct ArrowArray child = {3, 0, 0, 3, 0, cbuf, NULL, NULL, noop_release, NULL};
+
+    int32_t offs[2], sizes[2];
+    if (!strcmp(mode, "overlap")) { offs[0] = 0; offs[1] = 0; sizes[0] = 3; sizes[1] = 3; }
+    else if (!strcmp(mode, "gap")) { offs[0] = 0; offs[1] = 2; sizes[0] = 1; sizes[1] = 1; }
+    else if (!strcmp(mode, "ok")) { offs[0] = 0; offs[1] = 1; sizes[0] = 1; sizes[1] = 2; }
+    else { printf("unknown mode %s\n", mode); return 2; }
+
+    const void *lbuf[3] = {NULL, offs, sizes};
+    struct ArrowArray *lch[1] = {&child};
+    struct ArrowArray lv = {2, 0, 0, 3, 1, lbuf, lch, NULL, noop_release, NULL};
+    struct ArrowArray *cols[1] = {&lv};
+    const void *nb[1] = {NULL};
+    struct ArrowArray rb = {2, 0, 0, 1, 1, nb, cols, NULL, noop_release, NULL};
+
+    struct ArrowSchema s_child = {"u", "item", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+    struct ArrowSchema *slc[1] = {&s_child};
+    struct ArrowSchema s_lv = {"+vl", "l", NULL, 0, 1, slc, NULL, noop_srelease, NULL};
+    struct ArrowSchema *scols[1] = {&s_lv};
+    struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)&ps, &conv);
+    if (e1) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e1)); return 1; }
+    duckdb_data_chunk out = NULL;
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)&rb, conv, &out);
+    if (e2) { printf("from_arrow: %s\n", duckdb_error_data_message(e2)); return 1; }
+
+    duckdb_result r0; duckdb_query(con, "CREATE TABLE t(l VARCHAR[])", &r0); duckdb_destroy_result(&r0);
+    duckdb_appender ap; duckdb_appender_create(con, NULL, "t", &ap);
+    duckdb_state st = duckdb_append_data_chunk(ap, out);
+    if (st != DuckDBSuccess) { printf("append: %s\n", duckdb_appender_error(ap)); return 1; }
+    duckdb_appender_close(ap); duckdb_appender_destroy(&ap);
+    duckdb_result res; duckdb_query(con, "SELECT l::VARCHAR FROM t", &res);
+    idx_t n = duckdb_row_count(&res);
+    printf("%s: ", mode);
+    for (idx_t i = 0; i < n; i++) {
+        char *s = duckdb_value_varchar(&res, 0, i);
+        printf("%s%s", i ? " / " : "", s ? s : "NULL");
+        duckdb_free(s);
+    }
+    printf("\n");
+    duckdb_destroy_result(&res);
+    duckdb_destroy_data_chunk(&out);
+    duckdb_destroy_arrow_converted_schema(&conv);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Observed. `overlap` (two rows both viewing all three strings, so
+`sum(sizes) = 6` over a three-string child). Whether the process crashes or
+returns the (still correct-looking) rows depends on the heap layout: it crashes
+on v1.4.4 and v1.4.5 (`SIGSEGV`, exit 139) and returns on v1.5.0-v1.5.5:
+```text
+overlap: [aaa, bbb, ccc] / [aaa, bbb, ccc]
+```
+
+but under valgrind all eight releases report the same out-of-bounds read of the
+child's offsets buffer, byte-for-byte identical except the library path:
+```text
+==PID== Invalid read of size 4
+==PID==    at 0x…: duckdb::ArrowToDuckDBConversion::ColumnArrowToDuckDB(duckdb::Vector&, ArrowArray&, unsigned long, duckdb::ArrowArrayScanState&, unsigned long, duckdb::ArrowType const&, long, duckdb::ValidityMask*, unsigned long, bool) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb::ArrowToDuckDBList(duckdb::Vector&, ArrowArray&, unsigned long, duckdb::ArrowArrayScanState&, unsigned long, duckdb::ArrowType const&, long, duckdb::ValidityMask const*, long) (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: duckdb_data_chunk_from_arrow (in /opt/duckdb/<ver>/libduckdb.so)
+==PID==    by 0x…: main (item27.c:60)
+==PID==  Address 0x… is 0 bytes after a block of size 16 alloc'd
+==PID==    at 0x…: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==PID==    by 0x…: main (item27.c:33)
+==PID== 
+```
+
+`gap` (offsets `{0,2}`, sizes `{1,1}`, so the second row's element lies outside
+the scanned range `[0, 2)`) imports with no error and returns the wrong second
+row. v1.4.4, v1.4.5, v1.5.3, v1.5.4 and v1.5.5 print `[aaa]` for both rows:
+```text
+gap: [aaa] / [aaa]
+```
+
+while v1.5.0, v1.5.1 and v1.5.2 crash reading the out-of-range string element
+(`SIGSEGV`, exit 139). The control `ok` (sequential offsets `{0,1}`, sizes
+`{1,2}`) is correct on all eight:
+```text
+ok: [aaa] / [bbb, ccc]
+```
+
+Expected: for `gap`, `[aaa] / [ccc]`. quack-rs mitigation:
+`data_chunk_from_arrow` refuses a list view whose views overlap or leave gaps
+(the furthest child element in use exceeds `lowest_offset + sum(sizes)`);
+`src/arrow/import_layout.rs`, exercised end-to-end by
+`tests/ffi_roundtrip/arrow_layout.rs`.
+
+---
+## 28. Arrow sparse-union import uses the type codes as member indices, ignoring the `+us:` code list
+
+An Arrow union type is `+us:<codes>`, where `<codes>` lists the type code that
+labels each member position, in order. A value's type id in the union's buffer
+is one of those codes, not a member index, so a producer may use any codes it
+likes. DuckDB reads the type id and uses it directly as the member index,
+ignoring the code list (`UNION` case, `arrow_conversion.cpp:1199`; the tag is
+used as `children[tag]` and range-checked against `array.n_children` at
+`:1245`, `:1163` in v1.4.4). So a union whose codes are not `0, 1, ...` in order
+imports the wrong members, and a code at or above the member count is reported
+as "Arrow union tag out of range" even though it is a valid code.
+
+Built with `gcc -O1 -g -Wall -I/opt/duckdb/<ver> item28.c -L/opt/duckdb/<ver> -lduckdb -Wl,-rpath,/opt/duckdb/<ver>` against each prebuilt library.
+```c
+// duckdb_data_chunk_from_arrow, sparse-union import. The Arrow union format
+// "+us:<codes>" lists the type code for each member position; a value's type
+// id in the buffer is one of those codes, not a member index. DuckDB uses the
+// type id directly as the member index and ignores the code list. Modes:
+//   swap  "+us:1,0": member 0 has code 1, member 1 has code 0. A row whose
+//         type id is 0 means "member with code 0" = member position 1, but
+//         DuckDB reads member position 0. The two members are swapped.
+//   oob   "+us:5,2": codes 5 and 2; a type id of 5 is not a member index
+//         (only 2 members), so DuckDB throws "Arrow union tag out of range".
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    if (argc < 2) { printf("usage: %s <swap|oob>\n", argv[0]); return 2; }
+    const char *mode = argv[1];
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+
+    int32_t m0[2] = {10, 11};
+    int32_t m1[2] = {20, 21};
+    const void *b0[2] = {NULL, m0};
+    const void *b1[2] = {NULL, m1};
+    struct ArrowArray a0 = {2, 0, 0, 2, 0, b0, NULL, NULL, noop_release, NULL};
+    struct ArrowArray a1 = {2, 0, 0, 2, 0, b1, NULL, NULL, noop_release, NULL};
+    struct ArrowArray *members[2] = {&a0, &a1};
+
+    const char *fmt;
+    int8_t tids[2];
+    if (!strcmp(mode, "swap")) { fmt = "+us:1,0"; tids[0] = 0; tids[1] = 1; }
+    else if (!strcmp(mode, "oob")) { fmt = "+us:5,2"; tids[0] = 5; tids[1] = 2; }
+    else { printf("unknown mode %s\n", mode); return 2; }
+
+    const void *ubuf[1] = {tids};
+    struct ArrowArray uni = {2, 0, 0, 1, 2, ubuf, members, NULL, noop_release, NULL};
+    struct ArrowArray *cols[1] = {&uni};
+    const void *nb[1] = {NULL};
+    struct ArrowArray rb = {2, 0, 0, 1, 1, nb, cols, NULL, noop_release, NULL};
+
+    struct ArrowSchema s0 = {"i", "a", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+    struct ArrowSchema s1 = {"i", "b", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+    struct ArrowSchema *um[2] = {&s0, &s1};
+    struct ArrowSchema s_uni = {fmt, "u", NULL, 0, 2, um, NULL, noop_srelease, NULL};
+    struct ArrowSchema *scols[1] = {&s_uni};
+    struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)&ps, &conv);
+    if (e1) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e1)); return 1; }
+    duckdb_data_chunk out = NULL;
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)&rb, conv, &out);
+    if (e2) { printf("%s: from_arrow error: %s\n", mode, duckdb_error_data_message(e2)); return 1; }
+
+    duckdb_vector uv = duckdb_data_chunk_get_vector(out, 0);
+    duckdb_vector tagv = duckdb_struct_vector_get_child(uv, 0);
+    uint8_t *tag = duckdb_vector_get_data(tagv);
+    duckdb_vector mv0 = duckdb_struct_vector_get_child(uv, 1);
+    duckdb_vector mv1 = duckdb_struct_vector_get_child(uv, 2);
+    int32_t *dd0 = duckdb_vector_get_data(mv0);
+    int32_t *dd1 = duckdb_vector_get_data(mv1);
+    idx_t n = duckdb_data_chunk_get_size(out);
+    printf("%s: ", mode);
+    for (idx_t i = 0; i < n; i++) { if (i) printf(" / "); printf("%d", tag[i] == 0 ? dd0[i] : dd1[i]); }
+    printf("\n");
+    duckdb_destroy_data_chunk(&out);
+    duckdb_destroy_arrow_converted_schema(&conv);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Observed. `swap` (`+us:1,0`, two INT members, type ids `[0,1]`), identical on
+all eight releases -- DuckDB reads the type id `0` as member index 0 and `1` as
+index 1, so the members are swapped relative to their codes:
+```text
+swap: 10 / 21
+```
+
+`oob` (`+us:5,2`, two INT members, type ids `[5,2]`), identical on all eight --
+the type id `5` is a valid code but not a member index, and the import fails
+(exit 1, no crash):
+```text
+oob: from_arrow error: {"exception_type":"Invalid Input","exception_message":"Arrow union tag out of range: 5"}
+```
+
+Expected: for `swap`, `20 / 11` (the value with code `0` is member position 1);
+for `oob`, member position 0 (the member whose code is `5`). quack-rs
+mitigation: `data_chunk_from_arrow` refuses a sparse union whose type codes are
+not `0, 1, ...` in order (a "recoded" union);
+`src/arrow/import_layout.rs`, exercised end-to-end by
+`tests/ffi_roundtrip/arrow_layout.rs`.

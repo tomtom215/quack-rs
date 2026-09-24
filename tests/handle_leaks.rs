@@ -135,7 +135,9 @@ impl Drop for Db {
 #[cfg(feature = "duckdb-1-5")]
 unsafe extern "C" fn inspect_argument(info: libduckdb_sys::duckdb_bind_info) {
     let bind = unsafe { quack_rs::scalar::ScalarBindInfo::new(info) };
-    drop(unsafe { bind.argument(0) }.expect("argument"));
+    // Before v1.5.5 `argument` refuses and sets the bind error; a panic here
+    // would cross this `extern "C"` function and abort.
+    drop(unsafe { bind.argument(0) });
 }
 
 #[cfg(feature = "duckdb-1-5")]
@@ -209,10 +211,26 @@ fn every_handle_frees_what_duckdb_allocated_for_it() {
                 .register(db.con)
                 .expect("register leak_arg");
         }
-        results.push((
-            "Expression",
-            growth(|| drop(con.query("SELECT leak_arg(1)").expect("query"))),
-        ));
+        // `argument` refuses before v1.5.5, so there is no `Expression` to
+        // leak there; the query must then fail with that refusal.
+        let version = {
+            let mut result = con.query("SELECT version()").expect("version");
+            let chunk = result.next_chunk().expect("fetch").expect("one row");
+            // SAFETY: one VARCHAR row, never NULL.
+            unsafe { chunk.reader(0).read_str(0) }.to_owned()
+        };
+        if quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 5)) {
+            results.push((
+                "Expression",
+                growth(|| drop(con.query("SELECT leak_arg(1)").expect("query"))),
+            ));
+        } else {
+            let err = con.query("SELECT leak_arg(1)").expect_err(&version);
+            assert!(
+                err.to_string().contains("before v1.5.5"),
+                "{version}: {err}"
+            );
+        }
     }
 
     #[cfg(feature = "duckdb-1-5")]
@@ -265,6 +283,13 @@ fn every_handle_frees_what_duckdb_allocated_for_it() {
             drop(handle);
         }
         let leaked_fds = open_files().saturating_sub(before);
+        // A leaked wrapper keeps its heap memory even when the descriptor is
+        // closed.
+        let read_only = FileOpenOptions::read_only();
+        results.push((
+            "FileHandle",
+            growth(|| drop(fs.open(&c_path, &read_only).expect("open"))),
+        ));
         std::fs::remove_dir_all(&dir).expect("clean up");
         assert_eq!(
             leaked_fds, 0,

@@ -206,3 +206,69 @@ fn a_list_builder_finalize_called_once_per_row_keeps_every_row() {
     );
     assert_eq!(wrong, Some(0));
 }
+
+/// A `combine` that consumes its source: it moves the sum into the target and
+/// leaves zero behind, as a `combine` that `mem::take`s an owned field would.
+unsafe extern "C" fn taking_combine(
+    _info: duckdb_function_info,
+    source: *mut duckdb_aggregate_state,
+    target: *mut duckdb_aggregate_state,
+    count: idx_t,
+) {
+    for i in 0..count as usize {
+        unsafe {
+            let source = (*source.add(i)).cast::<i64>();
+            *(*target.add(i)).cast::<i64>() += std::mem::take(&mut *source);
+        }
+    }
+}
+
+/// Counts the rows where `agg` disagrees with the built-in `sum` over a
+/// sliding frame of 101 rows, which `DuckDB` evaluates with a segment tree:
+/// each tree node's state is a `combine` source for every frame that covers
+/// it.
+fn sliding_sum_mismatches(fx: &Fixture, agg: &str) -> Option<i64> {
+    fx.scalar(
+        &format!(
+            "SELECT count(*) FILTER (WHERE a IS DISTINCT FROM b) FROM (\
+               SELECT {agg}(x) OVER w AS a, sum(x) OVER w AS b FROM range(1, 5001) t(x) \
+               WINDOW w AS (ORDER BY x ROWS BETWEEN 100 PRECEDING AND CURRENT ROW))"
+        ),
+        |r, i| unsafe { r.read_i64(i) },
+    )
+}
+
+/// `CombineFn`'s contract: `combine` must leave its `source` states
+/// unchanged. A window's segment tree combines one state into many frames,
+/// so a `combine` that consumes its source is right for the first frame that
+/// reads it and wrong for the rest. The documentation used to advise moving
+/// out of the source states; this pins why it no longer does.
+#[test]
+fn combine_must_leave_its_source_unchanged() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match the declared signatures.
+    unsafe {
+        for (name, combine) in [
+            (
+                "reading_sum",
+                sum_combine as quack_rs::aggregate::callbacks::CombineFn,
+            ),
+            ("taking_sum", taking_combine),
+        ] {
+            AggregateFunctionBuilder::new(name)
+                .param(TypeId::BigInt)
+                .returns(TypeId::BigInt)
+                .state_size(sum_size)
+                .init(sum_init)
+                .update(sum_update)
+                .combine(combine)
+                .finalize(sum_finalize)
+                .register(fx.con())
+                .expect("register");
+        }
+    }
+    assert_eq!(sliding_sum_mismatches(&fx, "reading_sum"), Some(0));
+    let wrong = sliding_sum_mismatches(&fx, "taking_sum").expect("a count");
+    println!("taking_sum: {wrong} of 5000 rows wrong in a sliding window");
+    assert!(wrong > 0, "a consuming combine went unnoticed");
+}

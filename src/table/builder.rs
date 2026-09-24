@@ -134,6 +134,9 @@ pub struct TableFunctionBuilder {
     local_init: Option<InitFn>,
     scan: Option<ScanFn>,
     projection_pushdown: bool,
+    /// Set by [`TypedTableFunctionBuilder::build`][crate::table::TypedTableFunctionBuilder::build]:
+    /// the scan is a typed closure, which cannot follow a projection.
+    typed: bool,
     extra_info: Option<crate::extra_info::ExtraInfo>,
 }
 
@@ -154,6 +157,7 @@ impl TableFunctionBuilder {
             local_init: None,
             scan: None,
             projection_pushdown: false,
+            typed: false,
             extra_info: None,
         }
     }
@@ -177,6 +181,7 @@ impl TableFunctionBuilder {
             local_init: None,
             scan: None,
             projection_pushdown: false,
+            typed: false,
             extra_info: None,
         })
     }
@@ -194,6 +199,14 @@ impl TableFunctionBuilder {
     /// [`TypedTableFunctionBuilder::build`][crate::table::TypedTableFunctionBuilder::build].
     pub(crate) const fn projection_pushdown_enabled(&self) -> bool {
         self.projection_pushdown
+    }
+
+    /// Marks the builder as wired to a typed scan closure, so that
+    /// [`check_parts`][Self::check_parts] refuses projection pushdown switched
+    /// on after [`TypedTableFunctionBuilder::build`][crate::table::TypedTableFunctionBuilder::build].
+    pub(crate) const fn mark_typed(mut self) -> Self {
+        self.typed = true;
+        self
     }
 
     /// Adds a positional parameter with the given type.
@@ -304,6 +317,11 @@ impl TableFunctionBuilder {
     /// When enabled, `DuckDB` informs the `init` callback which columns were
     /// requested. Use `duckdb_init_get_column_count` and `duckdb_init_get_column_index`
     /// in your init callback to skip producing unrequested columns.
+    ///
+    /// A builder returned by
+    /// [`TypedTableFunctionBuilder::build`][crate::table::TypedTableFunctionBuilder::build]
+    /// is refused at registration with pushdown on: its scan closure cannot
+    /// see the projection.
     pub const fn projection_pushdown(mut self, enable: bool) -> Self {
         self.projection_pushdown = enable;
         self
@@ -373,6 +391,10 @@ impl TableFunctionBuilder {
     ///   `UNION`); build it as a [`LogicalType`] and use the `*_logical`
     ///   method. The error names the slot.
     /// - The bind, init, or scan callback was not set.
+    /// - The builder came from
+    ///   [`TypedTableFunctionBuilder::build`][crate::table::TypedTableFunctionBuilder::build]
+    ///   and [`projection_pushdown`][Self::projection_pushdown] was switched on
+    ///   afterwards.
     /// - `DuckDB` reports a registration failure.
     ///
     /// # Safety
@@ -399,10 +421,12 @@ impl TableFunctionBuilder {
         }
     }
 
-    /// The completeness checks that need no `DuckDB` call: the bind, init and
-    /// scan callbacks. [`MockRegistrar`][crate::testing::MockRegistrar] runs
-    /// them too, so a builder it accepts is not refused at `LOAD` for a
-    /// missing part.
+    /// The checks that need no `DuckDB` call: the bind, init and scan
+    /// callbacks are set, and a builder from
+    /// [`TypedTableFunctionBuilder::build`][crate::table::TypedTableFunctionBuilder::build]
+    /// does not have projection pushdown on.
+    /// [`MockRegistrar`][crate::testing::MockRegistrar] runs them too, so a
+    /// builder it accepts is not refused at `LOAD`.
     pub(crate) fn check_parts(&self) -> Result<(), ExtensionError> {
         let missing = [
             ("bind", self.bind.is_none()),
@@ -411,9 +435,20 @@ impl TableFunctionBuilder {
         ]
         .into_iter()
         .find_map(|(name, absent)| absent.then_some(name));
-        missing.map_or(Ok(()), |callback| {
-            Err(ExtensionError::new(format!("{callback} callback not set")))
-        })
+        if let Some(callback) = missing {
+            return Err(ExtensionError::new(format!("{callback} callback not set")));
+        }
+        if self.typed && self.projection_pushdown {
+            return Err(ExtensionError::new(format!(
+                "typed table function '{}': projection_pushdown was enabled after build(). \
+                 The typed scan closure writes columns in declaration order and cannot see \
+                 the projection, so pushdown would put one column's values under another's \
+                 name. Remove projection_pushdown(true), or use the raw TableFunctionBuilder \
+                 with InitInfo::projected_column_index.",
+                self.name()
+            )));
+        }
+        Ok(())
     }
 
     /// Builds a configured, unregistered `duckdb_table_function`.
@@ -426,8 +461,10 @@ impl TableFunctionBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `ExtensionError` if a parameter type is invalid, or if the bind,
-    /// init or scan callback was not set.
+    /// Returns `ExtensionError` if a parameter type is invalid, if the bind,
+    /// init or scan callback was not set, or if projection pushdown was
+    /// switched on after a typed builder's `build` (see
+    /// [`register`][Self::register]).
     ///
     /// # Safety
     ///
@@ -704,6 +741,7 @@ impl core::fmt::Debug for TableFunctionBuilder {
             .field("local_init", &Callback::of(&self.local_init))
             .field("scan", &Callback::of(&self.scan))
             .field("projection_pushdown", &self.projection_pushdown)
+            .field("typed", &self.typed)
             .field("extra_info", &Callback::of(&self.extra_info))
             .finish()
     }

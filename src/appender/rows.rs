@@ -34,7 +34,8 @@ impl Appender {
     /// row's first value went in, `DuckDB` is left holding a half-written row
     /// it can neither finish nor drop, and every row buffered since the last
     /// flush is lost. The appender is then *poisoned*: see the
-    /// [module docs][crate::appender]. A failure of the automatic flush inside
+    /// [module docs][crate::appender]. A closure that panics after the row's
+    /// first value poisons it too. A failure of the automatic flush inside
     /// `end_row` does not poison it (see [`end_row`][Self::end_row]).
     ///
     /// # Errors
@@ -55,7 +56,9 @@ impl Appender {
                 self.column.get()
             )));
         }
+        let unwinding = PoisonOnUnwind(self);
         let result = append(self).and_then(|()| self.end_row());
+        core::mem::forget(unwinding);
         if result.is_err() && self.column.get() != 0 {
             self.lifecycle.set(Lifecycle::Poisoned);
         }
@@ -284,5 +287,18 @@ impl Appender {
         }
         // SAFETY: self.handle is valid and value.as_raw() is non-null.
         self.record_append(unsafe { duckdb_append_value(self.handle, value.as_raw()) })
+    }
+}
+
+/// Poisons the appender if a [`row`][Appender::row] closure panics after the
+/// row's first value, as an error there does. Forgotten on the normal path,
+/// so its `drop` runs only while unwinding.
+struct PoisonOnUnwind<'a>(&'a Appender);
+
+impl Drop for PoisonOnUnwind<'_> {
+    fn drop(&mut self) {
+        if self.0.column.get() != 0 {
+            self.0.lifecycle.set(Lifecycle::Poisoned);
+        }
     }
 }

@@ -179,17 +179,26 @@ fn a_geometry_is_not_rendered() {
 
 /// `as_str` casts to VARCHAR as SQL does, so a UNION renders as its active
 /// member alone: the tag is lost, and a member that is NULL renders as the
-/// text `NULL` although the value itself is not SQL NULL. `Debug` keeps both.
+/// text `NULL` although the value itself is not SQL NULL. `Debug` keeps both
+/// where it shows contents at all (`duckdb-1-5`, which `display_string`
+/// needs).
 #[test]
 fn a_union_renders_as_its_member_alone() {
     let fx = Fixture::open();
     register_probe(&fx);
+    let debug_shows = |debug: &str, want: &str| {
+        if cfg!(feature = "duckdb-1-5") {
+            assert!(debug.contains(want), "{debug}");
+        } else {
+            assert_eq!(debug, "Value { type: Union }");
+        }
+    };
     let (text, _, debug) = render(&fx, "union_value(a := 5)");
     assert_eq!(text.as_deref(), Ok("5"));
-    assert!(debug.contains("union_value(a := 5)"), "{debug}");
+    debug_shows(&debug, "union_value(a := 5)");
     let (text, _, debug) = render(&fx, "union_value(a := NULL::INTEGER)");
     assert_eq!(text.as_deref(), Ok("NULL"));
-    assert!(debug.contains("union_value(a := NULL)"), "{debug}");
+    debug_shows(&debug, "union_value(a := NULL)");
     let (text, _, _) = render(&fx, "NULL::UNION(a INTEGER, b VARCHAR)");
     assert_eq!(text, Err("Value is SQL NULL".to_owned()));
 }

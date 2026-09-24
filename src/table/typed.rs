@@ -90,9 +90,11 @@
 //!
 //! # No projection pushdown
 //!
-//! The typed builder does not offer `projection_pushdown`, and
+//! The typed builder does not offer `projection_pushdown`,
 //! [`build`][TypedTableFunctionBuilder::build] returns an error if it was
-//! switched on on the raw builder before `with_state` / `with_bind_init`.
+//! switched on on the raw builder before `with_state` / `with_bind_init`, and
+//! registering the builder `build` returns fails if it was switched on
+//! afterwards.
 //! With pushdown on,
 //! `DuckDB` hands the scan a chunk holding only the *projected* columns, in
 //! projection order, so `chunk.writer(0)` is no longer "the first declared
@@ -427,6 +429,43 @@ mod tests {
         assert_eq!(typed.name(), "demo");
         assert!(typed.bind.is_some());
         assert!(typed.scan.is_none());
+    }
+
+    unsafe extern "C" fn noop_bind(_: libduckdb_sys::duckdb_bind_info) {}
+    unsafe extern "C" fn noop_init(_: libduckdb_sys::duckdb_init_info) {}
+    unsafe extern "C" fn noop_scan(
+        _: libduckdb_sys::duckdb_function_info,
+        _: libduckdb_sys::duckdb_data_chunk,
+    ) {
+    }
+
+    #[test]
+    fn projection_pushdown_after_build_is_refused_at_registration() {
+        use crate::connection::Registrar;
+        use crate::testing::MockRegistrar;
+        let built = || {
+            TableFunctionBuilder::new("demo")
+                .with_state::<DummyState, _>(|_bind| Ok(DummyState { _rows: 10 }))
+                .scan(|_state, _chunk| Ok(()))
+                .build()
+                .expect("build")
+        };
+        let registrar = MockRegistrar::new();
+        // SAFETY: `MockRegistrar` never calls `DuckDB`.
+        let err = unsafe { registrar.register_table(built().projection_pushdown(true)) }
+            .expect_err("pushdown after build");
+        assert!(err.as_str().contains("after build()"), "{err}");
+        // SAFETY: as above.
+        unsafe { registrar.register_table(built().projection_pushdown(false)) }
+            .expect("pushdown off");
+        // A raw builder keeps pushdown.
+        let raw = TableFunctionBuilder::new("raw")
+            .bind(noop_bind)
+            .init(noop_init)
+            .scan(noop_scan)
+            .projection_pushdown(true);
+        // SAFETY: as above.
+        unsafe { registrar.register_table(raw) }.expect("raw pushdown");
     }
 
     #[test]

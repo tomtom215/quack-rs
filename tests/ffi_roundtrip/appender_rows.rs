@@ -372,3 +372,33 @@ fn rows_buffered_after_the_connection_closes_are_lost_with_an_error() {
     drop(appender);
     assert_eq!(count(&fx, "ap_closed_con"), 0);
 }
+
+/// A `row` closure that panics after its first value leaves the same
+/// half-written row as one that returns an error there, so it poisons the
+/// appender the same way. Before the fix the panic left it unpoisoned: the
+/// caller could finish the row by hand, and `close` committed `(1, 2)`, half
+/// of it from the closure that had panicked.
+#[test]
+fn a_row_closure_that_panics_mid_row_poisons_the_appender() {
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE ap_panic (a INTEGER, b INTEGER)");
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"ap_panic") }.expect("create");
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        appender.row(|row| {
+            row.append_i32(1)?;
+            panic!("the closure panics mid-row");
+        })
+    }));
+    assert!(panicked.is_err(), "the panic reaches the caller");
+    let finish = appender.append_i32(2).and_then(|()| appender.end_row());
+    let err = finish.expect_err("a poisoned appender refuses the rest of the row");
+    assert!(err.to_string().contains("poisoned"), "{err}");
+    assert!(appender.close().is_err(), "close reports the abandoned row");
+    drop(appender);
+    assert_eq!(
+        count(&fx, "ap_panic"),
+        0,
+        "no half-written row is committed"
+    );
+}

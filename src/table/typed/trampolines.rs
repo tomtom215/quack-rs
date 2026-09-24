@@ -51,6 +51,7 @@ pub(super) fn wire<S: Send + 'static>(
             .scan(typed_scan_trampoline::<S>)
             .extra_info(raw, destroy_extra::<S>)
     }
+    .mark_typed()
 }
 
 /// `extra_info` destructor passed to `DuckDB`.

@@ -27,7 +27,12 @@ unsafe extern "C" fn record_bind(info: libduckdb_sys::duckdb_bind_info) {
     let mut seen = SEEN.lock().expect("lock");
     for index in 0..bind.argument_count() {
         // SAFETY: `index` is below the argument count.
-        let expr = unsafe { bind.argument(index) }.expect("argument");
+        let Some(expr) = (unsafe { bind.argument(index) }) else {
+            // Before v1.5.5 `argument` refuses, having set the bind error
+            // `inspects_arguments_or_refuses` checks for. A panic here would
+            // cross this `extern "C"` function and abort.
+            return;
+        };
         let type_id = expr
             .return_type()
             // SAFETY: a live logical type DuckDB just returned.

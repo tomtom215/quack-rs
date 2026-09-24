@@ -60,6 +60,13 @@ an operator sizes its state buffers (not once at registration), so it must alway
 return the same value; `destroy` runs on `combine`'s source states once they have
 been merged, as well as after `finalize`.
 
+**`combine` must leave its source states unchanged.** A window's segment tree
+combines the same state into every frame that covers it, from several threads at
+once, so a `combine` that moves data out of its source (`mem::take`, or zeroing a
+counter) is right for the first frame and wrong for the rest: 4985 of 5000 rows in
+the fifth audit's regression test. Read the source; copy or clone what the target
+needs.
+
 ---
 
 ## Registration

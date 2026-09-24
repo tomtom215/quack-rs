@@ -308,32 +308,48 @@ fn check_duckdb_version(
 ///
 /// This is the platform the library being stamped was most likely built for
 /// too; cross-compiled libraries need an explicit `--platform`.
-pub const fn host_platform() -> Option<&'static str> {
-    let arm = cfg!(target_arch = "aarch64");
-    if !arm && !cfg!(target_arch = "x86_64") {
-        return None;
-    }
-    Some(if cfg!(target_os = "linux") {
-        match (arm, cfg!(target_env = "musl")) {
+pub fn host_platform() -> Option<&'static str> {
+    let env = if cfg!(target_env = "musl") {
+        "musl"
+    } else if cfg!(target_env = "ohos") {
+        "ohos"
+    } else if cfg!(target_env = "gnu") {
+        "gnu"
+    } else {
+        ""
+    };
+    platform_for(std::env::consts::ARCH, std::env::consts::OS, env)
+}
+
+/// The platform name `DuckDBPlatform()` (`platform.hpp`) gives a build for
+/// Rust's `target_arch`, `target_os` and `target_env`, or `None` for one
+/// `DuckDB` publishes no extensions for.
+///
+/// `DuckDB` appends `_musl` on Linux when the C library does not define
+/// `__USE_GNU` — musl, which `OpenHarmony` (`ohos`) is built on too — and
+/// `_mingw` on Windows under `MinGW`, which Rust calls `gnu` (including the
+/// `gnullvm` targets).
+pub fn platform_for(arch: &str, os: &str, env: &str) -> Option<&'static str> {
+    let arm = match arch {
+        "x86_64" => false,
+        "aarch64" => true,
+        _ => return None,
+    };
+    Some(match (os, arm) {
+        ("linux", _) => match (arm, matches!(env, "musl" | "ohos")) {
             (false, false) => "linux_amd64",
             (false, true) => "linux_amd64_musl",
             (true, false) => "linux_arm64",
             (true, true) => "linux_arm64_musl",
-        }
-    } else if cfg!(target_os = "macos") {
-        if arm {
-            "osx_arm64"
-        } else {
-            "osx_amd64"
-        }
-    } else if cfg!(target_os = "windows") {
-        match (arm, cfg!(target_env = "gnu")) {
+        },
+        ("macos", false) => "osx_amd64",
+        ("macos", true) => "osx_arm64",
+        ("windows", _) => match (arm, env == "gnu") {
             (false, false) => "windows_amd64",
             (false, true) => "windows_amd64_mingw",
             (true, false) => "windows_arm64",
             (true, true) => "windows_arm64_mingw",
-        }
-    } else {
-        return None;
+        },
+        _ => return None,
     })
 }

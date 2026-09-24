@@ -458,3 +458,32 @@ fn wasm_header_matches_extension_ci_tools() {
         "header and footer replaced, not stacked"
     );
 }
+
+/// Every combination `DuckDBPlatform()` (`platform.hpp`) names, from the
+/// `target_arch` / `target_os` / `target_env` triples `rustc --print cfg`
+/// reports for each target.
+#[test]
+fn the_platform_matches_duckdbs_name_for_each_target() {
+    for (arch, os, env, want) in [
+        ("x86_64", "linux", "gnu", Some("linux_amd64")),
+        ("aarch64", "linux", "gnu", Some("linux_arm64")),
+        ("x86_64", "linux", "musl", Some("linux_amd64_musl")),
+        ("aarch64", "linux", "musl", Some("linux_arm64_musl")),
+        // OpenHarmony is built on musl, so `DuckDB` sees no `__USE_GNU`.
+        ("x86_64", "linux", "ohos", Some("linux_amd64_musl")),
+        ("aarch64", "linux", "ohos", Some("linux_arm64_musl")),
+        ("x86_64", "macos", "", Some("osx_amd64")),
+        ("aarch64", "macos", "", Some("osx_arm64")),
+        ("x86_64", "windows", "msvc", Some("windows_amd64")),
+        ("aarch64", "windows", "msvc", Some("windows_arm64")),
+        // `*-pc-windows-gnu` and `*-pc-windows-gnullvm` both report `gnu`.
+        ("x86_64", "windows", "gnu", Some("windows_amd64_mingw")),
+        ("aarch64", "windows", "gnu", Some("windows_arm64_mingw")),
+        ("x86", "linux", "gnu", None),
+        ("riscv64", "linux", "gnu", None),
+        ("x86_64", "freebsd", "", None),
+        ("aarch64", "android", "", None),
+    ] {
+        assert_eq!(cli::platform_for(arch, os, env), want, "{arch} {os} {env}");
+    }
+}

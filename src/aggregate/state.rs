@@ -44,7 +44,8 @@
 //!
 //! - **L1**: Combine propagates all fields because your type `T`'s `combine`
 //!   method is responsible — the `FfiState` wrapper ensures `T`'s method is called.
-//! - **L2**: No double-free — `destroy_callback` sets `inner` to null after freeing.
+//! - **L2**: No double-free — `destroy_callback` clears the state's tag before
+//!   dropping `T`, and drops only a state whose tag matches.
 //! - **L3**: No panic across FFI — `with_state_mut` returns an `Option`, not a panic.
 
 use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
