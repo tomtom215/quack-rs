@@ -1008,6 +1008,10 @@ in each section below.
   The drop now closes through `duckdb_file_handle_close`, which catches, and
   destroys the handle only if that succeeded; after a failed close it leaks
   the handle rather than retry the close unguarded.
+- **`FileHandle::seek` clamped a position past `i64::MAX` to `i64::MAX`**,
+  which a file system that accepts that offset (tmpfs) took, so the call
+  returned `Ok` at a position the caller never asked for. It is now an
+  `InvalidInput` error.
 - **`append_metadata` named the wrong default platform on OpenHarmony**
   (`*-linux-ohos`): `DuckDB` appends `_musl` there, as for any musl-based
   Linux, and the tool did not.

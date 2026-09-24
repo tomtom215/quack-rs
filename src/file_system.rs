@@ -479,9 +479,17 @@ impl FileHandle<'_> {
     ///
     /// # Errors
     ///
-    /// Returns the structured [`ErrorData`] if the seek fails.
+    /// Returns the structured [`ErrorData`] if the seek fails, and an
+    /// `InvalidInput` error, without calling `DuckDB`, for a position past
+    /// `i64::MAX`, which `DuckDB`'s seek cannot take (it used to be clamped,
+    /// and a file system that accepts that offset returned `Ok`).
     pub fn seek(&self, position: u64) -> Result<(), ErrorData> {
-        let pos = i64::try_from(position).unwrap_or(i64::MAX);
+        let Ok(pos) = i64::try_from(position) else {
+            return Err(ErrorData::new(
+                crate::error_data::DuckDbErrorType::InvalidInput,
+                &format!("FileHandle::seek: position {position} is past i64::MAX"),
+            ));
+        };
         // SAFETY: self.handle is valid.
         let state = unsafe { duckdb_file_handle_seek(self.handle, pos) };
         self.check(state)
