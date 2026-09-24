@@ -337,6 +337,12 @@ quack-rs/
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` aggregate function set (multiple overloads)
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` aggregate function
 │   │       └── tests.rs               # Unit tests
+│   ├── appender/
+│   │   ├── chunk.rs                   # Chunk-at-a-time appends: handing the [`Appender`] a whole [`DataChunk`]
+│   │   ├── construct.rs               # Creating an [`Appender`] and choosing the columns it appends to
+│   │   ├── lifecycle.rs               # Flushing, closing and (with `duckdb-1-5`) clearing an [`Appender`]
+│   │   ├── rows.rs                    # Row-at-a-time appends: `row`, `end_row` and the non-numeric `append_*` methods
+│   │   └── scalars.rs                 # The fixed-width numeric `append_*` methods, `append_bool` through `append_u128`
 │   ├── bin/
 │   │   └── append_metadata/
 │   │       ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)

@@ -61,6 +61,7 @@ exclude_globs = [
     "src/expression.rs",        # Expression: all methods call duckdb_expression_*
     "src/file_system.rs",       # FileSystem/FileHandle: all methods call duckdb FS API
     "src/appender.rs",          # Appender: all methods call duckdb_appender_*
+    "src/appender/*.rs",        # the same Appender methods, split out of appender.rs
     "src/selection_vector.rs",  # SelectionVector: new() calls duckdb_create_selection_vector
     "src/instance_cache.rs",    # InstanceCache: all methods call duckdb_*_instance_cache
     "src/table_description.rs", # TableDescription: FFI methods; tests are bundled-test-gated
