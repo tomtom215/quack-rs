@@ -113,7 +113,8 @@ pub enum ResultKind {
 }
 
 /// A `duckdb_result` — materialised, or streaming when it came from
-/// [`PreparedStatement::execute_streaming`] — destroyed on drop.
+/// `PreparedStatement::execute_streaming` (feature `duckdb-1-5`) — destroyed
+/// on drop.
 ///
 /// Iterate the rows with [`next_chunk`][Self::next_chunk] until it returns
 /// `Ok(None)`; an `Err` means the rows stopped early.

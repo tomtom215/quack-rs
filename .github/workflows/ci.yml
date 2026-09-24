@@ -302,6 +302,11 @@ jobs:
       - run: cargo doc --no-deps --features duckdb-1-5-4
         env:
           RUSTDOCFLAGS: "-D warnings"
+      # A dependent crate documents quack-rs with *its* feature set, usually
+      # the default one, where a link to a feature-gated item is broken.
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
       # The book's changelog page is a mirror of CHANGELOG.md. Kept by hand it
       # drifted ~19 KB and dropped a whole subsection of the published 0.16.0
       # entry, so it is generated now and checked here.
