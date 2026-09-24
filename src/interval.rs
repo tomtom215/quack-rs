@@ -516,6 +516,30 @@ mod tests {
         assert_eq!(interval_to_micros_saturating(iv), i64::MAX);
     }
 
+    /// The days term alone decides the direction: it overflows, outweighs
+    /// months and micros of the other sign, and is itself far past `i64`.
+    /// Only the randomized `saturating_direction_matches_i128` reached this
+    /// case before, so CI's mutation job caught `days * MICROS_PER_DAY` ->
+    /// `days + MICROS_PER_DAY` on some runs and not others.
+    #[test]
+    fn saturation_direction_follows_days_when_days_dominate() {
+        let down = DuckInterval {
+            months: 1_000_000,
+            days: i32::MIN,
+            micros: i64::MAX,
+        };
+        assert_eq!(interval_to_micros(down), None);
+        assert_eq!(interval_to_micros_saturating(down), i64::MIN);
+
+        let up = DuckInterval {
+            months: -1_000_000,
+            days: i32::MAX,
+            micros: i64::MIN,
+        };
+        assert_eq!(interval_to_micros(up), None);
+        assert_eq!(interval_to_micros_saturating(up), i64::MAX);
+    }
+
     #[test]
     fn saturating_negative_overflow_all_negative() {
         let iv = DuckInterval {

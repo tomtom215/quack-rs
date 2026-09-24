@@ -1069,6 +1069,13 @@ All at `fcebab5` against DuckDB 1.5.5 unless stated, x86-64 Linux:
   (116 changed `src` files, config exclusions re-applied, `--features
   duckdb-1-5-4 --lib`): 994 mutants, **0 missed**, 745 caught, 249 unviable,
   0 timeouts. No mutant log contains the `rustc` probe failure of 8.4.
+  CI's own run of the same invocation (on `3ddd9b8`) missed one mutant the
+  local run had caught: `days * MICROS_PER_DAY` -> `+` in
+  `interval_to_micros_saturating`, which only a randomized proptest could
+  reach. A deterministic test now kills it (shown failing with the mutation
+  applied), and `src/interval.rs` under `PROPTEST_CASES=1` gives 28 mutants,
+  27 caught, 1 unviable, 0 missed; the only other proptests in the library
+  (`src/testing/harness.rs`) exercise the harness and their own test states.
 - **DuckDB built from source, assertions on,** after the `time_from_micros`
   fix (8.2), with CI's two commands: `cargo test --all-targets --features
   bundled-test` passes 816 library, 34 `append_metadata`, 119 end-to-end,
