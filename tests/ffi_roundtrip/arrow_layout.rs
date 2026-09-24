@@ -186,6 +186,13 @@ fn ints(values: &[i32], offset: i64) -> Box<Arr> {
     )
 }
 
+/// Dictionary values `[5, 6]` with one padding element past their length:
+/// `data_chunk_from_arrow`'s Safety section requires it when the indices can
+/// be NULL (`DuckDB` reads a sentinel entry there, upstream item 29).
+fn padded_dictionary() -> Box<Arr> {
+    arr(2, 0, 0, vec![vec![], bytes(&[5_i32, 6, 0])], vec![])
+}
+
 fn connect(fx: &Fixture) -> OwnedConnection {
     // SAFETY: the fixture's database outlives the connection.
     unsafe { OwnedConnection::open(fx.db()) }.expect("connect")
@@ -438,7 +445,7 @@ fn a_dictionary_with_nulls_under_a_list_starting_past_zero_is_refused() {
             0,
             0,
             vec![vec![], bytes(&[2_i32, 4])],
-            vec![with_dict(dict, ints(&[5, 6], 0))],
+            vec![with_dict(dict, padded_dictionary())],
         )
     };
     refused(
@@ -460,7 +467,13 @@ fn a_run_end_encoded_array_below_an_offset_is_refused() {
     let schema = || {
         sch(
             "+s",
-            vec![sch("+r", vec![sch("i", vec![]), sch("i", vec![])])],
+            vec![sch(
+                "+r",
+                vec![
+                    named("run_ends", sch("i", vec![])),
+                    named("values", sch("i", vec![])),
+                ],
+            )],
         )
     };
     let column = |offset| {
@@ -535,7 +548,7 @@ fn a_dictionary_under_null_struct_rows_past_2048_is_refused() {
             0,
             rows.div_ceil(3) as i64,
             vec![bitmap(&valid)],
-            vec![with_dict(dict, ints(&[5, 6], 0))],
+            vec![with_dict(dict, padded_dictionary())],
         )
     };
     refused(

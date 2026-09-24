@@ -239,13 +239,18 @@ pub unsafe fn schema_from_arrow(
 /// - its `children` pointer, or one of the child pointers, is null;
 /// - a child is shorter than `length` (the Arrow specification requires
 ///   every child of a struct array to hold `offset + length` rows);
-/// - a dictionary-encoded array anywhere in `array` has a validity buffer, a
-///   nonzero null count and more than
-///   [`duckdb_vector_size`](libduckdb_sys::duckdb_vector_size) (2048)
-///   entries. `DuckDB` imports that shape by writing past a heap allocation
-///   (see `docs/upstream-duckdb-reports.md`); a `LIST` of 1025 or more rows
-///   whose two-element lists are dictionary-encoded is enough to reach it.
-///   Split such batches before importing them.
+/// - a node anywhere in `array` has a valid Arrow layout that `DuckDB`
+///   imports from the wrong rows or out of bounds: an offset below the top
+///   level that `DuckDB` misapplies, a dictionary under a list or with more
+///   than [`duckdb_vector_size`](libduckdb_sys::duckdb_vector_size) (2048)
+///   rows that can hold NULLs, a nested dictionary, overlapping or gapped
+///   list views, a sparse union with recoded type ids, or a run-end-encoded
+///   array where `DuckDB` reads a plain one. The message names the node; the
+///   module docs of `src/arrow/import_layout.rs` and
+///   `docs/upstream-duckdb-reports.md` (items 9 and 24 to 28) give the
+///   details;
+/// - the array and its schema disagree on a node's child count or
+///   dictionary encoding.
 ///
 /// [`DuckDbErrorType::Internal`] if copying a non-flat column into a flat
 /// vector fails (see above), which needs an allocation failure.
@@ -284,6 +289,18 @@ pub unsafe fn schema_from_arrow(
 ///   values imported are right; the read itself is the hazard. Buffers padded to a multiple of 8 or 64 bytes, as
 ///   the Arrow columnar format recommends, satisfy this; the allocation size
 ///   is invisible through the C Data Interface, so it cannot be checked here.
+/// - A dictionary whose values are a fixed-width type (integers, floats,
+///   `DATE` in days, `TIMESTAMP`, `DECIMAL`, ...) and whose indices can be
+///   NULL (a nonzero `null_count`, or NULL rows in an enclosing struct) must
+///   have its values buffer readable for **one element past**
+///   `offset + length`. `DuckDB` points every NULL index at a sentinel entry
+///   one past the dictionary, but imports those types without copying, so
+///   the sentinel lies in the producer's buffer; copying the column, as this
+///   function does for every dictionary-encoded column, reads it (an invalid
+///   read under valgrind on 1.4.4 to 1.5.5,
+///   `docs/upstream-duckdb-reports.md`, item 29). The value read is
+///   discarded: those rows are NULL. A buffer padded to a multiple of 64
+///   bytes satisfies this unless the values fill it exactly.
 #[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub unsafe fn data_chunk_from_arrow(
     connection: duckdb_connection,

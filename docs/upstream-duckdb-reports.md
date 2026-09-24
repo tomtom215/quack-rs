@@ -39,6 +39,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 26 | Arrow import of a dictionary whose values are dictionary-encoded shares one dictionary cache and returns garbage | C program, below | nested dictionaries refused |
 | 27 | Arrow list-view import scans `sum(sizes)` child rows from the lowest offset, reading past the child | C program, below (valgrind) | overlapping or gapped list views refused |
 | 28 | Arrow sparse-union import uses the type codes as member indices, ignoring the `+us:` code list | C program, below | non-identity union type codes refused |
+| 29 | Arrow dictionary import points NULL indices one past a zero-copied values buffer; copying the vector reads past it | C program, below (valgrind) | Safety clause on `data_chunk_from_arrow` |
 
 ## Before filing
 
@@ -3046,3 +3047,137 @@ mitigation: `data_chunk_from_arrow` refuses a sparse union whose type codes are
 not `0, 1, ...` in order (a "recoded" union);
 `src/arrow/import_layout.rs`, exercised end-to-end by
 `tests/ffi_roundtrip/arrow_layout.rs`.
+
+---
+
+## 29. Arrow dictionary import points NULL indices one element past the producer's values buffer
+
+`ColumnArrowToDuckDBDictionary` (`arrow_conversion.cpp`) allocates the
+dictionary vector with `dictionary->length + 1` entries and marks the last
+one invalid, as a sentinel: `SetMaskedSelectionVectorLoop` points every NULL
+index at it. The values are then converted into that vector, but for a
+fixed-width type (the integer and float types, `DATE` in days, `TIMESTAMP`,
+and the others `DirectConversion` handles) the conversion replaces the
+vector's data with a pointer into the Arrow values buffer
+(`FlatVector::SetData`), so the sentinel entry lies one element past the
+producer's buffer. `VectorOperations::Copy` (`TemplatedCopy`,
+`vector_copy.cpp`) copies values without consulting validity, so copying
+the imported vector, for example with `duckdb_vector_copy_sel`, reads that
+element. The rows it fills are NULL, so the result is right; the read is
+the defect. `duckdb_append_data_chunk` does not reach it (valgrind is clean
+for that path).
+
+Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5,
+x86_64 Linux, valgrind 3.22.0. Build: `gcc -I<libduckdb dir> item29.c
+-L<libduckdb dir> -lduckdb -o item29`, then run with
+`LD_LIBRARY_PATH=<libduckdb dir>` (under `valgrind` for the read).
+
+```c
+// duckdb_data_chunk_from_arrow: a dictionary-encoded INTEGER column with a
+// NULL index. ColumnArrowToDuckDBDictionary points every NULL row's selection
+// at a sentinel entry one past the dictionary (dictionary->length), but for a
+// fixed-width type the dictionary vector's data is the Arrow values buffer
+// itself (DirectConversion), so the sentinel lies past the producer's buffer.
+// Copying the vector with duckdb_vector_copy_sel reads it; DuckDB's own
+// appender does not (valgrind is clean for that path).
+// Build: gcc -I<libduckdb dir> item29.c -L<libduckdb dir> -lduckdb -o item29
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    printf("Built with DuckDB %s\n", duckdb_library_version());
+    duckdb_database db; duckdb_connection con; duckdb_open(NULL, &db); duckdb_connect(db, &con);
+
+    // Dictionary values [5, 6] in a heap buffer of exactly 8 bytes.
+    int32_t *values = malloc(2 * sizeof(int32_t));
+    values[0] = 5; values[1] = 6;
+    const void *vbuf[2] = {NULL, values};
+    struct ArrowArray dict = {2, 0, 0, 2, 0, vbuf, NULL, NULL, noop_release, NULL};
+    // Indices [1, NULL, 0]: bit 1 of the validity bitmap is clear.
+    uint8_t valid = 0x05;
+    int32_t idx[3] = {1, 0, 0};
+    const void *ibuf[2] = {&valid, idx};
+    struct ArrowArray col = {3, 1, 0, 2, 0, ibuf, NULL, &dict, noop_release, NULL};
+    struct ArrowArray *cols[1] = {&col};
+    const void *nb[1] = {NULL};
+    struct ArrowArray rb = {3, 0, 0, 1, 1, nb, cols, NULL, noop_release, NULL};
+
+    struct ArrowSchema s_values = {"i", "v", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+    struct ArrowSchema s_col = {"i", "v", NULL, 2, 0, NULL, &s_values, noop_srelease, NULL};
+    struct ArrowSchema *scols[1] = {&s_col};
+    struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)&ps, &conv);
+    if (e1) { printf("schema_from_arrow: %s\n", duckdb_error_data_message(e1)); return 1; }
+    duckdb_data_chunk out = NULL;
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)&rb, conv, &out);
+    if (e2) { printf("from_arrow: %s\n", duckdb_error_data_message(e2)); return 1; }
+
+    duckdb_vector src = duckdb_data_chunk_get_vector(out, 0);
+    duckdb_logical_type ty = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
+    duckdb_vector dst = duckdb_create_vector(ty, 3);
+    duckdb_selection_vector sel = duckdb_create_selection_vector(3);
+    sel_t *s = duckdb_selection_vector_get_data_ptr(sel);
+    for (int i = 0; i < 3; i++) s[i] = (sel_t)i;
+    duckdb_vector_copy_sel(src, dst, sel, 3, 0, 0);
+    int32_t *d = (int32_t *)duckdb_vector_get_data(dst);
+    uint64_t *m = duckdb_vector_get_validity(dst);
+    printf("rows:");
+    for (int i = 0; i < 3; i++) {
+        if (m && !duckdb_validity_row_is_valid(m, i)) printf(" NULL"); else printf(" %d", d[i]);
+    }
+    printf("\n");
+    duckdb_destroy_selection_vector(sel);
+    duckdb_destroy_vector(&dst);
+    duckdb_destroy_logical_type(&ty);
+    duckdb_destroy_data_chunk(&out);
+    duckdb_destroy_arrow_converted_schema(&conv);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    free(values);
+    return 0;
+}
+```
+
+Observed, identical on all eight releases apart from the version line
+(program output compared with `md5sum`; valgrind reported 1 error from 1
+context on each, the same invalid read of size 4 in
+`duckdb::VectorOperations::Copy`, 0 bytes after the 8-byte `malloc` block
+of the values). The valgrind trace is 1.5.5's, with the process id,
+addresses and the program's path normalised:
+
+```text
+Built with DuckDB v1.5.5
+rows: 6 NULL 5
+```
+
+```text
+==PID== Invalid read of size 4
+==PID==    at 0x…: duckdb::VectorOperations::Copy(duckdb::Vector const&, duckdb::Vector&, duckdb::SelectionVector const&, unsigned long, unsigned long, unsigned long, unsigned long) (in /opt/duckdb/1.5.5/libduckdb.so)
+==PID==    by 0x…: duckdb::VectorOperations::Copy(duckdb::Vector const&, duckdb::Vector&, duckdb::SelectionVector const&, unsigned long, unsigned long, unsigned long) (in /opt/duckdb/1.5.5/libduckdb.so)
+==PID==    by 0x…: main (in item29)
+==PID==  Address 0x… is 0 bytes after a block of size 8 alloc'd
+==PID==    at 0x…: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==PID==    by 0x…: main (in item29)
+```
+
+Expected: the sentinel entry inside memory `DuckDB` owns (copy the values
+when the indices can be NULL), or a copy that skips invalid rows.
+
+quack-rs mitigation: `data_chunk_from_arrow` flattens every
+dictionary-encoded column with `duckdb_vector_copy_sel`, so it performs this
+read itself. Its Safety section requires such a dictionary's values buffer
+to be readable for one element past `offset + length`. Found by running
+`tests/ffi_roundtrip/arrow_layout.rs` against a `libduckdb` built with
+AddressSanitizer (heap-buffer-overflow in `TemplatedCopy<int>`); that test's
+dictionaries are now padded as the Safety section requires.

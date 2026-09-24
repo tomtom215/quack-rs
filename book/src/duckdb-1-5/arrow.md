@@ -140,6 +140,10 @@ therefore makes the caller's job:
   the *schema* declares. An `int32` child imported under a `utf8` schema has
   its values read as string offsets into a buffer that does not exist. Arrays
   exported with `data_chunk_to_arrow` under the schema you converted conform.
+- **A fixed-width dictionary whose indices can be NULL needs one element of
+  padding** past its values: DuckDB points NULL indices at an entry there,
+  and the copy `data_chunk_from_arrow` makes of every dictionary column reads
+  it (`docs/upstream-duckdb-reports.md`, item 29).
 - **The buffers must be as long as the lengths say**, and `length` must be
   the true row count. DuckDB allocates the chunk for `length` rows before its
   error handling starts, so an absurd length is an allocation failure that

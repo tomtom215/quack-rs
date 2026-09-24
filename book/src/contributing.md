@@ -192,6 +192,8 @@ quack-rs/
 │   │       ├── mod.rs                 # Builder types for registering `DuckDB` aggregate functions
 │   │       ├── overload.rs            # One overload within an [`AggregateFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` aggregate function set (multiple overloads)
+│   │       ├── single/
+│   │       │   └── register.rs        # `AggregateFunctionBuilder::register`
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` aggregate function
 │   │       └── tests.rs               # Unit tests
 │   ├── appender/

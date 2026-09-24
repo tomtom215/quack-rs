@@ -18,7 +18,7 @@ This directory contains all GitHub Actions workflows for the quack-rs project.
 
 ## Quality gates (enforced by CI)
 
-Every job in `ci.yml` must be green before merging a PR, except the three marked
+Every job in `ci.yml` must be green before merging a PR, except the two marked
 informational. This table is generated from `ci.yml`; the hand-written list it
 replaced had drifted to fewer than half the jobs.
 
@@ -28,6 +28,7 @@ replaced had drifted to fewer than half the jobs.
 | `test` | Test (${{ matrix.os }}) | blocking |
 | `test-bundled` | Test bundled-test (${{ matrix.os }}) | blocking |
 | `test-bundled-prebuilt` | Test bundled-test-prebuilt (prebuilt libduckdb) | blocking |
+| `test-older-engines` | Test against DuckDB ${{ matrix.engine }} (${{ matrix.features }}) | blocking |
 | `test-duckdb-1-5` | Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features | blocking |
 | `wasm` | WASM (wasm32-unknown-emscripten) | blocking |
 | `clippy` | Clippy | blocking |
@@ -35,6 +36,7 @@ replaced had drifted to fewer than half the jobs.
 | `fmt` | Format | blocking |
 | `doc` | Documentation | blocking |
 | `msrv` | MSRV (1.86.0) | blocking |
+| `dependency-floor` | Dependency floor (duckdb / libduckdb-sys 1.4.4) | blocking |
 | `bench-compile` | Benchmark (compile check) | blocking |
 | `example-check` | Example (hello-ext · ${{ matrix.os }}) | blocking |
 | `scaffold-compile` | Scaffold (compile check) | blocking |
@@ -42,10 +44,13 @@ replaced had drifted to fewer than half the jobs.
 | `abi-table` | ABI layout table (vs upstream DuckDB headers) | blocking |
 | `platform-table` | Platform list (vs upstream distribution matrix) | blocking |
 | `spdx-list` | SPDX shortlist (vs official registry) | blocking |
+| `autoload-entries` | Catalog autoload names (vs every supported DuckDB) | blocking |
+| `book` | Book builds (mdBook) | blocking |
 | `msrv-vs-duckdb-ci` | MSRV vs DuckDB's extension CI | blocking |
 | `extension-load` | Extension load test (DuckDB ${{ matrix.duckdb }}) | blocking |
 | `scaffold-e2e` | Scaffold end-to-end (build, stamp, load, query) | blocking |
-| `abi-guard` | ABI guard rejects a cross-version unstable build | blocking |
+| `abi-guard` | ABI guard refuses a build whose declared DuckDB version contradicts its bindings | blocking |
+| `abi-guard-layout` | ABI guard refuses a real layout mismatch (and accepts the matching DuckDB) | blocking |
 | `publish-dry-run` | Publish dry-run | blocking |
 | `security` | Security (cargo-deny) | blocking |
 | `osv-scan` | Security (OSV / GHSA) | blocking |

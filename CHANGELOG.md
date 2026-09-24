@@ -52,6 +52,10 @@ in each section below.
 - A `value_render` fuzz target (`fuzz/`, feature `live`) that renders
   arbitrary temporal payloads, alone and nested in lists, through a real
   `DuckDB`.
+- CI: `test-older-engines` also runs the suite against 1.4.5 (the last 1.4
+  release) and against 1.5.3 and 1.5.4, the oldest releases the `duckdb-1-5-3`
+  and `duckdb-1-5-4` features load into. `tests/append_metadata_cli.rs` runs
+  the `append_metadata` binary end to end.
 
 #### Fourth audit
 
@@ -427,7 +431,16 @@ in each section below.
   unchanged (see Fixed), and no longer advises moving out of them.
 - `Catalog::type_name` no longer gives `"system"` as an example type: the
   `system` and `temp` catalogs are of type `"duckdb"`.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 28, and item 16 gained
+- `data_chunk_from_arrow`'s Safety section requires a fixed-width
+  dictionary's values buffer to be readable one element past its length when
+  the indices can be NULL: `DuckDB` points NULL indices at a sentinel entry
+  there, and the flattening copy reads it (found with an
+  AddressSanitizer-built `libduckdb`; item 29). Its Errors section now lists
+  the layout refusals.
+- `LESSONS.md` and the book's pitfall catalogue gained L15 (`combine` must
+  leave its source states unchanged) and L16 (a valid Arrow array is not
+  always one `DuckDB` imports correctly): 28 documented pitfalls.
+- `docs/upstream-duckdb-reports.md` gained items 20 to 29, and item 16 gained
   a `HUGEINT` reproducer.
 
 #### Fourth audit

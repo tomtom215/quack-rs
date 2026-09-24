@@ -184,7 +184,9 @@ jobs:
     # Every other test job runs against the DuckDB release Cargo.lock pins
     # (v1.5.5), but quack-rs supports every release from v1.4.4, and a
     # `duckdb-1-5` build loads into v1.5.0 to v1.5.4 too. Their C APIs differ
-    # in places: before v1.5.5 `duckdb_scalar_function_bind_get_argument`
+    # in places (v1.4.5 is the last 1.4 release; v1.5.3 and v1.5.4 are the
+    # oldest the duckdb-1-5-3 and duckdb-1-5-4 features load into): before
+    # v1.5.5 `duckdb_scalar_function_bind_get_argument`
     # copies outside any `try` (a subquery argument aborted the process);
     # before v1.5.4 `duckdb_create_decimal_type` validates nothing; before
     # v1.5.0 scalar registration cannot add an overload to an existing name,
@@ -201,9 +203,19 @@ jobs:
           - engine: v1.4.4
             crate: 1.4.4
             features: bundled-test-prebuilt
+          - engine: v1.4.5
+            crate: 1.4.5
+            features: bundled-test-prebuilt
           - engine: v1.5.0
             crate: 1.10500.0
             features: bundled-test-prebuilt,duckdb-1-5
+          # The oldest release each version feature loads into.
+          - engine: v1.5.3
+            crate: 1.10503.0
+            features: bundled-test-prebuilt,duckdb-1-5-3
+          - engine: v1.5.4
+            crate: 1.10504.0
+            features: bundled-test-prebuilt,duckdb-1-5-4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
