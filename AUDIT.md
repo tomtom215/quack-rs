@@ -1031,7 +1031,8 @@ unchanged in `main`'s source at `30c64e17`: `duckdb_list_vector_reserve`,
 `Initialize` before its `try`). A fifth report asks for a way to compare scalar
 and aggregate bind data, and a sixth reports the aggregate states a failed
 `finalize` leaves undestroyed. Drafted, not yet filed; DuckDB's tracker was not
-searched for duplicates.
+searched for duplicates. The drafts, reproducers and a status table are in
+`docs/upstream-duckdb-reports.md`.
 
 ### 8.6 How this pass was verified
 
