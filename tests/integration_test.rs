@@ -1218,6 +1218,118 @@ fn documented_pitfall_counts_match_lessons_md() {
     );
 }
 
+/// The module-responsibilities table in `docs/architecture.md` has a row for
+/// every public top-level module in `src/lib.rs`, and each row's "requires
+/// `<feature>`" note matches the `#[cfg(feature = ...)]` on that `pub mod` line.
+///
+/// The table had drifted both ways: nine modules added since it was written were
+/// missing, and `appender` / `table_description` were still marked as requiring
+/// `duckdb-1-5` after the gate was lifted from them.
+#[test]
+fn architecture_module_table_matches_lib_rs() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let doc_path = root.join("docs/architecture.md");
+    if !doc_path.is_file() {
+        eprintln!("SKIPPED architecture_module_table_matches_lib_rs: docs/ is not packaged");
+        return;
+    }
+    let lib = std::fs::read_to_string(root.join("src/lib.rs")).expect("src/lib.rs");
+    // module name -> the feature on the `#[cfg(feature = "...")]` line directly
+    // above its `pub mod` (None when there is no such line).
+    let mut modules = std::collections::BTreeMap::new();
+    let mut previous = "";
+    for line in lib.lines() {
+        if let Some(name) = line
+            .strip_prefix("pub mod ")
+            .and_then(|r| r.strip_suffix(';'))
+        {
+            let gate = previous
+                .trim()
+                .strip_prefix("#[cfg(feature = \"")
+                .and_then(|r| r.strip_suffix("\")]"))
+                .map(str::to_owned);
+            modules.insert(name.to_owned(), gate);
+        }
+        if !line.trim().is_empty() {
+            previous = line;
+        }
+    }
+    assert!(
+        !modules.is_empty(),
+        "no `pub mod` lines found in src/lib.rs"
+    );
+
+    let doc = std::fs::read_to_string(&doc_path).expect("docs/architecture.md");
+    let table = doc
+        .split("### Module responsibilities")
+        .nth(1)
+        .expect("docs/architecture.md: no \"### Module responsibilities\" section")
+        .split("\n---")
+        .next()
+        .unwrap_or_default();
+    // (module path, every feature its row says it requires), in table order
+    let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+    for line in table.lines() {
+        let Some(cell) = line.strip_prefix("| `") else {
+            continue;
+        };
+        let path = cell.split('`').next().unwrap_or_default().to_owned();
+        let required = line
+            .split("requires `")
+            .skip(1)
+            .filter_map(|r| r.split('`').next())
+            .map(str::to_owned)
+            .collect();
+        rows.push((path, required));
+    }
+
+    let mut problems = Vec::new();
+    for (name, gate) in &modules {
+        let prefix = format!("{name}::");
+        let own = rows.iter().find(|(p, _)| p == name);
+        let subs: Vec<_> = rows
+            .iter()
+            .filter(|(p, _)| p.starts_with(&prefix))
+            .collect();
+        match (own, gate) {
+            (None, _) if subs.is_empty() => problems.push(format!(
+                "`{name}` is a `pub mod` in src/lib.rs but has no `{name}` or `{name}::*` row"
+            )),
+            // A parent documented only through its submodule rows: when it is
+            // gated, every one of those rows must say so.
+            (None, Some(f)) => {
+                for (p, required) in subs.iter().filter(|(_, r)| !r.contains(f)) {
+                    problems.push(format!(
+                        "`{p}`: src/lib.rs gates `{name}` on {f:?}, but the row says it requires {required:?}"
+                    ));
+                }
+            }
+            (None, None) => {}
+            (Some((_, required)), _) => {
+                let expected: Vec<String> = gate.iter().cloned().collect();
+                if *required != expected {
+                    problems.push(format!(
+                        "`{name}`: src/lib.rs gates it on {gate:?}, but its row says it requires {required:?}"
+                    ));
+                }
+            }
+        }
+    }
+    for (path, _) in &rows {
+        let top = path.split("::").next().unwrap_or_default();
+        if !modules.contains_key(top) {
+            problems.push(format!(
+                "`{path}` has a row but `{top}` is not a `pub mod` in src/lib.rs"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "docs/architecture.md's module-responsibilities table is stale:\n{}",
+        problems.join("\n")
+    );
+}
+
 /// Every paragraph of user-facing documentation that mentions
 /// `panic = "abort"` must be warning against it.
 ///
