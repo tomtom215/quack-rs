@@ -51,6 +51,7 @@ exclude_globs = [
     "src/testing/harness.rs",   # test harness infrastructure (FFI wiring)
     "src/testing/in_memory_db.rs", # thin wrapper around DuckDB C API
     "src/testing/mock_vector.rs",  # test-only vector stub
+    "src/testing/mock_vector/*.rs", # the same stub, split out of mock_vector.rs
     "src/testing/mod.rs",       # re-exports only
     "src/bin/**",               # binary entry points
     # DuckDB 1.5.x FFI wrapper modules: every public method calls a DuckDB C
