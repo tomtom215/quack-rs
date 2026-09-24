@@ -36,6 +36,7 @@ use libduckdb_sys::{
 };
 
 use crate::error::ExtensionError;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, TypeId};
 use crate::value::Value;
 use crate::vector::VectorReader;
@@ -172,6 +173,13 @@ impl ConfigOptionBuilder {
         Ok(())
     }
 
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
+        self.option_type
+            .map_or(Ok(()), |id| slot(id, "config option type"))
+    }
+
     /// Registers this config option with `DuckDB`.
     ///
     /// # The default is converted by SQL, never inside the C API
@@ -223,6 +231,7 @@ impl ConfigOptionBuilder {
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         self.check_parts()?;
+        self.check_types(LogicalType::check_slot)?;
         let name = self.name.to_string_lossy();
         let type_id = self
             .option_type

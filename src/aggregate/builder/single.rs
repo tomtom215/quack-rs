@@ -12,6 +12,7 @@ use crate::aggregate::callbacks::{
     CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn,
 };
 use crate::error::ExtensionError;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
 
@@ -397,6 +398,22 @@ impl AggregateFunctionBuilder {
         missing.map_or(Ok(()), |callback| {
             Err(ExtensionError::new(format!("{callback} callback not set")))
         })
+    }
+
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
+        for (i, id) in self.params.iter().enumerate() {
+            slot(*id, &format!("aggregate function parameter {i}"))?;
+        }
+        if let Some(id) = self.return_type {
+            slot(id, "aggregate function return type")?;
+        }
+        crate::table::type_check::refuse_any_return(
+            "aggregate function return type",
+            self.return_type,
+            self.return_logical.as_ref(),
+        )
     }
 }
 

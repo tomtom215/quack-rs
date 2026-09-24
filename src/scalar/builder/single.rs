@@ -23,6 +23,7 @@ use libduckdb_sys::{
 };
 
 use crate::error::ExtensionError;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
 
@@ -388,17 +389,28 @@ impl ScalarFunctionBuilder {
         Ok(())
     }
 
-    fn check_complete(&self) -> Result<ScalarFn, ExtensionError> {
-        self.check_parts()?;
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
         for (i, id) in self.params.iter().enumerate() {
-            LogicalType::check_slot(*id, &format!("scalar function parameter {i}"))?;
+            slot(*id, &format!("scalar function parameter {i}"))?;
         }
         if let Some(id) = self.return_type {
-            LogicalType::check_slot(id, "scalar function return type")?;
+            slot(id, "scalar function return type")?;
         }
         if let Some(ref varargs) = self.varargs {
-            varargs.check("scalar function varargs")?;
+            varargs.check(slot, "scalar function varargs")?;
         }
+        crate::table::type_check::refuse_any_return(
+            "scalar function return type",
+            self.return_type,
+            self.return_logical.as_ref(),
+        )
+    }
+
+    fn check_complete(&self) -> Result<ScalarFn, ExtensionError> {
+        self.check_parts()?;
+        self.check_types(LogicalType::check_slot)?;
         self.function
             .ok_or_else(|| ExtensionError::new("function callback not set"))
     }
@@ -488,11 +500,6 @@ impl ScalarFunctionBuilder {
         snapshot: Option<&RefCell<Option<super::collision::ExistingScalars>>>,
     ) -> Result<(), ExtensionError> {
         let function = self.check_complete()?;
-        crate::table::type_check::refuse_any_return(
-            "scalar function return type",
-            self.return_type,
-            self.return_logical.as_ref(),
-        )?;
         let name = self.name.to_string_lossy().into_owned();
         let rendered = self.rendered_signature();
         // SAFETY: `con` is valid per this function's contract.

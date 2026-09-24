@@ -1018,6 +1018,12 @@ in each section below.
 - **`append_metadata` named the wrong default platform on OpenHarmony**
   (`*-linux-ohos`): `DuckDB` appends `_musl` there, as for any musl-based
   Linux, and the tool did not.
+- **`MockRegistrar` still accepted builders whose types the real
+  registration refuses**: a composite or literal `TypeId` in any parameter,
+  varargs, return, named-parameter, cast or config-option slot, and an `ANY`
+  return type. Its module doc said these checks need `DuckDB`; they do not.
+  Each builder now runs one sequence of type checks, with `DuckDB` when
+  registering and without it in the mock, so the messages are the same.
 
 #### Fourth audit
 

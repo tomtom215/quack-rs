@@ -76,6 +76,7 @@ use libduckdb_sys::{
 };
 
 use crate::error::ExtensionError;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, TypeId};
 use crate::validate::validate_function_name;
 
@@ -483,6 +484,23 @@ impl TableFunctionBuilder {
         Ok(())
     }
 
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
+        for (i, id) in self.params.iter().enumerate() {
+            slot(*id, &format!("table function parameter {i}"))?;
+        }
+        for np in &self.named_params {
+            if let NamedParam::Simple { name, type_id } = np {
+                slot(
+                    *type_id,
+                    &format!("table function named parameter {}", name.to_string_lossy()),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Builds a configured, unregistered `duckdb_table_function`.
     ///
     /// [`register`][Self::register] is this plus
@@ -506,17 +524,7 @@ impl TableFunctionBuilder {
     pub unsafe fn build_handle(self) -> Result<TableFunctionHandle, ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.
         self.check_parts()?;
-        for (i, id) in self.params.iter().enumerate() {
-            LogicalType::check_slot(*id, &format!("table function parameter {i}"))?;
-        }
-        for np in &self.named_params {
-            if let NamedParam::Simple { name, type_id } = np {
-                LogicalType::check_slot(
-                    *type_id,
-                    &format!("table function named parameter {}", name.to_string_lossy()),
-                )?;
-            }
-        }
+        self.check_types(LogicalType::check_slot)?;
         let bind = self
             .bind
             .ok_or_else(|| ExtensionError::new("bind callback not set"))?;

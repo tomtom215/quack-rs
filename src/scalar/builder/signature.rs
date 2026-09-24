@@ -31,6 +31,7 @@ use libduckdb_sys::{
 };
 
 use crate::error::ExtensionError;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, TypeId};
 
 /// One declared parameter, however it was declared.
@@ -71,10 +72,10 @@ impl Varargs {
         }
     }
 
-    /// Fails if a `TypeId` varargs type is composite; `slot` names it.
-    pub fn check(&self, slot: &str) -> Result<(), ExtensionError> {
+    /// Runs `check` on a `TypeId` varargs type; `slot` names it.
+    pub fn check(&self, check: SlotCheck, slot: &str) -> Result<(), ExtensionError> {
         match self {
-            Self::Id(id) => LogicalType::check_slot(*id, slot),
+            Self::Id(id) => check(*id, slot),
             Self::Logical(_) => Ok(()),
         }
     }
@@ -719,7 +720,7 @@ mod tests {
     fn a_composite_varargs_id_is_refused_naming_the_slot() {
         for id in [TypeId::List, TypeId::Struct, TypeId::Decimal] {
             let err = Varargs::Id(id)
-                .check("scalar function varargs")
+                .check(LogicalType::check_slot, "scalar function varargs")
                 .expect_err("a composite id cannot be built from the id alone");
             let msg = err.as_str();
             assert!(msg.starts_with("scalar function varargs: "), "{msg}");

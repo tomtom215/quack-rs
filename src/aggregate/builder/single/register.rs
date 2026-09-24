@@ -51,17 +51,7 @@ impl AggregateFunctionBuilder {
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         // See `ScalarFunctionBuilder::register` -- validate before allocating.
         self.check_parts()?;
-        for (i, id) in self.params.iter().enumerate() {
-            LogicalType::check_slot(*id, &format!("aggregate function parameter {i}"))?;
-        }
-        if let Some(id) = self.return_type {
-            LogicalType::check_slot(id, "aggregate function return type")?;
-        }
-        crate::table::type_check::refuse_any_return(
-            "aggregate function return type",
-            self.return_type,
-            self.return_logical.as_ref(),
-        )?;
+        self.check_types(LogicalType::check_slot)?;
         // Resolve return type: prefer explicit LogicalType over TypeId.
         let ret_lt = if let Some(lt) = self.return_logical {
             lt

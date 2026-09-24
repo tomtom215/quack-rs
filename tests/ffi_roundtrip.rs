@@ -5945,3 +5945,6 @@ mod collision;
 
 #[path = "ffi_roundtrip/temporal_binds.rs"]
 mod temporal_binds;
+
+#[path = "ffi_roundtrip/mock_parity.rs"]
+mod mock_parity;

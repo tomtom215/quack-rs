@@ -18,6 +18,7 @@ use libduckdb_sys::{
 use super::overload::{AggregateOverloadBuilder, OverloadSpec};
 use crate::error::ExtensionError;
 use crate::scalar::builder::signature::{merged_params, reject_duplicate_overloads};
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
 
@@ -326,6 +327,35 @@ impl AggregateFunctionSetBuilder {
         Ok(())
     }
 
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
+        if let Some(id) = self.return_type {
+            slot(id, "aggregate function set return type")?;
+        }
+        for (i, overload) in self.overloads.iter().enumerate() {
+            for (j, id) in overload.params.iter().enumerate() {
+                slot(*id, &format!("overload {i} parameter {j}"))?;
+            }
+            if let Some(id) = overload.return_type {
+                slot(id, &format!("overload {i} return type"))?;
+            }
+            // The overload's own return type, else the set-level default.
+            let (id, logical) =
+                if overload.return_logical.is_some() || overload.return_type.is_some() {
+                    (overload.return_type, overload.return_logical.as_ref())
+                } else {
+                    (self.return_type, self.return_logical.as_ref())
+                };
+            crate::table::type_check::refuse_any_return(
+                &format!("overload {i} return type"),
+                id,
+                logical,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Registers the function set on the given connection.
     ///
     /// # Pitfall L6
@@ -372,30 +402,7 @@ impl AggregateFunctionSetBuilder {
         // that need no DuckDB call come first, so a missing callback is
         // reported by index without touching the engine.
         self.check_parts()?;
-        // See `AggregateFunctionBuilder::register` -- reject composite TypeIds.
-        if let Some(id) = self.return_type {
-            LogicalType::check_slot(id, "aggregate function set return type")?;
-        }
-        for (i, overload) in self.overloads.iter().enumerate() {
-            for (j, id) in overload.params.iter().enumerate() {
-                LogicalType::check_slot(*id, &format!("overload {i} parameter {j}"))?;
-            }
-            if let Some(id) = overload.return_type {
-                LogicalType::check_slot(id, &format!("overload {i} return type"))?;
-            }
-            // The overload's own return type, else the set-level default.
-            let (id, logical) =
-                if overload.return_logical.is_some() || overload.return_type.is_some() {
-                    (overload.return_type, overload.return_logical.as_ref())
-                } else {
-                    (self.return_type, self.return_logical.as_ref())
-                };
-            crate::table::type_check::refuse_any_return(
-                &format!("overload {i} return type"),
-                id,
-                logical,
-            )?;
-        }
+        self.check_types(LogicalType::check_slot)?;
         let signatures: Vec<_> = self
             .overloads
             .iter()
