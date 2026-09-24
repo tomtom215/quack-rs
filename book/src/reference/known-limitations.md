@@ -57,13 +57,60 @@ When an aggregate's `finalize` callback reports an error
 for every state the query created: an ungrouped query initialised 2 states and
 destroyed 1, a grouped one 4 and 2. When `finalize` succeeds, every state is
 destroyed. The extension cannot tell which states were abandoned, so whatever
-they own is leaked: with `FfiState<T>`, one boxed `T` per abandoned state. The
-query still fails with your message. If that leak matters (a large `T`, or a
-long-lived process whose queries often fail this way), keep what a state owns
-small. Only `finalize` was measured; errors reported from other callbacks were
+they own is leaked: with `FfiState<T>`, whatever `T` owns on the heap, and the
+box of a `T` too large to store inline (see the next section). The query still
+fails with your message. If that leak matters (a long-lived process whose
+queries often fail this way), keep what a state owns small. Only `finalize` was measured; errors reported from other callbacks were
 not. The behaviour is pinned by
 `aggregate_states_are_not_all_destroyed_when_finalize_fails` in
 `tests/ffi_roundtrip/lifecycle.rs`.
+
+## Grouped-aggregate states the scan never reaches are never destroyed (DuckDB defect)
+
+DuckDB 1.4.4 to 1.5.5 destroys a grouped aggregate's states as its result
+scan passes them. When the scan stops early, the states it has not reached are
+never destroyed — not after the query, not when the connection or the database
+closes. That happens under a `LIMIT` above the aggregate, an error raised
+above it, or an interrupt (`InterruptHandle::cancel`). Measured on one thread
+with 300,000 groups: under `LIMIT 10`, 2,048 of 300,000 states were destroyed
+(4,096 on 1.4.x); with an error raised half-way through the result, 151,552.
+DuckDB's own aggregates are affected the same way: `mode()` under `LIMIT 10`
+leaked about 100 MB per query. See `docs/upstream-duckdb-reports.md`, item 20.
+
+The query's answer is right; the cost is memory. `FfiState<T>` stores a `T`
+of at most 256 bytes, aligned no more strictly than `usize`, inside DuckDB's
+own state bytes, which DuckDB frees with the hash table, so such a state leaks
+nothing unless `T` itself owns heap memory (a `Vec`, `String` or `HashMap`).
+A larger `T` is boxed, and the box leaks with it. Until DuckDB fixes this,
+keep aggregate states small and free of heap allocations where you can.
+Pinned by `states_a_grouped_scan_never_reaches_leak_no_rust_heap` in
+`tests/aggregate_leaks.rs`.
+
+## An abandoned stream keeps its table-function state (DuckDB behaviour)
+
+Dropping a streaming `QueryResult` part-way through, and then its
+`PreparedStatement`, does not free the query's operator states: DuckDB keeps
+the active query on the connection until the next statement runs there (or
+the connection closes). A table function's state — for a typed table
+function, the `with_state` value and its per-scan clone — therefore lives
+until then. Nothing leaks, but a state that holds a file, a lock or a large
+buffer holds it for that long; run any statement (`SELECT 1`) on the
+connection to release it. Pinned by
+`an_abandoned_stream_keeps_its_table_state_until_the_next_statement` in
+`tests/ffi_roundtrip/query_stream.rs`.
+
+## Running out of memory inside a callback aborts the process
+
+An allocation failure is not an error quack-rs can report. On the Rust side,
+the default allocation-error handler aborts. On the DuckDB side,
+`duckdb_list_vector_reserve`, `duckdb_vector_copy_sel` and
+`duckdb_vector_assign_string_element_len` allocate without catching, so their
+`std::bad_alloc` crosses the Rust callback frame and aborts the process
+("Rust cannot catch foreign exceptions"). quack-rs allocates inside
+callbacks only on error paths and in `data_chunk_to_arrow`'s pre-export
+check, which copies each column it checks. Bound what your callbacks
+allocate, and set DuckDB's `memory_limit` so its own operators fail cleanly
+before the process runs out.
 
 ## COPY functions (resolved in DuckDB 1.5.0; both directions since)
 

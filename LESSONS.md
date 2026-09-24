@@ -56,7 +56,8 @@ The combine-propagates-config bug passed 435 unit tests before being caught by E
 **Root cause**: If `state_destroy` frees the inner Box but doesn't null out the pointer,
 a second call to `state_destroy` (e.g., in error paths) will free already-freed memory.
 
-**Fix**: `FfiState<T>::destroy_callback` nulls `inner` after freeing. Use it instead of
+**Fix**: `FfiState<T>::destroy_callback` clears the slot's tag before dropping the `T`, and
+drops only a slot whose tag matches, so a second call is a no-op. Use it instead of
 writing your own destructor.
 
 ---

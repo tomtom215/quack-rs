@@ -30,6 +30,8 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 17 | Literal types accepted; first use invalidates the database | C program, below | refused by `LogicalType::try_new` |
 | 18 | Zero-size ARRAY / empty UNION depend on the build | C program, below | refused |
 | 19 | `epoch_us(interval)` fails when one field overflows | SQL, below | exact total computed in `i128` |
+| 20 | Grouped-aggregate states a stopped scan never reached are never destroyed | C program, below | small states stored inline; documented |
+| 21 | Arrow import reads one byte past a validity bitmap at an unaligned bit offset | C program, below (valgrind) | Safety clause on `data_chunk_from_arrow` |
 
 ## Before filing
 
@@ -44,6 +46,9 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
   reproducers were compiled and run against the prebuilt v1.4.4, v1.5.0 and
   v1.5.5 libraries, where each entry says so, on 2026-09-24; output is quoted
   as observed except where an entry says it abbreviates.
+- Items 20 and later come from the fifth audit (`AUDIT.md` section 10). Their
+  reproducers were compiled and run against the prebuilt libraries of every
+  release each entry names, on 2026-09-24; output is quoted as observed.
 
 ## Removal
 
@@ -1437,3 +1442,208 @@ Conversion Error: Could not convert Day to Microseconds
 Expected: the total, when it fits. quack-rs's `interval_to_micros` computes
 the exact total in `i128` and returns it; its documentation notes where it and
 `epoch_us` differ.
+
+---
+
+## 20. Grouped-aggregate states that a stopped scan never reached are never destroyed
+
+A grouped aggregate's states live in the radix-partitioned hash table and are
+destroyed as the result scan passes them. When the scan stops early (a
+`LIMIT` above the aggregate, an error raised above it, an interrupt), the
+states it had not reached are never destroyed: not when the query ends, and
+not when the connection or the database closes. Any memory a state owns leaks.
+This affects DuckDB's own aggregates too: `mode()` under `LIMIT 10` leaks
+about 100 MB per query in the program below.
+
+Where, from a source reading of v1.5.5 (not confirmed in a debugger):
+`RadixHTGlobalSinkState::Destroy` (`radix_partitioned_hashtable.cpp`, from
+line 245) returns at once while `scan_pin_properties` is
+`DESTROY_AFTER_DONE`, its initial value (line 218), relying on the scan to
+destroy each state after reading it (line 938). A scan that stops early
+leaves the rest.
+
+```c
+/* Grouped-aggregate states the scan never reaches are never destroyed. */
+#include <duckdb.h>
+#include <malloc.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static long inits, destroys;
+static idx_t sz(duckdb_function_info i) { (void)i; return sizeof(long); }
+static void init(duckdb_function_info i, duckdb_aggregate_state s) { (void)i; *(long *)s = 0; __atomic_add_fetch(&inits, 1, __ATOMIC_SEQ_CST); }
+static void update(duckdb_function_info i, duckdb_data_chunk c, duckdb_aggregate_state *s) {
+	(void)i; idx_t n = duckdb_data_chunk_get_size(c);
+	for (idx_t r = 0; r < n; r++) *(long *)s[r] += 1;
+}
+static void combine(duckdb_function_info i, duckdb_aggregate_state *src, duckdb_aggregate_state *dst, idx_t n) {
+	(void)i; for (idx_t r = 0; r < n; r++) *(long *)dst[r] += *(long *)src[r];
+}
+static void finalize(duckdb_function_info i, duckdb_aggregate_state *s, duckdb_vector out, idx_t n, idx_t off) {
+	(void)i; long *d = duckdb_vector_get_data(out);
+	for (idx_t r = 0; r < n; r++) d[off + r] = *(long *)s[r];
+}
+static void destroy(duckdb_aggregate_state *s, idx_t n) { (void)s; __atomic_add_fetch(&destroys, (long)n, __ATOMIC_SEQ_CST); }
+
+static void run(duckdb_connection con, const char *label, const char *sql) {
+	long i0 = inits, d0 = destroys;
+	duckdb_result res;
+	duckdb_state st = duckdb_query(con, sql, &res);
+	printf("%-44s %s  init %ld  destroy %ld\n", label, st == DuckDBSuccess ? "ok   " : "error", inits - i0, destroys - d0);
+	duckdb_destroy_result(&res);
+}
+
+static void heap(duckdb_connection con, const char *label, const char *sql) {
+	duckdb_result res;
+	duckdb_query(con, sql, &res); duckdb_destroy_result(&res); /* warm-up */
+	malloc_trim(0);
+	size_t before = mallinfo2().uordblks;
+	for (int k = 0; k < 10; k++) { duckdb_query(con, sql, &res); duckdb_destroy_result(&res); }
+	malloc_trim(0);
+	printf("%-44s heap in use grew by %zu bytes over 10 runs\n", label, mallinfo2().uordblks - before);
+}
+
+int main(void) {
+	duckdb_database db; duckdb_connection con;
+	duckdb_open(NULL, &db); duckdb_connect(db, &con);
+	duckdb_aggregate_function f = duckdb_create_aggregate_function();
+	duckdb_aggregate_function_set_name(f, "counted");
+	duckdb_logical_type big = duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);
+	duckdb_aggregate_function_add_parameter(f, big);
+	duckdb_aggregate_function_set_return_type(f, big);
+	duckdb_aggregate_function_set_functions(f, sz, init, update, combine, finalize);
+	duckdb_aggregate_function_set_destructor(f, destroy);
+	if (duckdb_register_aggregate_function(con, f) != DuckDBSuccess) { puts("register failed"); return 1; }
+	duckdb_query(con, "SET threads = 1", NULL);
+	const char *inner = "(SELECT i % 300000 AS g, counted(i) AS s FROM range(1000000) t(i) GROUP BY g)";
+	char sql[512];
+	snprintf(sql, sizeof sql, "SELECT count(s) FROM %s", inner);
+	run(con, "whole result", sql);
+	snprintf(sql, sizeof sql, "SELECT count(s) FROM (SELECT s FROM %s LIMIT 10)", inner);
+	run(con, "LIMIT 10 above the aggregate", sql);
+	snprintf(sql, sizeof sql, "SELECT count(CASE WHEN s > -1 AND g = 150000 THEN error('stop') END) FROM %s", inner);
+	run(con, "error raised above the aggregate", sql);
+	const char *m = "(SELECT i % 300000 AS g, mode(i) AS m FROM range(1000000) t(i) GROUP BY g)";
+	snprintf(sql, sizeof sql, "SELECT count(m) FROM %s", m);
+	heap(con, "built-in mode(), whole result", sql);
+	snprintf(sql, sizeof sql, "SELECT count(m) FROM (SELECT m FROM %s LIMIT 10)", m);
+	heap(con, "built-in mode(), LIMIT 10", sql);
+	duckdb_destroy_logical_type(&big); duckdb_destroy_aggregate_function(&f);
+	duckdb_disconnect(&con); duckdb_close(&db);
+	return 0;
+}
+```
+
+Built with `gcc -O1 -Wall -I<dir> abandoned_states.c -L<dir> -lduckdb` against
+each prebuilt library. v1.4.4:
+
+```text
+whole result                                 ok     init 300000  destroy 300000
+LIMIT 10 above the aggregate                 ok     init 300000  destroy 4096
+error raised above the aggregate             error  init 300000  destroy 151552
+built-in mode(), whole result                heap in use grew by 547312 bytes over 10 runs
+built-in mode(), LIMIT 10                    heap in use grew by 993475152 bytes over 10 runs
+```
+
+v1.4.5 printed the same destroy counts as v1.4.4. v1.5.0 to v1.5.5 printed
+the same destroy counts as each other; their `mode()` figures differed by at
+most 16,400 bytes in these runs, and vary from run to run. v1.5.5:
+
+```text
+whole result                                 ok     init 300000  destroy 300000
+LIMIT 10 above the aggregate                 ok     init 300000  destroy 2048
+error raised above the aggregate             error  init 300000  destroy 151552
+built-in mode(), whole result                heap in use grew by 584400 bytes over 10 runs
+built-in mode(), LIMIT 10                    heap in use grew by 1001047984 bytes over 10 runs
+```
+
+Expected: `destroy` equal to `init` in every row, and no heap growth for
+`mode()` beyond the whole-result case. quack-rs cannot destroy states DuckDB
+abandons; `FfiState<T>` stores a `T` of at most 256 bytes, aligned no more
+strictly than `usize`, inside the state bytes (which DuckDB frees with the
+hash table) instead of boxing it, so only what such a `T` owns leaks. Pinned
+by `states_a_grouped_scan_never_reaches_leak_no_rust_heap` in
+`tests/aggregate_leaks.rs`.
+
+---
+
+## 21. Arrow import reads one byte past a validity bitmap whose bit offset is not a multiple of 8
+
+`GetValidityMask` (`src/function/table/arrow_conversion.cpp`, from line 47 in
+v1.5.5) copies `ceil(size / 8) + 1` bytes from the first byte it needs when the
+effective bit offset is not a multiple of 8 (line 66). The rows need only
+`ceil((bit_offset % 8 + size) / 8)` bytes, so when those fit, the copy reads
+one byte past them. A producer whose bitmap is exactly as long as its rows
+need (the Arrow format recommends, but does not require, padding buffers to 8
+or 64 bytes) is read out of bounds. The extra byte only supplies bits for rows
+past the end, so the values imported are right.
+
+```c
+// duckdb_data_chunk_from_arrow reads one byte past a validity bitmap whose
+// bit offset is not a multiple of 8.
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <duckdb.h>
+struct ArrowArray { int64_t length, null_count, offset, n_buffers, n_children; const void **buffers;
+  struct ArrowArray **children; struct ArrowArray *dictionary; void (*release)(struct ArrowArray *); void *private_data; };
+struct ArrowSchema { const char *format, *name, *metadata; int64_t flags, n_children; struct ArrowSchema **children;
+  struct ArrowSchema *dictionary; void (*release)(struct ArrowSchema *); void *private_data; };
+static void noop_release(struct ArrowArray *a) { a->release = NULL; }
+static void noop_srelease(struct ArrowSchema *s) { s->release = NULL; }
+int main(void) {
+    duckdb_database db; duckdb_connection con;
+    duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    int32_t data[8]; for (int i = 0; i < 8; i++) data[i] = i * 10;
+    uint8_t *validity = malloc(1);   // bits 1..7 cover rows 0..6: one byte is enough
+    *validity = 0xFF & ~(1u << 3);   // row 2 (bit 3) is NULL
+    const void *cbuf[2] = {validity, data};
+    struct ArrowArray child = {7, 1, 1, 2, 0, cbuf, NULL, NULL, noop_release, NULL}; // offset 1, length 7
+    struct ArrowArray *children[1] = {&child};
+    const void *pbuf[1] = {NULL};
+    struct ArrowArray parent = {7, 0, 0, 1, 1, pbuf, children, NULL, noop_release, NULL};
+    struct ArrowSchema cs = {"i", "v", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+    struct ArrowSchema *cschildren[1] = {&cs};
+    struct ArrowSchema ps = {"+s", "", NULL, 0, 1, cschildren, NULL, noop_srelease, NULL};
+    duckdb_arrow_converted_schema conv;
+    duckdb_error_data e1 = duckdb_schema_from_arrow(con, (void *)&ps, &conv);
+    duckdb_data_chunk out;
+    duckdb_error_data e2 = duckdb_data_chunk_from_arrow(con, (void *)&parent, conv, &out);
+    printf("errors: %s / %s\n", e1 ? duckdb_error_data_message(e1) : "none", e2 ? duckdb_error_data_message(e2) : "none");
+    duckdb_vector vec = duckdb_data_chunk_get_vector(out, 0);
+    int32_t *v = duckdb_vector_get_data(vec);
+    uint64_t *valid = duckdb_vector_get_validity(vec);
+    printf("rows=%llu values:", (unsigned long long)duckdb_data_chunk_get_size(out));
+    for (idx_t i = 0; i < duckdb_data_chunk_get_size(out); i++) {
+        if (valid && !duckdb_validity_row_is_valid(valid, i)) printf(" NULL"); else printf(" %d", v[i]);
+    }
+    printf("\n");
+    duckdb_destroy_data_chunk(&out); duckdb_destroy_arrow_converted_schema(&conv);
+    free(validity);
+    duckdb_disconnect(&con); duckdb_close(&db);
+}
+```
+
+Built with `gcc -O0 -g -Wall -I<dir> validity_overread.c -L<dir> -lduckdb`
+against each prebuilt library and run under valgrind. v1.5.5 (the process id
+replaced by `PID`):
+
+```text
+==PID== Invalid read of size 2
+==PID==    at 0x4852EB0: memmove (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==PID==    by 0x5B6AA6F: duckdb::GetValidityMask(duckdb::ValidityMask&, ArrowArray&, unsigned long, unsigned long, long, long, bool) (in /opt/duckdb/1.5.5/libduckdb.so)
+==PID==    by 0x6483244: duckdb_data_chunk_from_arrow (in /opt/duckdb/1.5.5/libduckdb.so)
+==PID==    by 0x10968E: main (validity_overread.c:30)
+==PID==  Address 0xb6eb230 is 0 bytes inside a block of size 1 alloc'd
+==PID==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==PID==    by 0x10944D: main (validity_overread.c:17)
+errors: none / none
+rows=7 values: 10 20 NULL 40 50 60 70
+```
+
+v1.4.4 and v1.5.0 report the same invalid read from `GetValidityMask`, and
+print the same two lines. Expected: no read past byte 0 of the bitmap.
+quack-rs cannot see a buffer's allocated size through the C Data Interface;
+`data_chunk_from_arrow`'s Safety section requires every bitmap `DuckDB` reads
+to be readable for one byte past the last byte its rows occupy.

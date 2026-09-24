@@ -93,7 +93,7 @@ real DuckDB extensions in Rust:
 
 ```text
 L1  COMBINE must propagate ALL config fields (not just data)
-L2  State destroy double-free → FfiState<T> nulls pointers after free
+L2  State destroy double-free → FfiState<T> clears its tag before dropping
 L3  No panics across FFI → init_extension uses Result throughout
 L4  ensure_validity_writable required before NULL output → VectorWriter handles it
 L5  Boolean reading must use u8 != 0 → VectorReader enforces this
@@ -442,7 +442,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | ID | Name | Symptom | quack-rs Solution |
 |----|------|---------|-------------------|
 | **L1** | COMBINE config propagation | Aggregate returns wrong results under parallelism | Testable with `AggregateTestHarness` |
-| **L2** | Double-free in destroy | Heap corruption / SIGABRT | `FfiState<T>::destroy_callback` nulls pointer after free |
+| **L2** | Double-free in destroy | Heap corruption / SIGABRT | `FfiState<T>::destroy_callback` clears the tag before dropping |
 | **L3** | Panic across FFI | Process abort | `init_extension` propagates `Result` and runs the registration closure under `catch_unwind`; a wrapper macro does the same for every callback kind — scalar, table bind/init/scan, aggregate update/combine/finalize/destroy, cast and replacement scan — routing the panic message to that kind's `set_error`. Requires `panic = "unwind"`, which the scaffold generates |
 | **L4** | Missing `ensure_validity_writable` | NULLs silently dropped (the mask pointer is NULL) | `VectorWriter::set_null` calls it automatically |
 | **L5** | Boolean undefined behavior | Non-deterministic bool semantics | `VectorReader::read_bool` reads `u8 != 0` |

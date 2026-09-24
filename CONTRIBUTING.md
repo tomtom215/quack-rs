@@ -481,14 +481,20 @@ quack-rs/
 │       ├── validity.rs                # Validity bitmap helpers for `DuckDB` NULL tracking
 │       └── writer.rs                  # Safe typed writing to `DuckDB` result vectors
 ├── tests/
+│   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
+│   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
+│       ├── agg_states.rs              # Every aggregate state is dropped, including the ones `DuckDB` moves
 │       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
+│       ├── bind_expressions.rs        # What a bind callback learns about its arguments from `Expression`
+│       ├── chunk_writer.rs            # `ChunkWriter` against a chunk `DuckDB` allocated
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
+│       ├── file_errors.rs             # `FileHandle` reports the write and sync failures `DuckDB` reports
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
 │       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`

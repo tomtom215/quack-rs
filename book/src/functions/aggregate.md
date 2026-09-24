@@ -96,8 +96,8 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 
 The five core callbacks (`state_size`, `init`, `update`, `combine`, `finalize`) must be
 set before `register` — the builder will return an error if any are missing. The
-`destructor` callback is optional but strongly recommended when your state allocates
-heap memory (e.g., when using `FfiState<T>`).
+`destructor` callback is optional, but required whenever you use `FfiState<T>`:
+`FfiState::<T>::destroy_callback` is what drops each `T`.
 
 ---
 
@@ -120,8 +120,9 @@ unsafe extern "C" fn state_size(_info: duckdb_function_info) -> idx_t {
 }
 ```
 
-Returns the size DuckDB must allocate per group. This is always `size_of::<*mut MyState>()`
-— a pointer, since `FfiState<T>` stores a `Box<T>` pointer in the allocated slot.
+Returns the size DuckDB must allocate per group: `FfiState::<MyState>::size()`, a tag
+word followed by `MyState` itself (or, for a state larger than 256 bytes or aligned
+more strictly than `usize`, a `Box<MyState>` pointer).
 
 ### `state_init`
 

@@ -270,6 +270,17 @@ pub unsafe fn schema_from_arrow(
 ///   to allocate throws through the C API and aborts the process. No bound
 ///   short of the memory the producer's own buffers already occupy separates
 ///   a valid length from an absurd one, so it cannot be checked here.
+/// - Every validity bitmap that `DuckDB` reads (one with a nonzero
+///   `null_count`) must be readable for **one byte past** the last byte that
+///   holds its rows' bits. When a node's effective bit offset is not a
+///   multiple of 8, `GetValidityMask` (`arrow_conversion.cpp`) copies
+///   `ceil(rows / 8) + 1` bytes from the first byte it needs, which can be one
+///   more than the rows occupy: an `int32` column at offset 1 of length 7 with
+///   a 1-byte bitmap is read as 2 bytes (an invalid read under valgrind on
+///   1.5.5). That byte only supplies bits for rows past the end, so the
+///   values imported are right; the read itself is the hazard. Buffers padded to a multiple of 8 or 64 bytes, as
+///   the Arrow columnar format recommends, satisfy this; the allocation size
+///   is invisible through the C Data Interface, so it cannot be checked here.
 #[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub unsafe fn data_chunk_from_arrow(
     connection: duckdb_connection,

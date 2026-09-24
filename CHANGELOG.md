@@ -34,7 +34,19 @@ also documented thirteen DuckDB defects in `docs/upstream-duckdb-reports.md`, ea
 with a plain-C reproducer. Its entries are grouped under **Fourth audit** in
 each section below.
 
+A fifth pass followed (`AUDIT.md` section 10). Each code fix was reproduced
+against a real DuckDB, and its regression test shown failing without the
+fix. DuckDB defects it found are added to `docs/upstream-duckdb-reports.md`,
+each with a plain-C reproducer. Its entries are grouped under **Fifth audit**
+in each section below.
+
 ### Added
+
+#### Fifth audit
+
+- `tests/aggregate_leaks.rs`, a test binary with a counting global allocator,
+  and `tests/handle_leaks.rs`, which bounds the C heap (glibc `mallinfo2`)
+  across many create-and-drop rounds of every RAII handle.
 
 #### Fourth audit
 
@@ -374,6 +386,22 @@ each section below.
     against it.
 
 ### Changed
+
+#### Fifth audit
+
+- **Breaking: `FfiState<T>` stores a small `T` in `DuckDB`'s state bytes.** A
+  `T` of at most 256 bytes, aligned no more strictly than `usize`, is kept
+  inline; a larger one is still boxed. `FfiState<T>` is no longer a two-word
+  struct with a public `inner` field; use its callbacks and `with_state` /
+  `with_state_mut` as before. See Fixed.
+- **Breaking: `AggregateState` requires `Sync`.** A window's segment tree
+  shares its states between threads as `combine` sources.
+- Documentation: bind-time arguments are seen before the cast to the
+  parameter type (`ScalarBindInfo::argument`); a Safety clause on
+  `data_chunk_from_arrow` (validity bitmaps are read one byte past their
+  rows); Known Limitations entries for aggregate states `DuckDB` never
+  destroys, abandoned streams and out-of-memory aborts.
+- `docs/upstream-duckdb-reports.md` gained items 20 and 21.
 
 #### Fourth audit
 
@@ -797,6 +825,20 @@ each section below.
   not). An integration test now fails when the table and `src/lib.rs` disagree.
 
 ### Fixed
+
+#### Fifth audit
+
+- **Aggregate states `DuckDB` moved were never dropped.** The fourth audit's
+  `FfiState` tag was derived from the slot's address, and radix
+  repartitioning copies states to new rows, so every moved state was skipped
+  and its `T` leaked (8 of them after one ungrouped query on eight threads in
+  the regression test). The tag follows the slot's contents.
+- **Aggregate states `DuckDB` never destroys leaked a box each.** A grouped
+  aggregate's states that a stopped scan never reached (a `LIMIT` above it,
+  an error, an interrupt) are never destroyed by `DuckDB` 1.4.4 to 1.5.5;
+  under `LIMIT 10` over 300,000 groups, 297,952 boxed `T`s leaked. A small
+  `T` is now stored in `DuckDB`'s own state bytes, so it leaks nothing unless
+  it owns heap memory itself.
 
 #### Fourth audit
 

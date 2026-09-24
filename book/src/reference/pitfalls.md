@@ -66,8 +66,9 @@ Test this with `AggregateTestHarness::combine` — see [Testing Guide](../testin
 pointer, a second `state_destroy` call (common in error paths) frees
 already-freed memory → undefined behavior.
 
-**Fix**: `FfiState<T>::destroy_callback` nulls `inner` after freeing. Use it
-instead of writing your own destructor:
+**Fix**: `FfiState<T>::destroy_callback` clears the slot's tag before dropping
+the `T`, and drops only a slot whose tag matches, so a second call is a no-op.
+Use it instead of writing your own destructor:
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,

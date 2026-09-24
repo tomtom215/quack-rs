@@ -289,7 +289,8 @@ synchronously.
 
 ### How does `FfiState<T>` prevent double-free?
 
-`FfiState<T>` stores the `Box<T>` as a raw pointer in `inner`. When
-`destroy_callback` is called, it reconstitutes the `Box` (which drops `T` and
-frees memory) and then sets `inner` to null. A second call to `destroy_callback`
-on the same state sees a null `inner` and returns without freeing.
+Each state slot starts with a tag that `init_callback` writes once the `T`
+is in place. `destroy_callback` drops the `T` (freeing its box, when `T` is
+too large to store inline) only when the tag matches, and clears the tag
+first. A second call to `destroy_callback` on the same state finds no tag and
+does nothing.

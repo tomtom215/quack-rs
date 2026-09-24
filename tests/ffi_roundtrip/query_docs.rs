@@ -176,3 +176,50 @@ fn struct_field_names_of_a_union_include_its_tag() {
     let list = Value::list_value(&LogicalType::new(TypeId::BigInt), &[]).expect("list");
     assert_eq!(list.struct_field_names(), Vec::<String>::new());
 }
+
+/// A bound `BOOLEAN` reaches the query, and binding past the last parameter
+/// is an error naming the index and the count.
+#[test]
+fn a_bound_boolean_is_used_and_a_bad_index_is_an_error() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    let statement = con
+        .prepare("SELECT (NOT ?::BOOLEAN)::VARCHAR")
+        .expect("prepare");
+    statement.bind_bool(1, true).expect("bind");
+    let mut result = statement.execute().expect("execute");
+    let chunk = result.next_chunk().expect("fetch").expect("one row");
+    // SAFETY: one VARCHAR column, one row.
+    assert_eq!(unsafe { chunk.reader(0).read_str(0) }, "false");
+    let err = statement
+        .bind_bool(2, true)
+        .expect_err("there is one parameter");
+    assert!(
+        err.to_string()
+            .contains("failed to bind parameter 2 (statement has 1 parameter(s))"),
+        "{err}"
+    );
+}
+
+/// `interrupt` stops what the connection is running — here a streaming
+/// query between two fetches.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn interrupting_the_connection_stops_its_streaming_query() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    let statement = con
+        .prepare("SELECT i FROM range(100000000) t(i)")
+        .expect("prepare");
+    let mut result = statement.execute_streaming().expect("execute");
+    assert!(result.next_chunk().expect("first chunk").is_some());
+    con.interrupt();
+    let outcome = loop {
+        match result.next_chunk() {
+            Ok(Some(_)) => {}
+            other => break other,
+        }
+    };
+    let err = outcome.expect_err("an interrupted stream fails");
+    assert!(err.to_string().contains("Interrupted"), "{err}");
+}

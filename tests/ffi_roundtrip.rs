@@ -3567,6 +3567,8 @@ fn a_selection_vector_round_trips_its_indices() {
 
     let mut sel = SelectionVector::new(2048).expect("allocate");
     assert_eq!(sel.as_slice().len(), 2048);
+    assert_eq!(sel.len(), 2048);
+    assert!(!sel.is_empty());
 
     for (i, slot) in sel.as_mut_slice().iter_mut().enumerate() {
         *slot = (2047 - i) as u32;
@@ -3577,6 +3579,7 @@ fn a_selection_vector_round_trips_its_indices() {
     // A zero-length vector must not hand out a dangling non-empty slice.
     let empty = SelectionVector::new(0).expect("allocate");
     assert_eq!(empty.as_slice(), &[]);
+    assert!(empty.is_empty());
 }
 
 /// The instance cache must hand back the *same* database for the same path.
@@ -5889,6 +5892,9 @@ mod value_temporal;
 mod appender_rows;
 
 #[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/bind_expressions.rs"]
+mod bind_expressions;
+#[cfg(feature = "duckdb-1-5")]
 #[path = "ffi_roundtrip/query_stream.rs"]
 mod query_stream;
 
@@ -5902,6 +5908,13 @@ mod arrow_import;
 #[path = "ffi_roundtrip/query_docs.rs"]
 mod query_docs;
 
+#[path = "ffi_roundtrip/agg_states.rs"]
+mod agg_states;
+#[path = "ffi_roundtrip/chunk_writer.rs"]
+mod chunk_writer;
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/file_errors.rs"]
+mod file_errors;
 #[path = "ffi_roundtrip/lifecycle.rs"]
 mod lifecycle;
 

@@ -399,6 +399,18 @@ mod tests {
         const fn assert_send<T: Send>() {}
         assert_send::<OwnedConnection>();
     }
+
+    /// Reached only through `DuckDB`'s `catch (...)` paths, which no SQL can
+    /// take, so the text is checked here.
+    #[test]
+    fn a_failure_without_a_message_names_the_call_and_the_reason() {
+        let message = no_error_message("duckdb_query");
+        assert!(
+            message.starts_with("duckdb_query reported failure"),
+            "{message}"
+        );
+        assert!(message.contains("catch (...)"), "{message}");
+    }
 }
 
 /// Tests that need a live `DuckDB`.

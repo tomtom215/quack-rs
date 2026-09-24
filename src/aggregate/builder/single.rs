@@ -289,8 +289,9 @@ impl AggregateFunctionBuilder {
 
     /// Sets the optional `destructor` callback.
     ///
-    /// Required if your state allocates heap memory (e.g., when using
-    /// [`FfiState<T>`][crate::aggregate::FfiState]).    ///
+    /// Required when you use [`FfiState<T>`][crate::aggregate::FfiState]: its
+    /// `destroy_callback` is what drops each `T`.
+    ///
     /// When none is set, `register` installs a no-op destructor rather than
     /// none at all. `DuckDB` evaluates an aggregate without a state destructor
     /// as a *streaming* window for running frames
