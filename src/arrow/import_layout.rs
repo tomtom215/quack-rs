@@ -511,12 +511,17 @@ unsafe fn check_node(
     } else {
         ctx
     };
-    if shape.kind == Kind::Null || ctx.size == 0 && shape.kind != Kind::RunEnd {
+    if shape.kind == Kind::Null {
         return Ok(());
     }
+    // A node `DuckDB` converts as zero rows reads none of its own, but its
+    // descendants are still converted (a run-end-encoded array below it is
+    // expanded at full length), so the walk goes on; only the row checks
+    // are skipped.
+    let rows = ctx.size > 0;
     // SAFETY: `node` is a valid array.
     let has_validity = unsafe { copies_validity(node) };
-    if has_validity && ctx.duck_validity(node.offset) != ctx.arrow_start(node.offset) {
+    if rows && has_validity && ctx.duck_validity(node.offset) != ctx.arrow_start(node.offset) {
         return Err(format!(
             "validity would be read from row {} where Arrow puts it at row {}",
             ctx.duck_validity(node.offset),
@@ -525,7 +530,7 @@ unsafe fn check_node(
     }
     let reads_values = !matches!(shape.kind, Kind::Struct | Kind::FixedList(_));
     let start = ctx.duck_start(node.offset);
-    if reads_values && start != ctx.arrow_start(node.offset) {
+    if rows && reads_values && start != ctx.arrow_start(node.offset) {
         return Err(format!(
             "rows would be read from row {start} where Arrow puts them at row {}",
             ctx.arrow_start(node.offset)

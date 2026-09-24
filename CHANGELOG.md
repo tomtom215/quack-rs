@@ -946,8 +946,11 @@ in each section below.
   invalid accesses in `SetInvalid` past the 256-byte mask on 1.5.5); a dictionary with `null_count = -1`, whose NULL rows came back as
   values (item 31); and a sparse union with a nonzero `null_count`, whose
   type ids were read as validity, so every row came back NULL (item 32).
-  Each is refused. So is a `geoarrow.wkb` column read as more than 2048
-  rows: `DuckDB` 1.5 copies its storage into a 2048-row vector before the
+  Each is refused, as is such a layout below a node `DuckDB` converts as
+  zero rows (the walk used to stop there, though `DuckDB` still expands a
+  run-end-encoded descendant; valgrind showed its values' validity read 11
+  bytes past a 1-byte bitmap on 1.5.5, item 24). So is a `geoarrow.wkb`
+  column read as more than 2048 rows: `DuckDB` 1.5 copies its storage into a 2048-row vector before the
   cast to `GEOMETRY` (SIGSEGV on 4096 rows, item 33).
 - **A null-typed field below the top level of an imported Arrow column read
   as valid** after its first row: `DuckDB` imports it as a constant vector,

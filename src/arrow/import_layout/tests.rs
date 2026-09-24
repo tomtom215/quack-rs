@@ -430,3 +430,29 @@ fn a_geoarrow_column_of_more_than_2048_rows_is_refused() {
     let err = check_column(4096, blobs(4096), geo).expect_err("past the vector");
     assert!(err.contains("geoarrow.wkb"), "{err}");
 }
+
+/// A node `DuckDB` converts as zero rows still has its descendants converted:
+/// a run-end-encoded array below it is expanded at its full length, and its
+/// values' validity read at the inherited offset. The walk used to stop at
+/// the first zero-row node.
+#[test]
+fn the_walk_continues_below_a_node_of_zero_rows() {
+    let ree_shape = of(Kind::RunEnd, vec![leaf(), leaf()]);
+    let shape = of(
+        Kind::List { wide: false },
+        vec![of(Kind::Struct, vec![ree_shape])],
+    );
+    let column = |value_nulls| {
+        let ree = Node::new(100, 0, 0, vec![]).with_children(vec![
+            Node::new(1, 0, 0, vec![vec![], i32s(&[100])]),
+            Node::new(1, 0, value_nulls, vec![bits(1), i32s(&[20])]),
+        ]);
+        let strukt = Node::new(100, 0, 0, vec![vec![]]).with_children(vec![ree]);
+        // One empty list whose offsets start at 100: zero child rows, read
+        // from element 100 on.
+        Node::new(1, 0, 0, vec![vec![], i32s(&[100, 100])]).with_children(vec![strukt])
+    };
+    assert_eq!(check_column(1, column(0), shape.clone()), Ok(()));
+    let err = check_column(1, column(1), shape).expect_err("below a zero-row struct");
+    assert!(err.contains("run-end-encoded array's values"), "{err}");
+}
