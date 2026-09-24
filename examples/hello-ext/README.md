@@ -375,7 +375,7 @@ src/lib.rs
 | `ReplacementScanInfo` | Info handle for replacement scan callbacks |
 | `AggregateFunctionBuilder` | Builder for a single aggregate function |
 | `AggregateFunctionSetBuilder` | Builder for overloaded aggregate functions |
-| `ScalarFunctionBuilder` | Builder for a single scalar function (+ `varargs`, `volatile`, `bind`, `init` with `duckdb-1-5`) |
+| `ScalarFunctionBuilder` | Builder for a single scalar function (+ `varargs`, `volatile`; `bind`, `init` with `duckdb-1-5`) |
 | `ScalarFunctionSetBuilder` | Builder for overloaded scalar functions |
 | `TableFunctionBuilder` | Builder for table functions (bind/init/scan) |
 | `CastFunctionBuilder` | Builder for CAST / TRY_CAST functions |

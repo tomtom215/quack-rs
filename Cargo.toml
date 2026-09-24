@@ -95,10 +95,6 @@ bundled-test-prebuilt = ["_duckdb-testing"]
 ## `bundled-test-prebuilt` (pre-built libduckdb); those two differ only in
 ## whether `duckdb/bundled` is also turned on.
 _duckdb-testing = ["dep:duckdb"]
-## Enables wrappers for DuckDB 1.5.0 C API additions (e.g. scalar function local
-## states, config option registration). Requires `libduckdb-sys >= 1.5.0` to be
-## resolved by Cargo. Has no effect when compiled against libduckdb-sys 1.4.x.
-##
 ## Requires `libduckdb-sys >= 1.10500.0` (DuckDB 1.5.0+) to be resolved by Cargo.
 ## Enables wrappers for new C Extension API surfaces:
 ## - Scalar function bind/init lifecycle and local state
