@@ -138,7 +138,6 @@ cargo run --bin append_metadata -- \
     --abi-type C_STRUCT --extension-version v0.1.0 \
     --duckdb-version v1.2.0 --platform linux_amd64
 /tmp/duckdb -unsigned -c "
-SET allow_extensions_metadata_mismatch=true;
 LOAD '/tmp/hello_ext.duckdb_extension';
 SELECT word_count('hello world foo');   -- 3
 SELECT first_word('hello world');       -- hello

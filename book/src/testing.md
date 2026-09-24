@@ -556,7 +556,6 @@ cargo run --bin append_metadata -- \
 
 # Load it in DuckDB CLI (-unsigned allows loading without a signed certificate)
 /tmp/duckdb -unsigned -c "
-SET allow_extensions_metadata_mismatch=true;
 LOAD '/tmp/my_extension.duckdb_extension';
 SELECT my_function('hello world');
 "

@@ -61,7 +61,7 @@ def load_fixture() -> list[tuple[str, str, str]]:
 
 def readme_statements() -> list[str]:
     text = README.read_text(encoding="utf-8")
-    start = text.index("```sql\nSET allow_extensions_metadata_mismatch=true;")
+    start = text.index("```sql\nLOAD 'hello_ext.duckdb_extension';")
     body = text[start + len("```sql\n") :]
     body = body[: body.index("\n```")]
     code = "\n".join(re.sub(r"--.*$", "", line) for line in body.splitlines())

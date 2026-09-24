@@ -303,9 +303,6 @@ impl InMemoryDb {
     /// use quack_rs::testing::InMemoryDb;
     ///
     /// let db = InMemoryDb::open_unsigned().unwrap();
-    /// // Loosen metadata checks too, since locally-built artifacts may have
-    /// // platform / DuckDB-version fields that don't match the host process.
-    /// db.execute_batch("SET allow_extensions_metadata_mismatch=true").unwrap();
     /// db.execute_batch("LOAD '/path/to/my_ext.duckdb_extension'").unwrap();
     /// # }
     /// ```

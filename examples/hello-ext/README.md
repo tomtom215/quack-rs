@@ -170,7 +170,6 @@ duckdb -unsigned
 ```
 
 ```sql
-SET allow_extensions_metadata_mismatch=true;
 LOAD 'hello_ext.duckdb_extension';
 
 -- 29 numbered checks (31 statements), verified against DuckDB 1.4.4, 1.5.0 and 1.5.5:
