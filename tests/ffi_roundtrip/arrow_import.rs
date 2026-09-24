@@ -32,11 +32,17 @@ unsafe extern "C" fn release_nothing(array: *mut RawArrowArray) {
     unsafe { (*array).release = None };
 }
 
-/// A struct-array record with `n_children` children at `children`.
-fn parent(length: i64, n_children: i64, children: *mut *mut RawArrowArray) -> RawArrowArray {
-    // `buffers` must outlive the record; one null validity buffer, leaked.
-    let buffers: &'static mut [*const c_void; 1] = Box::leak(Box::new([ptr::null()]));
-    RawArrowArray {
+/// A struct-array record with `n_children` children at `children`, and the
+/// buffer list it points into (one null validity buffer). The caller keeps
+/// the buffer list alive for as long as the record is in use; the records
+/// release nothing, so the test owns and frees everything they point at.
+fn parent(
+    length: i64,
+    n_children: i64,
+    children: *mut *mut RawArrowArray,
+) -> (RawArrowArray, Box<[*const c_void; 1]>) {
+    let mut buffers = Box::new([ptr::null()]);
+    let raw = RawArrowArray {
         length,
         null_count: 0,
         offset: 0,
@@ -47,15 +53,22 @@ fn parent(length: i64, n_children: i64, children: *mut *mut RawArrowArray) -> Ra
         dictionary: ptr::null_mut(),
         release: Some(release_nothing),
         private_data: ptr::null_mut(),
-    }
+    };
+    (raw, buffers)
 }
 
-/// An `int32` child of `length` rows over a leaked buffer of `data_len`.
-fn int_child(length: i64, data_len: usize) -> &'static mut RawArrowArray {
-    let data: &'static mut [i32] = Box::leak(vec![7_i32; data_len].into_boxed_slice());
-    let buffers: &'static mut [*const c_void; 2] =
-        Box::leak(Box::new([ptr::null(), data.as_ptr().cast()]));
-    Box::leak(Box::new(RawArrowArray {
+/// An `int32` child of `length` rows over a buffer of `data_len`, with the
+/// allocations it points into.
+struct IntChild {
+    raw: Box<RawArrowArray>,
+    _buffers: Box<[*const c_void; 2]>,
+    _data: Box<[i32]>,
+}
+
+fn int_child(length: i64, data_len: usize) -> IntChild {
+    let data = vec![7_i32; data_len].into_boxed_slice();
+    let mut buffers = Box::new([ptr::null(), data.as_ptr().cast()]);
+    let raw = Box::new(RawArrowArray {
         length,
         null_count: 0,
         offset: 0,
@@ -66,7 +79,12 @@ fn int_child(length: i64, data_len: usize) -> &'static mut RawArrowArray {
         dictionary: ptr::null_mut(),
         release: Some(release_nothing),
         private_data: ptr::null_mut(),
-    }))
+    });
+    IntChild {
+        raw,
+        _buffers: buffers,
+        _data: data,
+    }
 }
 
 /// Converts a one-column `INTEGER` schema on `con`.
@@ -99,7 +117,8 @@ fn a_null_children_pointer_is_refused() {
     let fx = Fixture::open();
     // SAFETY: the fixture's database outlives the connection.
     let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
-    let err = import(&con, parent(4, 1, ptr::null_mut())).expect_err("no children to read");
+    let (raw, _buffers) = parent(4, 1, ptr::null_mut());
+    let err = import(&con, raw).expect_err("no children to read");
     assert!(err.contains("children"), "{err}");
 }
 
@@ -109,8 +128,9 @@ fn a_null_child_is_refused() {
     let fx = Fixture::open();
     // SAFETY: the fixture's database outlives the connection.
     let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
-    let kids: &'static mut [*mut RawArrowArray; 1] = Box::leak(Box::new([ptr::null_mut()]));
-    let err = import(&con, parent(4, 1, kids.as_mut_ptr())).expect_err("child 0 is null");
+    let mut kids: Box<[*mut RawArrowArray; 1]> = Box::new([ptr::null_mut()]);
+    let (raw, _buffers) = parent(4, 1, kids.as_mut_ptr());
+    let err = import(&con, raw).expect_err("child 0 is null");
     assert!(err.contains("child 0"), "{err}");
 }
 
@@ -122,15 +142,17 @@ fn a_child_shorter_than_its_parent_is_refused() {
     let fx = Fixture::open();
     // SAFETY: the fixture's database outlives the connection.
     let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
-    let child = int_child(2, 2);
-    let kids: &'static mut [*mut RawArrowArray; 1] = Box::leak(Box::new([ptr::from_mut(child)]));
-    let err = import(&con, parent(4096, 1, kids.as_mut_ptr())).expect_err("child too short");
+    let mut short = int_child(2, 2);
+    let mut kids = Box::new([ptr::from_mut(&mut *short.raw)]);
+    let (raw, _buffers) = parent(4096, 1, kids.as_mut_ptr());
+    let err = import(&con, raw).expect_err("child too short");
     assert!(err.contains("child 0"), "{err}");
 
     // A well-formed array of the same shape imports.
-    let child = int_child(4, 4);
-    let kids: &'static mut [*mut RawArrowArray; 1] = Box::leak(Box::new([ptr::from_mut(child)]));
-    assert_eq!(import(&con, parent(4, 1, kids.as_mut_ptr())), Ok(4));
+    let mut full = int_child(4, 4);
+    let mut full_kids = Box::new([ptr::from_mut(&mut *full.raw)]);
+    let (raw, _full_buffers) = parent(4, 1, full_kids.as_mut_ptr());
+    assert_eq!(import(&con, raw), Ok(4));
 }
 
 /// Exports one value of `expr` and imports it back, returning the imported
