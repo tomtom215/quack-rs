@@ -208,7 +208,13 @@ quack-rs/
 │   │   ├── mod.rs                     # Calendar conversions for `DuckDB`'s temporal types
 │   │   └── tests.rs                   # Unit tests
 │   ├── query/
-│   │   └── cstr.rs                    # The two C-string conversions the `query` module runs everything through
+│   │   ├── bind.rs                    # Binding a [`PreparedStatement`]'s parameters: the typed `bind_*` methods and `bind_value`
+│   │   ├── chunk.rs                   # [`OwnedDataChunk`]: a `duckdb_data_chunk` destroyed on drop
+│   │   ├── connection.rs              # [`OwnedConnection`] and its cross-thread [`InterruptHandle`]
+│   │   ├── cstr.rs                    # The two C-string conversions the `query` module runs everything through
+│   │   ├── live_tests.rs              # Tests that need a live `DuckDB`
+│   │   ├── prepared.rs                # Inspecting and executing a [`PreparedStatement`]; `bind.rs` binds its parameters
+│   │   └── result.rs                  # Reading a [`QueryResult`]: its columns, its chunks and what kind of outcome it is
 │   ├── replacement_scan/
 │   │   └── mod.rs                     # Builder for registering `DuckDB` replacement scans
 │   ├── scaffold/

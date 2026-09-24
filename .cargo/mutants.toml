@@ -78,6 +78,13 @@ exclude_globs = [
     # and cargo-mutants still follows the mod statements in an excluded file.
     "src/value.rs",             # Value: 130 duckdb_get_* / duckdb_create_* wrappers
     "src/query.rs",             # QueryResult/PreparedStatement/Connection: FFI wrappers
+    # The same wrappers, split out of query.rs; src/query/cstr.rs stays in.
+    "src/query/bind.rs",
+    "src/query/chunk.rs",
+    "src/query/connection.rs",
+    "src/query/live_tests.rs",
+    "src/query/prepared.rs",
+    "src/query/result.rs",
     # Same rationale, added with the September 2026 audit fixes. Their pure
     # logic lives in siblings that stay in the gate: src/value/checks.rs (the
     # DECIMAL range check and the scalar-cast allow-list).
