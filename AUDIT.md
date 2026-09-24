@@ -125,6 +125,15 @@ shows up as a test failure rather than a surprise.
 NULL rows before `update` under the default. The correction is specific to
 scalar functions, and the docs now say so.
 
+> **Corrected September 2026 (third pass).** The last paragraph is false.
+> `CAPIAggregateUpdate` (`aggregate_function-c.cpp:92-111`, DuckDB 1.5.5)
+> flattens the inputs and passes every row, NULL rows included, under either
+> null-handling setting. An aggregate's setting is read only by
+> `BoundAggregateExpression::PropagatesNullValues`, which only the
+> correlated-subquery decorrelator consults. VALIDATED end to end by
+> `aggregate_update_receives_null_rows_under_either_null_handling`
+> (`tests/ffi_roundtrip/lifecycle.rs`); recorded as Pitfall L12. See section 8.
+
 ### D3 — Composite `TypeId`s silently produced an invalid type (Medium)
 
 `duckdb.h` on `duckdb_create_logical_type`:
@@ -513,6 +522,21 @@ if nobody wrote down that they were checked.
   takes a total capacity and reallocates the child buffer when it grows; the
   builder re-fetches the child writer after every reserve, and refuses to exceed
   `MAX_VECTOR_SIZE` rather than let DuckDB throw a C++ exception into Rust.
+
+  > **Corrected September 2026 (third pass).** Two parts of this were wrong.
+  > A refused row got no list entry, and the refusal was sticky, so every later
+  > row in the chunk kept the previous chunk's `{offset, length}` and came back
+  > as a valid list the callback never wrote (VALIDATED: a whole 2048-row chunk
+  > of stale lists). And staying under the ceiling does not prevent an abort:
+  > `duckdb_list_vector_reserve` has no try/catch, so an allocation failure
+  > below it unwinds too (VALIDATED: 2^36 `BIGINT` elements). Refused rows are
+  > now NULL, and `ListBuilder::with_element_limit` bounds input-driven lengths.
+- **Correction (third pass): the appender was not the only 32-bit narrowing.**
+  The next bullet is right about `duckdb_append_varchar_length`, but
+  `VectorWriter::write_varchar` / `write_blob` reached the same narrowing in
+  `StringVector::AddStringOrBlob` unguarded: a 4 GiB + 1 byte value was stored
+  as a one-byte string (VALIDATED). They now refuse it (`try_write_varchar`,
+  `vector::string::MAX_STRING_LEN`).
 - **The appender, the virtual file system and the string decoder** are careful in
   the places that matter: short reads and writes are looped
   (`FileHandle::read_exact` / `write_all`), `duckdb_append_varchar_length`'s
@@ -789,10 +813,21 @@ README assertion that panicked — are fixed and were recompiled.
    would still make DuckDB's `GetValue` throw; none was found across the 31
    value types the new test exercises against every getter, but that is testing,
    not proof.
-4. **The book is not compiled in CI.** `docs.yml` runs `mdbook build`, never
-   `mdbook test`, which is how the non-compiling examples went unnoticed.
-   Compiling book blocks against the local crate needs a small harness (plain
-   `mdbook test` cannot link external crates).
+
+   > **Corrected September 2026 (third pass).** "PROVEN not to abort for a
+   > cast that fails" was false. Temporal casts bound through
+   > `TemplatedCastLoop` throw instead of reporting through the error channel,
+   > so 8 value-type/getter pairs aborted the process at both +infinity and
+   > -infinity, 16 cases in all (VALIDATED, e.g. `TIMESTAMP -> as_time`,
+   > `TIMESTAMP_MS -> as_date`; the DuckDB CLI's
+   > `TRY_CAST('infinity'::TIMESTAMP AS TIME)` throws too). The proof missed
+   > casts bound through `duckdb::Cast`, and the test used only benign values.
+   > The getters now refuse those pairs first (`value::temporal_checks`). See
+   > section 8.
+4. ~~**The book is not compiled in CI.**~~ — fixed in the third pass:
+   `book/doctest` compiles every Rust block of the book and README as a
+   doctest in CI, and a `book` job builds the book and checks its links on
+   every pull request (section 8).
 5. ~~The book changelog's relative links~~ — fixed in this pass:
    `scripts/sync-book-changelog.py` rewrites repository-file links to GitHub
    URLs, since the mirror lives in `book/src/reference/`.
