@@ -123,6 +123,13 @@ check, which copies each column it checks. Bound what your callbacks
 allocate, and set DuckDB's `memory_limit` so its own operators fail cleanly
 before the process runs out.
 
+One allocation failure is worse than an abort. When `duckdb_prepare` fails to
+allocate while it records a statement's parameter names, it frees the
+statement it has already handed back and reports an error; `prepare` (and
+everything built on it) then reads and frees that statement again. This is
+undefined behaviour inside DuckDB's C API that no caller can detect; see
+`docs/upstream-duckdb-reports.md`, item 36.
+
 ## COPY functions (resolved in DuckDB 1.5.0; both directions since)
 
 DuckDB 1.5.0 added `duckdb_create_copy_function` and related symbols to the public

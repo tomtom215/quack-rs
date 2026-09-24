@@ -4300,6 +4300,33 @@ fn a_streaming_result_reads_the_same_rows_as_a_materialised_one() {
     assert_eq!(sum, sum2);
 }
 
+/// `OwnedConnection` is `Send`: opened on one thread, it queries and
+/// disconnects on another.
+#[test]
+fn an_owned_connection_is_used_and_dropped_on_another_thread() {
+    use quack_rs::query::OwnedConnection;
+
+    let fx = Fixture::open();
+    // SAFETY: `db` is open for the fixture's lifetime, which outlives the
+    // scoped thread.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("open an owned connection");
+    con.execute("CREATE TABLE moved AS SELECT 7::BIGINT AS v")
+        .expect("create");
+    let v = std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let mut result = con.query("SELECT v FROM moved").expect("query");
+                let chunk = result.next_chunk().expect("fetch").expect("one chunk");
+                // SAFETY: one BIGINT column, one row.
+                unsafe { chunk.reader(0).read_i64(0) }
+                // `con` is dropped (disconnected) here, on this thread.
+            })
+            .join()
+            .expect("the thread does not panic")
+    });
+    assert_eq!(v, 7);
+}
+
 #[test]
 fn an_interrupt_handle_cancels_a_query_from_another_thread() {
     use quack_rs::query::OwnedConnection;

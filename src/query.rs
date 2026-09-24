@@ -242,6 +242,11 @@ pub struct PreparedStatement {
 /// Returns [`ExtensionError`] carrying `DuckDB`'s parse/bind error, or if `sql`
 /// contains an interior NUL byte.
 ///
+/// An allocation failure inside `DuckDB` while it prepares a statement with
+/// parameters can leave its output pointing at a statement it has already
+/// freed, which this then reads and frees again; nothing on this side can
+/// tell. See `docs/upstream-duckdb-reports.md`, item 36.
+///
 /// # Safety
 ///
 /// `con` must be a valid, open `duckdb_connection`.
@@ -257,7 +262,8 @@ pub unsafe fn prepare(
         return Ok(PreparedStatement { statement });
     }
     // SAFETY: on failure DuckDB still allocates the statement so the error is
-    // readable; it must be destroyed either way.
+    // readable; it must be destroyed either way. (Except after an allocation
+    // failure, which can leave a freed statement here: upstream item 36.)
     let message = unsafe { c_str_to_owned(duckdb_prepare_error(statement)) }
         .unwrap_or_else(|| String::from("prepare failed without an error message"));
     // SAFETY: destroyed exactly once, here, on the error path.
@@ -379,10 +385,16 @@ pub struct OwnedConnection {
     con: duckdb_connection,
 }
 
-// SAFETY: a duckdb_connection is a `duckdb::Connection *`, which owns its own
-// ClientContext and may be moved between threads. It is *not* `Sync`: DuckDB
-// does not permit concurrent use of one connection, so `OwnedConnection`
-// deliberately does not implement `Sync`.
+// SAFETY: a duckdb_connection is a `duckdb::Connection *`, which holds its
+// ClientContext through a shared_ptr and has no state tied to the thread that
+// created it (DuckDB 1.5.5's two `thread_local`s are a per-thread allocator
+// cache and a settings cache keyed by the settings' owner and version), so it
+// may be used from, and disconnected on, another thread; the test
+// `an_owned_connection_is_used_and_dropped_on_another_thread` does both.
+// `Sync` is not implemented. DuckDB itself serialises concurrent calls on one
+// connection with the ClientContext's lock, but a query on one thread would
+// then end a result another thread is streaming, and this type's API was not
+// designed for that; share one behind a `Mutex`.
 unsafe impl Send for OwnedConnection {}
 
 #[cfg(test)]
@@ -391,11 +403,10 @@ mod tests {
 
     #[test]
     fn owned_connection_is_send() {
-        // DuckDB allows moving a connection between threads. It is deliberately
-        // not `Sync`: DuckDB does not permit concurrent use of one connection,
-        // and this module deliberately carries no `unsafe impl Sync` to grant
-        // it — `&OwnedConnection` therefore cannot cross a thread boundary, so
-        // two threads cannot reach the same connection through this type.
+        // A connection may move between threads (see the `unsafe impl Send`).
+        // This module carries no `unsafe impl Sync`, so `&OwnedConnection`
+        // cannot cross a thread boundary and two threads cannot reach the same
+        // connection through this type.
         const fn assert_send<T: Send>() {}
         assert_send::<OwnedConnection>();
     }

@@ -473,7 +473,17 @@ in each section below.
   `DuckDB` never destroys one aggregate state per row of a window frame with
   `EXCLUDE` (item 35: 5000 of a 5000-row window, every release from 1.4.4).
   `DestroyFn`'s docs said it was called for every state `DuckDB` created.
-- `docs/upstream-duckdb-reports.md` gained items 20 to 35, and item 16 gained
+- `query::prepare` and the book's known limitations document that an
+  allocation failure inside `duckdb_prepare` can hand back a statement
+  `DuckDB` has already freed, which the error path then reads and frees
+  (item 36: the last 3 of its allocations, every release from 1.4.4, found
+  by failing each allocation in turn).
+- `ClientContext::config_option` documents that `DuckDB`'s function has no
+  `try`, and why no built-in setting's getter throws through it in practice.
+- `OwnedConnection`'s `Send` justification said `DuckDB` forbids concurrent
+  use of one connection; it serialises it. The comment now gives the real
+  reasons, and a test queries and drops a connection on another thread.
+- `docs/upstream-duckdb-reports.md` gained items 20 to 36, and item 16 gained
   a `HUGEINT` reproducer.
 
 #### Fourth audit

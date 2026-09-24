@@ -46,6 +46,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 33 | Arrow import of a `geoarrow.wkb` column of more than 2048 rows writes past a vector | C program, below | refused past 2048 rows |
 | 34 | Arrow export declares plain binary for BIGNUM/GEOMETRY but writes binary views under `arrow_output_version = '1.4'` | C program, below | such an export refused |
 | 35 | Window frames with `EXCLUDE` never destroy the aggregate states of their second segment-tree part | C program, below | documented; small states stored inline |
+| 36 | `duckdb_prepare` frees the statement it already stored in `*out` when an allocation fails while it builds the parameter-name map | C program (fault injection), below | documented; nothing an extension can do |
 
 ## Before filing
 
@@ -3772,3 +3773,189 @@ limitation is documented on `DestroyFn` and `FfiState` and in the book's
 known limitations, and `tests/ffi_roundtrip/agg_states.rs` counts the `T`s
 never dropped (5000 of a 5000-row window with `EXCLUDE CURRENT ROW` on
 1.5.5, none without).
+
+## 36. `duckdb_prepare` frees the statement it already stored in `*out` when an allocation fails
+
+`duckdb_prepare` (`prepared-c.cpp`) allocates a `PreparedStatementWrapper`,
+prepares into it, stores it in `*out_prepared_statement`, and only then builds
+the wrapper's parameter-index-to-name map
+(`duckdb_prepare_param_index_to_name_map_internal`). The whole body is in a
+`try`, whose `catch (...)` deletes the wrapper and returns `DuckDBError`
+without clearing `*out_prepared_statement`. When an allocation fails while
+the map is built, the caller gets `DuckDBError` and a pointer to freed
+memory, and the documented error path (`duckdb_prepare_error`, then
+`duckdb_destroy_prepare`) reads it and frees it again.
+`duckdb_prepare_extracted_statement` has the same shape. Only a failed
+allocation reaches this; nothing else in the map's construction throws.
+
+Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5, x86_64
+Linux, glibc. Build: `gcc -rdynamic -I<libduckdb dir> item36.c -L<libduckdb
+dir> -lduckdb -o item36`, then run with `LD_LIBRARY_PATH=<libduckdb dir>`.
+Failing each allocation in turn, in a fresh child process, finds every point
+at which a failure leaves `*out` freed; the prepared statement has two
+parameters, so the map is not empty.
+
+```c
+// duckdb_prepare stores the new statement in *out before building the
+// parameter-name map, and its catch (...) deletes the statement without
+// clearing *out. An allocation failure while building the map returns
+// DuckDBError with *out pointing at freed memory, which the caller then
+// passes to duckdb_prepare_error and duckdb_destroy_prepare.
+//
+// Fault injection: this file defines malloc and free so that allocation
+// number K after arming returns NULL (libstdc++'s operator new then throws
+// std::bad_alloc), and records every pointer freed during the call. For each
+// K in turn a child process prepares the statement and reports whether the
+// pointer left in *out was freed.
+// Build: gcc -rdynamic -I<libduckdb dir> item36.c -L<libduckdb dir> -lduckdb -o item36
+// (-rdynamic exports this malloc and free, so libduckdb's calls reach them.)
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <duckdb.h>
+
+extern void *__libc_malloc(size_t);
+extern void __libc_free(void *);
+static int armed, recording; static long count, target;
+static void *freed[1 << 20]; static long nfreed;
+void *malloc(size_t n) {
+    if (armed && ++count == target) { armed = 0; return NULL; }
+    return __libc_malloc(n);
+}
+void free(void *p) {
+    if (recording && p && nfreed < (1 << 20)) freed[nfreed++] = p;
+    __libc_free(p);
+}
+
+static const char *SQL = "SELECT $first::INTEGER + $second::INTEGER";
+
+// 0: prepared; 1: error, *out NULL or live; 2: error, *out freed.
+static int attempt(long k) {
+    duckdb_database db; duckdb_connection con;
+    duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    duckdb_prepared_statement stmt = NULL;
+    count = 0; target = k; nfreed = 0; recording = 1; armed = 1;
+    duckdb_state st = duckdb_prepare(con, SQL, &stmt);
+    armed = 0; recording = 0;
+    if (st == DuckDBSuccess) return 0;
+    for (long i = 0; i < nfreed; i++) if (freed[i] == (void *)stmt && stmt) return 2;
+    return 1;
+}
+
+static long total_allocations(void) {
+    duckdb_database db; duckdb_connection con;
+    duckdb_open(NULL, &db); duckdb_connect(db, &con);
+    duckdb_prepared_statement stmt = NULL;
+    count = 0; target = -1; armed = 1;
+    duckdb_prepare(con, SQL, &stmt);
+    armed = 0;
+    return count;
+}
+
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    printf("Built with DuckDB %s\n", duckdb_library_version());
+    // Count the allocations in a child: the parent never opens DuckDB, so
+    // every fork starts clean.
+    int fd[2]; long total = 0;
+    if (pipe(fd) != 0) return 1;
+    pid_t pid = fork();
+    if (pid == 0) { long n = total_allocations(); (void)!write(fd[1], &n, sizeof n); _exit(0); }
+    waitpid(pid, NULL, 0);
+    if (read(fd[0], &total, sizeof total) != sizeof total) return 1;
+    printf("allocations during prepare: %ld\n", total);
+    long ok = 0, errors = 0, dangling = 0, first_dangling = 0, crashed = 0;
+    for (long k = 1; k <= total; k++) {
+        pid = fork();
+        if (pid == 0) _exit(attempt(k));
+        int ws; waitpid(pid, &ws, 0);
+        if (!WIFEXITED(ws)) { crashed++; continue; }
+        int rc = WEXITSTATUS(ws);
+        if (rc == 0) ok++;
+        if (rc == 1) errors++;
+        if (rc == 2) { dangling++; if (!first_dangling) first_dangling = k; }
+    }
+    printf("prepared: %ld\n", ok);
+    printf("failed with *out NULL or live: %ld\n", errors);
+    printf("failed with *out freed: %ld (first at allocation %ld)\n", dangling, first_dangling);
+    printf("child crashed: %ld\n", crashed);
+    return 0;
+}
+```
+
+Observed (stderr, which carries `terminate called after throwing an instance
+of 'std::bad_alloc'` from the children that crashed, dropped):
+
+```text
+Built with DuckDB v1.4.4
+allocations during prepare: 511
+prepared: 0
+failed with *out NULL or live: 500
+failed with *out freed: 3 (first at allocation 509)
+child crashed: 8
+
+Built with DuckDB v1.4.5
+allocations during prepare: 511
+prepared: 0
+failed with *out NULL or live: 500
+failed with *out freed: 3 (first at allocation 509)
+child crashed: 8
+
+Built with DuckDB v1.5.0
+allocations during prepare: 648
+prepared: 5
+failed with *out NULL or live: 632
+failed with *out freed: 3 (first at allocation 646)
+child crashed: 8
+
+Built with DuckDB v1.5.1
+allocations during prepare: 652
+prepared: 5
+failed with *out NULL or live: 636
+failed with *out freed: 3 (first at allocation 650)
+child crashed: 8
+
+Built with DuckDB v1.5.2
+allocations during prepare: 652
+prepared: 5
+failed with *out NULL or live: 636
+failed with *out freed: 3 (first at allocation 650)
+child crashed: 8
+
+Built with DuckDB v1.5.3
+allocations during prepare: 647
+prepared: 5
+failed with *out NULL or live: 631
+failed with *out freed: 3 (first at allocation 645)
+child crashed: 8
+
+Built with DuckDB v1.5.4
+allocations during prepare: 647
+prepared: 5
+failed with *out NULL or live: 631
+failed with *out freed: 3 (first at allocation 645)
+child crashed: 8
+
+Built with DuckDB v1.5.5
+allocations during prepare: 647
+prepared: 5
+failed with *out NULL or live: 631
+failed with *out freed: 3 (first at allocation 645)
+child crashed: 8
+```
+
+On every release, failing one of the last three allocations `duckdb_prepare`
+makes returns `DuckDBError` with `*out` pointing at the freed wrapper. The
+other failures either leave `*out` null or live, or abort the child (an
+allocation failure `DuckDB` does not catch; see the book's known limitations).
+
+Expected: `*out_prepared_statement` set to null (or the wrapper kept) on every
+error return.
+
+quack-rs mitigation: none possible. `query::prepare` cannot tell a freed
+wrapper from a live one, and the error path it must take to read the message
+and free the statement is the one that touches it. `prepare`'s documentation
+and the book's known limitations describe the hazard, which every caller of
+the C API shares.
