@@ -141,6 +141,43 @@ impl ScalarFunctionInfo {
     }
 }
 
+/// The argument `DuckDB` passes to a scalar function **bind** callback: a
+/// `duckdb_bind_info`, in a type of its own.
+///
+/// A table function's bind callback receives a `duckdb_bind_info` too, but
+/// `DuckDB` casts it to a different, larger struct, so a callback written for
+/// one kind of function corrupts memory when registered on the other (a
+/// table bind's `duckdb_bind_set_error` writes past the scalar bind info).
+/// With its own argument type, [`ScalarBindFn`][crate::scalar::ScalarBindFn]
+/// no longer accepts a table callback, and a scalar callback no longer fits a
+/// table function's `bind`. `#[repr(transparent)]`, so the C ABI is the
+/// pointer's.
+///
+/// ```rust,compile_fail
+/// use quack_rs::scalar::ScalarFunctionBuilder;
+/// quack_rs::table_bind_callback!(table_bind, |_info| {});
+/// // Does not compile: a table bind callback takes a `duckdb_bind_info`.
+/// let _ = ScalarFunctionBuilder::new("f").bind(table_bind);
+/// ```
+#[cfg(feature = "duckdb-1-5")]
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
+pub struct RawScalarBindInfo(pub duckdb_bind_info);
+
+/// The argument `DuckDB` passes to a scalar function **init** callback; see
+/// [`RawScalarBindInfo`] for why it has a type of its own.
+///
+/// ```rust,compile_fail
+/// use quack_rs::scalar::ScalarFunctionBuilder;
+/// quack_rs::table_init_callback!(table_init, |_info| {});
+/// // Does not compile: a table init callback takes a `duckdb_init_info`.
+/// let _ = ScalarFunctionBuilder::new("f").init(table_init);
+/// ```
+#[cfg(feature = "duckdb-1-5")]
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
+pub struct RawScalarInitInfo(pub duckdb_init_info);
+
 /// Ergonomic wrapper around the `duckdb_bind_info` handle provided to a
 /// scalar function bind callback (`DuckDB` 1.5.0+).
 ///
@@ -153,17 +190,20 @@ pub struct ScalarBindInfo {
 
 #[cfg(feature = "duckdb-1-5")]
 impl ScalarBindInfo {
-    /// Wraps a raw `duckdb_bind_info` provided by `DuckDB` inside a scalar
-    /// function bind callback.
+    /// Wraps the info `DuckDB` passes to a scalar function bind callback.
+    ///
+    /// **Breaking** in 0.18.0: takes a [`RawScalarBindInfo`], the argument type
+    /// of [`ScalarBindFn`][crate::scalar::ScalarBindFn], not a bare
+    /// `duckdb_bind_info`.
     ///
     /// # Safety
     ///
-    /// `info` must be a valid `duckdb_bind_info` passed by `DuckDB` to a
-    /// scalar function bind callback.
+    /// `info` must be the argument `DuckDB` passed to a scalar function bind
+    /// callback that is still running.
     #[inline]
     #[must_use]
-    pub const unsafe fn new(info: duckdb_bind_info) -> Self {
-        Self { info }
+    pub const unsafe fn new(info: RawScalarBindInfo) -> Self {
+        Self { info: info.0 }
     }
 
     /// Returns the number of arguments passed to the scalar function.
@@ -477,17 +517,20 @@ pub struct ScalarInitInfo {
 
 #[cfg(feature = "duckdb-1-5")]
 impl ScalarInitInfo {
-    /// Wraps a raw `duckdb_init_info` provided by `DuckDB` inside a scalar
-    /// function init callback.
+    /// Wraps the info `DuckDB` passes to a scalar function init callback.
+    ///
+    /// **Breaking** in 0.18.0: takes a [`RawScalarInitInfo`], the argument type
+    /// of [`ScalarInitFn`][crate::scalar::ScalarInitFn], not a bare
+    /// `duckdb_init_info`.
     ///
     /// # Safety
     ///
-    /// `info` must be a valid `duckdb_init_info` passed by `DuckDB` to a
-    /// scalar function init callback.
+    /// `info` must be the argument `DuckDB` passed to a scalar function init
+    /// callback that is still running.
     #[inline]
     #[must_use]
-    pub const unsafe fn new(info: duckdb_init_info) -> Self {
-        Self { info }
+    pub const unsafe fn new(info: RawScalarInitInfo) -> Self {
+        Self { info: info.0 }
     }
 
     /// Retrieves the extra-info pointer previously set via
@@ -654,7 +697,7 @@ mod tests {
     #[test]
     fn scalar_bind_info_as_raw_roundtrip() {
         let raw = std::ptr::null_mut();
-        let info = unsafe { ScalarBindInfo::new(raw) };
+        let info = unsafe { ScalarBindInfo::new(RawScalarBindInfo(raw)) };
         assert_eq!(info.as_raw(), raw);
     }
 
@@ -662,7 +705,7 @@ mod tests {
     #[test]
     fn scalar_init_info_as_raw_roundtrip() {
         let raw = std::ptr::null_mut();
-        let info = unsafe { ScalarInitInfo::new(raw) };
+        let info = unsafe { ScalarInitInfo::new(RawScalarInitInfo(raw)) };
         assert_eq!(info.as_raw(), raw);
     }
 }

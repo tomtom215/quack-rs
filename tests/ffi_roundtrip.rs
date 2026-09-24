@@ -3271,7 +3271,7 @@ mod scalar_state {
 /// Bind callback: fold the constant second argument once, instead of reading it
 /// on every row.
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn scaled_bind(info: libduckdb_sys::duckdb_bind_info) {
+unsafe extern "C" fn scaled_bind(info: quack_rs::scalar::RawScalarBindInfo) {
     use quack_rs::scalar::ScalarBindInfo;
 
     // SAFETY: DuckDB passes a valid bind info.
@@ -3301,7 +3301,7 @@ unsafe extern "C" fn scaled_bind(info: libduckdb_sys::duckdb_bind_info) {
 
 /// Init callback: allocate per-thread scratch.
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn scaled_init(info: libduckdb_sys::duckdb_init_info) {
+unsafe extern "C" fn scaled_init(info: quack_rs::scalar::RawScalarInitInfo) {
     use quack_rs::scalar::ScalarInitInfo;
 
     // SAFETY: DuckDB passes a valid init info.
@@ -5016,7 +5016,7 @@ mod typed_scalar_state {
 }
 
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn typed_bind(info: libduckdb_sys::duckdb_bind_info) {
+unsafe extern "C" fn typed_bind(info: quack_rs::scalar::RawScalarBindInfo) {
     use quack_rs::scalar::{ScalarBindData, ScalarBindInfo};
     use typed_scalar_state::Factor;
 
@@ -5037,7 +5037,7 @@ unsafe extern "C" fn typed_bind(info: libduckdb_sys::duckdb_bind_info) {
 }
 
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn typed_init(info: libduckdb_sys::duckdb_init_info) {
+unsafe extern "C" fn typed_init(info: quack_rs::scalar::RawScalarInitInfo) {
     use quack_rs::scalar::{ScalarInitInfo, ScalarLocalState};
     use typed_scalar_state::Calls;
 

@@ -950,7 +950,7 @@ mod fold_errors {
 
     static SEEN: Mutex<Vec<(DuckDbErrorType, String)>> = Mutex::new(Vec::new());
 
-    unsafe extern "C" fn fold_bind(info: libduckdb_sys::duckdb_bind_info) {
+    unsafe extern "C" fn fold_bind(info: quack_rs::scalar::RawScalarBindInfo) {
         // SAFETY: `info` is the live bind info.
         let bind = unsafe { ScalarBindInfo::new(info) };
         // SAFETY: argument 0 was declared.

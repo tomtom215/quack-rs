@@ -414,6 +414,17 @@ in each section below.
   payload `DuckDB` can render; everything else (`VARIANT`, `GEOMETRY`, a type
   quack-rs does not know, and `ARRAY` / `UNION` values that could hold one)
   gets `UNRENDERABLE`. See Fixed.
+- **Breaking: scalar function bind and init callbacks take their own
+  argument types**, `RawScalarBindInfo` and `RawScalarInitInfo`
+  (`#[repr(transparent)]` over `duckdb_bind_info` / `duckdb_init_info`), in
+  `ScalarBindFn`, `ScalarInitFn`, `scalar_bind_callback!`,
+  `scalar_init_callback!`, `ScalarBindInfo::new` and `ScalarInitInfo::new`.
+  A table function's bind and init callbacks receive the same C types, but
+  `DuckDB` casts them to a different, larger struct, so `table_bind_callback!`
+  output registered on a scalar function (which safe code could do) wrote past
+  the scalar bind info when it reported a panic. The two kinds no longer
+  type-check in each other's slots (`compile_fail` doctests). A hand-written
+  raw scalar callback changes its parameter type only.
 - **Breaking: `ArrowConvertedSchema::from_raw` takes the Arrow schema** the
   handle was built from (`&ArrowSchema`) instead of a column count, and is no
   longer `const`: `data_chunk_from_arrow` checks each array against that

@@ -19,7 +19,7 @@ type Seen = (bool, Option<TypeId>, bool, Option<i64>);
 
 static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
 
-unsafe extern "C" fn record_bind(info: libduckdb_sys::duckdb_bind_info) {
+unsafe extern "C" fn record_bind(info: quack_rs::scalar::RawScalarBindInfo) {
     // SAFETY: DuckDB passes a valid bind info.
     let bind = unsafe { ScalarBindInfo::new(info) };
     // SAFETY: inside a bind callback, so the context is live.

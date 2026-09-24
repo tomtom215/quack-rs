@@ -19,10 +19,9 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use quack_rs::scalar::ScalarBindInfo;
-//! use libduckdb_sys::duckdb_bind_info;
+//! use quack_rs::scalar::{RawScalarBindInfo, ScalarBindInfo};
 //!
-//! unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
+//! unsafe extern "C" fn my_bind(info: RawScalarBindInfo) {
 //!     let bind = unsafe { ScalarBindInfo::new(info) };
 //!     if let Some(arg) = unsafe { bind.argument(0) } {
 //!         // Inspect the argument's static return type at bind time.

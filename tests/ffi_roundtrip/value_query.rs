@@ -439,7 +439,7 @@ mod fold_probe {
 }
 
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn vq_fold_bind(info: libduckdb_sys::duckdb_bind_info) {
+unsafe extern "C" fn vq_fold_bind(info: quack_rs::scalar::RawScalarBindInfo) {
     use quack_rs::scalar::ScalarBindInfo;
 
     // SAFETY: DuckDB passes a valid bind info.

@@ -29,16 +29,42 @@ use crate::validate::validate_function_name;
 /// The scalar function bind callback signature (`DuckDB` 1.5.0+).
 ///
 /// Called once during query planning. Use this to inspect arguments and
-/// allocate per-query state via `duckdb_scalar_function_bind_set_bind_data`.
+/// allocate per-query state via `duckdb_scalar_function_set_bind_data`.
+///
+/// **Breaking** in 0.18.0: the argument is a
+/// [`RawScalarBindInfo`][crate::scalar::RawScalarBindInfo], so that a table
+/// function's bind callback, which `DuckDB` passes a different struct, cannot
+/// be registered here.
 #[cfg(feature = "duckdb-1-5")]
-pub type ScalarBindFn = unsafe extern "C" fn(info: duckdb_bind_info);
+pub type ScalarBindFn = unsafe extern "C" fn(info: crate::scalar::RawScalarBindInfo);
 
 /// The scalar function init callback signature (`DuckDB` 1.5.0+).
 ///
 /// Called once per thread before execution begins. Use this to allocate
 /// per-thread local state via `duckdb_scalar_function_init_set_state`.
+///
+/// **Breaking** in 0.18.0: the argument is a
+/// [`RawScalarInitInfo`][crate::scalar::RawScalarInitInfo]; see
+/// [`ScalarBindFn`].
 #[cfg(feature = "duckdb-1-5")]
-pub type ScalarInitFn = unsafe extern "C" fn(info: duckdb_init_info);
+pub type ScalarInitFn = unsafe extern "C" fn(info: crate::scalar::RawScalarInitInfo);
+
+/// `f` as the callback type `duckdb_scalar_function_set_bind` takes.
+#[cfg(feature = "duckdb-1-5")]
+pub(super) const fn raw_bind(f: ScalarBindFn) -> unsafe extern "C" fn(duckdb_bind_info) {
+    // SAFETY: `RawScalarBindInfo` is `#[repr(transparent)]` over
+    // `duckdb_bind_info`, so the two function pointer types have the same ABI
+    // and `DuckDB` calls `f` with exactly the argument it declares.
+    unsafe { core::mem::transmute::<ScalarBindFn, unsafe extern "C" fn(duckdb_bind_info)>(f) }
+}
+
+/// `f` as the callback type `duckdb_scalar_function_set_init` takes.
+#[cfg(feature = "duckdb-1-5")]
+pub(super) const fn raw_init(f: ScalarInitFn) -> unsafe extern "C" fn(duckdb_init_info) {
+    // SAFETY: as in `raw_bind`, for `RawScalarInitInfo` over
+    // `duckdb_init_info`.
+    unsafe { core::mem::transmute::<ScalarInitFn, unsafe extern "C" fn(duckdb_init_info)>(f) }
+}
 
 /// The scalar function callback signature.
 ///
@@ -541,7 +567,7 @@ impl ScalarFunctionBuilder {
         if let Some(bind_fn) = self.bind {
             // SAFETY: func is a valid scalar function handle.
             unsafe {
-                duckdb_scalar_function_set_bind(func, Some(bind_fn));
+                duckdb_scalar_function_set_bind(func, Some(raw_bind(bind_fn)));
             }
         }
 
@@ -550,7 +576,7 @@ impl ScalarFunctionBuilder {
         if let Some(init_fn) = self.init {
             // SAFETY: func is a valid scalar function handle.
             unsafe {
-                duckdb_scalar_function_set_init(func, Some(init_fn));
+                duckdb_scalar_function_set_init(func, Some(raw_init(init_fn)));
             }
         }
 

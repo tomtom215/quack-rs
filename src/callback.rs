@@ -190,12 +190,13 @@ macro_rules! table_scan_callback {
 /// reported through `duckdb_bind_set_error`, which fails the query during
 /// planning rather than aborting the process.
 ///
-/// **Table functions only.** A scalar function's `bind` / `init` callback has
-/// the same C signature, so the compiler accepts this macro's output there
-/// too — but `duckdb_bind_set_error` casts its argument to the table
-/// function's much larger info struct and writes past the scalar one, which
-/// corrupted the stack (SIGSEGV) in testing. Use
-/// `scalar_bind_callback!` (feature `duckdb-1-5`) for scalar functions.
+/// **Table functions only.** `duckdb_bind_set_error` casts its argument to the
+/// table function's info struct, which is much larger than a scalar
+/// function's: used on a scalar function, it wrote past the scalar bind info
+/// (SIGSEGV in testing). A scalar callback takes a
+/// [`RawScalarBindInfo`](crate::scalar::RawScalarBindInfo), so the compiler
+/// refuses this macro's output there. Use `scalar_bind_callback!` (feature
+/// `duckdb-1-5`) for scalar functions.
 ///
 /// # Example
 ///
@@ -233,12 +234,13 @@ macro_rules! table_bind_callback {
 /// the global `init` and the per-thread `local_init` callback — they share a
 /// signature. A panic is reported through `duckdb_init_set_error`.
 ///
-/// **Table functions only.** A scalar function's `bind` / `init` callback has
-/// the same C signature, so the compiler accepts this macro's output there
-/// too — but `duckdb_init_set_error` casts its argument to the table
-/// function's much larger info struct and writes past the scalar one, which
-/// corrupted the stack (SIGSEGV) in testing. Use
-/// `scalar_init_callback!` (feature `duckdb-1-5`) for scalar functions.
+/// **Table functions only.** `duckdb_init_set_error` casts its argument to the
+/// table function's info struct, which is much larger than a scalar
+/// function's: used on a scalar function, it wrote past the scalar init info
+/// (SIGSEGV in testing). A scalar callback takes a
+/// [`RawScalarInitInfo`](crate::scalar::RawScalarInitInfo), so the compiler
+/// refuses this macro's output there. Use `scalar_init_callback!` (feature
+/// `duckdb-1-5`) for scalar functions.
 ///
 /// # Example
 ///
@@ -273,14 +275,12 @@ macro_rules! table_init_callback {
 /// Generates a panic-safe `unsafe extern "C"` **scalar function bind** callback
 /// (`duckdb-1-5`).
 ///
-/// Emits `unsafe extern "C" fn $name(info: duckdb_bind_info)`, for
+/// Emits `unsafe extern "C" fn $name(info: RawScalarBindInfo)`, for
 /// [`ScalarFunctionBuilder::bind`](crate::scalar::ScalarFunctionBuilder::bind).
 /// A panic is reported through `duckdb_scalar_function_bind_set_error`, which
-/// fails the query during planning.
-///
-/// Do not use [`table_bind_callback!`](crate::table_bind_callback) here: the
-/// C signature is the same, but it reports through the table function's
-/// `duckdb_bind_set_error`, which writes past the scalar bind info.
+/// fails the query during planning. The argument type keeps the callback out
+/// of a table function's `bind`, and [`table_bind_callback!`](crate::table_bind_callback)'s
+/// output out of this one.
 ///
 /// # Example
 ///
@@ -300,13 +300,13 @@ macro_rules! scalar_bind_callback {
         ///
         /// Called by DuckDB. `info` is provided by the DuckDB runtime.
         #[allow(unused_unsafe)]
-        pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_bind_info) {
+        pub unsafe extern "C" fn $name($info: $crate::scalar::RawScalarBindInfo) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the scalar bind info DuckDB passed in.
                 unsafe {
-                    ::libduckdb_sys::duckdb_scalar_function_bind_set_error($info, c_msg.as_ptr());
+                    ::libduckdb_sys::duckdb_scalar_function_bind_set_error($info.0, c_msg.as_ptr());
                 }
             }
         }
@@ -316,13 +316,12 @@ macro_rules! scalar_bind_callback {
 /// Generates a panic-safe `unsafe extern "C"` **scalar function init** callback
 /// (`duckdb-1-5`).
 ///
-/// Emits `unsafe extern "C" fn $name(info: duckdb_init_info)`, for
+/// Emits `unsafe extern "C" fn $name(info: RawScalarInitInfo)`, for
 /// [`ScalarFunctionBuilder::init`](crate::scalar::ScalarFunctionBuilder::init).
-/// A panic is reported through `duckdb_scalar_function_init_set_error`.
-///
-/// Do not use [`table_init_callback!`](crate::table_init_callback) here: the
-/// C signature is the same, but it reports through the table function's
-/// `duckdb_init_set_error`, which writes past the scalar init info.
+/// A panic is reported through `duckdb_scalar_function_init_set_error`. The
+/// argument type keeps the callback out of a table function's `init`, and
+/// [`table_init_callback!`](crate::table_init_callback)'s output out of this
+/// one.
 ///
 /// # Example
 ///
@@ -341,13 +340,13 @@ macro_rules! scalar_init_callback {
         ///
         /// Called by DuckDB. `info` is provided by the DuckDB runtime.
         #[allow(unused_unsafe)]
-        pub unsafe extern "C" fn $name($info: ::libduckdb_sys::duckdb_init_info) {
+        pub unsafe extern "C" fn $name($info: $crate::scalar::RawScalarInitInfo) {
             let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| $body));
             if let Err(panic) = result {
                 let c_msg = $crate::callback::panic_c_message(panic);
                 // SAFETY: `info` is the scalar init info DuckDB passed in.
                 unsafe {
-                    ::libduckdb_sys::duckdb_scalar_function_init_set_error($info, c_msg.as_ptr());
+                    ::libduckdb_sys::duckdb_scalar_function_init_set_error($info.0, c_msg.as_ptr());
                 }
             }
         }

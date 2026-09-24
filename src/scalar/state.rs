@@ -47,7 +47,7 @@
 //! struct Factor(i64);
 //!
 //! # #[allow(unused)]
-//! unsafe extern "C" fn my_bind(info: libduckdb_sys::duckdb_bind_info) {
+//! unsafe extern "C" fn my_bind(info: quack_rs::scalar::RawScalarBindInfo) {
 //!     // SAFETY: DuckDB passes a valid bind info.
 //!     let bind = unsafe { ScalarBindInfo::new(info) };
 //!     ScalarBindData::set(&bind, Factor(10));

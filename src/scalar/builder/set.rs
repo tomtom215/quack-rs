@@ -361,14 +361,14 @@ impl ScalarFunctionSetBuilder {
             if let Some(bind_fn) = overload.bind {
                 // SAFETY: func is a valid scalar function handle.
                 unsafe {
-                    duckdb_scalar_function_set_bind(func, Some(bind_fn));
+                    duckdb_scalar_function_set_bind(func, Some(super::single::raw_bind(bind_fn)));
                 }
             }
             #[cfg(feature = "duckdb-1-5")]
             if let Some(init_fn) = overload.init {
                 // SAFETY: func is a valid scalar function handle.
                 unsafe {
-                    duckdb_scalar_function_set_init(func, Some(init_fn));
+                    duckdb_scalar_function_set_init(func, Some(super::single::raw_init(init_fn)));
                 }
             }
 

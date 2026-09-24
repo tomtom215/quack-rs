@@ -56,7 +56,7 @@ pub use builder::ScalarFn;
 pub use builder::{ScalarBindFn, ScalarInitFn};
 pub use info::ScalarFunctionInfo;
 #[cfg(feature = "duckdb-1-5")]
-pub use info::{ScalarBindInfo, ScalarInitInfo};
+pub use info::{RawScalarBindInfo, RawScalarInitInfo, ScalarBindInfo, ScalarInitInfo};
 #[cfg(feature = "duckdb-1-5")]
 pub use state::{ScalarBindData, ScalarLocalState};
 pub use typed::{ScalarOut, ScalarValue};

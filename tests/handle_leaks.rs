@@ -133,7 +133,7 @@ impl Drop for Db {
 }
 
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn inspect_argument(info: libduckdb_sys::duckdb_bind_info) {
+unsafe extern "C" fn inspect_argument(info: quack_rs::scalar::RawScalarBindInfo) {
     let bind = unsafe { quack_rs::scalar::ScalarBindInfo::new(info) };
     // Before v1.5.5 `argument` refuses and sets the bind error; a panic here
     // would cross this `extern "C"` function and abort.
