@@ -529,4 +529,22 @@ mod tests {
             .collect();
         assert_eq!(ids, vec![Some(TypeId::BigInt), Some(TypeId::Varchar)]);
     }
+
+    /// A composite varargs id is refused by `check`, naming the slot and the
+    /// type, so `register` reports it instead of `set_on` hitting the
+    /// composite-type panic in `LogicalType::new`. The refusal happens before
+    /// any `DuckDB` call, so no live runtime is needed.
+    #[test]
+    fn a_composite_varargs_id_is_refused_naming_the_slot() {
+        for id in [TypeId::List, TypeId::Struct, TypeId::Decimal] {
+            let err = Varargs::Id(id)
+                .check("scalar function varargs")
+                .expect_err("a composite id cannot be built from the id alone");
+            let msg = err.as_str();
+            assert!(msg.starts_with("scalar function varargs: "), "{msg}");
+            assert!(msg.contains(id.sql_name()), "{msg}");
+            // Points at the `*_logical` setter that does accept the type.
+            assert!(msg.contains("_logical"), "{msg}");
+        }
+    }
 }

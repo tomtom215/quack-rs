@@ -91,6 +91,13 @@ exclude_globs = [
     # logic lives in siblings that stay in the gate: src/value/checks.rs (the
     # DECIMAL range check and the scalar-cast allow-list).
     "src/value/getters.rs",     # Value::as_*: each copies the value and calls duckdb_get_*
+    # Split out of value.rs with the same rationale: every function reads the
+    # value through duckdb_get_list_size / _list_child / _map_size / _map_key /
+    # _map_value / _struct_child / duckdb_get_value_type. Its siblings
+    # composite.rs, scalars.rs, temporal.rs and temporal_checks.rs stay in:
+    # their range and count checks run before any DuckDB call (composite.rs's
+    # FFI-only checks are dropped in exclude_re below instead).
+    "src/value/nested.rs",      # Value::list_* / struct_* / map_* readers: duckdb_get_*
     "src/vector/nested_null.rs",# walks a vector's type and child masks through the C API
     # FFI-only wrappers that were missing from this list: every surviving
     # mutant in them (Sept 2026 run) is in a function that only calls DuckDB
@@ -143,4 +150,21 @@ exclude_re = [
     "impl [a-z:]*Debug for",    # Debug impls: rendering is not behaviour
     "abi.rs.*replace uses_unstable_api -> bool with true",  # equivalent: see above
     "abi.rs.*replace built_against_version -> Option<&'static str> with None",  # equivalent: see above
+
+    # ── FFI-only checks in files that otherwise stay in the gate ────────────
+    # Each check below runs only with a DuckDB handle in hand, so a --lib run
+    # with no live engine cannot reach it; the rest of its file has pure logic
+    # that unit tests do kill, so the file is not excluded.
+    #
+    # composite.rs: Value::struct_value first reads the field count with
+    # duckdb_struct_type_child_count; Value::checked_container inspects the
+    # result of duckdb_create_list_value / _array_value and then calls
+    # duckdb_get_type_id; Value::map count check needs a LogicalType (only
+    # duckdb_create_*_type makes one) and Values to count. Covered end to end
+    # in tests/ffi_roundtrip.rs and tests/ffi_roundtrip/value_nested.rs.
+    "src/value/composite.rs:.*Value::(struct_value|checked_container|map)( |$)",
+    # info.rs: only BindInfo::set_error sets the flag, and it calls
+    # duckdb_bind_set_error. The with-true mutant is killed by a unit test;
+    # the with-false one by tests/ffi_roundtrip/table_cast.rs.
+    "src/table/info.rs:.*replace BindInfo::error_reported -> bool with false",
 ]

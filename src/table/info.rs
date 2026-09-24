@@ -586,3 +586,19 @@ impl FunctionInfo {
 }
 
 crate::debug_repr::impl_handle_debug!(BindInfo.info, InitInfo.info, FunctionInfo.info);
+
+#[cfg(test)]
+mod tests {
+    use super::BindInfo;
+
+    /// A fresh wrapper has reported no error, so the typed bind trampoline
+    /// still raises its own "declared no result columns" error for a bind that
+    /// declared nothing. (The other direction needs `set_error`, which calls
+    /// `duckdb_bind_set_error`; see `.cargo/mutants.toml`.)
+    #[test]
+    fn a_fresh_bind_info_has_reported_no_error() {
+        // SAFETY: the handle is only stored, never passed to DuckDB.
+        let info = unsafe { BindInfo::new(std::ptr::null_mut()) };
+        assert!(!info.error_reported());
+    }
+}

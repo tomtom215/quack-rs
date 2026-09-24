@@ -247,3 +247,51 @@ impl Value {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Value;
+
+    /// An out-of-range `TIME_TZ` encoding is refused before `DuckDB` is
+    /// called, so this needs no live runtime. Passed on, it would be stored
+    /// unchecked and later render as garbage.
+    #[test]
+    fn time_tz_refuses_an_encoding_duckdb_cannot_render() {
+        // Every bit set: the time field is far past 24:00:00. Then a valid
+        // 00:00:00 with an offset field just past ±15:59:59.
+        for bits in [u64::MAX, 2 * 57_599 + 1] {
+            let err = Value::time_tz(bits).expect_err("out of range must be refused");
+            let msg = err.as_str();
+            assert!(msg.contains("Value::time_tz("), "{msg}");
+            assert!(msg.contains(&format!("{bits:#x}")), "{msg}");
+            assert!(msg.contains("TIMETZ"), "{msg}");
+        }
+    }
+
+    /// Each checked 64-bit constructor refuses a payload outside its type's
+    /// range before calling `DuckDB`, naming itself and the value.
+    #[test]
+    fn checked_constructors_refuse_out_of_range_payloads() {
+        type Ctor = fn(i64) -> Result<Value, crate::error::ExtensionError>;
+        let cases: Vec<(&str, Ctor, i64)> = vec![
+            ("time", Value::time, -1),
+            ("time", Value::time, 86_400_000_001),
+            ("timestamp", Value::timestamp, i64::MIN),
+            ("timestamp_tz", Value::timestamp_tz, i64::MIN),
+            ("timestamp_s", Value::timestamp_s, i64::MIN),
+            ("timestamp_ms", Value::timestamp_ms, i64::MIN),
+            ("timestamp_ns", Value::timestamp_ns, i64::MIN),
+        ];
+        #[cfg(feature = "duckdb-1-5")]
+        let cases = {
+            let mut cases = cases;
+            cases.push(("time_ns", Value::time_ns, -1));
+            cases
+        };
+        for (name, ctor, v) in cases {
+            let err = ctor(v).expect_err("out of range must be refused");
+            let msg = err.as_str();
+            assert!(msg.contains(&format!("Value::{name}({v})")), "{msg}");
+        }
+    }
+}

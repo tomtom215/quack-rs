@@ -590,7 +590,7 @@ impl LogicalType {
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_names, MAX_UNION_MEMBERS};
+    use super::{checked_names, LogicalType, TypeId, MAX_UNION_MEMBERS};
 
     fn names(list: &[&str], max: Option<usize>) -> Result<usize, String> {
         checked_names("STRUCT field", "api", list.iter().copied(), max)
@@ -631,5 +631,21 @@ mod tests {
             err.contains("257 names") && err.contains("at most 256"),
             "{err}"
         );
+    }
+
+    /// A composite `TypeId` among the `(name, TypeId)` members is refused
+    /// while resolving them, before any `DuckDB` call (so no live runtime is
+    /// needed), with the message that says which constructor to use instead.
+    #[test]
+    fn a_composite_member_id_is_refused_for_struct_and_union() {
+        let members = [("xs", TypeId::List)];
+        for err in [
+            LogicalType::try_struct_type(&members).expect_err("STRUCT with a LIST id"),
+            LogicalType::try_union_type(&members).expect_err("UNION with a LIST id"),
+        ] {
+            let msg = err.to_string();
+            assert!(msg.contains("LIST"), "{msg}");
+            assert!(msg.contains("bare TypeId"), "{msg}");
+        }
     }
 }
