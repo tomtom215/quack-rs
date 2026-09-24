@@ -713,11 +713,39 @@ fn every_sql_built_out_of_range_timestamp_is_refused_by_the_renderers() {
             "{1='2024-01-01 00:00:00'}",
         ),
         ("[1, 2]::INTEGER[2]", "[1, 2]"),
+        // A NULL has no payload to range-check, so it renders whatever its
+        // type, here nested where `as_str` reaches it.
+        ("[NULL::TIMESTAMP, NULL::TIMESTAMP_NS]", "[NULL, NULL]"),
+        (
+            "{'a': NULL::TIME, 'b': NULL::TIMETZ}",
+            "{'a': NULL, 'b': NULL}",
+        ),
+        ("MAP([1], [NULL::TIMESTAMP_S])", "{1=NULL}"),
     ] {
         let (as_str, display, _, _) = run(arg);
         assert_eq!(
             as_str.as_ref().ok().map(String::as_str),
             Some(want),
+            "{arg}"
+        );
+        assert_ne!(display, Some(false), "{arg}");
+    }
+
+    // A top-level NULL: `as_str` reports the NULL itself, and the renderers
+    // behind `display_string` and `Debug` are not refused.
+    for arg in [
+        "NULL::TIMESTAMP",
+        "NULL::TIMESTAMP_S",
+        "NULL::TIMESTAMP_MS",
+        "NULL::TIMESTAMP_NS",
+        "NULL::TIMESTAMPTZ",
+        "NULL::TIME",
+        "NULL::TIMETZ",
+    ] {
+        let (as_str, display, _, _) = run(arg);
+        assert_eq!(
+            as_str.as_ref().map_err(String::as_str),
+            Err("Value is SQL NULL"),
             "{arg}"
         );
         assert_ne!(display, Some(false), "{arg}");

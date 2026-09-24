@@ -212,4 +212,16 @@ exclude_re = [
     # duckdb_bind_set_error. The with-true mutant is killed by a unit test;
     # the with-false one by tests/ffi_roundtrip/table_cast.rs.
     "src/table/info.rs:.*replace BindInfo::error_reported -> bool with false",
+    # render_guard.rs: Value::renderable and its two helpers read the value's
+    # type, payload and children through duckdb_get_* calls. Its pure type
+    # predicates stay in the gate. Checked end to end in September 2026 by
+    # running these 17 mutants (with try_new's below) against
+    # tests/ffi_roundtrip with a real libduckdb 1.5.5: all 17 caught, 10 by
+    # the process aborting as the guard exists to prevent, the rest by
+    # tests/ffi_roundtrip/value_temporal.rs and value_nested.rs assertions.
+    "src/value/render_guard.rs:.*Value::(renderable|temporal_payload_in_range|type_contains_checked_temporal)( |$)",
+    # construct.rs: LogicalType::try_new compares the type id DuckDB created
+    # with the one asked for, which needs duckdb_create_logical_type; with the
+    # comparison inverted, every type creation fails end to end.
+    "src/types/logical_type/construct.rs:.*replace != with == in LogicalType::try_new",
 ]
