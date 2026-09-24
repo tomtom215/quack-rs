@@ -307,17 +307,16 @@ fn parse_value(
             Some(child) if split_key(child.text).is_some() && !starts_quoted(child.text) => {
                 Ok(Value::Mapping)
             }
-            // A quoted, flow or block value that starts on the next line reads
-            // as if it started on the key's own: `name:\n  "x"` is `x`, not
-            // `"x"` with its quotes.
-            Some(child) if starts_structured(child.text) => {
+            // Any other value that starts on the next line reads as if it
+            // started on the key's own: `name:\n  "x"` is `x`, not `"x"` with
+            // its quotes, and a plain one folds the lines below it.
+            Some(child) => {
                 let at = children
                     .iter()
                     .position(Line::is_content)
                     .map_or(children.len(), |i| i + 1);
                 parse_value(child.text, &children[at..], parent_indent, child.number)
             }
-            Some(_) => plain_scalar("", children, line),
         };
     }
 

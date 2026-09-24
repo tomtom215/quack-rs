@@ -466,3 +466,43 @@ fn unquoted_values_yaml_1_1_reads_as_non_text_are_warned_about() {
     let yml = doc("  custom_toolchain_script: true\n");
     assert_eq!(warned(&yml), Vec::<String>::new());
 }
+
+/// Whether the YAML 1.1 warning may apply to a value that starts on the line
+/// after its key: only a plain scalar there is one `PyYAML` may retype, not a
+/// quoted scalar, a sequence or a mapping.
+#[test]
+fn only_a_plain_scalar_on_the_next_line_counts_as_plain() {
+    let plain = |body: &str| {
+        yaml::read_sections(&format!("extension:\n{body}"), &["extension"])
+            .expect("parses")
+            .into_iter()
+            .flat_map(|s| s.entries)
+            .find(|e| e.key == "version")
+            .map(|e| e.plain)
+            .expect("has a version")
+    };
+    assert!(plain("  version:\n    0.10\n"));
+    assert!(!plain("  version:\n    \"0.10\"\n"));
+    assert!(!plain("  version:\n    '0.10'\n"));
+    assert!(!plain("  version:\n    - 0.10\n"));
+    assert!(!plain("  version:\n    major: 0.10\n"));
+    assert!(!plain("  version:\n    \"a: b\"\n"));
+}
+
+/// The error for text after a comment names the line the comment is on, not
+/// the line the value started on — including a value that starts on the
+/// line after its key.
+#[test]
+fn text_after_a_comment_names_the_comments_line() {
+    for (body, comment_line) in [
+        ("  version: a\n    b # c\n    d\n", 3),
+        ("  version:\n    a # c\n    d\n", 3),
+        ("  version:\n    a\n    b # c\n    d\n", 4),
+    ] {
+        let err = read(body, "version").expect_err("text after the comment");
+        assert!(
+            err.contains(&format!("ended the value on line {comment_line}")),
+            "{body:?}: {err}"
+        );
+    }
+}

@@ -849,7 +849,8 @@ each section below.
 - **`description.yml`:** a quoted, flow or block value on the line after its
   key kept its quotes; values that `PyYAML` (YAML 1.1) reads as a boolean,
   number, date or null draw a warning; the scaffold quotes `name`, `github`
-  and `ref`.
+  and `ref`. The "text after a comment" error named the line the value
+  started on rather than the line of the comment that ended it.
 - **Scaffold:** the generated `lib.rs` failed `cargo fmt --check` for names of
   4 characters or fewer or 40 or more; the generated CI's Linux SQLLogicTest
   step was skipped by extension-ci-tools.

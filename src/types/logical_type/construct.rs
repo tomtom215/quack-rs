@@ -443,15 +443,7 @@ impl LogicalType {
     /// it only from v1.5.4, and before that `duckdb_create_decimal_type`
     /// returns a `DECIMAL(0, 0)` or `DECIMAL(5, 6)` it cannot use.
     pub fn try_decimal(width: u8, scale: u8) -> Result<Self, LogicalTypeError> {
-        if !(1..=38).contains(&width) || scale > width {
-            return Err(LogicalTypeError::with_detail(
-                "duckdb_create_decimal_type",
-                format!(
-                    "DECIMAL({width}, {scale}) is not a DECIMAL type: the width must be 1 to 38 \
-                     and the scale no larger than the width"
-                ),
-            ));
-        }
+        check_decimal(width, scale)?;
         // SAFETY: plain values; DuckDB returns an owned handle or null.
         let inner = unsafe { duckdb_create_decimal_type(width, scale) };
         Self::owned_or(inner, "duckdb_create_decimal_type")
@@ -513,12 +505,7 @@ impl LogicalType {
     /// null handle); a release build creates the type anyway, so it is refused
     /// here to behave the same on both.
     pub fn try_array_from_logical(element: &Self, size: u64) -> Result<Self, LogicalTypeError> {
-        if size == 0 {
-            return Err(LogicalTypeError::with_detail(
-                "duckdb_create_array_type",
-                "an ARRAY's size must be at least 1, as in SQL".to_owned(),
-            ));
-        }
+        check_array_size(size)?;
         // SAFETY: `element` is live for the call; DuckDB copies it and returns
         // an owned handle or null.
         let inner = unsafe { duckdb_create_array_type(element.as_raw(), size as idx_t) };
@@ -652,9 +639,36 @@ impl LogicalType {
     }
 }
 
+/// [`LogicalType::try_decimal`]'s own check (`Decimal::IsValidWidthScale`).
+fn check_decimal(width: u8, scale: u8) -> Result<(), LogicalTypeError> {
+    if !(1..=38).contains(&width) || scale > width {
+        return Err(LogicalTypeError::with_detail(
+            "duckdb_create_decimal_type",
+            format!(
+                "DECIMAL({width}, {scale}) is not a DECIMAL type: the width must be 1 to 38 \
+                 and the scale no larger than the width"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// [`LogicalType::try_array_from_logical`]'s own check: SQL's minimum size.
+fn check_array_size(size: u64) -> Result<(), LogicalTypeError> {
+    if size == 0 {
+        return Err(LogicalTypeError::with_detail(
+            "duckdb_create_array_type",
+            "an ARRAY's size must be at least 1, as in SQL".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{checked_names, LogicalType, TypeId, MAX_UNION_MEMBERS};
+    use super::{
+        check_array_size, check_decimal, checked_names, LogicalType, TypeId, MAX_UNION_MEMBERS,
+    };
 
     fn names(list: &[&str], max: Option<usize>) -> Result<usize, String> {
         checked_names("STRUCT field", "api", list.iter().copied(), max)
@@ -711,5 +725,31 @@ mod tests {
             assert!(msg.contains("LIST"), "{msg}");
             assert!(msg.contains("bare TypeId"), "{msg}");
         }
+    }
+
+    /// Exactly `1 <= width <= 38` and `scale <= width` pass, at every edge.
+    #[test]
+    fn decimal_width_and_scale_are_checked_at_every_edge() {
+        for (width, scale) in [(1, 0), (1, 1), (5, 5), (18, 3), (38, 0), (38, 38)] {
+            assert!(
+                check_decimal(width, scale).is_ok(),
+                "DECIMAL({width}, {scale})"
+            );
+        }
+        for (width, scale) in [(0, 0), (39, 0), (5, 6), (1, 2), (255, 255)] {
+            let err = check_decimal(width, scale).expect_err("refused");
+            assert!(
+                err.to_string()
+                    .contains(&format!("DECIMAL({width}, {scale}) is not a DECIMAL type")),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_array_needs_at_least_one_element() {
+        assert!(check_array_size(0).is_err());
+        assert!(check_array_size(1).is_ok());
+        assert!(check_array_size(99_999).is_ok());
     }
 }
