@@ -364,9 +364,11 @@ fn a_wasm_platform_needs_the_wasm_section_header() {
     for platform in ["wasm_eh", "wasm_mvp", "wasm_threads"] {
         let err = parse_err(&format!("in out --platform {platform}"));
         assert!(err.contains("pass --wasm"), "{platform}: {err}");
-        assert!(parse_ok(&format!("in out --platform {platform} --wasm"))
-            .warnings
-            .is_empty());
+        assert_eq!(
+            parse_ok(&format!("in out --platform {platform} --wasm")).warnings,
+            Vec::<String>::new(),
+            "{platform}"
+        );
     }
     let args = parse_ok("in out --platform linux_amd64 --wasm");
     assert_eq!(args.warnings.len(), 1, "{:?}", args.warnings);

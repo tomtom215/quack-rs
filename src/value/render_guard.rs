@@ -39,14 +39,19 @@ const fn is_checked_temporal(id: TypeId) -> bool {
     ) || is_time_ns(id)
 }
 
-#[cfg(feature = "duckdb-1-5")]
+/// `TIME_NS`, which only exists with `duckdb-1-5`. One function with a cfg'd
+/// body rather than two cfg'd functions, so every build compiles, and a
+/// mutation test can reach, the body that runs.
 const fn is_time_ns(id: TypeId) -> bool {
-    matches!(id, TypeId::TimeNs)
-}
-
-#[cfg(not(feature = "duckdb-1-5"))]
-const fn is_time_ns(_id: TypeId) -> bool {
-    false
+    #[cfg(feature = "duckdb-1-5")]
+    {
+        matches!(id, TypeId::TimeNs)
+    }
+    #[cfg(not(feature = "duckdb-1-5"))]
+    {
+        let _ = id;
+        false
+    }
 }
 
 impl Value {
@@ -98,5 +103,48 @@ impl Value {
                 TypeId::try_from_duckdb_type(raw).is_some_and(is_checked_temporal)
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_checked_temporal, is_time_ns};
+    use crate::types::TypeId;
+
+    /// Exactly the types `temporal_in_range` / `time_tz_in_range` judge are
+    /// checked; `DATE` and `INTERVAL` render at any payload, and so do the
+    /// non-temporal types.
+    #[test]
+    fn exactly_the_timestamp_and_time_types_are_checked() {
+        for id in [
+            TypeId::Timestamp,
+            TypeId::TimestampTz,
+            TypeId::TimestampS,
+            TypeId::TimestampMs,
+            TypeId::TimestampNs,
+            TypeId::Time,
+            TypeId::TimeTz,
+        ] {
+            assert!(is_checked_temporal(id), "{id:?}");
+            assert!(!is_time_ns(id), "{id:?}");
+        }
+        for id in [
+            TypeId::Date,
+            TypeId::Interval,
+            TypeId::BigInt,
+            TypeId::Varchar,
+            TypeId::List,
+            TypeId::Struct,
+        ] {
+            assert!(!is_checked_temporal(id), "{id:?}");
+            assert!(!is_time_ns(id), "{id:?}");
+        }
+    }
+
+    #[cfg(feature = "duckdb-1-5")]
+    #[test]
+    fn time_ns_is_checked() {
+        assert!(is_time_ns(TypeId::TimeNs));
+        assert!(is_checked_temporal(TypeId::TimeNs));
     }
 }
