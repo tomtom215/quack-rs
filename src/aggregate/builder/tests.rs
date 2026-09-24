@@ -442,7 +442,7 @@ fn ffi_state_installs_all_three_state_callbacks_for_one_type() {
         );
         // SAFETY: `FfiState`'s size callback does not read its argument.
         let bytes = unsafe { size(std::ptr::null_mut()) };
-        assert_eq!(bytes as usize, FfiState::<Wide>::size());
+        assert_eq!(usize::try_from(bytes).ok(), Some(FfiState::<Wide>::size()));
         let word = std::mem::size_of::<usize>();
         let mut buffer = vec![0_usize; FfiState::<Wide>::size().div_ceil(word)];
         let mut state: libduckdb_sys::duckdb_aggregate_state = buffer.as_mut_ptr().cast();
