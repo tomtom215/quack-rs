@@ -5917,6 +5917,10 @@ mod chunk_writer;
 mod file_errors;
 #[path = "ffi_roundtrip/lifecycle.rs"]
 mod lifecycle;
+#[path = "ffi_roundtrip/list_limits.rs"]
+mod list_limits;
+#[path = "ffi_roundtrip/value_render.rs"]
+mod value_render;
 
 #[path = "ffi_roundtrip/agg_window.rs"]
 mod agg_window;

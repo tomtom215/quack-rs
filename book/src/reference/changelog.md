@@ -50,6 +50,11 @@ in each section below.
 - `tests/aggregate_leaks.rs`, a test binary with a counting global allocator,
   and `tests/handle_leaks.rs`, which bounds the C heap (glibc `mallinfo2`)
   across many create-and-drop rounds of every RAII handle.
+- `vector::max_child_capacity`: the most elements `DuckDB` can hold in a list
+  vector's child buffer, which `ListBuilder` now respects.
+- A `value_render` fuzz target (`fuzz/`, feature `live`) that renders
+  arbitrary temporal payloads, alone and nested in lists, through a real
+  `DuckDB`.
 
 #### Fourth audit
 
@@ -404,7 +409,11 @@ in each section below.
   `data_chunk_from_arrow` (validity bitmaps are read one byte past their
   rows); Known Limitations entries for aggregate states `DuckDB` never
   destroys, abandoned streams and out-of-memory aborts.
-- `docs/upstream-duckdb-reports.md` gained items 20 and 21.
+- `Value::as_str`, `display_string` and `Debug` render only types whose every
+  payload `DuckDB` can render; everything else (`VARIANT`, `GEOMETRY`, a type
+  quack-rs does not know, and `ARRAY` / `UNION` values that could hold one)
+  gets `UNRENDERABLE`. See Fixed.
+- `docs/upstream-duckdb-reports.md` gained items 20 to 23.
 
 #### Fourth audit
 
@@ -831,6 +840,19 @@ in each section below.
 
 #### Fifth audit
 
+- **Rendering a value aborted the process** for values ordinary SQL builds:
+  a `VARIANT` holding an out-of-range timestamp, a `DECIMAL(38, 0)` holding
+  `i128::MIN` (from `sum` over two in-range values), and a `GEOMETRY` built
+  from malformed WKB each made `DuckDB`'s cast to text throw through the C
+  API; a `DECIMAL(38, 38)` holding 1.2 rendered with an unwritten first byte,
+  and aborted too when that byte was not valid UTF-8. The render guard is now
+  an allow-list, and `DECIMAL` payloads are checked against their width.
+- **`ListBuilder` aborted the process on a large list of a wide type.**
+  `DuckDB`'s ceiling is 2^37 *bytes* per child buffer, not elements, checked
+  after it rounds the reservation up to a power of two, so a `BIGINT` list of
+  2^34 + 1 elements, or an `INTEGER[1000]` list of 2^25 + 1, reached a reserve
+  that throws through the C API. The builder respects the rounded byte
+  ceiling; a row past it is NULL.
 - **Aggregate states `DuckDB` moved were never dropped.** The fourth audit's
   `FfiState` tag was derived from the slot's address, and radix
   repartitioning copies states to new rows, so every moved state was skipped

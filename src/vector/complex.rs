@@ -192,15 +192,19 @@ impl ListVector {
     ///
     /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - `capacity` must not exceed
-    ///   [`MAX_LIST_CHILD_CAPACITY`][crate::vector::MAX_LIST_CHILD_CAPACITY]
-    ///   (`2^37`). Above it `DuckDB` throws an `OutOfRangeException`
-    ///   (`VectorListBuffer::Reserve`), which the C API does not catch, so the
-    ///   process aborts. Below it, a reservation the allocator cannot satisfy
-    ///   aborts the same way, so a capacity derived from input data should be
-    ///   bounded to what fits in memory.
+    ///   [`max_child_capacity(vector)`][crate::vector::max_child_capacity]:
+    ///   2^37 bytes in the widest buffer the child's type grows, as a
+    ///   power-of-two element count. Above it `DuckDB` throws an
+    ///   `OutOfRangeException` (`VectorListBuffer::Reserve`, `Vector::Resize`),
+    ///   which the C API does not catch, so the process aborts. Below it, a
+    ///   reservation the allocator cannot satisfy aborts the same way, so a
+    ///   capacity derived from input data should be bounded to what fits in
+    ///   memory.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
-        // SAFETY: caller guarantees vector is valid.
+        // SAFETY: the caller guarantees a valid LIST vector (clause 1) and a
+        // capacity at or below `max_child_capacity` (clause 2), under which
+        // `ListVector::Reserve` does not throw for size.
         unsafe { duckdb_list_vector_reserve(vector, capacity as idx_t) };
     }
 
@@ -386,15 +390,16 @@ impl MapVector {
     ///
     /// - `vector` must be a valid `DuckDB` MAP vector.
     /// - `capacity` must not exceed
-    ///   [`MAX_LIST_CHILD_CAPACITY`][crate::vector::MAX_LIST_CHILD_CAPACITY]
-    ///   (`2^37`); see [`ListVector::reserve`], which this shares with `DuckDB`.
+    ///   [`max_child_capacity(vector)`][crate::vector::max_child_capacity];
+    ///   see [`ListVector::reserve`], which this shares with `DuckDB`.
     #[inline]
     pub unsafe fn reserve(vector: duckdb_vector, capacity: usize) {
         // SAFETY: `duckdb_list_vector_reserve` calls `ListVector::Reserve`
         // (data_chunk-c.cpp), which requires a LIST or MAP vector with a list buffer
         // (vector.cpp) — `# Safety` clause 1 — and throws `OutOfRangeException`
-        // above `MAX_VECTOR_SIZE` = 2^37 (vector_buffer.cpp), which would abort
-        // across the C API; clause 2 keeps `capacity` at or below that.
+        // when the rounded-up capacity's bytes pass `MAX_VECTOR_SIZE` = 2^37
+        // (vector_buffer.cpp, vector.cpp), which would abort across the C API;
+        // clause 2 keeps `capacity` at or below `max_child_capacity`.
         unsafe { duckdb_list_vector_reserve(vector, capacity as idx_t) };
     }
 

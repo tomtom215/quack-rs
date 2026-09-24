@@ -119,14 +119,23 @@ impl Value {
     /// may contain NULs, keep it in a `BLOB` and use
     /// [`as_blob`][Self::as_blob].
     ///
+    /// # A `UNION` renders as its member
+    ///
+    /// The text is the value cast to `VARCHAR`, as SQL casts it, so a `UNION`
+    /// renders as its active member alone: `union_value(a := 5)` as `"5"`,
+    /// with the tag gone, and a `UNION` whose member is `NULL` as the text
+    /// `"NULL"` — returned as text, not as an error, because the `UNION`
+    /// itself is not SQL `NULL`. The `Debug` form keeps the tag.
+    ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if the handle is null, the value is SQL `NULL`
     /// (`duckdb_get_varchar` would throw on it, aborting the process), the
-    /// text is not valid UTF-8, or the value holds a timestamp `DuckDB` cannot
-    /// render — see [`UNRENDERABLE`]. `DuckDB` builds such timestamps from
-    /// ordinary SQL (`make_timestamp(-9223372036854775808)`), and rendering one
-    /// throws through the C API, which aborted the process.
+    /// text is not valid UTF-8, or the value holds something `DuckDB` cannot
+    /// render — see [`UNRENDERABLE`]. `DuckDB` builds such values from
+    /// ordinary SQL (`make_timestamp(-9223372036854775808)`, or `sum` over a
+    /// `DECIMAL(38, s)` column), and rendering one throws through the C API,
+    /// which aborted the process.
     pub fn as_str(&self) -> Result<String, ExtensionError> {
         if self.raw.is_null() {
             return Err(ExtensionError::new("Value is null"));
@@ -293,7 +302,8 @@ impl Value {
 /// `DuckDB` converts, or an `ARRAY` / `UNION` of a temporal type, whose
 /// elements the C API gives no way to check first.
 pub const UNRENDERABLE: &str = "Value cannot be rendered: it holds a timestamp or time payload \
-     outside the range DuckDB converts (or an ARRAY / UNION of a temporal type, which cannot be \
+     outside the range DuckDB converts, a DECIMAL wider than its type, a VARIANT, a GEOMETRY or a \
+     type quack-rs does not know (or an ARRAY / UNION that could hold one, which cannot be \
      checked), and DuckDB's rendering would throw through the C API and abort the process";
 
 impl Drop for Value {

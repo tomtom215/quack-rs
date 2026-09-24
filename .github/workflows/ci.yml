@@ -1456,6 +1456,9 @@ jobs:
             exit 1
           fi
           for target in $TARGETS; do
+            # Targets that call a real DuckDB need the `live` feature and a
+            # libduckdb; the next step runs them.
+            case " $LIVE_TARGETS " in *" $target "*) continue ;; esac
             echo "::group::$target"
             # Seed from the committed inputs. `fuzz/corpus` is generated and
             # gitignored: keeping a growing corpus in the history would add a
@@ -1463,6 +1466,33 @@ jobs:
             mkdir -p "fuzz/corpus/$target"
             cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
             cargo +nightly fuzz run --fuzz-dir fuzz "$target" -- \
+              -max_total_time=60 -rss_limit_mb=4096
+            echo "::endgroup::"
+          done
+        env:
+          LIVE_TARGETS: value_render
+      # `value_render` renders values through a real DuckDB, whose
+      # `duckdb_get_varchar` and converting getters abort the process on a
+      # payload they cannot render: the fuzzer's job is to find one quack-rs
+      # lets through. The libduckdb is the one fuzz/Cargo.lock names.
+      - name: Download pre-built libduckdb
+        run: |
+          set -euo pipefail
+          DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh fuzz/Cargo.lock)
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip" -o "${{ runner.temp }}/libduckdb.zip"
+          mkdir -p "${{ runner.temp }}/libduckdb"
+          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+      - name: Run the live targets briefly
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: |
+          set -euo pipefail
+          for target in value_render; do
+            echo "::group::$target"
+            mkdir -p "fuzz/corpus/$target"
+            cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
+            cargo +nightly fuzz run --fuzz-dir fuzz --features live "$target" -- \
               -max_total_time=60 -rss_limit_mb=4096
             echo "::endgroup::"
           done

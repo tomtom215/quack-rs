@@ -15,10 +15,25 @@
 //! table function's parameter, for one — so the check has to be made on the
 //! value, at rendering time.
 //!
+//! `DECIMAL` is the same: `sum` over a `DECIMAL(38, s)` column checks for
+//! `HUGEINT` overflow but not for the declared width, so plain SQL builds a
+//! `DECIMAL(38, 0)` holding `i128::MIN`, whose rendering throws "Negation of
+//! HUGEINT is out of range" through the C API, and a `DECIMAL(38, 38)` holding
+//! 1.2, whose first character `DuckDB` never writes
+//! (`DecimalToString::FormatDecimal` skips the integer digits when
+//! `width == scale`): the text starts with a stray byte, and rendering throws
+//! when that byte is not valid UTF-8. A `DECIMAL` renders only if its payload
+//! fits its width (`docs/upstream-duckdb-reports.md`, items 13 and 22).
+//!
+//! The check is an allow-list: a type renders unchecked only if every payload
+//! of it renders ([`renders_at_any_payload`]). `VARIANT` (whose content the C
+//! API cannot see), `GEOMETRY` (whose WKB `DuckDB` accepts malformed and then
+//! fails to print) and any type this crate does not know are refused.
+//!
 //! The C API can read a `LIST`'s elements, a `STRUCT`'s fields and a `MAP`'s
 //! entries, so those are checked element by element. It exposes no way to
-//! read an `ARRAY`'s elements or a `UNION`'s member, so one of those whose
-//! type contains any timestamp or time type is treated as unrenderable.
+//! read an `ARRAY`'s elements or a `UNION`'s member, so one of those is
+//! refused when its type contains anything that would need a check.
 
 use super::temporal_checks::{temporal_in_range, time_tz_in_range};
 use super::Value;
@@ -54,6 +69,49 @@ const fn is_time_ns(id: TypeId) -> bool {
     }
 }
 
+/// Whether `DuckDB` renders every payload of a value of type `id`, so that no
+/// check is needed. The allow-list: a type not named here is refused unless
+/// [`Value::renderable`] checks it.
+const fn renders_at_any_payload(id: TypeId) -> bool {
+    matches!(
+        id,
+        TypeId::Boolean
+            | TypeId::TinyInt
+            | TypeId::SmallInt
+            | TypeId::Integer
+            | TypeId::BigInt
+            | TypeId::UTinyInt
+            | TypeId::USmallInt
+            | TypeId::UInteger
+            | TypeId::UBigInt
+            | TypeId::HugeInt
+            | TypeId::UHugeInt
+            | TypeId::Float
+            | TypeId::Double
+            | TypeId::Varchar
+            | TypeId::Blob
+            | TypeId::Date
+            | TypeId::Interval
+            | TypeId::Uuid
+            | TypeId::Enum
+            | TypeId::Bit
+            | TypeId::Varint
+            | TypeId::SqlNull
+    )
+}
+
+/// Whether a type found inside an `ARRAY` or `UNION` — whose elements the C
+/// API cannot read — makes the container unrenderable: anything that is not
+/// on the allow-list, including a type this crate does not know (`None`).
+/// Nested containers are looked through, since their leaves are visited too.
+const fn blocks_opaque_container(id: Option<TypeId>) -> bool {
+    match id {
+        Some(TypeId::List | TypeId::Struct | TypeId::Map | TypeId::Array | TypeId::Union) => false,
+        Some(id) => !renders_at_any_payload(id),
+        None => true,
+    }
+}
+
 impl Value {
     /// Whether rendering this value to text cannot make `DuckDB` throw: see
     /// the [module docs](self).
@@ -62,10 +120,13 @@ impl Value {
             return true;
         }
         let Some(id) = self.type_id() else {
-            return true;
+            return false;
         };
         match id {
             _ if is_checked_temporal(id) => self.temporal_payload_in_range(id),
+            TypeId::Decimal => self.as_decimal().is_some_and(|d| {
+                super::checks::validate_decimal(d.width, d.scale, d.value).is_ok()
+            }),
             TypeId::List => (0..self.list_len())
                 .all(|i| self.list_child(i).is_none_or(|child| child.renderable())),
             TypeId::Struct => (0..self.struct_field_names().len())
@@ -74,8 +135,8 @@ impl Value {
                 self.map_key(i).is_none_or(|key| key.renderable())
                     && self.map_value(i).is_none_or(|value| value.renderable())
             }),
-            TypeId::Array | TypeId::Union => !self.type_contains_checked_temporal(),
-            _ => true,
+            TypeId::Array | TypeId::Union => !self.type_contains_unchecked_payload(),
+            _ => renders_at_any_payload(id),
         }
     }
 
@@ -88,9 +149,9 @@ impl Value {
             .is_some_and(|v| temporal_in_range(id, v))
     }
 
-    /// Whether this value's type contains a temporal type anywhere below the
-    /// top level.
-    fn type_contains_checked_temporal(&self) -> bool {
+    /// Whether this value's type contains, anywhere below the top level, a
+    /// type whose payload would need a check ([`blocks_opaque_container`]).
+    fn type_contains_unchecked_payload(&self) -> bool {
         // SAFETY: `self.raw` is a live, non-null value; the returned type is
         // owned by the value and is not destroyed here (`duckdb.h`).
         let ty = unsafe { libduckdb_sys::duckdb_get_value_type(self.raw) };
@@ -100,7 +161,7 @@ impl Value {
         // SAFETY: `ty` is live for as long as `self` is.
         unsafe {
             crate::table::type_check::contains_type(ty, &|raw| {
-                TypeId::try_from_duckdb_type(raw).is_some_and(is_checked_temporal)
+                blocks_opaque_container(TypeId::try_from_duckdb_type(raw))
             })
         }
     }
@@ -108,7 +169,7 @@ impl Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_checked_temporal, is_time_ns};
+    use super::{blocks_opaque_container, is_checked_temporal, is_time_ns, renders_at_any_payload};
     use crate::types::TypeId;
 
     /// Exactly the types `temporal_in_range` / `time_tz_in_range` judge are
@@ -138,6 +199,80 @@ mod tests {
         ] {
             assert!(!is_checked_temporal(id), "{id:?}");
             assert!(!is_time_ns(id), "{id:?}");
+        }
+    }
+
+    /// The allow-list: types every payload of which renders. Checked or
+    /// refused types are not on it.
+    #[test]
+    fn only_types_whose_every_payload_renders_are_allowed_unchecked() {
+        for id in [
+            TypeId::Boolean,
+            TypeId::TinyInt,
+            TypeId::SmallInt,
+            TypeId::Integer,
+            TypeId::BigInt,
+            TypeId::UTinyInt,
+            TypeId::USmallInt,
+            TypeId::UInteger,
+            TypeId::UBigInt,
+            TypeId::HugeInt,
+            TypeId::UHugeInt,
+            TypeId::Float,
+            TypeId::Double,
+            TypeId::Varchar,
+            TypeId::Blob,
+            TypeId::Date,
+            TypeId::Interval,
+            TypeId::Uuid,
+            TypeId::Enum,
+            TypeId::Bit,
+            TypeId::Varint,
+            TypeId::SqlNull,
+        ] {
+            assert!(renders_at_any_payload(id), "{id:?}");
+            assert!(!blocks_opaque_container(Some(id)), "{id:?}");
+        }
+        for id in [
+            TypeId::Decimal,
+            TypeId::Timestamp,
+            TypeId::Time,
+            TypeId::TimeTz,
+            TypeId::Any,
+            TypeId::IntegerLiteral,
+            TypeId::StringLiteral,
+        ] {
+            assert!(!renders_at_any_payload(id), "{id:?}");
+            assert!(blocks_opaque_container(Some(id)), "{id:?}");
+        }
+        for id in [
+            TypeId::List,
+            TypeId::Struct,
+            TypeId::Map,
+            TypeId::Array,
+            TypeId::Union,
+        ] {
+            assert!(
+                !renders_at_any_payload(id),
+                "{id:?}: checked element by element"
+            );
+            assert!(
+                !blocks_opaque_container(Some(id)),
+                "{id:?}: its leaves are visited"
+            );
+        }
+        assert!(
+            blocks_opaque_container(None),
+            "a type quack-rs does not know"
+        );
+    }
+
+    #[cfg(feature = "duckdb-1-5-3")]
+    #[test]
+    fn variant_and_geometry_are_refused() {
+        for id in [TypeId::Variant, TypeId::Geometry] {
+            assert!(!renders_at_any_payload(id), "{id:?}");
+            assert!(blocks_opaque_container(Some(id)), "{id:?}");
         }
     }
 

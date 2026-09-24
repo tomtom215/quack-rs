@@ -32,6 +32,8 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 19 | `epoch_us(interval)` fails when one field overflows | SQL, below | exact total computed in `i128` |
 | 20 | Grouped-aggregate states a stopped scan never reached are never destroyed | C program, below | small states stored inline; documented |
 | 21 | Arrow import reads one byte past a validity bitmap at an unaligned bit offset | C program, below (valgrind) | Safety clause on `data_chunk_from_arrow` |
+| 22 | `duckdb_get_varchar` / `duckdb_value_to_string` fail on DECIMAL, VARIANT and GEOMETRY values SQL builds | C program, below | render guard is an allow-list; DECIMAL checked against its width; VARIANT and GEOMETRY refused |
+| 23 | `duckdb_list_vector_reserve` aborts below `MAX_VECTOR_SIZE` elements when the child buffer passes 2^37 bytes | C program, below | `ListBuilder` limit: the largest power of two whose bytes fit |
 
 ## Before filing
 
@@ -1647,3 +1649,399 @@ print the same two lines. Expected: no read past byte 0 of the bitmap.
 quack-rs cannot see a buffer's allocated size through the C Data Interface;
 `data_chunk_from_arrow`'s Safety section requires every bitmap `DuckDB` reads
 to be readable for one byte past the last byte its rows occupy.
+
+---
+
+## 22. `duckdb_get_varchar` and `duckdb_value_to_string` fail on DECIMAL, VARIANT and GEOMETRY values that SQL builds
+
+Item 13 covers out-of-range TIMESTAMP payloads. The same two functions, which
+render with no `try` (`src/main/capi/duckdb_value-c.cpp:309` and `:621` in
+v1.5.5, `:301` and `:613` in v1.4.4), also fail on these values, each built
+by plain SQL:
+
+1. **`DECIMAL(38,0)` holding `i128::MIN`.** `sum` over `DECIMAL(38, s)`
+   returns `DECIMAL(38, s)`
+   (`extension/core_functions/aggregate/distributive/sum.cpp:210`) and checks
+   only for `HUGEINT` overflow, so the sum of
+   `-99999999999999999999999999999999999999` and
+   `-70141183460469231731687303715884105729` is `i128::MIN`, 39 digits.
+   `DecimalToString::DecimalLength` negates it (`cast_helpers.cpp:217`; the
+   `D_ASSERT` above it is compiled out of release builds) and
+   `Hugeint::NegateInPlace` throws "Negation of HUGEINT is out of range!"
+   (`hugeint.hpp:53`).
+2. **`DECIMAL(38,38)` holding 1.2**, the `sum` of `0.6` and `0.6`. When
+   `width == scale`, `DecimalLength` reserves one character for the integer
+   part (`cast_helpers.cpp:233`: 40 characters here) but `FormatDecimal`
+   writes no integer digit (`cast_helpers.cpp:308`), so the first character
+   of the text is never written and keeps whatever the string heap held
+   before. When that byte is not valid UTF-8, the `Value` constructor throws
+   "Invalid unicode (byte sequence mismatch) detected in value construction"
+   (`src/common/types/value.cpp:161-163`); otherwise the function returns
+   the text with a stray first character, or with a NUL there, which a C
+   caller reads as an empty string. Which of the three happens varied by
+   release and by call in the runs below. valgrind (memcheck) reported no
+   error for this case on v1.4.4 or v1.5.5; the prebuilt library allocates
+   through its bundled jemalloc (`duckdb_je_*` symbols), which memcheck does
+   not track, so it cannot see that the byte was never written.
+3. **VARIANT holding an out-of-range TIMESTAMP**,
+   `make_timestamp(-9223372036854775808)::VARIANT`. The cast to VARCHAR
+   (`CastFromVARIANT`, `src/function/cast/variant/from_variant.cpp:743`)
+   renders the timestamp and `Timestamp::Convert` throws "Date out of range
+   in timestamp conversion" (`timestamp.cpp:413`), as in item 13. SQL
+   accepts `::VARIANT` from v1.4.4, but `duckdb.h` has no
+   `DUCKDB_TYPE_VARIANT` before v1.5.3, where the value's type id reads as
+   0 (`DUCKDB_TYPE_INVALID`). The C API cannot read what a VARIANT holds, so
+   a caller cannot check the payload first.
+4. **GEOMETRY from malformed WKB.** `ST_GeomFromWKB` is built in from v1.5.0
+   (v1.4.x reports that it exists in the spatial extension) and accepts a
+   MULTIPOINT whose part is a LINESTRING. `Geometry::ToString` throws
+   "Expected POINT in MULTIPOINT but got 2" when it renders it
+   (`src/common/types/geometry.cpp:702`). `DUCKDB_TYPE_GEOMETRY` is in
+   `duckdb.h` from v1.5.2; on v1.5.0 and v1.5.1 the type id reads as 0.
+
+In each case `SELECT CAST(x AS VARCHAR)` in SQL reports the same exception as
+an ordinary error (or, for case 2, returns the same text); only the C API lets
+it escape. The program reaches the value the way an extension does: a table
+function with an `ANY` parameter reads it with `duckdb_bind_get_parameter` and
+renders it inside its bind callback, and `main` renders a second copy after
+the query has returned. Inside the callback, the exception unwinds through
+the C frames (skipping the rest of the callback, which then leaks `v`) and
+DuckDB reports it as the query's error; an extension whose callback cannot be
+unwound through, such as one written in Rust, aborts there instead. Outside
+any DuckDB frame, in `main`, the process terminates.
+
+```c
+// duckdb_get_varchar / duckdb_value_to_string on values that plain SQL builds,
+// reached the way an extension reaches them: a table function taking ANY
+// renders its bind parameter (duckdb_bind_get_parameter) inside its bind
+// callback, and main() renders a second copy of it after the query returns.
+// Usage: render dec_min|dec_scale|variant|geometry [sql]
+#include <stdio.h>
+#include <string.h>
+#include <duckdb.h>
+
+static int use_to_string;
+static duckdb_value kept; // a second copy of the parameter, rendered again from main()
+
+static void render(const char *where, duckdb_value v) {
+    duckdb_logical_type t = duckdb_get_value_type(v);
+    printf("%s: type id %d; calling %s\n", where, (int)duckdb_get_type_id(t),
+           use_to_string ? "duckdb_value_to_string" : "duckdb_get_varchar");
+    char *s = use_to_string ? duckdb_value_to_string(v) : duckdb_get_varchar(v);
+    if (s) {
+        printf("%s: strlen %zu, text \"%s\"\n", where, strlen(s), s);
+        duckdb_free(s);
+    } else {
+        printf("%s: NULL\n", where);
+    }
+}
+
+static void bind(duckdb_bind_info info) {
+    kept = duckdb_bind_get_parameter(info, 0);
+    duckdb_value v = duckdb_bind_get_parameter(info, 0);
+    render("bind", v);
+    duckdb_destroy_value(&v);
+    duckdb_logical_type big = duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);
+    duckdb_bind_add_result_column(info, "n", big);
+    duckdb_destroy_logical_type(&big);
+}
+static void init(duckdb_init_info info) { (void)info; }
+static void scan(duckdb_function_info info, duckdb_data_chunk out) { (void)info; duckdb_data_chunk_set_size(out, 0); }
+
+static void run(duckdb_connection con, const char *sql) {
+    duckdb_result r;
+    if (duckdb_query(con, sql, &r) == DuckDBSuccess) {
+        char *s = duckdb_value_varchar(&r, 0, 0);
+        printf("%s\n  -> %s\n", sql, s ? s : "(no value)");
+        duckdb_free(s);
+    } else {
+        printf("%s\n  -> error: %s\n", sql, duckdb_result_error(&r));
+    }
+    duckdb_destroy_result(&r);
+}
+
+int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    const char *mode = argc > 1 ? argv[1] : "dec_min";
+    use_to_string = argc > 2 && strcmp(argv[2], "sql") == 0;
+    duckdb_database db; duckdb_connection con;
+    duckdb_open(NULL, &db); duckdb_connect(db, &con);
+
+    duckdb_table_function f = duckdb_create_table_function();
+    duckdb_table_function_set_name(f, "render_probe");
+    duckdb_logical_type any = duckdb_create_logical_type(DUCKDB_TYPE_ANY);
+    duckdb_table_function_add_parameter(f, any);
+    duckdb_table_function_set_bind(f, bind);
+    duckdb_table_function_set_init(f, init);
+    duckdb_table_function_set_function(f, scan);
+    duckdb_register_table_function(con, f);
+
+    const char *value;
+    if (strcmp(mode, "dec_min") == 0) {
+        // sum() of two in-range DECIMAL(38,0) values: i128::MIN, 39 digits.
+        run(con, "SET VARIABLE v = (SELECT sum(x) FROM (VALUES "
+                 "((-99999999999999999999999999999999999999)::DECIMAL(38,0)), "
+                 "((-70141183460469231731687303715884105729)::DECIMAL(38,0))) t(x))");
+        value = "getvariable('v')";
+    } else if (strcmp(mode, "dec_scale") == 0) {
+        // sum() of 0.6 + 0.6 in DECIMAL(38,38): 1.2, which needs 39 digits.
+        run(con, "SET VARIABLE v = (SELECT sum(x) FROM (VALUES "
+                 "('0.6'::DECIMAL(38,38)), ('0.6'::DECIMAL(38,38))) t(x))");
+        value = "getvariable('v')";
+    } else if (strcmp(mode, "variant") == 0) {
+        value = "make_timestamp(-9223372036854775808)::VARIANT";
+    } else {
+        // WKB MULTIPOINT (type 4) with one part whose type is LINESTRING (2), 0 points.
+        value = "ST_GeomFromWKB('\\x01\\x04\\x00\\x00\\x00\\x01\\x00\\x00\\x00"
+                "\\x01\\x02\\x00\\x00\\x00\\x00\\x00\\x00\\x00'::BLOB)";
+    }
+    char sql[512];
+    snprintf(sql, sizeof sql, "SELECT typeof(%s)", value);
+    run(con, sql);
+    snprintf(sql, sizeof sql, "SELECT CAST(%s AS VARCHAR)", value);
+    run(con, sql);
+    snprintf(sql, sizeof sql, "SELECT count(*) FROM render_probe(%s)", value);
+    run(con, sql);
+    if (kept) {
+        render("main", kept);
+        duckdb_destroy_value(&kept);
+    }
+
+    duckdb_destroy_logical_type(&any);
+    duckdb_destroy_table_function(&f);
+    duckdb_disconnect(&con); duckdb_close(&db);
+    return 0;
+}
+```
+
+Built with `gcc -O1 -Wall -I<dir> render.c -L<dir> -lduckdb` against each
+prebuilt library from v1.4.4 to v1.5.5 (v1.4.4, v1.4.5, v1.5.0 to v1.5.5), and
+run as `render <case>` (`duckdb_get_varchar`) and `render <case> sql`
+(`duckdb_value_to_string`).
+
+Case 1, `render dec_min` on v1.5.5 (exit 134):
+
+```text
+SET VARIABLE v = (SELECT sum(x) FROM (VALUES ((-99999999999999999999999999999999999999)::DECIMAL(38,0)), ((-70141183460469231731687303715884105729)::DECIMAL(38,0))) t(x))
+  -> (no value)
+SELECT typeof(getvariable('v'))
+  -> DECIMAL(38,0)
+SELECT CAST(getvariable('v') AS VARCHAR)
+  -> error: Out of Range Error: Negation of HUGEINT is out of range!
+bind: type id 19; calling duckdb_get_varchar
+SELECT count(*) FROM render_probe(getvariable('v'))
+  -> error: Out of Range Error: Negation of HUGEINT is out of range!
+
+LINE 1: SELECT count(*) FROM render_probe(getvariable('v'))
+                             ^
+main: type id 19; calling duckdb_get_varchar
+terminate called after throwing an instance of 'duckdb::OutOfRangeException'
+  what():  {"exception_type":"Out of Range","exception_message":"Negation of HUGEINT is out of range!"}
+```
+
+All eight releases printed exactly this (compared with `diff`), and
+`render dec_min sql` printed the same with `duckdb_value_to_string` in place
+of `duckdb_get_varchar`, also exiting with 134 on all eight.
+
+Case 2, `render dec_scale` on v1.4.4 (exit 0):
+
+```text
+SET VARIABLE v = (SELECT sum(x) FROM (VALUES ('0.6'::DECIMAL(38,38)), ('0.6'::DECIMAL(38,38))) t(x))
+  -> (no value)
+SELECT typeof(getvariable('v'))
+  -> DECIMAL(38,38)
+SELECT CAST(getvariable('v') AS VARCHAR)
+  -> D.20000000000000000000000000000000000000
+bind: type id 19; calling duckdb_get_varchar
+bind: strlen 40, text "D.20000000000000000000000000000000000000"
+SELECT count(*) FROM render_probe(getvariable('v'))
+  -> 0
+main: type id 19; calling duckdb_get_varchar
+main: strlen 40, text "8.20000000000000000000000000000000000000"
+```
+
+and on v1.5.4 (exit 134):
+
+```text
+SET VARIABLE v = (SELECT sum(x) FROM (VALUES ('0.6'::DECIMAL(38,38)), ('0.6'::DECIMAL(38,38))) t(x))
+  -> (no value)
+SELECT typeof(getvariable('v'))
+  -> DECIMAL(38,38)
+SELECT CAST(getvariable('v') AS VARCHAR)
+  -> D.20000000000000000000000000000000000000
+bind: type id 19; calling duckdb_get_varchar
+bind: strlen 40, text "D.20000000000000000000000000000000000000"
+SELECT count(*) FROM render_probe(getvariable('v'))
+  -> 0
+main: type id 19; calling duckdb_get_varchar
+terminate called after throwing an instance of 'duckdb::InvalidInputException'
+  what():  {"exception_type":"Invalid Input","exception_message":"Invalid unicode (byte sequence mismatch) detected in value construction"}
+```
+
+Over five runs of `render dec_scale` per release: v1.4.4 printed the output
+above every time, and v1.5.5 the same except that `main` read
+`x.20000000000000000000000000000000000000`; v1.4.5, v1.5.3 and v1.5.4 printed
+the v1.5.4 output above every time; on v1.5.0, v1.5.1 and v1.5.2 SQL's own
+cast and the bind-time rendering came back with a NUL first byte
+(`bind: strlen 0, text ""`), and the rendering in `main` terminated as above
+in 13 of the 15 runs (in two of the v1.5.1 runs the bind-time rendering threw
+too, and the query reported it as its error). Under valgrind, v1.4.4 and v1.5.5 printed the same lines as without
+it and reported `ERROR SUMMARY: 0 errors from 0 contexts`.
+
+Case 3, `render variant` on v1.5.5 (exit 134):
+
+```text
+SELECT typeof(make_timestamp(-9223372036854775808)::VARIANT)
+  -> VARIANT
+SELECT CAST(make_timestamp(-9223372036854775808)::VARIANT AS VARCHAR)
+  -> error: Conversion Error: Date out of range in timestamp conversion
+bind: type id 41; calling duckdb_get_varchar
+SELECT count(*) FROM render_probe(make_timestamp(-9223372036854775808)::VARIANT)
+  -> error: Conversion Error: Date out of range in timestamp conversion
+
+LINE 1: SELECT count(*) FROM render_probe(make_timestamp(-9223372036854775808)::VARIANT)
+                             ^
+main: type id 41; calling duckdb_get_varchar
+terminate called after throwing an instance of 'duckdb::ConversionException'
+  what():  {"exception_type":"Conversion","exception_message":"Date out of range in timestamp conversion"}
+```
+
+All eight releases printed the same apart from `type id 0` before v1.5.3
+(compared with `diff` after replacing the type id). `render variant sql`
+printed the same with `duckdb_value_to_string` on v1.5.0 to v1.5.5. On v1.4.4
+and v1.4.5 `duckdb_value_to_string` does not throw: it renders the VARIANT's
+internal STRUCT (exit 0):
+
+```text
+bind: strlen 125, text "{'keys': [], 'children': [], 'values': [{'type_id': 24, 'byte_offset': 0}], 'data': '\x00\x00\x00\x00\x00\x00\x00\x80'::BLOB}"
+```
+
+Case 4, `render geometry` on v1.5.5 (exit 134):
+
+```text
+SELECT typeof(ST_GeomFromWKB('\x01\x04\x00\x00\x00\x01\x00\x00\x00\x01\x02\x00\x00\x00\x00\x00\x00\x00'::BLOB))
+  -> GEOMETRY
+SELECT CAST(ST_GeomFromWKB('\x01\x04\x00\x00\x00\x01\x00\x00\x00\x01\x02\x00\x00\x00\x00\x00\x00\x00'::BLOB) AS VARCHAR)
+  -> error: Invalid Input Error: Expected POINT in MULTIPOINT but got 2
+bind: type id 40; calling duckdb_get_varchar
+SELECT count(*) FROM render_probe(ST_GeomFromWKB('\x01\x04\x00\x00\x00\x01\x00\x00\x00\x01\x02\x00\x00\x00\x00\x00\x00\x00'::BLOB))
+  -> error: Invalid Input Error: Expected POINT in MULTIPOINT but got 2
+
+LINE 1: SELECT count(*) FROM render_probe(ST_GeomFromWKB('\x01\x04\x00\x00\x00\x01\x00...
+                             ^
+main: type id 40; calling duckdb_get_varchar
+terminate called after throwing an instance of 'duckdb::InvalidInputException'
+  what():  {"exception_type":"Invalid Input","exception_message":"Expected POINT in MULTIPOINT but got 2"}
+```
+
+v1.5.0 to v1.5.4 printed the same apart from `type id 0` on v1.5.0 and
+v1.5.1, and `render geometry sql` the same with `duckdb_value_to_string`
+(compared with `diff`); every one exited with 134. v1.4.4 and v1.4.5 have no
+`ST_GeomFromWKB` without the spatial extension.
+
+Expected: `nullptr` (or an error string) from both functions for cases 1, 3
+and 4, as for other failures of these functions, and for case 2 either the
+text `1.20000000000000000000000000000000000000` or an error, never an
+unwritten byte. quack-rs mitigation: the render guard behind `Value::as_str`,
+`display_string` and `Debug` is an allow-list. A value renders unchecked only
+if every payload of its type renders; TIMESTAMP and TIME payloads are checked
+against the range DuckDB renders (item 13), and a DECIMAL payload against its
+width, so cases 1 and 2 are refused. VARIANT and GEOMETRY are always refused,
+as is a type the crate does not know (VARIANT before v1.5.3, whose type id
+reads as invalid); LIST, STRUCT and MAP are checked element by element, and an
+ARRAY or UNION whose type contains anything that needs a check is refused,
+since the C API cannot read its elements.
+
+---
+
+## 23. `duckdb_list_vector_reserve` aborts below `MAX_VECTOR_SIZE` elements when the child buffer passes 2^37 bytes
+
+Item 1 covers a capacity above `MAX_VECTOR_SIZE` (2^37) elements, which
+`VectorListBuffer::Reserve` refuses. A smaller capacity can still throw
+through the same uncaught call (`src/main/capi/data_chunk-c.cpp:207-213`).
+`VectorListBuffer::Reserve` rounds the capacity up to a power of two
+(`src/common/types/vector_buffer.cpp:79`) and calls `Vector::Resize`
+(`src/common/types/vector.cpp:399`), which for every buffer of the child
+(the child's own, each STRUCT field's, and an ARRAY child's, whose multiplier
+is the array size) computes `new_size * GetTypeIdSize(type) * multiplier`
+bytes and throws `OutOfRangeException` when that exceeds
+`DConstants::MAX_VECTOR_SIZE`, the same constant 2^37 now read as bytes
+(`vector.cpp:424`). The limit in elements therefore depends on the child
+type: 2^33 for a 16-byte HUGEINT, and for `INTEGER[1000]` (4000 bytes per
+element) 2^25, since a capacity of 2^25 + 1 is rounded up to 2^26, although
+2^25 + 1 elements would take only 134,217,732,000 bytes, less than 2^37.
+v1.4.4 has the same code (`Vector::Resize` identical; the C API call at
+`data_chunk-c.cpp:182`).
+
+For each buffer the check comes after the validity mask is resized (line 412)
+and before the data allocation (line 432). The validity resize allocates only
+when the mask has already been materialised, which it has not for a new
+vector, so the program below allocates nothing large. Buffers are processed
+in order, though, so for a STRUCT child whose narrower field comes first,
+that field's buffer is allocated at the rounded capacity before the wider
+field's check throws (source reading; not run, since it would allocate at
+least 16 GiB).
+
+```c
+// duckdb_list_vector_reserve lets a C++ exception escape for a capacity below
+// MAX_VECTOR_SIZE (2^37) elements whose child buffer would exceed 2^37 bytes.
+// Usage: reserve_bytes hugeint|array
+//   hugeint: LIST(HUGEINT), 16 bytes per element, capacity 2^33 + 1
+//   array:   LIST(INTEGER[1000]), 4000 bytes per element, capacity 2^25 + 1
+#include <stdio.h>
+#include <string.h>
+#include <duckdb.h>
+int main(int argc, char **argv) {
+    int array = argc > 1 && strcmp(argv[1], "array") == 0;
+    duckdb_logical_type elem = duckdb_create_logical_type(array ? DUCKDB_TYPE_INTEGER : DUCKDB_TYPE_HUGEINT);
+    duckdb_logical_type child = array ? duckdb_create_array_type(elem, 1000) : elem;
+    duckdb_logical_type list = duckdb_create_list_type(child);
+    duckdb_vector vec = duckdb_create_vector(list, 1);
+    idx_t bytes_per_element = array ? 4000 : 16;
+    idx_t capacity = array ? ((idx_t)1 << 25) + 1 : ((idx_t)1 << 33) + 1;
+    fprintf(stderr, "calling duckdb_list_vector_reserve(%llu): %llu elements, %llu bytes; ceiling 2^37 = %llu bytes\n",
+            (unsigned long long)capacity, (unsigned long long)capacity,
+            (unsigned long long)(capacity * bytes_per_element), (unsigned long long)((idx_t)1 << 37));
+    duckdb_state st = duckdb_list_vector_reserve(vec, capacity);
+    fprintf(stderr, "returned %s\n", st == DuckDBSuccess ? "DuckDBSuccess" : "DuckDBError");
+    duckdb_destroy_vector(&vec);
+    duckdb_destroy_logical_type(&list);
+    if (array) duckdb_destroy_logical_type(&child);
+    duckdb_destroy_logical_type(&elem);
+    return 0;
+}
+```
+
+Built with `gcc -O1 -Wall -I<dir> reserve_bytes.c -L<dir> -lduckdb` against
+each prebuilt library and run with the address space limited to 4 GiB
+(`ulimit -v 4194304`). v1.4.4, `reserve_bytes hugeint` (exit 134):
+
+```text
+calling duckdb_list_vector_reserve(8589934593): 8589934593 elements, 137438953488 bytes; ceiling 2^37 = 137438953472 bytes
+terminate called after throwing an instance of 'duckdb::OutOfRangeException'
+  what():  {"exception_type":"Out of Range","exception_message":"Cannot resize vector to 256.0 GiB: maximum allowed vector size is 128.0 GiB"}
+```
+
+and `reserve_bytes array` (exit 134):
+
+```text
+calling duckdb_list_vector_reserve(33554433): 33554433 elements, 134217732000 bytes; ceiling 2^37 = 137438953472 bytes
+terminate called after throwing an instance of 'duckdb::OutOfRangeException'
+  what():  {"exception_type":"Out of Range","exception_message":"Cannot resize vector to 250.0 GiB: maximum allowed vector size is 128.0 GiB"}
+```
+
+v1.4.5 and v1.5.0 to v1.5.5 printed exactly the same for both (compared with
+`md5sum`), each exiting with 134. There is no control run under the ceiling:
+the largest reservation that passes the check (2^33 HUGEINTs, or 2^25
+`INTEGER[1000]`s) allocates 128 GiB or 125 GiB.
+
+Expected: `DuckDBError`, as in item 1; the fix there (a `try` around the call)
+covers this too. quack-rs mitigation: `ListBuilder` limits a list vector's
+child to `max_child_capacity`, computed from the widest buffer the child
+type grows (`resize_bytes_per_element`, which follows STRUCT fields and
+UNION members and multiplies through ARRAY sizes), and writes a row that
+would pass it as NULL. The limit allows for the rounding: it is the
+largest power of two whose elements fit, 2^25 for `INTEGER[1000]`. (The
+fifth audit's first version divided 2^37 by the element size, 34,359,738
+for `INTEGER[1000]`, so the reservation in the program above still aborted;
+`tests/ffi_roundtrip/list_limits.rs` now covers it.)

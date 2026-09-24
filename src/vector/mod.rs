@@ -35,7 +35,7 @@ pub mod uuid;
 pub mod validity;
 pub mod writer;
 
-pub use list_builder::{ListBuilder, MAX_LIST_CHILD_CAPACITY};
+pub use list_builder::{max_child_capacity, ListBuilder, MAX_LIST_CHILD_CAPACITY};
 #[cfg(feature = "duckdb-1-5")]
 pub use ops::OwnedVector;
 pub use reader::VectorReader;
