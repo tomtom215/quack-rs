@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # Upstream DuckDB reports (pending)
 
 Working notes for reports to the DuckDB project about C API behaviour found
