@@ -81,6 +81,7 @@ fn adversarial_text_round_trips_through_description_yml() {
 /// community-extensions tooling uses). Runs only where `python3` with `PyYAML`
 /// is available; quack-rs's own parser above always runs.
 #[test]
+#[cfg_attr(miri, ignore = "spawns python3; Miri cannot run a subprocess")]
 fn adversarial_text_round_trips_through_pyyaml() {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
