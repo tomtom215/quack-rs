@@ -231,8 +231,7 @@ fn inspects_arguments_or_refuses(fx: &Fixture, probe: &str) -> bool {
     }
     // SAFETY: the fixture's connection is open.
     let message = unsafe { quack_rs::query::query(fx.con(), probe) }
-        .map(|_| String::from("(the query succeeded)"))
-        .unwrap_or_else(|e| e.to_string());
+        .map_or_else(|e| e.to_string(), |_| String::from("(the query succeeded)"));
     assert!(
         message.contains("before v1.5.5"),
         "{version}: {probe}: {message}"

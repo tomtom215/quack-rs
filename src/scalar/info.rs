@@ -607,7 +607,7 @@ fn get_argument_catches_copy_failures(engine: &str) -> bool {
 #[cfg(test)]
 mod tests {
 
-    /// `duckdb_scalar_function_bind_get_argument` has no `try` at DuckDB tags
+    /// `duckdb_scalar_function_bind_get_argument` has no `try` at `DuckDB` tags
     /// v1.5.0 to v1.5.4 and one at v1.5.5, so only v1.5.5 and later, or a
     /// development build of a later release, may be asked for an argument.
     #[cfg(feature = "duckdb-1-5")]

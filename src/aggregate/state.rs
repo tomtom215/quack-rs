@@ -492,6 +492,46 @@ mod tests {
         assert_eq!(raw.inner, bogus, "another slot's tag does not match");
     }
 
+    /// `DuckDB` lays a group's states out contiguously, `size()` bytes apart,
+    /// so a slot's neighbours are the likeliest source of a stale tag. Every
+    /// slot's tag differs from every other's, and a neighbour's tag is not
+    /// accepted. Eight adjacent slots (16 bytes each on 64-bit targets, 8 on
+    /// 32-bit) always include two whose addresses differ only in the slot-size
+    /// bit (bit 4, or bit 3), and `TAG_KEY` sets that bit on both: a tag built
+    /// with `|` instead of `^` gives those two the same tag.
+    #[test]
+    fn adjacent_slots_never_share_a_tag() {
+        let bogus = core::ptr::NonNull::<Counter>::dangling().as_ptr();
+        let mut slots: [FfiState<Counter>; 8] = core::array::from_fn(|_| FfiState {
+            inner: bogus,
+            tag: 0,
+        });
+        let base = slots.as_mut_ptr();
+        // SAFETY (all `add`s below): `i` and `j` are below `slots.len()`.
+        let tags: Vec<usize> = (0..slots.len())
+            .map(|i| FfiState::<Counter>::tag_for(unsafe { base.add(i) }))
+            .collect();
+        for i in 0..tags.len() {
+            for j in i + 1..tags.len() {
+                assert_ne!(tags[i], tags[j], "slots {i} and {j} share a tag");
+            }
+        }
+        for i in 0..slots.len() {
+            for j in (0..slots.len()).filter(|&j| j != i) {
+                // SAFETY: `base.add(i)` is a live `FfiState<Counter>` in
+                // `slots`, accessed only through `base` from here on.
+                unsafe { (*base.add(i)).tag = tags[j] };
+                let mut state_arr = [unsafe { base.add(i) } as duckdb_aggregate_state];
+                // SAFETY: as above; the slot is either skipped or, if the tag
+                // were wrongly accepted, `inner` would be freed (Miri reports it).
+                unsafe { FfiState::<Counter>::destroy_callback(state_arr.as_mut_ptr(), 1) };
+                // SAFETY: as above.
+                let inner = unsafe { (*base.add(i)).inner };
+                assert_eq!(inner, bogus, "slot {i} accepted slot {j}'s tag");
+            }
+        }
+    }
+
     /// A destroyed slot's tag is cleared, so destroying it again is a no-op
     /// even though its bytes are otherwise unchanged.
     #[test]

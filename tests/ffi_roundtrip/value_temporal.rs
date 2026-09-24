@@ -511,7 +511,10 @@ type Rendered = (Result<String, String>, Option<bool>, String, Option<i64>);
 
 static RENDERED: Mutex<Vec<(&'static str, Rendered)>> = Mutex::new(Vec::new());
 
+// `Option` so the two variants share a signature: without `duckdb-1-5` there
+// is no `display_string` to ask.
 #[cfg(feature = "duckdb-1-5")]
+#[allow(clippy::unnecessary_wraps)]
 fn display_produced_text(value: &Value) -> Option<bool> {
     Some(value.display_string().is_some())
 }

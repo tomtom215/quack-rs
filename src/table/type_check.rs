@@ -150,4 +150,20 @@ mod tests {
         // SAFETY: null is explicitly allowed and makes no DuckDB call.
         assert!(unsafe { child_matches(std::ptr::null_mut(), &|_| false) });
     }
+
+    /// A return type given only as a `TypeId` is refused exactly when it is
+    /// `ANY`, with a message naming the slot; no type at all is not refused.
+    #[test]
+    fn an_any_return_type_id_is_refused_by_name() {
+        use crate::types::TypeId;
+        let err =
+            refuse_any_return("return type", Some(TypeId::Any), None).expect_err("ANY is refused");
+        assert!(
+            err.as_str()
+                .starts_with("return type must not be or contain ANY"),
+            "{err}"
+        );
+        assert!(refuse_any_return("return type", Some(TypeId::Integer), None).is_ok());
+        assert!(refuse_any_return("return type", None, None).is_ok());
+    }
 }
