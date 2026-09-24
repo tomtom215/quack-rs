@@ -95,6 +95,6 @@ fn list_items_and_map_entries_read_back_in_order() {
 
     // A non-list, non-map value has no items and no entries.
     let scalar = Value::bigint(7);
-    assert!(scalar.list_items().is_empty());
+    assert_eq!(scalar.list_items().len(), 0);
     assert_eq!(scalar.map_len(), 0);
 }

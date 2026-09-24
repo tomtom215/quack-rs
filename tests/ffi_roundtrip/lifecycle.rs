@@ -405,6 +405,8 @@ fn every_rendered_parameter_type_matches_duckdbs_own_spelling() {
 
     type Make = Box<dyn Fn() -> LogicalType>;
     let fx = Fixture::open();
+    // Extended below only when `duckdb-1-5-3` adds GEOMETRY and VARIANT.
+    #[cfg_attr(not(feature = "duckdb-1-5-3"), allow(unused_mut))]
     let mut ids = vec![
         TypeId::Boolean,
         TypeId::TinyInt,

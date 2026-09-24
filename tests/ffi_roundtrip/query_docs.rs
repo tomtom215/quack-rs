@@ -169,7 +169,7 @@ fn struct_field_names_of_a_union_include_its_tag() {
     let union_type = LogicalType::union_type(&[("a", TypeId::Integer), ("b", TypeId::Varchar)]);
     let value = Value::union_value(&union_type, 1, &Value::varchar("x")).expect("union");
     assert_eq!(value.struct_field_names(), ["", "a", "b"]);
-    assert!(Value::bigint(1).struct_field_names().is_empty());
+    assert_eq!(Value::bigint(1).struct_field_names(), Vec::<String>::new());
     let list = Value::list_value(&LogicalType::new(TypeId::BigInt), &[]).expect("list");
-    assert!(list.struct_field_names().is_empty());
+    assert_eq!(list.struct_field_names(), Vec::<String>::new());
 }

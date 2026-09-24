@@ -387,6 +387,7 @@ fn error_data_reports_sequence_and_autoload_types() {
 /// `ErrorData::new` replaces an interior NUL like every other error path in
 /// the crate (`callback::message_to_c_string`); it used to truncate there,
 /// dropping the rest of the message.
+#[cfg(feature = "duckdb-1-5")]
 #[test]
 fn error_data_keeps_the_text_after_an_interior_nul() {
     use quack_rs::error_data::{DuckDbErrorType, ErrorData};
