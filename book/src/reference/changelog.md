@@ -460,6 +460,14 @@ reproducer run on the releases it names. Its entries are grouped under
   `catch_unwind`, and its value was discarded: a body that used `?` compiled,
   and the error it returned was dropped without being reported. It is now a
   type error; report the error through the callback's `set_error`.
+- **Breaking: a callback macro's body is no longer an `unsafe` context.** The
+  body was a closure inside the generated `unsafe extern "C" fn`, and a
+  closure inherits its function's unsafe context, so a raw-pointer
+  dereference or an `unsafe fn` call in a "safe" callback compiled with no
+  `unsafe` keyword and, on edition 2021 (which the scaffold generates), no
+  warning. The body is now expanded as a nested ordinary `fn`; wrap unsafe
+  operations in `unsafe` blocks, as the documented examples already do.
+  `compile_fail` doctests pin it.
 - **Breaking: catalog lookups are refused in a catalog `DuckDB` does not
   implement itself.** For a catalog a storage extension attaches,
   `duckdb_catalog_get_entry` starts that extension's transaction and runs its
