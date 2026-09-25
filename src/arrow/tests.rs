@@ -440,3 +440,26 @@ fn release_runs_once_even_if_the_callback_leaves_itself_set() {
     drop(array);
     assert_eq!(ARRAY.load(Ordering::SeqCst), 1);
 }
+
+/// `dictionary` borrows a dictionary-encoded schema's value schema, and is
+/// `None` for a schema without one.
+#[test]
+fn dictionary_borrows_the_value_schema() {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let values_format = CString::new("u").expect("no NUL");
+    let mut values = RawArrowSchema::empty();
+    values.format = values_format.as_ptr();
+    // Live, as a producer's is; no counter, so its release counts nothing.
+    values.release = Some(count_schema_release);
+    let indices_format = CString::new("i").expect("no NUL");
+    let mut raw = RawArrowSchema::empty();
+    raw.format = indices_format.as_ptr();
+    raw.dictionary = &raw mut values;
+    raw.private_data = std::ptr::from_ref(&COUNTER).cast_mut().cast();
+    raw.release = Some(count_schema_release);
+    // SAFETY: `count_schema_release` frees nothing and nulls itself; `values`
+    // and the format strings outlive the schema.
+    let schema = unsafe { ArrowSchema::from_raw(raw) };
+    assert_eq!(schema.dictionary().and_then(ArrowSchema::format), Some("u"));
+    assert!(live_schema(&COUNTER).dictionary().is_none());
+}

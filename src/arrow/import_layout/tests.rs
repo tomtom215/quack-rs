@@ -510,3 +510,14 @@ fn a_negative_offset_or_length_below_the_top_is_refused() {
         );
     }
 }
+
+/// A list's child is read from the list's first element for its values and
+/// its validity alike, so a child with NULLs under a list starting at element
+/// 2 imports: `DuckDB` reads row 2 of the bitmap, where Arrow puts it.
+#[test]
+fn validity_under_a_list_starting_past_zero_is_accepted() {
+    let shape = of(Kind::List { wide: false }, vec![leaf()]);
+    let child = Node::new(4, 0, 1, vec![bits(4), i32s(&[1, 2, 3, 4])]);
+    let list = Node::new(1, 0, 0, vec![vec![], i32s(&[2, 4])]).with_children(vec![child]);
+    assert_eq!(check_column(1, list, shape), Ok(()));
+}

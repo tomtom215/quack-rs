@@ -167,6 +167,20 @@ mod tests {
         assert!(!check.is_fully_optimized());
     }
 
+    /// `validate_release_profile` refuses `panic = "abort"` outright, so a
+    /// check without it only comes from a struct literal; it must not pass.
+    #[test]
+    fn a_check_without_unwind_is_not_satisfied() {
+        let check = ReleaseProfileCheck {
+            panic_unwind: false,
+            lto_enabled: true,
+            opt_level_3: true,
+            codegen_units_1: true,
+        };
+        assert!(!check.is_required_satisfied());
+        assert!(!check.is_fully_optimized());
+    }
+
     #[test]
     fn panic_abort_rejected_because_it_disables_catch_unwind() {
         let err = validate_release_profile("abort", "true", "3", "1").unwrap_err();

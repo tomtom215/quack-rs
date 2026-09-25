@@ -467,3 +467,35 @@ fn ffi_state_installs_all_three_state_callbacks_for_one_type() {
     let overload = AggregateOverloadBuilder::new().ffi_state::<Wide>();
     run(overload.state_size, overload.init, overload.destructor);
 }
+
+/// An overload's own return type takes precedence over the set's: a set
+/// whose default is `ANY` passes when every overload declares its own, and
+/// fails when one relies on the default.
+#[test]
+fn an_overloads_own_return_type_overrides_the_sets() {
+    use crate::types::logical_type::LogicalType;
+    let overload = |returns: Option<TypeId>| {
+        let o = AggregateOverloadBuilder::new()
+            .param(TypeId::BigInt)
+            .state_size(ss)
+            .init(si)
+            .update(su)
+            .combine(sc)
+            .finalize(sf);
+        match returns {
+            Some(id) => o.returns(id),
+            None => o,
+        }
+    };
+    let own = AggregateFunctionSetBuilder::new("s")
+        .returns(TypeId::Any)
+        .overload(overload(Some(TypeId::BigInt)));
+    assert!(own.check_types(LogicalType::check_slot_offline).is_ok());
+    let inherited = AggregateFunctionSetBuilder::new("s")
+        .returns(TypeId::Any)
+        .overload(overload(None));
+    let err = inherited
+        .check_types(LogicalType::check_slot_offline)
+        .expect_err("the set's ANY is used");
+    assert!(err.as_str().contains("overload 0 return type"), "{err}");
+}
