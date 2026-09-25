@@ -971,7 +971,7 @@ Wrong answers with no error:
 | `SqlMacro` bodies with `--` comments broke; `1); DROP TABLE …; SELECT (1` ran | VALIDATED |
 | An error message with an interior NUL lost its tail in some paths and kept it in others; every path now replaces NUL with `?` (`ErrorData::new` was the last) | VALIDATED (e.g. `"bad\0input"` → `"bad"`) |
 | A `CAST` callback returning `false` with no message: `Conversion Error: ` and nothing | VALIDATED |
-| `FileHandle` outlived its `FileSystem`; `FileFlag::CreateNew` did not create | VALIDATED (valgrind "Invalid read"); `FileHandle<'fs>` (**breaking**) |
+| `FileHandle` outlived its `FileSystem`; `FileFlag::CreateNew` did not create | VALIDATED (valgrind "Invalid read"); `FileHandle<'fs>` (**breaking**). On Windows an existing file is still not refused (DuckDB ignores the exclusive flag there; VALIDATED by the release CI failure, documented) |
 
 Security: `SecretEntry` freed replaced field, provider and scope values
 without zeroizing them, and `Debug` printed the scope. VALIDATED by an

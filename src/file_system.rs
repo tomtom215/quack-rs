@@ -69,6 +69,15 @@ pub enum FileFlag {
     /// combination with `FILE_FLAGS_FILE_CREATE` (`O_EXCL` without `O_CREAT`
     /// is ignored by `open(2)`), and on its own neither created a missing file
     /// nor refused an existing one.
+    ///
+    /// # Windows: an existing file is not refused
+    ///
+    /// `DuckDB`'s local file system on Windows ignores the exclusive flag: it
+    /// opens with `OPEN_ALWAYS` whenever `Create` is set
+    /// (`LocalFileSystem::OpenFile` in `src/common/local_file_system.cpp`,
+    /// checked in `DuckDB` 1.5.5), so an existing file is opened, not
+    /// truncated, and no error is returned. A missing file is still created.
+    /// Do not rely on `CreateNew` for mutual exclusion on Windows.
     CreateNew,
     /// Open in append mode.
     Append,

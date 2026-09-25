@@ -66,6 +66,9 @@ cover the common cases; use `set_flag` for anything else.
   it to `FILE_FLAGS_EXCLUSIVE_CREATE`, which only has that meaning together with
   `FILE_FLAGS_FILE_CREATE`; on its own it neither created a missing file nor refused
   an existing one.
+  **On Windows an existing file is not refused**: DuckDB's local file system there
+  ignores the exclusive flag and opens with `OPEN_ALWAYS` (checked in DuckDB 1.5.5),
+  so the existing file is opened, untruncated, without an error.
 - `set_flag(flag, false)` does **not** clear a flag: the C API ORs flags in and
   ignores `value`. Build a fresh `FileOpenOptions` instead.
 

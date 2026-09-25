@@ -898,6 +898,11 @@ fn config_options_without_a_default_or_with_a_pseudo_type_are_refused_clearly() 
 /// TBL-10: `FileFlag::CreateNew` mapped to `FILE_FLAGS_EXCLUSIVE_CREATE`
 /// alone, which only means something together with `FILE_FLAGS_FILE_CREATE`:
 /// it neither created a missing file nor refused an existing one.
+///
+/// On Windows `DuckDB`'s local file system ignores the exclusive flag
+/// (`OPEN_ALWAYS`), so there an existing file opens, untruncated. That branch
+/// pins the upstream behaviour documented on `FileFlag::CreateNew`: if
+/// `DuckDB` starts honouring the flag, it fails and the docs must change.
 #[cfg(feature = "duckdb-1-5")]
 #[test]
 fn file_flag_create_new_creates_or_refuses() {
@@ -921,7 +926,15 @@ fn file_flag_create_new_creates_or_refuses() {
         let c_path = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("no NUL");
         fs.open(&c_path, &options).map(drop)
     };
-    assert!(open(&existing).is_err(), "an existing file must be refused");
+    if cfg!(windows) {
+        assert!(
+            open(&existing).is_ok(),
+            "DuckDB now refuses an existing file on Windows: update the \
+             `FileFlag::CreateNew` docs and this test"
+        );
+    } else {
+        assert!(open(&existing).is_err(), "an existing file must be refused");
+    }
     assert_eq!(std::fs::read(&existing).expect("still there"), b"keep me");
     assert!(open(&fresh).is_ok(), "a missing file must be created");
     assert!(fresh.exists());

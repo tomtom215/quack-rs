@@ -1448,7 +1448,9 @@ reproducer run on the releases it names. Its entries are grouped under
 - `FileFlag::CreateNew` did not create a file: it set only DuckDB's exclusive
   flag, which is ignored without the create flag, so an existing file opened and
   a missing one failed. `set_flag(FileFlag::CreateNew, true)` now also sets
-  `Create`.
+  `Create`. On Windows an existing file is still opened rather than refused:
+  DuckDB's Windows file system ignores the exclusive flag, which is now
+  documented on `FileFlag::CreateNew`.
 - `WarningCollector` dropped every warning, silently, once a panic had poisoned
   its lock. It now recovers the lock and keeps working.
 - `ScalarFunctionBuilder::varargs` / `ScalarOverloadBuilder::varargs` with a
