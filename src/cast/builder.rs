@@ -19,6 +19,7 @@ use libduckdb_sys::{
 
 use crate::error::ExtensionError;
 use crate::table::cstr::error_cstring;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, TypeId};
 
 // ── Cast mode ─────────────────────────────────────────────────────────────────
@@ -367,6 +368,18 @@ impl CastFunctionBuilder {
         Ok(())
     }
 
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
+        if let Some(id) = self.source {
+            slot(id, "cast function source type")?;
+        }
+        if let Some(id) = self.target {
+            slot(id, "cast function target type")?;
+        }
+        Ok(())
+    }
+
     /// Registers the cast function on the given connection.
     ///
     /// # Errors
@@ -403,12 +416,7 @@ impl CastFunctionBuilder {
         let function = self
             .function
             .ok_or_else(|| ExtensionError::new("cast function callback not set"))?;
-        if let Some(id) = self.source {
-            LogicalType::check_slot(id, "cast function source type")?;
-        }
-        if let Some(id) = self.target {
-            LogicalType::check_slot(id, "cast function target type")?;
-        }
+        self.check_types(LogicalType::check_slot)?;
         if con.is_null() {
             return Err(ExtensionError::new(
                 "cast function registration: connection is null",

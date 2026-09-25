@@ -21,7 +21,7 @@
 //! | [`UpdateFn`] | Per batch of input rows | Accumulates data from a chunk into the states |
 //! | [`CombineFn`] | Parallel merge, window segment trees | Merges source states into target states |
 //! | [`FinalizeFn`] | Per batch of result rows, with a `count` and an `offset` | Writes results from `count` states to the output vector starting at `offset` |
-//! | [`DestroyFn`] | For every state `DuckDB` created: after finalize, on the source states once `combine` has merged them — and, after a failed `state_init`, on states that were never initialised | Frees per-state memory |
+//! | [`DestroyFn`] | After finalize, on the source states once `combine` has merged them, and, after a failed `state_init`, on states that were never initialised; not on some states a stopped scan or an `EXCLUDE` window frame leaves behind (see [`DestroyFn`]) | Frees per-state memory |
 //!
 //! Sources (`DuckDB` 1.5.5): `CAPIAggregateStateSize`, `CAPIAggregateFinalize`
 //! and `CAPIAggregateDestructor` in `src/main/capi/aggregate_function-c.cpp`;
@@ -123,8 +123,20 @@ pub type UpdateFn = unsafe extern "C" fn(
 /// `T::default()`) and may have seen no `update` at all. All configuration
 /// fields must be copied from `source`, not just accumulated data values.
 ///
+/// # Leave `source` unchanged
+///
+/// Read the `source` states; do not modify them. A window's segment tree
+/// combines one of its shared node states into every frame that covers it,
+/// from several threads at once (`WindowSegmentTreePart::WindowSegmentValue`
+/// and `FlushStates`, `window_segment_tree.cpp`), so
+/// a `combine` that consumes its source is right for the first frame that
+/// reads it and wrong for the rest: a sum that moved its value out gave 4985
+/// of 5000 rows wrong over `ROWS BETWEEN 100 PRECEDING AND CURRENT ROW` in
+/// the fifth audit's regression test. Writing to a source another thread is
+/// reading is also a data race. Copy or clone what the target needs.
+///
 /// After `combine` returns, `DuckDB` may call [`DestroyFn`] on the `source`
-/// states, so move out of them rather than keeping pointers into them.
+/// states, so do not keep pointers into them either.
 pub type CombineFn = unsafe extern "C" fn(
     info: duckdb_function_info,
     source: *mut duckdb_aggregate_state,
@@ -151,10 +163,15 @@ pub type FinalizeFn = unsafe extern "C" fn(
 
 /// Frees memory allocated by [`StateInitFn`].
 ///
-/// Called for every state `DuckDB` created — after finalize, but also on the
-/// source states of a [`CombineFn`] once they have been merged, and on states
-/// that are never finalized. Must free all heap allocations made in
-/// `StateInitFn`.
+/// Called after finalize, on the source states of a [`CombineFn`] once they
+/// have been merged, and on states that are never finalized. Must free all
+/// heap allocations made in `StateInitFn`.
+///
+/// `DuckDB` 1.4.4 to 1.5.5 does not call it for every state it created: not
+/// for a grouped aggregate's states a stopped result scan never reached
+/// (`docs/upstream-duckdb-reports.md`, item 20), and not for the states a
+/// window frame with `EXCLUDE` initialises for each row (item 35). What those
+/// states own on the heap leaks.
 ///
 /// # Not every state it receives was initialised
 ///
@@ -182,6 +199,11 @@ pub type DestroyFn = unsafe extern "C" fn(states: *mut duckdb_aggregate_state, c
 /// every later row of the chunk re-reads row 0 (Pitfall L13). Any destructor
 /// takes the aggregate off that path. A no-op cannot fail, touches no state
 /// and cannot unwind.
+///
+/// # Safety
+///
+/// None: it reads neither argument. It is `unsafe` only because `DuckDB`'s
+/// destructor slot takes an `unsafe extern "C" fn`.
 pub(crate) const unsafe extern "C" fn no_op_destroy(
     _states: *mut duckdb_aggregate_state,
     _count: idx_t,

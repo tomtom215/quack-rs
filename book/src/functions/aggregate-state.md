@@ -37,36 +37,40 @@ create fresh states.
 
 ## `FfiState<T>`
 
-`FfiState<T>` is a `#[repr(C)]` struct holding a raw pointer and a tag:
+`FfiState<T>` names the layout of the bytes DuckDB allocates for each group's
+state, and the callbacks that manage them. It is never constructed itself.
 
-```rust
-#[repr(C)]
-pub struct FfiState<T> {
-    inner: *mut T,
-    tag: usize,
-}
-```
-
-This matches DuckDB's expectation: DuckDB allocates `state_size()` bytes per group,
-and your state lives in a `Box<T>` heap allocation whose pointer is stored in that space.
-
-The tag marks the slot initialised. When one `state_init` call fails — a
-panicking `T::default()`, say — DuckDB 1.4.4 to 1.5.5 still runs the
-destructor over every state it created, including states whose `state_init`
-never ran, so a slot can hold arbitrary bytes. `destroy_callback` frees only a
-slot carrying the tag `init_callback` wrote, derived from the slot's address,
-and clears it before freeing. That makes freeing a stale pointer a matter of
-chance — uninitialised bytes equal to the slot's tag — rather than a
-certainty; see `docs/upstream-duckdb-reports.md` for the DuckDB defect.
+A small `T` — aligned no more strictly than `usize`, and at most 256 bytes —
+is stored in those bytes directly. A larger or more strictly aligned `T` is
+boxed, and the slot holds the pointer. Either way the slot starts with a tag:
 
 ### Memory layout
 
 ```text
-DuckDB-allocated slot (state_size bytes = 2 * sizeof(usize)):
-  [ inner: *mut T ][ tag: usize ]
-       │
-       └──→  Box<T>  (on the Rust heap)
+DuckDB-allocated slot (state_size bytes, a multiple of sizeof(usize)):
+  [ tag: usize ][ T, padded to whole words ]      T stored inline
+  [ tag: usize ][ *mut T ]                        T boxed
+                     │
+                     └──→  Box<T>  (on the Rust heap)
 ```
+
+Storing `T` inline matters because DuckDB 1.4.4 to 1.5.5 does not destroy
+every state: when a grouped aggregate's result scan stops early (a `LIMIT`
+above it, an error, an interrupt), the states it never reached are never
+destroyed. An inline `T`'s bytes are DuckDB's, and DuckDB frees them with the
+hash table; only what `T` itself owns on the heap, or a boxed `T`'s box,
+leaks. See [Known Limitations](../reference/known-limitations.md).
+
+The tag marks the slot initialised. When one `state_init` call fails — a
+panicking `T::default()`, say — DuckDB 1.4.4 to 1.5.5 still runs the
+destructor over every state it created, including states whose `state_init`
+never ran, so a slot can hold arbitrary bytes. `destroy_callback` drops only a
+slot carrying the tag `init_callback` wrote, and clears it first. The tag is
+derived from `T` (and a boxed slot's pointer), not from the slot's address,
+because DuckDB moves states by copying their bytes. That makes dropping
+garbage a matter of chance — uninitialised bytes equal to the tag — rather
+than a certainty; see `docs/upstream-duckdb-reports.md` for the DuckDB
+defect.
 
 ### Lifecycle callbacks
 
@@ -80,18 +84,18 @@ DuckDB-allocated slot (state_size bytes = 2 * sizeof(usize)):
 #     state: duckdb_aggregate_state, states: *mut duckdb_aggregate_state, count: idx_t) {
 // state_size: DuckDB calls this whenever an operator sizes its state buffers
 FfiState::<MyState>::size_callback(_info);
-// Returns: size_of::<FfiState<MyState>>() (two words)
+// Returns: FfiState::<MyState>::size() (a tag word, then the i64 and usize inline)
 
 // state_init: DuckDB calls this for every state slot it allocates, combine
 // targets included
 FfiState::<MyState>::init_callback(info, state);
-// Effect: writes Box::into_raw(Box::new(MyState::default())) into the slot
+// Effect: writes MyState::default() into the slot (or a box holding it), then the tag
 
-// state_destroy: DuckDB calls this for every state it created — after finalize,
-// on combine's source states once merged, and (after a failed state_init) on
-// states never initialised, which the tag makes it skip
+// destructor: DuckDB calls this after finalize, on combine's source states once
+// merged, and (after a failed state_init) on states never initialised, which
+// the tag makes it skip; not on every state (see Known Limitations)
 FfiState::<MyState>::destroy_callback(states, count);
-// Effect: for each state: drop(Box::from_raw(inner)); inner = null
+// Effect: for each state whose tag matches: clear the tag, then drop the T
 # }
 ```
 
@@ -116,8 +120,8 @@ if let Some(st) = FfiState::<MyState>::with_state_mut(state_ptr) {
 # }
 ```
 
-Both methods return `Option<&T>` / `Option<&mut T>`. They return `None` if `inner` is
-null (which happens after `destroy_callback` or if initialization failed). Using `Option`
+Both methods return `Option<&T>` / `Option<&mut T>`. They return `None` if the slot's
+tag does not match (which happens after `destroy_callback` or if initialization failed). Using `Option`
 rather than panicking on null is what keeps the extension panic-free.
 
 ---
@@ -129,7 +133,7 @@ Without quack-rs, a naive destructor looks like:
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, idx_t};
 # struct MyState;
-# // The layout quack-rs uses, written out: this is the code *without* quack-rs.
+# // A hand-written boxed layout: this is the code *without* quack-rs.
 # #[repr(C)] struct FfiState<T> { inner: *mut T }
 // ❌ Naive — causes double-free if DuckDB calls destroy twice
 unsafe extern "C" fn destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
@@ -140,17 +144,9 @@ unsafe extern "C" fn destroy(states: *mut duckdb_aggregate_state, count: idx_t) 
 }
 ```
 
-`FfiState::destroy_callback` does:
-
-```rust
-# struct Ffi { inner: *mut u8 }
-# let mut ffi = Ffi { inner: Box::into_raw(Box::new(0_u8)) };
-# drop(unsafe { Box::from_raw(ffi.inner) });
-// After drop(Box::from_raw(ffi.inner)):
-ffi.inner = std::ptr::null_mut();   // ← prevents double-free
-```
-
-If DuckDB calls destroy again, `with_state` returns `None` and the loop body is a no-op.
+`FfiState::destroy_callback` clears the slot's tag *before* dropping the `T`,
+and drops only a slot whose tag matches. If DuckDB calls destroy again, the tag
+no longer matches, the slot is skipped, and `with_state` returns `None`.
 
 ---
 

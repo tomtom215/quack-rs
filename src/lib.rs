@@ -97,7 +97,8 @@
 //!
 //! The documentation convention is:
 //!
-//! - Every `unsafe fn` states what the caller must guarantee under `# Safety`.
+//! - Every `unsafe fn` states what the caller must guarantee under `# Safety`;
+//!   a trait's `unsafe` methods state it once, on the trait.
 //! - Every `unsafe` block **inside a safe function** carries a `// SAFETY:`
 //!   comment, because there the crate — not the caller — is asserting the
 //!   invariant.

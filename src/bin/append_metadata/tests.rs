@@ -458,3 +458,83 @@ fn wasm_header_matches_extension_ci_tools() {
         "header and footer replaced, not stacked"
     );
 }
+
+/// Every combination `DuckDBPlatform()` (`platform.hpp`) names, from the
+/// `target_arch` / `target_os` / `target_env` triples `rustc --print cfg`
+/// reports for each target.
+#[test]
+fn the_platform_matches_duckdbs_name_for_each_target() {
+    for (arch, os, env, want) in [
+        ("x86_64", "linux", "gnu", Some("linux_amd64")),
+        ("aarch64", "linux", "gnu", Some("linux_arm64")),
+        ("x86_64", "linux", "musl", Some("linux_amd64_musl")),
+        ("aarch64", "linux", "musl", Some("linux_arm64_musl")),
+        // OpenHarmony is built on musl, so `DuckDB` sees no `__USE_GNU`.
+        ("x86_64", "linux", "ohos", Some("linux_amd64_musl")),
+        ("aarch64", "linux", "ohos", Some("linux_arm64_musl")),
+        ("x86_64", "macos", "", Some("osx_amd64")),
+        ("aarch64", "macos", "", Some("osx_arm64")),
+        ("x86_64", "windows", "msvc", Some("windows_amd64")),
+        ("aarch64", "windows", "msvc", Some("windows_arm64")),
+        // `*-pc-windows-gnu` and `*-pc-windows-gnullvm` both report `gnu`.
+        ("x86_64", "windows", "gnu", Some("windows_amd64_mingw")),
+        ("aarch64", "windows", "gnu", Some("windows_arm64_mingw")),
+        ("x86", "linux", "gnu", None),
+        ("riscv64", "linux", "gnu", None),
+        ("x86_64", "freebsd", "", None),
+        ("aarch64", "android", "", None),
+    ] {
+        assert_eq!(cli::platform_for(arch, os, env), want, "{arch} {os} {env}");
+    }
+}
+
+/// Only a `--flag=value` argument is split at `=`; a positional path that
+/// contains one, and a lone `-`, are paths.
+#[test]
+fn positional_paths_keep_an_equals_sign_and_a_lone_dash() {
+    let args = parse_ok("in=1.so out");
+    assert_eq!(args.input, std::path::PathBuf::from("in=1.so"));
+    let args = parse_ok("- out");
+    assert_eq!(args.input, std::path::PathBuf::from("-"));
+}
+
+/// A version component is ASCII digits only: `u64::from_str` would accept
+/// `+1`, which `DuckDB`'s loader does not.
+#[test]
+fn a_signed_version_component_is_rejected() {
+    parse_err("in out --duckdb-version v+1.2.0");
+    parse_err("in out --abi-type C_STRUCT_UNSTABLE --duckdb-version v1.+5.5");
+}
+
+/// A commit hash is 7 to 40 lowercase hex digits.
+#[test]
+fn a_commit_hash_is_seven_to_forty_lowercase_hex_digits() {
+    parse_ok("in out --abi-type CPP --duckdb-version 1f0067f");
+    parse_ok(&format!(
+        "in out --abi-type CPP --duckdb-version {}",
+        "a".repeat(40)
+    ));
+    for bad in [
+        "1f0067".to_owned(),
+        "a".repeat(41),
+        "zzzzzzz".to_owned(),
+        "1F0067F".to_owned(),
+    ] {
+        parse_err(&format!("in out --abi-type CPP --duckdb-version {bad}"));
+    }
+}
+
+/// A trailing 512 bytes is a footer only if its magic field is exactly `"4"`
+/// followed by NULs; a valid ABI type in field 3 is not enough.
+#[test]
+fn a_footer_with_the_wrong_magic_is_not_recognised() {
+    let args = parse_ok("in out --platform linux_amd64");
+    for (offset, byte) in [(0, b'5'), (1, b'x')] {
+        let mut data = vec![7; 100];
+        let mut footer = build_metadata("C_STRUCT", "v1", "v1.2.0", "linux_amd64").unwrap();
+        footer[7 * 32 + offset] = byte;
+        data.extend_from_slice(&footer);
+        let (out, _) = stamp(data, &args).unwrap_or_else(|e| panic!("magic byte {offset}: {e}"));
+        assert_eq!(out.len(), 100 + 2 * METADATA_SIZE, "magic byte {offset}");
+    }
+}

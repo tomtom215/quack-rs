@@ -65,14 +65,16 @@ These same checks run in CI on every push and pull request.
 
 ### Unit tests
 
-Unit tests live in `#[cfg(test)]` modules within each source file. They test
+Unit tests live in `#[cfg(test)]` modules alongside the code. They test
 pure-Rust logic that does not require a live DuckDB instance.
 
 **Important constraint**: `libduckdb-sys` with `features = ["loadable-extension"]`
 makes all DuckDB C API functions go through lazy `AtomicPtr` dispatch. These
 pointers are only populated when `duckdb_rs_extension_api_init` is called from
-within a real DuckDB extension load. Calling any `duckdb_*` function in a unit
-test will panic. Move such tests to integration tests or example-extension tests.
+within a real DuckDB extension load — or by `testing::InMemoryDb::open()` under
+the `bundled-test` / `bundled-test-prebuilt` features. Without one of those,
+calling any `duckdb_*` function in a unit test panics ("DuckDB API not
+initialized"). Put such tests in `tests/ffi_roundtrip.rs`.
 
 ### Integration tests
 
@@ -192,6 +194,8 @@ quack-rs/
 │   │       ├── mod.rs                 # Builder types for registering `DuckDB` aggregate functions
 │   │       ├── overload.rs            # One overload within an [`AggregateFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` aggregate function set (multiple overloads)
+│   │       ├── single/
+│   │       │   └── register.rs        # `AggregateFunctionBuilder::register`
 │   │       ├── single.rs              # Builder for registering a single-signature `DuckDB` aggregate function
 │   │       └── tests.rs               # Unit tests
 │   ├── appender/
@@ -204,6 +208,11 @@ quack-rs/
 │   │   ├── array.rs                   # `ArrowArray` — an owned Arrow C Data Interface array
 │   │   ├── convert.rs                 # The four conversions between `DuckDB` data chunks and the Arrow C Data Interface
 │   │   ├── converted.rs               # `ArrowConvertedSchema` — an Arrow schema translated into `DuckDB`'s own type descriptors
+│   │   ├── export_check.rs            # Values `DuckDB` would export as different values, found before the export
+│   │   ├── import_check.rs            # Structural checks on an imported array, and flattening what the readers cannot index
+│   │   ├── import_layout/
+│   │   │   └── tests.rs               # Unit tests
+│   │   ├── import_layout.rs           # Arrow layouts `DuckDB` imports wrongly, found by walking the array with its schema
 │   │   ├── options.rs                 # `ArrowOptions` — the Arrow production settings of a connection or a result
 │   │   ├── schema.rs                  # `ArrowSchema` — an owned Arrow C Data Interface schema
 │   │   └── tests.rs                   # Unit tests
@@ -332,25 +341,43 @@ quack-rs/
 │       ├── validity.rs                # Validity bitmap helpers for `DuckDB` NULL tracking
 │       └── writer.rs                  # Safe typed writing to `DuckDB` result vectors
 ├── tests/
+│   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
+│   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
+│   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
+│       ├── agg_states.rs              # Every aggregate state is dropped, including the ones `DuckDB` moves
 │       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
+│       ├── appender_api.rs            # `Appender` methods a no-op replacement survived: schemas, column types, `clear_columns`, defaults
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
+│       ├── arrow_export.rs            # `arrow::data_chunk_to_arrow` refuses values `DuckDB` would export wrongly
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
+│       ├── arrow_layout.rs            # Valid Arrow layouts `DuckDB` imports wrongly, refused, and their correct neighbours
+│       ├── bind_expressions.rs        # What a bind callback learns about its arguments from `Expression`
+│       ├── chunk_writer.rs            # `ChunkWriter` against a chunk `DuckDB` allocated
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
+│       ├── copy_from_columns.rs       # A typed `COPY … FROM` reader that declares a column is refused
+│       ├── file_errors.rs             # `FileHandle` reports the write and sync failures `DuckDB` reports
+│       ├── handles_api.rs             # `StructWriter` child handles and `InMemoryDb::execute`'s row count
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
+│       ├── list_limits.rs             # `ListBuilder` stops at `DuckDB`'s byte ceiling, not an element count
+│       ├── mock_parity.rs             # `MockRegistrar` refuses a bad type with the live registration's message
+│       ├── nested_reserve.rs          # which nested buffers a `LIST` reserve moves (the writer contracts)
 │       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
 │       ├── table_cast.rs              # Table function, cast, replacement scan, SQL macro and COPY regressions
+│       ├── table_description.rs       # `TableDescription` accessors on an index `DuckDB` cannot hold
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── value_getters.rs           # Each typed `Value` getter at its own type; out-of-range TIMETZ / TIME_NS are not cast
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
+│       ├── value_render.rs            # `Value` rendering of values SQL builds and `DuckDB` cannot render
 │       ├── value_temporal.rs          # Every `Value` getter against every temporal source type, at every edge
 │       └── vector_dt.rs               # NULLs in nested output vectors; selection vectors
 ├── benches/

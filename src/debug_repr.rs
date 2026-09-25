@@ -39,7 +39,7 @@ impl Callback {
     ///
     /// Takes `&Option<T>` rather than `Option<&T>` so call sites read
     /// `Callback::of(&self.function)` — a `Debug` impl only ever has the field
-    /// by reference, and `.as_ref()` at every one of thirty call sites buys
+    /// by reference, and `.as_ref()` at every one of 35 call sites buys
     /// nothing.
     #[allow(clippy::ref_option, reason = "reads better at every call site")]
     pub const fn of<T>(option: &Option<T>) -> Self {

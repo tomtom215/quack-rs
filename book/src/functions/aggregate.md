@@ -48,7 +48,7 @@ flowchart TD
     UPDATE["**update**(chunk, states[])<br/>Process one input batch<br/>(NULL rows included — check is_valid)"]
     COMBINE["**combine**(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
     FINAL["**finalize**(states[], out, count, offset)<br/>Write count results at out[offset..], once per result batch"]
-    DESTROY["**state_destroy**(states[], count)<br/>Free memory — for every initialized state,<br/>including combine sources after the merge"]
+    DESTROY["**state_destroy**(states[], count)<br/>Free memory — after finalize and for combine<br/>sources after the merge (not every state: see Known Limitations)"]
 
     style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```
@@ -59,6 +59,13 @@ source — so `combine` must carry every field across. `state_size` is called wh
 an operator sizes its state buffers (not once at registration), so it must always
 return the same value; `destroy` runs on `combine`'s source states once they have
 been merged, as well as after `finalize`.
+
+**`combine` must leave its source states unchanged.** A window's segment tree
+combines the same state into every frame that covers it, from several threads at
+once, so a `combine` that moves data out of its source (`mem::take`, or zeroing a
+counter) is right for the first frame and wrong for the rest: 4985 of 5000 rows in
+the fifth audit's regression test. Read the source; copy or clone what the target
+needs.
 
 ---
 
@@ -96,8 +103,8 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 
 The five core callbacks (`state_size`, `init`, `update`, `combine`, `finalize`) must be
 set before `register` — the builder will return an error if any are missing. The
-`destructor` callback is optional but strongly recommended when your state allocates
-heap memory (e.g., when using `FfiState<T>`).
+`destructor` callback is optional, but required whenever you use `FfiState<T>`:
+`FfiState::<T>::destroy_callback` is what drops each `T`.
 
 ---
 
@@ -120,8 +127,9 @@ unsafe extern "C" fn state_size(_info: duckdb_function_info) -> idx_t {
 }
 ```
 
-Returns the size DuckDB must allocate per group. This is always `size_of::<*mut MyState>()`
-— a pointer, since `FfiState<T>` stores a `Box<T>` pointer in the allocated slot.
+Returns the size DuckDB must allocate per group: `FfiState::<MyState>::size()`, a tag
+word followed by `MyState` itself (or, for a state larger than 256 bytes or aligned
+more strictly than `usize`, a `Box<MyState>` pointer).
 
 ### `state_init`
 
@@ -259,8 +267,9 @@ unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: i
 }
 ```
 
-`destroy_callback` calls `Box::from_raw` for each state and then nulls the pointer,
-preventing double-free. See [Pitfall L2](../reference/pitfalls.md#l2-state-destroy-double-free).
+`destroy_callback` drops the `T` in each state (freeing its box, if the state is
+too large to be stored inline) and clears the state's tag first, so a second call
+on the same state is a no-op. See [Pitfall L2](../reference/pitfalls.md#l2-state-destroy-double-free).
 
 ---
 

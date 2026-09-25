@@ -433,12 +433,18 @@ Sets a custom bind callback that runs at plan time. Use this to inspect argument
 types and set the return type dynamically. Maps to
 `duckdb_scalar_function_set_bind`.
 
+The callback takes a `RawScalarBindInfo` (wrap it with `ScalarBindInfo::new`),
+not a bare `duckdb_bind_info`: `DuckDB` passes a table function's bind callback
+a different, larger struct, and a callback written for one kind of function
+corrupts memory on the other, so the types keep them apart. `init` takes a
+`RawScalarInitInfo` for the same reason.
+
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
 # unsafe extern "C" fn dynamic_return_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
-# unsafe extern "C" fn my_bind_fn(_: duckdb_bind_info) {}
+# unsafe extern "C" fn my_bind_fn(_: quack_rs::scalar::RawScalarBindInfo) {}
 # unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::new("dynamic_return")
     .varargs(TypeId::Varchar)
@@ -461,7 +467,7 @@ this to allocate per-thread state. Maps to
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
 # unsafe extern "C" fn stateful_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
-# unsafe extern "C" fn my_init_fn(_: duckdb_init_info) {}
+# unsafe extern "C" fn my_init_fn(_: quack_rs::scalar::RawScalarInitInfo) {}
 # unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::new("stateful_fn")
     .param(TypeId::BigInt)

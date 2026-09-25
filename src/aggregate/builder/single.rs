@@ -6,20 +6,17 @@
 use std::ffi::CString;
 use std::os::raw::c_void;
 
-use libduckdb_sys::{
-    duckdb_aggregate_function_set_destructor, duckdb_aggregate_function_set_extra_info,
-    duckdb_aggregate_function_set_functions, duckdb_aggregate_function_set_name,
-    duckdb_aggregate_function_set_return_type, duckdb_aggregate_function_set_special_handling,
-    duckdb_connection, duckdb_create_aggregate_function, duckdb_delete_callback_t,
-    duckdb_destroy_aggregate_function, duckdb_register_aggregate_function, DuckDBSuccess,
-};
+use libduckdb_sys::duckdb_delete_callback_t;
 
 use crate::aggregate::callbacks::{
     CombineFn, DestroyFn, FinalizeFn, StateInitFn, StateSizeFn, UpdateFn,
 };
 use crate::error::ExtensionError;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
+
+mod register;
 
 /// Builder for registering a single-signature `DuckDB` aggregate function.
 ///
@@ -257,13 +254,41 @@ impl AggregateFunctionBuilder {
         self
     }
 
+    /// Installs [`FfiState<T>`][crate::aggregate::FfiState]'s `state_size`,
+    /// `init` and `destructor` callbacks together, so they cannot describe
+    /// different states (setting them one by one, a size callback for one `T`
+    /// with an init callback for another wrote past `DuckDB`'s allocation).
+    /// `update`, `combine` and `finalize` still read the state through
+    /// `FfiState::<T>::with_state` / `with_state_mut` with the same `T`.
+    pub fn ffi_state<T: crate::aggregate::AggregateState>(self) -> Self {
+        self.state_size(crate::aggregate::FfiState::<T>::size_callback)
+            .init(crate::aggregate::FfiState::<T>::init_callback)
+            .destructor(crate::aggregate::FfiState::<T>::destroy_callback)
+    }
+
     /// Sets the `state_size` callback.
+    ///
+    /// The `state_size`, `init` and `destructor` callbacks must describe the
+    /// same state: `DuckDB` allocates what `state_size` returns and hands that
+    /// allocation to `init` and, later, to `destructor` and the other
+    /// callbacks. [`FfiState<A>`][crate::aggregate::FfiState]'s size callback
+    /// with `FfiState<B>`'s init callback writes a `B` into space sized for an
+    /// `A`, past the allocation when `B` is larger. Prefer
+    /// [`ffi_state`][Self::ffi_state], which installs all three for one `T`.
     pub fn state_size(mut self, f: StateSizeFn) -> Self {
         self.state_size = Some(f);
         self
     }
 
     /// Sets the `state_init` callback.
+    ///
+    /// The `state_size`, `init` and `destructor` callbacks must describe the
+    /// same state: `DuckDB` allocates what `state_size` returns and hands that
+    /// allocation to `init` and, later, to `destructor` and the other
+    /// callbacks. [`FfiState<A>`][crate::aggregate::FfiState]'s size callback
+    /// with `FfiState<B>`'s init callback writes a `B` into space sized for an
+    /// `A`, past the allocation when `B` is larger. Prefer
+    /// [`ffi_state`][Self::ffi_state], which installs all three for one `T`.
     pub fn init(mut self, f: StateInitFn) -> Self {
         self.init = Some(f);
         self
@@ -289,8 +314,9 @@ impl AggregateFunctionBuilder {
 
     /// Sets the optional `destructor` callback.
     ///
-    /// Required if your state allocates heap memory (e.g., when using
-    /// [`FfiState<T>`][crate::aggregate::FfiState]).    ///
+    /// Required when you use [`FfiState<T>`][crate::aggregate::FfiState]: its
+    /// `destroy_callback` is what drops each `T`.
+    ///
     /// When none is set, `register` installs a no-op destructor rather than
     /// none at all. `DuckDB` evaluates an aggregate without a state destructor
     /// as a *streaming* window for running frames
@@ -374,175 +400,20 @@ impl AggregateFunctionBuilder {
         })
     }
 
-    /// Registers the aggregate function on the given connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ExtensionError` if:
-    /// - The return type was not set.
-    /// - Any required callback was not set.
-    /// - A parameter, varargs or return type was given as a bare composite
-    ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
-    ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
-    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
-    ///   names the slot.
-    /// - `DuckDB` reports a registration failure.
-    ///
-    /// # Name collisions
-    ///
-    /// An aggregate can neither extend nor replace an existing catalog entry:
-    /// registration fails if the name is already taken by any scalar function,
-    /// aggregate function or macro, built-in or not — including an earlier
-    /// registration of this same aggregate. (`DuckDB` registers with
-    /// `ALTER_ON_CONFLICT`, and turning the create into an alter is not
-    /// implemented for aggregates: `CreateInfo::GetAlterInfo` throws.)
-    ///
-    /// # Safety
-    ///
-    /// `con` must be a valid, open `duckdb_connection`.
-    #[allow(clippy::too_many_lines)]
-    pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
-        // See `ScalarFunctionBuilder::register` -- validate before allocating.
-        self.check_parts()?;
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
         for (i, id) in self.params.iter().enumerate() {
-            LogicalType::check_slot(*id, &format!("aggregate function parameter {i}"))?;
+            slot(*id, &format!("aggregate function parameter {i}"))?;
         }
         if let Some(id) = self.return_type {
-            LogicalType::check_slot(id, "aggregate function return type")?;
+            slot(id, "aggregate function return type")?;
         }
         crate::table::type_check::refuse_any_return(
             "aggregate function return type",
             self.return_type,
             self.return_logical.as_ref(),
-        )?;
-        // Resolve return type: prefer explicit LogicalType over TypeId.
-        let ret_lt = if let Some(lt) = self.return_logical {
-            lt
-        } else if let Some(id) = self.return_type {
-            LogicalType::for_slot(id, "aggregate function return type")?
-        } else {
-            return Err(ExtensionError::new("return type not set"));
-        };
-
-        let state_size = self
-            .state_size
-            .ok_or_else(|| ExtensionError::new("state_size callback not set"))?;
-        let init = self
-            .init
-            .ok_or_else(|| ExtensionError::new("init callback not set"))?;
-        let update = self
-            .update
-            .ok_or_else(|| ExtensionError::new("update callback not set"))?;
-        let combine = self
-            .combine
-            .ok_or_else(|| ExtensionError::new("combine callback not set"))?;
-        let finalize = self
-            .finalize
-            .ok_or_else(|| ExtensionError::new("finalize callback not set"))?;
-
-        // SAFETY: duckdb_create_aggregate_function allocates a new function handle.
-        let mut func = unsafe { duckdb_create_aggregate_function() };
-
-        // SAFETY: func is a valid newly created function handle.
-        unsafe {
-            duckdb_aggregate_function_set_name(func, self.name.as_ptr());
-        }
-
-        // Add parameters: merge simple TypeId params and complex LogicalType params
-        // in the order they were added (tracked by position).
-        {
-            let mut simple_idx = 0;
-            let mut logical_idx = 0;
-            let total = self.params.len() + self.logical_params.len();
-            for pos in 0..total {
-                if logical_idx < self.logical_params.len()
-                    && self.logical_params[logical_idx].0 == pos
-                {
-                    // SAFETY: func and logical type handle are valid.
-                    unsafe {
-                        libduckdb_sys::duckdb_aggregate_function_add_parameter(
-                            func,
-                            self.logical_params[logical_idx].1.as_raw(),
-                        );
-                    }
-                    logical_idx += 1;
-                } else if simple_idx < self.params.len() {
-                    let lt = LogicalType::new(self.params[simple_idx]);
-                    // SAFETY: func and lt.as_raw() are valid.
-                    unsafe {
-                        libduckdb_sys::duckdb_aggregate_function_add_parameter(func, lt.as_raw());
-                    }
-                    simple_idx += 1;
-                }
-            }
-        }
-
-        // Set return type
-        // SAFETY: func and ret_lt.as_raw() are valid.
-        unsafe {
-            duckdb_aggregate_function_set_return_type(func, ret_lt.as_raw());
-        }
-
-        // Set callbacks
-        // SAFETY: All function pointers are valid extern "C" fn pointers.
-        unsafe {
-            duckdb_aggregate_function_set_functions(
-                func,
-                Some(state_size),
-                Some(init),
-                Some(update),
-                Some(combine),
-                Some(finalize),
-            );
-        }
-
-        // Always register a destructor, a no-op if none was given: without one
-        // DuckDB streams running-frame windows through a path that gives C API
-        // aggregates wrong answers (see `callbacks::no_op_destroy`).
-        let dtor = self
-            .destructor
-            .unwrap_or(crate::aggregate::callbacks::no_op_destroy);
-        // SAFETY: dtor is a valid extern "C" fn pointer.
-        unsafe {
-            duckdb_aggregate_function_set_destructor(func, Some(dtor));
-        }
-
-        // Set special NULL handling if requested
-        if self.null_handling == NullHandling::SpecialNullHandling {
-            // SAFETY: func is a valid aggregate function handle.
-            unsafe {
-                duckdb_aggregate_function_set_special_handling(func);
-            }
-        }
-
-        // Set extra info if provided
-        if let Some(info) = self.extra_info {
-            // SAFETY: func is valid; data and destroy are provided by caller.
-            unsafe {
-                duckdb_aggregate_function_set_extra_info(func, info.data(), info.destroy());
-                // DuckDB owns the allocation from here.
-                info.mark_transferred();
-            }
-        }
-
-        // Register
-        // SAFETY: con is a valid open connection, func is fully configured.
-        let result = unsafe { duckdb_register_aggregate_function(con, func) };
-
-        // SAFETY: func was created above and must be destroyed after use.
-        unsafe {
-            duckdb_destroy_aggregate_function(&raw mut func);
-        }
-
-        if result == DuckDBSuccess {
-            Ok(())
-        } else {
-            Err(ExtensionError::new(format!(
-                "duckdb_register_aggregate_function failed for '{name}': {hint}",
-                name = self.name.to_string_lossy(),
-                hint = crate::error::REGISTRATION_FAILURE_HINT
-            )))
-        }
+        )
     }
 }
 

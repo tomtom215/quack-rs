@@ -13,12 +13,15 @@
 //! It refuses, with the same error, a builder the real registration refuses
 //! before its first `DuckDB` call: a missing return type or callback, a
 //! function set with no overloads, a copy function that implements neither
-//! direction, a config option without a type or default. Checks that need
-//! `DuckDB` — a composite `TypeId`, a name collision — are not run.
+//! direction, a config option without a type or default, a composite or
+//! literal [`TypeId`] in any slot, an `ANY` return type. Checks that need
+//! `DuckDB` are not run: a name or signature collision, a type the running
+//! `DuckDB` lacks (`TIME_NS` before 1.5.0), a default that does not convert
+//! to its config option's type.
 //!
 //! # Limitation: builders with `LogicalType` fields
 //!
-//! Builders that contain [`LogicalType`][crate::types::LogicalType] values (e.g.,
+//! Builders that contain [`LogicalType`] values (e.g.,
 //! created with `.returns_logical(...)` or `.param_logical(...)`) cannot be used
 //! with `MockRegistrar` in `loadable-extension` test mode. `LogicalType`'s `Drop`
 //! implementation calls `duckdb_destroy_logical_type`, which panics when the
@@ -69,7 +72,7 @@ use crate::error::ExtensionError;
 use crate::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder};
 use crate::sql_macro::SqlMacro;
 use crate::table::TableFunctionBuilder;
-use crate::types::TypeId;
+use crate::types::{LogicalType, TypeId};
 
 /// A record of a single cast function registration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +254,7 @@ impl Registrar for MockRegistrar {
     /// connection is required.
     unsafe fn register_scalar(&self, builder: ScalarFunctionBuilder) -> Result<(), ExtensionError> {
         builder.check_parts()?;
+        builder.check_types(LogicalType::check_slot_offline)?;
         self.scalar_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -267,6 +271,7 @@ impl Registrar for MockRegistrar {
         builder: ScalarFunctionSetBuilder,
     ) -> Result<(), ExtensionError> {
         builder.check_parts()?;
+        builder.check_types(LogicalType::check_slot_offline)?;
         self.scalar_set_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -283,6 +288,7 @@ impl Registrar for MockRegistrar {
         builder: AggregateFunctionBuilder,
     ) -> Result<(), ExtensionError> {
         builder.check_parts()?;
+        builder.check_types(LogicalType::check_slot_offline)?;
         self.aggregate_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -299,6 +305,7 @@ impl Registrar for MockRegistrar {
         builder: AggregateFunctionSetBuilder,
     ) -> Result<(), ExtensionError> {
         builder.check_parts()?;
+        builder.check_types(LogicalType::check_slot_offline)?;
         self.aggregate_set_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -312,6 +319,7 @@ impl Registrar for MockRegistrar {
     /// This implementation is safe to call in any context.
     unsafe fn register_table(&self, builder: TableFunctionBuilder) -> Result<(), ExtensionError> {
         builder.check_parts()?;
+        builder.check_types(LogicalType::check_slot_offline)?;
         self.table_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -339,6 +347,7 @@ impl Registrar for MockRegistrar {
     /// This implementation is safe to call in any context.
     unsafe fn register_cast(&self, builder: CastFunctionBuilder) -> Result<(), ExtensionError> {
         builder.check_parts()?;
+        builder.check_types(LogicalType::check_slot_offline)?;
         self.casts.borrow_mut().push(CastRecord {
             source: builder.source(),
             target: builder.target(),
@@ -364,6 +373,7 @@ impl Registrar for MockRegistrar {
         builder: crate::config_option::ConfigOptionBuilder,
     ) -> Result<(), ExtensionError> {
         builder.check_parts()?;
+        builder.check_types(LogicalType::check_slot_offline)?;
         self.config_option_names
             .borrow_mut()
             .push(builder.name().to_owned());
@@ -765,6 +775,79 @@ mod tests {
         assert_eq!(mock.total_registrations(), 0, "nothing refused is recorded");
     }
 
+    /// The mock ran only the missing-part checks, so it recorded builders
+    /// whose types the real registration refuses before its first `DuckDB`
+    /// call: a composite or literal `TypeId` in any slot, an `ANY` return.
+    #[test]
+    fn the_mock_refuses_the_types_registration_refuses() {
+        let mock = MockRegistrar::new();
+        let refuse = |result: Result<(), ExtensionError>, want: &str| {
+            let err = result.expect_err(want);
+            assert!(err.as_str().contains(want), "{want}: {err}");
+        };
+        // SAFETY (every call): the mock ignores the connection entirely.
+        unsafe {
+            refuse(
+                mock.register_scalar(scalar("f").param(TypeId::Struct)),
+                "scalar function parameter 1: ",
+            );
+            refuse(
+                mock.register_scalar(scalar("f").varargs(TypeId::IntegerLiteral)),
+                "scalar function varargs: ",
+            );
+            refuse(
+                mock.register_scalar(scalar("f").returns(TypeId::Any)),
+                "scalar function return type must not be or contain ANY",
+            );
+            refuse(
+                mock.register_scalar_set(
+                    crate::scalar::ScalarFunctionSetBuilder::new("s").overload(
+                        crate::scalar::ScalarOverloadBuilder::new()
+                            .param(TypeId::List)
+                            .returns(TypeId::BigInt)
+                            .function(scalar_fn),
+                    ),
+                ),
+                "overload 0 parameter 0: ",
+            );
+            refuse(
+                mock.register_aggregate(aggregate("a").returns(TypeId::StringLiteral)),
+                "aggregate function return type: ",
+            );
+            refuse(
+                mock.register_aggregate_set(
+                    AggregateFunctionSetBuilder::new("as")
+                        .returns(TypeId::Any)
+                        .overload(
+                            crate::aggregate::AggregateOverloadBuilder::new()
+                                .param(TypeId::BigInt)
+                                .state_size(state_size)
+                                .init(state_init)
+                                .update(update)
+                                .combine(combine)
+                                .finalize(finalize),
+                        ),
+                ),
+                "overload 0 return type must not be or contain ANY",
+            );
+            refuse(
+                mock.register_table(table("t").param(TypeId::Map)),
+                "table function parameter 0: ",
+            );
+            refuse(
+                mock.register_table(table("t").named_param("n", TypeId::Union)),
+                "table function named parameter n: ",
+            );
+            refuse(
+                mock.register_cast(
+                    CastFunctionBuilder::new(TypeId::Struct, TypeId::Integer).function(cast_fn),
+                ),
+                "cast function source type: ",
+            );
+        }
+        assert_eq!(mock.total_registrations(), 0, "nothing refused is recorded");
+    }
+
     #[cfg(feature = "duckdb-1-5")]
     #[test]
     fn the_mock_refuses_incomplete_copy_functions_and_config_options() {
@@ -779,6 +862,14 @@ mod tests {
         // SAFETY: as above.
         let err = unsafe { mock.register_config_option(option) }.expect_err("no default");
         assert!(err.as_str().contains("has no default value"), "{err}");
+        let option = crate::config_option::ConfigOptionBuilder::try_new("opt")
+            .expect("name")
+            .option_type(TypeId::Struct)
+            .default_value("x")
+            .expect("default");
+        // SAFETY: as above.
+        let err = unsafe { mock.register_config_option(option) }.expect_err("composite type");
+        assert!(err.as_str().starts_with("config option type: "), "{err}");
         assert_eq!(mock.total_registrations(), 0);
     }
 }

@@ -7,22 +7,36 @@
 
 use libduckdb_sys::{duckdb_arrow_converted_schema, duckdb_destroy_arrow_converted_schema};
 
-use super::ArrowConvertedSchema;
+use super::import_layout::Shape;
+use super::{ArrowConvertedSchema, ArrowSchema};
 
 impl ArrowConvertedSchema {
-    /// Takes ownership of a raw converted schema.
+    /// Takes ownership of a raw converted schema, recording the column count
+    /// and the shape of `schema`, the Arrow schema it was built from.
     ///
     /// # Safety
     ///
     /// - `raw` must be a non-null handle the caller is responsible for
     ///   destroying, and nobody else may destroy it.
-    /// - `column_count` must be the number of columns `raw` describes, i.e. the
-    ///   `n_children` of the Arrow schema it was built from. A wrong value
-    ///   defeats the bounds check in [`data_chunk_from_arrow`][super::data_chunk_from_arrow].
-    #[inline]
+    /// - `raw` must have been built from `schema` (by
+    ///   `duckdb_schema_from_arrow`). A different schema defeats the bounds and
+    ///   layout checks in [`data_chunk_from_arrow`][super::data_chunk_from_arrow].
     #[must_use]
-    pub const unsafe fn from_raw(raw: duckdb_arrow_converted_schema, column_count: usize) -> Self {
-        Self { raw, column_count }
+    pub unsafe fn from_raw(raw: duckdb_arrow_converted_schema, schema: &ArrowSchema) -> Self {
+        let column_count = schema.child_count();
+        let shapes = (0..column_count)
+            .filter_map(|i| schema.child(i).map(Shape::of))
+            .collect();
+        Self {
+            raw,
+            column_count,
+            shapes,
+        }
+    }
+
+    /// The shape of each column's Arrow schema.
+    pub(super) fn shapes(&self) -> &[Shape] {
+        &self.shapes
     }
 
     /// The raw handle, still owned by this value.
@@ -57,6 +71,7 @@ impl core::fmt::Debug for ArrowConvertedSchema {
         f.debug_struct("ArrowConvertedSchema")
             .field("raw", &self.raw)
             .field("column_count", &self.column_count)
+            .field("shapes", &self.shapes)
             .finish()
     }
 }

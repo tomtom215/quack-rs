@@ -131,8 +131,7 @@
 //!     let _ = AggregateFunctionBuilder::try_new("my_count")?
 //!         .param(TypeId::BigInt)
 //!         .returns(TypeId::BigInt)
-//!         .state_size(FfiState::<MyState>::size_callback)
-//!         .init(FfiState::<MyState>::init_callback)
+//!         .ffi_state::<MyState>()
 //!         // ... callbacks ...
 //!         ;
 //!     Ok(())

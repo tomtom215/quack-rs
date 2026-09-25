@@ -25,7 +25,7 @@ mod bind_copy {
     #[derive(Clone)]
     pub struct Times(pub i64);
 
-    pub unsafe extern "C" fn times_bind(info: libduckdb_sys::duckdb_bind_info) {
+    pub unsafe extern "C" fn times_bind(info: quack_rs::scalar::RawScalarBindInfo) {
         // SAFETY: DuckDB passes a valid bind info.
         let bind = unsafe { ScalarBindInfo::new(info) };
         ScalarBindData::set(&bind, Times(10));

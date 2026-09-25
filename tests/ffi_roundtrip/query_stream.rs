@@ -93,3 +93,82 @@ fn a_finished_stream_keeps_returning_none() {
     assert!(result.next_chunk().expect("fetch").is_none());
     assert!(result.next_chunk().expect("fetch").is_none());
 }
+
+/// Live `Cursor` values: the bind template and every clone of it.
+static CURSORS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+struct Cursor {
+    next: i64,
+    end: i64,
+}
+impl Clone for Cursor {
+    fn clone(&self) -> Self {
+        CURSORS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self {
+            next: self.next,
+            end: self.end,
+        }
+    }
+}
+impl Drop for Cursor {
+    fn drop(&mut self) {
+        CURSORS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// `DuckDB` keeps an abandoned stream's operator states on the connection
+/// until the next statement there, not until the `QueryResult` or the
+/// `PreparedStatement` is dropped. The documented behaviour (Known
+/// Limitations, "An abandoned stream keeps its table-function state") is
+/// pinned here: if `DuckDB` starts freeing them on drop, this fails and the
+/// page needs updating.
+#[test]
+fn an_abandoned_stream_keeps_its_table_state_until_the_next_statement() {
+    use quack_rs::table::TableFunctionBuilder;
+    use quack_rs::types::TypeId;
+    use std::sync::atomic::Ordering;
+
+    let fx = Fixture::open();
+    let cursor = TableFunctionBuilder::new("stream_cursor")
+        .param(TypeId::BigInt)
+        .with_state::<Cursor, _>(|bind| {
+            bind.add_result_column("n", TypeId::BigInt);
+            // SAFETY: the function declares one BIGINT parameter.
+            let end = unsafe { bind.get_parameter_value(0) }.as_i64_or(0);
+            CURSORS.fetch_add(1, Ordering::SeqCst);
+            Ok(Cursor { next: 0, end })
+        })
+        .scan(|cursor, chunk| {
+            // SAFETY: column 0 is the BIGINT result column.
+            let mut writer = unsafe { chunk.writer(0) };
+            let mut rows = 0;
+            while rows < 2048 && cursor.next < cursor.end {
+                // SAFETY: `rows` is below the chunk's capacity of 2048.
+                unsafe { writer.write_i64(rows, cursor.next) };
+                cursor.next += 1;
+                rows += 1;
+            }
+            // SAFETY: `rows` rows were written.
+            unsafe { chunk.set_size(rows) };
+            Ok(())
+        })
+        .build()
+        .expect("build");
+    // SAFETY: the fixture's connection is open.
+    unsafe { cursor.register(fx.con()) }.expect("register");
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let statement = con
+        .prepare("SELECT n FROM stream_cursor(10000000)")
+        .expect("prepare");
+    let mut result = statement.execute_streaming().expect("execute");
+    assert!(result.next_chunk().expect("fetch").is_some());
+    drop(result);
+    drop(statement);
+    assert!(
+        CURSORS.load(Ordering::SeqCst) > 0,
+        "DuckDB now frees an abandoned stream's state when the result is dropped"
+    );
+    con.execute("SELECT 1").expect("next statement");
+    assert_eq!(CURSORS.load(Ordering::SeqCst), 0);
+}

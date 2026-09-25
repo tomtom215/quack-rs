@@ -215,18 +215,18 @@ impl Appender {
     }
 
     /// Reads whichever error channel this build has.
-    #[cfg(feature = "duckdb-1-5")]
     fn last_error(&self) -> AppendError {
-        self.error_data()
-    }
-
-    /// Reads whichever error channel this build has.
-    #[cfg(not(feature = "duckdb-1-5"))]
-    fn last_error(&self) -> AppendError {
-        self.error_message().map_or_else(
-            || append_error("appender operation failed"),
-            crate::error::ExtensionError::new,
-        )
+        #[cfg(feature = "duckdb-1-5")]
+        {
+            self.error_data()
+        }
+        #[cfg(not(feature = "duckdb-1-5"))]
+        {
+            self.error_message().map_or_else(
+                || append_error("appender operation failed"),
+                crate::error::ExtensionError::new,
+            )
+        }
     }
 
     /// Converts a `duckdb_state` into a `Result`, reading the appender's error
@@ -312,16 +312,15 @@ impl Appender {
 
 /// Builds an [`AppendError`] for a failure quack-rs detected itself, before
 /// `DuckDB` was ever called.
-#[cfg(feature = "duckdb-1-5")]
 fn append_error(message: &str) -> AppendError {
-    ErrorData::new(crate::error_data::DuckDbErrorType::InvalidInput, message)
-}
-
-/// Builds an [`AppendError`] for a failure quack-rs detected itself, before
-/// `DuckDB` was ever called.
-#[cfg(not(feature = "duckdb-1-5"))]
-fn append_error(message: &str) -> AppendError {
-    crate::error::ExtensionError::new(message)
+    #[cfg(feature = "duckdb-1-5")]
+    {
+        ErrorData::new(crate::error_data::DuckDbErrorType::InvalidInput, message)
+    }
+    #[cfg(not(feature = "duckdb-1-5"))]
+    {
+        crate::error::ExtensionError::new(message)
+    }
 }
 
 impl Drop for Appender {

@@ -175,8 +175,9 @@ fn test_register_all() {
 `MockRegistrar` refuses, with the same error, what the real registration
 refuses before it calls DuckDB: a missing return type or callback, an empty
 function set, a copy function with neither direction, a config option without a
-type or default. Checks that need DuckDB (a composite `TypeId`, a name already
-taken) are not run.
+type or default, a composite or literal `TypeId` in any slot, an `ANY` return
+type. Checks that need DuckDB (a name or signature already taken, a type the
+running DuckDB lacks, a config default that does not convert) are not run.
 
 > **Limitation**: `MockRegistrar` cannot be used with builders that hold
 > `LogicalType` values (created via `.returns_logical()` or `.param_logical()`),

@@ -475,6 +475,49 @@ fn a_config_option_default_that_does_not_cast_is_an_error_not_an_abort() {
     );
 }
 
+// ─── Catalog lookups in catalogs other than DuckDB's own ─────────────────────
+
+/// Lookups are refused in a catalog that is not `DuckDB`'s own: for one an
+/// extension provides, `duckdb_catalog_get_entry` runs the extension's
+/// `LookupSchema` (and starts its transaction) with no `try`, so an exception
+/// there would abort the process. `DuckDB`'s own catalogs (the database's,
+/// `temp` and `system`) are all `DuckCatalog`s of type `"duckdb"` and are
+/// still looked up. No extension catalog can be attached offline, so the
+/// refusal itself is covered by the unit tests in `src/catalog.rs`.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn catalog_lookups_run_in_every_catalog_duckdb_itself_provides() {
+    use quack_rs::catalog::CatalogEntryType;
+    use quack_rs::client_context::ClientContext;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE tc_own (id INTEGER)");
+    fx.query("CREATE TEMP TABLE tc_temp (id INTEGER)");
+    // SAFETY: `con` is open.
+    let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
+    fx.query("BEGIN TRANSACTION");
+    for (catalog_name, schema, name, entry_type) in [
+        (c"memory", c"main", c"tc_own", CatalogEntryType::Table),
+        (c"temp", c"main", c"tc_temp", CatalogEntryType::Table),
+        (
+            c"system",
+            c"information_schema",
+            c"tables",
+            CatalogEntryType::View,
+        ),
+    ] {
+        // SAFETY: inside a transaction.
+        let catalog = unsafe { ctx.catalog(catalog_name) }.expect("catalog");
+        assert_eq!(catalog.type_name(), Some("duckdb"), "{catalog_name:?}");
+        // SAFETY: catalog and context are valid and a transaction is active.
+        let entry = unsafe { catalog.get_entry(ctx.as_raw(), schema, name, entry_type) }
+            .expect("a lookup in DuckDB's own catalog is not refused")
+            .expect("the entry exists");
+        assert_eq!(entry.name(), name.to_str().ok(), "{catalog_name:?}");
+    }
+    fx.query("COMMIT");
+}
+
 // ─── Catalog lookups of non-schema entry types ───────────────────────────────
 
 /// Before the fix each of these lookups aborted the process: `DuckDB` throws
@@ -907,7 +950,7 @@ mod fold_errors {
 
     static SEEN: Mutex<Vec<(DuckDbErrorType, String)>> = Mutex::new(Vec::new());
 
-    unsafe extern "C" fn fold_bind(info: libduckdb_sys::duckdb_bind_info) {
+    unsafe extern "C" fn fold_bind(info: quack_rs::scalar::RawScalarBindInfo) {
         // SAFETY: `info` is the live bind info.
         let bind = unsafe { ScalarBindInfo::new(info) };
         // SAFETY: argument 0 was declared.
@@ -1045,6 +1088,54 @@ fn the_typed_builder_refuses_projection_pushdown_set_beforehand() {
         .build()
         .expect_err("projection pushdown must be refused");
     assert!(err.as_str().contains("projection_pushdown"), "{err}");
+}
+
+/// `build` returns the raw builder, which still offered `projection_pushdown`:
+/// switched on after `build`, it reached `DuckDB`, which handed the scan a
+/// one-column chunk for `SELECT b`, and the value the closure wrote as column
+/// `a` came back as `b` (111 here). Registering such a builder is now refused.
+#[test]
+fn projection_pushdown_on_a_built_typed_table_function_is_refused() {
+    let fx = Fixture::open();
+    let builder = TableFunctionBuilder::new("tc_pushdown_after")
+        .with_state(|bind| {
+            bind.add_result_column("a", TypeId::BigInt);
+            bind.add_result_column("b", TypeId::BigInt);
+            Ok(false)
+        })
+        .scan(|done: &mut bool, chunk| {
+            if *done {
+                // SAFETY: end of stream.
+                unsafe { chunk.set_size(0) };
+                return Ok(());
+            }
+            // SAFETY: row 0 is in range of every column the chunk has, and
+            // column 1 is written only when it exists.
+            unsafe {
+                chunk.writer(0).write_i64(0, 111);
+                if chunk.column_count() > 1 {
+                    chunk.writer(1).write_i64(0, 222);
+                }
+                chunk.set_size(1);
+            }
+            *done = true;
+            Ok(())
+        })
+        .build()
+        .expect("build")
+        .projection_pushdown(true);
+    // SAFETY: `con` is open.
+    let err = unsafe { builder.register(fx.con()) }
+        .expect_err("projection pushdown on a typed function must be refused");
+    assert!(err.as_str().contains("projection_pushdown"), "{err}");
+    assert_eq!(
+        fx.scalar(
+            "SELECT count(*) FROM duckdb_functions() WHERE function_name = 'tc_pushdown_after'",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(0),
+        "nothing is registered"
+    );
 }
 
 /// TBL-9: a bind that declares no result columns made `DuckDB` raise an

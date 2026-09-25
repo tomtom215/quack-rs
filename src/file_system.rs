@@ -479,9 +479,17 @@ impl FileHandle<'_> {
     ///
     /// # Errors
     ///
-    /// Returns the structured [`ErrorData`] if the seek fails.
+    /// Returns the structured [`ErrorData`] if the seek fails, and an
+    /// `InvalidInput` error, without calling `DuckDB`, for a position past
+    /// `i64::MAX`, which `DuckDB`'s seek cannot take (it used to be clamped,
+    /// and a file system that accepts that offset returned `Ok`).
     pub fn seek(&self, position: u64) -> Result<(), ErrorData> {
-        let pos = i64::try_from(position).unwrap_or(i64::MAX);
+        let Ok(pos) = i64::try_from(position) else {
+            return Err(ErrorData::new(
+                crate::error_data::DuckDbErrorType::InvalidInput,
+                &format!("FileHandle::seek: position {position} is past i64::MAX"),
+            ));
+        };
         // SAFETY: self.handle is valid.
         let state = unsafe { duckdb_file_handle_seek(self.handle, pos) };
         self.check(state)
@@ -526,7 +534,10 @@ impl FileHandle<'_> {
     ///
     /// # Errors
     ///
-    /// Returns the structured [`ErrorData`] if the close fails.
+    /// Returns the structured [`ErrorData`] if the close fails. Dropping the
+    /// handle then tries to close it once more, and leaks it if that fails
+    /// too: destroying it would retry the close where an exception aborts the
+    /// process.
     pub fn close(&self) -> Result<(), ErrorData> {
         // SAFETY: self.handle is valid.
         let state = unsafe { duckdb_file_handle_close(self.handle) };
@@ -555,8 +566,22 @@ impl FileHandle<'_> {
 
 impl Drop for FileHandle<'_> {
     fn drop(&mut self) {
-        if !self.handle.is_null() {
-            // SAFETY: self.handle is a valid handle that we own.
+        if self.handle.is_null() {
+            return;
+        }
+        // `duckdb_destroy_file_handle` calls `Close()` outside any `try`
+        // (`file_system-c.cpp`), so a close that throws — possible for a
+        // handle from an extension's file system — would escape the C API
+        // and abort the process. `duckdb_file_handle_close` catches, so it
+        // closes first; destroy's second `Close()` is then a no-op for
+        // `DuckDB`'s own handles (`local_file_system.cpp`). If the close
+        // failed, destroy would retry it with no `try`, so the handle is
+        // leaked instead. Call [`close`][FileHandle::close] first to see
+        // the error.
+        // SAFETY: self.handle is a valid handle that we own.
+        let state = unsafe { duckdb_file_handle_close(self.handle) };
+        if state == DuckDBSuccess {
+            // SAFETY: as above; destroy nulls the handle.
             unsafe { duckdb_destroy_file_handle(&raw mut self.handle) };
         }
     }

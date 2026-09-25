@@ -90,9 +90,12 @@
 //!
 //! # No projection pushdown
 //!
-//! The typed builder does not offer `projection_pushdown`, and
+//! The typed builder does not offer `projection_pushdown`,
 //! [`build`][TypedTableFunctionBuilder::build] returns an error if it was
-//! switched on on the raw builder before `with_state` / `with_bind_init`.
+//! switched on on the raw builder before `with_state` / `with_bind_init`, and
+//! registering the builder `build` returns fails if it was switched on
+//! afterwards. So does replacing its `bind`, `init`, `local_init`, `scan` or
+//! `extra_info`: the typed callbacks read one another's data.
 //! With pushdown on,
 //! `DuckDB` hands the scan a chunk holding only the *projected* columns, in
 //! projection order, so `chunk.writer(0)` is no longer "the first declared
@@ -173,7 +176,10 @@ impl TableFunctionBuilder {
     ///   [`BindInfo::add_result_column`][crate::table::BindInfo::add_result_column]
     ///   — at least one column. With `duckdb-1-5`, a bind that declares none
     ///   is reported as an ordinary bind error instead of the `INTERNAL Error`
-    ///   `DuckDB` raises for it.
+    ///   `DuckDB` raises for it. Used as a `COPY … FROM` reader, it must
+    ///   instead declare none and read the target table's columns
+    ///   (`BindInfo::result_column_count`);
+    ///   with `duckdb-1-5` a column declared there fails the bind.
     /// - Read parameters (positional or named) from the [`BindInfo`].
     /// - Return the *template* scan state `S` on success, or an
     ///   [`ExtensionError`] on failure. Errors are propagated to `DuckDB` via
@@ -427,6 +433,69 @@ mod tests {
         assert_eq!(typed.name(), "demo");
         assert!(typed.bind.is_some());
         assert!(typed.scan.is_none());
+    }
+
+    unsafe extern "C" fn noop_bind(_: libduckdb_sys::duckdb_bind_info) {}
+    unsafe extern "C" fn noop_init(_: libduckdb_sys::duckdb_init_info) {}
+    unsafe extern "C" fn noop_scan(
+        _: libduckdb_sys::duckdb_function_info,
+        _: libduckdb_sys::duckdb_data_chunk,
+    ) {
+    }
+
+    #[test]
+    fn projection_pushdown_after_build_is_refused_at_registration() {
+        use crate::connection::Registrar;
+        use crate::testing::MockRegistrar;
+        let built = || {
+            TableFunctionBuilder::new("demo")
+                .with_state::<DummyState, _>(|_bind| Ok(DummyState { _rows: 10 }))
+                .scan(|_state, _chunk| Ok(()))
+                .build()
+                .expect("build")
+        };
+        let registrar = MockRegistrar::new();
+        // SAFETY: `MockRegistrar` never calls `DuckDB`.
+        let err = unsafe { registrar.register_table(built().projection_pushdown(true)) }
+            .expect_err("pushdown after build");
+        assert!(err.as_str().contains("after build()"), "{err}");
+        // SAFETY: as above.
+        unsafe { registrar.register_table(built().projection_pushdown(false)) }
+            .expect("pushdown off");
+        // A raw builder keeps pushdown.
+        let raw = TableFunctionBuilder::new("raw")
+            .bind(noop_bind)
+            .init(noop_init)
+            .scan(noop_scan)
+            .projection_pushdown(true);
+        // SAFETY: as above.
+        unsafe { registrar.register_table(raw) }.expect("raw pushdown");
+    }
+
+    #[test]
+    fn replacing_a_typed_functions_callbacks_after_build_is_refused() {
+        use crate::connection::Registrar;
+        use crate::testing::MockRegistrar;
+        let built = || {
+            TableFunctionBuilder::new("demo")
+                .with_state::<DummyState, _>(|_bind| Ok(DummyState { _rows: 10 }))
+                .scan(|_state, _chunk| Ok(()))
+                .build()
+                .expect("build")
+        };
+        let registrar = MockRegistrar::new();
+        for (what, builder) in [
+            ("bind", built().bind(noop_bind)),
+            ("init", built().init(noop_init)),
+            ("local_init", built().local_init(noop_init)),
+            ("scan", built().scan(noop_scan)),
+        ] {
+            // SAFETY: `MockRegistrar` never calls `DuckDB`.
+            let err = unsafe { registrar.register_table(builder) }.expect_err(what);
+            assert!(err.as_str().contains(what), "{what}: {err}");
+        }
+        // SAFETY: as above.
+        unsafe { registrar.register_table(built()) }.expect("untouched");
     }
 
     #[test]

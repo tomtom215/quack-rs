@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT
+// Copyright 2026 Tom F. <https://github.com/tomtom215/>
+// My way of giving something small back to the open source community
+// and encouraging more Rust development!
 //! Fuzzes the community-extension validators against arbitrary text.
 //!
 //! These run over names, versions and license identifiers that come from a

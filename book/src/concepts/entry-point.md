@@ -11,7 +11,9 @@ quack-rs provides two ways to create it.
 
 The `entry_point_v2!` macro gives your closure a `&Connection` instead of a raw
 `duckdb_connection`. The `Connection` type implements the `Registrar` trait, which
-provides ergonomic methods for registering every function type:
+registers every kind of function, macro, cast, copy function and config option;
+replacement scans, which belong to the database rather than a connection, are
+`Connection`'s own methods:
 
 ```rust,ignore
 use quack_rs::entry_point_v2;

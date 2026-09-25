@@ -28,6 +28,18 @@
 //! With `SET autoload_known_extensions = false` no autoload is attempted and
 //! the lookup runs normally. Every other name and entry type is unaffected.
 //!
+//! # Lookups in a catalog an extension provides are refused
+//!
+//! For a catalog `DuckDB` does not implement itself — one a storage extension
+//! attaches — `duckdb_catalog_get_entry` starts that catalog's transaction
+//! (`Transaction::Get`, reached from `Catalog::TryLookupEntry`) and calls its
+//! `LookupSchema` and its schema's `LookupEntry`
+//! (`Catalog::TryLookupEntryInternal`, `catalog.cpp`), all extension code,
+//! again with no `try`. Whether they throw cannot be known
+//! from here, so [`CatalogEntry::lookup`] refuses any catalog whose type is
+//! not `"duckdb"`. `DuckDB`'s own catalogs — the database's, `temp` and
+//! `system` — all have that type.
+//!
 //! # Example
 //!
 //! ```rust,no_run
@@ -214,7 +226,12 @@ impl CatalogEntry {
     /// - a `Type` or `Collation` whose name `DuckDB` would try to autoload an
     ///   extension for, while `autoload_known_extensions` is on — see the
     ///   [module docs](crate::catalog) and
-    ///   [`CatalogEntryType::may_autoload_extension`].
+    ///   [`CatalogEntryType::may_autoload_extension`];
+    /// - any lookup in a catalog that is not `DuckDB`'s own (type `"duckdb"`),
+    ///   such as one a storage extension attaches: `DuckDB` runs that
+    ///   extension's schema lookup and transaction start with no `try`, so
+    ///   whatever it throws would abort the process. This reads the catalog's
+    ///   type name, which cannot throw.
     ///
     /// # Safety
     ///
@@ -233,6 +250,19 @@ impl CatalogEntry {
                 "catalog lookup of a {entry_type:?} entry is not supported: DuckDB throws \
                  \"Unsupported catalog type in schema\" through the C API, which would abort \
                  the process"
+            )));
+        }
+        // SAFETY: `catalog` is valid per this function's contract; the type
+        // name is owned by the catalog wrapper and read before it is dropped.
+        let catalog_type = unsafe {
+            let ptr = duckdb_catalog_get_type_name(catalog);
+            (!ptr.is_null()).then(|| CStr::from_ptr(ptr).to_string_lossy().into_owned())
+        };
+        if !is_duckdb_catalog(catalog_type.as_deref()) {
+            return Err(ExtensionError::new(format!(
+                "catalog lookup refused in a catalog of type {catalog_type:?}: DuckDB runs the \
+                 lookup of a catalog it does not implement itself with no try/catch, so an \
+                 exception there would abort the process. Query the catalog with SQL instead."
             )));
         }
         let lossy_name = name.to_string_lossy();
@@ -321,8 +351,9 @@ impl Catalog {
         self.catalog
     }
 
-    /// Returns the type name of this catalog (e.g. `"duckdb"`, `"system"`, or a
-    /// storage extension's name like `"sqlite"`).
+    /// Returns the type name of this catalog: `"duckdb"` for every catalog
+    /// `DuckDB` provides itself (the database's, `temp` and `system`), or a
+    /// storage extension's name like `"sqlite"`.
     ///
     /// Returns `None` if the name is not valid UTF-8.
     #[must_use]
@@ -378,6 +409,14 @@ impl Drop for Catalog {
     }
 }
 
+/// Whether a catalog of type `name` is `DuckDB`'s own: `DuckCatalog` is the
+/// only catalog in `DuckDB` itself (`duck_catalog.hpp`), and its type is
+/// `"duckdb"`. The database's catalog, `temp` and `system` are all one. Any
+/// other type comes from an extension.
+fn is_duckdb_catalog(name: Option<&str>) -> bool {
+    name == Some("duckdb")
+}
+
 /// Whether `DuckDB` would try to autoload an extension on a catalog miss.
 ///
 /// Reads the `autoload_known_extensions` setting (it always exists, so this
@@ -411,6 +450,20 @@ crate::debug_repr::impl_handle_debug!(Catalog.catalog);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_duckdbs_own_catalog_type_is_looked_up() {
+        assert!(is_duckdb_catalog(Some("duckdb")));
+        for other in [
+            None,
+            Some(""),
+            Some("sqlite"),
+            Some("postgres"),
+            Some("DuckDB"),
+        ] {
+            assert!(!is_duckdb_catalog(other), "{other:?}");
+        }
+    }
 
     #[test]
     fn catalog_entry_type_round_trip_all_variants() {

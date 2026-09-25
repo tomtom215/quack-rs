@@ -9,6 +9,7 @@
 name = "quack-rs-fuzz"
 version = "0.0.0"
 publish = false
+license = "MIT"
 edition = "2021"
 
 [package.metadata]
@@ -16,6 +17,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+# The same bindings quack-rs uses (fuzz/Cargo.lock pins the release), for the
+# raw `duckdb_create_*` constructors in `value_render`.
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [dependencies.quack-rs]
 path = ".."
@@ -30,6 +34,18 @@ bench = false
 [[bin]]
 name = "duck_string"
 path = "fuzz_targets/duck_string.rs"
+test = false
+doc = false
+bench = false
+
+[features]
+# Targets that call into a real DuckDB: needs a libduckdb (`DUCKDB_LIB_DIR`).
+live = ["quack-rs/bundled-test-prebuilt", "quack-rs/duckdb-1-5-4"]
+
+[[bin]]
+name = "value_render"
+path = "fuzz_targets/value_render.rs"
+required-features = ["live"]
 test = false
 doc = false
 bench = false

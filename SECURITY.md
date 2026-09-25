@@ -70,7 +70,7 @@ quack-rs is designed with safety as a primary concern:
 
 1. **`#![deny(unsafe_op_in_unsafe_fn)]`** in `src/lib.rs` and **`unsafe_op_in_unsafe_fn = "deny"`** in `Cargo.toml`: every unsafe operation needs an explicit `unsafe` block, even inside `unsafe fn`. Each `unsafe fn` documents its caller obligations under `# Safety`, and each `unsafe` block inside a *safe* function carries a `// SAFETY:` comment; blocks inside an `unsafe fn` that only forward its own contract are not re-annotated (the convention is set out in the crate docs, `src/lib.rs`).
 2. **No panics across FFI**: All entry points and callbacks use `Result`/`Option`, and every FFI boundary is wrapped in `catch_unwind` (see `callback::catch_ffi_panic`). The release profile therefore sets `panic = "unwind"`, **not** `abort`: under `panic = "abort"` a panic aborts the process before `catch_unwind` can run, which disables the crate's entire panic-containment mechanism. `validate_release_profile` rejects `abort` outright, and the generated scaffold never emits it.
-3. **Double-free prevention**: `FfiState<T>::destroy_callback` nulls pointers after freeing.
+3. **Double-free prevention**: `FfiState<T>::destroy_callback` clears each state's tag before dropping it.
 4. **Boolean UB prevention**: `VectorReader::read_bool` reads as `u8 != 0`, never transmutes to `bool`.
 5. **RAII for DuckDB handles**: `LogicalType` ensures `duckdb_destroy_logical_type` is always called.
 6. **Credential protection**: `SecretEntry` redacts field values in `Debug`/`Display` output and zeroizes all sensitive data on `Drop` using `write_volatile`.

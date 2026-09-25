@@ -585,7 +585,7 @@ mod overload_fns {
         use quack_rs::vector::VectorWriter;
 
         /// Folds the constant second argument into bind data.
-        pub unsafe extern "C" fn bind(info: libduckdb_sys::duckdb_bind_info) {
+        pub unsafe extern "C" fn bind(info: quack_rs::scalar::RawScalarBindInfo) {
             // SAFETY: DuckDB passes a valid bind info.
             let bind = unsafe { ScalarBindInfo::new(info) };
             // SAFETY: the overload declares two parameters.
@@ -601,7 +601,7 @@ mod overload_fns {
         }
 
         /// Counts chunks per thread.
-        pub unsafe extern "C" fn init(info: libduckdb_sys::duckdb_init_info) {
+        pub unsafe extern "C" fn init(info: quack_rs::scalar::RawScalarInitInfo) {
             // SAFETY: DuckDB passes a valid init info.
             let init = unsafe { ScalarInitInfo::new(info) };
             ScalarLocalState::set(&init, 0_u64);
@@ -967,13 +967,13 @@ mod nul_errors {
     });
 
     #[cfg(feature = "duckdb-1-5")]
-    pub unsafe extern "C" fn bind_fails(info: libduckdb_sys::duckdb_bind_info) {
+    pub unsafe extern "C" fn bind_fails(info: quack_rs::scalar::RawScalarBindInfo) {
         // SAFETY: DuckDB passes a valid bind info.
         unsafe { quack_rs::scalar::ScalarBindInfo::new(info) }.set_error("bind head\0bind tail");
     }
 
     #[cfg(feature = "duckdb-1-5")]
-    pub unsafe extern "C" fn init_fails(info: libduckdb_sys::duckdb_init_info) {
+    pub unsafe extern "C" fn init_fails(info: quack_rs::scalar::RawScalarInitInfo) {
         // SAFETY: DuckDB passes a valid init info.
         unsafe { quack_rs::scalar::ScalarInitInfo::new(info) }.set_error("init head\0init tail");
     }
@@ -1068,7 +1068,7 @@ mod bind_counter {
 
     /// Stores a fresh counter value on every bind: deliberately *not* a
     /// function of the arguments.
-    pub unsafe extern "C" fn bind(info: libduckdb_sys::duckdb_bind_info) {
+    pub unsafe extern "C" fn bind(info: quack_rs::scalar::RawScalarBindInfo) {
         // SAFETY: DuckDB passes a valid bind info.
         let bind = unsafe { ScalarBindInfo::new(info) };
         ScalarBindData::set(&bind, BINDS.fetch_add(1, Ordering::SeqCst));

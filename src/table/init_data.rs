@@ -79,7 +79,12 @@ impl<T: 'static> FfiInitData<T> {
     ///
     /// # Safety
     ///
-    /// - `info` must be a valid `duckdb_init_info`.
+    /// - `info` must be a valid `duckdb_init_info` passed to the table function's
+    ///   global `init` callback, not its `local_init`. Both kinds of init data
+    ///   are stored through `duckdb_init_set_init_data`, so the callback alone
+    ///   decides which one this sets; called from `local_init`, it sets the
+    ///   local init data, which [`FfiLocalInitData::get`] would then read as its
+    ///   own type.
     /// - Must be called at most once per init invocation.
     pub unsafe fn set(info: duckdb_init_info, data: T)
     where
@@ -186,7 +191,11 @@ impl<T: 'static> FfiLocalInitData<T> {
     ///
     /// # Safety
     ///
-    /// - `info` must be a valid `duckdb_init_info`.
+    /// - `info` must be a valid `duckdb_init_info` passed to the table function's
+    ///   `local_init` callback, not its global `init`. Both kinds of init data
+    ///   are stored through `duckdb_init_set_init_data`, so the callback alone
+    ///   decides which one this sets; called from `init`, it sets the global
+    ///   init data, which [`FfiInitData::get`] would then read as its own type.
     /// - Must be called at most once per `local_init` invocation.
     pub unsafe fn set(info: duckdb_init_info, data: T)
     where

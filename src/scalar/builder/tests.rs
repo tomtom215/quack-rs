@@ -149,8 +149,8 @@ fn overload_builder_mirrors_the_single_builders_stability_setter() {
 #[cfg(feature = "duckdb-1-5")]
 #[test]
 fn overload_builder_mirrors_the_single_builders_bind_and_init_setters() {
-    unsafe extern "C" fn b(_: libduckdb_sys::duckdb_bind_info) {}
-    unsafe extern "C" fn i(_: libduckdb_sys::duckdb_init_info) {}
+    unsafe extern "C" fn b(_: crate::scalar::RawScalarBindInfo) {}
+    unsafe extern "C" fn i(_: crate::scalar::RawScalarInitInfo) {}
 
     let ob = ScalarOverloadBuilder::new();
     assert!(ob.bind.is_none() && ob.init.is_none());

@@ -169,9 +169,9 @@ exclude_globs = [
 #   existing `max_capacity_matches_duckdbs_constant` catches it). The `<`
 #   mutant stays in the gate and is killed. `vector::ops::MAX_CAPACITY` is
 #   defined as this constant, so it has no separate mutants.
-# - `with_element_limit`'s `limit < MAX_CHILD_CAPACITY_USIZE` mutated to `<=`:
-#   the two differ only at `limit == MAX_CHILD_CAPACITY_USIZE`, where both arms
-#   store that same value.
+# - `with_element_limit`'s `limit < self.ceiling` mutated to `<=`: the two
+#   differ only at `limit == self.ceiling`, where both arms store that same
+#   value.
 # - `CastGuard::accepts`'s `(v < 0) as i64` mutated to `<=` (src/value/
 #   temporal_checks.rs, the `FiniteAndNanoDayFits` arm). The two differ only at
 #   `v == 0`, where the mutant computes day `(0 + 1) / NANOS_PER_DAY - 1 = -1`
@@ -214,14 +214,38 @@ exclude_re = [
     "src/table/info.rs:.*replace BindInfo::error_reported -> bool with false",
     # render_guard.rs: Value::renderable and its two helpers read the value's
     # type, payload and children through duckdb_get_* calls. Its pure type
-    # predicates stay in the gate. Checked end to end in September 2026 by
-    # running these 17 mutants (with try_new's below) against
-    # tests/ffi_roundtrip with a real libduckdb 1.5.5: all 17 caught, 10 by
-    # the process aborting as the guard exists to prevent, the rest by
-    # tests/ffi_roundtrip/value_temporal.rs and value_nested.rs assertions.
-    "src/value/render_guard.rs:.*Value::(renderable|temporal_payload_in_range|type_contains_checked_temporal)( |$)",
+    # predicates stay in the gate. Checked end to end against
+    # tests/ffi_roundtrip with a real libduckdb 1.5.5: in the fourth audit,
+    # 17 mutants with try_new's below, all caught, 10 by the process aborting
+    # as the guard exists to prevent, the rest by value_temporal.rs and
+    # value_nested.rs assertions; in the fifth (AUDIT.md 10.8), after the
+    # guard became an allow-list, all 17 of this pattern's mutants caught.
+    "src/value/render_guard.rs:.*Value::(renderable|temporal_payload_in_range|type_contains_unchecked_payload)( |$)",
     # construct.rs: LogicalType::try_new compares the type id DuckDB created
     # with the one asked for, which needs duckdb_create_logical_type; with the
     # comparison inverted, every type creation fails end to end.
     "src/types/logical_type/construct.rs:.*replace != with == in LogicalType::try_new",
+    # error_data.rs: a non-null ErrorData only comes from DuckDB, and
+    # is_null / has_error / message / Drop / check_valid_utf8 are only told
+    # apart from their mutants with one (duckdb_error_data_* /
+    # duckdb_valid_utf8_check); the --lib run reaches them only with a null
+    # handle. Killed end to end by tests/ffi_roundtrip and, for Drop,
+    # tests/handle_leaks.rs (fifth audit, AUDIT.md 10.8).
+    "src/error_data.rs:.*(replace ErrorData::is_null -> bool with true|replace ErrorData::has_error -> bool with false|replace ErrorData::message -> Option<String> with None|replace <impl Drop for ErrorData>::drop with|replace check_valid_utf8 )",
+    # export_check.rs: Rules::of builds DuckDB's Arrow schema for three types
+    # (duckdb_to_arrow_schema) and check_chunk reads live vectors; both are
+    # killed end to end by tests/ffi_roundtrip/arrow_export.rs (AUDIT.md 10.8).
+    "src/arrow/export_check.rs:.*(replace == with != in Rules::of$|check_chunk( |$))",
+    # Equivalent: capacity_for's `elements > MAX_CHILD_CAPACITY_USIZE as u64`
+    # mutated to `>=` or `==` differs only when the two are equal, where both
+    # branches return that same value; reservation's `p < limit` mutated to
+    # `<=` differs only at `p == limit`, where both arms return `limit`.
+    "list_builder.rs:.*replace > with (==|>=) in capacity_for",
+    "list_builder.rs:.*replace < with <= in reservation",
+    # Equivalent: capacity_within's `allocation_bytes < MAX_LIST_CHILD_CAPACITY`
+    # and max_capacity_within's `fitting < MAX_LIST_CHILD_CAPACITY` pick the
+    # smaller of two values; as `<=` they differ only when the two are equal,
+    # where both branches give that same value.
+    "list_builder.rs:.*replace < with <= in capacity_within",
+    "vector/ops.rs:.*replace < with <= in max_capacity_within",
 ]

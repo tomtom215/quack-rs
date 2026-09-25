@@ -177,24 +177,7 @@ impl LogicalType {
     /// pointer, or when the running `DuckDB` does not support the type
     /// (`TIME_NS` before 1.5.0, whose C API returns an `INVALID` type for it).
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
-        if type_id.is_composite() {
-            return Err(LogicalTypeError::with_detail(
-                "duckdb_create_logical_type",
-                composite_message(type_id),
-            ));
-        }
-        if matches!(type_id, TypeId::IntegerLiteral | TypeId::StringLiteral) {
-            return Err(LogicalTypeError::with_detail(
-                "duckdb_create_logical_type",
-                format!(
-                    "{type_id} is the binder's type for an unbound literal, not a column type: \
-                     DuckDB registers a function or type that uses it, but the first query \
-                     that returns it fails with an internal error that invalidates the \
-                     database, and a parameter of it can never be called. Use BIGINT or \
-                     VARCHAR"
-                ),
-            ));
-        }
+        Self::precheck(type_id)?;
         // SAFETY: any DUCKDB_TYPE value is accepted; DuckDB returns an owned
         // handle or null.
         let inner = unsafe { duckdb_create_logical_type(type_id.to_duckdb_type()) };
@@ -216,6 +199,30 @@ impl LogicalType {
         Ok(created)
     }
 
+    /// The checks [`try_new`][Self::try_new] makes before its first `DuckDB`
+    /// call: a composite id and the two literal types are refused.
+    fn precheck(type_id: TypeId) -> Result<(), LogicalTypeError> {
+        if type_id.is_composite() {
+            return Err(LogicalTypeError::with_detail(
+                "duckdb_create_logical_type",
+                composite_message(type_id),
+            ));
+        }
+        if matches!(type_id, TypeId::IntegerLiteral | TypeId::StringLiteral) {
+            return Err(LogicalTypeError::with_detail(
+                "duckdb_create_logical_type",
+                format!(
+                    "{type_id} is the binder's type for an unbound literal, not a column type: \
+                     DuckDB registers a function or type that uses it, but the first query \
+                     that returns it fails with an internal error that invalidates the \
+                     database, and a parameter of it can never be called. Use BIGINT or \
+                     VARCHAR"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Builds a `LogicalType` for a named builder slot, turning a composite
     /// [`TypeId`] into an [`ExtensionError`][crate::error::ExtensionError] that
     /// says which slot was wrong and what to use instead.
@@ -232,10 +239,10 @@ impl LogicalType {
             .map_err(|e| crate::error::ExtensionError::new(format!("{slot}: {e}")))
     }
 
-    /// Validates that `type_id` can be turned into a logical type, without
-    /// building one.
+    /// Validates that `type_id` can be turned into a logical type, by
+    /// building one and dropping it.
     ///
-    /// Builders call this **before** allocating any `DuckDB` handle, so a bad
+    /// Builders call this **before** allocating any function handle, so a bad
     /// type id is reported without leaking a half-built function. Once it has
     /// passed, the [`new`][Self::new] calls further down cannot hit their
     /// composite-type assertion.
@@ -244,6 +251,18 @@ impl LogicalType {
         slot: &str,
     ) -> Result<(), crate::error::ExtensionError> {
         Self::for_slot(type_id, slot).map(drop)
+    }
+
+    /// [`check_slot`][Self::check_slot] without its `DuckDB` call: the
+    /// refusals that need no engine, with the same messages.
+    /// [`MockRegistrar`][crate::testing::MockRegistrar] runs this; it cannot
+    /// tell that the running `DuckDB` lacks a type (`TIME_NS` before 1.5.0).
+    pub(crate) fn check_slot_offline(
+        type_id: TypeId,
+        slot: &str,
+    ) -> Result<(), crate::error::ExtensionError> {
+        Self::precheck(type_id)
+            .map_err(|e| crate::error::ExtensionError::new(format!("{slot}: {e}")))
     }
 
     /// Creates a `LIST<element_type>` logical type.

@@ -151,6 +151,13 @@ impl ClientContext {
     /// ```sql
     /// SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
     /// ```
+    ///
+    /// The C function has no `try`, so a built-in setting whose getter threw
+    /// would abort the process too. None does in practice: every setting
+    /// `duckdb_settings()` lists was read this way on 1.5.0 (150) and 1.5.5
+    /// (157) without a throw, and the two 1.5.5 getters that can throw do so
+    /// only for a state their `SET` handlers never store. An extension's own
+    /// option has no getter.
     pub fn config_option(&self, name: &CStr) -> Option<String> {
         let mut scope: duckdb_config_option_scope = 0;
         // SAFETY: self.ctx is valid.

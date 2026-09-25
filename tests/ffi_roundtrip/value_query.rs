@@ -379,6 +379,7 @@ fn error_data_reports_sequence_and_autoload_types() {
             ))
         };
         assert_eq!(err.error_type(), expected, "raw type {raw}");
+        assert!(!err.is_null(), "a created error-data handle is not null");
         let made = ErrorData::new(expected, "probe");
         assert_eq!(made.error_type(), expected);
     }
@@ -439,7 +440,7 @@ mod fold_probe {
 }
 
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn vq_fold_bind(info: libduckdb_sys::duckdb_bind_info) {
+unsafe extern "C" fn vq_fold_bind(info: quack_rs::scalar::RawScalarBindInfo) {
     use quack_rs::scalar::ScalarBindInfo;
 
     // SAFETY: DuckDB passes a valid bind info.

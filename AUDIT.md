@@ -550,6 +550,12 @@ if nobody wrote down that they were checked.
   silent 32-bit narrowing is refused rather than truncated, and the 16-byte
   `duckdb_string_t` is decoded with explicit little-endian reads that work
   regardless of pointer width.
+
+  > **Corrected in the fifth audit (section 10).** Little-endian reads were
+  > the defect: `duckdb_string_t` holds its length and pointer in the target's
+  > byte order, so on a big-endian target the decoder misread every string and
+  > followed inlined bytes as a pointer (reproduced under Miri on s390x). It
+  > now reads both natively, the pointer at the target's width.
 - **Every truncating cast is deliberate.** The crate is clippy-pedantic-clean
   with `-D warnings`, so each one carries an explicit `#[allow]`; all of them are
   the `i128 → {u64, i64}` hugeint split or the documented DECIMAL width
@@ -1344,3 +1350,429 @@ the prebuilt DuckDB 1.5.5 unless stated.
   compiled (4 ignored). Miri over the library found the test-code violation in
   9.2; after its fix the `aggregate::state` tests, the new adjacent-slot test
   included, pass under Miri.
+
+---
+
+## 10. Fifth audit, September 2026 (0.18.0, before release)
+
+### 10.1 Method
+
+A pre-release gate, run in parallel over four areas — soundness of the safe
+API, callbacks and builders, the Arrow bridge, and every documentation claim —
+with each finding re-run by hand before it was accepted. Every code fix has a
+regression test shown failing without the fix (by reverting it, or by
+running the test on the parent commit); where DuckDB was involved, the defect
+was first reproduced against a real engine, in plain C where the defect is
+DuckDB's. Claims with "all", "every", "never" or a count were re-derived by a
+command. The whole suite ran against every release a build can load into
+(1.4.4, 1.4.5, 1.5.0 to 1.5.5), and against v1.5.5 built from source with
+assertions and AddressSanitizer.
+
+Severity and labels as in 9.1: **Critical** — a process abort or memory
+corruption reachable from SQL; **High** — the same not reachable from SQL
+alone, or a silent wrong answer; **Medium** — a wrong answer in a narrow case,
+or a failure with a misleading message; **Low** — tooling, validation and
+documentation. VALIDATED (reproduced and pinned by a test), PROVEN (derived from
+DuckDB's source, cited), CONTRACT (a Safety or documentation obligation).
+
+### 10.2 Defects found and fixed
+
+**Critical**
+
+- *Rendering a value aborted* (VALIDATED). A `VARIANT` holding an out-of-range
+  timestamp, a `DECIMAL(38, 0)` holding `i128::MIN` from `sum` over two
+  in-range values, and a `GEOMETRY` from malformed WKB each made
+  `duckdb_get_varchar` throw through the C API (upstream item 22). The render
+  guard is now an allow-list.
+- *`ListBuilder` aborted on a large list of a wide type* (VALIDATED). DuckDB's
+  ceiling is 2^37 bytes per child buffer after rounding to a power of two, not
+  2^37 elements (item 23). The limit is computed from the child type, and
+  `with_element_limit` after the first row can no longer raise it.
+- *`TableDescription` accessors aborted on index `u64::MAX` from 1.5.0*
+  (VALIDATED on all eight releases; item 30). Refused before the call.
+- *Arrow import heap overflows and out-of-bounds reads* (VALIDATED, under
+  valgrind or with glibc heap-corruption aborts or SIGSEGV): dictionaries
+  under lists, or under struct NULLs past 2048 rows (a fixed-size list's
+  broadcast NULLs included), overlapping list views, `geoarrow.wkb` past
+  2048 rows, and run-end arrays below zero-row nodes (items 25, 27 and 33;
+  item 24's run-end case). Refused by the layout walk in
+  `src/arrow/import_layout.rs`, which also refuses the layouts that import
+  wrong values (High, below).
+- *Two more Arrow-import crashes a differential fuzzer found after the pass's
+  own fixes* (VALIDATED): a run-end-encoded child of a list `DuckDB` converts
+  as zero rows when the list's offset is not 0 (SIGSEGV on 1.5.5 and in plain
+  C on all eight releases), and a dictionary-encoded child of a fixed-size
+  list that is a `MAP` value, where the map's validity check flattens the
+  fixed-size list over its over-allocated capacity and reads the dictionary's
+  selection vector out of bounds (SIGSEGV on 1.5.0-1.5.2, an AddressSanitizer
+  `heap-buffer-overflow` on 1.5.5). Both are item 24; the walk now judges a
+  zero-row list's child as `DuckDB` does (by row count, not offset) and
+  refuses a dictionary fixed-size-list child under a map.
+- *That walk let a run-end-encoded child of a zero-row list through when the
+  list's offset was not 0* (VALIDATED: SIGSEGV on 1.5.5 through
+  `data_chunk_from_arrow`, and on all eight releases in plain C; item 24's
+  second site). DuckDB takes a list it converts as zero rows for empty
+  whatever its offsets say and reads its child as a plain array; the walk
+  judged emptiness by the offsets. Found by a fresh review after the fixes
+  above; the walk now judges by the row count.
+
+**High**
+
+- *Arrow import returned wrong values from valid arrays* (VALIDATED on all
+  eight releases): offsets below the top level, nested dictionaries, recoded
+  union codes, and `null_count = -1` dictionaries and unions (items 24, 26,
+  28, 31 and 32). Refused.
+
+- *Moved aggregate states were never dropped* (VALIDATED): the fourth audit's
+  address-derived tag failed for every state radix repartitioning moved. The
+  tag now follows the slot's contents.
+- *Abandoned grouped-aggregate states leaked a box each* (VALIDATED; item 20):
+  a `T` of at most 256 bytes is stored inline in DuckDB's state bytes.
+- *Arrow export returned values that differ, or an array that contradicts its
+  schema* (VALIDATED): large INTERVAL / UHUGEINT / 39-digit HUGEINT (item 16,
+  now refused at any depth) and BIGNUM / GEOMETRY under
+  `arrow_output_version = '1.4'` before 1.5.5 (item 34; DuckDB's re-import
+  crashed).
+- *A typed table function answered from the wrong column under projection
+  pushdown*, and *its callbacks could be replaced after `build()`*, reading one
+  another's data as the wrong type (VALIDATED). Both refused.
+- *Scalar bind/init callbacks shared the table callbacks' argument types*, so
+  a table macro's output compiled on a scalar function and wrote past the
+  scalar bind info (VALIDATED as compiling; the SIGSEGV is the crate's own
+  earlier record). Distinct `RawScalarBindInfo` / `RawScalarInitInfo` types;
+  `compile_fail` doctests pin it.
+- *A typed `COPY … FROM` reader could invalidate the database* (VALIDATED on a
+  1.5.5 assertion build; item 37). Refused at bind.
+- *Arrow import: `+w:2x`-style fixed-size list formats bypassed the layout
+  checks* (VALIDATED: SIGSEGV before). Upgraded from the reviewer's Low: the
+  size is parsed as DuckDB's `std::stoi` parses it.
+- *`VARCHAR` / `BLOB` decoding assumed little-endian* (VALIDATED under Miri
+  with `--target s390x-unknown-linux-gnu`: undefined behaviour, a dangling
+  pointer built from an inline string's bytes). `duckdb_string_t` holds its
+  length and pointer in the target's byte order. On a big-endian target a
+  string of 1 to 12 bytes read its length as `length << 24` and had its
+  inlined bytes followed as a pointer, and a longer one read a byte-swapped
+  length and pointer. That would be Critical, but it is limited to
+  big-endian targets, and none of the 18 platform names in
+  `validate::platform::DUCKDB_PLATFORMS` is one. Both fields are now read
+  natively, the pointer as a pointer, which also clears Miri's one
+  provenance warning (10.8). Found by reading the code behind that warning.
+- *The Arrow export check read `HUGEINT` / `UHUGEINT` rows with their halves
+  swapped on a big-endian target* (VALIDATED under Miri on s390x: the test
+  reads 2^64 as 1). DuckDB stores `{lower, upper}`; the check read a native
+  128-bit integer, so on s390x `10^38` passed into a lossy export and `2^63`
+  was refused. It reads DuckDB's struct now.
+- *On a 32-bit target, `ListBuilder`, `OwnedVector::new` and
+  `data_chunk_from_arrow` could make DuckDB allocate a buffer whose size
+  wraps* (PROVEN from DuckDB's source and computed; not run, as no wasm32
+  DuckDB was available). DuckDB sizes buffers as a 64-bit `idx_t`, checks
+  them only against 2^48 (`Allocator::AllocateData`), and hands them to
+  `malloc`, which narrows them to a 32-bit `size_t`. The limits bounded
+  element counts, not bytes: a `BIGINT` or `VARCHAR` list child could
+  reserve 2^32 elements (`malloc(0)`), `OwnedVector::new(HUGEINT, 2^28)`
+  succeeded, and a run-end-encoded Arrow column, which declares any length
+  with a few bytes of buffers, made the chunk itself wrap, after which the
+  import wrote past it. Critical on wasm32, where it is reachable from SQL
+  when an extension imports Arrow data, but limited to 32-bit targets. The
+  limits now bound bytes, `MAX_CAPACITY` is 2^28 - 1 there, and the Arrow
+  layout walk refuses a row count above it at any node. On 64-bit that
+  also refuses a length past 2^37, which threw through the C API before
+  (item 4's case).
+
+**Medium**
+
+- A `row` closure panicking mid-row committed a half row (VALIDATED; the
+  appender is poisoned). `FileHandle` drop could abort when the close threw,
+  and `seek` past `i64::MAX` returned `Ok` on tmpfs (VALIDATED). `CombineFn`'s
+  documentation advised a `combine` that gave 4985 of 5000 window rows wrong
+  (VALIDATED; Pitfall L15). Catalog lookups outside DuckDB's own catalog type
+  (PROVEN from `catalog.cpp`; no offline reproducer). `MockRegistrar` accepted
+  builders whose types registration refuses (VALIDATED; messages compared with
+  a live registration for ten cases). `entry_point!` aborted when an argument
+  expression panicked (VALIDATED: SIGABRT). A callback macro body that used
+  `?` dropped its error silently (VALIDATED as compiling; now a type error).
+  Arrow offsets below the top level were not checked for sign and their sums
+  could overflow (a debug-build panic, VALIDATED). `ArrowArray::release` could
+  call a non-conforming producer's callback twice (VALIDATED).
+- *A callback macro's body was an `unsafe` context* (VALIDATED: two
+  `compile_fail` doctests compile against the old macros). The body was a
+  closure inside the generated `unsafe extern "C" fn`, which it inherits, so
+  a raw-pointer dereference in a "safe" callback compiled with no `unsafe`
+  and, on edition 2021 (the scaffold's), no warning. It is a nested `fn` now.
+- `ffi_state::<T>()` installs an aggregate's three state callbacks for one
+  type; the raw setters remain, with the pairing a stated Safety obligation
+  (CONTRACT). This mitigates, not eliminates, a mismatched pairing.
+
+**Low (contracts, tooling, documentation)**
+
+- Contracts widened to what DuckDB does (each measured or source-read):
+  writers under a `LIST` child (a reserve moves every buffer below it,
+  measured; Pitfall L18); which callback `FfiInitData` / `FfiLocalInitData::set`
+  belong to; `FfiBindData::set` in a typed bind; a replacement scan's
+  `delete_callback` runs with null data (observed); only column 0 of an
+  imported Arrow chunk holds the producer's buffers (observed);
+  `data_chunk_from_arrow` needs one element of dictionary padding (item 29);
+  `DestroyFn` is not called for every state DuckDB creates (items 20, 35);
+  `duckdb_prepare`'s allocation-failure path (item 36); why
+  `config_option`'s missing `try` is not reachable; `OwnedConnection`'s `Send`
+  reasoning.
+- `append_metadata` named the wrong default platform on OpenHarmony.
+- `StructWriter::field_mut` lets safe code swap two field writers, after
+  which the `unsafe` `write_*` methods write to the wrong child: their Safety
+  sections now require that no writer was replaced (CONTRACT).
+- Mutation testing found untested behaviour (10.8), now pinned: `FfiState`'s
+  tag structure, a release profile without `panic = "unwind"`, an overload's
+  own return type, `ArrowSchema::dictionary`, validity under a list child
+  starting past zero, every typed `Value` getter, the `TIMETZ` / `TIME_NS`
+  range guards, four `Appender` methods, `StructWriter`'s child vectors,
+  `InMemoryDb::execute`, `ResultKind::Nothing`, `ErrorData`,
+  `MockVectorWriter::len`, seven `append_metadata` argument, version and
+  footer checks, and every RAII handle's `Drop` (`tests/handle_leaks.rs`).
+- Documentation claims corrected (10.4).
+- `cargo doc --document-private-items` warned 8 times with `duckdb-1-5-4`
+  (redundant link targets, from before this pass) and twice on default
+  features (links to feature-gated items); 0 on all four feature sets now.
+
+### 10.3 Not changed, deliberately
+
+Decisions on 9.3's open items:
+
+- *Arrow export of large INTERVAL / UHUGEINT*: superseded. This pass checks
+  such values at any depth (10.2, High); the cost is one walk over the
+  columns being exported.
+- *ARRAY and UNION of a temporal type* still refuse `as_str`: the C API still
+  cannot read their elements, and the render guard's allow-list keeps it so.
+- *Argument inspection on 1.5.0–1.5.4* stays refused (item 12).
+- *DuckDB's V2 entry point*: still not implemented; no released DuckDB has it.
+- *`interval_to_micros` vs `epoch_us`* (item 19): stays documented.
+
+New this pass:
+
+- *EXCLUDE window frames* (item 35) and *abandoned grouped states* (item 20):
+  a slot `init` receives again cannot be told from reused memory holding a
+  stale copy of a moved state, so it cannot be dropped safely; small states
+  leak nothing, large ones leak their box. Documented.
+- *`duckdb_prepare` on allocation failure* (item 36): undefined behaviour no
+  caller can detect. Documented.
+- *Raw aggregate setters* kept (maintainer's choice); see 10.2.
+- *Empty-list dictionary children* stay refused: DuckDB converts that child as
+  a plain array, and the refusal is the conservative side.
+- *`SelectionVector::new`* accepts up to 2^32 indices (16 GiB); an allocation
+  the system cannot satisfy throws through the C API, as its documentation
+  says. Real selections are vector-sized; the cap stays at `sel_t`'s range.
+- *Open, Low, CONJECTURED*: the union export check reads unselected members;
+  DuckDB nulls them, so a spurious refusal is the most it could cause.
+
+### 10.4 Corrections to earlier sections
+
+Each re-derived by a command, in `6a249a7` and the commits before it except
+where a commit is named:
+
+- The Arrow conversion functions are in DuckDB 1.4.4's C API, not added in
+  1.5.0; the unstable region did not change in every recent release; it had
+  middle insertions in two of the last four, not four.
+- CHANGELOG: 36 CI jobs (not 35), 48 checkout steps (not 47); a test-gap
+  list named a function removed before release.
+- Platform counts: 84 of 346 published descriptors exclude
+  `windows_amd64_rtools`, 3 exclude `windows_arm64_mingw` (community-extensions
+  `5ae7df8`).
+- The dispatch table has one slot per API field (546 with the pinned
+  bindings), not 459; the unified `libduckdb-sys` feature is `bundled`.
+- "Unit tests in every source file" (105 of 156), "every `unsafe fn` has
+  `# Safety`" (four did not), "every unsafe block has a SAFETY comment" (two
+  macro expansions did not), a header example no file uses, `Registrar`'s
+  coverage, the `ExtraInfo` holder count (seven, not four), a nonexistent C
+  function name, the macro-parameter validator, `destroy_callback`'s
+  behaviour.
+- The pitfall summary tables stopped at L14; they list all 30 now.
+- 4, the appender/VFS/decoder bullet (`08311ce`): the string decoder's
+  "explicit little-endian reads" were the defect in 10.2 (annotated in
+  place). P7's
+  layout, in `LESSONS.md`, the book and `docs/ffi-reference.md`, listed an
+  `unused: u32` after the pointer, which only exists on 32-bit targets.
+- README (`08311ce`): "three further audits (sections 7–9)", and "each reproduced
+  against a real DuckDB or derived from its source", which the pure-Rust
+  fixes were not.
+- 9.6 recorded CI's doc build as clean; five intra-doc links added in this
+  pass broke it on the default feature set until `ed5e381`.
+
+### 10.5 Upstream
+
+`docs/upstream-duckdb-reports.md` items 20 to 37, each with a plain-C
+reproducer (item 32 reuses item 31's program) and the output observed on the
+releases it names. None filed.
+
+### 10.6 Exception escapes
+
+Every C API call quack-rs makes where a C++ exception can leave the C
+function, which aborts the host process ("Rust cannot catch foreign
+exceptions"):
+
+| C API call | Trigger | quack-rs | Evidence |
+|---|---|---|---|
+| `duckdb_list_vector_reserve` | capacity past `MAX_VECTOR_SIZE` or a child buffer past 2^37 bytes | `ListBuilder` caps both, from the child type; `with_element_limit` cannot raise the cap | items 1, 23; `list_limits.rs` |
+| `duckdb_get_varchar`, `duckdb_value_to_string` | temporal, DECIMAL, VARIANT, GEOMETRY payloads SQL builds | render guard allow-list | items 13, 22; `value_render.rs`; 4.0 M fuzz runs |
+| `duckdb_table_description_get_column_name` / `_type`, `duckdb_column_has_default` | index `idx_t(-1)`, from 1.5.0 | refused | item 30 |
+| `duckdb_scalar_function_bind_get_argument` | an uncopyable argument, before 1.5.5 | refused before 1.5.5 | item 12 |
+| `duckdb_catalog_get_entry` | a failed autoload; a catalog that is not DuckDB's own | autoloading names and non-`duckdb` catalogs refused | item 2; PROVEN |
+| `duckdb_config_option_set_default_value` | a default that does not cast | converted by SQL first | item 3 |
+| `duckdb_data_chunk_from_arrow` | chunk allocation before its `try` | negative lengths, and row counts above `MAX_CAPACITY` at any node, refused; an allocation below that the system cannot satisfy is documented | item 4 |
+| `duckdb_destroy_file_handle` | a `Close()` that throws | closes through `duckdb_file_handle_close` first; leaks on failure | `file_errors.rs` |
+| `duckdb_client_context_get_config_option` | a missing setting (debug builds); a throwing getter | documented; no getter throws for a stored state (source, 1.5.5) | P12; 150 / 157 settings read |
+| any allocating call | allocation failure | documented; `duckdb_prepare` leaves a freed statement (item 36) | known limitations |
+
+### 10.7 Versions
+
+| DuckDB | Version feature (with `bundled-test-prebuilt`) | `cargo test --all-targets` at `42f894c` | Version-specific behaviour found |
+|---|---|---|---|
+| 1.4.4, 1.4.5 | none | 1,164 passed each | items 30 (returns NULL), 33 (imports as BLOB), 34 |
+| 1.5.0, 1.5.1 | `duckdb-1-5` | 1,318 passed each | items 12, 30, 33 (abort in `malloc` on 1.5.0), 34; union and run-end layouts differ from 1.5.2+ |
+| 1.5.2 | `duckdb-1-5` | 1,318 passed | items 12, 30, 33, 34 |
+| 1.5.3 | `duckdb-1-5-3` | 1,322 passed | items 12, 30, 33, 34 |
+| 1.5.4 | `duckdb-1-5-4` | 1,412 passed | items 12, 30, 33, 34 |
+| 1.5.5 | `duckdb-1-5-4` | 1,412 passed | items 30, 33; the assertion build (item 37) |
+
+Items 20, 24 to 29, 31, 32, 35 and 36 hold on all eight releases; item 21
+was run, and holds, on 1.4.4, 1.5.0 and 1.5.5.
+
+### 10.8 How this pass was verified
+
+The code is the 44 commits from `16f7c3b` to `42f894c` on top of `6382d0a`;
+the commit after them adds this section.
+Local runs are x86-64 Linux against the prebuilt DuckDB 1.5.5 unless stated.
+
+- **Tests, at `42f894c`:** with `bundled-test-prebuilt,duckdb-1-5-4`, 1,013
+  library, 42 `append_metadata`, 279 end-to-end (`tests/ffi_roundtrip`), 71
+  integration, 4 `append_metadata_cli`, and one each in `aggregate_leaks`,
+  `handle_leaks` and `secret_zeroize`; 207 doctests (3 ignored). With default
+  features, 820 library tests and 174 doctests (1 ignored).
+- **Lints, before every push:** `cargo fmt --check` (added to the local gate
+  late in the pass, after a formatting slip was caught before a push);
+  clippy `-D warnings` on default features, `duckdb-1-5`, `duckdb-1-5-3`,
+  `duckdb-1-5-4`, `bundled-test-prebuilt`, `bundled-test-prebuilt,duckdb-1-5`
+  and `bundled-test-prebuilt,duckdb-1-5-4`; beta clippy on CI's two
+  configurations; hello-ext's clippy; `RUSTDOCFLAGS="-D warnings" cargo doc`
+  on default features, `duckdb-1-5`, `duckdb-1-5-3` and `duckdb-1-5-4`.
+  The doc builds were added after CI's doc job failed at `f16c26b` (fixed in
+  `ed5e381`). `cb02176` was pushed with a clippy error, because the gate and
+  the commit ran in one command; `f79704c` fixed it, and from then on the gate
+  ran as its own step.
+- **Every release:** `cargo test --all-targets` with CI's pinning of
+  `duckdb` / `libduckdb-sys`, at `42f894c` (table in 10.7): 0 failures on
+  any of the eight releases. The same matrix passed at earlier commits.
+- **Assertions and AddressSanitizer:** DuckDB v1.5.5 built from source with
+  `FORCE_ASSERT` and ASan (core functions, ICU and Parquet linked; not
+  httpfs), each end-to-end test in its own process at `f16c26b`: 262 of 263
+  pass. The one failure needs httpfs ("Secret type 's3' does not exist").
+  The tests added afterwards were run the same way and all pass. The
+  integration tests pass except the scaffold test, which hangs because
+  `rustc -vV` inherits `LD_PRELOAD`: a harness artefact, not run.
+  `handle_leaks`, `aggregate_leaks` and `secret_zeroize` pass. 0 ASan reports.
+  This build found item 37.
+- **Miri:** the library at `f79704c`, 925 passed, 1 ignored, no undefined
+  behaviour, and one warning: an integer-to-pointer cast in the string
+  decoder. Reading the code behind it found the byte-order defect (10.2,
+  High). At `08311ce` the library also runs under Miri on s390x: 934
+  passed, 1 ignored, 0 undefined behaviour, no warning. CI's `miri` job now
+  runs both targets. CI's Miri failed once in this pass, at `ed5e381`, on
+  one of this pass's own tests, which compared function addresses; Rust
+  guarantees no address identity for functions. The test now runs the
+  callbacks instead (`cb02176`).
+- **Fuzzing,** libFuzzer via cargo-fuzz: `value_render` against a live DuckDB
+  1.5.5, 4,047,724 runs in 10,801 s; `description_yml`, 107,229,512 runs in
+  7,201 s; `duck_string`, 5,275,667,662 runs in 7,201 s (built before the
+  byte-order fix; on x86-64 its oracle's `from_le_bytes` and the fixed
+  `from_ne_bytes` are the same function); `validators`, 435,075,141 runs in 7,201 s. No crashes, no
+  artifacts.
+- **A structure-aware Arrow-import differential fuzzer** (`scratchpad`,
+  kept): a seeded generator of valid nested Arrow arrays (struct, list, list
+  view, fixed-size list, map, dictionary, run-end, sparse union; depths 1-3;
+  offsets, null counts including -1, lengths spanning the 2048-row vector),
+  each run through `data_chunk_from_arrow` and dropped, checked against
+  DuckDB 1.5.5 and its AddressSanitizer build. It found the two crashes
+  above. After they were fixed: 0 crashers over 200,000 arrays, and 0 ASan
+  errors over ~4,600 (windows 0-3500, 8000-8699, 50400-50799). A separate
+  heap-dependent report it made against the pre-fix code (a run-end array
+  under a union) did not reproduce under AddressSanitizer once the map case
+  was fixed.
+- **Mutation testing** (cargo-mutants 27.1.0):
+  - Full sweep with the repository's configuration (`--lib`,
+    `duckdb-1-5-4`): 1,810 mutants, 1,496 caught, 292 unviable, 0 timeouts,
+    22 missed. 7 now fail new tests: 3 in `FfiState::tag_for`, killed after
+    its salt became a pure function, and 4 pure-logic gaps. 3 are equivalent
+    and excluded with the argument. 2 had fallen out of the render guard's
+    exclusion through a rename. 10 need a live DuckDB and are excluded;
+    their end-to-end run is below.
+  - Then every mutant the configuration excludes, end to end (`--no-config`,
+    `bundled-test-prebuilt,duckdb-1-5-4`, libduckdb 1.5.5), in four groups:
+    - The excluded FFI files, against `ffi_roundtrip`: 684 mutants, 538
+      caught, 73 unviable, 2 timeouts, 71 missed. The two timeouts are
+      detections: `FileHandle::read -> Ok(1)` loops, and a no-op
+      `InterruptHandle::cancel` hangs its test.
+    - The mock vectors, against the integration tests: 197 mutants, 178
+      caught, 17 unviable, 2 missed.
+    - `append_metadata`: 121 mutants, 113 caught, 1 unviable, 7 missed.
+    - The `exclude_re` patterns: 84 mutants, 48 caught, 3 unviable, 33
+      missed.
+  - Of the 113 missed, 29 are `Debug` impls, excluded by design. 10 are the
+    documented equivalents in `.cargo/mutants.toml`. Two, in `ErrorData`, were
+    wrongly recorded there as killed end to end (`89f8bf2`); they now fail
+    tests. `tests/handle_leaks.rs`'s header likewise named two `Drop`
+    survivors that `ffi_roundtrip` had caught, and missed the one it had not;
+    corrected in `7242606`. 24 are `Drop` impls, and the free in `parameter_name`, that nothing
+    functional observes; `tests/handle_leaks.rs` kills them. The other 48
+    were re-run through cargo-mutants after tests were added, together with
+    the 6 mutants of the refactored `append_bytes_as` / `fits_append_length`
+    (3 of the 48 no longer exist after that refactor): 9 of 9 for
+    `append_metadata` (its patterns matched 2 same-named siblings too), 26 of
+    26 for the `Drop` and `ErrorData` mutants, and 44 tested for the rest,
+    with 32 caught and 12 missed.
+  - The 12 are equivalent, each argued from DuckDB's source:
+    - `runtime_vector_size`'s `==` (`duckdb_vector_size()` is 2048 in every
+      official build, as is the fallback).
+    - `FileSystem::open`'s and `InstanceCache::get_or_create`'s `&&`: DuckDB
+      writes the out-handle only on success (`file_system-c.cpp`,
+      `duckdb_open_internal`).
+    - `Expression::fold`'s error-path `!` (`expression-c.cpp` writes the
+      value only on success).
+    - The read chunk size, and `read_to_end`'s size-hint arm: buffer sizing
+      only.
+    - `SelectionVector`'s length limit and its two slice accessors (equal
+      limits; `new` refuses a null handle).
+    - `parameter_name`'s `||` (DuckDB returns null for index 0 and past the
+      end itself).
+    - `clear_bindings -> Ok` (it fails only for a statement
+      `PreparedStatement` cannot hold).
+    - `FileHandle::close -> Ok` (the local file system's `Close` never
+      throws: `local_file_system.cpp`).
+  - The functions added after those runs (`capacity_within`,
+    `max_capacity_within`, `fits_one_vector`, `hugeint_at`, `uhugeint_at`):
+    every mutant caught but two `<` → `<=` in minimum computations, which
+    are equivalent (equal operands give the same value) and excluded.
+  - The workflow's `sed`/`grep` extraction of `.cargo/mutants.toml` (34
+    globs, 18 patterns) was replayed after every edit and matches a TOML
+    parse.
+- **Release mechanics:**
+  - `cargo semver-checks` 0.50.0 against 0.16.0 runs no checks for a 0.x
+    minor bump (254 skipped), so it was run as a patch release: 223 checks,
+    8 failures with `duckdb-1-5-3` (7 on default features). All are listed
+    as breaking in the CHANGELOG; three were not until this pass.
+  - `cargo deny` 0.19.0: advisories, bans, licences and sources pass for the
+    crate. For `fuzz/Cargo.lock` everything passes except the licence check,
+    on `libfuzzer-sys`'s NCSA term; that crate is fuzz-only and never
+    published.
+  - A docs.rs-equivalent build (`--cfg docsrs`, nightly, `-D warnings`)
+    finishes with 0 warnings. `cargo publish --dry-run`
+    packages 227 files (873,740 bytes compressed) and builds them; it warns
+    that the two examples are not packaged, which `Cargo.toml`'s `exclude`
+    intends. semver-checks, the docs.rs build and the dry run were run at
+    `08311ce`; no manifest, lock file or `deny.toml` has changed since
+    cargo-deny ran on `bc94b7a`.
+- **CI:** all 50 jobs of the workflow passed at `42f894c` (run 610). They
+  include the end-to-end suite against DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3 and
+  1.5.4 as well as the pinned 1.5.5; DuckDB built from source on Linux, macOS
+  and Windows; Miri over the library on x86-64 and, added this pass, on
+  big-endian s390x; LeakSanitizer and AddressSanitizer; the incremental
+  mutation gate; both ABI guards; the book and README code blocks; the
+  scaffold end-to-end job; MSRV and the dependency floor; `semver-checks`;
+  and the publish dry run.

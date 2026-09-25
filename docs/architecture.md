@@ -262,7 +262,7 @@ Within this crate:
   test code is exempt.
 - Raw pointer validity is enforced through type invariants:
   - `FfiState<T>::init_callback` — caller guarantees `state` points to allocated memory
-  - `FfiState<T>::destroy_callback` — sets `inner = null` after freeing (prevents double-free)
+  - `FfiState<T>::destroy_callback` — clears the slot's tag before dropping `T` (prevents double-drop)
   - `VectorReader::new` — caller guarantees `chunk` lives at least as long as the reader
 
 ---

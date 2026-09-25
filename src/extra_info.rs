@@ -40,10 +40,11 @@ pub struct ExtraInfo {
     /// An `AtomicBool` rather than a `Cell<bool>`: `Cell` contains an
     /// `UnsafeCell`, which is `!RefUnwindSafe`, and that propagates to every
     /// builder that owns an `ExtraInfo` — silently removing an auto trait from
-    /// four public types. `AtomicBool` gives the same shared-reference mutation
-    /// with none of that. (`ExtraInfo` stays `!Sync` because of the raw
-    /// pointer, which is why `CopyFunctionBuilder` is `!Sync` like its three
-    /// sibling builders.)
+    /// seven public builders that hold one directly and the two set builders
+    /// that hold their overloads. `AtomicBool` gives the same shared-reference
+    /// mutation with none of that (the test `builders_stay_ref_unwind_safe`
+    /// checks it). `ExtraInfo` stays `!Sync` because of the raw pointer, and so
+    /// does every builder that holds one.
     transferred: AtomicBool,
 }
 
@@ -120,6 +121,23 @@ impl core::fmt::Debug for ExtraInfo {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Every public builder that holds an `ExtraInfo`, directly or through its
+    /// overloads or inner builder, is `RefUnwindSafe`.
+    #[test]
+    fn builders_stay_ref_unwind_safe() {
+        const fn ref_unwind_safe<T: std::panic::RefUnwindSafe>() {}
+        ref_unwind_safe::<crate::aggregate::AggregateFunctionBuilder>();
+        ref_unwind_safe::<crate::aggregate::AggregateOverloadBuilder>();
+        ref_unwind_safe::<crate::aggregate::AggregateFunctionSetBuilder>();
+        ref_unwind_safe::<crate::cast::CastFunctionBuilder>();
+        ref_unwind_safe::<crate::scalar::ScalarFunctionBuilder>();
+        ref_unwind_safe::<crate::scalar::ScalarOverloadBuilder>();
+        ref_unwind_safe::<crate::scalar::ScalarFunctionSetBuilder>();
+        ref_unwind_safe::<crate::table::TableFunctionBuilder>();
+        #[cfg(feature = "duckdb-1-5")]
+        ref_unwind_safe::<crate::copy_function::CopyFunctionBuilder>();
+    }
 
     /// The payload each test allocates: a reference to *that test's* counter.
     ///

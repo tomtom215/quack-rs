@@ -88,12 +88,12 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **26 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **30 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```text
 L1  COMBINE must propagate ALL config fields (not just data)
-L2  State destroy double-free → FfiState<T> nulls pointers after free
+L2  State destroy double-free → FfiState<T> clears its tag before dropping
 L3  No panics across FFI → init_extension uses Result throughout
 L4  ensure_validity_writable required before NULL output → VectorWriter handles it
 L5  Boolean reading must use u8 != 0 → VectorReader enforces this
@@ -221,12 +221,10 @@ fn register(con: libduckdb_sys::duckdb_connection) -> ExtResult<()> {
         AggregateFunctionBuilder::try_new("word_count")?
             .param(TypeId::Varchar)
             .returns(TypeId::BigInt)
-            .state_size(FfiState::<WordCountState>::size_callback)
-            .init(FfiState::<WordCountState>::init_callback)
+            .ffi_state::<WordCountState>()
             .update(update)
             .combine(combine)
             .finalize(finalize)
-            .destructor(FfiState::<WordCountState>::destroy_callback)
             .register(con)?;
     }
     Ok(())
@@ -371,8 +369,8 @@ append_metadata target/release/libmy_extension.so \
 > ¹ Requires the `duckdb-1-5` feature flag (DuckDB 1.5.0+).
 >
 > ² Requires the `duckdb-1-5-4` feature flag. The functions themselves are in
-> DuckDB's C API from 1.5.0; the flag exists because `libduckdb-sys` did not
-> ship the Arrow C Data Interface struct layouts until 1.10504.0.
+> DuckDB's C API already in 1.4.4; the flag exists because `libduckdb-sys` did
+> not ship the Arrow C Data Interface struct layouts until 1.10504.0.
 
 [`arrow`]: https://docs.rs/quack-rs/latest/quack_rs/arrow/index.html
 [`callback`]: https://docs.rs/quack-rs/latest/quack_rs/callback/index.html
@@ -442,7 +440,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | ID | Name | Symptom | quack-rs Solution |
 |----|------|---------|-------------------|
 | **L1** | COMBINE config propagation | Aggregate returns wrong results under parallelism | Testable with `AggregateTestHarness` |
-| **L2** | Double-free in destroy | Heap corruption / SIGABRT | `FfiState<T>::destroy_callback` nulls pointer after free |
+| **L2** | Double-free in destroy | Heap corruption / SIGABRT | `FfiState<T>::destroy_callback` clears the tag before dropping |
 | **L3** | Panic across FFI | Process abort | `init_extension` propagates `Result` and runs the registration closure under `catch_unwind`; a wrapper macro does the same for every callback kind — scalar, table bind/init/scan, aggregate update/combine/finalize/destroy, cast and replacement scan — routing the panic message to that kind's `set_error`. Requires `panic = "unwind"`, which the scaffold generates |
 | **L4** | Missing `ensure_validity_writable` | NULLs silently dropped (the mask pointer is NULL) | `VectorWriter::set_null` calls it automatically |
 | **L5** | Boolean undefined behavior | Non-deterministic bool semantics | `VectorReader::read_bool` reads `u8 != 0` |
@@ -454,7 +452,11 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L11** | C API aggregates under `agg(x) OVER ()` / `agg(x ORDER BY y)` | Segfault or memory corruption in `update` | A `DuckDB` defect (`CAPIAggregateUpdate` does not flatten the state vector), reported as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109); documented, cannot be prevented from an extension |
 | **L12** | Aggregate `update` receives NULL rows under `DEFAULT_NULL_HANDLING` | A wrong answer when the input has NULLs: `update` reads whatever the NULL slot holds | Skip rows where `is_valid` is false in `update`, whatever the null handling; documented on `NullHandling` and the aggregate builders |
 | **L13** | A C API aggregate without a destructor in a running window | A wrong running value, no error: `DuckDB` streams the window and re-reads the first row | Every aggregate builder registers a destructor (a no-op when none is given) |
-| **L14** | The C API differs across the releases one build loads into | An abort, a bad type or an unexplained registration failure on an older release that loads the same binary | `argument`, `try_decimal`, `try_new` and the collision check do not rely on newer behaviour; CI runs the suite against DuckDB 1.4.4 and 1.5.0 |
+| **L14** | The C API differs across the releases one build loads into | An abort, a bad type or an unexplained registration failure on an older release that loads the same binary | `argument`, `try_decimal`, `try_new` and the collision check do not rely on newer behaviour; CI runs the suite against DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4 and 1.5.5 |
+| **L15** | `combine` consumes its source states | Right in `GROUP BY`, wrong in a sliding window | Documented on `CombineFn`; `AggregateState` requires `Sync` |
+| **L16** | Valid Arrow layouts `DuckDB` misimports | Wrong rows, reads past a buffer, heap corruption | `data_chunk_from_arrow` walks the array with its schema and refuses them |
+| **L17** | A `COPY … FROM` reader declares result columns | Database invalidated (assertion builds); column silently dropped (release) | Typed readers refused at bind; documented for raw binds |
+| **L18** | A `LIST` reserve moves every buffer below its child | Writes into freed memory through a cached writer | Documented in the writers' `# Safety` sections |
 
 ### Practical Pitfalls (P)
 
@@ -793,7 +795,8 @@ within those callbacks.
 
 The documentation convention is:
 
-- Every `unsafe fn` states what the caller must guarantee under `# Safety`.
+- Every `unsafe fn` states what the caller must guarantee under `# Safety`; a
+  trait's `unsafe` methods state it once, on the trait.
 - Every `unsafe` block **inside a safe function** carries a `// SAFETY:` comment —
   there the crate, not the caller, is asserting the invariant.
 - Every `unsafe` block inside an `unsafe fn` carries one too, naming the clause of
@@ -852,9 +855,9 @@ inside a callback is caught there like any other.
 
 `quack-rs` uses four layers of tests:
 
-### 1. Unit tests (in every source file)
+### 1. Unit tests (alongside the code)
 
-Each module contains `#[cfg(test)]` unit tests that verify pure-Rust behavior without
+Most modules contain `#[cfg(test)]` unit tests that verify pure-Rust behavior without
 a DuckDB runtime. These test state machine correctness, builder field storage, validation
 logic, and the `description.yml` parser.
 
@@ -953,8 +956,8 @@ preserves compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
 
 ### Arrow interop
 
-DuckDB 1.5.0 added a conversion family that moves data straight between a
-`duckdb_data_chunk` and the [Arrow C Data Interface] — `duckdb_to_arrow_schema`,
+DuckDB's C API has a conversion family (already in 1.4.4) that moves data
+straight between a `duckdb_data_chunk` and the [Arrow C Data Interface] — `duckdb_to_arrow_schema`,
 `duckdb_data_chunk_to_arrow`, `duckdb_schema_from_arrow`,
 `duckdb_data_chunk_from_arrow` and the `duckdb_arrow_options` accessors.
 `quack-rs` wraps all of them in the [`arrow`] module behind the
@@ -968,7 +971,7 @@ and one that does not pays nothing.
 
 The feature is separate from `duckdb-1-5` only because `libduckdb-sys` declared
 those records as opaque zero-sized placeholders until **1.10504.0**; the DuckDB
-functions themselves are present from 1.5.0.
+functions themselves are present in every release quack-rs supports.
 
 [Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
 
@@ -981,10 +984,11 @@ functions themselves are present from 1.5.0.
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
 
-**Unreleased (0.18.0)** — Fixes from three further production-readiness audits
-(`AUDIT.md`, sections 7–9): soundness holes in the safe API, process aborts, wrong
-answers and leaks, each reproduced against a real DuckDB or derived from its source
-before it was fixed. Breaking; see the CHANGELOG.
+**Unreleased (0.18.0)** — Fixes from four further production-readiness audits
+(`AUDIT.md`, sections 7–10): soundness holes in the safe API, process aborts, wrong
+answers and leaks. Each fix has a regression test, and each defect involving DuckDB
+was reproduced against a real DuckDB or derived from its source before it was
+fixed. Breaking; see the CHANGELOG.
 
 **v0.16.0** (2026-08-19) — New `abi` module: the extension checks, at load, that
 the running DuckDB's `duckdb_ext_api_v1` layout matches the one it was compiled

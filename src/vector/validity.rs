@@ -56,9 +56,11 @@ impl ValidityBitmap<'_> {
     ///
     /// `vector` must be a valid `DuckDB` vector handle obtained from a data chunk
     /// within the current callback invocation. The vector must not be destroyed
-    /// while the returned `ValidityBitmap` is live. If `vector` is the child of a
-    /// `LIST` or `MAP` vector, the bitmap must not be used after that parent is
-    /// grown with a `reserve`, which reallocates the child's validity buffer.
+    /// while the returned `ValidityBitmap` is live. If `vector` lies inside the
+    /// child of a `LIST` or `MAP` vector — is that child, or a STRUCT field or
+    /// ARRAY element vector below it with no other `LIST` or `MAP` in between —
+    /// the bitmap must not be used after that `LIST` or `MAP` is grown with a
+    /// `reserve`, which reallocates the validity buffer of every such vector.
     pub unsafe fn ensure_writable(vector: duckdb_vector) -> Self {
         // SAFETY: `vector` is a valid DuckDB vector handle. This call marks the
         // vector's validity buffer as writable and allocates it if it doesn't exist.

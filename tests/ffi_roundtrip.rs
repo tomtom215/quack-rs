@@ -3008,6 +3008,41 @@ fn a_replacement_scan_sees_only_the_unqualified_name() {
     );
 }
 
+/// Calls of `count_null_deletes` with a null pointer.
+static NULL_DELETES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe extern "C" fn count_null_deletes(data: *mut std::os::raw::c_void) {
+    if data.is_null() {
+        NULL_DELETES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Unlike every other C API destructor slot, a replacement scan's
+/// `delete_callback` runs even when its extra data is null
+/// (`~CAPIReplacementScanData` has no null check), so a callback that frees
+/// its argument must handle null.
+#[test]
+fn a_replacement_scans_delete_callback_runs_with_null_extra_data() {
+    use quack_rs::replacement_scan::ReplacementScanBuilder;
+
+    let before = NULL_DELETES.load(std::sync::atomic::Ordering::SeqCst);
+    let fx = Fixture::open();
+    // SAFETY: `db` is open; the callback accepts null.
+    unsafe {
+        ReplacementScanBuilder::register(
+            fx.db(),
+            record_names,
+            std::ptr::null_mut(),
+            Some(count_null_deletes),
+        );
+    }
+    drop(fx); // closes the database
+    assert_eq!(
+        NULL_DELETES.load(std::sync::atomic::Ordering::SeqCst),
+        before + 1
+    );
+}
+
 /// A panic inside a replacement scan must reach SQL as an error, not abort.
 #[test]
 fn a_panicking_replacement_scan_becomes_a_sql_error() {
@@ -3271,7 +3306,7 @@ mod scalar_state {
 /// Bind callback: fold the constant second argument once, instead of reading it
 /// on every row.
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn scaled_bind(info: libduckdb_sys::duckdb_bind_info) {
+unsafe extern "C" fn scaled_bind(info: quack_rs::scalar::RawScalarBindInfo) {
     use quack_rs::scalar::ScalarBindInfo;
 
     // SAFETY: DuckDB passes a valid bind info.
@@ -3301,7 +3336,7 @@ unsafe extern "C" fn scaled_bind(info: libduckdb_sys::duckdb_bind_info) {
 
 /// Init callback: allocate per-thread scratch.
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn scaled_init(info: libduckdb_sys::duckdb_init_info) {
+unsafe extern "C" fn scaled_init(info: quack_rs::scalar::RawScalarInitInfo) {
     use quack_rs::scalar::ScalarInitInfo;
 
     // SAFETY: DuckDB passes a valid init info.
@@ -3567,6 +3602,8 @@ fn a_selection_vector_round_trips_its_indices() {
 
     let mut sel = SelectionVector::new(2048).expect("allocate");
     assert_eq!(sel.as_slice().len(), 2048);
+    assert_eq!(sel.len(), 2048);
+    assert!(!sel.is_empty());
 
     for (i, slot) in sel.as_mut_slice().iter_mut().enumerate() {
         *slot = (2047 - i) as u32;
@@ -3577,6 +3614,7 @@ fn a_selection_vector_round_trips_its_indices() {
     // A zero-length vector must not hand out a dangling non-empty slice.
     let empty = SelectionVector::new(0).expect("allocate");
     assert_eq!(empty.as_slice(), &[]);
+    assert!(empty.is_empty());
 }
 
 /// The instance cache must hand back the *same* database for the same path.
@@ -4240,7 +4278,9 @@ fn result_kind_distinguishes_rows_from_row_counts() {
 
     let fx = Fixture::open();
     // SAFETY: `con` is open.
-    unsafe { query(fx.con(), "CREATE TABLE k(i INTEGER)") }.expect("create");
+    let created = unsafe { query(fx.con(), "CREATE TABLE k(i INTEGER)") }.expect("create");
+    assert_eq!(created.result_kind(), ResultKind::Nothing);
+    drop(created);
 
     assert_eq!(fx.query("SELECT 1").result_kind(), ResultKind::Rows);
     // SAFETY: `con` is open.
@@ -4295,6 +4335,33 @@ fn a_streaming_result_reads_the_same_rows_as_a_materialised_one() {
         }
     }
     assert_eq!(sum, sum2);
+}
+
+/// `OwnedConnection` is `Send`: opened on one thread, it queries and
+/// disconnects on another.
+#[test]
+fn an_owned_connection_is_used_and_dropped_on_another_thread() {
+    use quack_rs::query::OwnedConnection;
+
+    let fx = Fixture::open();
+    // SAFETY: `db` is open for the fixture's lifetime, which outlives the
+    // scoped thread.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("open an owned connection");
+    con.execute("CREATE TABLE moved AS SELECT 7::BIGINT AS v")
+        .expect("create");
+    let v = std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let mut result = con.query("SELECT v FROM moved").expect("query");
+                let chunk = result.next_chunk().expect("fetch").expect("one chunk");
+                // SAFETY: one BIGINT column, one row.
+                unsafe { chunk.reader(0).read_i64(0) }
+                // `con` is dropped (disconnected) here, on this thread.
+            })
+            .join()
+            .expect("the thread does not panic")
+    });
+    assert_eq!(v, 7);
 }
 
 #[test]
@@ -5013,7 +5080,7 @@ mod typed_scalar_state {
 }
 
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn typed_bind(info: libduckdb_sys::duckdb_bind_info) {
+unsafe extern "C" fn typed_bind(info: quack_rs::scalar::RawScalarBindInfo) {
     use quack_rs::scalar::{ScalarBindData, ScalarBindInfo};
     use typed_scalar_state::Factor;
 
@@ -5034,7 +5101,7 @@ unsafe extern "C" fn typed_bind(info: libduckdb_sys::duckdb_bind_info) {
 }
 
 #[cfg(feature = "duckdb-1-5")]
-unsafe extern "C" fn typed_init(info: libduckdb_sys::duckdb_init_info) {
+unsafe extern "C" fn typed_init(info: quack_rs::scalar::RawScalarInitInfo) {
     use quack_rs::scalar::{ScalarInitInfo, ScalarLocalState};
     use typed_scalar_state::Calls;
 
@@ -5889,6 +5956,9 @@ mod value_temporal;
 mod appender_rows;
 
 #[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/bind_expressions.rs"]
+mod bind_expressions;
+#[cfg(feature = "duckdb-1-5")]
 #[path = "ffi_roundtrip/query_stream.rs"]
 mod query_stream;
 
@@ -5896,14 +5966,34 @@ mod query_stream;
 mod value_nested;
 
 #[cfg(feature = "duckdb-1-5-4")]
+#[path = "ffi_roundtrip/arrow_export.rs"]
+mod arrow_export;
+#[cfg(feature = "duckdb-1-5-4")]
 #[path = "ffi_roundtrip/arrow_import.rs"]
 mod arrow_import;
+#[cfg(feature = "duckdb-1-5-4")]
+#[path = "ffi_roundtrip/arrow_layout.rs"]
+mod arrow_layout;
 
 #[path = "ffi_roundtrip/query_docs.rs"]
 mod query_docs;
 
+#[path = "ffi_roundtrip/table_description.rs"]
+mod table_description;
+
+#[path = "ffi_roundtrip/agg_states.rs"]
+mod agg_states;
+#[path = "ffi_roundtrip/chunk_writer.rs"]
+mod chunk_writer;
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/file_errors.rs"]
+mod file_errors;
 #[path = "ffi_roundtrip/lifecycle.rs"]
 mod lifecycle;
+#[path = "ffi_roundtrip/list_limits.rs"]
+mod list_limits;
+#[path = "ffi_roundtrip/value_render.rs"]
+mod value_render;
 
 #[path = "ffi_roundtrip/agg_window.rs"]
 mod agg_window;
@@ -5919,3 +6009,23 @@ mod collision;
 
 #[path = "ffi_roundtrip/temporal_binds.rs"]
 mod temporal_binds;
+
+#[path = "ffi_roundtrip/mock_parity.rs"]
+mod mock_parity;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/nested_reserve.rs"]
+mod nested_reserve;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/copy_from_columns.rs"]
+mod copy_from_columns;
+
+#[path = "ffi_roundtrip/value_getters.rs"]
+mod value_getters;
+
+#[path = "ffi_roundtrip/appender_api.rs"]
+mod appender_api;
+
+#[path = "ffi_roundtrip/handles_api.rs"]
+mod handles_api;

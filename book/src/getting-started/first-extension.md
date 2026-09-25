@@ -80,8 +80,9 @@ impl AggregateState for WordCountState {}
 ```
 
 `AggregateState` is a marker trait — no methods required.
-`FfiState<WordCountState>` wraps it in a heap-allocated `Box<T>` behind a raw pointer
-and manages the full lifecycle (init, combine, destroy).
+`FfiState<WordCountState>` stores it in the bytes DuckDB allocates for each group
+(boxing it only when it is large or over-aligned) and manages its lifecycle
+(size, init, destroy).
 
 ### 1b. `state_size` and `state_init`
 
@@ -221,7 +222,9 @@ unsafe extern "C" fn wc_state_destroy(
 }
 ```
 
-`destroy_callback` calls `Box::from_raw` and nulls each pointer, preventing double-free.
+`destroy_callback` drops the `T` in each state (and its box, if the state is too
+large to be stored inline), clearing the state's tag first so a second call is a
+no-op.
 
 ---
 

@@ -64,16 +64,21 @@ use crate::table::TableFunctionBuilder;
 ///
 /// # Why every method is `unsafe`
 ///
-/// Each method's only safety requirement is that the implementor's underlying
-/// `duckdb_connection` is valid for the call. The builders carry no further
-/// caller obligation — whatever their callbacks need was promised when the
-/// builder was made (an `unsafe extern "C" fn`, an `unsafe` `extra_info` call),
-/// and a closure-built [`TypedScalarFunctionBuilder`] needs nothing at all.
+/// Each method requires that the implementor's underlying `duckdb_connection`
+/// is valid for the call, and that the raw callbacks installed on the builder
+/// fit the calls `DuckDB` will make to them: each callback's own `# Safety`
+/// preconditions must hold where it is installed. For a raw aggregate that
+/// means `state_size`, `init`, `destructor` and the data callbacks all
+/// describe the same state ([`AggregateFunctionBuilder::ffi_state`][crate::aggregate::AggregateFunctionBuilder::ffi_state]
+/// installs `FfiState<T>`'s three together); scalar and table bind/init
+/// callbacks are kept apart by their argument types. Builders whose callbacks
+/// quack-rs installs itself — a closure-built [`TypedScalarFunctionBuilder`],
+/// a typed table function — add no obligation.
 ///
-/// For the [`Connection`] handed to your registration closure, that
-/// requirement always holds: quack-rs builds it from the handles `DuckDB` passed
-/// the entry point and only lends it to the closure, so it cannot outlive them.
-/// Calling these methods on that `&Connection` is therefore always sound.
+/// For the [`Connection`] handed to your registration closure, the connection
+/// requirement always holds: quack-rs builds it from the handles `DuckDB`
+/// passed the entry point and only lends it to the closure, so it cannot
+/// outlive them.
 ///
 /// They stay `unsafe` because `Registrar` is a *safe* trait: any type can
 /// implement it around any handle, so a safe method could not rely on the

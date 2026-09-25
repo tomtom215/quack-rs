@@ -335,10 +335,138 @@ fn debug_says_released_without_touching_the_other_fields() {
 }
 
 #[test]
-fn a_converted_schema_remembers_its_column_count() {
+fn a_converted_schema_remembers_its_column_count_and_shapes() {
+    use super::import_layout::Kind;
+
+    let strings: Vec<CString> = ["+s", "i", "+l", "+us:1,0", "u"]
+        .iter()
+        .map(|s| CString::new(*s).expect("no interior NUL"))
+        .collect();
+    let mut leaves = [
+        RawArrowSchema::empty(),
+        RawArrowSchema::empty(),
+        RawArrowSchema::empty(),
+    ];
+    leaves[0].format = strings[1].as_ptr();
+    leaves[1].format = strings[1].as_ptr();
+    leaves[2].format = strings[4].as_ptr();
+    // Every record in a live schema carries a release callback; one without
+    // reads as released.
+    for leaf in &mut leaves {
+        leaf.release = Some(count_schema_release);
+    }
+    let [item, member_a, member_b] = &mut leaves;
+    let mut list_children = [std::ptr::from_mut(item)];
+    let mut union_children = [std::ptr::from_mut(member_a), std::ptr::from_mut(member_b)];
+    let mut columns = [
+        RawArrowSchema::empty(),
+        RawArrowSchema::empty(),
+        RawArrowSchema::empty(),
+    ];
+    columns[0].format = strings[1].as_ptr();
+    columns[1].format = strings[2].as_ptr();
+    columns[1].n_children = 1;
+    columns[1].children = list_children.as_mut_ptr();
+    columns[2].format = strings[3].as_ptr();
+    columns[2].n_children = 2;
+    columns[2].children = union_children.as_mut_ptr();
+    for column in &mut columns {
+        column.release = Some(count_schema_release);
+    }
+    let [c0, c1, c2] = &mut columns;
+    let mut column_ptrs = [
+        std::ptr::from_mut(c0),
+        std::ptr::from_mut(c1),
+        std::ptr::from_mut(c2),
+    ];
+    let mut raw = RawArrowSchema::empty();
+    raw.format = strings[0].as_ptr();
+    raw.n_children = 3;
+    raw.children = column_ptrs.as_mut_ptr();
+    raw.release = Some(count_schema_release);
+    // SAFETY: `count_schema_release` frees nothing and nulls itself, and every
+    // pointer above targets a local declared before `root`.
+    let root = unsafe { ArrowSchema::from_raw(raw) };
+
     // SAFETY: a null handle is what `duckdb_destroy_arrow_converted_schema`
     // ignores, so this never calls into DuckDB.
-    let converted = unsafe { ArrowConvertedSchema::from_raw(ptr::null_mut(), 3) };
+    let converted = unsafe { ArrowConvertedSchema::from_raw(ptr::null_mut(), &root) };
     assert_eq!(converted.column_count(), 3);
+    let kinds: Vec<Kind> = converted.shapes().iter().map(|s| s.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            Kind::Leaf,
+            Kind::List {
+                wide: false,
+                map: false
+            },
+            Kind::RecodedUnion
+        ]
+    );
+    assert_eq!(converted.shapes()[1].children[0].kind, Kind::Leaf);
+    assert_eq!(converted.shapes()[2].children.len(), 2);
     assert!(format!("{converted:?}").contains("column_count"));
+}
+
+// A producer that breaks the rule above: its callback does not null `release`.
+unsafe extern "C" fn count_schema_release_leaving_it_set(schema: *mut RawArrowSchema) {
+    // SAFETY: as in `count_schema_release`.
+    unsafe { bump((*schema).private_data) };
+}
+
+unsafe extern "C" fn count_array_release_leaving_it_set(array: *mut RawArrowArray) {
+    // SAFETY: as in `count_array_release`.
+    unsafe { bump((*array).private_data) };
+}
+
+/// `release` runs the producer's callback once even when the callback does
+/// not null itself, so a later `release` or the drop cannot free twice.
+#[test]
+fn release_runs_once_even_if_the_callback_leaves_itself_set() {
+    static SCHEMA: AtomicUsize = AtomicUsize::new(0);
+    static ARRAY: AtomicUsize = AtomicUsize::new(0);
+    let mut raw = RawArrowSchema::empty();
+    raw.private_data = std::ptr::from_ref(&SCHEMA).cast_mut().cast();
+    raw.release = Some(count_schema_release_leaving_it_set);
+    // SAFETY: the callback frees nothing.
+    let mut schema = unsafe { ArrowSchema::from_raw(raw) };
+    schema.release();
+    assert!(schema.is_released());
+    schema.release();
+    drop(schema);
+    assert_eq!(SCHEMA.load(Ordering::SeqCst), 1);
+
+    let mut raw = RawArrowArray::empty();
+    raw.private_data = std::ptr::from_ref(&ARRAY).cast_mut().cast();
+    raw.release = Some(count_array_release_leaving_it_set);
+    // SAFETY: the callback frees nothing.
+    let mut array = unsafe { ArrowArray::from_raw(raw) };
+    array.release();
+    assert!(array.is_released());
+    drop(array);
+    assert_eq!(ARRAY.load(Ordering::SeqCst), 1);
+}
+
+/// `dictionary` borrows a dictionary-encoded schema's value schema, and is
+/// `None` for a schema without one.
+#[test]
+fn dictionary_borrows_the_value_schema() {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let values_format = CString::new("u").expect("no NUL");
+    let mut values = RawArrowSchema::empty();
+    values.format = values_format.as_ptr();
+    // Live, as a producer's is; no counter, so its release counts nothing.
+    values.release = Some(count_schema_release);
+    let indices_format = CString::new("i").expect("no NUL");
+    let mut raw = RawArrowSchema::empty();
+    raw.format = indices_format.as_ptr();
+    raw.dictionary = &raw mut values;
+    raw.private_data = std::ptr::from_ref(&COUNTER).cast_mut().cast();
+    raw.release = Some(count_schema_release);
+    // SAFETY: `count_schema_release` frees nothing and nulls itself; `values`
+    // and the format strings outlive the schema.
+    let schema = unsafe { ArrowSchema::from_raw(raw) };
+    assert_eq!(schema.dictionary().and_then(ArrowSchema::format), Some("u"));
+    assert!(live_schema(&COUNTER).dictionary().is_none());
 }

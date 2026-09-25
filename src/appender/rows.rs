@@ -22,6 +22,11 @@ use crate::value::Value;
 /// low 32 bits, so it is refused here instead.
 const MAX_VARCHAR_LEN: usize = u32::MAX as usize;
 
+/// Whether `len` bytes fit `duckdb_append_varchar_length`'s `uint32_t`.
+const fn fits_append_length(len: usize) -> bool {
+    len <= MAX_VARCHAR_LEN
+}
+
 impl Appender {
     // ── Row-at-a-time appends ───────────────────────────────────────────
 
@@ -34,7 +39,8 @@ impl Appender {
     /// row's first value went in, `DuckDB` is left holding a half-written row
     /// it can neither finish nor drop, and every row buffered since the last
     /// flush is lost. The appender is then *poisoned*: see the
-    /// [module docs][crate::appender]. A failure of the automatic flush inside
+    /// [module docs][crate::appender]. A closure that panics after the row's
+    /// first value poisons it too. A failure of the automatic flush inside
     /// `end_row` does not poison it (see [`end_row`][Self::end_row]).
     ///
     /// # Errors
@@ -55,7 +61,9 @@ impl Appender {
                 self.column.get()
             )));
         }
+        let unwinding = PoisonOnUnwind(self);
         let result = append(self).and_then(|()| self.end_row());
+        core::mem::forget(unwinding);
         if result.is_err() && self.column.get() != 0 {
             self.lifecycle.set(Lifecycle::Poisoned);
         }
@@ -171,7 +179,7 @@ impl Appender {
     fn append_bytes_as(&self, value: &[u8], varchar: bool) -> Result<(), AppendError> {
         self.usable()?;
         if varchar {
-            if value.len() > MAX_VARCHAR_LEN {
+            if !fits_append_length(value.len()) {
                 return Err(append_error(&format!(
                     "VARCHAR of {} bytes exceeds DuckDB's {MAX_VARCHAR_LEN}-byte appender limit",
                     value.len()
@@ -188,7 +196,7 @@ impl Appender {
             };
             return self.record_append(state);
         }
-        if value.len() > MAX_VARCHAR_LEN {
+        if !fits_append_length(value.len()) {
             return Err(append_error(&format!(
                 "BLOB of {} bytes exceeds DuckDB's {MAX_VARCHAR_LEN}-byte appender limit",
                 value.len()
@@ -284,5 +292,33 @@ impl Appender {
         }
         // SAFETY: self.handle is valid and value.as_raw() is non-null.
         self.record_append(unsafe { duckdb_append_value(self.handle, value.as_raw()) })
+    }
+}
+
+/// Poisons the appender if a [`row`][Appender::row] closure panics after the
+/// row's first value, as an error there does. Forgotten on the normal path,
+/// so its `drop` runs only while unwinding.
+struct PoisonOnUnwind<'a>(&'a Appender);
+
+impl Drop for PoisonOnUnwind<'_> {
+    fn drop(&mut self) {
+        if self.0.column.get() != 0 {
+            self.0.lifecycle.set(Lifecycle::Poisoned);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fits_append_length;
+
+    /// The limit is `u32::MAX` bytes inclusive: a string of exactly that
+    /// length is passed to `DuckDB` intact, one byte more would be truncated.
+    #[test]
+    fn the_append_length_limit_is_u32_max_inclusive() {
+        assert!(fits_append_length(0));
+        assert!(fits_append_length(u32::MAX as usize));
+        #[cfg(target_pointer_width = "64")]
+        assert!(!fits_append_length(u32::MAX as usize + 1));
     }
 }

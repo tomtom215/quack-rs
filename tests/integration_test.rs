@@ -393,10 +393,10 @@ fn duck_string_view_inline_format() {
     use quack_rs::vector::DuckStringView;
 
     // Build a 16-byte buffer for an inline string ("hello" = 5 bytes)
-    // Layout: [len: u32 LE][data: 12 bytes padding to 0]
+    // Layout: [len: u32, native byte order][data: 12 bytes padding to 0]
     let mut bytes = [0u8; 16];
     let s = b"hello";
-    bytes[0..4].copy_from_slice(&u32::try_from(s.len()).unwrap_or(u32::MAX).to_le_bytes());
+    bytes[0..4].copy_from_slice(&u32::try_from(s.len()).unwrap_or(u32::MAX).to_ne_bytes());
     bytes[4..4 + s.len()].copy_from_slice(s);
 
     let view = DuckStringView::inline_from_bytes(&bytes).expect("inline value");
@@ -1507,4 +1507,40 @@ fn the_scaffold_generates_a_profile_its_own_validator_accepts() {
     let check = validate_release_profile(&panic, &lto, &opt, &cgu)
         .unwrap_or_else(|e| panic!("generated Cargo.toml: {e}"));
     assert!(check.is_fully_optimized());
+}
+
+// ─── Entry-point macro arguments ─────────────────────────────────────────────
+
+// The macros used to evaluate `$policy` and `$register` in the generated
+// `extern "C"` function before any panic guard, so a panicking argument
+// expression aborted the process at `LOAD`.
+quack_rs::entry_point!(
+    panicking_policy_init,
+    { panic!("policy expression") },
+    |_con| Ok(())
+);
+
+/// A registration function built at load time, whose construction panics.
+fn register_that_panics(
+) -> fn(&quack_rs::connection::Connection) -> Result<(), quack_rs::error::ExtensionError> {
+    panic!("register expression")
+}
+
+quack_rs::entry_point_v2!(panicking_register_init, register_that_panics());
+
+#[test]
+fn a_panicking_entry_point_argument_fails_the_load_instead_of_aborting() {
+    // Null pointers: the argument panics before either is used, and a null
+    // `access` has nowhere to report the error, so the result is `false`.
+    // SAFETY: the generated functions accept null pointers.
+    unsafe {
+        assert!(!panicking_policy_init(
+            std::ptr::null_mut(),
+            std::ptr::null()
+        ));
+        assert!(!panicking_register_init(
+            std::ptr::null_mut(),
+            std::ptr::null()
+        ));
+    }
 }

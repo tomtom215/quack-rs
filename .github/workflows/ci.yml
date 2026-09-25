@@ -184,7 +184,9 @@ jobs:
     # Every other test job runs against the DuckDB release Cargo.lock pins
     # (v1.5.5), but quack-rs supports every release from v1.4.4, and a
     # `duckdb-1-5` build loads into v1.5.0 to v1.5.4 too. Their C APIs differ
-    # in places: before v1.5.5 `duckdb_scalar_function_bind_get_argument`
+    # in places (v1.4.5 is the last 1.4 release; v1.5.3 and v1.5.4 are the
+    # oldest the duckdb-1-5-3 and duckdb-1-5-4 features load into): before
+    # v1.5.5 `duckdb_scalar_function_bind_get_argument`
     # copies outside any `try` (a subquery argument aborted the process);
     # before v1.5.4 `duckdb_create_decimal_type` validates nothing; before
     # v1.5.0 scalar registration cannot add an overload to an existing name,
@@ -201,9 +203,19 @@ jobs:
           - engine: v1.4.4
             crate: 1.4.4
             features: bundled-test-prebuilt
+          - engine: v1.4.5
+            crate: 1.4.5
+            features: bundled-test-prebuilt
           - engine: v1.5.0
             crate: 1.10500.0
             features: bundled-test-prebuilt,duckdb-1-5
+          # The oldest release each version feature loads into.
+          - engine: v1.5.3
+            crate: 1.10503.0
+            features: bundled-test-prebuilt,duckdb-1-5-3
+          - engine: v1.5.4
+            crate: 1.10504.0
+            features: bundled-test-prebuilt,duckdb-1-5-4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1251,6 +1263,21 @@ jobs:
         # pure-Rust `unsafe` in the crate, and exactly what Miri is here for.
         # `.cargo/mutants.toml` already sets the same features for the same reason.
         run: cargo +nightly miri test --lib --features duckdb-1-5-4
+      # The same tests on a big-endian target. `duckdb_string_t`, HUGEINT and
+      # Arrow buffers are native-endian, and the string decoder read them as
+      # little-endian until the fifth audit: every test passed on x86-64 while
+      # the decoder followed an inline string's bytes as a pointer on s390x.
+      # Miri interprets the target, so no s390x runner is needed. criterion's
+      # `alloca` dependency compiles a C shim in its build script; Miri never
+      # executes it, so the host compiler stands in for the cross compiler.
+      - name: Run the library unit tests under Miri, big-endian (s390x)
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+          RUSTFLAGS: ""
+          PROPTEST_CASES: "8"
+          CC_s390x_unknown_linux_gnu: gcc
+          AR_s390x_unknown_linux_gnu: ar
+        run: cargo +nightly miri test --target s390x-unknown-linux-gnu --lib --features duckdb-1-5-4
 
   leak-check:
     name: LeakSanitizer (RAII wrappers vs a real DuckDB)
@@ -1456,6 +1483,9 @@ jobs:
             exit 1
           fi
           for target in $TARGETS; do
+            # Targets that call a real DuckDB need the `live` feature and a
+            # libduckdb; the next step runs them.
+            case " $LIVE_TARGETS " in *" $target "*) continue ;; esac
             echo "::group::$target"
             # Seed from the committed inputs. `fuzz/corpus` is generated and
             # gitignored: keeping a growing corpus in the history would add a
@@ -1463,6 +1493,33 @@ jobs:
             mkdir -p "fuzz/corpus/$target"
             cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
             cargo +nightly fuzz run --fuzz-dir fuzz "$target" -- \
+              -max_total_time=60 -rss_limit_mb=4096
+            echo "::endgroup::"
+          done
+        env:
+          LIVE_TARGETS: value_render
+      # `value_render` renders values through a real DuckDB, whose
+      # `duckdb_get_varchar` and converting getters abort the process on a
+      # payload they cannot render: the fuzzer's job is to find one quack-rs
+      # lets through. The libduckdb is the one fuzz/Cargo.lock names.
+      - name: Download pre-built libduckdb
+        run: |
+          set -euo pipefail
+          DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh fuzz/Cargo.lock)
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip" -o "${{ runner.temp }}/libduckdb.zip"
+          mkdir -p "${{ runner.temp }}/libduckdb"
+          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+      - name: Run the live targets briefly
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: |
+          set -euo pipefail
+          for target in value_render; do
+            echo "::group::$target"
+            mkdir -p "fuzz/corpus/$target"
+            cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
+            cargo +nightly fuzz run --fuzz-dir fuzz --features live "$target" -- \
               -max_total_time=60 -rss_limit_mb=4096
             echo "::endgroup::"
           done

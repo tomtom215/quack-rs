@@ -19,10 +19,9 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use quack_rs::scalar::ScalarBindInfo;
-//! use libduckdb_sys::duckdb_bind_info;
+//! use quack_rs::scalar::{RawScalarBindInfo, ScalarBindInfo};
 //!
-//! unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
+//! unsafe extern "C" fn my_bind(info: RawScalarBindInfo) {
 //!     let bind = unsafe { ScalarBindInfo::new(info) };
 //!     if let Some(arg) = unsafe { bind.argument(0) } {
 //!         // Inspect the argument's static return type at bind time.
@@ -399,6 +398,76 @@ mod tests {
         ] {
             assert_eq!(parse_exception_json(raw), None, "{raw}");
         }
+    }
+
+    /// Every name `Exception::ExceptionTypeToString` can produce maps to the
+    /// error type with the same code. The pairs are `EXCEPTION_MAP`
+    /// (`src/common/exception.cpp`) joined with the `ExceptionType` codes
+    /// (`exception.hpp`) of `DuckDB` 1.5.5, extracted by script; the C API's
+    /// `duckdb_error_type` uses the same codes. `NETWORK` (25) has no name.
+    #[test]
+    fn every_exception_type_name_maps_to_the_error_type_with_its_code() {
+        for (code, name) in [
+            (0, "Invalid"),
+            (1, "Out of Range"),
+            (2, "Conversion"),
+            (3, "Unknown Type"),
+            (4, "Decimal"),
+            (5, "Mismatch Type"),
+            (6, "Divide by Zero"),
+            (7, "Object Size"),
+            (8, "Invalid type"),
+            (9, "Serialization"),
+            (10, "TransactionContext"),
+            (11, "Not implemented"),
+            (12, "Expression"),
+            (13, "Catalog"),
+            (14, "Parser"),
+            (24, "Binder"),
+            (15, "Planner"),
+            (16, "Scheduler"),
+            (17, "Executor"),
+            (18, "Constraint"),
+            (19, "Index"),
+            (20, "Stat"),
+            (21, "Connection"),
+            (22, "Syntax"),
+            (23, "Settings"),
+            (26, "Optimizer"),
+            (27, "NullPointer"),
+            (28, "IO"),
+            (29, "INTERRUPT"),
+            (30, "FATAL"),
+            (31, "INTERNAL"),
+            (32, "Invalid Input"),
+            (33, "Out of Memory"),
+            (34, "Permission"),
+            (35, "Parameter Not Resolved"),
+            (36, "Parameter Not Allowed"),
+            (37, "Dependency"),
+            (39, "Missing Extension"),
+            (38, "HTTP"),
+            (40, "Extension Autoloading"),
+            (41, "Sequence"),
+            (42, "Invalid Configuration"),
+        ] {
+            let mapped = error_type_from_name(name);
+            assert_eq!(u64::from(mapped.to_raw()), code, "{name}");
+            assert_eq!(mapped, DuckDbErrorType::from_raw(mapped.to_raw()), "{name}");
+        }
+    }
+
+    #[test]
+    fn every_single_character_json_escape_is_decoded() {
+        let raw = r#"{"exception_type":"IO","exception_message":"\"\\\/\b\f\n\r\t"}"#;
+        assert_eq!(
+            parse_exception_json(raw),
+            Some(("IO".to_owned(), "\"\\/\u{8}\u{c}\n\r\t".to_owned()))
+        );
+        assert_eq!(
+            parse_exception_json(r#"{"exception_type":"IO","exception_message":"\q"}"#),
+            None
+        );
     }
 
     #[test]

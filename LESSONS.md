@@ -56,7 +56,8 @@ The combine-propagates-config bug passed 435 unit tests before being caught by E
 **Root cause**: If `state_destroy` frees the inner Box but doesn't null out the pointer,
 a second call to `state_destroy` (e.g., in error paths) will free already-freed memory.
 
-**Fix**: `FfiState<T>::destroy_callback` nulls `inner` after freeing. Use it instead of
+**Fix**: `FfiState<T>::destroy_callback` clears the slot's tag before dropping the `T`, and
+drops only a slot whose tag matches, so a second call is a no-op. Use it instead of
 writing your own destructor.
 
 ---
@@ -415,8 +416,9 @@ with the raw C API, call `duckdb_aggregate_function_set_destructor`.
 
 **Status**: Four cases fixed in quack-rs (`ScalarBindInfo::argument`,
 `LogicalType::try_decimal`, `LogicalType::try_new`, the scalar collision
-check); CI job `test-older-engines` runs the suite against DuckDB 1.4.4 (default
-features) and 1.5.0 (`duckdb-1-5`).
+check); CI job `test-older-engines` runs the suite against DuckDB 1.4.4 and
+1.4.5 (default features), 1.5.0 (`duckdb-1-5`), 1.5.3 (`duckdb-1-5-3`) and
+1.5.4 (`duckdb-1-5-4`).
 
 **Symptom**: code tested against the release `Cargo.lock` pins (1.5.5) aborts
 or misbehaves in an older release the same binary loads into. A default-feature
@@ -438,6 +440,96 @@ the whole suite against the oldest release of each range.
 introduced it (the source at each tag answers that), and either check the
 engine version at run time (`abi::engine_version`) or make the check in Rust.
 Test against the oldest release a build can load into, not only the pinned one.
+
+---
+
+## L15: `combine` must leave its source states unchanged
+
+**Status**: Documented on `CombineFn` and in the aggregate chapter; pinned by
+`combine_must_leave_its_source_unchanged` (`tests/ffi_roundtrip/agg_window.rs`).
+Not preventable by the SDK: `combine` receives raw state pointers.
+
+**Symptom**: an aggregate is right in `GROUP BY` and wrong in a sliding window
+(`ROWS BETWEEN n PRECEDING AND CURRENT ROW`): in the regression test a sum
+whose `combine` moved its value out of the source gave 4985 of 5000 rows wrong.
+
+**Root cause**: a window's segment tree keeps one state per tree node and
+combines each node's state into every frame that covers it, from several
+threads at once (`WindowSegmentTreePart::WindowSegmentValue`,
+`window_segment_tree.cpp`). A `combine` that consumes its source (`mem::take`,
+zeroing a counter) is right for the first frame and wrong for the rest, and a
+write to a source another thread reads is a data race.
+
+**Fix**: read the source; copy or clone what the target needs. `AggregateState`
+requires `Sync` for the same reason.
+
+---
+
+## L16: A valid Arrow array is not always one `DuckDB` imports correctly
+
+**Status**: Fixed in quack-rs: `data_chunk_from_arrow` walks the array with its
+schema and refuses the layouts `DuckDB` 1.4.4 to 1.5.5 mishandles
+(`src/arrow/import_layout.rs`, `tests/ffi_roundtrip/arrow_layout.rs`;
+`docs/upstream-duckdb-reports.md`, items 9, 24 to 29 and 31 to 33).
+
+**Symptom**: an array that arrow-rs or another producer built, valid by the
+Arrow specification, imports with values from the wrong rows, reads past a
+buffer, or corrupts the heap. Arrays `DuckDB` exported itself never show it,
+which is why round-trip tests pass.
+
+**Root cause**: `DuckDB`'s importer tracks where a node's rows start with two
+parameters, `parent_offset` and `nested_offset`, and some paths pass the wrong
+one: a struct gives its children only its own offset, union members start at
+row 0, a dictionary's validity ignores the list's offset. List views, recoded
+union type ids and nested dictionaries are mishandled too.
+
+**Fix**: never assume a producer's layout matches the one `DuckDB` writes.
+Test an importer with hand-built arrays that put offsets at every level, and
+refuse what the engine cannot import rather than return wrong values.
+
+---
+
+## L17: A `COPY … FROM` reader must not declare result columns
+
+**Status**: Refused for typed table functions (their bind fails with a
+message); documented for raw ones on `CopyFunctionBuilder::copy_from` and
+`BindInfo::add_result_column`. Pinned by
+`tests/ffi_roundtrip/copy_from_columns.rs`;
+`docs/upstream-duckdb-reports.md`, item 37.
+
+**Symptom**: on a `DuckDB` built with assertions, `COPY t FROM …` fails with
+`chunk.ColumnCount() == types.size()` and the database is invalidated. A
+release build silently drops the extra column, so the bug hides in testing.
+
+**Root cause**: `CCopyFromBind` hands the reader's bind the `INSERT`'s own list
+of expected types as its result types, and `duckdb_bind_add_result_column`
+appends to that list, so every chunk the `INSERT` receives is wider than the
+table. `duckdb.h` says the reader "should not" declare columns; nothing
+enforces it.
+
+**Fix**: in a `COPY … FROM` reader's bind, read the target's columns with
+`BindInfo::result_column_count` and its siblings, and declare none.
+
+---
+
+## L18: A `LIST` reserve moves every buffer below its child
+
+**Status**: Documented in the `# Safety` sections of `VectorWriter::from_vector`,
+`StructWriter::new`, `StructVector::field_writer` and
+`ValidityBitmap::ensure_writable`; measured by
+`tests/ffi_roundtrip/nested_reserve.rs`.
+
+**Symptom**: a writer on a STRUCT field of a list's elements writes into freed
+memory after the list is grown, although it was never a direct child of the
+list.
+
+**Root cause**: `duckdb_list_vector_reserve` resizes the child with
+`Vector::Resize`, which reallocates the data and validity buffers of the child
+and of every STRUCT field and ARRAY element vector below it, down to the next
+`LIST` (whose child has its own buffer). Writers cache both pointers.
+
+**Fix**: fetch every writer and bitmap below a list's child again after each
+`reserve` on that list (a `ListBuilder` row that grows it counts).
 
 ---
 
@@ -577,9 +669,13 @@ reading silently drops bytes that are not valid UTF-8.
 
 **Root cause**: DuckDB stores strings in a 16-byte struct with two formats:
 - **Inline** (≤ 12 bytes): `[ len: u32 | data: [u8; 12] ]`
-- **Pointer** (> 12 bytes): `[ len: u32 | prefix: [u8; 4] | ptr: *const u8 | unused: u32 ]`
+- **Pointer** (> 12 bytes): `[ len: u32 | prefix: [u8; 4] | ptr: *const u8 ]`
+  (on a 32-bit target the pointer is 4 bytes and the last 4 are unused, and
+  not necessarily zero)
 
-This is not documented in `libduckdb-sys`.
+The length and the pointer are in the target's own byte order: decoding them
+as little-endian misreads every string on a big-endian target (quack-rs did,
+until the fifth audit). This is not documented in `libduckdb-sys`.
 
 **Fix**: Use `VectorReader::read_str` or `read_duck_string` for UTF-8 text. Use
 `VectorReader::read_blob` or `read_duck_blob` for arbitrary binary data. All four
@@ -633,7 +729,7 @@ extension's `init_c_api` entry-point.
 The `bundled-test` feature adds `duckdb = { features = ["bundled"] }` as a dependency.
 `duckdb` in turn depends on `libduckdb-sys`.  Cargo's **feature-unification** rule merges
 features across all uses of the same crate, so the single `libduckdb-sys` that ends up in
-the test binary carries *both* `loadable-extension` AND `bundled-full`.
+the test binary carries *both* `loadable-extension` AND `bundled`.
 
 In this combined configuration the bundled DuckDB static library is linked into the binary,
 but `loadable-extension` still intercepts every call through the uninitialized dispatch

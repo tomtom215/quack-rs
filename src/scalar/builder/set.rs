@@ -18,6 +18,7 @@ use libduckdb_sys::{
 use libduckdb_sys::{duckdb_scalar_function_set_bind, duckdb_scalar_function_set_init};
 
 use crate::error::ExtensionError;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, NullHandling};
 use crate::validate::validate_function_name;
 
@@ -126,7 +127,7 @@ impl ScalarFunctionSetBuilder {
     /// - A parameter, varargs or return type was given as a bare composite
     ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
     ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
-    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   it as a [`LogicalType`] and use the `*_logical` method; the error
     ///   names the slot.
     /// - Any overload is missing a return type or function callback. The error
     ///   names the overload's index, and is reported before any `DuckDB`
@@ -171,12 +172,6 @@ impl ScalarFunctionSetBuilder {
         unsafe { self.register_with(con, None) }
     }
 
-    /// [`register`][Self::register], checking signatures against `snapshot`
-    /// (listed on first use) instead of listing the catalog for this call.
-    ///
-    /// # Safety
-    ///
-    /// As [`register`][Self::register].
     /// The completeness checks that need no `DuckDB` call: at least one
     /// overload, each with a return type and a function callback.
     /// [`MockRegistrar`][crate::testing::MockRegistrar] runs them too.
@@ -192,6 +187,36 @@ impl ScalarFunctionSetBuilder {
         Ok(())
     }
 
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
+        for (i, overload) in self.overloads.iter().enumerate() {
+            crate::table::type_check::refuse_any_return(
+                &format!("overload {i} return type"),
+                overload.return_type,
+                overload.return_logical.as_ref(),
+            )?;
+        }
+        for (i, overload) in self.overloads.iter().enumerate() {
+            for (j, id) in overload.params.iter().enumerate() {
+                slot(*id, &format!("overload {i} parameter {j}"))?;
+            }
+            if let Some(id) = overload.return_type {
+                slot(id, &format!("overload {i} return type"))?;
+            }
+            if let Some(ref varargs) = overload.varargs {
+                varargs.check(slot, &format!("overload {i} varargs"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// [`register`][Self::register], checking signatures against `snapshot`
+    /// (listed on first use) instead of listing the catalog for this call.
+    ///
+    /// # Safety
+    ///
+    /// As [`register`][Self::register].
     #[allow(clippy::too_many_lines)]
     pub(crate) unsafe fn register_with(
         self,
@@ -202,25 +227,7 @@ impl ScalarFunctionSetBuilder {
         // that need no DuckDB call come first, so a missing callback is
         // reported by index without touching the engine.
         self.check_parts()?;
-        for (i, overload) in self.overloads.iter().enumerate() {
-            crate::table::type_check::refuse_any_return(
-                &format!("overload {i} return type"),
-                overload.return_type,
-                overload.return_logical.as_ref(),
-            )?;
-        }
-        // See `ScalarFunctionBuilder::register` -- reject composite TypeIds.
-        for (i, overload) in self.overloads.iter().enumerate() {
-            for (j, id) in overload.params.iter().enumerate() {
-                LogicalType::check_slot(*id, &format!("overload {i} parameter {j}"))?;
-            }
-            if let Some(id) = overload.return_type {
-                LogicalType::check_slot(id, &format!("overload {i} return type"))?;
-            }
-            if let Some(ref varargs) = overload.varargs {
-                varargs.check(&format!("overload {i} varargs"))?;
-            }
-        }
+        self.check_types(LogicalType::check_slot)?;
         let signatures: Vec<_> = self
             .overloads
             .iter()
@@ -361,14 +368,14 @@ impl ScalarFunctionSetBuilder {
             if let Some(bind_fn) = overload.bind {
                 // SAFETY: func is a valid scalar function handle.
                 unsafe {
-                    duckdb_scalar_function_set_bind(func, Some(bind_fn));
+                    duckdb_scalar_function_set_bind(func, Some(super::single::raw_bind(bind_fn)));
                 }
             }
             #[cfg(feature = "duckdb-1-5")]
             if let Some(init_fn) = overload.init {
                 // SAFETY: func is a valid scalar function handle.
                 unsafe {
-                    duckdb_scalar_function_set_init(func, Some(init_fn));
+                    duckdb_scalar_function_set_init(func, Some(super::single::raw_init(init_fn)));
                 }
             }
 

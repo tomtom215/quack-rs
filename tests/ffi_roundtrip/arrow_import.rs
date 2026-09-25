@@ -393,7 +393,10 @@ fn a_dictionary_array_duckdb_would_overflow_on_is_refused() {
         .expect_err("a 4096-entry dictionary child with NULLs");
     assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
     let message = err.message().unwrap_or_default();
-    assert!(message.contains("4096 entries and nulls"), "{message}");
+    assert!(
+        message.contains("4096 rows that can hold NULLs"),
+        "{message}"
+    );
 }
 
 /// An Arrow null-type column imports as a *constant* NULL vector
@@ -439,4 +442,63 @@ fn a_null_type_column_reads_back_null_in_every_row() {
         // SAFETY: `row < size`.
         assert!(!unsafe { reader.is_valid(row) }, "row {row}");
     }
+}
+
+/// Releases of records built by `claimed_by_column`, per test.
+unsafe extern "C" fn count_release(array: *mut RawArrowArray) {
+    // SAFETY: `private_data` is the test's live counter.
+    unsafe {
+        (*(*array)
+            .private_data
+            .cast::<std::sync::atomic::AtomicUsize>())
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (*array).release = None;
+    }
+}
+
+/// Whether the producer's release has run once the chunk is dropped while a
+/// vector still references column `column` of it.
+#[cfg(feature = "duckdb-1-5")]
+fn released_while_column_is_referenced(column: usize) -> bool {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let options = ArrowOptions::from_connection(&con).expect("options");
+    let int = LogicalType::new(TypeId::Integer);
+    let mut schema = to_arrow_schema(&options, &[("a", &int), ("b", &int)]).expect("schema");
+    // SAFETY: `con` is live.
+    let converted = unsafe { schema_from_arrow(con.as_raw(), &mut schema) }.expect("converted");
+    let (a, b) = (int_child(2, 2), int_child(2, 2));
+    let mut children = [
+        ptr::from_ref(&*a.raw).cast_mut(),
+        ptr::from_ref(&*b.raw).cast_mut(),
+    ];
+    let (mut raw, _buffers) = parent(2, 2, children.as_mut_ptr());
+    let releases = AtomicUsize::new(0);
+    raw.private_data = ptr::from_ref(&releases).cast_mut().cast();
+    raw.release = Some(count_release);
+    // SAFETY: the record's release may run once; nothing else holds it.
+    let array = unsafe { ArrowArray::from_raw(raw) };
+    // SAFETY: `con` is live and `converted` came from it.
+    let chunk = unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }.expect("import");
+    let target = quack_rs::vector::OwnedVector::new(&int, 2).expect("vector");
+    // SAFETY: both vectors are INTEGER; `target` is not read after this.
+    unsafe { quack_rs::vector::ops::reference_vector(target.as_raw(), chunk.vector(column)) };
+    drop(chunk);
+    let freed = releases.load(Ordering::SeqCst) == 1;
+    drop(target);
+    assert_eq!(releases.load(Ordering::SeqCst), 1, "released exactly once");
+    freed
+}
+
+/// `DuckDB` gives the array's `release` to column 0 alone: every column's
+/// state holds a copy of the record, but `release` is nulled after the
+/// first. A vector referencing column 0 keeps the producer's buffers; one
+/// referencing column 1 does not.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn only_the_first_column_holds_the_claim_on_the_arrow_array() {
+    assert!(!released_while_column_is_referenced(0));
+    assert!(released_while_column_is_referenced(1));
 }

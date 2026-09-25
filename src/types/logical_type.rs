@@ -15,6 +15,12 @@ mod construct;
 
 pub use construct::MAX_UNION_MEMBERS;
 
+/// Checks one builder slot's [`TypeId`]: [`LogicalType::check_slot`] when
+/// registering, `check_slot_offline` in
+/// [`MockRegistrar`][crate::testing::MockRegistrar]. Each builder's
+/// `check_types` takes one, so both run the same sequence of checks.
+pub(crate) type SlotCheck = fn(TypeId, &str) -> Result<(), crate::error::ExtensionError>;
+
 use crate::types::TypeId;
 use libduckdb_sys::{
     duckdb_array_type_array_size, duckdb_array_type_child_type, duckdb_decimal_internal_type,

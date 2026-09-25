@@ -252,6 +252,12 @@ fn writer_is_empty() {
 }
 
 #[test]
+fn writer_len_is_its_capacity() {
+    assert_eq!(MockVectorWriter::new(0).len(), 0);
+    assert_eq!(MockVectorWriter::new(5).len(), 5);
+}
+
+#[test]
 fn writer_try_get_i8_round_trip() {
     let mut w = MockVectorWriter::new(1);
     w.write_i8(0, -42);

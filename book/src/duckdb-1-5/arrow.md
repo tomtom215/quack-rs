@@ -2,8 +2,8 @@
 
 > **Requires the `duckdb-1-5-4` feature flag.**
 
-DuckDB 1.5.0 added a conversion family that moves data straight between a
-`duckdb_data_chunk` and the
+DuckDB's C API has a conversion family (already in 1.4.4) that moves data
+straight between a `duckdb_data_chunk` and the
 [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html),
 without a query result in between. `quack_rs::arrow` wraps all of it.
 
@@ -18,9 +18,9 @@ that *does* use arrow-rs bridges across with a pointer cast.
 
 ## Why the feature is `duckdb-1-5-4` and not `duckdb-1-5`
 
-All eight C functions are in `duckdb_ext_api_v1` from DuckDB **1.5.0** — that
-was checked against the v1.5.0 `duckdb_extension.h`, not assumed. The floor
-comes from the bindings: `libduckdb-sys` declared both records as *opaque
+All eight C functions are in `duckdb_ext_api_v1` already in DuckDB **1.4.4**
+(`extension_api.hpp` at v1.4.4, slots 410 to 434; they moved to 411 to 509 in
+1.5.0). The floor comes from the bindings: `libduckdb-sys` declared both records as *opaque
 zero-sized* bindgen placeholders (`_unused: [u8; 0]`) until **1.10504.0**, and
 you cannot allocate the caller-owned structs these APIs need out of a
 zero-sized type. `src/arrow.rs` carries a `const` assertion that says exactly
@@ -140,16 +140,38 @@ therefore makes the caller's job:
   the *schema* declares. An `int32` child imported under a `utf8` schema has
   its values read as string offsets into a buffer that does not exist. Arrays
   exported with `data_chunk_to_arrow` under the schema you converted conform.
+- **A fixed-width dictionary whose indices can be NULL needs one element of
+  padding** past its values: DuckDB points NULL indices at an entry there,
+  and the copy `data_chunk_from_arrow` makes of every dictionary column reads
+  it (`docs/upstream-duckdb-reports.md`, item 29).
 - **The buffers must be as long as the lengths say**, and `length` must be
   the true row count. DuckDB allocates the chunk for `length` rows before its
   error handling starts, so an absurd length is an allocation failure that
   aborts the process.
 
-Arrays that came from `data_chunk_to_arrow`, from arrow-rs, or from any other
-conforming Arrow implementation, paired with the schema they were produced
-with, are fine. Dictionary-encoded and run-end-encoded children are converted
-too. Every error DuckDB reports from the conversion arrives as
-`InvalidInput`.
+It also refuses valid Arrow layouts that DuckDB imports wrongly: it walks the
+array alongside its schema and returns `InvalidInput`, naming the node, for
+
+- an offset below the top level that DuckDB applies to the wrong rows: a
+  struct inside an offset struct or a list, a union's members, a run-end-encoded
+  array's value validity (`docs/upstream-duckdb-reports.md`, item 24);
+- a dictionary with NULLs under a list that starts past element 0, or with more
+  than 2048 rows and NULLs of its own or an enclosing struct's, which DuckDB
+  copies past a 2048-row heap mask (items 9 and 25);
+- a dictionary whose values are themselves dictionary-encoded (item 26);
+- list views that overlap or leave gaps (item 27);
+- a sparse union whose `+us:` type codes are not `0, 1, …` (item 28), or
+  whose `null_count` is not 0 (item 32);
+- a dictionary whose `null_count` is -1 ("not computed", item 31);
+- a `geoarrow.wkb` column read as more than 2048 rows (item 33);
+- a run-end-encoded array where DuckDB reads a plain one: a fixed-size list's
+  child, or another run-end array's values (item 24).
+
+Arrays that `data_chunk_to_arrow` produced, paired with the schema they were
+produced with, never take these shapes. Arrays from other producers can: one
+that slices a nested array without copying it may leave offsets below the top
+level. Copying the slice before export avoids them. Every error DuckDB
+reports from the conversion arrives as `InvalidInput`.
 
 ## Round trips are not always exact
 
@@ -163,15 +185,26 @@ converters:
 Check the converted types (`ArrowConvertedSchema`) when a round trip must be
 lossless.
 
-Two more types export the wrong value with no error (checked on `DuckDB` 1.5.0
-and 1.5.5):
+`DuckDB` would export three kinds of value wrongly, with no error (checked on
+1.4.4, 1.5.0 and 1.5.5), so `data_chunk_to_arrow` checks the chunk first and
+refuses one that holds such a value, at any nesting depth:
 
 - An `INTERVAL` whose microseconds exceed about ±106,751 days (2,562,047
-  hours) wraps, because Arrow counts nanoseconds in an `i64` and DuckDB
-  multiplies by 1000 unchecked: `INTERVAL 2562048 HOUR` exports as a negative
-  interval.
-- A `UHUGEINT` of 2^127 or more exports as a negative `decimal128(38, 0)`
-  (`2^128 - 1` becomes `-1`).
+  hours) would wrap, because Arrow counts nanoseconds in an `i64` and DuckDB
+  multiplies by 1000 unchecked: `INTERVAL 2562048 HOUR` would export as a
+  negative interval.
+- A 39-digit `UHUGEINT` would export as a `decimal128(38, 0)` it does not
+  fit; from 2^127 it comes out negative (`2^128 - 1` becomes `-1`).
+- A 39-digit `HUGEINT` would export as a `decimal128(38, 0)` it does not fit,
+  unless `arrow_lossless_conversion` is set (then it exports as a 16-byte
+  fixed-size binary and is not refused).
+
+After the export, the array is also checked against the schema DuckDB
+declares for the chunk's types. Before 1.5.5, `BIGNUM` (and from 1.5.0
+`GEOMETRY`) exported under `arrow_output_version = '1.4'` are written as
+binary views while the schema says plain binary, which a consumer reads as
+offsets (`docs/upstream-duckdb-reports.md`, item 34); such an export is
+refused. Set `arrow_output_version = '1.0'` on those releases.
 
 ## Bridging to arrow-rs
 

@@ -98,9 +98,11 @@ impl ArrowSchema {
     /// Releases the schema now instead of at drop. Idempotent.
     pub fn release(&mut self) {
         if let Some(release) = self.0.release {
-            // SAFETY: `release` came from the producer that filled this record,
-            // and is called at most once — it nulls itself.
+            // SAFETY: `release` came from the producer that filled this record.
+            // It runs at most once: the specification has it null itself, and
+            // the line after it nulls it for a producer that does not.
             unsafe { release(&raw mut self.0) };
+            self.0.release = None;
         }
     }
 
@@ -117,6 +119,15 @@ impl ArrowSchema {
         // SAFETY: a live record's `format` is a null-terminated string owned by
         // the producer and valid for as long as the record is.
         unsafe { CStr::from_ptr(self.0.format) }.to_str().ok()
+    }
+
+    /// The raw `metadata` pointer: null when released or when there is none.
+    pub(super) const fn metadata_ptr(&self) -> *const core::ffi::c_char {
+        if self.is_released() {
+            core::ptr::null()
+        } else {
+            self.0.metadata
+        }
     }
 
     /// The column name, or `None` when released, null, or not UTF-8.
@@ -165,6 +176,18 @@ impl ArrowSchema {
         // SAFETY: `Self` is `#[repr(transparent)]` over `RawArrowSchema`, and the
         // child lives as long as this schema does.
         Some(unsafe { &*child.cast::<Self>() })
+    }
+
+    /// Borrows the dictionary (value) schema of a dictionary-encoded type, or
+    /// `None` for any other type or once released.
+    #[must_use]
+    pub(super) fn dictionary(&self) -> Option<&Self> {
+        if self.is_released() || self.0.dictionary.is_null() {
+            return None;
+        }
+        // SAFETY: as for `child`: `repr(transparent)`, and the dictionary lives
+        // as long as this schema does.
+        Some(unsafe { &*self.0.dictionary.cast::<Self>() })
     }
 }
 

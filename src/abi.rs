@@ -28,8 +28,12 @@
 //! `SelectionVector`, config options, table descriptions, `TIME_NS` values, and
 //! the client context all sit past the stable boundary.
 //!
-//! `DuckDB` inserted entries into the middle of the unstable region in **four
-//! of the last four** minor/patch families:
+//! The unstable region grew at every minor version in the table below, and
+//! twice `DuckDB` **inserted** entries into its middle, shifting every later
+//! slot. The releases from v1.4.4 on were checked by hashing
+//! `extension_api.hpp` at each tag (v1.4.4 and v1.4.5 are identical, as are
+//! v1.5.0 and v1.5.1, and v1.5.2 to v1.5.5); the rest of the table comes from
+//! the original survey.
 //!
 //! | `DuckDB` | Total slots | What changed |
 //! |----------|-------------|--------------|
@@ -533,9 +537,9 @@ pub enum AbiPolicy {
     /// the same situation into a positive match rather than a suspended
     /// judgement. Reach for this only when the build cannot set that variable.
     ///
-    /// The risk is real and asymmetric: `DuckDB` has changed the unstable region
-    /// in every recent release, so an unknown version is *more* likely to differ
-    /// than to match. Under this policy, an extension that calls into the
+    /// The risk is real and asymmetric: `DuckDB` changed the unstable region in
+    /// every minor release from v1.3.0 on, and in the v1.5.2 patch release, so
+    /// an unknown version is *more* likely to differ than to match. Under this policy, an extension that calls into the
     /// unstable region on a release it was not built for is undefined behaviour.
     /// This is not hypothetical: before `DuckDB` v1.4.5 was added to the table, a
     /// v1.5.5 build loaded into v1.4.5 under this policy and segfaulted on its

@@ -23,22 +23,49 @@ use libduckdb_sys::{
 };
 
 use crate::error::ExtensionError;
+use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, NullHandling, TypeId};
 use crate::validate::validate_function_name;
 
 /// The scalar function bind callback signature (`DuckDB` 1.5.0+).
 ///
 /// Called once during query planning. Use this to inspect arguments and
-/// allocate per-query state via `duckdb_scalar_function_bind_set_bind_data`.
+/// allocate per-query state via `duckdb_scalar_function_set_bind_data`.
+///
+/// **Breaking** in 0.18.0: the argument is a
+/// [`RawScalarBindInfo`][crate::scalar::RawScalarBindInfo], so that a table
+/// function's bind callback, which `DuckDB` passes a different struct, cannot
+/// be registered here.
 #[cfg(feature = "duckdb-1-5")]
-pub type ScalarBindFn = unsafe extern "C" fn(info: duckdb_bind_info);
+pub type ScalarBindFn = unsafe extern "C" fn(info: crate::scalar::RawScalarBindInfo);
 
 /// The scalar function init callback signature (`DuckDB` 1.5.0+).
 ///
 /// Called once per thread before execution begins. Use this to allocate
 /// per-thread local state via `duckdb_scalar_function_init_set_state`.
+///
+/// **Breaking** in 0.18.0: the argument is a
+/// [`RawScalarInitInfo`][crate::scalar::RawScalarInitInfo]; see
+/// [`ScalarBindFn`].
 #[cfg(feature = "duckdb-1-5")]
-pub type ScalarInitFn = unsafe extern "C" fn(info: duckdb_init_info);
+pub type ScalarInitFn = unsafe extern "C" fn(info: crate::scalar::RawScalarInitInfo);
+
+/// `f` as the callback type `duckdb_scalar_function_set_bind` takes.
+#[cfg(feature = "duckdb-1-5")]
+pub(super) const fn raw_bind(f: ScalarBindFn) -> unsafe extern "C" fn(duckdb_bind_info) {
+    // SAFETY: `RawScalarBindInfo` is `#[repr(transparent)]` over
+    // `duckdb_bind_info`, so the two function pointer types have the same ABI
+    // and `DuckDB` calls `f` with exactly the argument it declares.
+    unsafe { core::mem::transmute::<ScalarBindFn, unsafe extern "C" fn(duckdb_bind_info)>(f) }
+}
+
+/// `f` as the callback type `duckdb_scalar_function_set_init` takes.
+#[cfg(feature = "duckdb-1-5")]
+pub(super) const fn raw_init(f: ScalarInitFn) -> unsafe extern "C" fn(duckdb_init_info) {
+    // SAFETY: as in `raw_bind`, for `RawScalarInitInfo` over
+    // `duckdb_init_info`.
+    unsafe { core::mem::transmute::<ScalarInitFn, unsafe extern "C" fn(duckdb_init_info)>(f) }
+}
 
 /// The scalar function callback signature.
 ///
@@ -253,9 +280,10 @@ impl ScalarFunctionBuilder {
     /// Sets a bind callback for this scalar function (`DuckDB` 1.5.0+).
     ///
     /// The bind callback is invoked once during query planning. It can inspect
-    /// the function arguments and store per-query data via
-    /// `duckdb_scalar_function_bind_set_bind_data`. This data can later be
-    /// retrieved during execution via `duckdb_scalar_function_get_bind_data`.
+    /// the function arguments and store per-query data with
+    /// `ScalarBindInfo::set_bind_data` (`duckdb_scalar_function_set_bind_data`).
+    /// This data can later be retrieved during execution with
+    /// `ScalarFunctionInfo::get_bind_data` (`duckdb_scalar_function_get_bind_data`).
     ///
     /// Guard it against panics with
     /// [`scalar_bind_callback!`](crate::scalar_bind_callback), **not**
@@ -325,6 +353,10 @@ impl ScalarFunctionBuilder {
     /// - `destroy` must not unwind: it is an `extern "C" fn`, so a panic
     ///   escaping it aborts the process. Wrap a body that can panic in
     ///   [`catch_ffi_panic`][crate::callback::catch_ffi_panic].
+    /// - The pointee must be the type the installed function reads it as. A
+    ///   closure-built function reads its own `extra_info`, so the builder
+    ///   inside a [`TypedScalarFunctionBuilder`][crate::scalar::TypedScalarFunctionBuilder]
+    ///   must not be given another.
     ///
     /// The typical pattern is to box your data:
     /// `Box::into_raw(Box::new(my_data)).cast()`.
@@ -358,17 +390,28 @@ impl ScalarFunctionBuilder {
         Ok(())
     }
 
-    fn check_complete(&self) -> Result<ScalarFn, ExtensionError> {
-        self.check_parts()?;
+    /// Refuses a type [`register`][Self::register] refuses before its first
+    /// `DuckDB` call; `slot` checks each `TypeId` (see [`SlotCheck`]).
+    pub(crate) fn check_types(&self, slot: SlotCheck) -> Result<(), ExtensionError> {
         for (i, id) in self.params.iter().enumerate() {
-            LogicalType::check_slot(*id, &format!("scalar function parameter {i}"))?;
+            slot(*id, &format!("scalar function parameter {i}"))?;
         }
         if let Some(id) = self.return_type {
-            LogicalType::check_slot(id, "scalar function return type")?;
+            slot(id, "scalar function return type")?;
         }
         if let Some(ref varargs) = self.varargs {
-            varargs.check("scalar function varargs")?;
+            varargs.check(slot, "scalar function varargs")?;
         }
+        crate::table::type_check::refuse_any_return(
+            "scalar function return type",
+            self.return_type,
+            self.return_logical.as_ref(),
+        )
+    }
+
+    fn check_complete(&self) -> Result<ScalarFn, ExtensionError> {
+        self.check_parts()?;
+        self.check_types(LogicalType::check_slot)?;
         self.function
             .ok_or_else(|| ExtensionError::new("function callback not set"))
     }
@@ -395,9 +438,9 @@ impl ScalarFunctionBuilder {
     /// - The return type was not set.
     /// - The function callback was not set.
     /// - A parameter, varargs or return type was given as a bare composite
-    ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
+    ///   [`TypeId`] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
     ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
-    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   it as a [`LogicalType`] and use the `*_logical` method; the error
     ///   names the slot.
     /// - A scalar function with this name and parameter types already exists
     ///   (see "Name collisions").
@@ -458,11 +501,6 @@ impl ScalarFunctionBuilder {
         snapshot: Option<&RefCell<Option<super::collision::ExistingScalars>>>,
     ) -> Result<(), ExtensionError> {
         let function = self.check_complete()?;
-        crate::table::type_check::refuse_any_return(
-            "scalar function return type",
-            self.return_type,
-            self.return_logical.as_ref(),
-        )?;
         let name = self.name.to_string_lossy().into_owned();
         let rendered = self.rendered_signature();
         // SAFETY: `con` is valid per this function's contract.
@@ -541,7 +579,7 @@ impl ScalarFunctionBuilder {
         if let Some(bind_fn) = self.bind {
             // SAFETY: func is a valid scalar function handle.
             unsafe {
-                duckdb_scalar_function_set_bind(func, Some(bind_fn));
+                duckdb_scalar_function_set_bind(func, Some(raw_bind(bind_fn)));
             }
         }
 
@@ -550,7 +588,7 @@ impl ScalarFunctionBuilder {
         if let Some(init_fn) = self.init {
             // SAFETY: func is a valid scalar function handle.
             unsafe {
-                duckdb_scalar_function_set_init(func, Some(init_fn));
+                duckdb_scalar_function_set_init(func, Some(raw_init(init_fn)));
             }
         }
 
