@@ -721,7 +721,7 @@ pub struct TableFunctionHandle {
     ///
     /// Kept because `COPY … FROM` requires exactly one `VARCHAR` parameter and
     /// `DuckDB` reports a violation by doing nothing at all — see
-    /// [`CopyFunctionBuilder::copy_from`][crate::copy_function::CopyFunctionBuilder::copy_from].
+    /// `CopyFunctionBuilder::copy_from` (`duckdb-1-5`).
     param_types: Vec<Option<TypeId>>,
 }
 

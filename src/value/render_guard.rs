@@ -5,9 +5,9 @@
 
 //! Whether `DuckDB` can render a value without failing.
 //!
-//! [`Value::as_str`], [`Value::display_string`] and `Debug` hand the value to
-//! `duckdb_get_varchar` / `duckdb_value_to_string`, which cast it to text with
-//! no `try` (`duckdb_value-c.cpp`). For a timestamp whose payload is outside
+//! [`Value::as_str`], `Value::display_string` (`duckdb-1-5`) and `Debug`
+//! hand the value to `duckdb_get_varchar` / `duckdb_value_to_string`, which
+//! cast it to text with no `try` (`duckdb_value-c.cpp`). For a timestamp whose payload is outside
 //! the range `DuckDB`'s own rendering handles, that cast throws "Date out of
 //! range in timestamp conversion" through the C API, and the process aborts.
 //! The quack-rs constructors refuse such payloads, but `DuckDB` builds them

@@ -438,9 +438,9 @@ impl ScalarFunctionBuilder {
     /// - The return type was not set.
     /// - The function callback was not set.
     /// - A parameter, varargs or return type was given as a bare composite
-    ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
+    ///   [`TypeId`] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
     ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
-    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   it as a [`LogicalType`] and use the `*_logical` method; the error
     ///   names the slot.
     /// - A scalar function with this name and parameter types already exists
     ///   (see "Name collisions").

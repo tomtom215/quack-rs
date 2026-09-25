@@ -28,7 +28,7 @@ impl AggregateFunctionBuilder {
     /// - A parameter, varargs or return type was given as a bare composite
     ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
     ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
-    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   it as a [`LogicalType`] and use the `*_logical` method; the error
     ///   names the slot.
     /// - `DuckDB` reports a registration failure.
     ///

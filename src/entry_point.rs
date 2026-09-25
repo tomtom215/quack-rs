@@ -95,7 +95,7 @@ use crate::error::ExtensionError;
 ///
 /// # ABI policy
 ///
-/// A three-argument form takes an [`AbiPolicy`][crate::abi::AbiPolicy] between
+/// A three-argument form takes an [`AbiPolicy`] between
 /// the name and the closure:
 ///
 /// ```rust,no_run
@@ -107,7 +107,7 @@ use crate::error::ExtensionError;
 /// });
 /// ```
 ///
-/// The default is [`AbiPolicy::Strict`][crate::abi::AbiPolicy::Strict], which
+/// The default is [`AbiPolicy::Strict`], which
 /// refuses to load when the running `DuckDB` does not provide the C API struct
 /// layout this extension was compiled against. See [`crate::abi`].
 ///

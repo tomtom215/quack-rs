@@ -368,9 +368,9 @@ impl AggregateFunctionSetBuilder {
     /// Returns `ExtensionError` if:
     /// - No overloads were added.
     /// - A parameter, varargs or return type was given as a bare composite
-    ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
+    ///   [`TypeId`] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
     ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
-    ///   it as a [`LogicalType`][crate::types::LogicalType] and use the `*_logical` method; the error
+    ///   it as a [`LogicalType`] and use the `*_logical` method; the error
     ///   names the slot.
     /// - An overload has neither its own return type nor a set-level default,
     ///   or is missing a required callback. The error names the overload's
