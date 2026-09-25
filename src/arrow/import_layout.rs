@@ -60,8 +60,8 @@ pub(super) enum Kind {
     Null,
     /// `+s`.
     Struct,
-    /// `+l` / `+m` (32-bit offsets) or `+L` (64-bit offsets).
-    List { wide: bool },
+    /// `+l` (32-bit offsets), `+L` (64-bit offsets) or `+m` (`map: true`).
+    List { wide: bool, map: bool },
     /// `+vl` / `+vL`.
     ListView { wide: bool },
     /// `+w:N`.
@@ -90,8 +90,18 @@ pub(super) fn kind_of(format: &str, children: usize, extension: Option<&str>) ->
     match format {
         "n" => Kind::Null,
         "+s" => Kind::Struct,
-        "+l" | "+m" => Kind::List { wide: false },
-        "+L" => Kind::List { wide: true },
+        "+l" => Kind::List {
+            wide: false,
+            map: false,
+        },
+        "+m" => Kind::List {
+            wide: false,
+            map: true,
+        },
+        "+L" => Kind::List {
+            wide: true,
+            map: false,
+        },
         "+vl" => Kind::ListView { wide: false },
         "+vL" => Kind::ListView { wide: true },
         "+r" => Kind::RunEnd,
@@ -241,6 +251,13 @@ pub(super) struct Ctx {
     /// node's own validity (`ArrowToDuckDBArray`). Only a `STRUCT` passes its
     /// validity on, so only a `STRUCT` reads this.
     pub broadcast_nulls: bool,
+    /// Whether the node descends from a `MAP`'s key/value through only
+    /// `STRUCT` fields and fixed-size-list children (no `LIST` in between).
+    /// `DuckDB` verifies a map by flattening its entries, and a fixed-size
+    /// list is flattened over its vector's capacity, which a map over-allocates
+    /// to the chunk's size: a dictionary child there is read past the indices
+    /// the conversion set (a heap over-read, upstream item 24).
+    pub in_map: bool,
     pub route: Route,
 }
 
@@ -255,6 +272,7 @@ impl Ctx {
             size: rows,
             struct_nulls: false,
             broadcast_nulls: false,
+            in_map: false,
             route: Route::Physical,
         }
     }
@@ -486,6 +504,16 @@ unsafe fn check_node(
                     .to_owned(),
             );
         }
+        if ctx.in_map && ctx.route == Route::FixedListChild {
+            return Err(
+                "a dictionary-encoded array as a fixed-size list's child under a MAP: DuckDB \
+                 verifies the map by flattening the fixed-size list over its vector's capacity \
+                 (which a map over-allocates to the chunk's size), reading the dictionary \
+                 indices past the ones the conversion set (upstream item 24). Decode the \
+                 dictionary before importing"
+                    .to_owned(),
+            );
+        }
         let arrow = in_range(ctx.arrow_start(node.offset))?;
         let duck = in_range(ctx.duck_start(node.offset))?;
         if ctx.size > 0 && duck != arrow {
@@ -609,6 +637,7 @@ unsafe fn check_node(
                     size: ctx.size,
                     struct_nulls: mask,
                     broadcast_nulls: false,
+                    in_map: ctx.in_map,
                     route: Route::Physical,
                 };
                 // SAFETY: the child conforms to `s`.
@@ -617,7 +646,7 @@ unsafe fn check_node(
             }
             Ok(())
         }
-        Kind::List { wide } | Kind::ListView { wide } => {
+        Kind::List { wide, .. } | Kind::ListView { wide } => {
             let size = i64::try_from(ctx.size).map_err(|_| "row count out of range")?;
             // A list `DuckDB` converts as zero rows is empty to it whatever its
             // offsets say: `ConvertArrowListOffsetsTemplated` returns 0 and 0
@@ -661,6 +690,7 @@ unsafe fn check_node(
                 size: total,
                 struct_nulls: false,
                 broadcast_nulls: false,
+                in_map: matches!(shape.kind, Kind::List { map: true, .. }),
                 route: if empty { Route::Plain } else { Route::Physical },
             };
             // SAFETY: the child conforms to the list's child shape.
@@ -684,6 +714,7 @@ unsafe fn check_node(
                 // Its own NULLs and an enclosing struct's are broadcast into
                 // the child's validity.
                 broadcast_nulls: ctx.struct_nulls || ctx.broadcast_nulls || has_validity,
+                in_map: ctx.in_map,
                 route: if empty {
                     Route::Plain
                 } else {
@@ -704,6 +735,7 @@ unsafe fn check_node(
                     size: ctx.size,
                     struct_nulls: false,
                     broadcast_nulls: false,
+                    in_map: false,
                     route: Route::UnionMember,
                 };
                 // SAFETY: the member conforms to `s`.

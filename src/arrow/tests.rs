@@ -395,7 +395,14 @@ fn a_converted_schema_remembers_its_column_count_and_shapes() {
     let kinds: Vec<Kind> = converted.shapes().iter().map(|s| s.kind).collect();
     assert_eq!(
         kinds,
-        [Kind::Leaf, Kind::List { wide: false }, Kind::RecodedUnion]
+        [
+            Kind::Leaf,
+            Kind::List {
+                wide: false,
+                map: false
+            },
+            Kind::RecodedUnion
+        ]
     );
     assert_eq!(converted.shapes()[1].children[0].kind, Kind::Leaf);
     assert_eq!(converted.shapes()[2].children.len(), 2);

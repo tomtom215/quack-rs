@@ -34,7 +34,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 21 | Arrow import reads one byte past a validity bitmap at an unaligned bit offset | C program, below (valgrind) | Safety clause on `data_chunk_from_arrow` |
 | 22 | `duckdb_get_varchar` / `duckdb_value_to_string` fail on DECIMAL, VARIANT and GEOMETRY values SQL builds | C program, below | render guard is an allow-list; DECIMAL checked against its width; VARIANT and GEOMETRY refused |
 | 23 | `duckdb_list_vector_reserve` aborts below `MAX_VECTOR_SIZE` elements when the child buffer passes 2^37 bytes | C program, below | `ListBuilder` limit: the largest power of two whose bytes fit |
-| 24 | Arrow import applies offsets below the top level wrongly (struct fields, union members, run-end arrays), and reads run-end arrays as plain ones under a fixed-size or zero-row list | C program, below | offsets below the top level, and run-end arrays under an offset or read as plain, refused |
+| 24 | Arrow import applies offsets below the top level wrongly (struct fields, union members, run-end arrays), reads run-end arrays as plain ones under a fixed-size or zero-row list, and over-flattens a dictionary fixed-size-list child under a MAP | C program, below | offsets below the top level, run-end arrays under an offset or read as plain, and a dictionary fixed-size-list child under a MAP, refused |
 | 25 | Arrow dictionary import reads validity without the list's start offset, and copies an enclosing struct's NULLs into a 2048-row mask past a heap buffer | C program, below (valgrind) | such dictionaries refused before import |
 | 26 | Arrow import of a dictionary whose values are dictionary-encoded shares one dictionary cache and returns garbage | C program, below | nested dictionaries refused |
 | 27 | Arrow list-view import scans `sum(sizes)` child rows from the lowest offset, reading past the child | C program, below (valgrind) | overlapping or gapped list views refused |
@@ -2172,6 +2172,16 @@ error:
   run-end encoding nor dictionaries. A list is converted as zero rows when it
   sits under an empty row of an enclosing list, which is valid Arrow; its own
   offsets need not start at 0.
+- **A dictionary-encoded child of a fixed-size list is read past its indices
+  when the fixed-size list is a `MAP` value.** `ArrowToDuckDBMapVerify`
+  flattens the map's entries to check key validity (`CheckMapValidity` ->
+  `ToUnifiedFormat` -> `Flatten`), and `Vector::Flatten` of an `ARRAY`
+  flattens its child over `ArrayVector::GetTotalSize` --- the child vector's
+  *capacity*, which the map allocates at the chunk's row count, not the
+  entries it holds. The dictionary child's selection vector was built for the
+  entries actually converted, so the flatten reads it past the end. The
+  program below (`emptylist_ree`'s sibling, run as `mapdict`) imports
+  `MAP(INTEGER, INTEGER[3])` where the array child is dictionary-encoded.
 
 The line numbers in v1.4.4 are `29`, `257`, `672`, `1076`, `1120`; the code is
 otherwise identical.
@@ -2188,6 +2198,8 @@ Built with `gcc -O1 -g -Wall -I/opt/duckdb/<ver> item24.c -L/opt/duckdb/<ver> -l
 //   fixedlist_ree  a run-end-encoded array under a fixed-size list (read plain)
 //   emptylist_ree  a run-end-encoded array under a zero-row list whose offset
 //                  is not 0 (read plain)
+//   mapdict        a dictionary-encoded child of a fixed-size list that is a
+//                  MAP value (map verify flattens it past its indices)
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -2473,6 +2485,49 @@ int main(int argc, char **argv) {
         duckdb_vector lv = duckdb_data_chunk_get_vector(out, 0);
         duckdb_list_entry *ent = duckdb_vector_get_data(lv);
         printf("emptylist_ree: outer row has %llu elements\n", (unsigned long long)ent[0].length);
+    } else if (!strcmp(mode, "mapdict")) {
+        // MAP(INTEGER, INTEGER[3]) whose array child is dictionary-encoded.
+        // One 10-entry row, then 21 empty rows: the map allocates the value
+        // array at the 22-row chunk capacity but converts only 10 entries, so
+        // verifying the map flattens the dictionary child past its indices.
+        int32_t dv[1] = {7};
+        const void *dbuf[2] = {NULL, dv};
+        struct ArrowArray dict = {1, 0, 0, 2, 0, dbuf, NULL, NULL, noop_release, NULL};
+        int32_t di[30];
+        for (int k = 0; k < 30; k++) di[k] = 0;
+        const void *ibuf[2] = {NULL, di};
+        struct ArrowArray item = {30, 0, 0, 2, 0, ibuf, NULL, &dict, noop_release, NULL};
+        struct ArrowArray *flc[1] = {&item};
+        const void *flb[1] = {NULL};
+        struct ArrowArray value = {10, 0, 0, 1, 1, flb, flc, NULL, noop_release, NULL};
+        int32_t keys[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+        const void *kb[2] = {NULL, keys};
+        struct ArrowArray key = {10, 0, 0, 2, 0, kb, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *ec[2] = {&key, &value};
+        const void *eb[1] = {NULL};
+        struct ArrowArray entries = {10, 0, 0, 1, 2, eb, ec, NULL, noop_release, NULL};
+        int32_t offs[23];
+        offs[0] = 0;
+        for (int k = 1; k <= 22; k++) offs[k] = 10;
+        struct ArrowArray *mc[1] = {&entries};
+        const void *mb[2] = {NULL, offs};
+        struct ArrowArray map = {22, 0, 0, 2, 1, mb, mc, NULL, noop_release, NULL};
+        struct ArrowArray *cols[1] = {&map};
+        const void *rbb[1] = {NULL};
+        struct ArrowArray rb = {22, 0, 0, 1, 1, rbb, cols, NULL, noop_release, NULL};
+        struct ArrowSchema sd = {"i", "", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema sit = {"i", "item", NULL, 0, 0, NULL, &sd, noop_srelease, NULL};
+        struct ArrowSchema *sfc[1] = {&sit};
+        struct ArrowSchema sval = {"+w:3", "value", NULL, 0, 1, sfc, NULL, noop_srelease, NULL};
+        struct ArrowSchema sk = {"i", "key", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sec[2] = {&sk, &sval};
+        struct ArrowSchema sent = {"+s", "entries", NULL, 0, 2, sec, NULL, noop_srelease, NULL};
+        struct ArrowSchema *smc[1] = {&sent};
+        struct ArrowSchema smap = {"+m", "m", NULL, 0, 1, smc, NULL, noop_srelease, NULL};
+        struct ArrowSchema *scols[1] = {&smap};
+        struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+        if (import(&rb, &ps, &out)) return 1;
+        printf("mapdict: imported %llu rows\n", (unsigned long long)duckdb_data_chunk_get_size(out));
     } else {
         printf("unknown mode %s\n", mode); return 2;
     }
@@ -2547,13 +2602,20 @@ offset, 5, and a run-end-encoded child) crashes during the import on all eight
 Expected: `20 / 30 / 40`; `[{'a':30},{'a':40}] / [{'a':50},{'a':60}]`;
 `101 / 20 / 103`; `[20, 20]`; `{'r': 20}` twice; and, for `fixedlist_ree`,
 `[NULL, NULL]` read back without a crash; for `emptylist_ree`, an outer row of
-0 elements. quack-rs mitigation:
+0 elements. `mapdict` (one 10-entry map row of `INTEGER[3]` values whose
+`INTEGER` child is a dictionary, then 21 empty rows in a 22-row batch)
+crashes on 1.5.0, 1.5.1 and 1.5.2 (`SIGSEGV`, exit 139) and, on 1.5.3-1.5.5,
+reads out of bounds where the neighbouring heap makes it observable --- under
+the AddressSanitizer build of 1.5.5 it reports a `heap-buffer-overflow` READ in
+`ValidityMask::CopySel` <- `Vector::Flatten` <- `MapVector::CheckMapValidity`
+<- `duckdb_data_chunk_from_arrow`. quack-rs mitigation:
 `data_chunk_from_arrow` walks the array beside its schema and refuses a struct
 or union with an offset below the top level, a run-end-encoded array read under
 an offset, and a run-end-encoded array in a place DuckDB reads as a plain array
 (a fixed-size list's child, another encoded array's values, or the child of a
 list converted as zero rows, judged by its row count as DuckDB judges it, not
-by its offsets: the fifth audit found the walk had used the offsets);
+by its offsets), and a dictionary-encoded child of a fixed-size list under a
+`MAP` (the fifth audit found the last two);
 `src/arrow/import_layout.rs`, exercised end-to-end by
 `tests/ffi_roundtrip/arrow_layout.rs`.
 

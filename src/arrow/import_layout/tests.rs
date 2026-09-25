@@ -111,9 +111,27 @@ fn formats_map_to_the_kinds_duckdb_reads() {
     assert_eq!(kind_of("i", 0, None), Kind::Leaf);
     assert_eq!(kind_of("n", 0, None), Kind::Null);
     assert_eq!(kind_of("+s", 2, None), Kind::Struct);
-    assert_eq!(kind_of("+l", 1, None), Kind::List { wide: false });
-    assert_eq!(kind_of("+m", 1, None), Kind::List { wide: false });
-    assert_eq!(kind_of("+L", 1, None), Kind::List { wide: true });
+    assert_eq!(
+        kind_of("+l", 1, None),
+        Kind::List {
+            wide: false,
+            map: false
+        }
+    );
+    assert_eq!(
+        kind_of("+m", 1, None),
+        Kind::List {
+            wide: false,
+            map: true
+        }
+    );
+    assert_eq!(
+        kind_of("+L", 1, None),
+        Kind::List {
+            wide: true,
+            map: false
+        }
+    );
     assert_eq!(kind_of("+vl", 1, None), Kind::ListView { wide: false });
     assert_eq!(kind_of("+vL", 1, None), Kind::ListView { wide: true });
     assert_eq!(kind_of("+w:4", 1, None), Kind::FixedList(4));
@@ -163,7 +181,10 @@ fn a_struct_inside_a_struct_with_an_offset_is_refused() {
 #[test]
 fn a_struct_with_an_offset_inside_a_list_is_refused() {
     let shape = of(
-        Kind::List { wide: false },
+        Kind::List {
+            wide: false,
+            map: false,
+        },
         vec![of(Kind::Struct, vec![leaf()])],
     );
     let list = |offset| {
@@ -227,7 +248,13 @@ fn dictionaries_duckdb_imports_wrongly_are_refused() {
         .with_dictionary(ints(1, 0))
     };
     // Under a list starting past element 0, with NULLs: validity offset lost.
-    let in_list = of(Kind::List { wide: false }, vec![dict_shape.clone()]);
+    let in_list = of(
+        Kind::List {
+            wide: false,
+            map: false,
+        },
+        vec![dict_shape.clone()],
+    );
     let list = |nulls| {
         Node::new(1, 0, 0, vec![vec![], i32s(&[2, 4])]).with_children(vec![dict(4, 0, nulls)])
     };
@@ -267,7 +294,13 @@ fn run_end_encoding_duckdb_reads_wrongly_is_refused() {
     };
     assert_eq!(check_column(3, ree(1), ree_shape.clone()), Ok(()));
     // Under a list starting past element 0, the values' validity is misread.
-    let in_list = of(Kind::List { wide: false }, vec![ree_shape.clone()]);
+    let in_list = of(
+        Kind::List {
+            wide: false,
+            map: false,
+        },
+        vec![ree_shape.clone()],
+    );
     let list =
         |nulls| Node::new(1, 0, 0, vec![vec![], i32s(&[1, 3])]).with_children(vec![ree(nulls)]);
     assert_eq!(check_column(1, list(0), in_list.clone()), Ok(()));
@@ -317,8 +350,20 @@ fn a_node_with_more_rows_than_one_vector_holds_is_refused() {
 #[test]
 fn a_zero_row_list_reads_its_child_as_plain_whatever_its_offsets_say() {
     let ree_shape = of(Kind::RunEnd, vec![leaf(), leaf()]);
-    let inner_shape = of(Kind::List { wide: false }, vec![ree_shape]);
-    let shape = of(Kind::List { wide: false }, vec![inner_shape]);
+    let inner_shape = of(
+        Kind::List {
+            wide: false,
+            map: false,
+        },
+        vec![ree_shape],
+    );
+    let shape = of(
+        Kind::List {
+            wide: false,
+            map: false,
+        },
+        vec![inner_shape],
+    );
     let column = |first: i32| {
         let ree = Node::new(5, 0, 0, vec![]).with_children(vec![
             Node::new(1, 0, 0, vec![vec![], i32s(&[5])]),
@@ -334,6 +379,63 @@ fn a_zero_row_list_reads_its_child_as_plain_whatever_its_offsets_say() {
             "offset {first}: {err}"
         );
     }
+}
+
+/// A dictionary-encoded child of a fixed-size list that is a MAP value: `DuckDB`
+/// verifies the map by flattening the fixed-size list over its vector's
+/// capacity (a map over-allocates to the chunk size), reading the dictionary
+/// indices past what the conversion set (a heap over-read on 1.5.5). The same
+/// fixed-size list of a dictionary is accepted at the top level and as a plain
+/// list's child, where nothing over-flattens it.
+#[test]
+fn a_dictionary_under_a_fixed_size_list_under_a_map_is_refused() {
+    let dict_shape = Shape {
+        kind: Kind::Leaf,
+        children: vec![],
+        dictionary: Some(Box::new(leaf())),
+    };
+    let fl = |child: Shape| of(Kind::FixedList(3), vec![child]);
+    // A fixed-size list INT[3] of 10 rows whose child is 30 dict indices.
+    let fl_arr = || {
+        Node::new(10, 0, 0, vec![vec![]]).with_children(vec![Node::new(
+            30,
+            0,
+            0,
+            vec![vec![], i32s(&[0; 30])],
+        )
+        .with_dictionary(ints(1, 0))])
+    };
+    // Map: one row of 10 entries, then rows of 0; keys int, values the array.
+    let map_shape = of(
+        Kind::List {
+            wide: false,
+            map: true,
+        },
+        vec![of(Kind::Struct, vec![leaf(), fl(dict_shape.clone())])],
+    );
+    let entries = |value: Box<Node>| {
+        Node::new(10, 0, 0, vec![vec![]]).with_children(vec![
+            Node::new(10, 0, 0, vec![vec![], i32s(&[0; 10])]),
+            value,
+        ])
+    };
+    let map = |value: Box<Node>| {
+        Node::new(1, 0, 0, vec![vec![], i32s(&[0, 10])]).with_children(vec![entries(value)])
+    };
+    let err = check_column(1, map(fl_arr()), map_shape).expect_err("map over-flatten");
+    assert!(err.contains("under a MAP"), "{err}");
+    // The same fixed-size-list-of-dictionary at the top level is accepted.
+    assert_eq!(check_column(10, fl_arr(), fl(dict_shape.clone())), Ok(()));
+    // And as a plain list's child (a list flattens over its real child size).
+    let list_shape = of(
+        Kind::List {
+            wide: false,
+            map: false,
+        },
+        vec![fl(dict_shape)],
+    );
+    let list = Node::new(1, 0, 0, vec![vec![], i32s(&[0, 10])]).with_children(vec![fl_arr()]);
+    assert_eq!(check_column(1, list, list_shape), Ok(()));
 }
 
 #[test]
@@ -355,7 +457,18 @@ fn a_child_count_or_dictionary_mismatch_is_refused() {
 #[test]
 fn a_list_or_run_end_array_without_its_children_is_refused() {
     let list = Node::new(1, 0, 0, vec![vec![], i32s(&[0, 1])]);
-    let err = check_column(1, list, of(Kind::List { wide: false }, vec![])).expect_err("list");
+    let err = check_column(
+        1,
+        list,
+        of(
+            Kind::List {
+                wide: false,
+                map: false,
+            },
+            vec![],
+        ),
+    )
+    .expect_err("list");
     assert!(err.contains("child 0 is missing"), "{err}");
     let ree = Node::new(1, 0, 0, vec![]).with_children(vec![ints(1, 0)]);
     let err = check_column(1, ree, of(Kind::RunEnd, vec![leaf()])).expect_err("run end");
@@ -510,7 +623,10 @@ fn a_geoarrow_column_of_more_than_2048_rows_is_refused() {
 fn the_walk_continues_below_a_node_of_zero_rows() {
     let ree_shape = of(Kind::RunEnd, vec![leaf(), leaf()]);
     let shape = of(
-        Kind::List { wide: false },
+        Kind::List {
+            wide: false,
+            map: false,
+        },
         vec![of(Kind::Struct, vec![ree_shape])],
     );
     let column = |value_nulls| {
@@ -572,7 +688,13 @@ fn a_negative_offset_or_length_below_the_top_is_refused() {
 /// 2 imports: `DuckDB` reads row 2 of the bitmap, where Arrow puts it.
 #[test]
 fn validity_under_a_list_starting_past_zero_is_accepted() {
-    let shape = of(Kind::List { wide: false }, vec![leaf()]);
+    let shape = of(
+        Kind::List {
+            wide: false,
+            map: false,
+        },
+        vec![leaf()],
+    );
     let child = Node::new(4, 0, 1, vec![bits(4), i32s(&[1, 2, 3, 4])]);
     let list = Node::new(1, 0, 0, vec![vec![], i32s(&[2, 4])]).with_children(vec![child]);
     assert_eq!(check_column(1, list, shape), Ok(()));

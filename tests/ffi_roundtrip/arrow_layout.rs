@@ -512,6 +512,82 @@ fn a_run_end_encoded_array_below_an_offset_is_refused() {
     );
 }
 
+/// A dictionary-encoded child of a fixed-size list that is a MAP value:
+/// `DuckDB` verifies the map by flattening the fixed-size list over its
+/// vector's capacity (which the map over-allocates to the chunk size), reading
+/// the dictionary index selection vector past the elements the conversion set
+/// (a heap over-read; a crash on 1.5.0-1.5.2, an `ASan` report on 1.5.5 --- upstream
+/// item 24). A plain integer value in the same shape imports.
+#[test]
+fn a_dictionary_fixed_list_map_value_is_refused() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    // MAP(INTEGER, INTEGER[3]); the value's INTEGER child is dict-encoded.
+    let value_sch = |dict: bool| {
+        let item = if dict {
+            dict_sch("i", sch("i", vec![]))
+        } else {
+            sch("i", vec![])
+        };
+        named("value", sch("+w:3", vec![named("item", item)]))
+    };
+    let schema = |dict: bool| {
+        sch(
+            "+m",
+            vec![sch(
+                "+s",
+                vec![named("key", sch("i", vec![])), value_sch(dict)],
+            )],
+        )
+    };
+    // One row of 10 entries, then 21 empty rows: 22 rows, chunk capacity 22,
+    // but the value fixed-list holds 10 rows -> the map over-allocates it.
+    let column = |dict: bool| {
+        let item = if dict {
+            with_dict(
+                arr(30, 0, 0, vec![vec![], bytes(&[0_i32; 30])], vec![]),
+                arr(1, 0, 0, vec![vec![], bytes(&[7_i32])], vec![]),
+            )
+        } else {
+            arr(
+                30,
+                0,
+                0,
+                vec![vec![], bytes(&(0..30).collect::<Vec<i32>>())],
+                vec![],
+            )
+        };
+        let value = arr(10, 0, 0, vec![vec![]], vec![item]);
+        let key = arr(
+            10,
+            0,
+            0,
+            vec![vec![], bytes(&(0..10).collect::<Vec<i32>>())],
+            vec![],
+        );
+        let entries = arr(10, 0, 0, vec![vec![]], vec![key, value]);
+        let mut offs = vec![0_i32];
+        offs.extend(std::iter::repeat_n(10, 22));
+        arr(22, 0, 0, vec![vec![], bytes(&offs)], vec![entries])
+    };
+    refused(
+        import_one(&con, schema(true), column(true), 22),
+        "under a MAP",
+    );
+    // The same map with a plain integer value imports.
+    assert_eq!(
+        imports(
+            &con,
+            schema(false),
+            column(false),
+            22,
+            "MAP(INTEGER, INTEGER[3])"
+        )
+        .len(),
+        22
+    );
+}
+
 /// A list `DuckDB` converts as zero rows reads its child as a plain array,
 /// whatever its offsets say (upstream item 24). An inner list of no rows under
 /// an empty outer row, whose one offset is 5, with a run-end-encoded child

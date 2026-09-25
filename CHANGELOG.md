@@ -1168,6 +1168,16 @@ reproducer run on the releases it names. Its entries are grouped under
   and a valid array (an inner list under an empty outer row, whose offsets
   need not start at 0) got through. It now decides as `DuckDB` does, by the
   row count.
+- **A dictionary-encoded child of a fixed-size list crashed the Arrow import
+  when the fixed-size list was a `MAP` value.** `DuckDB` verifies a map by
+  flattening its entries, and flattening an `ARRAY` flattens its child over
+  the child vector's capacity, which a map allocates at the chunk's row count
+  rather than the entries it holds; the dictionary child's selection vector
+  was built only for the entries converted, so the flatten read it out of
+  bounds (`SIGSEGV` on 1.5.0-1.5.2, an AddressSanitizer `heap-buffer-overflow`
+  on 1.5.5; upstream item 24). The layout walk refuses a dictionary-encoded
+  fixed-size-list child under a map; the same shape at the top level or under
+  a plain list, which is not over-flattened, still imports.
 
 #### Fourth audit
 
