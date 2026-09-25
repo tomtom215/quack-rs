@@ -4278,7 +4278,9 @@ fn result_kind_distinguishes_rows_from_row_counts() {
 
     let fx = Fixture::open();
     // SAFETY: `con` is open.
-    unsafe { query(fx.con(), "CREATE TABLE k(i INTEGER)") }.expect("create");
+    let created = unsafe { query(fx.con(), "CREATE TABLE k(i INTEGER)") }.expect("create");
+    assert_eq!(created.result_kind(), ResultKind::Nothing);
+    drop(created);
 
     assert_eq!(fx.query("SELECT 1").result_kind(), ResultKind::Rows);
     // SAFETY: `con` is open.
