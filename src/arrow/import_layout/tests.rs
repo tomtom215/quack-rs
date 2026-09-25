@@ -69,7 +69,7 @@ impl Node {
 }
 
 fn i32s(values: &[i32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 
 /// An all-valid validity bitmap (the null count decides whether it is read).

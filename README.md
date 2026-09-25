@@ -984,10 +984,11 @@ functions themselves are present in every release quack-rs supports.
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
 
-**Unreleased (0.18.0)** — Fixes from three further production-readiness audits
-(`AUDIT.md`, sections 7–9): soundness holes in the safe API, process aborts, wrong
-answers and leaks, each reproduced against a real DuckDB or derived from its source
-before it was fixed. Breaking; see the CHANGELOG.
+**Unreleased (0.18.0)** — Fixes from four further production-readiness audits
+(`AUDIT.md`, sections 7–10): soundness holes in the safe API, process aborts, wrong
+answers and leaks. Each fix has a regression test, and each defect involving DuckDB
+was reproduced against a real DuckDB or derived from its source before it was
+fixed. Breaking; see the CHANGELOG.
 
 **v0.16.0** (2026-08-19) — New `abi` module: the extension checks, at load, that
 the running DuckDB's `duckdb_ext_api_v1` layout matches the one it was compiled

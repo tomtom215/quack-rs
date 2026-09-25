@@ -257,8 +257,8 @@ impl VectorReader {
 
     /// Reads an `i128` (HUGEINT) value at row `idx`.
     ///
-    /// `DuckDB` stores HUGEINT as `{ lower: u64, upper: i64 }` in little-endian
-    /// layout, totaling 16 bytes per value.
+    /// `DuckDB` stores HUGEINT as `{ lower: u64, upper: i64 }`, `lower` first,
+    /// each in the target's byte order: 16 bytes per value.
     ///
     /// # Safety
     ///
@@ -268,7 +268,7 @@ impl VectorReader {
     #[inline]
     pub const unsafe fn read_i128(&self, idx: usize) -> i128 {
         // SAFETY: HUGEINT is stored as { lower: u64, upper: i64 } = 16 bytes.
-        // DuckDB lays this out in little-endian order: lower at offset 0, upper at offset 8.
+        // `lower` is at offset 0 and `upper` at offset 8, each a native-endian integer.
         let base = unsafe { self.data.add(idx * 16) };
         // SAFETY: `base` is row `idx`'s 16-byte `duckdb_hugeint` ({lower: u64,
         // upper: i64}, duckdb.h) in the vector's data buffer, in bounds because
@@ -286,8 +286,8 @@ impl VectorReader {
 
     /// Reads a `u128` (UHUGEINT) value at row `idx`.
     ///
-    /// `DuckDB` stores UHUGEINT as `{ lower: u64, upper: u64 }` in little-endian
-    /// layout, totalling 16 bytes per value.
+    /// `DuckDB` stores UHUGEINT as `{ lower: u64, upper: u64 }`, `lower` first,
+    /// each in the target's byte order: 16 bytes per value.
     ///
     /// # Safety
     ///
@@ -608,7 +608,7 @@ mod tests {
         // (duckdb/common/types/decimal.hpp). Reading with the wrong width reads
         // the wrong number of bytes, so pin the boundaries.
         let mut buf = [0u8; 16];
-        buf[..2].copy_from_slice(&(-1234_i16).to_le_bytes());
+        buf[..2].copy_from_slice(&(-1234_i16).to_ne_bytes());
         let reader = VectorReader {
             data: buf.as_ptr(),
             validity: std::ptr::null_mut(),
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(unsafe { reader.read_decimal(0, 4) }, -1234);
 
         let mut buf = [0u8; 16];
-        buf[..4].copy_from_slice(&(-123_456_789_i32).to_le_bytes());
+        buf[..4].copy_from_slice(&(-123_456_789_i32).to_ne_bytes());
         let reader = VectorReader {
             data: buf.as_ptr(),
             validity: std::ptr::null_mut(),
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(unsafe { reader.read_decimal(0, 9) }, -123_456_789);
 
         let mut buf = [0u8; 16];
-        buf[..8].copy_from_slice(&(-1_234_567_890_123_456_789_i64).to_le_bytes());
+        buf[..8].copy_from_slice(&(-1_234_567_890_123_456_789_i64).to_ne_bytes());
         let reader = VectorReader {
             data: buf.as_ptr(),
             validity: std::ptr::null_mut(),
@@ -641,7 +641,8 @@ mod tests {
         );
 
         let value: i128 = -170_141_183_460_469_231_731_687_303_715_884_105_727;
-        let buf = value.to_le_bytes();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let buf = hugeint_bytes(value as u64, (value >> 64) as u64);
         let reader = VectorReader {
             data: buf.as_ptr(),
             validity: std::ptr::null_mut(),
@@ -651,10 +652,19 @@ mod tests {
         assert_eq!(unsafe { reader.read_decimal(0, 38) }, value);
     }
 
+    /// A `duckdb_hugeint` / `duckdb_uhugeint` as `DuckDB` lays it out: `lower`
+    /// then `upper`, each in the target's byte order.
+    fn hugeint_bytes(lower: u64, upper: u64) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        buf[..8].copy_from_slice(&lower.to_ne_bytes());
+        buf[8..].copy_from_slice(&upper.to_ne_bytes());
+        buf
+    }
+
     #[test]
-    fn u128_reads_little_endian_halves() {
+    fn u128_reads_the_lower_then_the_upper_half() {
         let value: u128 = (0xdead_beef_u128 << 64) | 0x1234_5678;
-        let buf = value.to_le_bytes();
+        let buf = hugeint_bytes(0x1234_5678, 0xdead_beef);
         let reader = VectorReader {
             data: buf.as_ptr(),
             validity: std::ptr::null_mut(),

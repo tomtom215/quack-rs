@@ -90,7 +90,10 @@ representations, selected at runtime based on string length:
 | Format | Condition | Layout |
 |--------|-----------|--------|
 | **Inline** | length ≤ 12 | `[len: u32][data: [u8; 12]]` |
-| **Pointer** | length > 12 | `[len: u32][prefix: [u8; 4]][ptr: *const u8][unused: u32]` |
+| **Pointer** | length > 12 | `[len: u32][prefix: [u8; 4]][ptr: *const u8]` |
+
+On a 32-bit target (DuckDB-WASM) the pointer is 4 bytes and the last 4 bytes
+are unused. The length and the pointer are in the target's byte order.
 
 `VectorReader::read_str` and the underlying `read_duck_string` function handle
 both formats transparently. You never need to inspect the raw struct.

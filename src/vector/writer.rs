@@ -245,8 +245,8 @@ impl VectorWriter {
 
     /// Writes an `i128` (HUGEINT) value at row `idx`.
     ///
-    /// `DuckDB` stores HUGEINT as `{ lower: u64, upper: i64 }` in little-endian
-    /// layout, totaling 16 bytes per value.
+    /// `DuckDB` stores HUGEINT as `{ lower: u64, upper: i64 }`, `lower` first,
+    /// each in the target's byte order: 16 bytes per value.
     ///
     /// # Safety
     ///
@@ -518,8 +518,8 @@ impl VectorWriter {
 
     /// Writes a `u128` (UHUGEINT) value at row `idx`.
     ///
-    /// `DuckDB` stores UHUGEINT as `{ lower: u64, upper: u64 }` in little-endian
-    /// layout, totalling 16 bytes per value.
+    /// `DuckDB` stores UHUGEINT as `{ lower: u64, upper: u64 }`, `lower` first,
+    /// each in the target's byte order: 16 bytes per value.
     ///
     /// # Safety
     ///

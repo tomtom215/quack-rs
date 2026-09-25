@@ -273,26 +273,28 @@ DuckDB stores VARCHAR values as 16-byte `duckdb_string_t` structs with two layou
 ### Inline (length ≤ 12)
 
 ```
-bytes 0..4   : length as u32 LE
+bytes 0..4   : length as u32, native byte order
 bytes 4..16  : string data, zero-padded
 ```
 
 ### Pointer (length > 12)
 
 ```
-bytes 0..4   : length as u32 LE
+bytes 0..4   : length as u32, native byte order
 bytes 4..8   : prefix (first 4 bytes of string)
-bytes 8..16  : pointer to heap-allocated string data (*const u8)
+bytes 8..16  : pointer to heap-allocated string data (*const u8), native
+               byte order; on a 32-bit target only bytes 8..12, and 12..16
+               may hold stale bytes
 ```
 
 ```rust
 // Correct reading:
 let bytes: [u8; 16] = ptr::read(data.add(row * 16) as *const [u8; 16]);
-let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+let len = u32::from_ne_bytes(bytes[..4].try_into().unwrap()) as usize;
 let s: &str = if len <= 12 {
     std::str::from_utf8(&bytes[4..4 + len]).unwrap_or("")
 } else {
-    let ptr = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as *const u8;
+    let ptr = data.add(row * 16 + 8).cast::<*const u8>().read_unaligned();
     std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or("")
 };
 ```

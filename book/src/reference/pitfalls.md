@@ -676,7 +676,9 @@ reading silently drops bytes that are not valid UTF-8.
 
 **Root cause**: DuckDB stores strings in a 16-byte struct with two formats
 (inline ≤ 12 bytes, pointer > 12 bytes) that are not documented in
-`libduckdb-sys`.
+`libduckdb-sys`. The length and the pointer are in the target's own byte
+order, so a decoder that reads them as little-endian misreads every string on
+a big-endian target.
 
 **Fix**: Use `VectorReader::read_str(row)` for UTF-8 text and
 `VectorReader::read_blob(row)` for arbitrary binary data. See

@@ -24,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
     let mut raw = [0u8; DUCK_STRING_SIZE];
     raw.copy_from_slice(&data[..DUCK_STRING_SIZE]);
 
-    let declared = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+    let declared = u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
     match DuckStringView::inline_from_bytes(&raw) {
         Some(view) => {
             assert!(

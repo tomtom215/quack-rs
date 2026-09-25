@@ -669,9 +669,13 @@ reading silently drops bytes that are not valid UTF-8.
 
 **Root cause**: DuckDB stores strings in a 16-byte struct with two formats:
 - **Inline** (≤ 12 bytes): `[ len: u32 | data: [u8; 12] ]`
-- **Pointer** (> 12 bytes): `[ len: u32 | prefix: [u8; 4] | ptr: *const u8 | unused: u32 ]`
+- **Pointer** (> 12 bytes): `[ len: u32 | prefix: [u8; 4] | ptr: *const u8 ]`
+  (on a 32-bit target the pointer is 4 bytes and the last 4 are unused, and
+  not necessarily zero)
 
-This is not documented in `libduckdb-sys`.
+The length and the pointer are in the target's own byte order: decoding them
+as little-endian misreads every string on a big-endian target (quack-rs did,
+until the fifth audit). This is not documented in `libduckdb-sys`.
 
 **Fix**: Use `VectorReader::read_str` or `read_duck_string` for UTF-8 text. Use
 `VectorReader::read_blob` or `read_duck_blob` for arbitrary binary data. All four

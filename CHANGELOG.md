@@ -57,6 +57,9 @@ reproducer run on the releases it names. Its entries are grouped under
   release) and against 1.5.3 and 1.5.4, the oldest releases the `duckdb-1-5-3`
   and `duckdb-1-5-4` features load into. `tests/append_metadata_cli.rs` runs
   the `append_metadata` binary end to end.
+- CI: the `miri` job also runs the library tests on a big-endian target
+  (`s390x-unknown-linux-gnu`, interpreted), which is where the string
+  decoder's byte-order defect shows (see Fixed).
 
 #### Fourth audit
 
@@ -1111,6 +1114,16 @@ reproducer run on the releases it names. Its entries are grouped under
   `chunk.ColumnCount() == types.size()` and invalidates the database; a
   release build drops the column. The typed bind now fails with a message
   when a column is declared there (upstream item 37).
+- **`VARCHAR` and `BLOB` values were decoded as little-endian.**
+  `duckdb_string_t` holds its length and pointer in the target's own byte
+  order; `DuckStringView`, `read_duck_string` and `read_duck_blob` read both
+  as little-endian, so on a big-endian target an inline string's length read
+  as `length << 24` and its inlined bytes were followed as a pointer
+  (reproduced under Miri with `--target s390x-unknown-linux-gnu`). Both are
+  now read natively, and the pointer is read as a pointer at the target's
+  width, which also keeps its provenance. No `DuckDB` extension platform is
+  big-endian, and nothing changes on a little-endian one; bytes passed to
+  `DuckStringView::inline_from_bytes` are now read in native order too.
 
 #### Fourth audit
 

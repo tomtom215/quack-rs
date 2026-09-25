@@ -393,10 +393,10 @@ fn duck_string_view_inline_format() {
     use quack_rs::vector::DuckStringView;
 
     // Build a 16-byte buffer for an inline string ("hello" = 5 bytes)
-    // Layout: [len: u32 LE][data: 12 bytes padding to 0]
+    // Layout: [len: u32, native byte order][data: 12 bytes padding to 0]
     let mut bytes = [0u8; 16];
     let s = b"hello";
-    bytes[0..4].copy_from_slice(&u32::try_from(s.len()).unwrap_or(u32::MAX).to_le_bytes());
+    bytes[0..4].copy_from_slice(&u32::try_from(s.len()).unwrap_or(u32::MAX).to_ne_bytes());
     bytes[4..4 + s.len()].copy_from_slice(s);
 
     let view = DuckStringView::inline_from_bytes(&bytes).expect("inline value");

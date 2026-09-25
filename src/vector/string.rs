@@ -106,7 +106,7 @@ impl<'a> DuckStringView<'a> {
     /// that stay live for `'a`.
     #[must_use]
     pub const unsafe fn from_raw(raw: &'a [u8; DUCK_STRING_SIZE]) -> Self {
-        let length = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        let length = u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
         Self {
             bytes: raw,
             length,
@@ -126,7 +126,7 @@ impl<'a> DuckStringView<'a> {
     /// use quack_rs::vector::string::DuckStringView;
     ///
     /// let mut inline = [0u8; 16];
-    /// inline[0] = 5;
+    /// inline[..4].copy_from_slice(&5u32.to_ne_bytes());
     /// inline[4..9].copy_from_slice(b"hello");
     /// assert_eq!(
     ///     DuckStringView::inline_from_bytes(&inline).and_then(|v| v.as_str()),
@@ -135,13 +135,13 @@ impl<'a> DuckStringView<'a> {
     ///
     /// // A pointer-format value is refused rather than dereferenced.
     /// let mut pointer_format = [0u8; 16];
-    /// pointer_format[..4].copy_from_slice(&64u32.to_le_bytes());
-    /// pointer_format[8..16].copy_from_slice(&0xdead_beef_u64.to_le_bytes());
+    /// pointer_format[..4].copy_from_slice(&64u32.to_ne_bytes());
+    /// pointer_format[8..16].copy_from_slice(&0xdead_beef_u64.to_ne_bytes());
     /// assert!(DuckStringView::inline_from_bytes(&pointer_format).is_none());
     /// ```
     #[must_use]
     pub const fn inline_from_bytes(raw: &'a [u8; DUCK_STRING_SIZE]) -> Option<Self> {
-        let length = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        let length = u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
         if length > DUCK_STRING_INLINE_MAX_LEN {
             return None;
         }
@@ -172,7 +172,7 @@ impl<'a> DuckStringView<'a> {
                 `DuckStringView::inline_from_bytes` (safe, refuses pointer format)"
     )]
     pub const fn from_bytes(raw: &'a [u8; DUCK_STRING_SIZE]) -> Self {
-        let length = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        let length = u32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
         Self {
             bytes: raw,
             length,
@@ -221,15 +221,15 @@ impl<'a> DuckStringView<'a> {
     ///
     /// # Platform assumption
     ///
-    /// The pointer-format branch reads bytes 8–15 as a `u64` and truncates to
-    /// `usize`. On 64-bit targets this is a lossless round-trip; on 32-bit
-    /// (DuckDB-WASM via `wasm32-unknown-emscripten`) the C union still reserves
-    /// 8 bytes for the pointer slot but only the lower 4 carry the address.
-    /// The upper 4 (bytes 12–15) are **not** guaranteed to be zero: `DuckDB`'s
-    /// `string_t` constructor writes only the length, prefix and 4-byte
-    /// pointer for a long string, so those bytes keep whatever the slot held
-    /// before (e.g. the tail of an earlier inlined string). `u64 as usize`
-    /// keeps only the lower 4 bytes, so the stale upper ones are discarded.
+    /// The length (bytes 0–3) and the pointer (from byte 8) are read in the
+    /// target's byte order, as `DuckDB` writes them. The pointer is read at the
+    /// target's pointer width: 8 bytes on 64-bit targets; 4 on 32-bit
+    /// (DuckDB-WASM via `wasm32-unknown-emscripten`), where the C union still
+    /// spans 16 bytes but bytes 12–15 are **not** guaranteed to be zero:
+    /// `DuckDB`'s `string_t` constructor writes only the length, prefix and
+    /// 4-byte pointer for a long string, so those bytes keep whatever the slot
+    /// held before (e.g. the tail of an earlier inlined string), and are not
+    /// read.
     ///
     /// # Safety (internal)
     ///
@@ -246,17 +246,17 @@ impl<'a> DuckStringView<'a> {
             // safe caller supplied, so refuse instead.
             None
         } else {
-            // Pointer case: bytes 8–15 hold the heap pointer in an 8-byte slot.
-            // SAFETY: For pointer-format strings, bytes 8..16 hold a valid pointer
-            // to heap memory allocated by DuckDB and valid for the vector's lifetime.
-            let ptr_bytes: [u8; 8] = self.bytes[8..16].try_into().ok()?;
-            // Read as u64 so this works regardless of `usize` width; truncating
-            // to `usize` is a no-op on 64-bit and yields the low 4 bytes on wasm32,
-            // where the upper 4 bytes of the 8-byte slot may hold stale data
-            // (DuckDB does not clear them) and must be discarded. The truncation
-            // is intentional and keeps the whole address on every supported target.
-            #[allow(clippy::cast_possible_truncation)]
-            let ptr_val = u64::from_le_bytes(ptr_bytes) as usize as *const u8;
+            // Pointer case: `duckdb_string_t`'s `char *ptr` sits at offset 8 on
+            // every target (after the `uint32_t` length and the 4-byte prefix),
+            // in the target's own byte order and width. Reading it as a pointer
+            // takes exactly those bytes — 8 on 64-bit, 4 on wasm32, where the
+            // rest of the slot may hold stale bytes DuckDB does not clear — and
+            // keeps the address's provenance.
+            let slot = self.bytes.get(8..8 + std::mem::size_of::<*const u8>())?;
+            // SAFETY: `slot` is `size_of::<*const u8>()` in-bounds bytes of
+            // `self.bytes`; `read_unaligned` needs no alignment, and any bit
+            // pattern is a valid raw pointer.
+            let ptr_val = unsafe { slot.as_ptr().cast::<*const u8>().read_unaligned() };
             if ptr_val.is_null() {
                 return None;
             }
@@ -366,6 +366,19 @@ mod tests {
 
     use super::*;
 
+    /// Stores `ptr` at byte 8 the way `DuckDB`'s `char *ptr` field holds it:
+    /// native byte order, pointer width, provenance kept.
+    fn put_pointer(bytes: &mut [u8; 16], ptr: *const u8) {
+        // SAFETY: bytes 8..16 hold the `size_of::<*const u8>()` (at most 8)
+        // bytes written; `write_unaligned` needs no alignment.
+        unsafe {
+            bytes[8..]
+                .as_mut_ptr()
+                .cast::<*const u8>()
+                .write_unaligned(ptr);
+        }
+    }
+
     fn make_inline_bytes(s: &str) -> [u8; 16] {
         assert!(
             s.len() <= DUCK_STRING_INLINE_MAX_LEN,
@@ -373,7 +386,7 @@ mod tests {
         );
         let mut bytes = [0u8; 16];
         let len = u32::try_from(s.len()).unwrap_or(u32::MAX);
-        bytes[..4].copy_from_slice(&len.to_le_bytes());
+        bytes[..4].copy_from_slice(&len.to_ne_bytes());
         bytes[4..4 + s.len()].copy_from_slice(s.as_bytes());
         bytes
     }
@@ -411,7 +424,7 @@ mod tests {
         let payload = [0x80u8, 0xF0, 0x01, 0x42];
         let mut bytes = [0u8; 16];
         let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
-        bytes[..4].copy_from_slice(&len.to_le_bytes());
+        bytes[..4].copy_from_slice(&len.to_ne_bytes());
         bytes[4..4 + payload.len()].copy_from_slice(&payload);
 
         assert_eq!(unsafe { read_duck_blob(bytes.as_ptr(), 0) }, &payload);
@@ -425,10 +438,9 @@ mod tests {
         ];
         let mut bytes = [0u8; 16];
         let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
-        bytes[..4].copy_from_slice(&len.to_le_bytes());
+        bytes[..4].copy_from_slice(&len.to_ne_bytes());
         bytes[4..8].copy_from_slice(&payload[..4]);
-        let ptr = payload.as_ptr() as usize as u64;
-        bytes[8..16].copy_from_slice(&ptr.to_le_bytes());
+        put_pointer(&mut bytes, payload.as_ptr());
 
         assert_eq!(unsafe { read_duck_blob(bytes.as_ptr(), 0) }, &payload);
     }
@@ -441,16 +453,11 @@ mod tests {
 
         let mut bytes = [0u8; 16];
         // Write length
-        bytes[..4].copy_from_slice(&u32::try_from(len).unwrap_or(u32::MAX).to_le_bytes());
+        bytes[..4].copy_from_slice(&u32::try_from(len).unwrap_or(u32::MAX).to_ne_bytes());
         // Write prefix (first 4 bytes of the string)
         bytes[4..8].copy_from_slice(&long_str.as_bytes()[..4]);
-        // Write pointer at bytes 8..16
-        // Widen through `u64` so the 8-byte slot is filled on every target:
-        // on wasm32 `usize` is 4 bytes, so `usize::to_le_bytes()` would yield
-        // only 4 bytes and panic on this 8-byte copy (and would not match
-        // DuckDB's 16-byte layout that `as_bytes_unsafe` reads back as a `u64`).
-        let ptr_val = ptr as usize as u64;
-        bytes[8..16].copy_from_slice(&ptr_val.to_le_bytes());
+        // Write the pointer at byte 8, as DuckDB does
+        put_pointer(&mut bytes, ptr);
 
         // SAFETY: `bytes` really does point at `long_str`, which outlives the view.
         let view = unsafe { DuckStringView::from_raw(&bytes) };
@@ -462,7 +469,7 @@ mod tests {
     fn pointer_null_returns_none() {
         let mut bytes = [0u8; 16];
         // Write length > 12
-        bytes[..4].copy_from_slice(&13u32.to_le_bytes());
+        bytes[..4].copy_from_slice(&13u32.to_ne_bytes());
         // pointer bytes 8..16 remain 0 (null pointer)
 
         // SAFETY: the length says pointer-format, and the null pointer case is
@@ -489,14 +496,9 @@ mod tests {
         let ptr = long_str.as_ptr();
 
         let mut bytes = [0u8; 16];
-        bytes[..4].copy_from_slice(&u32::try_from(len).unwrap_or(u32::MAX).to_le_bytes());
+        bytes[..4].copy_from_slice(&u32::try_from(len).unwrap_or(u32::MAX).to_ne_bytes());
         bytes[4..8].copy_from_slice(&long_str.as_bytes()[..4]);
-        // Widen through `u64` so the 8-byte slot is filled on every target:
-        // on wasm32 `usize` is 4 bytes, so `usize::to_le_bytes()` would yield
-        // only 4 bytes and panic on this 8-byte copy (and would not match
-        // DuckDB's 16-byte layout that `as_bytes_unsafe` reads back as a `u64`).
-        let ptr_val = ptr as usize as u64;
-        bytes[8..16].copy_from_slice(&ptr_val.to_le_bytes());
+        put_pointer(&mut bytes, ptr);
 
         // SAFETY: bytes is a valid pointer-format duckdb_string_t at idx 0.
         let s = unsafe { read_duck_string(bytes.as_ptr(), 0) };
@@ -508,8 +510,8 @@ mod tests {
         // A hostile 16 bytes: length says "pointer format", and the pointer slot
         // holds an address that must never be dereferenced.
         let mut bytes = [0u8; DUCK_STRING_SIZE];
-        bytes[..4].copy_from_slice(&1024u32.to_le_bytes());
-        bytes[8..16].copy_from_slice(&0xdead_beef_dead_beef_u64.to_le_bytes());
+        bytes[..4].copy_from_slice(&1024u32.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&0xdead_beef_dead_beef_u64.to_ne_bytes());
 
         assert!(DuckStringView::inline_from_bytes(&bytes).is_none());
     }
@@ -518,7 +520,7 @@ mod tests {
     fn safe_constructor_accepts_every_inline_length() {
         for len in 0..=DUCK_STRING_INLINE_MAX_LEN {
             let mut bytes = [b'x'; DUCK_STRING_SIZE];
-            bytes[..4].copy_from_slice(&u32::try_from(len).expect("fits").to_le_bytes());
+            bytes[..4].copy_from_slice(&u32::try_from(len).expect("fits").to_ne_bytes());
             let view = DuckStringView::inline_from_bytes(&bytes)
                 .unwrap_or_else(|| panic!("length {len} must be inline"));
             assert_eq!(view.len(), len);
@@ -531,12 +533,60 @@ mod tests {
     fn deprecated_constructor_no_longer_dereferences() {
         // The old safe `from_bytes` used to follow this pointer. It must not.
         let mut bytes = [0u8; DUCK_STRING_SIZE];
-        bytes[..4].copy_from_slice(&64u32.to_le_bytes());
-        bytes[8..16].copy_from_slice(&0xdead_beef_dead_beef_u64.to_le_bytes());
+        bytes[..4].copy_from_slice(&64u32.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&0xdead_beef_dead_beef_u64.to_ne_bytes());
 
         let view = DuckStringView::from_bytes(&bytes);
         assert_eq!(view.len(), 64);
         assert_eq!(view.as_str(), None);
+    }
+
+    /// A `duckdb_string_t` filled through its own C fields, as `DuckDB` fills
+    /// it: the length and the pointer in the target's byte order. Decoding
+    /// assumed little-endian, so on a big-endian target an inline string's
+    /// length read as `len << 24` and the decoder followed its inlined bytes
+    /// as a pointer. Run under Miri with `--target s390x-unknown-linux-gnu`
+    /// to exercise the big-endian case.
+    #[test]
+    fn a_duckdb_string_t_in_native_layout_is_decoded() {
+        use libduckdb_sys::{
+            duckdb_string_t, duckdb_string_t__bindgen_ty_1,
+            duckdb_string_t__bindgen_ty_1__bindgen_ty_1 as Pointer,
+            duckdb_string_t__bindgen_ty_1__bindgen_ty_2 as Inlined,
+        };
+        let short = "hello";
+        let mut inlined = [0 as std::os::raw::c_char; 12];
+        for (dst, &b) in inlined.iter_mut().zip(short.as_bytes()) {
+            *dst = std::os::raw::c_char::from_ne_bytes([b]);
+        }
+        let long = "a string longer than twelve bytes";
+        let mut prefix = [0 as std::os::raw::c_char; 4];
+        for (dst, &b) in prefix.iter_mut().zip(long.as_bytes()) {
+            *dst = std::os::raw::c_char::from_ne_bytes([b]);
+        }
+        let rows = [
+            duckdb_string_t {
+                value: duckdb_string_t__bindgen_ty_1 {
+                    inlined: Inlined { length: 5, inlined },
+                },
+            },
+            duckdb_string_t {
+                value: duckdb_string_t__bindgen_ty_1 {
+                    pointer: Pointer {
+                        length: u32::try_from(long.len()).expect("short"),
+                        prefix,
+                        ptr: long.as_ptr().cast_mut().cast(),
+                    },
+                },
+            },
+        ];
+        assert_eq!(std::mem::size_of_val(&rows), 2 * DUCK_STRING_SIZE);
+        let data = rows.as_ptr().cast::<u8>();
+        // SAFETY: `data` is two genuine `duckdb_string_t` rows; the second
+        // points at `long`, which outlives both reads.
+        assert_eq!(unsafe { read_duck_string(data, 0) }, short);
+        assert_eq!(unsafe { read_duck_string(data, 1) }, long);
+        assert_eq!(unsafe { read_duck_blob(data, 1) }, long.as_bytes());
     }
 
     #[test]

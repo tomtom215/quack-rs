@@ -550,6 +550,12 @@ if nobody wrote down that they were checked.
   silent 32-bit narrowing is refused rather than truncated, and the 16-byte
   `duckdb_string_t` is decoded with explicit little-endian reads that work
   regardless of pointer width.
+
+  > **Corrected in the fifth audit (section 10).** Little-endian reads were
+  > the defect: `duckdb_string_t` holds its length and pointer in the target's
+  > byte order, so on a big-endian target the decoder misread every string and
+  > followed inlined bytes as a pointer (reproduced under Miri on s390x). It
+  > now reads both natively, the pointer at the target's width.
 - **Every truncating cast is deliberate.** The crate is clippy-pedantic-clean
   with `-D warnings`, so each one carries an explicit `#[allow]`; all of them are
   the `i128 → {u64, i64}` hugeint split or the documented DECIMAL width
