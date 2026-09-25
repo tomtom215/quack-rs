@@ -669,10 +669,22 @@ mod tests {
     /// (no box) is the key itself.
     #[test]
     fn a_tag_is_the_box_address_xor_the_types_key() {
-        let key = FfiState::<Counter>::tag_for(core::ptr::null());
+        // Pin the whole structure `addr ^ TAG_KEY ^ salt` against `TAG_KEY`
+        // and the salt directly. Asserting only `tag ^ key == addr` is weaker:
+        // it also holds when the second XOR is an AND and `addr` is a submask
+        // of the salt, and the salt is the type-name pointer, so whether that
+        // coincidence occurs depends on the run's address layout -- the
+        // assertion below does not.
+        let salt = FfiState::<Counter>::salt(core::any::type_name::<Counter>().as_ptr() as usize);
+        let key = FfiState::<Counter>::TAG_KEY ^ salt;
+        // An inline state (null box) carries the key itself.
+        assert_eq!(FfiState::<Counter>::tag_for(core::ptr::null()), key);
         for addr in [0x10_usize, 0x1000, 0xFFFF_FFF0, usize::MAX & !0xF] {
             let boxed = core::ptr::without_provenance::<Counter>(addr);
-            assert_eq!(FfiState::<Counter>::tag_for(boxed) ^ key, addr, "{addr:#x}");
+            let tag = FfiState::<Counter>::tag_for(boxed);
+            assert_eq!(tag, addr ^ FfiState::<Counter>::TAG_KEY ^ salt, "{addr:#x}");
+            // And two tags of one type differ exactly where the addresses do.
+            assert_eq!(tag ^ key, addr, "{addr:#x}");
         }
     }
 
