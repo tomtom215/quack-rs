@@ -242,4 +242,10 @@ exclude_re = [
     # `<=` differs only at `p == limit`, where both arms return `limit`.
     "list_builder.rs:.*replace > with (==|>=) in capacity_for",
     "list_builder.rs:.*replace < with <= in reservation",
+    # Equivalent: capacity_within's `allocation_bytes < MAX_LIST_CHILD_CAPACITY`
+    # and max_capacity_within's `fitting < MAX_LIST_CHILD_CAPACITY` pick the
+    # smaller of two values; as `<=` they differ only when the two are equal,
+    # where both branches give that same value.
+    "list_builder.rs:.*replace < with <= in capacity_within",
+    "vector/ops.rs:.*replace < with <= in max_capacity_within",
 ]

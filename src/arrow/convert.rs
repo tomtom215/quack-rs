@@ -286,9 +286,13 @@ pub unsafe fn schema_from_arrow(
 /// - `length` must be the array's true row count. `DuckDB` allocates a chunk
 ///   of that capacity before its error handling starts
 ///   (`dchunk->Initialize(…, length)` in `arrow-c.cpp`), so a length too large
-///   to allocate throws through the C API and aborts the process. No bound
-///   short of the memory the producer's own buffers already occupy separates
-///   a valid length from an absurd one, so it cannot be checked here.
+///   to allocate throws through the C API and aborts the process. A length,
+///   or a nested row count, above
+///   [`MAX_CAPACITY`](crate::vector::ops::MAX_CAPACITY) is refused, which on
+///   a 32-bit target also keeps every buffer's byte size within what `malloc`
+///   receives unnarrowed; below it an allocation the system cannot satisfy
+///   still aborts. The length is not otherwise checkable: a run-end-encoded
+///   column declares any length with a few bytes of buffers.
 /// - Every validity bitmap that `DuckDB` reads (one with a nonzero
 ///   `null_count`) must be readable for **one byte past** the last byte that
 ///   holds its rows' bits. When a node's effective bit offset is not a

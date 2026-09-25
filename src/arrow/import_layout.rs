@@ -408,6 +408,20 @@ pub(super) unsafe fn check(
     Ok(())
 }
 
+/// Whether `DuckDB` can hold `rows` elements in one vector under `max`
+/// ([`MAX_CAPACITY`](crate::vector::ops::MAX_CAPACITY) on this target),
+/// counting the rounding up to a power of two that a list child's reserve
+/// adds. Above it the allocation either throws before
+/// `duckdb_data_chunk_from_arrow`'s `try` (aborting the process) or, on a
+/// 32-bit target, has its byte size narrowed by `malloc` and comes back too
+/// small.
+const fn fits_one_vector(rows: u64, max: u64) -> bool {
+    match rows.checked_next_power_of_two() {
+        Some(reserved) => reserved <= max,
+        None => false,
+    }
+}
+
 /// Checks `node`, reached with `ctx`, and everything below it.
 ///
 /// # Safety
@@ -424,6 +438,14 @@ unsafe fn check_node(
         return Err(format!(
             "the array has a negative length ({}) or offset ({})",
             node.length, node.offset
+        ));
+    }
+    let max = crate::vector::ops::MAX_CAPACITY as u64;
+    if !fits_one_vector(ctx.size, max) {
+        return Err(format!(
+            "{} rows here is more rows than one DuckDB vector can hold on this target \
+             ({max}); DuckDB would size the vector before its error handling starts",
+            ctx.size
         ));
     }
     let children = usize::try_from(node.n_children).unwrap_or(0);

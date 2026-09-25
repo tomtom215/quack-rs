@@ -1150,6 +1150,15 @@ reproducer run on the releases it names. Its entries are grouped under
   `OwnedVector::new(HUGEINT, 2^28)` succeeded with the same wrap. The list
   limit now also fits one allocation, and `vector::ops::MAX_CAPACITY` is
   2^28 - 1 on a 32-bit target. 64-bit targets are unchanged.
+- **`data_chunk_from_arrow` passed on lengths no vector can hold.** `DuckDB`
+  sizes the chunk from the array's length before its error handling starts,
+  and sizes each list child it reserves from the list's element count; a
+  run-end-encoded column declares any length with a few bytes of buffers.
+  On a 32-bit target a length of 2^28 (`VARCHAR`) or 2^29 (`BIGINT`) had
+  its byte size narrowed by `malloc`, and the import then wrote past the
+  buffer; on any target a length past 2^37 threw through the C API. The
+  layout walk now refuses a row count above `vector::ops::MAX_CAPACITY` at
+  any node.
 
 #### Fourth audit
 

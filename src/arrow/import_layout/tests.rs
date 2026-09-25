@@ -280,6 +280,35 @@ fn run_end_encoding_duckdb_reads_wrongly_is_refused() {
     assert!(err.contains("buffers it does not have"), "{err}");
 }
 
+/// `DuckDB` allocates a vector per node sized from its row count (the chunk
+/// from the batch's length, a list child reserved to its element count
+/// rounded up to a power of two) as a 64-bit byte count that `malloc`
+/// narrows on a 32-bit target. A run-end-encoded column declares any length
+/// with a few bytes of buffers, so the length itself must be bounded.
+#[test]
+fn a_node_with_more_rows_than_one_vector_holds_is_refused() {
+    let max = crate::vector::ops::MAX_CAPACITY as u64;
+    let ree_shape = of(Kind::RunEnd, vec![leaf(), leaf()]);
+    let ree = |rows: i64| {
+        Node::new(rows, 0, 0, vec![]).with_children(vec![
+            Node::new(1, 0, 0, vec![vec![], i32s(&[i32::MAX])]),
+            Node::new(1, 0, 0, vec![vec![], i32s(&[20])]),
+        ])
+    };
+    let at_limit = i64::try_from(max).expect("fits");
+    assert_eq!(
+        check_column(at_limit, ree(at_limit), ree_shape.clone()),
+        Ok(())
+    );
+    let err = check_column(at_limit + 1, ree(at_limit + 1), ree_shape).expect_err("too long");
+    assert!(err.contains("more rows than one DuckDB vector"), "{err}");
+    // With a 32-bit target's limit: 2^28 - 1 sixteen-byte elements.
+    let wasm32 = (1_u64 << 28) - 1;
+    assert!(fits_one_vector(1 << 27, wasm32));
+    assert!(!fits_one_vector((1 << 27) + 1, wasm32));
+    assert!(!fits_one_vector(u64::MAX, wasm32));
+}
+
 #[test]
 fn a_child_count_or_dictionary_mismatch_is_refused() {
     let err = check_column(1, ints(1, 0), of(Kind::Struct, vec![leaf()])).expect_err("children");
