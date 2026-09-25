@@ -499,6 +499,7 @@ quack-rs/
 │   └── ffi_roundtrip/
 │       ├── agg_states.rs              # Every aggregate state is dropped, including the ones `DuckDB` moves
 │       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
+│       ├── appender_api.rs            # `Appender` methods a no-op replacement survived: schemas, column types, `clear_columns`, defaults
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_export.rs            # `arrow::data_chunk_to_arrow` refuses values `DuckDB` would export wrongly
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
@@ -508,6 +509,7 @@ quack-rs/
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
 │       ├── copy_from_columns.rs       # A typed `COPY … FROM` reader that declares a column is refused
 │       ├── file_errors.rs             # `FileHandle` reports the write and sync failures `DuckDB` reports
+│       ├── handles_api.rs             # `StructWriter` child handles and `InMemoryDb::execute`'s row count
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
 │       ├── list_limits.rs             # `ListBuilder` stops at `DuckDB`'s byte ceiling, not an element count
 │       ├── mock_parity.rs             # `MockRegistrar` refuses a bad type with the live registration's message
@@ -521,6 +523,7 @@ quack-rs/
 │       ├── table_description.rs       # `TableDescription` accessors on an index `DuckDB` cannot hold
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── value_getters.rs           # Each typed `Value` getter at its own type; out-of-range TIMETZ / TIME_NS are not cast
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
 │       ├── value_render.rs            # `Value` rendering of values SQL builds and `DuckDB` cannot render

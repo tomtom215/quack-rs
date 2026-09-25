@@ -510,6 +510,20 @@ reproducer run on the releases it names. Its entries are grouped under
   reasons, and a test queries and drops a connection on another thread.
 - `docs/upstream-duckdb-reports.md` gained items 20 to 37, and item 16 gained
   a `HUGEINT` reproducer.
+- **Test gaps the mutation sweeps exposed.** The full sweep left 22 mutants
+  alive, and the end-to-end run over the files `mutants.toml` excludes left
+  more. Each is now killed by a test, excluded with the reason in
+  `mutants.toml`, or recorded in `AUDIT.md` section 10 as equivalent with the
+  argument. The new tests cover `FfiState`'s tag structure, a release profile
+  without `panic = "unwind"`, an overload's own return type, every typed
+  `Value` getter against a value of its own type, the `TIMETZ` and `TIME_NS`
+  range guards, the `Appender` methods a no-op replacement survived (another
+  schema, `column_type`, `clear_columns`, `append_default_to_chunk`),
+  `StructWriter`'s child vectors, `InMemoryDb::execute`'s row count and
+  `QueryResult::result_kind` for a statement that returns nothing. Two
+  comparisons moved into small `const fn`s so that a unit test can reach
+  their boundary: the aggregate-state salt and the appender's
+  `u32::MAX`-inclusive length limit.
 
 #### Fourth audit
 

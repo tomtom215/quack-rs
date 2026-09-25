@@ -6020,3 +6020,12 @@ mod nested_reserve;
 #[cfg(feature = "duckdb-1-5")]
 #[path = "ffi_roundtrip/copy_from_columns.rs"]
 mod copy_from_columns;
+
+#[path = "ffi_roundtrip/value_getters.rs"]
+mod value_getters;
+
+#[path = "ffi_roundtrip/appender_api.rs"]
+mod appender_api;
+
+#[path = "ffi_roundtrip/handles_api.rs"]
+mod handles_api;

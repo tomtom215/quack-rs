@@ -22,6 +22,11 @@ use crate::value::Value;
 /// low 32 bits, so it is refused here instead.
 const MAX_VARCHAR_LEN: usize = u32::MAX as usize;
 
+/// Whether `len` bytes fit `duckdb_append_varchar_length`'s `uint32_t`.
+const fn fits_append_length(len: usize) -> bool {
+    len <= MAX_VARCHAR_LEN
+}
+
 impl Appender {
     // ── Row-at-a-time appends ───────────────────────────────────────────
 
@@ -174,7 +179,7 @@ impl Appender {
     fn append_bytes_as(&self, value: &[u8], varchar: bool) -> Result<(), AppendError> {
         self.usable()?;
         if varchar {
-            if value.len() > MAX_VARCHAR_LEN {
+            if !fits_append_length(value.len()) {
                 return Err(append_error(&format!(
                     "VARCHAR of {} bytes exceeds DuckDB's {MAX_VARCHAR_LEN}-byte appender limit",
                     value.len()
@@ -191,7 +196,7 @@ impl Appender {
             };
             return self.record_append(state);
         }
-        if value.len() > MAX_VARCHAR_LEN {
+        if !fits_append_length(value.len()) {
             return Err(append_error(&format!(
                 "BLOB of {} bytes exceeds DuckDB's {MAX_VARCHAR_LEN}-byte appender limit",
                 value.len()
@@ -300,5 +305,20 @@ impl Drop for PoisonOnUnwind<'_> {
         if self.0.column.get() != 0 {
             self.0.lifecycle.set(Lifecycle::Poisoned);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fits_append_length;
+
+    /// The limit is `u32::MAX` bytes inclusive: a string of exactly that
+    /// length is passed to `DuckDB` intact, one byte more would be truncated.
+    #[test]
+    fn the_append_length_limit_is_u32_max_inclusive() {
+        assert!(fits_append_length(0));
+        assert!(fits_append_length(u32::MAX as usize));
+        #[cfg(target_pointer_width = "64")]
+        assert!(!fits_append_length(u32::MAX as usize + 1));
     }
 }
