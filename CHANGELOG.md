@@ -516,6 +516,10 @@ reproducer run on the releases it names. Its entries are grouped under
   array: `DuckDB` gives `release` to column 0 alone, so a vector made to
   reference another column (`reference_vector`) does not keep the producer's
   buffers alive (a new test observes both cases).
+- `StructWriter`'s `write_*`, `set_null` and `set_valid` state in their
+  Safety sections that no field writer was replaced through `field_mut`:
+  swapping two writers is safe code, and the next write would go to the
+  wrong child vector.
 - `OwnedConnection`'s `Send` justification said `DuckDB` forbids concurrent
   use of one connection; it serialises it. The comment now gives the real
   reasons, and a test queries and drops a connection on another thread.
