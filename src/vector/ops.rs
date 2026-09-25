@@ -75,9 +75,27 @@ use crate::value::Value;
 /// bytes, so a vector within this bound needs at most 2 TiB and its size can
 /// never wrap a 64-bit multiply.
 ///
-/// On a target whose `usize` cannot hold 2^37 no allocation can reach the
-/// ceiling, so the bound is `usize::MAX` there.
-pub const MAX_CAPACITY: usize = crate::vector::list_builder::MAX_CHILD_CAPACITY_USIZE;
+/// On a 32-bit target (wasm32) the allocation is the tighter bound: `DuckDB`
+/// narrows a buffer's 64-bit size to `size_t` when it allocates, so a vector
+/// of 2^32 bytes or more would get a wrapped, undersized buffer. There the
+/// bound is the most 16-byte elements whose bytes fit a `usize`, 2^28 - 1.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "at most usize::MAX / 16 or 2^37, whichever is smaller, so it fits"
+)]
+pub const MAX_CAPACITY: usize =
+    max_capacity_within(crate::vector::list_builder::MAX_ALLOCATION_BYTES) as usize;
+
+/// [`MAX_CAPACITY`] for an allocation limit of `allocation_bytes`: 2^37, or
+/// the most 16-byte elements (the widest physical type) that fit it.
+const fn max_capacity_within(allocation_bytes: u64) -> u64 {
+    let fitting = allocation_bytes / 16;
+    if fitting < crate::vector::list_builder::MAX_LIST_CHILD_CAPACITY {
+        fitting
+    } else {
+        crate::vector::list_builder::MAX_LIST_CHILD_CAPACITY
+    }
+}
 
 /// The largest number of elements any single vector — `ty` itself or a child
 /// vector `DuckDB` allocates for it — would hold for a `rows`-row vector of
@@ -362,17 +380,18 @@ mod tests {
     use super::*;
 
     /// `OwnedVector::new` refuses anything above `DuckDB`'s
-    /// `DConstants::MAX_VECTOR_SIZE` (2^37 elements) — and nothing below it.
-    /// On a target whose `usize` cannot hold 2^37, no allocation can reach
-    /// it, so the bound is `usize::MAX` there.
+    /// `DConstants::MAX_VECTOR_SIZE` (2^37 elements) — and nothing below it —
+    /// on a 64-bit target. On a 32-bit one the allocation binds first: 2^28 - 1
+    /// elements of 16 bytes fit a `u32`, 2^28 do not.
     #[test]
-    fn max_capacity_is_duckdbs_max_vector_size() {
+    fn max_capacity_is_duckdbs_max_vector_size_or_what_one_allocation_holds() {
         #[cfg(target_pointer_width = "64")]
         assert_eq!(super::MAX_CAPACITY, 137_438_953_472);
-        assert_eq!(
-            super::MAX_CAPACITY,
-            usize::try_from(137_438_953_472_u64).unwrap_or(usize::MAX)
-        );
+        assert_eq!(super::max_capacity_within(u64::MAX), 1 << 37);
+        let wasm32 = u64::from(u32::MAX);
+        assert_eq!(super::max_capacity_within(wasm32), (1 << 28) - 1);
+        assert!(super::max_capacity_within(wasm32) * 16 <= wasm32);
+        assert!(usize::try_from(super::MAX_CAPACITY as u64 * 16).is_ok());
     }
     #[cfg(feature = "_duckdb-testing")]
     use crate::types::TypeId;

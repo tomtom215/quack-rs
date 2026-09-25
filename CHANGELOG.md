@@ -1124,6 +1124,20 @@ reproducer run on the releases it names. Its entries are grouped under
   width, which also keeps its provenance. No `DuckDB` extension platform is
   big-endian, and nothing changes on a little-endian one; bytes passed to
   `DuckStringView::inline_from_bytes` are now read in native order too.
+- **The Arrow export check read `HUGEINT` / `UHUGEINT` rows with their halves
+  swapped on a big-endian target.** `DuckDB` stores them as `{lower, upper}`;
+  the check read the 16 bytes as a native `i128`, so on s390x it passed
+  `10^38` (read as about `1.27 * 10^37`) into a lossy export and refused
+  `2^63`. It now reads `DuckDB`'s struct (reproduced under Miri on s390x).
+- **On a 32-bit target (wasm32), `ListBuilder` and `OwnedVector::new` could
+  ask `DuckDB` for a buffer whose size wraps.** `DuckDB` computes a buffer's
+  size as a 64-bit `idx_t` and passes it to `malloc`, which narrows it to a
+  32-bit `size_t` unchecked. The limits bounded the element count by
+  `usize::MAX`, not the bytes, so a `BIGINT` or `VARCHAR` list child could
+  reserve 2^32 elements and `malloc` receive 0 bytes, and
+  `OwnedVector::new(HUGEINT, 2^28)` succeeded with the same wrap. The list
+  limit now also fits one allocation, and `vector::ops::MAX_CAPACITY` is
+  2^28 - 1 on a 32-bit target. 64-bit targets are unchanged.
 
 #### Fourth audit
 

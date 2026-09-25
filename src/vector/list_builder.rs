@@ -108,9 +108,10 @@ pub const MAX_LIST_CHILD_CAPACITY: u64 = 1 << 37;
 /// count can exceed it, whatever the type (`BOOLEAN` and `TINYINT` elements are
 /// one byte each).
 ///
-/// On a 64-bit target this is the ceiling itself. On a 32-bit target the
-/// ceiling is larger than any allocation `usize` can describe, so `usize::MAX`
-/// is the real limit and `DuckDB`'s is unreachable.
+/// On a 64-bit target this is the ceiling itself. On a 32-bit target it is
+/// `usize::MAX`, which bounds the count but not the bytes: the limits
+/// themselves come from [`capacity_for`], which also respects
+/// [`MAX_ALLOCATION_BYTES`].
 #[allow(
     clippy::cast_possible_truncation,
     reason = "the branch above proves the value fits"
@@ -161,18 +162,12 @@ pub(crate) const fn element_bytes(id: Option<TypeId>) -> u64 {
 /// is the largest power of two whose bytes fit, not the ceiling divided by
 /// the element size: 2^25 for a 4000-byte `INTEGER[1000]`, where
 /// 2^37 / 4000 = 34,359,738 elements would be checked as 2^26.
+///
+/// On a 32-bit target the allocation is the tighter bound: see
+/// [`MAX_ALLOCATION_BYTES`].
 #[must_use]
 pub(crate) const fn capacity_for(bytes_per_element: Option<u64>) -> usize {
-    let Some(bytes) = bytes_per_element else {
-        return 0;
-    };
-    let fitting = MAX_LIST_CHILD_CAPACITY / if bytes == 0 { 1 } else { bytes };
-    if fitting == 0 {
-        return 0;
-    }
-    // The largest power of two not above `fitting`: a request up to it rounds
-    // up to at most it.
-    let elements = 1_u64 << (u64::BITS - 1 - fitting.leading_zeros());
+    let elements = capacity_within(bytes_per_element, MAX_ALLOCATION_BYTES);
     if elements > MAX_CHILD_CAPACITY_USIZE as u64 {
         MAX_CHILD_CAPACITY_USIZE
     } else {
@@ -182,6 +177,38 @@ pub(crate) const fn capacity_for(bytes_per_element: Option<u64>) -> usize {
             elements as usize
         }
     }
+}
+
+/// The most bytes one `DuckDB` allocation can hold on this target.
+///
+/// `DuckDB` computes a buffer's size as a 64-bit `idx_t` and hands it to
+/// `malloc` (`Allocator::DefaultAllocate`, `allocator_standard.cpp`), which
+/// takes a `size_t`: on a 32-bit target such as wasm32 the size is narrowed
+/// without a check, so a buffer of 2^32 bytes or more is allocated modulo
+/// 2^32 and comes back too small. `DuckDB`'s own limit
+/// (`Allocator::MAXIMUM_ALLOC_SIZE`, 2^48) is far above that.
+pub(crate) const MAX_ALLOCATION_BYTES: u64 = usize::MAX as u64;
+
+/// [`capacity_for`] for an allocation limit of `allocation_bytes`: the largest
+/// power of two whose elements fit both `DuckDB`'s 2^37-byte ceiling and the
+/// allocation, as a `u64`.
+#[must_use]
+pub(crate) const fn capacity_within(bytes_per_element: Option<u64>, allocation_bytes: u64) -> u64 {
+    let Some(bytes) = bytes_per_element else {
+        return 0;
+    };
+    let ceiling = if allocation_bytes < MAX_LIST_CHILD_CAPACITY {
+        allocation_bytes
+    } else {
+        MAX_LIST_CHILD_CAPACITY
+    };
+    let fitting = ceiling / if bytes == 0 { 1 } else { bytes };
+    if fitting == 0 {
+        return 0;
+    }
+    // The largest power of two not above `fitting`: a request up to it rounds
+    // up to at most it.
+    1_u64 << (u64::BITS - 1 - fitting.leading_zeros())
 }
 
 /// The widest buffer, in bytes per element, that `Vector::Resize` grows for a
@@ -561,8 +588,8 @@ impl ListBuilder {
 #[cfg(test)]
 mod tests {
     use super::{
-        capacity_for, element_bytes, reservation, ListBuilder, MAX_CHILD_CAPACITY_USIZE,
-        MAX_LIST_CHILD_CAPACITY,
+        capacity_for, capacity_within, element_bytes, reservation, ListBuilder,
+        MAX_CHILD_CAPACITY_USIZE, MAX_LIST_CHILD_CAPACITY,
     };
 
     #[test]
@@ -582,6 +609,7 @@ mod tests {
     use crate::types::TypeId;
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
     fn capacity_is_duckdbs_byte_ceiling_over_the_element_size() {
         assert_eq!(capacity_for(Some(8)), 1 << 34);
         assert_eq!(capacity_for(Some(16)), 1 << 33);
@@ -599,6 +627,42 @@ mod tests {
         assert_eq!(capacity_for(Some((1 << 37) + 1)), 0);
         assert_eq!(capacity_for(None), 0);
         assert_eq!(capacity_for(Some(u64::MAX)), 0);
+    }
+
+    /// `DuckDB` computes a buffer's size as a 64-bit `idx_t` and passes it to
+    /// `malloc`, which narrows it to a 32-bit `size_t` on wasm32: a limit
+    /// whose rounded-up reservation needs more bytes than a `usize` holds gets
+    /// a wrapped, undersized buffer. Run under Miri with `--target
+    /// i686-unknown-linux-gnu` for the 32-bit case.
+    #[test]
+    fn a_32_bit_allocation_bounds_the_capacity_in_bytes() {
+        let wasm32 = u64::from(u32::MAX);
+        assert_eq!(capacity_within(Some(16), wasm32), 1 << 27);
+        assert_eq!(capacity_within(Some(8), wasm32), 1 << 28);
+        assert_eq!(capacity_within(Some(4000), wasm32), 1 << 20);
+        assert_eq!(capacity_within(Some(1), wasm32), 1 << 31);
+        for bytes in [1_u64, 2, 3, 4, 8, 16, 4000] {
+            let reserved = capacity_within(Some(bytes), wasm32).saturating_mul(bytes);
+            assert!(
+                reserved <= wasm32,
+                "{bytes}-byte elements reserve {reserved}"
+            );
+        }
+        // On a 64-bit target `DuckDB`'s own 2^37-byte ceiling is the tighter.
+        assert_eq!(capacity_within(Some(16), u64::MAX), 1 << 33);
+        assert_eq!(capacity_within(Some(1), u64::MAX), 1 << 37);
+    }
+
+    #[test]
+    fn no_limit_asks_for_more_bytes_than_one_allocation_holds() {
+        for bytes in [1_u64, 2, 4, 8, 16, 3, 4000] {
+            let elements = capacity_for(Some(bytes)) as u64;
+            let reserved = elements.next_power_of_two().saturating_mul(bytes);
+            assert!(
+                usize::try_from(reserved).is_ok(),
+                "{bytes}-byte elements: {elements} reserve {reserved} bytes"
+            );
+        }
     }
 
     /// `GetTypeIdSize` of each type's physical type.

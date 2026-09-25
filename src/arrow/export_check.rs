@@ -237,15 +237,13 @@ unsafe fn check_vector(vector: duckdb_vector, rows: &[usize], rules: Rules) -> O
                         })
                     }
                     Some(TypeId::HugeInt) => {
-                        // `hugeint_t` is 8-byte aligned; `i128` wants 16.
-                        let v = data.cast::<i128>().add(row).read_unaligned();
+                        let v = hugeint_at(data, row);
                         (!hugeint_fits_decimal38(v)).then(|| {
                             format!("the HUGEINT {v}, which has more digits than decimal128(38, 0) holds")
                         })
                     }
                     Some(TypeId::UHugeInt) => {
-                        // `hugeint_t` is 8-byte aligned; `u128` wants 16.
-                        let v = data.cast::<u128>().add(row).read_unaligned();
+                        let v = uhugeint_at(data, row);
                         (!uhugeint_fits_decimal38(v)).then(|| {
                             format!(
                                 "the UHUGEINT {v}, which has more digits than decimal128(38, 0) holds"
@@ -257,6 +255,34 @@ unsafe fn check_vector(vector: duckdb_vector, rows: &[usize], rules: Rules) -> O
             }
         }
     }
+}
+
+/// Row `row` of a `HUGEINT` vector's data buffer.
+///
+/// # Safety
+///
+/// `data` must be a `HUGEINT` vector's data buffer with more than `row` rows.
+const unsafe fn hugeint_at(data: *mut std::ffi::c_void, row: usize) -> i128 {
+    // SAFETY: the caller's contract. The row is read as DuckDB's own
+    // `{lower, upper}` struct, not as an `i128`, whose halves are the other
+    // way round on a big-endian target.
+    let raw = unsafe { data.cast::<libduckdb_sys::duckdb_hugeint>().add(row).read() };
+    crate::value::hugeint_to_i128(raw)
+}
+
+/// Row `row` of a `UHUGEINT` vector's data buffer.
+///
+/// # Safety
+///
+/// `data` must be a `UHUGEINT` vector's data buffer with more than `row` rows.
+const unsafe fn uhugeint_at(data: *mut std::ffi::c_void, row: usize) -> u128 {
+    // SAFETY: as in `hugeint_at`.
+    let raw = unsafe {
+        data.cast::<libduckdb_sys::duckdb_uhugeint>()
+            .add(row)
+            .read()
+    };
+    crate::value::uhugeint_to_u128(raw)
 }
 
 /// Refuses `chunk` if `duckdb_data_chunk_to_arrow` would export one of its
@@ -421,6 +447,34 @@ pub(super) unsafe fn check_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DuckDB` lays out `HUGEINT` / `UHUGEINT` as `{lower, upper}`, each in
+    /// the target's byte order, so a native 128-bit read has the halves
+    /// swapped on a big-endian target. Run under Miri with
+    /// `--target s390x-unknown-linux-gnu` for that case.
+    #[test]
+    fn hugeint_rows_are_read_as_duckdb_lays_them_out() {
+        use libduckdb_sys::{duckdb_hugeint, duckdb_uhugeint};
+        let signed = [
+            duckdb_hugeint { lower: 0, upper: 1 },
+            duckdb_hugeint {
+                lower: u64::MAX,
+                upper: -1,
+            },
+        ];
+        let unsigned = [duckdb_uhugeint {
+            lower: 5,
+            upper: 1 << 63,
+        }];
+        // SAFETY: two and one rows of the matching layouts.
+        unsafe {
+            let data = signed.as_ptr().cast_mut().cast();
+            assert_eq!(hugeint_at(data, 0), 1_i128 << 64);
+            assert_eq!(hugeint_at(data, 1), -1);
+            let data = unsigned.as_ptr().cast_mut().cast();
+            assert_eq!(uhugeint_at(data, 0), (1_u128 << 127) | 5);
+        }
+    }
 
     unsafe extern "C" fn keep_schema(schema: *mut crate::arrow::RawArrowSchema) {
         // SAFETY: called with a live record; this test owns everything it
