@@ -230,8 +230,14 @@ impl<T: AggregateState> FfiState<T> {
     /// salt's low bit is cleared, so the key stays odd and never zero: a zeroed
     /// slot never matches.
     fn tag_for(boxed: *const T) -> usize {
-        let salt = core::any::type_name::<T>().as_ptr() as usize & !1;
+        let salt = Self::salt(core::any::type_name::<T>().as_ptr() as usize);
         (boxed as usize) ^ Self::TAG_KEY ^ salt
+    }
+
+    /// `name_addr` with its low bit cleared, so that `TAG_KEY ^ salt` stays
+    /// odd.
+    const fn salt(name_addr: usize) -> usize {
+        name_addr & !1
     }
 
     /// The payload: `T` itself, or the `Box<T>`'s pointer.
@@ -656,6 +662,30 @@ mod tests {
         // SAFETY: each state is `size()` word-aligned bytes, initialised or
         // not, which is what the destructor must cope with.
         unsafe { FfiState::<T>::destroy_callback(states.as_mut_ptr(), states.len() as idx_t) };
+    }
+
+    /// A tag is the box's address XOR a per-type key, so two tags of one
+    /// type differ exactly where the addresses do, and an inline state's tag
+    /// (no box) is the key itself.
+    #[test]
+    fn a_tag_is_the_box_address_xor_the_types_key() {
+        let key = FfiState::<Counter>::tag_for(core::ptr::null());
+        for addr in [0x10_usize, 0x1000, 0xFFFF_FFF0, usize::MAX & !0xF] {
+            let boxed = core::ptr::without_provenance::<Counter>(addr);
+            assert_eq!(FfiState::<Counter>::tag_for(boxed) ^ key, addr, "{addr:#x}");
+        }
+    }
+
+    /// The key is odd, whatever the type name's address, so no zeroed slot
+    /// and no aligned box address can produce a tag of zero.
+    #[test]
+    fn the_salt_clears_the_low_bit_so_the_key_stays_odd() {
+        for name_addr in [0x1000_usize, 0x1001, 0x7FFF_FFFF, usize::MAX] {
+            let salt = FfiState::<Counter>::salt(name_addr);
+            assert_eq!(salt & 1, 0, "{name_addr:#x}");
+            assert_eq!(salt | 1, name_addr | 1, "{name_addr:#x}");
+            assert_eq!((FfiState::<Counter>::TAG_KEY ^ salt) & 1, 1);
+        }
     }
 
     #[test]
