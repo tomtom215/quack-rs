@@ -34,7 +34,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 21 | Arrow import reads one byte past a validity bitmap at an unaligned bit offset | C program, below (valgrind) | Safety clause on `data_chunk_from_arrow` |
 | 22 | `duckdb_get_varchar` / `duckdb_value_to_string` fail on DECIMAL, VARIANT and GEOMETRY values SQL builds | C program, below | render guard is an allow-list; DECIMAL checked against its width; VARIANT and GEOMETRY refused |
 | 23 | `duckdb_list_vector_reserve` aborts below `MAX_VECTOR_SIZE` elements when the child buffer passes 2^37 bytes | C program, below | `ListBuilder` limit: the largest power of two whose bytes fit |
-| 24 | Arrow import applies offsets below the top level wrongly (struct fields, union members, run-end arrays) | C program, below | offsets below the top level, and run-end arrays under an offset, refused |
+| 24 | Arrow import applies offsets below the top level wrongly (struct fields, union members, run-end arrays), and reads run-end arrays as plain ones under a fixed-size or zero-row list | C program, below | offsets below the top level, and run-end arrays under an offset or read as plain, refused |
 | 25 | Arrow dictionary import reads validity without the list's start offset, and copies an enclosing struct's NULLs into a 2048-row mask past a heap buffer | C program, below (valgrind) | such dictionaries refused before import |
 | 26 | Arrow import of a dictionary whose values are dictionary-encoded shares one dictionary cache and returns garbage | C program, below | nested dictionaries refused |
 | 27 | Arrow list-view import scans `sum(sizes)` child rows from the lowest offset, reading past the child | C program, below (valgrind) | overlapping or gapped list views refused |
@@ -2164,6 +2164,14 @@ error:
   `RUN_END_ENCODED` child falls through to `ColumnArrowToDuckDB` and is read as
   a plain array from buffers it does not have (the same happens for a REE inside
   another encoded array's values).
+- **A run-end-encoded array under a list converted as zero rows is read as a
+  plain array.** `ConvertArrowListOffsetsTemplated` returns a start of 0 and a
+  size of 0 for `size == 0` whatever the offsets buffer holds
+  (`arrow_conversion.cpp:117`-`121`), and `ArrowToDuckDBList` then converts the
+  child with plain `ColumnArrowToDuckDB` (`:233`-`238`), which handles neither
+  run-end encoding nor dictionaries. A list is converted as zero rows when it
+  sits under an empty row of an enclosing list, which is valid Arrow; its own
+  offsets need not start at 0.
 
 The line numbers in v1.4.4 are `29`, `257`, `672`, `1076`, `1120`; the code is
 otherwise identical.
@@ -2178,6 +2186,8 @@ Built with `gcc -O1 -g -Wall -I/opt/duckdb/<ver> item24.c -L/opt/duckdb/<ver> -l
 //   list_ree       a run-end-encoded array under a list (values' validity off)
 //   struct_ree     the same under a struct at offset 2
 //   fixedlist_ree  a run-end-encoded array under a fixed-size list (read plain)
+//   emptylist_ree  a run-end-encoded array under a zero-row list whose offset
+//                  is not 0 (read plain)
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -2424,6 +2434,45 @@ int main(int argc, char **argv) {
             if (val && !duckdb_validity_row_is_valid(val, k)) printf("NULL"); else printf("%d", d[k]);
         }
         printf("]\n");
+    } else if (!strcmp(mode, "emptylist_ree")) {
+        // list<list<ree>>, one row: the outer row is [] (offsets [0, 0]), so the
+        // inner list is converted as zero rows. Its one offset is 5 (valid:
+        // offsets need not start at 0). Its child is run-end encoded (5 rows,
+        // one run of 42), which has no buffers of its own. DuckDB's empty-list
+        // branch reads it as a plain INT array.
+        int32_t rends[1] = {5};
+        const void *rbuf[2] = {NULL, rends};
+        struct ArrowArray ra = {1, 0, 0, 2, 0, rbuf, NULL, NULL, noop_release, NULL};
+        int32_t vals[1] = {42};
+        const void *vbuf[2] = {NULL, vals};
+        struct ArrowArray va = {1, 0, 0, 2, 0, vbuf, NULL, NULL, noop_release, NULL};
+        struct ArrowArray *ree_ch[2] = {&ra, &va};
+        struct ArrowArray ree = {5, 0, 0, 0, 2, NULL, ree_ch, NULL, noop_release, NULL};
+        struct ArrowArray *in_ch[1] = {&ree};
+        int32_t in_offs[1] = {5};
+        const void *inbuf[2] = {NULL, in_offs};
+        struct ArrowArray inner = {0, 0, 0, 2, 1, inbuf, in_ch, NULL, noop_release, NULL};
+        struct ArrowArray *out_ch[1] = {&inner};
+        int32_t out_offs[2] = {0, 0};
+        const void *outbuf[2] = {NULL, out_offs};
+        struct ArrowArray outer = {1, 0, 0, 2, 1, outbuf, out_ch, NULL, noop_release, NULL};
+        struct ArrowArray *cols[1] = {&outer};
+        const void *nb3[1] = {NULL};
+        struct ArrowArray rb = {1, 0, 0, 1, 1, nb3, cols, NULL, noop_release, NULL};
+        struct ArrowSchema s_re = {"i", "run_ends", NULL, 0, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema s_va = {"i", "values", NULL, 2, 0, NULL, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sree_ch[2] = {&s_re, &s_va};
+        struct ArrowSchema s_ree = {"+r", "item", NULL, 0, 2, sree_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sin_ch[1] = {&s_ree};
+        struct ArrowSchema s_in = {"+l", "item", NULL, 0, 1, sin_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *sout_ch[1] = {&s_in};
+        struct ArrowSchema s_out = {"+l", "l", NULL, 0, 1, sout_ch, NULL, noop_srelease, NULL};
+        struct ArrowSchema *scols[1] = {&s_out};
+        struct ArrowSchema ps = {"+s", "", NULL, 0, 1, scols, NULL, noop_srelease, NULL};
+        if (import(&rb, &ps, &out)) return 1;
+        duckdb_vector lv = duckdb_data_chunk_get_vector(out, 0);
+        duckdb_list_entry *ent = duckdb_vector_get_data(lv);
+        printf("emptylist_ree: outer row has %llu elements\n", (unsigned long long)ent[0].length);
     } else {
         printf("unknown mode %s\n", mode); return 2;
     }
@@ -2481,13 +2530,30 @@ on all eight releases (only the library path in each frame differs):
 ==PID== 
 ```
 
+`emptylist_ree` (a `list<list<ree>>` row `[]` whose inner list has one
+offset, 5, and a run-end-encoded child) crashes during the import on all eight
+(`SIGSEGV`, exit 139, no output). Under valgrind on 1.5.5:
+```text
+==PID== Invalid read of size 8
+==PID==    at 0x…: duckdb::DirectConversion(duckdb::Vector&, ArrowArray&, unsigned long, long, unsigned long) (in /opt/duckdb/1.5.5/libduckdb.so)
+==PID==    by 0x…: duckdb::ArrowToDuckDBList(duckdb::Vector&, ArrowArray&, unsigned long, duckdb::ArrowArrayScanState&, unsigned long, duckdb::ArrowType const&, long, duckdb::ValidityMask const*, long) (in /opt/duckdb/1.5.5/libduckdb.so)
+==PID==    by 0x…: duckdb::ArrowToDuckDBList(duckdb::Vector&, ArrowArray&, unsigned long, duckdb::ArrowArrayScanState&, unsigned long, duckdb::ArrowType const&, long, duckdb::ValidityMask const*, long) (in /opt/duckdb/1.5.5/libduckdb.so)
+==PID==    by 0x…: duckdb_data_chunk_from_arrow (in /opt/duckdb/1.5.5/libduckdb.so)
+==PID==    by 0x…: import (item24.c:30)
+==PID==    by 0x…: main (item24.c:292)
+==PID==  Address 0x8 is not stack'd, malloc'd or (recently) free'd
+```
+
 Expected: `20 / 30 / 40`; `[{'a':30},{'a':40}] / [{'a':50},{'a':60}]`;
 `101 / 20 / 103`; `[20, 20]`; `{'r': 20}` twice; and, for `fixedlist_ree`,
-`[NULL, NULL]` read back without a crash. quack-rs mitigation:
+`[NULL, NULL]` read back without a crash; for `emptylist_ree`, an outer row of
+0 elements. quack-rs mitigation:
 `data_chunk_from_arrow` walks the array beside its schema and refuses a struct
 or union with an offset below the top level, a run-end-encoded array read under
 an offset, and a run-end-encoded array in a place DuckDB reads as a plain array
-(a fixed-size list's child or another encoded array's values);
+(a fixed-size list's child, another encoded array's values, or the child of a
+list converted as zero rows, judged by its row count as DuckDB judges it, not
+by its offsets: the fifth audit found the walk had used the offsets);
 `src/arrow/import_layout.rs`, exercised end-to-end by
 `tests/ffi_roundtrip/arrow_layout.rs`.
 

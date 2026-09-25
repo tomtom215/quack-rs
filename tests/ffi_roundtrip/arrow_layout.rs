@@ -512,6 +512,52 @@ fn a_run_end_encoded_array_below_an_offset_is_refused() {
     );
 }
 
+/// A list `DuckDB` converts as zero rows reads its child as a plain array,
+/// whatever its offsets say (upstream item 24). An inner list of no rows under
+/// an empty outer row, whose one offset is 5, with a run-end-encoded child
+/// crashed the import (SIGSEGV in `DirectConversion` on 1.5.5): the walk took
+/// the list for non-empty because its offset was not 0. A plain child in the
+/// same place imports.
+#[test]
+fn a_run_end_child_of_a_zero_row_list_is_refused_whatever_its_offsets() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    let schema = |child: Box<Sch>| sch("+l", vec![sch("+l", vec![child])]);
+    let ree_schema = || {
+        sch(
+            "+r",
+            vec![
+                named("run_ends", sch("i", vec![])),
+                named("values", sch("i", vec![])),
+            ],
+        )
+    };
+    let column = |first: i32, child: Box<Arr>| {
+        let inner = arr(0, 0, 0, vec![vec![], bytes(&[first])], vec![child]);
+        arr(1, 0, 0, vec![vec![], bytes(&[0_i32, 0])], vec![inner])
+    };
+    let ree = || {
+        let values = arr(1, 0, 0, vec![vec![], bytes(&[42_i32])], vec![]);
+        arr(5, 0, 0, vec![], vec![ints(&[5], 0), values])
+    };
+    for first in [0, 5] {
+        refused(
+            import_one(&con, schema(ree_schema()), column(first, ree()), 1),
+            "where DuckDB reads a plain one",
+        );
+    }
+    assert_eq!(
+        imports(
+            &con,
+            schema(sch("i", vec![])),
+            column(5, ints(&[1, 2, 3, 4, 5], 0)),
+            1,
+            "INTEGER[][]"
+        ),
+        ["[]"]
+    );
+}
+
 /// List views that overlap: `DuckDB` scans `sum(sizes)` elements from the
 /// lowest offset, past the child. Views that leave no gap import right.
 #[test]

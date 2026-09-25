@@ -619,7 +619,13 @@ unsafe fn check_node(
         }
         Kind::List { wide } | Kind::ListView { wide } => {
             let size = i64::try_from(ctx.size).map_err(|_| "row count out of range")?;
-            let (first, total) = if let Kind::ListView { .. } = shape.kind {
+            // A list `DuckDB` converts as zero rows is empty to it whatever its
+            // offsets say: `ConvertArrowListOffsetsTemplated` returns 0 and 0
+            // for `size == 0`, and `ArrowToDuckDBList` then reads the child as
+            // a plain array (upstream item 24).
+            let (first, total) = if ctx.size == 0 {
+                (0, 0)
+            } else if let Kind::ListView { .. } = shape.kind {
                 // SAFETY: the list view's buffers cover its rows.
                 unsafe { list_view_range(node, start, ctx.size, wide) }?
             } else {

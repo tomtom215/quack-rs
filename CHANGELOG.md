@@ -1159,6 +1159,15 @@ reproducer run on the releases it names. Its entries are grouped under
   buffer; on any target a length past 2^37 threw through the C API. The
   layout walk now refuses a row count above `vector::ops::MAX_CAPACITY` at
   any node.
+- **A run-end-encoded child of a zero-row list crashed the Arrow import
+  when the list's offset was not 0.** `DuckDB` treats a list it converts as
+  zero rows as empty whatever its offsets say, and reads an empty list's
+  child as a plain array (upstream item 24): a run-end-encoded child there
+  is read from buffers it does not have (SIGSEGV on every release from
+  1.4.4). The layout walk refused this only when the list's offset was 0,
+  and a valid array (an inner list under an empty outer row, whose offsets
+  need not start at 0) got through. It now decides as `DuckDB` does, by the
+  row count.
 
 #### Fourth audit
 

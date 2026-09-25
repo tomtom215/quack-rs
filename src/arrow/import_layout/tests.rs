@@ -309,6 +309,33 @@ fn a_node_with_more_rows_than_one_vector_holds_is_refused() {
     assert!(!fits_one_vector(u64::MAX, wasm32));
 }
 
+/// A list `DuckDB` converts as zero rows takes its empty branch whatever its
+/// offsets say (`ConvertArrowListOffsetsTemplated` returns 0 and 0 for
+/// `size == 0`), and that branch reads the child as a plain array. An inner
+/// list of no rows whose one offset is 5 is valid Arrow; a run-end-encoded
+/// child there was read from buffers it does not have (a SIGSEGV on 1.5.5).
+#[test]
+fn a_zero_row_list_reads_its_child_as_plain_whatever_its_offsets_say() {
+    let ree_shape = of(Kind::RunEnd, vec![leaf(), leaf()]);
+    let inner_shape = of(Kind::List { wide: false }, vec![ree_shape]);
+    let shape = of(Kind::List { wide: false }, vec![inner_shape]);
+    let column = |first: i32| {
+        let ree = Node::new(5, 0, 0, vec![]).with_children(vec![
+            Node::new(1, 0, 0, vec![vec![], i32s(&[5])]),
+            Node::new(1, 0, 0, vec![vec![], i32s(&[42])]),
+        ]);
+        let inner = Node::new(0, 0, 0, vec![vec![], i32s(&[first])]).with_children(vec![ree]);
+        Node::new(1, 0, 0, vec![vec![], i32s(&[0, 0])]).with_children(vec![inner])
+    };
+    for first in [0, 5] {
+        let err = check_column(1, column(first), shape.clone()).expect_err("read as plain");
+        assert!(
+            err.contains("where DuckDB reads a plain one"),
+            "offset {first}: {err}"
+        );
+    }
+}
+
 #[test]
 fn a_child_count_or_dictionary_mismatch_is_refused() {
     let err = check_column(1, ints(1, 0), of(Kind::Struct, vec![leaf()])).expect_err("children");
