@@ -522,8 +522,13 @@ reproducer run on the releases it names. Its entries are grouped under
   `Value` getter against a value of its own type, the `TIMETZ` and `TIME_NS`
   range guards, the `Appender` methods a no-op replacement survived (another
   schema, `column_type`, `clear_columns`, `append_default_to_chunk`),
-  `StructWriter`'s child vectors, `InMemoryDb::execute`'s row count and
-  `QueryResult::result_kind` for a statement that returns nothing. Two
+  `StructWriter`'s child vectors, `InMemoryDb::execute`'s row count,
+  `QueryResult::result_kind` for a statement that returns nothing, a
+  created `ErrorData`, `MockVectorWriter::len`, and `append_metadata`'s
+  handling of `=` in a path, a lone `-`, signed version numbers, commit
+  hashes of the wrong length, case or alphabet, and a footer whose magic
+  field is wrong. `tests/handle_leaks.rs` kills the `Drop` mutants that
+  survived every functional test. Two
   comparisons moved into small `const fn`s so that a unit test can reach
   their boundary: the aggregate-state salt and the appender's
   `u32::MAX`-inclusive length limit.

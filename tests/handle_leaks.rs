@@ -6,13 +6,14 @@
 //! Every RAII handle frees what `DuckDB` allocated for it.
 //!
 //! Each wrapper's `Drop` calls a `duckdb_destroy_*` (or `duckdb_close_*`)
-//! function, and nothing else observes it: a `Drop` that did nothing would
-//! pass every functional test. The fifth audit's end-to-end mutation run
-//! showed exactly that — a `Drop` replaced by `()` survived for
-//! `ChunkWriter`, `DbConfig`, `Value`, `Appender`, `Catalog`,
-//! `ClientContext`, `Expression`, `FileOpenOptions`, `FileSystem`,
-//! `FileHandle`, `InstanceCache`, `SelectionVector`, `TableDescription` and
-//! `OwnedDataChunk`, and for the free in `PreparedStatement::parameter_name`.
+//! function, and for most of them nothing else observes it: a `Drop` that
+//! did nothing would pass every functional test. The fifth audit's
+//! end-to-end mutation run showed exactly that — a `Drop` replaced by `()`
+//! survived `tests/ffi_roundtrip` for `DbConfig`, `Value`, `Appender`,
+//! `Catalog`, `ClientContext`, `Expression`, `FileOpenOptions`,
+//! `FileSystem`, `FileHandle`, `InstanceCache`, `SelectionVector`,
+//! `TableDescription`, `QueryResult` and `ErrorData`, and so did the free in
+//! `PreparedStatement::parameter_name`. This file kills all of them.
 //!
 //! Each scenario here creates and drops a handle many times and bounds the
 //! growth of the C heap in use (glibc's `mallinfo2`, which counts `DuckDB`'s
@@ -257,6 +258,15 @@ fn every_handle_frees_what_duckdb_allocated_for_it() {
         results.push((
             "InstanceCache",
             growth(|| drop(quack_rs::instance_cache::InstanceCache::new())),
+        ));
+        results.push((
+            "ErrorData",
+            growth(|| {
+                drop(quack_rs::error_data::ErrorData::new(
+                    quack_rs::error_data::DuckDbErrorType::InvalidInput,
+                    "an error to leak",
+                ));
+            }),
         ));
         db.execute("BEGIN");
         let ctx_in_txn = unsafe { ClientContext::from_connection(db.con) }.expect("context");

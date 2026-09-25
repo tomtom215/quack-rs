@@ -214,21 +214,23 @@ exclude_re = [
     "src/table/info.rs:.*replace BindInfo::error_reported -> bool with false",
     # render_guard.rs: Value::renderable and its two helpers read the value's
     # type, payload and children through duckdb_get_* calls. Its pure type
-    # predicates stay in the gate. Checked end to end in September 2026 by
-    # running these 17 mutants (with try_new's below) against
-    # tests/ffi_roundtrip with a real libduckdb 1.5.5: all 17 caught, 10 by
-    # the process aborting as the guard exists to prevent, the rest by
-    # tests/ffi_roundtrip/value_temporal.rs and value_nested.rs assertions.
+    # predicates stay in the gate. Checked end to end against
+    # tests/ffi_roundtrip with a real libduckdb 1.5.5: in the fourth audit,
+    # 17 mutants with try_new's below, all caught, 10 by the process aborting
+    # as the guard exists to prevent, the rest by value_temporal.rs and
+    # value_nested.rs assertions; in the fifth (AUDIT.md 10.8), after the
+    # guard became an allow-list, all 17 of this pattern's mutants caught.
     "src/value/render_guard.rs:.*Value::(renderable|temporal_payload_in_range|type_contains_unchecked_payload)( |$)",
     # construct.rs: LogicalType::try_new compares the type id DuckDB created
     # with the one asked for, which needs duckdb_create_logical_type; with the
     # comparison inverted, every type creation fails end to end.
     "src/types/logical_type/construct.rs:.*replace != with == in LogicalType::try_new",
     # error_data.rs: a non-null ErrorData only comes from DuckDB, and
-    # has_error / message / Drop / check_valid_utf8 call duckdb_error_data_* /
-    # duckdb_valid_utf8_check; the --lib run reaches them only with a null
-    # handle. Killed end to end in tests/ffi_roundtrip (fifth audit, see
-    # AUDIT.md 10.8).
+    # is_null / has_error / message / Drop / check_valid_utf8 are only told
+    # apart from their mutants with one (duckdb_error_data_* /
+    # duckdb_valid_utf8_check); the --lib run reaches them only with a null
+    # handle. Killed end to end by tests/ffi_roundtrip and, for Drop,
+    # tests/handle_leaks.rs (fifth audit, AUDIT.md 10.8).
     "src/error_data.rs:.*(replace ErrorData::is_null -> bool with true|replace ErrorData::has_error -> bool with false|replace ErrorData::message -> Option<String> with None|replace <impl Drop for ErrorData>::drop with|replace check_valid_utf8 )",
     # export_check.rs: Rules::of builds DuckDB's Arrow schema for three types
     # (duckdb_to_arrow_schema) and check_chunk reads live vectors; both are

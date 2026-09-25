@@ -379,6 +379,7 @@ fn error_data_reports_sequence_and_autoload_types() {
             ))
         };
         assert_eq!(err.error_type(), expected, "raw type {raw}");
+        assert!(!err.is_null(), "a created error-data handle is not null");
         let made = ErrorData::new(expected, "probe");
         assert_eq!(made.error_type(), expected);
     }
