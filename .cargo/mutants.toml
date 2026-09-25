@@ -219,7 +219,7 @@ exclude_re = [
     # tests/ffi_roundtrip with a real libduckdb 1.5.5: all 17 caught, 10 by
     # the process aborting as the guard exists to prevent, the rest by
     # tests/ffi_roundtrip/value_temporal.rs and value_nested.rs assertions.
-    "src/value/render_guard.rs:.*Value::(renderable|temporal_payload_in_range|type_contains_checked_temporal)( |$)",
+    "src/value/render_guard.rs:.*Value::(renderable|temporal_payload_in_range|type_contains_unchecked_payload)( |$)",
     # construct.rs: LogicalType::try_new compares the type id DuckDB created
     # with the one asked for, which needs duckdb_create_logical_type; with the
     # comparison inverted, every type creation fails end to end.

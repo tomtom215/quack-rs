@@ -37,11 +37,12 @@ also documented thirteen DuckDB defects in `docs/upstream-duckdb-reports.md`, ea
 with a plain-C reproducer. Its entries are grouped under **Fourth audit** in
 each section below.
 
-A fifth pass followed (`AUDIT.md` section 10). Each code fix was reproduced
-against a real DuckDB, and its regression test shown failing without the
-fix. DuckDB defects it found are added to `docs/upstream-duckdb-reports.md`,
-each with a plain-C reproducer. Its entries are grouped under **Fifth audit**
-in each section below.
+A fifth pass followed (`AUDIT.md` section 10). Each code fix has a regression
+test shown failing without the fix, and each defect that involves DuckDB was
+reproduced against a real DuckDB first. It documented eighteen DuckDB defects
+(items 20 to 37 of `docs/upstream-duckdb-reports.md`), each with a plain-C
+reproducer run on the releases it names. Its entries are grouped under
+**Fifth audit** in each section below.
 
 ### Added
 
@@ -443,6 +444,14 @@ in each section below.
   schema's shape (see Fixed).
 - `data_chunk_to_arrow` refuses a chunk holding a value `DuckDB` would export
   as a different value (see Fixed).
+- **Breaking, not named until now** (found by `cargo semver-checks` against
+  0.16.0, run as a patch release so that it reports every break): `Appender`
+  and `Connection` are no longer `RefUnwindSafe` (they gained a `Cell` and a
+  `RefCell` in earlier passes: the appender's row bookkeeping and the
+  collision check's catalog snapshot), and
+  `validate::description_yml::DescriptionYml` is `#[non_exhaustive]`, so it
+  cannot be built with a struct literal. For `catch_unwind`, wrap a closure
+  that captures an `Appender` or a `Connection` in `AssertUnwindSafe`.
 - **Breaking: a callback macro's body must have type `()`** (except
   `cast_callback!`'s, which returns the cast's `bool`). The body runs inside
   `catch_unwind`, and its value was discarded: a body that used `?` compiled,
