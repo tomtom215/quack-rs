@@ -155,7 +155,9 @@ flowchart TD
 
 An error from any step, including an `Err` or a panic from your closure in step 5, is
 reported to DuckDB via `access.set_error`, and the function returns `false`. DuckDB then
-fails the `LOAD` with that message. The layout check in step 2 only runs when a `duckdb-1-5*`
+fails the `LOAD` with that message. (When DuckDB itself detects the failure, as when
+`get_database` returns null, quack-rs returns `false` without overwriting DuckDB's own
+message.) The layout check in step 2 only runs when a `duckdb-1-5*`
 feature is enabled; see [ABI Compatibility](abi.md).
 
 Registration is not transactional: functions registered before a failure stay registered
