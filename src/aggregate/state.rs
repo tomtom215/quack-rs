@@ -78,6 +78,27 @@ use libduckdb_sys::{duckdb_aggregate_state, duckdb_function_info, idx_t};
 /// ```
 pub trait AggregateState: Default + Send + Sync + 'static {}
 
+/// 64-bit FNV-1a, the hash behind `FfiState`'s per-type salt: deterministic
+/// in every build, unlike `std`'s randomly keyed hashers.
+struct Fnv1a(u64);
+
+impl Fnv1a {
+    const fn new() -> Self {
+        Self(0xCBF2_9CE4_8422_2325)
+    }
+}
+
+impl core::hash::Hasher for Fnv1a {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3);
+        }
+    }
+}
+
 /// A generic FFI-compatible state wrapper for use with `DuckDB` aggregate functions.
 ///
 /// `FfiState<T>` describes the bytes `DuckDB` allocates for each aggregate
@@ -243,18 +264,7 @@ impl<T: AggregateState> FfiState<T> {
     /// FNV-1a over `T`'s `TypeId`, as its `Hash` impl feeds it: the same
     /// value wherever it is computed, and a constant once optimised.
     fn type_hash() -> usize {
-        struct Fnv(u64);
-        impl core::hash::Hasher for Fnv {
-            fn finish(&self) -> u64 {
-                self.0
-            }
-            fn write(&mut self, bytes: &[u8]) {
-                for &byte in bytes {
-                    self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3);
-                }
-            }
-        }
-        let mut hasher = Fnv(0xCBF2_9CE4_8422_2325);
+        let mut hasher = Fnv1a::new();
         core::hash::Hash::hash(&core::any::TypeId::of::<T>(), &mut hasher);
         // Truncation on 32-bit targets keeps the low half, which is as good a
         // salt as any.
@@ -724,6 +734,23 @@ mod tests {
             assert_eq!(salt & 1, 0, "{hash:#x}");
             assert_eq!(salt | 1, hash | 1, "{hash:#x}");
             assert_eq!((FfiState::<Counter>::TAG_KEY ^ salt) & 1, 1);
+        }
+    }
+
+    /// `Fnv1a` is FNV-1a: pinned to the published 64-bit test vectors
+    /// (<http://www.isthe.com/chongo/src/fnv/test_fnv.c>), so a slip in the
+    /// mixing step (an OR for the XOR, say) cannot pass as "still a hash".
+    #[test]
+    fn fnv1a_matches_the_reference_vectors() {
+        use core::hash::Hasher;
+        for (input, want) in [
+            (&b""[..], 0xCBF2_9CE4_8422_2325_u64),
+            (b"a", 0xAF63_DC4C_8601_EC8C),
+            (b"foobar", 0x8594_4171_F739_67E8),
+        ] {
+            let mut h = Fnv1a::new();
+            h.write(input);
+            assert_eq!(h.finish(), want, "{input:?}");
         }
     }
 
