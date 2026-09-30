@@ -2,12 +2,12 @@
 
 > **Requires the `duckdb-1-5` feature flag** (DuckDB 1.5.0+).
 
-This module exposes DuckDB's **virtual file system** (VFS) to your extension, so
-a custom table function, replacement scan, or copy function can read and write
-files through the *same* abstraction DuckDB uses internally. That means
-transparently honouring `httpfs` (`s3://`, `http://`), in-memory files, and any
-other registered file system — instead of reaching for `std::fs` and only ever
-seeing local disk.
+The `file_system` module exposes DuckDB's **virtual file system** (VFS) to your
+extension, so a custom table function, replacement scan, or copy function can
+read and write files through the *same* abstraction DuckDB uses internally. Paths
+then resolve through every registered file system — `httpfs` (`s3://`,
+`http://`) when it is loaded, in-memory files, and so on — where `std::fs` only
+ever sees local disk.
 
 ## Obtaining a `FileSystem`
 
@@ -64,7 +64,7 @@ cover the common cases; use `set_flag` for anything else.
 - `Create`, `CreateNew` and `Append` need `Write` as well.
 - `CreateNew` ("create, failing if the file exists") also sets `Create`. DuckDB maps
   it to `FILE_FLAGS_EXCLUSIVE_CREATE`, which only has that meaning together with
-  `FILE_FLAGS_FILE_CREATE`; on its own it neither created a missing file nor refused
+  `FILE_FLAGS_FILE_CREATE`; on its own it neither creates a missing file nor refuses
   an existing one.
   **On Windows an existing file is not refused**: DuckDB's local file system there
   ignores the exclusive flag and opens with `OPEN_ALWAYS` (checked in DuckDB 1.5.5),
@@ -92,7 +92,8 @@ cover the common cases; use `set_flag` for anything else.
 
 `duckdb_file_handle_read` and `duckdb_file_handle_write` return "the number of
 bytes **actually** read/written" — not a promise that the whole buffer moved. On
-a local file the two almost always agree; over `httpfs` they routinely do not.
+a local file the two almost always agree; over `httpfs` a short transfer is
+common.
 Prefer `read_exact` / `read_to_end` / `write_all`, which loop for you, and reach
 for the raw `read` / `write` only when a partial transfer is what you want.
 

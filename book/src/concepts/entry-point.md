@@ -1,7 +1,8 @@
 # The Entry Point
 
-Every DuckDB extension must export a single C-callable symbol that DuckDB invokes at load time.
-quack-rs provides two ways to create it.
+Every DuckDB loadable extension exports one C-callable entry-point function, which DuckDB
+calls when it loads the extension. quack-rs generates it with the `entry_point_v2!` or
+`entry_point!` macro, or you can write it by hand around `init_extension`.
 
 ---
 
@@ -39,7 +40,8 @@ entry_point_v2!(my_extension_init_c_api, |con| unsafe { register(con) });
 ```
 
 (The `register_*` arguments above are placeholders, so that block is not
-compilable as written.) The macro emits:
+compilable as written.) The macro emits the equivalent of the following; the real
+expansion also evaluates the policy and closure arguments inside a panic guard:
 
 ```rust
 # use libduckdb_sys::{duckdb_extension_access, duckdb_extension_info};
@@ -68,29 +70,28 @@ Pass the **full symbol name** to the macro. The symbol `{name}_init_c_api` must 
 
 ### Why `Connection` over raw `duckdb_connection`?
 
-| Feature | `entry_point!` (raw) | `entry_point_v2!` (Connection) |
-|---------|---------------------|-------------------------------|
+| | `entry_point!` (raw) | `entry_point_v2!` (Connection) |
+|---|---|---|
 | Receives | `duckdb_connection` | `&Connection` |
 | Registration | Call builders' `.register(con)` | Call `con.register_*()` |
-| Type safety | Raw pointer | Wrapper with lifetime |
-| Future-proofing | Tied to C pointer | Can evolve without breaking extensions |
+| Type safety | Raw pointer | Typed wrapper around the connection and database handles |
+| Replacement scans | Need the database handle, which the closure does not receive | `con.register_replacement_scan*()` |
 
 ---
 
 ## Option B: The `entry_point!` macro
 
-The original macro passes a raw `duckdb_connection` to your closure. It works
-identically but requires you to pass the connection to each builder's `.register()`:
+The original macro passes a raw `duckdb_connection` to your closure. It performs the
+same initialization, but you pass the connection to each builder's `.register()`:
 
 ```rust
 use quack_rs::entry_point;
 use quack_rs::error::ExtensionError;
 
 fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
-    unsafe {
-        // register your functions here
-        Ok(())
-    }
+    // Register each function on `con`, e.g. `unsafe { builder.register(con)? };`
+    let _ = con;
+    Ok(())
 }
 
 entry_point!(my_extension_init_c_api, |con| register(con));
@@ -134,15 +135,17 @@ pub unsafe extern "C" fn my_extension_init_c_api(
 ```mermaid
 flowchart TD
     A["**1. duckdb_rs_extension_api_init**(info, access, version)<br/>Fills the global AtomicPtr dispatch table"]
-    B["**2. access.get_database**(info)<br/>Returns the duckdb_database handle"]
-    C["**3. duckdb_connect**(db, &amp;mut con)<br/>Opens a connection for function registration"]
-    D["**4. register**(con) ← your closure"]
-    E["**5. duckdb_disconnect**(&amp;mut con)<br/>Always runs, even if registration failed"]
+    L["**2. ABI layout check**<br/>Applies the AbiPolicy (Strict by default)"]
+    B["**3. access.get_database**(info)<br/>Returns the duckdb_database handle"]
+    C["**4. duckdb_connect**(db, &amp;mut con)<br/>Opens a connection for function registration"]
+    D["**5. register**(con) ← your closure<br/>A panic becomes an error"]
+    E["**6. duckdb_disconnect**(&amp;mut con)<br/>Always runs, even if registration failed"]
     F{Error?}
     G["return **true**"]
     H["return **false**<br/>error reported via access.set_error"]
 
-    A --> B --> C --> D --> E --> F
+    A --> L --> B --> C --> D --> E --> F
+    L -->|refused| H
     F -->|no| G
     F -->|yes| H
 
@@ -150,8 +153,14 @@ flowchart TD
     style H fill:#3b1c1c,stroke:#9e4a4a,color:#ecc8c8
 ```
 
-Errors from step 4 are reported back to DuckDB via `access.set_error` and the function
-returns `false`. DuckDB then surfaces the error message to the user.
+An error from any step, including an `Err` or a panic from your closure in step 5, is
+reported to DuckDB via `access.set_error`, and the function returns `false`. DuckDB then
+fails the `LOAD` with that message. The layout check in step 2 only runs when a `duckdb-1-5*`
+feature is enabled; see [ABI Compatibility](abi.md).
+
+Registration is not transactional: functions registered before a failure stay registered
+for the life of the database. Do fallible setup work (reading configuration, building
+lookup tables) before the first `register` call.
 
 ---
 
@@ -164,7 +173,7 @@ pub const DUCKDB_API_VERSION: &str = "v1.2.0";
 > **Pitfall P2**: This is the **C API version**, not the DuckDB release version.
 > DuckDB 1.4.x and 1.5.0 – 1.5.5 declare C API version `v1.2.0`; 1.5.6 declares `v1.5.6` and still loads
 > extensions that target `v1.2.0` (DuckDB accepts any C API version up to its own). Passing the wrong string
-> causes the metadata script to fail or produce incorrect metadata.
+> makes the metadata tool reject the value or write incorrect metadata.
 > See [Pitfall P2](../reference/pitfalls.md#p2-metadata-version-is-c-api-version-not-duckdb-version).
 
 ---
@@ -172,8 +181,9 @@ pub const DUCKDB_API_VERSION: &str = "v1.2.0";
 ## No panics in the entry point
 
 `init_extension` never panics. All error paths use `Result` and `?`. If your registration
-closure returns `Err`, the error message is reported to DuckDB via `access.set_error` and
-the extension fails to load gracefully.
+closure returns `Err` or panics, the message is reported to DuckDB via `access.set_error`
+and the `LOAD` fails with an error instead of aborting the process. Catching a panic
+requires `panic = "unwind"` in your release profile (the scaffold's default).
 
 Never use `unwrap()` or `expect()` in FFI callbacks.
 See [Pitfall L3](../reference/pitfalls.md#l3-no-panic-across-ffi-boundaries).

@@ -1,8 +1,9 @@
 # Reading & Writing Vectors
 
-DuckDB passes data to and from your extension as **vectors** — columnar arrays of typed
-values, with a separate NULL bitmap. `VectorReader` and `VectorWriter` provide safe,
-typed access to these vectors.
+DuckDB passes data to and from your extension as **vectors**: columnar arrays of typed
+values, each with a separate validity (NULL) bitmap. `VectorReader` and `VectorWriter`
+give typed access to these vectors from scalar, aggregate and table function callbacks;
+`DataChunk`, `StructReader`, `StructWriter` and `ChunkWriter` build on them.
 
 ---
 
@@ -23,7 +24,7 @@ let reader = unsafe { VectorReader::new(input, 0) };   // first column
 ```
 
 `VectorReader::new` takes the `duckdb_data_chunk` and a zero-based column index. The
-reader borrows the chunk — it must not outlive the callback.
+reader holds raw pointers into the chunk, so it must not outlive the callback.
 
 ### Row count
 
@@ -34,7 +35,7 @@ let n = reader.row_count();   // number of rows in this chunk
 # }
 ```
 
-Chunk sizes vary. Always loop from `0..reader.row_count()`, never assume a fixed size.
+Chunk sizes vary. Always loop over `0..reader.row_count()`; never assume a fixed size.
 
 ### NULL check
 
@@ -121,7 +122,7 @@ unsafe { writer.write_u64(row, 64) };
 unsafe { writer.write_f32(row, 3.5) };
 unsafe { writer.write_f64(row, 2.5) };
 unsafe { writer.write_bool(row, true) };
-unsafe { writer.write_varchar(row, s) };   // &str (also available as write_str)
+unsafe { writer.write_varchar(row, s) };   // &str
 unsafe { writer.write_str(row, s) };       // alias for write_varchar
 unsafe { writer.write_interval(row, interval) };  // DuckInterval
 
@@ -133,6 +134,13 @@ unsafe { writer.write_blob(row, &bytes) };
 unsafe { writer.write_uuid(row, uuid_bits) };        // UUID's textual 128 bits
 # }
 ```
+
+`write_varchar` and `write_blob` panic for a value longer than
+`vector::string::MAX_STRING_LEN` (`u32::MAX` bytes, DuckDB's string length
+limit) rather than store a truncated one. Inside `scalar_callback!` and the
+typed scalar constructors the panic becomes a SQL error. To handle the error
+yourself, use `try_write_varchar` / `try_write_blob`, which return
+`Result<(), ExtensionError>` and write nothing on error.
 
 ### `UUID` is not stored as you'd expect
 
@@ -177,8 +185,13 @@ field**, recursively; for an `ARRAY` of size `n` it nulls child rows
 and it matters: `struct_extract` / `s.a` reads the field vector without looking
 at the parent, so a NULL struct row whose fields were left valid returns the
 stale field value. `StructWriter::set_row_null(row)` does the same from a
-`StructWriter`. `LIST` / `MAP` elements are not touched (as in DuckDB), and
-`set_valid` does not undo the recursion — rewrite the fields after it.
+`StructWriter`. `LIST` / `MAP` elements are not touched (as in DuckDB).
+
+To reuse such a row, call `set_valid(row)` first: on a row that is NULL it also
+marks valid everything `set_null` nulled below it. Then write the fields, and
+any field NULLs after that. On a row that is already valid, `set_valid` leaves
+the fields alone, so marking a row valid after writing its fields keeps their
+NULLs.
 
 ### Clearing NULL (v0.11.0+)
 
@@ -191,14 +204,14 @@ unsafe { writer.set_valid(row) };
 # }
 ```
 
-`set_valid` also calls `ensure_validity_writable` automatically.
+Like `set_null`, `set_valid` calls `ensure_validity_writable` first.
 
 ---
 
 ## `DataChunk`
 
-`DataChunk` wraps a `duckdb_data_chunk` handle, providing ergonomic access to
-vectors and metadata without raw FFI calls:
+`DataChunk` wraps a `duckdb_data_chunk` handle and gives access to its vectors
+and row count without raw FFI calls:
 
 ```rust
 # use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
@@ -222,15 +235,17 @@ Methods:
 - `struct_writer(col, field_count)` — `StructWriter` for a STRUCT output column
 - `struct_reader(col, field_count)` — `StructReader` for a STRUCT input column
 - `struct_field_reader(col, field)` — `VectorReader` for a specific STRUCT field
-- `into_chunk_writer()` — convert to `ChunkWriter` with auto `set_size` on drop
+- `any_null(row)` — whether any column is NULL at `row`
+- `propagate_nulls(&mut writer)` — mark each output row NULL where any input column is NULL
+- `into_chunk_writer()` — convert to `ChunkWriter`, which calls `set_size` on drop
 
 ---
 
 ## `StructWriter` / `StructReader`
 
-For STRUCT columns with many fields, creating individual `VectorWriter`/`VectorReader`
-instances for each field is verbose. `StructWriter` and `StructReader` pre-create all
-field writers/readers at construction:
+For STRUCT columns, creating a `VectorWriter` or `VectorReader` for each field by
+hand is verbose. `StructWriter` and `StructReader` create one per field at
+construction:
 
 ```rust
 # use quack_rs::data_chunk::DataChunk;
@@ -260,8 +275,10 @@ for row in 0..chunk.size() {
 
 ## `ChunkWriter`
 
-`ChunkWriter` wraps an output `duckdb_data_chunk` and tracks rows. It automatically
-calls `set_size` on drop, preventing the common off-by-one bug:
+`ChunkWriter` wraps an output `duckdb_data_chunk` and counts the rows handed out
+by `next_row`. It calls `set_size` with that count on drop, so the row count
+cannot be forgotten or set wrongly. `next_row` returns `None` once the chunk
+holds `duckdb_vector_size()` rows:
 
 ```rust
 # use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};
@@ -269,10 +286,10 @@ calls `set_size` on drop, preventing the common off-by-one bug:
 # struct Item { name: String, value: i64 }
 # fn demo(output: duckdb_data_chunk, data: &[Item]) {
 let mut cw = unsafe { DataChunk::from_raw(output).into_chunk_writer() };
-while let Some(row) = cw.next_row() {
-    unsafe { cw.writer(0).write_varchar(row, &data[row].name) };
-    unsafe { cw.writer(1).write_i64(row, data[row].value) };
-    if cw.is_full() { break; }
+for item in data {
+    let Some(row) = cw.next_row() else { break };   // chunk is full
+    unsafe { cw.writer(0).write_varchar(row, &item.name) };
+    unsafe { cw.writer(1).write_i64(row, item.value) };
 }
 // set_size called automatically when `cw` is dropped
 # }
@@ -314,7 +331,7 @@ The `quack_rs::vector` module provides two utility functions:
 # fn demo(some_vector: duckdb_vector) {
 use quack_rs::vector::{vector_size, vector_get_column_type};
 
-// Returns the default vector size used by DuckDB (typically 2048).
+// Rows per data chunk: 2048 unless DuckDB was built with another STANDARD_VECTOR_SIZE.
 let size: u64 = vector_size();
 
 // Returns the LogicalType of a vector (unsafe — requires a valid duckdb_vector).
@@ -335,8 +352,9 @@ element addresses as `base_ptr + row * stride`:
 ```
 
 The validity bitmap is lazily allocated — it may be null if no NULLs have been written.
-This is why `ensure_validity_writable` must be called before any `get_validity` call
-that follows a write path.
+This is why `duckdb_vector_ensure_validity_writable` must be called before
+`duckdb_vector_get_validity` when writing NULLs; `VectorWriter` and
+`ValidityBitmap::ensure_writable` do so.
 
 ---
 

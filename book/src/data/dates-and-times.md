@@ -1,7 +1,9 @@
 # Dates, Times and Timestamps
 
-`VectorReader` and `VectorWriter` move DuckDB's temporal types as the raw
-integers DuckDB stores:
+`VectorReader` and `VectorWriter` read and write DuckDB's `DATE`, `TIME`,
+`TIMETZ`, `TIMESTAMP` and `INTERVAL` values as the raw integers DuckDB stores;
+`quack_rs::datetime` converts them to and from calendar fields. This page also
+covers `DECIMAL` and `HUGEINT`, whose conversions live in the same module.
 
 | SQL type | Storage | Accessor |
 |----------|---------|----------|
@@ -10,16 +12,16 @@ integers DuckDB stores:
 | `TIMETZ` | packed `u64` | `read_time_tz` / `write_time_tz` |
 | `TIMESTAMP` | `i64` — microseconds since the epoch | `read_timestamp` / `write_timestamp` |
 | `TIMESTAMPTZ` | `i64` — microseconds since the epoch, UTC | `read_timestamp_tz` / `write_timestamp_tz` |
-| `TIMESTAMP_S` | `i64` — seconds | `read_timestamp_s` / `write_timestamp_s` |
-| `TIMESTAMP_MS` | `i64` — milliseconds | `read_timestamp_ms` / `write_timestamp_ms` |
-| `TIMESTAMP_NS` | `i64` — nanoseconds | `read_timestamp_ns` / `write_timestamp_ns` |
-| `INTERVAL` | `{ months: i32, days: i32, micros: i64 }` | `read_interval` / `write_interval` |
+| `TIMESTAMP_S` | `i64` — seconds since the epoch | `read_timestamp_s` / `write_timestamp_s` |
+| `TIMESTAMP_MS` | `i64` — milliseconds since the epoch | `read_timestamp_ms` / `write_timestamp_ms` |
+| `TIMESTAMP_NS` | `i64` — nanoseconds since the epoch | `read_timestamp_ns` / `write_timestamp_ns` |
+| `INTERVAL` | `{ months: i32, days: i32, micros: i64 }` | `read_interval` / `write_interval` (see [INTERVAL Type](intervals.md)) |
 
 Turning those integers into year/month/day means implementing the proleptic
 Gregorian calendar, and getting it to agree with DuckDB's SQL semantics exactly
 rather than approximately. DuckDB already exposes the conversions, and they are
 in the [stable prefix](../concepts/abi.md) of the C API, so `quack_rs::datetime`
-wraps them rather than reimplementing anything.
+wraps them instead of reimplementing them. They need no feature flag.
 
 ## Decomposing and composing
 
@@ -64,8 +66,8 @@ let micros = unsafe { datetime::timestamp_to_micros(ts) };   // Option<i64>
 
 Several of DuckDB's conversions **throw a C++ exception** on bad input, and the
 C API does not catch it — so calling them directly with, say, month 13 aborts
-the whole process ("Rust cannot catch foreign exceptions"). The wrappers check
-first, using DuckDB's own conditions, and return `None` instead:
+the whole process ("Rust cannot catch foreign exceptions"). The wrappers apply
+DuckDB's own conditions first and return `None` instead:
 
 | Function | Returns `None` when |
 |----------|---------------------|
@@ -155,7 +157,8 @@ let width = unsafe { logical.decimal_width() };
 let scale = unsafe { logical.decimal_scale() };
 
 let unscaled = unsafe { reader.read_decimal(row, width) };
-// The represented number is unscaled / 10^scale.
+// The represented number is unscaled / 10^scale. The doubled value must
+// still fit in `width` digits; write_decimal does not check.
 unsafe { writer.write_decimal(row, width, unscaled * 2) };
 # }
 ```
@@ -169,5 +172,6 @@ width: DuckDB would index its powers-of-ten table out of bounds.
 
 `HUGEINT` is `{ lower: u64, upper: i64 }` and `UHUGEINT` is two `u64`s.
 `read_i128` / `write_i128` and `read_u128` / `write_u128` handle the halves;
-`datetime::hugeint_to_f64` and friends match DuckDB's own conversion behaviour
-including its rounding.
+`datetime::hugeint_to_f64`, `f64_to_hugeint`, `uhugeint_to_f64` and
+`f64_to_uhugeint` convert through DuckDB's own routines, so they round as
+DuckDB does.

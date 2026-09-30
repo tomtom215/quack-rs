@@ -30,8 +30,9 @@ The indices are 32-bit (`sel_t` / `u32`) and are **zeroed** by `new` — DuckDB
 itself leaves them uninitialised, so the wrapper clears them to keep
 `as_slice()` from exposing stale heap contents. Fill them via `as_mut_slice()`.
 
-`new` returns `Err` for a length above `selection_vector::MAX_LEN` (`2^32` on
-64-bit targets, the range of `sel_t`). DuckDB does not check the length itself:
+`new` returns `Err` for a length above `selection_vector::MAX_LEN`: `2^32` (the
+range of `sel_t`) on 64-bit targets, and the largest `u32` slice that fits in
+`isize::MAX` bytes on 32-bit ones. DuckDB does not check the length itself:
 a large enough length overflows its allocation-size arithmetic into a tiny
 buffer, and a request of `2^48` bytes or more makes its allocator throw, which
 would abort the extension.

@@ -1,7 +1,9 @@
 # NULL Handling & Strings
 
-This page covers two topics that are handled together in practice: checking for
-NULL before reading, and reading VARCHAR values from DuckDB vectors.
+This page covers checking for NULL before reading a DuckDB vector, writing NULL
+output, and reading and writing `VARCHAR` and `BLOB` values. The two topics
+belong together: reading a string from a NULL row is undefined behaviour, not
+just a wrong value.
 
 ---
 
@@ -24,9 +26,9 @@ for row in 0..reader.row_count() {
 # }
 ```
 
-**Reading from a NULL row returns garbage data** — the vector's data buffer is
-not zeroed at NULL positions. There is no bounds check or error; you get random
-bytes from the data buffer.
+**Reading a fixed-width value from a NULL row returns garbage.** The vector's data
+buffer is not zeroed at NULL positions, and no error is raised: you get whatever
+bytes the buffer holds at that position.
 
 For `VARCHAR` and `BLOB` it is worse than garbage. A NULL row's 16-byte entry
 is left as it was, and `DuckDB` reuses vector buffers between chunks, so the
@@ -81,8 +83,9 @@ keep it.
 
 ### The `duckdb_string_t` format
 
-> **Pitfall P7** — The `duckdb_string_t` format is not documented in the Rust
-> bindings. This is the internalized knowledge encoded in `quack-rs`.
+> **Pitfall P7**: the Rust bindings do not document the layout of
+> `duckdb_string_t`. `quack-rs` decodes it for you; the details below are for
+> reference. See [Pitfall P7](../reference/pitfalls.md#p7-duckdb_string_t-format-is-undocumented).
 
 DuckDB stores VARCHAR values in a 16-byte `duckdb_string_t` struct with two
 representations, selected at runtime based on string length:
@@ -96,7 +99,8 @@ On a 32-bit target (DuckDB-WASM) the pointer is 4 bytes and the last 4 bytes
 are unused. The length and the pointer are in the target's byte order.
 
 `VectorReader::read_str` and the underlying `read_duck_string` function handle
-both formats transparently. You never need to inspect the raw struct.
+both formats, so you do not need to inspect the raw struct. A value that is not
+valid UTF-8 is returned as `""`; use `read_blob` to get its bytes.
 
 ### Empty strings vs NULL
 
@@ -127,8 +131,23 @@ unsafe { writer.write_varchar(row, my_str) };  // &str
 # }
 ```
 
-`write_varchar` copies the string bytes into DuckDB's managed storage. The
-`&str` reference is no longer needed after the call returns.
+`write_varchar` copies the string bytes into DuckDB's managed storage, so the
+`&str` need not outlive the call. `write_blob` does the same for `&[u8]`.
+
+Both panic for a value longer than `MAX_STRING_LEN` (`u32::MAX` bytes, the
+most a `duckdb_string_t` length field can hold) instead of storing a truncated
+value; inside `scalar_callback!` and the typed scalar constructors the panic
+becomes a SQL error. `try_write_varchar` and `try_write_blob` return
+`Result<(), ExtensionError>` instead and write nothing on error:
+
+```rust
+# use quack_rs::vector::VectorWriter;
+# use quack_rs::error::ExtensionError;
+# fn demo(writer: &mut VectorWriter, row: usize, my_str: &str) -> Result<(), ExtensionError> {
+unsafe { writer.try_write_varchar(row, my_str)? };
+# Ok(())
+# }
+```
 
 ### Reading BLOB values
 
@@ -174,7 +193,7 @@ unsafe extern "C" fn my_scalar(
 
 ---
 
-## DuckStringView
+## `DuckStringView`
 
 For advanced use cases where you need access to the raw string bytes or the
 inline/pointer distinction, `quack_rs::vector::string::DuckStringView` is
@@ -198,8 +217,9 @@ if let Some(s) = view.as_str() {
 # }
 ```
 
-In practice, prefer `reader.read_str(row)` — `DuckStringView` is only needed
-when you have a raw pointer and want to avoid creating a full `VectorReader`.
+In practice, prefer `reader.read_str(row)`. `DuckStringView` is needed only when
+you have a raw data pointer rather than a `VectorReader`. Unlike `read_str`, its
+`as_str` returns `None`, not `""`, for a value that is not valid UTF-8.
 
 ---
 
@@ -208,4 +228,7 @@ when you have a raw pointer and want to avoid creating a full `VectorReader`.
 | Constant | Value | Meaning |
 |----------|-------|---------|
 | `DUCK_STRING_SIZE` | `16` | Size of one `duckdb_string_t` in bytes |
-| `DUCK_STRING_INLINE_MAX_LEN` | `12` | Max length stored inline (no heap ptr) |
+| `DUCK_STRING_INLINE_MAX_LEN` | `12` | Longest value stored inline (no heap pointer), in bytes |
+| `MAX_STRING_LEN` | `u32::MAX` (4,294,967,295) | Longest `VARCHAR` or `BLOB` value DuckDB can store, in bytes |
+
+All three are in `quack_rs::vector::string`.

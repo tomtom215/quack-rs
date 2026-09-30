@@ -21,7 +21,9 @@ A structured warning with:
 
 ### `WarningSeverity`
 
-Five levels mirroring common security advisory severity:
+Five levels mirroring common security advisory severity. `WarningSeverity`
+implements `Ord` in this order, so `severity >= WarningSeverity::High` selects
+the warnings that need attention:
 
 - **Info** — no security impact, but worth noting
 - **Low** — minimal security impact
@@ -31,8 +33,10 @@ Five levels mirroring common security advisory severity:
 
 ### `WarningCollector`
 
-A thread-safe collector backed by `Mutex<Vec<ExtensionWarning>>`. Safe to share
-across threads via `Arc<WarningCollector>`.
+A thread-safe collector backed by `Mutex<Vec<ExtensionWarning>>`. Share it
+across threads via `Arc<WarningCollector>`. A panic on another thread while it
+held the lock does not lose warnings: the collector recovers the list from the
+poisoned lock and keeps using it.
 
 ## Usage
 
@@ -66,28 +70,19 @@ assert!(collector.is_empty());  // now empty
 
 ## Display Format
 
-Warnings format as `[SEVERITY] CODE: message (CWE-nnn)`:
+`ExtensionWarning` implements `Display` as `[SEVERITY] CODE: message (CWE-nnn)`;
+the CWE suffix is omitted when `cwe` is `None`:
 
 ```text
 [HIGH] TLS_NO_VERIFY: TLS certificate verification is disabled (CWE-295)
-[MEDIUM] TLS_DEPRECATED_VERSION: TLS provider allows deprecated TLS 1.0 (CWE-327)
+[MEDIUM] TLS_DEPRECATED_VERSION: TLS provider "my-tls" allows deprecated TLS 1.0 (RFC 8996) (CWE-327)
 ```
 
 ## Integration with TLS Auditing
 
-The `audit_tls_provider()` function returns `Vec<ExtensionWarning>` that can be
-fed directly into a `WarningCollector`:
-
-```rust,no_run
-use quack_rs::tls::audit_tls_provider;
-use quack_rs::warning::WarningCollector;
-
-// let warnings = audit_tls_provider(&my_tls_provider);
-// let collector = WarningCollector::new();
-// for w in warnings {
-//     collector.emit(w);
-// }
-```
+`tls::audit_tls_provider()` returns a `Vec<ExtensionWarning>` that can be fed
+straight into a `WarningCollector`; see
+[Auditing a Provider](tls.md#auditing-a-provider) for a complete example.
 
 ## Best Practices
 
@@ -95,6 +90,6 @@ use quack_rs::warning::WarningCollector;
   bind-data state)
 - Use `snapshot()` for read-only diagnostics; use `drain()` when consuming
   warnings for output
-- Always include CWE identifiers for security-related warnings
-- Surface collected warnings through a table function
-  (e.g., `SELECT * FROM __extension_warnings()`)
+- Include a CWE identifier whenever one applies
+- Surface collected warnings through a table function of your own
+  (for example `SELECT * FROM __extension_warnings()`)

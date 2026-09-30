@@ -1,12 +1,14 @@
 # Aggregate Functions
 
-Aggregate functions reduce multiple rows into a single value per group — like `SUM()`,
-`COUNT()`, or `AVG()`. DuckDB supports parallel aggregation, which introduces a `combine`
-step that merges partial results from parallel workers.
+This page shows how to write a DuckDB aggregate function in Rust with quack-rs:
+the callbacks DuckDB calls, their signatures, and how `AggregateFunctionBuilder`
+registers them. An aggregate function reduces many rows to one value per group,
+like `SUM()`, `COUNT()` or `AVG()`. Because DuckDB aggregates in parallel, it
+also has a `combine` step that merges partial results from parallel workers.
 
 ## Known DuckDB limitation
 
-> **Known DuckDB limitation — out-of-bounds state reads.** Two query shapes make
+> **Out-of-bounds state reads.** Two query shapes make
 > DuckDB call every C-API aggregate's `update` with a state array holding **one**
 > state while passing `count > 1` rows, so the callback reads `states[1..count]`
 > past the end of the array (undefined behaviour, in any C-API aggregate, whether
@@ -44,7 +46,7 @@ flowchart TD
     FINAL   --> DESTROY
 
     SIZE["**state_size**()<br/>How many bytes to allocate per group?"]
-    INIT["**state_init**(state)<br/>Initialize a fresh state"]
+    INIT["**state_init**(state)<br/>Initialise a fresh state"]
     UPDATE["**update**(chunk, states[])<br/>Process one input batch<br/>(NULL rows included — check is_valid)"]
     COMBINE["**combine**(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
     FINAL["**finalize**(states[], out, count, offset)<br/>Write count results at out[offset..], once per result batch"]
@@ -53,18 +55,20 @@ flowchart TD
     style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```
 
-DuckDB may call `combine` multiple times as it merges results from parallel segments.
-**Target states in `combine` hold whatever `state_init` set up** — not a copy of the
-source — so `combine` must carry every field across. `state_size` is called whenever
-an operator sizes its state buffers (not once at registration), so it must always
-return the same value; `destroy` runs on `combine`'s source states once they have
-been merged, as well as after `finalize`.
+DuckDB may call `combine` many times as it merges partial results. **A `combine`
+target holds whatever `state_init` set up**, not a copy of the source, so `combine`
+must carry every field across (Pitfall L1). `state_size` is called whenever an
+operator sizes its state buffers, not once at registration, so it must always
+return the same value. `destroy` runs after `finalize`, and on `combine`'s source
+states once they have been merged.
 
-**`combine` must leave its source states unchanged.** A window's segment tree
-combines the same state into every frame that covers it, from several threads at
-once, so a `combine` that moves data out of its source (`mem::take`, or zeroing a
-counter) is right for the first frame and wrong for the rest: 4985 of 5000 rows in
-the fifth audit's regression test. Read the source; copy or clone what the target
+**`combine` must leave its source states unchanged**
+([Pitfall L15](../reference/pitfalls.md#l15-combine-must-leave-its-source-states-unchanged)).
+A window's segment tree combines the same state into every frame that covers it,
+from several threads at once. A `combine` that moves data out of its source
+(`mem::take`, or zeroing a counter) is right for the first frame and wrong for the
+rest: in quack-rs's regression test, a sliding-window sum written that way was
+wrong on 4985 of 5000 rows. Read the source and copy or clone what the target
 needs.
 
 ---
@@ -86,7 +90,7 @@ use quack_rs::types::TypeId;
 unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
     unsafe {
         AggregateFunctionBuilder::new("my_agg")
-            .param(TypeId::Varchar)       // input type(s)
+            .param(TypeId::BigInt)        // input type(s)
             .returns(TypeId::BigInt)      // output type
             .ffi_state::<MyState>()       // state_size + init + destructor
             .update(update)
@@ -98,14 +102,16 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 }
 ```
 
-The five core callbacks (`state_size`, `init`, `update`, `combine`, `finalize`) must be
-set before `register` — the builder will return an error if any are missing. The
-`destructor` callback is optional, but required whenever you use `FfiState<T>`:
-`FfiState::<T>::destroy_callback` is what drops each `T`. `.ffi_state::<MyState>()`
-sets `state_size`, `init` and `destructor` together from `FfiState<MyState>`, so the
-three cannot describe different states — see
-[State Management](aggregate-state.md#wiring-them-up-ffi_statet). `update`, `combine`
-and `finalize` read the state through `FfiState::<MyState>::with_state` /
+`register` returns an error if the return type or any of the five required
+callbacks (`state_size`, `init`, `update`, `combine`, `finalize`) is missing. The
+builder treats the `destructor` as optional (without one, `register` installs a
+no-op destructor; see
+[Pitfall L13](../reference/pitfalls.md#l13-a-c-api-aggregate-without-a-destructor-is-wrong-in-a-running-window)),
+but `FfiState<T>` needs its `destroy_callback` to drop each `T`.
+`.ffi_state::<MyState>()` sets `state_size`, `init` and `destructor` together from
+`FfiState<MyState>`, so the three cannot describe different states; see
+[State Management](aggregate-state.md#wiring-them-up-ffi_statet). `update`,
+`combine` and `finalize` read the state through `FfiState::<MyState>::with_state` /
 `with_state_mut` with the same type.
 
 ---
@@ -114,8 +120,8 @@ and `finalize` read the state through `FfiState::<MyState>::with_state` /
 
 With `FfiState<T>` you do not write `state_size`, `init` or `destroy` yourself:
 `ffi_state::<T>()` installs `FfiState::<T>::size_callback`, `init_callback` and
-`destroy_callback`. The wrappers below show what each of those does, and the
-signature DuckDB calls it with.
+`destroy_callback`. The wrappers below show the signature DuckDB calls each one
+with, and what it does. `update`, `combine` and `finalize` are yours to write.
 
 ### `state_size`
 
@@ -129,14 +135,15 @@ signature DuckDB calls it with.
 #     fn result(&self) -> i64 { self.accumulator }
 # }
 # impl AggregateState for MyState {}
-unsafe extern "C" fn state_size(_info: duckdb_function_info) -> idx_t {
-    FfiState::<MyState>::size_callback(_info)
+unsafe extern "C" fn state_size(info: duckdb_function_info) -> idx_t {
+    unsafe { FfiState::<MyState>::size_callback(info) }
 }
 ```
 
-Returns the size DuckDB must allocate per group: `FfiState::<MyState>::size()`, a tag
-word followed by `MyState` itself (or, for a state larger than 256 bytes or aligned
-more strictly than `usize`, a `Box<MyState>` pointer).
+Returns the number of bytes DuckDB allocates per group, `FfiState::<MyState>::size()`:
+a tag word followed by `MyState` itself, padded to whole words (or, for a state
+larger than 256 bytes or aligned more strictly than `usize`, a `Box<MyState>`
+pointer).
 
 ### `state_init`
 
@@ -155,8 +162,9 @@ unsafe extern "C" fn state_init(info: duckdb_function_info, state: duckdb_aggreg
 }
 ```
 
-Allocates a `Box<MyState>` (using `MyState::default()`) and writes its raw pointer into
-the DuckDB-allocated state slot.
+Writes `MyState::default()` into the DuckDB-allocated state slot (or, for a boxed
+state, a `Box` holding it), then writes the tag that marks the slot initialised. A
+panic in `default()` is caught and reported to DuckDB as a query error.
 
 ### `update`
 
@@ -190,7 +198,9 @@ unsafe extern "C" fn update(
 }
 ```
 
-`states[i]` corresponds to `chunk row i`. Each state belongs to one group.
+`states[row]` is the state of that row's group; rows in the same group share one
+state. `update` receives NULL rows too, so skip rows where `is_valid` is false (see
+[NULL Handling](null-handling.md#aggregate-functions)).
 
 ### `combine`
 
@@ -258,8 +268,8 @@ unsafe extern "C" fn finalize(
 }
 ```
 
-The `offset` parameter is non-zero when DuckDB is writing into a portion of a larger vector.
-Always add it to your index.
+`offset` is non-zero when DuckDB writes the results into part of a larger vector.
+Always add it to the output index.
 
 ### `state_destroy`
 
@@ -267,16 +277,16 @@ Always add it to your index.
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# #[derive(Default)] struct WordCountState { count: i64 }
-# impl AggregateState for WordCountState {}
+# #[derive(Default)] struct MyState { config_field: i64, accumulator: i64 }
+# impl AggregateState for MyState {}
 unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
-    unsafe { FfiState::<WordCountState>::destroy_callback(states, count) };
+    unsafe { FfiState::<MyState>::destroy_callback(states, count) };
 }
 ```
 
-`destroy_callback` drops the `T` in each state (freeing its box, if the state is
-too large to be stored inline) and clears the state's tag first, so a second call
-on the same state is a no-op. See [Pitfall L2](../reference/pitfalls.md#l2-state-destroy-double-free).
+`destroy_callback` drops the `T` in each state whose tag matches (freeing its box,
+if `T` is boxed), clearing the tag first, so a second call on the same state is a
+no-op. See [Pitfall L2](../reference/pitfalls.md#l2-state-destroy-double-free).
 
 ---
 
@@ -339,8 +349,9 @@ If both `returns` and `returns_logical` are called, the logical type takes prece
 
 ## Extra info
 
-Attach arbitrary data to an aggregate function using `extra_info`. This is useful
-for parameterising the function behaviour (e.g., passing configuration):
+`extra_info` attaches arbitrary data to an aggregate function, for example
+configuration that parameterises its behaviour. DuckDB calls the destroy callback
+to free the data when the function is dropped:
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -379,12 +390,13 @@ Inside callbacks, retrieve the extra info with `AggregateFunctionInfo::get_extra
 
 ## `AggregateFunctionInfo`
 
-`AggregateFunctionInfo` wraps the `duckdb_function_info` handle provided to
-aggregate function callbacks (update, combine, finalize, etc.). It exposes:
+`AggregateFunctionInfo` wraps the `duckdb_function_info` handle that DuckDB passes
+to every aggregate callback except the destructor. It exposes:
 
-- `get_extra_info() -> *mut c_void` — retrieves the extra-info pointer set during
-  registration
-- `set_error(message)` — reports an error, causing DuckDB to abort the query
+- `get_extra_info() -> *mut c_void`: the extra-info pointer set at registration.
+- `set_error(message)`: fails the current query with `message`. Called from
+  `finalize`, it also leaves some states undestroyed; see
+  [Known Limitations](../reference/known-limitations.md#aggregate-states-leak-when-finalize-reports-an-error-duckdb-behaviour).
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,

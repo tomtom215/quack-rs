@@ -12,8 +12,9 @@ setup through a uniform interface, regardless of which TLS library they use
 ## Design
 
 The trait is **type-erased** via `Arc<dyn Any + Send + Sync>` so that `quack-rs`
-does not depend on any specific TLS library. The implementing extension downcasts
-the returned `Arc` to its concrete config type.
+does not depend on any specific TLS library. The code that consumes the provider
+downcasts the returned `Arc` to the concrete config type, after checking
+`config_type_name()`. `TlsConfigProvider` requires `Send + Sync`.
 
 ## Implementing a TLS Provider
 
@@ -35,7 +36,7 @@ impl TlsConfigProvider for MyTlsProvider {
     }
 
     fn provider_name(&self) -> &str { "my-extension-tls" }
-    fn config_type_name(&self) -> &str { "rustls::ClientConfig" }
+    fn config_type_name(&self) -> &str { "String" } // in practice: "rustls::ClientConfig"
 
     fn min_tls_version(&self) -> TlsVersion {
         TlsVersion::Tls12  // Minimum recommended
@@ -63,36 +64,67 @@ Implementations **must**:
 
 ## Auditing a Provider
 
-The `audit_tls_provider()` function checks common misconfigurations:
+`audit_tls_provider()` checks a provider for two common misconfigurations and
+returns one `ExtensionWarning` per problem found:
 
-```rust,no_run
-use quack_rs::tls::audit_tls_provider;
+- Certificate verification bypass (CWE-295): code `TLS_NO_VERIFY`, severity
+  `High`
+- A deprecated minimum version, TLS 1.0 or 1.1 (CWE-327): code
+  `TLS_DEPRECATED_VERSION`, severity `Medium`
+
+Feed the result into a `WarningCollector`:
+
+```rust
+use quack_rs::error::ExtensionError;
+use quack_rs::tls::{audit_tls_provider, TlsConfigProvider, TlsVersion};
 use quack_rs::warning::WarningCollector;
+use std::any::Any;
+use std::sync::Arc;
 
-// let warnings = audit_tls_provider(&my_provider);
-// let collector = WarningCollector::new();
-// for w in warnings {
-//     collector.emit(w);
-// }
+struct InsecureProvider;
+
+impl TlsConfigProvider for InsecureProvider {
+    fn client_config(&self) -> Result<Arc<dyn Any + Send + Sync>, ExtensionError> {
+        Ok(Arc::new(()))
+    }
+    fn provider_name(&self) -> &str { "insecure" }
+    fn config_type_name(&self) -> &str { "()" }
+    fn min_tls_version(&self) -> TlsVersion { TlsVersion::Tls10 }
+    fn supports_mtls(&self) -> bool { false }
+    fn accepts_invalid_certs(&self) -> bool { true }
+}
+
+let collector = WarningCollector::new();
+for w in audit_tls_provider(&InsecureProvider) {
+    collector.emit(w);
+}
+
+let codes: Vec<&str> = collector.snapshot().iter().map(|w| w.code).collect();
+assert_eq!(codes, ["TLS_NO_VERIFY", "TLS_DEPRECATED_VERSION"]);
 ```
-
-It detects:
-- Certificate verification bypass (CWE-295) — emits `TLS_NO_VERIFY` warning
-- Deprecated TLS versions (CWE-327) — emits `TLS_DEPRECATED_VERSION` warning
 
 ## Downcasting Safely
 
 Never use `.unwrap()` or `.expect()` when downcasting in FFI callback contexts
-(see Pitfall L3). Always handle the `None` case gracefully:
+(see [Pitfall L3](../reference/pitfalls.md#l3-no-panic-across-ffi-boundaries)).
+Handle a failed downcast as an error:
 
-```rust,no_run
+```rust
 use std::any::Any;
 use std::sync::Arc;
 use quack_rs::error::ExtensionError;
 
-fn use_config(config: Arc<dyn Any + Send + Sync>) -> Result<(), ExtensionError> {
-    // let rustls_config = config.downcast_ref::<rustls::ClientConfig>()
-    //     .ok_or(ExtensionError::new("expected rustls::ClientConfig"))?;
+// With rustls this would be `downcast_ref::<rustls::ClientConfig>()`.
+fn use_config(config: &Arc<dyn Any + Send + Sync>) -> Result<(), ExtensionError> {
+    let text = config
+        .downcast_ref::<String>()
+        .ok_or_else(|| ExtensionError::new("expected a String TLS config"))?;
+    let _ = text;
     Ok(())
 }
+
+let config: Arc<dyn Any + Send + Sync> = Arc::new(String::from("pem bundle"));
+assert!(use_config(&config).is_ok());
+let wrong: Arc<dyn Any + Send + Sync> = Arc::new(42_u32);
+assert!(use_config(&wrong).is_err());
 ```

@@ -2,10 +2,11 @@
 
 > **Requires the `duckdb-1-5-4` feature flag.**
 
-DuckDB's C API has a conversion family (already in 1.4.4) that moves data
-straight between a `duckdb_data_chunk` and the
+DuckDB's C API has a family of conversion functions (present since 1.4.4) that
+move data directly between a `duckdb_data_chunk` and the
 [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html),
-without a query result in between. `quack_rs::arrow` wraps all of it.
+without a query result in between. The `quack_rs::arrow` module wraps all eight
+of them.
 
 ## No `arrow` crate dependency
 
@@ -18,13 +19,15 @@ that *does* use arrow-rs bridges across with a pointer cast.
 
 ## Why the feature is `duckdb-1-5-4` and not `duckdb-1-5`
 
-All eight C functions are in `duckdb_ext_api_v1` already in DuckDB **1.4.4**
+All eight C functions are already in `duckdb_ext_api_v1` in DuckDB **1.4.4**
 (`extension_api.hpp` at v1.4.4, slots 410 to 434; they moved to 411 to 509 in
-1.5.0). The floor comes from the bindings: `libduckdb-sys` declared both records as *opaque
-zero-sized* bindgen placeholders (`_unused: [u8; 0]`) until **1.10504.0**, and
-you cannot allocate the caller-owned structs these APIs need out of a
-zero-sized type. `src/arrow.rs` carries a `const` assertion that says exactly
-that if you build against an older binding.
+1.5.0). The floor comes from the bindings: `libduckdb-sys` declared both records
+as *opaque zero-sized* bindgen placeholders (`_unused: [u8; 0]`) until
+**1.10504.0**, and the caller-allocated structs these functions need cannot be
+created from a zero-sized type. `src/arrow.rs` carries a `const` assertion that
+fails with exactly that message against an older binding. Because the feature
+implies `duckdb-1-5`, an extension built with it also needs a DuckDB 1.5.0+
+engine.
 
 ## The types
 
@@ -118,8 +121,9 @@ Note the asymmetry, which mirrors what DuckDB actually does:
   dropped on the way out, which releases the array in the one case where DuckDB
   does *not* claim it (a zero-column schema, where the loop never runs).
 
-The resulting chunk keeps the Arrow buffers alive, so the data is shared rather
-than copied.
+The resulting chunk keeps the Arrow buffers alive, so most columns share the
+data rather than copy it. Dictionary-encoded columns are the exception: the
+wrapper copies them into flat vectors.
 
 ## What the wrapper refuses that DuckDB would not
 
@@ -131,6 +135,12 @@ released. Those are segfaults or out-of-bounds reads, not errors.
 `data_chunk_from_arrow` checks them first — which is why `ArrowConvertedSchema`
 remembers the column count of the schema it was built from — and returns an
 `InvalidInput` error instead.
+
+It also refuses a **zero-row** array. DuckDB passes `arrow_array->length`
+through as the chunk's capacity, and a capacity of zero trips a
+`D_ASSERT(size > 0)` that aborts a debug build of DuckDB, while a release build
+carries on. Skip empty batches, or create the empty chunk directly with
+`duckdb_create_data_chunk`.
 
 What it cannot check, and what `data_chunk_from_arrow`'s `# Safety` section
 therefore makes the caller's job:
@@ -185,7 +195,7 @@ converters:
 Check the converted types (`ArrowConvertedSchema`) when a round trip must be
 lossless.
 
-`DuckDB` would export three kinds of value wrongly, with no error (checked on
+DuckDB would export three kinds of value wrongly, with no error (checked on
 1.4.4, 1.5.0 and 1.5.5), so `data_chunk_to_arrow` checks the chunk first and
 refuses one that holds such a value, at any nesting depth:
 
@@ -200,9 +210,9 @@ refuses one that holds such a value, at any nesting depth:
   fixed-size binary and is not refused).
 
 After the export, the array is also checked against the schema DuckDB
-declares for the chunk's types. Before 1.5.5, `BIGNUM` (and from 1.5.0
-`GEOMETRY`) exported under `arrow_output_version = '1.4'` are written as
-binary views while the schema says plain binary, which a consumer reads as
+declares for the chunk's types. Before 1.5.5, `BIGNUM` (and, from 1.5.0,
+`GEOMETRY`) exported under `arrow_output_version = '1.4'` is written as
+binary views while the schema declares plain binary, which a consumer reads as
 offsets (`docs/upstream-duckdb-reports.md`, item 34); such an export is
 refused. Set `arrow_output_version = '1.0'` on those releases.
 

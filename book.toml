@@ -14,6 +14,9 @@ create-missing = false
 edition = "2021"
 
 [output.html]
+# mdBook looks for templates in <root>/theme by default; ours live in
+# book/theme, and without this line head.hbs is silently never rendered.
+theme = "book/theme"
 site-url = "https://quack-rs.com/"
 git-repository-url = "https://github.com/tomtom215/quack-rs"
 git-repository-icon = "fa-github"

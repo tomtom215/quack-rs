@@ -1,33 +1,52 @@
-<!-- SEO: canonical URL -->
-<link rel="canonical" href="https://quack-rs.com/{{ path_to_root }}{{ path }}" />
-
-<!-- SEO: meta description -->
-<meta name="description" content="quack-rs is a production-grade Rust SDK for building DuckDB loadable extensions. No C, no C++, no glue code. Covers scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions." />
-<meta name="keywords" content="DuckDB, Rust, extension, SDK, FFI, loadable extension, community extension, quack-rs, database, analytics" />
+<!-- Site-wide SEO tags. The per-page tags (canonical, meta description,
+     og:title, og:description, og:url) are written into the built HTML by
+     scripts/seo-postbuild.py, because mdBook 0.4 cannot turn a chapter's
+     source path (`{{ path }}`, e.g. "functions/scalar.md") into its public
+     URL from a template. -->
 <meta name="author" content="Tom F." />
 
-<!-- Open Graph (Facebook, LinkedIn, Discord, Slack) -->
+<!-- Open Graph (Facebook, LinkedIn, Discord, Slack). PNG, not SVG: most
+     link-preview renderers ignore SVG images. -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="quack-rs" />
-<meta property="og:title" content="{{ title }} - quack-rs" />
-<meta property="og:description" content="Production-grade Rust SDK for building DuckDB loadable extensions. No C, no C++, no glue code." />
-<meta property="og:url" content="https://quack-rs.com/{{ path_to_root }}{{ path }}" />
-<meta property="og:image" content="https://quack-rs.com/assets/og-image.svg" />
-<meta property="og:image:type" content="image/svg+xml" />
+<meta property="og:locale" content="en_US" />
+<meta property="og:image" content="https://quack-rs.com/assets/og-image.png" />
+<meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="quack-rs: production-grade Rust SDK for DuckDB extensions" />
 
-<!-- Structured Data (JSON-LD) -->
+<!-- X / Twitter: falls back to the og:title / og:description above. -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="https://quack-rs.com/assets/og-image.png" />
+<meta name="twitter:image:alt" content="quack-rs: production-grade Rust SDK for DuckDB extensions" />
+{{#if (eq path "introduction.md")}}
+
+<!-- Structured data (JSON-LD), home page only. -->
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
-  "@type": "SoftwareSourceCode",
-  "name": "quack-rs",
-  "description": "Production-grade Rust SDK for building DuckDB loadable extensions",
-  "url": "https://quack-rs.com/",
-  "codeRepository": "https://github.com/tomtom215/quack-rs",
-  "programmingLanguage": "Rust",
-  "license": "https://opensource.org/licenses/MIT",
-  "runtimePlatform": "DuckDB"
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://quack-rs.com/#website",
+      "name": "quack-rs",
+      "url": "https://quack-rs.com/",
+      "inLanguage": "en"
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://quack-rs.com/#software",
+      "name": "quack-rs",
+      "description": "Production-grade Rust SDK for building DuckDB loadable extensions",
+      "url": "https://quack-rs.com/",
+      "codeRepository": "https://github.com/tomtom215/quack-rs",
+      "programmingLanguage": { "@type": "ComputerLanguage", "name": "Rust" },
+      "runtimePlatform": "DuckDB",
+      "license": "https://opensource.org/licenses/MIT",
+      "author": { "@type": "Person", "name": "Tom F." }
+    }
+  ]
 }
 </script>
+{{/if}}

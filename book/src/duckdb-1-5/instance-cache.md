@@ -2,11 +2,11 @@
 
 > **Requires the `duckdb-1-5` feature flag** (DuckDB 1.5.0+).
 
-An `InstanceCache` lets multiple connections share a single underlying DuckDB
-*instance* for a given database path. Opening the same path twice through the
-cache returns handles backed by the **same** instance, which avoids the
-"database is already open in another instance" conflict and saves the cost of
-re-initialising the database.
+An `InstanceCache` wraps DuckDB's `duckdb_instance_cache`, which lets several
+database handles share one underlying DuckDB *instance* per database path.
+Opening the same path twice through the cache returns handles backed by the
+**same** instance, which avoids the "database is already open in another
+instance" conflict and saves the cost of re-initialising the database.
 
 This is primarily useful for extensions or host integrations that open secondary
 databases on behalf of a query.
@@ -31,8 +31,8 @@ When an instance already exists for the path, the config must **match** the one 
 was created with — a different one is an error ("Can't open a connection to same
 database file with a different configuration than existing connections"), not
 silently ignored. `None` means DuckDB's defaults, so it too conflicts with an
-instance created with a custom config. An empty path (in-memory) is never cached:
-each call creates a separate database.
+instance created with a custom config. An empty path or `:memory:` is never
+cached: each call creates a separate in-memory database.
 
 ```rust,no_run
 use quack_rs::instance_cache::InstanceCache;
@@ -72,9 +72,12 @@ retry.
 ## Ownership
 
 `InstanceCache` is RAII and destroys the cache on drop. The `duckdb_database`
-returned by `get_or_create` is, however, **owned by the caller** — you must close
-it with `duckdb_close` when finished. The cache keeps the *underlying* instance
-alive so that subsequent opens of the same path are cheap.
+returned by `get_or_create` is, however, **owned by the caller**: close it with
+`duckdb_close` when finished. The cache holds only a weak reference to each
+instance. An instance stays alive while at least one handle opened through the
+cache is open, and a handle stays valid after the cache itself is dropped. Once
+the last handle is closed, the next `get_or_create` for that path creates a
+fresh instance.
 
 ## Related modules
 

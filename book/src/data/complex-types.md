@@ -1,8 +1,9 @@
 # Complex Types: STRUCT, LIST, MAP, ARRAY
 
-DuckDB's complex types — `STRUCT`, `LIST`, `MAP`, and `ARRAY` — are stored as nested vectors.
-`quack-rs` provides four helper types in [`vector::complex`] to access the child
-vectors without manual offset arithmetic.
+DuckDB stores its nested types — `STRUCT`, `LIST`, `MAP` and `ARRAY` — as a parent
+vector with one or more child vectors. This page shows how a quack-rs extension reads
+and writes them: the four helper types in [`vector::complex`] reach the child vectors,
+and `ListBuilder` writes `LIST` and `MAP` output without manual offset arithmetic.
 
 ## Overview
 
@@ -22,13 +23,14 @@ vectors without manual offset arithmetic.
 # fn demo(parent_vec: duckdb_vector, row_count: usize) {
 use quack_rs::vector::{VectorReader, complex::StructVector};
 
-// Inside a scan or finalize callback:
+// Inside a scalar function or aggregate update callback:
 // parent_vec comes from duckdb_data_chunk_get_vector(chunk, col_idx)
 let x_reader = unsafe { StructVector::field_reader(parent_vec, 0, row_count) };
 let y_reader = unsafe { StructVector::field_reader(parent_vec, 1, row_count) };
 
 for row in 0..row_count {
-    if unsafe { x_reader.is_valid(row) } {
+    // Each field has its own validity bitmap.
+    if unsafe { x_reader.is_valid(row) && y_reader.is_valid(row) } {
         let x: f64 = unsafe { x_reader.read_f64(row) };
         let y: f64 = unsafe { y_reader.read_f64(row) };
         // process (x, y) …
@@ -62,24 +64,27 @@ for row in 0..row_count {
 
 ### MAP
 
-`MAP` is `LIST<STRUCT{key, value}>`. Access keys and values via the inner struct:
+`MAP` is `LIST<STRUCT{key, value}>`. `MapVector::key_reader` and `value_reader`
+read the two fields of the inner struct:
 
 ```rust
 # use libduckdb_sys::duckdb_vector;
 # fn demo(map_vec: duckdb_vector, row_count: usize) {
-use quack_rs::vector::{VectorReader, complex::MapVector};
+use quack_rs::vector::complex::MapVector;
 
 let total = unsafe { MapVector::total_entry_count(map_vec) };
-let key_reader   = unsafe { VectorReader::from_vector(MapVector::keys(map_vec), total) };
-let value_reader = unsafe { VectorReader::from_vector(MapVector::values(map_vec), total) };
+let key_reader   = unsafe { MapVector::key_reader(map_vec, total) };
+let value_reader = unsafe { MapVector::value_reader(map_vec, total) };
 
 for row in 0..row_count {
     let entry = unsafe { MapVector::get_entry(map_vec, row) };
     for i in 0..entry.length as usize {
         let idx = entry.offset as usize + i;
-        let k = unsafe { key_reader.read_str(idx) };
-        let v: i64 = unsafe { value_reader.read_i64(idx) };
-        // process (k, v) …
+        let k = unsafe { key_reader.read_str(idx) };   // MAP keys are never NULL
+        if unsafe { value_reader.is_valid(idx) } {
+            let v: i64 = unsafe { value_reader.read_i64(idx) };
+            // process (k, v) …
+        }
     }
 }
 # }
@@ -106,30 +111,34 @@ for row in 0..batch_size {
 
 ### Nested complex types inside STRUCT (v0.11.0+)
 
-When a STRUCT field is itself a LIST, MAP, or ARRAY, use `child_vector()` on
-`StructWriter` or `StructReader` to get the raw vector handle for complex operations:
+When a STRUCT field is itself a LIST, MAP or ARRAY, `child_vector(field_idx)` on
+`StructWriter` or `StructReader` returns the field's raw vector handle, which the
+`ListVector`, `MapVector` and `ArrayVector` helpers and `ListBuilder` accept:
 
 ```rust
 # use libduckdb_sys::duckdb_vector;
 # fn demo(struct_vec: duckdb_vector, row: usize) {
-use quack_rs::vector::{StructWriter, complex::ListVector};
+use quack_rs::vector::{ListBuilder, StructWriter};
 
-// STRUCT(name VARCHAR, services LIST<VARCHAR>, message VARCHAR)
+// STRUCT(name VARCHAR, services VARCHAR[], message VARCHAR)
 let mut sw = unsafe { StructWriter::new(struct_vec, 3) };
 
 // Write scalar fields normally
 unsafe { sw.write_varchar(row, 0, "hello") };
 unsafe { sw.write_varchar(row, 2, "ok") };
 
-// For the LIST field at index 1, get the raw vector
-let list_vec = sw.child_vector(1);
-unsafe { ListVector::reserve(list_vec, 10) };
-unsafe { ListVector::set_entry(list_vec, row, 0, 3) };
-let mut elem_writer = unsafe { ListVector::child_writer(list_vec) };
-unsafe { elem_writer.write_varchar(0, "a") };
-unsafe { elem_writer.write_varchar(1, "b") };
-unsafe { elem_writer.write_varchar(2, "c") };
-unsafe { ListVector::set_size(list_vec, 3) };
+// The LIST field at index 1: ListBuilder appends after any elements
+// earlier rows already wrote to the child vector.
+let services = ["a", "b", "c"];
+let mut builder = unsafe { ListBuilder::new(sw.child_vector(1)) };
+unsafe {
+    builder.push_row(row, services.len(), |writer, base| {
+        for (i, s) in services.iter().enumerate() {
+            writer.write_varchar(base + i, s);
+        }
+    });
+    builder.finish();
+}
 # }
 ```
 
@@ -163,10 +172,23 @@ unsafe { builder.finish() };
 > `VectorWriter` obtained before that call is left holding a dangling pointer.
 > The manual pattern below is safe only because it reserves exactly once, before
 > any writer exists — which requires knowing the total element count up front.
-> `ListBuilder` has no such requirement.
+> `ListBuilder` has no such requirement. The same applies to writers on anything
+> below the child, such as the fields of a `LIST` of `STRUCT`s: fetch them again
+> after every reserve that grows the list (see
+> [Pitfall L18](../reference/pitfalls.md#l18-a-list-reserve-moves-every-buffer-below-its-child)).
 
 `push_map_row` does the same for `MAP`, handing the closure a writer for the key
 child and one for the value child.
+
+DuckDB limits a child vector to 2^37 bytes per buffer
+(`MAX_LIST_CHILD_CAPACITY`), and a reservation above that — or one the
+allocator cannot satisfy — throws a C++ exception through the C API, which
+aborts the process. `vector::max_child_capacity(vec)` turns the byte limit into
+an element count for the child's type: 2^34 `BIGINT`s, 2^33 `VARCHAR`s.
+`ListBuilder` applies it by itself. When row lengths come from untrusted input,
+also set a limit that fits in memory with `with_element_limit(n)`: a row that
+would exceed the limit is written as NULL instead, and `overflowed()` reports
+that it happened.
 
 ### LIST — manual
 
@@ -176,6 +198,7 @@ child and one for the value child.
 use quack_rs::vector::{VectorWriter, complex::ListVector};
 
 let total_elements: usize = rows.iter().map(|r| r.len()).sum();
+// Must not exceed quack_rs::vector::max_child_capacity(list_vec); see above.
 unsafe { ListVector::reserve(list_vec, total_elements) };
 
 let mut child_writer = unsafe { ListVector::child_writer(list_vec) };
@@ -193,19 +216,19 @@ unsafe { ListVector::set_size(list_vec, total_elements) };
 
 ### MAP — manual
 
-The MAP write workflow is identical to LIST, but keys and values are written into
-the two struct child vectors. Prefer `ListBuilder::push_map_row` unless you know
-the total pair count before writing:
+Writing a MAP follows the LIST pattern, but keys and values go into the two
+fields of the inner STRUCT vector. Prefer `ListBuilder::push_map_row` unless you
+know the total pair count before writing:
 
 ```rust
 # use libduckdb_sys::duckdb_vector;
 # fn demo(map_vec: duckdb_vector, total_pairs: usize, all_pairs: &[Vec<(String, i64)>]) {
-use quack_rs::vector::{VectorWriter, complex::MapVector};
+use quack_rs::vector::complex::MapVector;
 
 unsafe { MapVector::reserve(map_vec, total_pairs) };
 
-let mut key_writer   = unsafe { VectorWriter::from_vector(MapVector::keys(map_vec)) };
-let mut val_writer   = unsafe { VectorWriter::from_vector(MapVector::values(map_vec)) };
+let mut key_writer = unsafe { MapVector::key_writer(map_vec) };
+let mut val_writer = unsafe { MapVector::value_writer(map_vec) };
 let mut offset = 0usize;
 for (row, pairs) in all_pairs.iter().enumerate() {
     for (i, (k, v)) in pairs.iter().enumerate() {
@@ -235,6 +258,13 @@ has a variant that accepts `TypeId` values (for simple element types) and a
 | `LogicalType::enum_type(&[&str])` | — | `ENUM(...)` |
 | `LogicalType::decimal(u8, u8)` | — | `DECIMAL(w, s)` |
 
+Each constructor also has a `try_` form (`try_list`, `try_struct_type_from_logical`, …)
+that returns `Result<LogicalType, LogicalTypeError>`; the plain forms panic where
+the `try_` form returns an error. Errors include a composite `TypeId` passed where
+a `_from_logical` variant is needed, `STRUCT` field or `UNION` member names that
+are equal ignoring ASCII case, and a `UNION` with more than `MAX_UNION_MEMBERS`
+(255) members.
+
 ## API reference
 
 All helpers are in `quack_rs::vector::complex` (re-exported from `quack_rs::prelude`).
@@ -251,8 +281,9 @@ All helpers are in `quack_rs::vector::complex` (re-exported from `quack_rs::prel
 
 | Method | Description |
 |--------|-------------|
-| `StructWriter::child_vector(field_idx)` | Returns the raw `duckdb_vector` for a complex child field (LIST, MAP, ARRAY) |
-| `StructReader::child_vector(field_idx)` | Same for reading nested complex fields |
+| `StructWriter::child_vector(field_idx)` | Returns the raw `duckdb_vector` of a nested field (LIST, MAP, ARRAY) |
+| `StructWriter::child_list_vector(field_idx)` | Alias of `child_vector` for a LIST field |
+| `StructReader::child_vector(field_idx)` | Same as `StructWriter::child_vector`, for reading (`unsafe`) |
 
 ### `ListVector`
 
@@ -261,7 +292,7 @@ All helpers are in `quack_rs::vector::complex` (re-exported from `quack_rs::prel
 | `get_child(vec)` | Returns the flat element child vector |
 | `get_size(vec)` | Total number of elements across all rows |
 | `set_size(vec, n)` | Sets the number of elements after writing |
-| `reserve(vec, capacity)` | Reserves capacity in the child vector |
+| `reserve(vec, capacity)` | Reserves capacity in the child vector (at most `max_child_capacity(vec)`) |
 | `get_entry(vec, row)` | Returns `{offset, length}` for a row (reading) |
 | `set_entry(vec, row, offset, length)` | Sets `{offset, length}` for a row (writing) |
 | `child_reader(vec, count)` | Creates a `VectorReader` for the element vector |
@@ -275,10 +306,12 @@ All helpers are in `quack_rs::vector::complex` (re-exported from `quack_rs::prel
 | `keys(vec)` | Returns the key vector (STRUCT field 0) |
 | `values(vec)` | Returns the value vector (STRUCT field 1) |
 | `total_entry_count(vec)` | Total key-value pairs |
-| `reserve(vec, n)` | Reserves capacity |
+| `reserve(vec, n)` | Reserves capacity for `n` pairs (at most `max_child_capacity(vec)`) |
 | `set_size(vec, n)` | Sets total entry count after writing |
 | `get_entry(vec, row)` | Returns `{offset, length}` for a row (reading) |
 | `set_entry(vec, row, offset, length)` | Sets `{offset, length}` for a row (writing) |
+| `key_reader(vec, count)` / `value_reader(vec, count)` | Creates a `VectorReader` for the keys / values |
+| `key_writer(vec)` / `value_writer(vec)` | Creates a `VectorWriter` for the keys / values |
 
 ### `ArrayVector`
 

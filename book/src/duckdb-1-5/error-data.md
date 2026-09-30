@@ -2,15 +2,15 @@
 
 > **Requires the `duckdb-1-5` feature flag** (DuckDB 1.5.0+).
 
-`ErrorData` is an RAII wrapper around DuckDB's `duckdb_error_data` handle — the
-structured error type returned by several DuckDB 1.5 C API surfaces. Unlike a
+`ErrorData` is an RAII wrapper around DuckDB's `duckdb_error_data` handle, the
+structured error type that several DuckDB 1.5 C API functions return. Unlike a
 bare error string, an `ErrorData` carries both a human-readable **message** and a
 machine-readable **category** ([`DuckDbErrorType`]), so your extension can branch
 on the *kind* of failure (for example, distinguishing `Io` from `OutOfMemory`).
 
-It is the common currency of the other 1.5 modules: [`Expression::fold`](expression.md),
-the [virtual file system](file-system.md), and the [appender](../data/appender.md) all
-report failures as an `ErrorData`.
+[`Expression::fold`](expression.md), the [virtual file system](file-system.md),
+the [Arrow bridge](arrow.md) and the [appender](../data/appender.md) all report
+failures as an `ErrorData`.
 
 ## Inspecting an error
 
@@ -84,11 +84,11 @@ Unknown or future categories map to `DuckDbErrorType::Invalid`.
 ## UTF-8 validation
 
 The free function `check_valid_utf8` exposes DuckDB's own UTF-8 validator. Its
-rules match Rust's exactly — it accepts every Unicode scalar value and rejects
+rules match Rust's exactly: it accepts every Unicode scalar value and rejects
 surrogates, overlong forms, code points above `U+10FFFF`, truncated sequences
-and stray continuation bytes, just as `std::str::from_utf8` does — so reach for
-it when you want DuckDB's structured `ErrorData` for the failure; for a yes/no
-answer `std::str::from_utf8` is equivalent:
+and stray continuation bytes, just as `std::str::from_utf8` does. Use it when
+you want DuckDB's structured `ErrorData` for the failure; for a yes/no answer,
+`std::str::from_utf8` is equivalent and needs no database:
 
 ```rust
 # // ErrorData is a DuckDB object: fill the dispatch table first.
@@ -110,14 +110,15 @@ match check_valid_utf8(bytes) {
 
 ## Ownership
 
-`ErrorData` calls `duckdb_destroy_error_data` on drop. When you receive one from
-a fallible 1.5 API, it owns the handle — just let it drop, or call
+`ErrorData` calls `duckdb_destroy_error_data` on drop. An `ErrorData` received
+from a fallible 1.5 API owns its handle: let it drop, or call
 `into_extension_error()` / `into_raw()` to move the data out.
 
 ## Related modules
 
 - [Bound Expressions](expression.md) — `Expression::fold` returns `ErrorData`
 - [Virtual File System](file-system.md) — file operations return `ErrorData`
+- [Arrow Interop](arrow.md) — the conversion functions return `ErrorData`
 - [Bulk Appender](../data/appender.md) — `Appender::error_data` returns `ErrorData`
 - [Error Handling](../concepts/errors.md) — the SDK's primary [`ExtensionError`] type
 
