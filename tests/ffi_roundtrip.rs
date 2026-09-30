@@ -895,7 +895,7 @@ fn decimals_round_trip_on_both_sides_of_every_storage_boundary() {
         // wide an integer picks up its neighbour's bytes, so with a single row
         // (or a zero neighbour) a wrong threshold still reads the right value.
         let max = "9".repeat(usize::from(width));
-        let want = [format!("-{max}"), max.clone(), "0".to_owned(), max.clone()];
+        let want = [format!("-{max}"), max.clone(), "0".to_owned(), max];
         let values = want
             .iter()
             .enumerate()

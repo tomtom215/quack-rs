@@ -214,24 +214,24 @@ pub(crate) const unsafe extern "C" fn no_op_destroy(
 mod tests {
     use super::*;
 
-    unsafe extern "C" fn _state_size(_: duckdb_function_info) -> idx_t {
+    unsafe extern "C" fn stub_state_size(_: duckdb_function_info) -> idx_t {
         0
     }
-    unsafe extern "C" fn _state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
-    unsafe extern "C" fn _update(
+    unsafe extern "C" fn stub_state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+    unsafe extern "C" fn stub_update(
         _: duckdb_function_info,
         _: duckdb_data_chunk,
         _: *mut duckdb_aggregate_state,
     ) {
     }
-    unsafe extern "C" fn _combine(
+    unsafe extern "C" fn stub_combine(
         _: duckdb_function_info,
         _: *mut duckdb_aggregate_state,
         _: *mut duckdb_aggregate_state,
         _: idx_t,
     ) {
     }
-    unsafe extern "C" fn _finalize(
+    unsafe extern "C" fn stub_finalize(
         _: duckdb_function_info,
         _: *mut duckdb_aggregate_state,
         _: duckdb_vector,
@@ -239,15 +239,15 @@ mod tests {
         _: idx_t,
     ) {
     }
-    unsafe extern "C" fn _destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
+    unsafe extern "C" fn stub_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 
     #[test]
     fn all_callback_types_compile() {
-        let _: StateSizeFn = _state_size;
-        let _: StateInitFn = _state_init;
-        let _: UpdateFn = _update;
-        let _: CombineFn = _combine;
-        let _: FinalizeFn = _finalize;
-        let _: DestroyFn = _destroy;
+        let _: StateSizeFn = stub_state_size;
+        let _: StateInitFn = stub_state_init;
+        let _: UpdateFn = stub_update;
+        let _: CombineFn = stub_combine;
+        let _: FinalizeFn = stub_finalize;
+        let _: DestroyFn = stub_destroy;
     }
 }
