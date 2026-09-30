@@ -134,8 +134,9 @@ metadata footer:
 - A `C_STRUCT` binary targeting C API `v1.2.0` (the default, stable API only) loads into
   every DuckDB release whose C API version is at least `v1.2.0` — all of 1.4.x and 1.5.x —
   on the platform it was built for
-- A `C_STRUCT_UNSTABLE` binary (required with the `duckdb-1-5*` features) loads only into
-  the exact DuckDB release it names
+- A `C_STRUCT_UNSTABLE` binary loads only into the exact DuckDB release it names. Stamp
+  builds that use the `duckdb-1-5*` features this way, so DuckDB itself refuses a mismatched
+  release; quack-rs's runtime layout check is the backstop when the stamp is missing
 - DuckDB checks the footer's platform and version fields at load time and refuses a mismatch
 - Core and community extensions are signed; a binary you build locally is not
 - To load an unsigned extension during development, start DuckDB with `allow_unsigned_extensions`

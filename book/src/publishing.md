@@ -352,9 +352,10 @@ stamped `C_STRUCT` with C API version `v1.2.0`, and one binary loads into every
 DuckDB 1.4.x and 1.5.x release for its platform. The `libduckdb-sys = ">=1.4.4, <2"`
 range above is correct for such an extension.
 
-An extension that enables the `duckdb-1-5*` features must be stamped
-`C_STRUCT_UNSTABLE` with the exact DuckDB release it was built against, and DuckDB
-loads it only into that release. Pin `libduckdb-sys` to that release's bindings
+An extension that enables the `duckdb-1-5*` features should be stamped
+`C_STRUCT_UNSTABLE` with the exact DuckDB release it was built against, so that DuckDB
+loads it only into that release. (Stamped `C_STRUCT` instead, it loads anywhere and
+quack-rs's runtime layout check refuses a mismatched release at `LOAD`.) Pin `libduckdb-sys` to that release's bindings
 (`~1.10505.0` for DuckDB 1.5.5) and rebuild for each new DuckDB release. See
 [ABI Compatibility](concepts/abi.md).
 
