@@ -1,15 +1,16 @@
 # Table Metadata
 
-`TableDescription` answers questions about an existing table from inside your
-extension: what its columns are called, and whether a column has a `DEFAULT`.
-Useful for replacement scans, table functions, and copy functions that need to
-inspect a table before deciding what to do.
+`TableDescription` reads the column metadata of an existing DuckDB table from
+inside your extension: column names, whether a column has a `DEFAULT`, and,
+with `duckdb-1-5`, the column count and types. Replacement scans, table
+functions and copy functions use it to inspect a table before deciding what to
+do.
 
 **No feature flag required** for creating a description or reading column names
-and defaults — `duckdb_table_description_*` has been in the frozen stable prefix
-of the extension API (slots 292–297) since v1.2.0. Two accessors are DuckDB 1.5
-additions living in the unstable region and need `duckdb-1-5`: `column_count`
-and `column_type`.
+and defaults: `duckdb_table_description_*` has been in the frozen stable prefix
+of the extension API (slots 292–297) since v1.2.0. Two accessors, `column_count`
+and `column_type`, were added in DuckDB 1.5 in the unstable region and need
+`duckdb-1-5`.
 
 ```rust,no_run
 use quack_rs::table_description::TableDescription;
@@ -42,9 +43,9 @@ let desc = unsafe { TableDescription::with_catalog(con, Some("mydb"), None, "eve
 
 | Method | Description |
 |--------|-------------|
-| `TableDescription::create(con, schema, table)` (unsafe) | Describe `schema.table` |
+| `TableDescription::create(con, schema, table)` (unsafe) | Describe `schema.table`; `Err` if the table does not exist |
 | `TableDescription::with_catalog(con, catalog, schema, table)` (unsafe) | Describe a fully-qualified table (`None` = default) |
-| `column_name(i)` | Column name, or `None` if `i` is out of range |
+| `column_name(i)` | Column name, or `None` if `i` is out of range (or the name is not valid UTF-8) |
 | `column_has_default(i)` | Whether the column has a `DEFAULT`, or `None` if `i` is out of range |
 | `column_count()` ¹ | Number of columns |
 | `column_type(i)` ¹ | Column [`LogicalType`], or `None` if `i` is out of range |

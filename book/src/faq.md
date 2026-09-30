@@ -17,18 +17,23 @@ utilities for publishing community extensions.
 
 ### Why does this exist?
 
-Building a DuckDB extension in Rust requires solving a set of undocumented
-FFI problems that every developer discovers independently. quack-rs encodes
-solutions to all 31 known pitfalls so you don't have to rediscover them.
-See the [Pitfall Catalog](reference/pitfalls.md).
+Building a DuckDB extension in Rust means solving a set of undocumented FFI
+problems that each developer otherwise discovers independently. quack-rs
+documents all 31 known pitfalls, and its API prevents most of them. See the
+[Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?
 
-quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.x and 1.5.x).
-The C API version string passed to the dispatch-table initializer is `"v1.2.0"`,
-available as `quack_rs::DUCKDB_API_VERSION`. Both DuckDB 1.4.x and 1.5.x use
-the same C API version. These are two distinct version identifiers — the crate
-version and the C API protocol version.
+quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` and supports DuckDB 1.4.x
+and 1.5.x. CI loads a built extension into DuckDB v1.4.4, v1.5.0, v1.5.5 and the
+latest release.
+
+The C API version passed to the dispatch-table initializer is `"v1.2.0"`,
+available as `quack_rs::DUCKDB_API_VERSION`. Every DuckDB 1.4.x and 1.5.x
+release loads extensions built for it (1.5.6 declares C API `v1.5.6`, but still
+accepts `v1.2.0`). The C API version is a separate identifier from the DuckDB
+release and from the `libduckdb-sys` crate version (e.g. `1.10505.0` for
+DuckDB 1.5.5).
 
 ### What is the minimum supported Rust version (MSRV)?
 
@@ -68,8 +73,9 @@ unsafe { m.register(con) }?;
 # }
 ```
 
-Register them inside your `init_extension` closure alongside aggregate and
-scalar functions. A table macro's body is bound when it is created, so the
+Register them in your registration closure (the one passed to `entry_point!`
+or `init_extension`) alongside your other functions. A table macro's body is
+bound when it is created, so the
 `events` table must already exist or `register` returns an error.
 See [SQL Macros](functions/sql-macros.md).
 
@@ -85,8 +91,8 @@ arity alone. See
 
 ### Can I register multiple functions in one extension?
 
-Yes. The `init_extension` closure receives a `duckdb_connection` and can call
-as many `register_*` functions as needed:
+Yes. The registration closure receives a `duckdb_connection` and can register
+as many functions as needed:
 
 ```rust
 # use libduckdb_sys::{duckdb_connection, duckdb_extension_access, duckdb_extension_info};
@@ -146,8 +152,8 @@ binary.
 ### My unit tests all pass but the extension crashes. Why?
 
 Unit tests cannot detect FFI wiring bugs. See [Pitfall P3](reference/pitfalls.md#p3-e2e-testing-is-mandatory)
-and the [Testing Guide](testing.md). Always run E2E tests by loading the
-extension into an actual DuckDB process.
+and the [Testing Guide](testing.md). Always run end-to-end tests that load the
+packaged extension into a real DuckDB process.
 
 ### How do I test SQL macros?
 
@@ -159,7 +165,7 @@ let m = SqlMacro::scalar("triple", &["x"], "x * 3").unwrap();
 assert_eq!(m.to_sql(), r#"CREATE OR REPLACE MACRO "triple"("x") AS (x * 3)"#);
 ```
 
-For E2E testing, include the macro in your SQLLogicTest file:
+For an end-to-end test, call the macro from your SQLLogicTest file:
 
 ```sql
 query I
@@ -185,9 +191,9 @@ See [Community Extensions](publishing.md) for the full workflow.
 ### My extension name is taken. What should I do?
 
 Use a vendor-prefixed name: `myorg_analytics` instead of `analytics`. Extension
-names must be globally unique across the entire DuckDB ecosystem. Check
+names must be unique among DuckDB community extensions; check
 [community-extensions.duckdb.org](https://community-extensions.duckdb.org/)
-first.
+before you pick one.
 
 ### Do I need to set up CI manually?
 
@@ -197,10 +203,11 @@ builds and tests your extension on Linux, macOS, and Windows automatically.
 ### Can my extension be installed with `INSTALL ... FROM community`?
 
 Yes, once your pull request is merged into the community-extensions repository.
-Until then, users load the `.duckdb_extension` binary directly:
+Until then, users load the `.duckdb_extension` file directly, starting DuckDB with
+`-unsigned` because a local build is not signed:
 
 ```sql
-LOAD './path/to/libmy_extension.duckdb_extension';
+LOAD './path/to/my_extension.duckdb_extension';
 ```
 
 ---
@@ -214,26 +221,44 @@ all configuration fields. See
 [Pitfall L1](reference/pitfalls.md#l1-combine-must-propagate-all-config-fields)
 and test with `AggregateTestHarness::combine`.
 
-### I'm getting a SEGFAULT when writing NULL.
+### The NULLs my function writes come back as values.
 
 You are likely calling `duckdb_vector_get_validity` without first calling
-`duckdb_vector_ensure_validity_writable`. Use `VectorWriter::set_null` instead.
-See [Pitfall L4](reference/pitfalls.md#l4-ensure_validity_writable-is-required-before-null-output).
+`duckdb_vector_ensure_validity_writable`. A vector that has never held a NULL
+has no validity mask, so `duckdb_vector_get_validity` returns a null pointer and
+`duckdb_validity_set_row_invalid` silently does nothing (dereferencing that
+pointer yourself crashes). Use `VectorWriter::set_null` instead. See
+[Pitfall L4](reference/pitfalls.md#l4-ensure_validity_writable-is-required-before-null-output).
 
 ### My function is not found in SQL after `LOAD`.
 
-Most likely cause: the function was not registered (Pitfall L6 — function set
-name not set on each member), or the entry point symbol name does not match
-the extension name. The symbol must be `{extension_name}_init_c_api` (all
-lowercase, underscores).
+If `LOAD` succeeded, the entry point ran, so check the name you gave the
+builder. If you build a function set through the raw C API instead of
+quack-rs's set builders, every member needs its own name, or DuckDB silently
+skips it ([Pitfall L6](reference/pitfalls.md#l6-function-set-name-must-be-set-on-each-member)).
+
+If `LOAD` itself fails, check the entry point symbol. DuckDB takes the file's
+base name, lowercases it and calls `<base name>_init_c_api`, so
+`my_extension.duckdb_extension` needs `my_extension_init_c_api`
+([Pitfall P1](reference/pitfalls.md#p1-library-name-must-match-extension-name)).
 
 ### `make configure` fails with a missing file error.
 
-The `extension-ci-tools` submodule is not initialized:
+The `extension-ci-tools` submodule is missing. In a new project, such as one
+fresh from the scaffold, add it once (`git submodule update --init` does nothing
+until it has been added):
+
+```bash
+git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+```
+
+In a clone of a repository that already has the submodule:
 
 ```bash
 git submodule update --init --recursive
 ```
+
+See [Pitfall P4](reference/pitfalls.md#p4-extension-ci-tools-submodule-must-be-initialized).
 
 ### My SQLLogicTest fails in CI but passes locally.
 
@@ -273,8 +298,11 @@ SEGFAULTs when the layout changes between `duckdb` crate versions.
 
 ### Why must the release profile use `panic = "unwind"`?
 
-quack-rs wraps every callback and entry point in `catch_unwind` and reports a
-panic as an ordinary SQL error. `catch_unwind` cannot catch anything under
+quack-rs wraps every entry point and every callback it generates in
+`catch_unwind` and reports a panic as an ordinary SQL error (a raw
+`extern "C"` callback you write yourself needs a `*_callback!` macro or
+`catch_ffi_panic`; see [Installation](getting-started/installation.md#why-panic--unwind-not-abort)).
+`catch_unwind` cannot catch anything under
 `panic = "abort"`: the process terminates at the panic site, taking the user's
 DuckDB session with it. `validate_release_profile` rejects `abort` for this
 reason. Returning `Result` and using `?` is still the right style — the guards
@@ -283,9 +311,9 @@ are a safety net, not a substitute.
 ### Can I use async Rust in my extension?
 
 Not directly in FFI callbacks. DuckDB's callbacks are synchronous C functions.
-You can run a Tokio or async-std runtime and block on async tasks inside
-callbacks (using `Runtime::block_on`), but the callbacks themselves must return
-synchronously.
+You can run an async runtime such as Tokio and block on async tasks inside
+callbacks (for example with `Runtime::block_on`), but the callbacks themselves
+must return synchronously.
 
 ### How does `FfiState<T>` prevent double-free?
 

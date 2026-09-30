@@ -1,8 +1,9 @@
 # Table Functions
 
-Table functions implement the `SELECT * FROM my_function(args)` pattern — they
-return a result set rather than a scalar value. DuckDB table functions have three
-lifecycle callbacks: **bind**, **init**, and **scan**.
+A DuckDB table function returns a result set rather than a single value, and is
+called in the `FROM` clause: `SELECT * FROM my_function(args)`. This page shows how
+to write one in Rust with quack-rs. DuckDB drives a table function through three
+callbacks: **bind**, **init** and **scan**.
 
 `quack-rs` provides two layers for registering table functions:
 
@@ -22,12 +23,12 @@ Both builders are backed by the helper types `BindInfo`, `InitInfo`, `FunctionIn
 
 | Phase | Callback | Called when | Typical work |
 |-------|----------|-------------|--------------|
-| **bind** | `bind_fn` | Query is planned (once per plan) | Extract parameters; register output columns; store config in bind data |
+| **bind** | `bind_fn` | Query is planned (once per plan) | Extract parameters; declare output columns; store configuration in bind data |
 | **init** | `init_fn` | Each execution of the plan starts | Allocate per-scan state (cursor, row index, etc.) |
-| **scan** | `scan_fn` | Each output batch | Fill `duckdb_data_chunk` with rows; call `duckdb_data_chunk_set_size` |
+| **scan** | `scan_fn` | Each output batch | Fill the output chunk with rows; set its size with `DataChunk::set_size` |
 
-The scan callback is called repeatedly until it writes 0 rows in a batch, signalling
-end-of-results.
+DuckDB calls the scan callback repeatedly until it sets the chunk size to 0, which
+signals the end of the results.
 
 > **Bind once, init many times.** DuckDB keeps the bind data for as long as the
 > bound plan lives and runs `init` against it on **every** execution: each
@@ -40,7 +41,7 @@ end-of-results.
 For the common "take parameters at bind, stream rows until exhausted" pattern,
 `TypedTableFunctionBuilder<S>` replaces all three callback trampolines with two
 closures. With `with_state`, the state returned by `bind` is a **template**: every
-execution of the plan scans a fresh `clone()` of it, so `S` must be `Clone`.
+execution of the plan scans a fresh `clone()` of it, so `S` must be `Clone + Send`.
 
 ```rust,no_run
 use quack_rs::prelude::*;
@@ -127,9 +128,9 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
   each execution (a clone of the `with_state` template, or `init(&B)` for
   `with_bind_init`) — no manual `FfiBindData` / `FfiInitData` shuffling, and a
   prepared statement can be executed any number of times.
-- **Panic safety.** User closures run inside `catch_unwind`. Panics surface as
-  `duckdb_bind/init/function_set_error`, and the scan forces chunk size to zero so
-  the query terminates cleanly instead of unwinding across the FFI boundary.
+- **Panic safety.** User closures run inside `catch_unwind`. A panic is reported
+  as a bind, init or scan error, and the scan sets the chunk size to zero, so the
+  query fails cleanly instead of unwinding across the FFI boundary.
 - **Error propagation.** Return `Err(ExtensionError::new("..."))` from any closure
   to report a SQL error to DuckDB.
 
@@ -153,7 +154,9 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
   [`TableFunctionBuilder`](#builder-api) directly.
 - `TypedTableFunctionBuilder::build()` returns a fully configured
   `TableFunctionBuilder`, so you can still pass it through any `Registrar`
-  — including `MockRegistrar` for unit tests.
+  — including `MockRegistrar` for unit tests. Registration fails if you then
+  enable `projection_pushdown` on it or replace its `bind`, `init`, `local_init`,
+  `scan` or `extra_info`: the generated callbacks read one another's data.
 
 ## Builder API
 
@@ -353,7 +356,8 @@ The C API has no table function *sets*: a second registration under a name that
 already exists — your own earlier one, another extension's, or a built-in such as
 `range` — is dropped by DuckDB while `duckdb_register_table_function` still
 reports success, and the old function keeps answering. `register` therefore checks
-`duckdb_functions()` first and returns an error naming the conflict. Table
+`duckdb_functions()` first and returns an error if the name already belongs to a
+table function or table macro (compared case-insensitively). Table
 functions registered through the C API live in the in-memory system catalog and
 are never persisted, so reloading an extension into a database file never trips
 this check.
@@ -386,7 +390,7 @@ TableFunctionBuilder::new("gen_series_v2")
 ```
 
 The local init callback receives `duckdb_init_info` and can use
-`FfiLocalInitData<T>::set` to store per-thread state.
+`FfiLocalInitData::<T>::set` to store per-thread state (`T: Send`).
 
 ### Thread control
 
@@ -470,13 +474,15 @@ TableFunctionBuilder::new("read_data")
 |--------|-------------|
 | `add_result_column(name, TypeId)` | Declares an output column (a type DuckDB would silently drop, like `ANY`, is a bind error instead) |
 | `add_result_column_with_type(name, &LogicalType)` | Output column with complex type (same check, including nested `ANY`/`INVALID`) |
-| `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer — DuckDB 1.5.5 records `is_exact = false` as estimate **and** upper bound, `true` as estimate only (the reverse of its header); see the rustdoc |
+| `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer. DuckDB 1.5.5 treats `is_exact = false` as an estimate **and** an upper bound, `true` as an estimate only — the reverse of `duckdb.h` |
 | `set_error(message)` | Report a bind-time error (an empty message is replaced by a placeholder) |
 | `parameter_count()` | Number of positional parameters |
-| `get_parameter(index)` | Returns a positional parameter value (`duckdb_value`) |
-| `get_named_parameter(name)` | Returns a named parameter value (`duckdb_value`) |
+| `get_parameter_value(index)` | Positional parameter as an RAII `Value` |
+| `get_named_parameter_value(name)` | Named parameter as an RAII `Value`; a null handle if the query omitted it |
+| `get_parameter(index)` / `get_named_parameter(name)` | The same as a raw `duckdb_value`, which the caller must destroy |
 | `get_extra_info()` | Returns the extra-info pointer set on the function |
-| `get_client_context()` | Returns a `ClientContext` (requires `duckdb-1-5` feature) |
+| `get_client_context()` | Returns a `ClientContext` (`duckdb-1-5`) |
+| `result_column_count()` / `result_column_name(i)` / `result_column_type(i)` | The target table's columns in a `COPY … FROM` reader (`duckdb-1-5`); zero columns otherwise |
 
 ### InitInfo helpers
 
@@ -506,7 +512,7 @@ accessible from all callbacks (bind, init, and scan) via `get_extra_info()`. The
 pointee must be `Send + Sync`: DuckDB passes the same pointer to callbacks running
 on several threads at once, and frees it on whichever thread releases the function.
 
-## Verified output (DuckDB 1.4.4 and 1.5.0)
+## Example output
 
 ```sql
 SELECT * FROM generate_series_ext(5);

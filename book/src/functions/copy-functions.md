@@ -1,18 +1,23 @@
 # Copy Functions
 
+A DuckDB copy function implements a custom file format for the `COPY` statement.
+This page shows how to register one from a Rust extension with quack-rs'
+`CopyFunctionBuilder`.
+
 > **Requires the `duckdb-1-5` feature flag** (DuckDB 1.5.0+).
 
-Copy functions let you implement a custom file format for `COPY`. A format can
-support writing, reading, or both:
+A format can support writing, reading, or both:
 
 | Direction | You supply | DuckDB calls |
 |---|---|---|
-| `COPY t TO 'f' (FORMAT my_format)` | `bind` + `sink` + `finalize` (and optionally `global_init`) | your four callbacks |
+| `COPY t TO 'f' (FORMAT my_format)` | `bind` + `sink` + `finalize` (and optionally `global_init`) | those callbacks |
 | `COPY t FROM 'f' (FORMAT my_format)` | `copy_from(table_function)` | your **table function**'s bind, init and scan |
 
 `duckdb_register_copy_function` decides which directions a format supports by
 looking at the sink and the reader independently, so a read-only format leaves
-the writing callbacks unset entirely.
+the writing callbacks unset entirely. Set `bind`, `sink` and `finalize` together
+or not at all: `register` refuses a builder with only some of them, and one that
+implements neither direction.
 
 ## Lifecycle (`COPY … TO`)
 
@@ -23,8 +28,9 @@ the writing callbacks unset entirely.
    `COPY`, once per file with `PER_THREAD_OUTPUT` or `PARTITION_BY`. Open the
    file, allocate that file's global state. With `USE_TMP_FILE` the path is a
    temporary name that DuckDB renames afterwards.
-3. **Sink** — called for each data chunk, from several threads at once. Write
-   rows to the output.
+3. **Sink** — called for each data chunk; with `PER_THREAD_OUTPUT` or
+   `PARTITION_BY`, from several threads at once (see [Threads](#threads)).
+   Write rows to the output.
 4. **Finalize** — called once per output file, after its last sink. Flush
    buffers, close the file. It is **not** called when a sink reports an error,
    so release resources in the global state's destructor as well.
@@ -46,7 +52,7 @@ let builder = CopyFunctionBuilder::try_new("my_format")?
     .sink(my_sink_fn)
     .finalize(my_finalize_fn);
 
-// Register on a connection (inside entry_point_v2! callback):
+// Register on a connection, for example in the entry point:
 // unsafe { builder.register(con)?; }
 # Ok(())
 # }
@@ -86,11 +92,11 @@ let format = CopyFunctionBuilder::try_new("my_format")?.copy_from(reader)?;
 # }
 ```
 
-Three things about the reader are not like an ordinary table function:
+Four things about the reader are not like an ordinary table function:
 
 - **The file path is positional parameter 0**, always `VARCHAR`. `duckdb.h`
-  requires the function to declare exactly one parameter, and DuckDB does not
-  check it — `copy_from` does, and returns an error naming the mismatch.
+  requires the function to declare exactly that one parameter, and DuckDB does
+  not check it — `copy_from` does, and returns an error naming the mismatch.
 - **COPY options are named parameters.** `(FORMAT my_format, SKIP_ROWS 1)`
   arrives as `skip_rows`; matching is case-insensitive. An option the function
   never declared is a binder error before your bind callback runs — and the
@@ -103,7 +109,8 @@ Three things about the reader are not like an ordinary table function:
   `Value::type_id()` before trusting a value — `as_i64_or(0)` on `'abc'`
   quietly returns the default.
 - **The schema is already fixed**, because `COPY … FROM` loads into an existing
-  table. The bind callback must **not** call `add_result_column`. Read the
+  table. The bind callback must **not** call `add_result_column` (a typed reader
+  built with `with_state` or `with_bind_init` fails its bind if it does). Read the
   target's schema instead:
 
 ```rust,no_run
@@ -133,10 +140,11 @@ persisted, so reloading into a database file does not trip the check.
 
 ## Options
 
-`CopyBindInfo::options()` returns the `COPY … TO` options as one `STRUCT` value.
-How DuckDB 1.5.5 builds it:
+`CopyBindInfo::options()` returns the `COPY … TO` options as one `STRUCT` value
+(`None` only if DuckDB returns a null handle). How DuckDB 1.5.5 builds it:
 
 - Option names are **upper-cased**: `compression 'zstd'` arrives as `COMPRESSION`.
+  `FORMAT` itself is not among them.
 - With no options besides `FORMAT`, the value is SQL `NULL`, not an empty `STRUCT`
   — check `is_sql_null()` first.
 - An option given without a value (`HEADER`) is a `NULL` field.
@@ -144,7 +152,20 @@ How DuckDB 1.5.5 builds it:
   their types differ.
 - An explicit `NULL` value is rejected by the binder before your callback runs.
 - Field order follows DuckDB's internal hash map, not the statement — look fields
-  up by name.
+  up by name:
+
+```rust,no_run
+# use quack_rs::copy_function::CopyBindInfo;
+# fn demo(bind: &CopyBindInfo) -> Option<String> {
+let options = bind.options()?;
+if options.is_sql_null() {
+    return None; // COPY ... (FORMAT my_format) with no other options
+}
+let names = options.struct_field_names();
+let idx = names.iter().position(|n| n == "COMPRESSION")?;
+options.struct_child(idx)?.as_str().ok()
+# }
+```
 
 ## Threads
 
@@ -179,7 +200,7 @@ the handle at the top of your callback to access helper methods:
 |--------|-------------|
 | `column_count()` | Number of output columns |
 | `column_type(index)` | `LogicalType` of the column at `index`, or `None` if out of range |
-| `options()` | The `COPY … TO` options, as one `STRUCT` `Value` |
+| `options()` | The `COPY … TO` options, as one `STRUCT` `Value` (see [Options](#options)) |
 | `get_extra_info()` | Extra-info pointer set on the copy function |
 | `set_bind_data(data, destroy)` | Store bind data and its destructor |
 | `set_error(message)` | Report a bind-time error |

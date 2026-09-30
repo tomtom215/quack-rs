@@ -1,7 +1,9 @@
 # Contributing
 
-quack-rs is an open source project. Contributions of all kinds are welcome:
-bug reports, documentation improvements, new pitfall discoveries, and code.
+This page describes how to build, test and contribute to quack-rs: the toolchain,
+the quality gates every pull request must pass, the test strategy, code standards,
+the repository layout and the release policy. Bug reports, documentation fixes, newly
+discovered pitfalls and code are all welcome.
 
 ---
 
@@ -44,6 +46,9 @@ cargo test
 # Integration tests
 cargo test --test integration_test
 
+# Doctests — `--all-targets` does not include them
+cargo test --doc --features duckdb-1-5-4
+
 # Linting — zero warnings (warnings are errors)
 cargo clippy --all-targets -- -D warnings
 
@@ -74,7 +79,8 @@ pointers are only populated when `duckdb_rs_extension_api_init` is called from
 within a real DuckDB extension load — or by `testing::InMemoryDb::open()` under
 the `bundled-test` / `bundled-test-prebuilt` features. Without one of those,
 calling any `duckdb_*` function in a unit test panics ("DuckDB API not
-initialized"). Put such tests in `tests/ffi_roundtrip.rs`.
+initialized or DuckDB feature omitted"). Put such tests in `tests/ffi_roundtrip.rs`
+or its submodules under `tests/ffi_roundtrip/`, which open an `InMemoryDb`.
 
 ### Integration tests
 
@@ -90,9 +96,10 @@ Selected modules include `proptest`-based tests:
 
 ### Example-extension tests
 
-`examples/hello-ext/` contains `#[cfg(test)]` unit tests for the pure logic
-(`count_words`). Full E2E testing (loading the `.so` into DuckDB) is left to
-consumers.
+`examples/hello-ext/` contains `#[cfg(test)]` unit tests for its pure-Rust logic.
+CI also tests it end to end: it builds the `cdylib`, appends the metadata footer
+with `append_metadata`, and loads it into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest
+release. See `CONTRIBUTING.md` for the exact commands.
 
 ---
 
@@ -111,8 +118,8 @@ it as an error); test code is exempt.
 ```rust
 # struct Ffi { inner: *mut u64 }
 # let ffi = Ffi { inner: Box::into_raw(Box::new(0_u64)) };
-// SAFETY: `states` is a valid array of `count` pointers, each initialized
-// by `init_callback`. We are the only owner of `inner` at this point.
+// SAFETY: `ffi.inner` came from `Box::into_raw` and has not been freed;
+// nothing else holds it, so reclaiming and dropping the box is sound.
 unsafe { drop(Box::from_raw(ffi.inner)) };
 ```
 
@@ -126,9 +133,9 @@ so — `VectorWriter::write_varchar` on a string over 4 GiB, or a builder's
 
 ### Clippy lint policy
 
-The crate enables `pedantic`, `nursery`, and `cargo` lint groups. All warnings
-are treated as errors in CI. Lints are suppressed only where they produce
-false positives for SDK API patterns:
+The crate enables the `all`, `pedantic`, `nursery` and `cargo` lint groups, plus
+`undocumented_unsafe_blocks`. All warnings are treated as errors in CI. Lints are
+suppressed only where they produce false positives for SDK API patterns:
 
 ```toml
 [lints.clippy]
@@ -142,7 +149,7 @@ return_self_not_must_use = "allow" # builder pattern
 
 Every public item must have a doc comment. Follow these conventions:
 
-- First line: short summary (noun phrase, no trailing period)
+- First line: a one-sentence summary, ending with a period
 - `# Safety`: mandatory on every `unsafe fn`
 - `# Panics`: mandatory if the function can panic
 - `# Errors`: mandatory on functions returning `Result`
@@ -175,7 +182,7 @@ quack-rs/
 │   ├── file_system.rs                 # File system access (`DuckDB` 1.5.0+)
 │   ├── instance_cache.rs              # Database instance cache (`DuckDB` 1.5.0+)
 │   ├── interval.rs                    # `DuckDB` `INTERVAL` type conversion utilities
-│   ├── lib.rs                         # A production-grade Rust SDK for building `DuckDB` loadable extensions
+│   ├── lib.rs                         # Crate root: module declarations and crate-level documentation
 │   ├── prelude.rs                     # Convenience re-exports for the most commonly used `quack-rs` items
 │   ├── query.rs                       # Running SQL from inside an extension
 │   ├── secrets.rs                     # Credential handling for extensions
@@ -384,7 +391,7 @@ quack-rs/
 ├── benches/
 │   └── interval_bench.rs          # Criterion benchmarks
 ├── examples/
-│   └── hello-ext/                 # Reference example: word_count (aggregate) + first_word (scalar)
+│   └── hello-ext/                 # Reference extension: aggregates, scalars, table functions, casts
 ├── book/                          # mdBook documentation source
 │   ├── src/                       # Markdown pages (this site)
 │   └── theme/custom.css
@@ -408,8 +415,8 @@ Before broadening the range to a new major band:
 1. Read the DuckDB changelog for C API changes
 2. Check the new C API version string (used in `duckdb_rs_extension_api_init`)
 3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed
-4. Audit all callback signatures against the new `bindgen.rs` output
-5. Update the range bounds in `Cargo.toml` (runtime and dev-deps)
+4. Audit all callback signatures against the new `libduckdb-sys` bindings
+5. Update the `libduckdb-sys` and `duckdb` version requirements in `Cargo.toml`
 
 Versions follow [Semantic Versioning](https://semver.org/) as Cargo applies it.
 While the crate is pre-1.0, a breaking change to the public API bumps the

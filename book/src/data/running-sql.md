@@ -1,16 +1,18 @@
 # Running SQL from an Extension
 
-Extensions routinely need to talk SQL to the database that is loading them:
+Extensions often need to run SQL against the database that is loading them:
 checking whether a table exists before registering a replacement scan, creating a
 helper view, reading a setting, or looking up a credential through
-`duckdb_secrets()`.
+`duckdb_secrets()`. This page covers queries, prepared statements with bound
+parameters, keeping a connection for use after loading, and cancelling a
+running query.
 
 The C API has everything for that — `duckdb_query`, `duckdb_prepare`,
 `duckdb_bind_*`, `duckdb_fetch_chunk` — and all of it is in the [stable
 prefix](../concepts/abi.md), so it needs no feature flag. What it does not have
 is any help releasing the handles: every one of them has a matching `destroy`
 that must run exactly once, including on the error paths, which is where
-hand-written FFI leaks.
+hand-written FFI usually leaks.
 
 `quack_rs::query` wraps them:
 
@@ -33,8 +35,8 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
     // Create a helper view the extension's functions rely on.
     unsafe { con.execute("CREATE OR REPLACE VIEW my_ext_config AS SELECT 1 AS version") }?;
 
-    // Read something back.
-    let mut result = unsafe { con.query("SELECT current_setting('threads')") }?;
+    // Read something back. The cast makes the column VARCHAR, which read_str requires.
+    let mut result = unsafe { con.query("SELECT current_setting('threads')::VARCHAR") }?;
     if let Some(chunk) = result.next_chunk()? {
         // The reader must outlive the `&str` it hands out, so bind it first.
         let reader = unsafe { chunk.reader(0) };
@@ -71,14 +73,28 @@ while let Some(chunk) = result.next_chunk()? {
 # run().unwrap();
 ```
 
-`next_chunk` returns `Result<Option<_>>` because a result can stop early. A
-**streaming** result (`PreparedStatement::execute_streaming`) produces rows as
-it runs, so a runtime error part-way through — or another statement run on the
-same connection, which invalidates the stream — surfaces at `next_chunk`. The C
-API reports that the same way as the end of the rows (a null chunk); quack-rs
-reads the error DuckDB recorded and returns it, so a partial result cannot pass
-for a complete one. The `?` above is what keeps it from being silently
-truncated.
+`next_chunk` returns `Result<Option<OwnedDataChunk>, ExtensionError>` because a
+result can stop early. A **streaming** result
+(`PreparedStatement::execute_streaming`, with the `duckdb-1-5` feature) produces
+rows as it runs, so a runtime error part-way through, an interrupt, or another
+statement run on the same connection (which invalidates the stream) surfaces at
+`next_chunk`. The C API reports that the same way as the end of the rows (a
+null chunk); quack-rs reads the error DuckDB recorded and returns it, so a
+partial result cannot pass for a complete one. The `?` above is what keeps it
+from being silently truncated. After `Ok(None)` or an error, later calls return
+the same thing.
+
+### Inspecting a result
+
+| Method | Returns |
+|--------|---------|
+| `column_count()` | Number of columns |
+| `column_name(i)` | Name of column `i` (`Option<String>`) |
+| `column_type(i)` | Top-level `TypeId` of column `i` |
+| `column_logical_type(i)` | Full `LogicalType` of column `i`, keeping `STRUCT` fields, `LIST` element type, `DECIMAL` width and scale |
+| `result_kind()` | `ResultKind::Rows`, `ChangedRows`, `Nothing` or `Invalid` |
+| `rows_changed()` | Rows changed by an `INSERT` / `UPDATE` / `DELETE`; 0 for other statements |
+| `is_streaming()` | Whether the result is streaming (`duckdb-1-5`) |
 
 ### Several statements in one string
 
@@ -120,7 +136,18 @@ stmt.execute()?;
 ```
 
 `bind_str` passes the length explicitly, so embedded NUL bytes are preserved and
-no `CString` conversion can fail. Named parameters resolve by name:
+no `CString` conversion can fail.
+
+There is a typed bind for every integer width (`bind_i8` … `bind_u128`),
+`bind_f32` / `bind_f64`, `bind_bool`, `bind_blob`, `bind_null`, `bind_decimal`,
+`bind_date`, `bind_time`, `bind_timestamp`, `bind_timestamp_tz` and
+`bind_interval`. `bind_value` takes any [`Value`](values-and-parameters.md),
+which covers the composite types. Like the `Value` constructors, `bind_decimal`
+validates width, scale and digit count, and `bind_time` and the timestamp
+binds refuse a payload outside the range DuckDB's SQL produces; the C API's
+`duckdb_bind_*` functions check nothing.
+
+Named parameters resolve by name:
 
 ```rust
 # use quack_rs::error::ExtensionError;
@@ -198,6 +225,40 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
 `OwnedConnection` is `Send` but deliberately not `Sync`: DuckDB permits moving a
 connection between threads, not using one concurrently. Open one connection per
 thread, or guard it with a mutex.
+
+## Cancelling a query and reading its progress
+
+`OwnedConnection::interrupt_handle` returns an `InterruptHandle`, which is
+`Send + Sync` and borrows the connection, so it cannot outlive it. Another
+thread can call its `cancel()` to stop the running query, which then fails with
+an interrupt error at DuckDB's next check, or its `progress()` to read a
+`QueryProgress` (`percentage`, `rows_processed`, `total_rows_to_process`).
+`percentage` is `-1.0` when DuckDB cannot report progress, for example when
+the progress bar is disabled (`SET enable_progress_bar = true`).
+`OwnedConnection::interrupt` and `progress` do the same on the calling thread.
+
+```rust
+# use quack_rs::error::ExtensionError;
+# use quack_rs::query::{OwnedConnection, QueryResult};
+use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::time::Duration;
+
+fn query_with_timeout(con: &OwnedConnection, sql: &str) -> Result<QueryResult, ExtensionError> {
+    let watchdog = con.interrupt_handle();
+    let (done, finished) = channel::<()>();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            // Cancel the query if it has not finished within 30 seconds.
+            if let Err(RecvTimeoutError::Timeout) = finished.recv_timeout(Duration::from_secs(30)) {
+                watchdog.cancel();
+            }
+        });
+        let result = con.query(sql);
+        drop(done); // wakes the watchdog
+        result
+    })
+}
+```
 
 ## Errors
 

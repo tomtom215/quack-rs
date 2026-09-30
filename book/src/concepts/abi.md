@@ -1,6 +1,8 @@
 # ABI Compatibility
 
-A loadable extension does not link against DuckDB's symbols. DuckDB hands it a
+This page explains DuckDB C Extension API ABI compatibility: which DuckDB releases a
+quack-rs extension binary can load into, and how quack-rs guards against a layout
+mismatch. A loadable extension does not link against DuckDB's symbols. DuckDB hands it a
 pointer to a `duckdb_ext_api_v1` struct — an array of function pointers — and the
 extension calls through it.
 
@@ -42,14 +44,15 @@ aggregate, table and cast functions, vectors, data chunks, values, SQL macros,
 replacement scans, the [`query`](../data/values-and-parameters.md) API and the
 `datetime` conversions.
 
-The `duckdb-1-5`, `duckdb-1-5-3` and `duckdb-1-5-4` features are the unstable
-half — 130 functions covering scalar bind/init, copy functions in both
+The `duckdb-1-5`, `duckdb-1-5-3` and `duckdb-1-5-4` features wrap the unstable
+half — 130 of its 189 functions, covering scalar bind/init, copy functions in both
 directions, the Arrow C Data Interface bridge, catalog access, `ErrorData`,
-`FileSystem`, `Expression`, `SelectionVector`, config options, table descriptions
-and the client context.
+`FileSystem`, `Expression`, `SelectionVector`, config options, table descriptions,
+`TIME_NS` values and the client context.
 
-The book's own test build enables `duckdb-1-5`, so this block is compiled there
-but not run:
+`abi::uses_unstable_api()` reports which half a build uses. The book's own test
+build enables `duckdb-1-5-4` (and therefore `duckdb-1-5`), so this block is
+compiled there but not run:
 
 ```rust,no_run
 use quack_rs::abi;
@@ -62,7 +65,7 @@ assert!(!abi::uses_unstable_api());
 
 DuckDB validates the ABI metadata in your extension's footer:
 
-| ABI type | `-dv` means | Accepted by |
+| ABI type | Version field (`-dv`) means | Accepted by |
 |----------|-------------|-------------|
 | `C_STRUCT` | the **C API** version (`v1.2.0`) | any DuckDB whose C API version is at least that — then handed the *whole* struct, unstable region included |
 | `C_STRUCT_UNSTABLE` | an exact **DuckDB release** (`v1.5.5`) | that release only |
@@ -89,14 +92,15 @@ Two layers.
 
 **Build metadata.** If you enable `duckdb-1-5`, stamp the binary
 `C_STRUCT_UNSTABLE` with the DuckDB release you built against, so DuckDB refuses
-the wrong engine at install time:
+the wrong engine at install time. With `extension-ci-tools`, set in the `Makefile`:
 
 ```makefile
 USE_UNSTABLE_C_API=1
 TARGET_DUCKDB_VERSION=v1.5.5
 ```
 
-`ScaffoldConfig` generates and validates this pairing:
+`generate_scaffold` writes this pairing from a `ScaffoldConfig`, and rejects a
+`target_duckdb_version` that does not match `use_unstable_c_api`:
 
 ```rust
 use quack_rs::scaffold::ScaffoldConfig;
@@ -109,16 +113,17 @@ let config = ScaffoldConfig {
 };
 ```
 
-**Runtime guard.** [`abi::check`] compares the compiled-in slot count against the
-layout the running engine uses, resolved from `duckdb_library_version()` — which
-lives at stable slot 7 and is therefore always dispatched correctly. The entry
-point applies it according to an [`AbiPolicy`]:
+**Runtime guard.** When a `duckdb-1-5*` feature is enabled, [`abi::check`] compares
+the compiled-in slot count against the layout the running engine uses, resolved from
+`duckdb_library_version()` — which lives at stable slot 7 and is therefore always
+dispatched correctly. (Without those features the check reports `StableOnly` and
+always passes.) The entry point applies it according to an [`AbiPolicy`]:
 
 | Policy | Behaviour |
 |--------|-----------|
 | `Strict` (default) | Refuse to load, with a message naming both layouts and the fix |
 | `AllowUnknownEngine` | Refuse a layout the table knows is different; allow a release the table has no entry for |
-| `Warn` | Report through `set_error`, then load anyway |
+| `Warn` | Print the diagnostic to stderr, then load anyway (`set_error` would fail the load) |
 | `Trust` | Skip the check |
 
 `AllowUnknownEngine` and `Trust` are only as safe as your knowledge of the

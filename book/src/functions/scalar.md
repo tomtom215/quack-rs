@@ -305,7 +305,9 @@ ScalarFunctionBuilder::new("coalesce_custom")
 ```
 
 With `SpecialNullHandling`, the callback must check `VectorReader::is_valid(row)`
-itself and decide what each NULL input produces.
+itself and decide what each NULL input produces. The closure constructors
+`map1_opt` / `map2_opt` register `SpecialNullHandling` for you and pass the
+closure an `Option` (`None` for NULL); returning `None` writes NULL.
 
 ---
 

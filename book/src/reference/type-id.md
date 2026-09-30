@@ -1,16 +1,18 @@
 # TypeId Reference
 
-`quack_rs::types::TypeId` is an ergonomic enum of all DuckDB column types
-supported by the builder APIs. It wraps the `DUCKDB_TYPE_*` integer constants
-from `libduckdb-sys` and provides safe, named variants.
+`quack_rs::types::TypeId` is the enum of DuckDB column types that the quack-rs
+builder APIs accept. Each variant names one of the C API's `DUCKDB_TYPE_*`
+integer constants, which `libduckdb-sys` exposes as
+`DUCKDB_TYPE_DUCKDB_TYPE_*` (for example
+`libduckdb_sys::DUCKDB_TYPE_DUCKDB_TYPE_BIGINT`).
 
 ---
 
 ## Full variant table
 
-| Variant | SQL name | libduckdb-sys constant | Notes |
+| Variant | SQL name | C API constant | Notes |
 |---------|----------|------------------------|-------|
-| `TypeId::Boolean` | `BOOLEAN` | `DUCKDB_TYPE_BOOLEAN` | true/false stored as u8 |
+| `TypeId::Boolean` | `BOOLEAN` | `DUCKDB_TYPE_BOOLEAN` | true/false, stored as a `u8` |
 | `TypeId::TinyInt` | `TINYINT` | `DUCKDB_TYPE_TINYINT` | 8-bit signed |
 | `TypeId::SmallInt` | `SMALLINT` | `DUCKDB_TYPE_SMALLINT` | 16-bit signed |
 | `TypeId::Integer` | `INTEGER` | `DUCKDB_TYPE_INTEGER` | 32-bit signed |
@@ -54,11 +56,12 @@ from `libduckdb-sys` and provides safe, named variants.
 
 > **Feature gate for `Geometry` / `Variant`:** `DUCKDB_TYPE_GEOMETRY` (40) and
 > `DUCKDB_TYPE_VARIANT` (41) require the **`duckdb-1-5-3`** feature, which layers
-> on top of `duckdb-1-5` and needs `libduckdb-sys >= 1.10503.1` (DuckDB 1.5.3).
-> They sit behind a separate feature because these type-enum values postdate the
-> `duckdb-1-5` feature's 1.5.0 floor (`VARIANT` was added in DuckDB 1.5.3); gating
-> them this way avoids breaking consumers pinned to libduckdb-sys 1.5.0–1.5.2.
-> See [Known Limitations](known-limitations.md).
+> on top of `duckdb-1-5` and needs `libduckdb-sys >= 1.10503.0` (DuckDB 1.5.3).
+> `VARIANT` entered the C type enum in DuckDB 1.5.3, after the `duckdb-1-5`
+> feature's 1.5.0 floor, and `GEOMETRY` is gated with it so that one feature
+> covers both. Gating them separately avoids breaking consumers pinned to
+> libduckdb-sys 1.10500–1.10502 (DuckDB 1.5.0–1.5.2). See
+> [Known Limitations](known-limitations.md#variant-and-geometry-types-resolved--exposed-behind-duckdb-1-5-3).
 
 ---
 
@@ -82,13 +85,33 @@ variant available in the active feature set, including `TIME_NS`, `ANY`,
 all six exist in every DuckDB this crate supports) and the `duckdb-1-5-3`
 values (`GEOMETRY`, `VARIANT`) when that feature is enabled.
 Panics if the value does not correspond to any variant available in the current
-feature configuration.
+feature configuration; `try_from_duckdb_type` returns `None` instead.
 
 ```rust
 use quack_rs::types::TypeId;
 
 let type_id = TypeId::from_duckdb_type(libduckdb_sys::DUCKDB_TYPE_DUCKDB_TYPE_BIGINT);
 assert_eq!(type_id, TypeId::BigInt);
+assert_eq!(TypeId::try_from_duckdb_type(9_999), None);
+```
+
+### `is_composite()` and `composite_constructor_hint()`
+
+`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY` and `UNION` carry parameters
+that a bare type id cannot express, so `duckdb_create_logical_type` cannot build
+them. `is_composite()` returns `true` for these seven, and
+`composite_constructor_hint()` names the `LogicalType` constructor to use
+instead:
+
+```rust
+use quack_rs::types::TypeId;
+
+assert!(TypeId::List.is_composite());
+assert_eq!(
+    TypeId::List.composite_constructor_hint(),
+    Some("LogicalType::list(element_type)")
+);
+assert_eq!(TypeId::BigInt.composite_constructor_hint(), None);
 ```
 
 ### `sql_name() → &'static str`
@@ -162,8 +185,8 @@ helpers. Access these via the raw data pointer from `duckdb_vector_get_data`.
 
 ## Properties
 
-`TypeId` implements `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, and `Hash`,
-making it usable as map keys, set elements, and in match expressions:
+`TypeId` implements `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, and `Hash`, so
+it can be used as a map key or set element and compared in `match` expressions:
 
 ```rust
 use std::collections::HashMap;
@@ -178,9 +201,9 @@ type_names.insert(TypeId::Varchar, "label");
 
 ## `#[non_exhaustive]`
 
-`TypeId` is marked `#[non_exhaustive]`. This means future DuckDB versions may
-add new variants without it being a breaking change. If you match on `TypeId`,
-include a wildcard arm:
+`TypeId` is marked `#[non_exhaustive]`, so quack-rs can add variants for new
+DuckDB types without a breaking change. A `match` on `TypeId` outside quack-rs
+needs a wildcard arm:
 
 ```rust
 # use quack_rs::types::TypeId;
@@ -197,8 +220,8 @@ match type_id {
 
 ## `LogicalType`
 
-For types that require runtime parameters (such as `DECIMAL(p, s)` or
-parameterized `LIST`), use `quack_rs::types::LogicalType`:
+For types that require parameters (such as `DECIMAL(p, s)` or `LIST(INTEGER)`),
+use `quack_rs::types::LogicalType`:
 
 ```rust,no_run
 use quack_rs::types::{LogicalType, TypeId};
@@ -231,9 +254,15 @@ memory leak described in [Pitfall L7](pitfalls.md#l7-logicaltype-memory-leak).
 | `array(element_type, size)` | `ARRAY<T>[size]` from a `TypeId` |
 | `array_from_logical(element, size)` | `ARRAY<T>[size]` from an existing `LogicalType` |
 
+Each constructor except `from_raw` has a `try_` form (`try_new`,
+`try_decimal`, `try_list`, …) that returns an error instead of panicking on
+invalid input, such as a composite `TypeId` passed to `new`, a `DECIMAL` width
+above 38, or a `UNION` with more than `MAX_UNION_MEMBERS` (255) members.
+
 ### Introspection methods
 
-All introspection methods are `unsafe` (require a valid DuckDB runtime handle):
+The introspection methods are all `unsafe`, because they call into a loaded
+DuckDB:
 
 `get_type_id`, `get_alias`, `set_alias`, `decimal_width`, `decimal_scale`,
 `decimal_internal_type`, `enum_internal_type`, `enum_dictionary_size`,

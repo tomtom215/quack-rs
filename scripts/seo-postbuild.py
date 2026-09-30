@@ -28,8 +28,9 @@ Usage:
     mdbook build && scripts/seo-postbuild.py            # edits book/book/
     scripts/seo-postbuild.py PATH/TO/BUILD              # another build dir
 
-Idempotent. Exits 1 if a page ends up with no description, or two indexable
-pages share a description or <title>; prints a warning (a GitHub annotation
+Idempotent. Exits 1 if a page ends up with no description, two indexable
+pages share a description or <title>, or sitemap.xml does not list exactly
+the canonical URLs; prints a warning (a GitHub annotation
 in Actions) when a derived description looks weak, so an override can be
 added here.
 """
@@ -136,8 +137,10 @@ def summarize(text: str) -> str:
         if len(candidate) > MAX_LEN:
             break
         out = candidate
-    if out:
+    if len(out) >= 100:
         return out
+    # One short sentence followed by a long one: a cut-off second sentence
+    # says more than the first alone.
     return text[: MAX_LEN - 1].rsplit(" ", 1)[0].rstrip(",;:—– ") + "…"
 
 
@@ -249,6 +252,21 @@ def main() -> int:
             print(f"error: {rel}: same <title> as {seen_title[title]}: {title!r}")
             failed = True
         seen_title.setdefault(title, rel)
+
+    # The sitemap (scripts/generate-sitemap.py) must list exactly the
+    # canonical URLs, or search engines get conflicting signals.
+    sitemap = root / "sitemap.xml"
+    if sitemap.is_file():
+        listed = set(re.findall(r"<loc>(.*?)</loc>", sitemap.read_text(encoding="utf-8")))
+        for url in sorted(set(by_url) - listed):
+            print(f"error: {url} is not in sitemap.xml; run scripts/generate-sitemap.py")
+            failed = True
+        for url in sorted(listed - set(by_url)):
+            print(f"error: sitemap.xml lists {url}, which is not a built page")
+            failed = True
+    else:
+        print(f"error: {sitemap} is missing")
+        failed = True
 
     print(f"SEO tags written to {len(by_url)} indexable pages in {root}")
     return 1 if failed else 0

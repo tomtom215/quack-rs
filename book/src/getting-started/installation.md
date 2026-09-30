@@ -1,5 +1,9 @@
 # Installation
 
+This page covers the `Cargo.toml` dependencies and release-profile settings a DuckDB
+loadable extension built with quack-rs needs, the minimum Rust version, and the optional
+test features.
+
 ## Adding quack-rs to an existing extension
 
 Add the following to your extension's `Cargo.toml`:
@@ -28,24 +32,31 @@ Every DuckDB extension requires specific Cargo settings to link and behave corre
 name = "my_extension"       # ← must match extension name exactly (Pitfall P1)
 crate-type = ["cdylib", "rlib"]
 #             ^^^^^^  cdylib produces the .so/.dylib/.dll DuckDB loads
-#                      rlib  allows unit tests and documentation to work
+#                      rlib   optional: lets doctests, examples and tests/ link the crate
 
 [profile.release]
 panic = "unwind"            # REQUIRED — quack-rs catches panics at every FFI boundary;
                             #   "abort" makes that impossible (see below)
 lto = true                  # recommended — reduces binary size, improves performance
 opt-level = 3               # recommended
-codegen-units = 1           # recommended — enables full LTO
+codegen-units = 1           # recommended — better optimisation, slower build
 strip = true                # recommended — reduces binary size
 ```
 
 ### Why `panic = "unwind"`, not `"abort"`?
 
-Every callback quack-rs generates, and every entry point, runs your code inside
-`std::panic::catch_unwind`, and turns a panic into an ordinary SQL error that DuckDB
+Every callback quack-rs generates (the `*_callback!` macros, the closure-based builders,
+`FfiState`'s callbacks), and every entry point, runs your code inside
+`std::panic::catch_unwind` and turns a panic into an ordinary SQL error that DuckDB
 reports to the user. `catch_unwind` can only catch a panic that **unwinds**: under
 `panic = "abort"` the process terminates at the panic site, before any guard runs, taking
 the user's whole DuckDB session with it.
+
+A raw `unsafe extern "C" fn` that you pass to a builder yourself (such as `double_it` in the
+[Quick Start](quick-start.md)) is installed as written, with no guard. Define it with the
+matching macro (`scalar_callback!`, `aggregate_update_callback!`, …), which reports a panic
+as a SQL error, or wrap its body in `quack_rs::callback::catch_ffi_panic` and report the
+`Err` it returns yourself.
 
 (A panic that escapes an `extern "C"` function without being caught is not undefined
 behaviour on Rust ≥ 1.81 — the runtime aborts the process — but that is exactly the
@@ -105,5 +116,5 @@ because nothing has filled the dispatch table. See the [Testing Guide](../testin
 
 ## Starting a new extension from scratch
 
-Use the [scaffold generator](scaffold.md) to produce a complete project with all required
-files pre-configured. This is the fastest and most reliable way to start a new extension.
+Use the [scaffold generator](scaffold.md) to produce a complete project with these settings,
+the build files and CI already in place.

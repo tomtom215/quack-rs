@@ -1,8 +1,9 @@
 # SQL Macros
 
-SQL macros let you package reusable SQL expressions and queries as named DuckDB functions —
-no FFI callbacks required. quack-rs makes this pure Rust: you define the macro body as a
-string and call `.register(con)`.
+A DuckDB SQL macro packages a SQL expression or query as a named function, with no
+FFI callback behind it. This page shows how to create scalar and table macros from a
+Rust extension with quack-rs' `SqlMacro`: you give the macro body as a string and call
+`.register(con)`, which runs `CREATE OR REPLACE MACRO`.
 
 ---
 
@@ -10,8 +11,8 @@ string and call `.register(con)`.
 
 | Type | SQL generated | Returns |
 |------|--------------|---------|
-| **Scalar** | `CREATE OR REPLACE MACRO "name"("params") AS (expression)` | one value per row |
-| **Table** | `CREATE OR REPLACE MACRO "name"("params") AS TABLE query` | a result set |
+| **Scalar** | `CREATE OR REPLACE MACRO "name"("a", "b") AS (expression)` | one value per row |
+| **Table** | `CREATE OR REPLACE MACRO "name"("a", "b") AS TABLE query` | a result set |
 
 ---
 
@@ -44,8 +45,8 @@ fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
         SqlMacro::scalar("clamp", &["x", "lo", "hi"], "greatest(lo, least(hi, x))")?
             .register(con)?;
 
-        // pi() → 3.14159265358979
-        SqlMacro::scalar("pi", &[], "3.14159265358979")?
+        // golden_ratio() → 1.61803398874989
+        SqlMacro::scalar("golden_ratio", &[], "1.61803398874989")?
             .register(con)?;
 
         // safe_div(a, b) → CASE WHEN b = 0 THEN NULL ELSE a / b END
@@ -62,7 +63,7 @@ fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 # register(con).unwrap();
 # assert_eq!(query_i64(con, "SELECT clamp(9, 1, 5)::BIGINT"), 5);
 # assert_eq!(query_i64(con, "SELECT clamp(-3, 1, 5)::BIGINT"), 1);
-# assert_eq!(query_i64(con, "SELECT (pi() * 1000)::BIGINT"), 3142);
+# assert_eq!(query_i64(con, "SELECT (golden_ratio() * 1000)::BIGINT"), 1618);
 # assert_eq!(query_i64(con, "SELECT count(*) FROM (SELECT safe_div(1, 0) AS v) WHERE v IS NULL"), 1);
 ```
 
@@ -167,14 +168,16 @@ assert_eq!(
 Macro names are validated with
 [`validate_function_name`](https://docs.rs/quack-rs/latest/quack_rs/validate/function_name/fn.validate_function_name.html),
 the same rules as function names, and parameter names with
-[`validate_parameter_name`](https://docs.rs/quack-rs/latest/quack_rs/validate/function_name/fn.validate_parameter_name.html):
-- Start with an ASCII letter or underscore, then ASCII letters, digits or underscores
-- Not exceed 256 characters
-- No null bytes
-- Not a DuckDB keyword that cannot be used in that position unquoted. For a
-  macro name that is a keyword it cannot be *called* by (`order`, `coalesce`);
-  for a parameter, one the body cannot *refer* to it by (`order`, `left`). The
-  two lists differ: a parameter may be called `columns`, which a macro may not.
+[`validate_parameter_name`](https://docs.rs/quack-rs/latest/quack_rs/validate/function_name/fn.validate_parameter_name.html).
+A name must:
+
+- start with an ASCII letter or underscore, followed by ASCII letters, digits or
+  underscores;
+- be at most 256 characters long;
+- not be a DuckDB keyword that cannot be used in that position unquoted. For a
+  macro, that is a keyword it cannot be *called* by (`order`, `coalesce`); for a
+  parameter, one the body cannot *refer* to it by (`order`, `left`). The two lists
+  differ: a parameter may be called `columns`, which a macro may not.
 
 Case is not restricted — DuckDB identifiers are case-insensitive, so a macro
 registered as `MyMacro` is callable as `mymacro(...)` or `MYMACRO(...)`.
@@ -211,7 +214,7 @@ nothing if there is more than one — but a body can still change the meaning of
 single statement it is part of.
 
 A scalar body containing `--` gets a newline before the closing parenthesis, so a
-trailing line comment (`"x + 1 -- plus one"`) no longer comments it out.
+trailing line comment (`"x + 1 -- plus one"`) does not comment it out.
 
 ---
 
@@ -240,8 +243,9 @@ schema — the **user's** database:
 `duckdb_extract_statements`, refuses more than one, and executes the
 `CREATE OR REPLACE MACRO` statement via `duckdb_query`.
 
-`execute_sql` zero-initializes a `duckdb_result`, calls `duckdb_query`, extracts any error
-message via `duckdb_result_error`, and always calls `duckdb_destroy_result` — even on failure.
+The query result is zero-initialized before `duckdb_query`, any error message is read
+with `duckdb_result_error`, and `duckdb_destroy_result` runs on success and failure
+alike.
 
 ---
 
@@ -251,6 +255,6 @@ message via `duckdb_result_error`, and always calls `duckdb_destroy_result` — 
 |----------|-----|
 | Logic expressible in SQL | SQL macro — simpler, no FFI |
 | Logic needs Rust code (algorithms, external crates, etc.) | Scalar function |
-| Best performance for simple expressions | SQL macro (no FFI overhead) |
-| Type-specific overloads | Scalar function with multiple registrations |
+| Simple expressions | SQL macro (expanded inline, no callback per chunk) |
+| Type-specific overloads | Scalar function set (`ScalarFunctionSetBuilder`) |
 | Returning a table | SQL table macro |

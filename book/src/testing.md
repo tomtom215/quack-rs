@@ -1,8 +1,10 @@
 # Testing Guide
 
-quack-rs provides a two-tier testing strategy: **pure-Rust unit tests** for
-business logic (no DuckDB required), and **SQLLogicTest E2E tests** that run
-inside an actual DuckDB process.
+This page covers how to test a DuckDB extension written with quack-rs. The
+strategy has two tiers: **pure-Rust unit tests** for business logic (no DuckDB
+required), and **SQLLogicTest end-to-end (E2E) tests** that load the packaged
+extension into a real DuckDB process. Between the two, the `InMemoryDb` helper
+lets `cargo test` register and call your real callbacks against a bundled DuckDB.
 
 ---
 
@@ -10,19 +12,23 @@ inside an actual DuckDB process.
 
 This is the most important thing to understand before writing tests.
 
-`DuckDB` loadable extensions use `libduckdb-sys` with
+DuckDB loadable extensions use `libduckdb-sys` with
 `features = ["loadable-extension"]`. This intentionally **does not link the
 DuckDB runtime** into the extension binary. Instead, every DuckDB C API call
 (`duckdb_vector_get_data`, `duckdb_create_logical_type`, etc.) goes through a
-lazy dispatch table — a global struct of `AtomicPtr<fn>` pointers initialized
-only when DuckDB calls `duckdb_rs_extension_api_init` at extension-load time.
+dispatch table: one global `AtomicPtr` per C API function, filled in only when
+the extension's entry point calls `duckdb_rs_extension_api_init` as DuckDB
+loads it.
 
 **In `cargo test`, no DuckDB process loads your extension.** The dispatch table
 is never initialized, and the first call to any DuckDB C API function panics:
 
 ```text
-DuckDB API not initialized
+DuckDB API not initialized or DuckDB feature omitted
 ```
+
+Opening an [`InMemoryDb`](#sql-level-testing-with-inmemorydb-bundled-test-feature)
+fills the table for the whole test process, after which the APIs below work.
 
 ### What this breaks
 
@@ -30,7 +36,7 @@ DuckDB API not initialized
 |-----|--------------|
 | `VectorReader::new` | calls `duckdb_vector_get_data` |
 | `VectorWriter::new` | calls `duckdb_vector_get_data` |
-| `Connection::register_*` | calls DuckDB registration C API |
+| `Connection::register_*` | calls the DuckDB registration C API |
 | `LogicalType::new` | calls `duckdb_create_logical_type` |
 | `LogicalType::drop` | calls `duckdb_destroy_logical_type` |
 | `BindInfo::add_result_column` | calls `duckdb_bind_add_result_column` |
@@ -41,11 +47,11 @@ DuckDB API not initialized
 |-----|--------------|
 | `AggregateTestHarness` | pure Rust, zero DuckDB dependency |
 | `MockVectorWriter` / `MockVectorReader` | in-memory buffers, zero DuckDB dependency |
-| `MockRegistrar` | records registrations without calling C API |
+| `MockRegistrar` | records registrations without calling the C API |
 | `SqlMacro::to_sql()` | generates SQL strings, no DuckDB needed |
 | `interval_to_micros` | pure arithmetic |
 | `validate` / `scaffold` | pure Rust |
-| `InMemoryDb` | uses bundled DuckDB via `duckdb` crate (`bundled-test` feature) |
+| `InMemoryDb` | links a real DuckDB via the `duckdb` crate (`bundled-test` or `bundled-test-prebuilt` feature) |
 
 ---
 
@@ -181,8 +187,9 @@ running DuckDB lacks, a config default that does not convert) are not run.
 
 > **Limitation**: `MockRegistrar` cannot be used with builders that hold
 > `LogicalType` values (created via `.returns_logical()` or `.param_logical()`),
-> because `LogicalType::drop` calls `duckdb_destroy_logical_type`. Use `TypeId`
-> parameters with `MockRegistrar`.
+> because `LogicalType::drop` calls `duckdb_destroy_logical_type`, which panics
+> while the dispatch table is uninitialised. Use `TypeId` parameters with
+> `MockRegistrar`.
 
 ---
 
@@ -197,7 +204,7 @@ opening a connection (see [Pitfall P9](reference/pitfalls.md#p9)).
 Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 
 ```toml
-# Zero-config but slow: compile libduckdb from C++ source (~5-10 min cold).
+# Zero-config but slow: compile libduckdb from C++ source (~5–10 min cold).
 [dev-dependencies]
 quack-rs = { version = "0.18", features = ["bundled-test"] }
 ```
@@ -206,7 +213,8 @@ quack-rs = { version = "0.18", features = ["bundled-test"] }
 # Fast: link against a pre-built libduckdb. Set DUCKDB_DOWNLOAD_LIB=1 at build
 # time and libduckdb-sys downloads the upstream release zip (~40 MB, cached
 # under target/); or set DUCKDB_LIB_DIR=/path/to/libduckdb if you already have
-# one extracted (requires libduckdb-sys >= 1.10503 for header auto-discovery).
+# one extracted. Header discovery needs libduckdb-sys >= 1.10503; with an older
+# one, also set DUCKDB_INCLUDE_DIR.
 [dev-dependencies]
 quack-rs = { version = "0.18", features = ["bundled-test-prebuilt"] }
 ```
@@ -214,10 +222,10 @@ quack-rs = { version = "0.18", features = ["bundled-test-prebuilt"] }
 Both keep `duckdb` out of a plain `cargo test` and out of your published
 crate's dependency tree — it is pulled in only when one of these features is on.
 
-If your tests need to `LOAD` your own locally-built `.duckdb_extension`
-artifact, use `InMemoryDb::open_unsigned` instead of `open()` — the
-`allow_unsigned_extensions` config option is startup-only and can't be set
-via `SET` after the connection has opened.
+If your tests need to `LOAD` your own locally built `.duckdb_extension`
+file, use `InMemoryDb::open_unsigned` instead of `open()`: the
+`allow_unsigned_extensions` option can only be set at startup, not with `SET`
+after the database is running.
 
 ```rust,test_harness
 use quack_rs::testing::InMemoryDb;
@@ -294,8 +302,8 @@ fn triple_it_works() {
 }
 ```
 
-This is the highest-value coverage available for an extension: it exercises the
-builder, `DuckDB`'s planner, your `extern "C"` callback, and the vector
+This is the most valuable coverage available inside `cargo test`: it exercises
+the builder, DuckDB's planner, your `extern "C"` callback, and the vector
 accessors' pointer arithmetic in one go. `tests/ffi_roundtrip.rs` in the quack-rs
 repository does this for every vector type.
 
@@ -314,7 +322,7 @@ database, and are the only option when the `bundled-test` features are off.
 | Test tier | What it catches | What it misses |
 |-----------|-----------------|----------------|
 | Unit tests | Logic bugs in state structs | FFI wiring, registration failures, SEGFAULT |
-| E2E tests | Everything above + FFI integration | Nothing (it's real DuckDB) |
+| E2E tests | FFI wiring, registration, load-time crashes, wrong results | Only the inputs you did not write a test for |
 
 **Both tiers are required.** Unit tests give fast, deterministic feedback.
 E2E tests prove the extension actually works inside DuckDB.
@@ -376,8 +384,9 @@ fn test_word_count() {
 ### Testing `combine` (Pitfall L1)
 
 DuckDB creates fresh target states — set up by `state_init`, which with
-`FfiState<T>` means `T::default()` — and calls `combine` to merge into them. You MUST propagate ALL fields — including configuration fields —
-not just accumulated data. Test this explicitly:
+`FfiState<T>` means `T::default()` — and calls `combine` to merge into them.
+`combine` must propagate **all** fields, including configuration fields, not
+just accumulated data. Test this explicitly:
 
 ```rust,test_harness
 # use quack_rs::aggregate::AggregateState;
@@ -495,8 +504,8 @@ fn table_macro_sql() {
 ## E2E testing with SQLLogicTest
 
 Community extensions are tested using DuckDB's
-[SQLLogicTest](https://duckdb.org/docs/dev/sqllogictest/intro.html) format. This
-format runs SQL directly in DuckDB and verifies output line-by-line.
+[SQLLogicTest](https://duckdb.org/docs/stable/dev/sqllogictest/intro) format,
+which runs SQL directly in DuckDB and compares the output line by line.
 
 ### File location
 
@@ -524,21 +533,22 @@ Directives:
 
 | Directive | Meaning |
 |-----------|---------|
-| `require` | Skip test if extension not available |
+| `require` | Load the extension; skip the file if it is not available |
 | `statement ok` | SQL must succeed |
 | `statement error` | SQL must fail |
 | `query I` | Query returning one INTEGER column |
-| `query II` | Query returning two columns |
+| `query II` | Query returning two INTEGER columns |
 | `query T` | Query returning one TEXT column |
 | `----` | Expected output follows |
 
 ### Installing DuckDB (1.4.x or 1.5.x)
 
-A live DuckDB CLI is **required** for E2E testing. Install it via `curl`
-(no system package manager needed). Every 1.4.x and 1.5.x release uses the same
-C API version (`v1.2.0`); CI's `extension-load` job tests 1.4.4, 1.5.0, 1.5.5
-and the latest release (currently 1.5.6). Develop against the current release,
-1.5.6:
+E2E testing needs the DuckDB CLI. Download it with `curl`; no system package
+manager is needed. Every 1.4.x and 1.5.x release loads an extension stamped with
+C API version `v1.2.0` (1.4.4 through 1.5.5 declare that version; 1.5.6 declares
+`v1.5.6` and accepts every earlier one). The quack-rs CI `extension-load` job
+loads its example extension into 1.4.4, 1.5.0, 1.5.5 and the latest release
+(currently 1.5.6). Develop against the current release, 1.5.6:
 
 ```bash
 # DuckDB 1.5.6 (current release)
@@ -562,8 +572,9 @@ For macOS, replace `linux-amd64` with `osx-universal`. For Windows, use
 # Build the extension
 cargo build --release
 
-# Package with metadata footer (required by DuckDB's extension loader)
-cargo run --bin append_metadata -- \
+# Append the metadata footer DuckDB's loader requires. append_metadata ships
+# with quack-rs: cargo install quack-rs --bin append_metadata
+append_metadata \
     target/release/libmy_extension.so \
     /tmp/my_extension.duckdb_extension \
     --abi-type C_STRUCT \
@@ -571,15 +582,15 @@ cargo run --bin append_metadata -- \
     --duckdb-version v1.2.0 \
     --platform linux_amd64
 
-# Load it in DuckDB CLI (-unsigned allows loading without a signed certificate)
+# Load it in the DuckDB CLI (-unsigned allows an unsigned extension)
 /tmp/duckdb -unsigned -c "
 LOAD '/tmp/my_extension.duckdb_extension';
 SELECT my_function('hello world');
 "
 ```
 
-The community extension CI runs SQLLogicTest automatically. Each function must
-have at least one test:
+The community extension CI runs these SQLLogicTest files automatically. Give
+each function at least one test, covering NULL, empty and typical input:
 
 ```sql
 # Test NULL handling
@@ -609,8 +620,8 @@ SELECT my_function('hello world');
 
 ## Property-based testing with `proptest`
 
-The `proptest` crate is well-suited for testing aggregate logic over arbitrary
-inputs:
+The `proptest` crate checks a property over arbitrary inputs, which suits
+arithmetic and aggregate logic:
 
 ```rust,test_harness
 # use quack_rs::interval::{interval_to_micros_saturating, DuckInterval};
@@ -626,8 +637,8 @@ proptest! {
 }
 ```
 
-quack-rs's own test suite uses proptest for interval conversion and aggregate
-harness properties.
+quack-rs's own test suite uses proptest for interval conversion and
+`AggregateTestHarness` properties.
 
 ---
 
@@ -650,10 +661,15 @@ harness properties.
 ## Dev dependencies
 
 ```toml
+[dependencies]
+quack-rs = "0.18"
+
 [dev-dependencies]
-quack-rs = { version = "0.18", features = [] }
 proptest = "1"
+# Only for InMemoryDb; enables the feature for test builds alone.
+quack-rs = { version = "0.18", features = ["bundled-test"] }
 ```
 
-The `testing` module is compiled unconditionally (not `#[cfg(test)]`) so it is
-available as a dev-dependency to downstream crates.
+The `testing` module is compiled unconditionally (not `#[cfg(test)]`), so crates
+that depend on quack-rs can use it in their own tests. `InMemoryDb` additionally
+needs the `bundled-test` or `bundled-test-prebuilt` feature.

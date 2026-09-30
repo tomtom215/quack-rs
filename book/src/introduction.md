@@ -3,7 +3,9 @@
   <img class="book-logo-dark"  src="assets/logos/logo1-dark-elegant.svg" alt="quack-rs">
 </div>
 
-**The Rust SDK for building DuckDB loadable extensions — no C++ required.**
+# quack-rs: DuckDB extensions in Rust
+
+**A Rust SDK for building DuckDB loadable extensions — no C++ required.**
 
 [![CI](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/quack-rs.svg)](https://crates.io/crates/quack-rs)
@@ -15,10 +17,11 @@
 
 ## What is quack-rs?
 
-`quack-rs` is a production-grade Rust SDK that makes building [DuckDB](https://duckdb.org/)
-loadable extensions straightforward and safe. It wraps the DuckDB C Extension API — the same
-API used by official DuckDB extensions — and eliminates every known FFI pitfall so you can
-focus on writing extension logic in pure Rust.
+`quack-rs` is a Rust SDK for building [DuckDB](https://duckdb.org/) loadable extensions
+without C++ or CMake. It wraps DuckDB's C Extension API — the C interface DuckDB exposes
+to loadable extensions — in safe builders and RAII types, and guards against the FFI
+pitfalls documented in the [Pitfall Catalog](reference/pitfalls.md), so you can focus on
+extension logic.
 
 DuckDB's own documentation acknowledges the gap:
 
@@ -45,7 +48,7 @@ DuckDB's own documentation acknowledges the gap:
 | Replacement scans | ✅ `ReplacementScanBuilder` |
 | SQL macros (scalar) | ✅ `SqlMacro::scalar` |
 | SQL macros (table) | ✅ `SqlMacro::table` |
-| Copy functions (`COPY TO`) | ✅ `CopyFunctionBuilder` (requires `duckdb-1-5`) |
+| Copy functions (`COPY TO` / `COPY FROM`) | ✅ `CopyFunctionBuilder` (requires `duckdb-1-5`) |
 
 > **Note:** Window functions have no counterpart in DuckDB's public C Extension API
 > and cannot be implemented from Rust (or any language) via that API.
@@ -68,22 +71,24 @@ being caught by end-to-end tests:
 2. 6 of 7 functions silently not registered (undocumented function-set naming rule)
 3. Wrong aggregate results under parallel plans (combine callback not propagating configuration fields to fresh target states)
 
-`quack-rs` makes each of these impossible through type-safe builders and safe wrappers.
-The full catalog is documented in the [Pitfall Reference](reference/pitfalls.md).
+`quack-rs` rules out the first two: `entry_point!` performs the correct initialization
+sequence, and the function-set builders name every member. The third lives in your own
+`combine` callback, so no API can prevent it; `AggregateTestHarness::combine` lets you test
+for it without DuckDB. The full list is in the [Pitfall Catalog](reference/pitfalls.md).
 
 ---
 
 ## Key features
 
 - **Zero C++** — no `CMakeLists.txt`, no header files, no glue code
-- **All C API function types** — scalar, aggregate, table, cast, replacement scan, SQL macro, copy function (`duckdb-1-5`)
-- **Panic-free FFI** — `init_extension` never panics; errors surface via `Result`
+- **Every function kind the C API can register** — scalar, aggregate, table, cast, replacement scan, copy function (`duckdb-1-5`) — plus SQL macros
+- **Panic-safe FFI** — the entry point and the callbacks quack-rs generates catch panics and report them as SQL errors; registration errors surface via `Result`
 - **RAII memory management** — `LogicalType` and `FfiState<T>` prevent leaks and double-frees
 - **Type-safe builders** — `ScalarFunctionBuilder`, `AggregateFunctionBuilder`, `TableFunctionBuilder`, `CastFunctionBuilder`, `ReplacementScanBuilder`
 - **SQL macros** — register `CREATE MACRO` statements without any FFI callbacks
 - **Testable state** — `AggregateTestHarness<T>` tests aggregate logic without a live DuckDB
-- **Scaffold generator** — produces a submission-ready community extension project from code
-- **31 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptoms and fixes
+- **Scaffold generator** — generates a complete community extension project (`Cargo.toml`, `Makefile`, CI, `description.yml`, tests) from one function call
+- **31 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptom, root cause and fix
 
 ---
 

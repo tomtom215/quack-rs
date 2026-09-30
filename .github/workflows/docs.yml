@@ -64,6 +64,11 @@ jobs:
       - name: Build documentation
         run: mdbook build
 
+      # Per-page canonical URL, meta description and og: tags, which mdBook's
+      # templates cannot produce (see the script's header).
+      - name: Add per-page SEO tags
+        run: python3 scripts/seo-postbuild.py book/book
+
       - name: Write build summary
         run: |
           PAGE_COUNT=$(find book/book -name '*.html' | wc -l)

@@ -94,35 +94,6 @@ quack-rs reads from a copy). The temporal cases are checked before
 the call too: DuckDB converts those pairs with a cast that throws a C++
 exception instead of failing, which aborts the process from Rust.
 
-### Building values
-
-`Value::bigint`, `Value::varchar`, `Value::date`, `Value::interval` and the
-other scalar constructors are infallible, with two exceptions that return
-`Result<Value, ExtensionError>`:
-
-- The temporal constructors that take a raw 64-bit payload — `time`,
-  `time_tz`, `time_ns` (with `duckdb-1-5`), `timestamp`, `timestamp_tz`,
-  `timestamp_s`, `timestamp_ms` and `timestamp_ns`. DuckDB stores any payload
-  unchecked, and rendering or casting an out-of-range one aborts, crashes or
-  prints garbage, so quack-rs accepts exactly the range DuckDB's SQL produces
-  (`TIME` `00:00:00`–`24:00:00`, the `TIMESTAMP` span
-  `290309-12-22 (BC)`–`294247-01-10` plus `±infinity`, and so on) and returns
-  an error otherwise.
-- `Value::decimal(width, scale, unscaled)`, which checks that `width` is
-  `1..=38`, `scale <= width` and `unscaled` has at most `width` digits.
-
-```rust
-# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
-#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
-# use quack_rs::prelude::*;
-# // Values are DuckDB objects: fill the dispatch table first.
-# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
-let noon = Value::time(12 * 3_600 * 1_000_000)?;
-assert!(Value::time(-1).is_err());
-# assert_eq!(noon.as_time(), Some(12 * 3_600 * 1_000_000));
-# Ok::<(), ExtensionError>(())
-```
-
 `as_blob()` copies the bytes into an owned `Vec<u8>` without UTF-8 validation.
 It accepts only a `BLOB`: DuckDB's conversion of anything else to `BLOB` can
 throw. Use `as_str()` for text.
@@ -191,7 +162,41 @@ let raw: duckdb_value = val.into_raw();  // takes ownership, no auto-destroy
 # }
 ```
 
-## Nested values
+## Building values
+
+`Value::bigint`, `Value::varchar`, `Value::date`, `Value::interval` and the
+other scalar constructors are infallible, with two exceptions that return
+`Result<Value, ExtensionError>`:
+
+- The temporal constructors that take a raw 64-bit payload — `time`,
+  `time_tz`, `time_ns` (with `duckdb-1-5`), `timestamp`, `timestamp_tz`,
+  `timestamp_s`, `timestamp_ms` and `timestamp_ns`. DuckDB stores any payload
+  unchecked, and rendering or casting an out-of-range one aborts, crashes or
+  prints garbage, so quack-rs accepts exactly the range DuckDB's SQL produces
+  (`TIME` `00:00:00`–`24:00:00`, the `TIMESTAMP` span
+  `290309-12-22 (BC)`–`294247-01-10` plus `±infinity`, and so on) and returns
+  an error otherwise.
+- `Value::decimal(width, scale, unscaled)`, which checks that `width` is
+  `1..=38`, `scale <= width` and `unscaled` has at most `width` digits.
+
+```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
+#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# // Values are DuckDB objects: fill the dispatch table first.
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+let noon = Value::time(12 * 3_600 * 1_000_000)?;
+assert!(Value::time(-1).is_err());
+# assert_eq!(noon.as_time(), Some(12 * 3_600 * 1_000_000));
+# Ok::<(), ExtensionError>(())
+```
+
+To build a nested value, `Value::list_value` and `Value::array_value` take the **element**
+type and the items, `Value::struct_value` the `STRUCT` type and one value per
+field, and `Value::enum_value` the `ENUM` type and an index; `Value::map` and
+`Value::union_value` need `duckdb-1-5`. All return `Result<Value, ExtensionError>`.
+
+## Reading nested values
 
 A parameter of type `LIST`, `STRUCT` or `MAP` is read element by element; each
 accessor that returns a `Value` returns an owned one.
@@ -213,10 +218,7 @@ options.struct_child(idx)?.as_str().ok()
 # }
 ```
 
-To build one, `Value::list_value` and `Value::array_value` take the **element**
-type and the items, `Value::struct_value` the `STRUCT` type and one value per
-field, and `Value::enum_value` the `ENUM` type and an index; `Value::map` and
-`Value::union_value` need `duckdb-1-5`. All return `Result<Value, ExtensionError>`.
+---
 
-`DataChunk`, which wraps the chunk a scan callback writes its output to, is
-described in [Reading & Writing Vectors](vectors.md#datachunk).
+`DataChunk`, which wraps the chunk a table function's scan callback writes its
+output to, is described in [Reading & Writing Vectors](vectors.md#datachunk).

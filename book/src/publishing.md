@@ -1,9 +1,9 @@
 # Community Extensions
 
-DuckDB's community extension ecosystem allows anyone to publish a loadable
-extension that DuckDB users can install with a single SQL command. This page
-covers everything you need to submit and maintain a community extension built
-with quack-rs.
+DuckDB's community extensions repository lets anyone publish a loadable
+extension that DuckDB users install with `INSTALL … FROM community`. This page
+covers scaffolding, `description.yml`, naming, versioning, platforms, build
+settings and submission for a community extension built with quack-rs.
 
 ---
 
@@ -18,9 +18,9 @@ with quack-rs.
 
 ## Scaffolding a new project
 
-`quack_rs::scaffold::generate_scaffold` generates all required files from a
-single function call. It returns paths relative to the project root and writes
-nothing itself, so join them under the project directory — never write them
+`quack_rs::scaffold::generate_scaffold` generates the project files in one call.
+It returns paths relative to the project root and writes nothing itself, so join
+them under the project directory — never write them
 relative to the current directory, which would overwrite its `Cargo.toml` and
 `src/lib.rs`:
 
@@ -75,7 +75,7 @@ my_extension/
 
 ## `description.yml`
 
-Required fields for community submission:
+The file the scaffold generates, with the fields a community submission uses:
 
 ```yaml
 extension:
@@ -86,7 +86,7 @@ extension:
   build: cargo
   license: MIT
   requires_toolchains: rust;python3
-  excluded_platforms: ""   # or "wasm_mvp;wasm_eh;wasm_threads"
+  # excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads"   # optional
   maintainers:
     - Your Name
 
@@ -102,7 +102,7 @@ repo:
 
 docs:
   hello_world: |
-    SELECT my_extension_version();
+    SELECT my_extension_hello('world');
   extended_description: |
     A longer description, rendered on the community-extensions site.
 ```
@@ -156,12 +156,14 @@ analytics         ✗  (likely taken or too generic)
 
 | Format | Example | Meaning |
 |--------|---------|---------|
-| 7+ hex chars | `690bfc5` | Unstable — no guarantees |
+| 7–40 lowercase hex chars (a git hash) | `690bfc5` | Unstable — no guarantees |
 | `0.y.z` | `0.1.0` | Pre-release — working toward stability |
 | `x.y.z` (x > 0) | `1.0.0` | Stable — full semver guarantees |
 
-Use `validate_extension_version` to accept all three formats, and
-`classify_extension_version` to determine the stability tier:
+`validate_extension_version` is deliberately permissive: it accepts these three
+formats and anything else made of `[A-Za-z0-9._+-]`, such as the date-based build ids
+some published extensions use. `classify_extension_version` accepts only the three
+formats above and returns the stability tier:
 
 ```rust
 use quack_rs::validate::semver::{classify_extension_version, ExtensionStability};
@@ -250,7 +252,7 @@ edition = "2021"
 
 [lib]
 name = "my_extension"       # Must match description.yml `name`
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [dependencies]
 quack-rs = "0.18"
@@ -259,21 +261,26 @@ libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 [profile.release]
 panic = "unwind"             # Required — "abort" disables quack-rs's panic guards
 opt-level = 3
-lto = "thin"
-strip = "symbols"
+lto = true
+codegen-units = 1
+strip = true
 ```
 
+This matches the scaffold's `Cargo.toml` (which also declares a `staticlib` example
+target for WebAssembly builds).
+
 > **ADR-4** (in `LESSONS.md`) — Do NOT use the `duckdb` crate's `bundled` feature. A
-> loadable extension must link against the DuckDB that loads it, not bundle
-> its own copy. `libduckdb-sys` with `loadable-extension` provides lazy function
-> pointers populated by DuckDB at load time.
+> loadable extension must call into the DuckDB that loads it, not bundle
+> its own copy. `libduckdb-sys` with `loadable-extension` provides function
+> pointers that are filled in at load time from the API struct DuckDB passes in.
 
 ---
 
 ## Release profile check
 
-The `validate_release_profile` validator checks that your release profile is
-correctly configured:
+`validate_release_profile` checks the four release-profile settings. Only
+`panic = "unwind"` is required; `lto = true`, `opt-level = 3` and `codegen-units = 1`
+are recommended, and the returned `ReleaseProfileCheck` reports each one:
 
 ```rust
 use quack_rs::validate::validate_release_profile;
@@ -297,12 +304,14 @@ as an abort — and quack-rs catches them before the boundary anyway.
 
 ## CI workflow
 
-The scaffold generates `.github/workflows/extension-ci.yml` which:
+The scaffold generates `.github/workflows/extension-ci.yml`, which:
 
-1. Runs on push and pull request
-2. Checks, lints, and tests in Rust (all platforms)
-3. Calls `extension-ci-tools` to build the `.duckdb_extension` artifact
-4. Runs SQLLogicTest integration tests
+1. Runs on pushes and pull requests to `main`
+2. Runs `cargo fmt --check` and `cargo clippy` on Linux, and `cargo test` on Linux,
+   macOS and Windows
+3. Runs `make configure` and `make release`, which use `extension-ci-tools` to build
+   the `.duckdb_extension` file
+4. Runs the SQLLogicTests in `test/sql` with `make test`
 
 After scaffolding:
 
@@ -338,27 +347,29 @@ LOAD my_extension;
 
 ## Binary compatibility
 
-Extension binaries are tied to a specific DuckDB version. When DuckDB releases
-a new version:
+An extension that uses only the stable C API (the default quack-rs features) is
+stamped `C_STRUCT` with C API version `v1.2.0`, and one binary loads into every
+DuckDB 1.4.x and 1.5.x release for its platform. The `libduckdb-sys = ">=1.4.4, <2"`
+range above is correct for such an extension.
 
-- New binaries must be built against that version
-- Old binaries will be refused by the new DuckDB runtime
-- The community build pipeline re-builds all extensions for each DuckDB release
+An extension that enables the `duckdb-1-5*` features must be stamped
+`C_STRUCT_UNSTABLE` with the exact DuckDB release it was built against, and DuckDB
+loads it only into that release. Pin `libduckdb-sys` to that release's bindings
+(`~1.10505.0` for DuckDB 1.5.5) and rebuild for each new DuckDB release. See
+[ABI Compatibility](concepts/abi.md).
 
-Pin `libduckdb-sys` with `=` (exact version) to ensure you always build against
-the exact version you intend. The `quack_rs::DUCKDB_API_VERSION` constant
-(`"v1.2.0"`) is passed to `init_extension` and must match the C API version
-of your pinned `libduckdb-sys`.
+The community build pipeline rebuilds extensions for each DuckDB release.
 
-> **Pitfall P2** — The `-dv` flag to `append_extension_metadata.py` must be the
-> **C API version** (`v1.2.0`), not the DuckDB release version (`v1.4.4`).
+> **Pitfall P2** — For `C_STRUCT`, the `-dv` flag to `append_extension_metadata.py`
+> must be the **C API version** (`v1.2.0`), not the DuckDB release version (`v1.4.4`).
 > Use `quack_rs::DUCKDB_API_VERSION` to avoid hardcoding this.
 
 ---
 
 ## Security considerations
 
-Community extensions are not vetted for security by the DuckDB team:
+The DuckDB team does not audit community extensions for security, so the
+responsibility is yours:
 
 - Never let a panic escape an FFI boundary: quack-rs's callbacks catch panics and
   report them as SQL errors, which requires `panic = "unwind"`

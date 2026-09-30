@@ -1,8 +1,8 @@
 # Project Scaffold
 
-`quack_rs::scaffold::generate_scaffold` generates a complete, submission-ready DuckDB
-community extension project from a single function call. No manual file creation, no
-copy-pasting templates.
+`quack_rs::scaffold::generate_scaffold` generates every file of a new DuckDB community
+extension project in Rust — `Cargo.toml`, `Makefile`, CI workflow, `description.yml`, an
+example function and its tests — from a single function call.
 
 ---
 
@@ -10,7 +10,7 @@ copy-pasting templates.
 
 ```text
 my_extension/
-├── Cargo.toml                          # cdylib crate, pinned deps, release profile
+├── Cargo.toml                          # cdylib crate, dependencies, release profile
 ├── Makefile                            # delegates to cargo + extension-ci-tools
 ├── extension_config.cmake              # required by extension-ci-tools
 ├── src/
@@ -85,8 +85,8 @@ fn main() {
 | `github_repo` | `String` | `"owner/repo"`, in the characters GitHub allows |
 | `excluded_platforms` | `Vec<String>` | Platforms to skip (e.g., `["wasm_mvp", "wasm_eh"]`) |
 | `git_ref` | `String` | `repo.ref` — **a commit hash** (or tag), not a branch. Defaults to `REF_PLACEHOLDER` so it cannot be submitted unset |
-| `target_duckdb_version` | `String` | Written as `TARGET_DUCKDB_VERSION` in the Makefile |
-| `use_unstable_c_api` | `bool` | Set when the extension enables `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4` |
+| `target_duckdb_version` | `String` | Written as `TARGET_DUCKDB_VERSION` in the Makefile. Defaults to `DUCKDB_API_VERSION` (`v1.2.0`); with `use_unstable_c_api`, an exact DuckDB release such as `v1.5.5` |
+| `use_unstable_c_api` | `bool` | Set when the extension enables `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4`. Defaults to `false` |
 
 ---
 
@@ -99,8 +99,8 @@ Extension names must satisfy all of:
 
 Use vendor-prefixed names to avoid collisions: `myorg_analytics`, not `analytics`.
 
-The scaffold generator validates the name before generating any files and returns an error
-if it violates the rules.
+The scaffold generator checks the first two rules before generating any files and returns
+an error if the name breaks one. Uniqueness is yours to check.
 
 ---
 

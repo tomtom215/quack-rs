@@ -1,8 +1,12 @@
 # Your First Extension
 
-This page walks through `hello-ext`, the reference example bundled with quack-rs,
-focusing on four of the functions it registers — one of each major kind (the
-full list is in its [README](https://github.com/tomtom215/quack-rs/tree/main/examples/hello-ext)):
+This page builds a DuckDB extension in Rust step by step, using `hello-ext`, the example
+extension bundled with quack-rs. The table lists four of the functions it registers, one of
+each major kind (the full list is in its
+[README](https://github.com/tomtom215/quack-rs/tree/main/examples/hello-ext)); this page walks
+through the aggregate and the scalar. The table function and the cast are covered in
+[Table Functions](../functions/table-functions.md) and
+[Cast Functions](../functions/cast-functions.md).
 
 | SQL | Kind | Signature |
 |-----|------|-----------|
@@ -79,7 +83,8 @@ struct WordCountState {
 impl AggregateState for WordCountState {}
 ```
 
-`AggregateState` is a marker trait — no methods required.
+`AggregateState` is a marker trait with no methods; its supertraits require the state to be
+`Default + Send + Sync + 'static`.
 `FfiState<WordCountState>` stores it in the bytes DuckDB allocates for each group
 (boxing it only when it is large or over-aligned) and manages its lifecycle
 (size, init, destroy).
@@ -253,6 +258,12 @@ the null flag — this is required by DuckDB and handled for you by `VectorWrite
 
 ## Part 3 — Registration
 
+The snippets below register through the raw builders and `entry_point!`, which take a
+`duckdb_connection`. `hello-ext` itself uses the equivalent `entry_point_v2!`, whose closure
+receives a `&Connection` and registers each builder through the `Registrar` trait
+(`con.register_aggregate(...)`, `con.register_scalar(...)`); see
+[The Entry Point](../concepts/entry-point.md).
+
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
@@ -358,7 +369,7 @@ a failure — this propagates to the entry point and is surfaced to the user.
 quack_rs::entry_point!(hello_ext_init_c_api, |con| unsafe { register(con) });
 ```
 
-This one line emits:
+This one line expands to the equivalent of:
 
 ```rust
 # use libduckdb_sys::{duckdb_connection, duckdb_extension_access, duckdb_extension_info};

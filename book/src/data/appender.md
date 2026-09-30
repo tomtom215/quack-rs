@@ -1,8 +1,10 @@
 # Bulk Appender
 
-`Appender` is an RAII wrapper around DuckDB's appender — the fastest way to
-bulk-insert rows into an existing table, and considerably faster than issuing
-`INSERT` statements.
+`Appender` is an RAII wrapper around DuckDB's appender, the fastest way for an
+extension to bulk-insert rows into an existing table: rows are buffered and
+written in batches instead of going through one `INSERT` statement each. This
+page covers appending row by row and chunk by chunk, error handling, and what
+happens when a row fails half-way.
 
 **No feature flag required.** DuckDB has kept `duckdb_appender_*` in the frozen
 stable prefix of the extension API (slots 281–291 and 330–356) since v1.2.0, so
@@ -13,9 +15,9 @@ matters. Three methods are the exception and need `duckdb-1-5`: `error_data`,
 
 ## Row at a time
 
-Call one `append_*` per column, then finish the row. `row` calls `end_row` for
-you, which is the difference between a forgotten `end_row` being a non-issue and
-a silently short table:
+Call one `append_*` per column, then finish the row with `end_row`. `row` calls
+`end_row` for you when its closure succeeds, so a forgotten `end_row` cannot
+leave the table silently short:
 
 ```rust
 use quack_rs::appender::{AppendError, Appender};
@@ -59,11 +61,21 @@ appender.close()?;
 ```
 
 `append_str` uses `duckdb_append_varchar_length`, so **interior NUL bytes
-survive** — the NUL-terminated alternative would stop at the first one.
+survive**; the NUL-terminated `duckdb_append_varchar` would stop at the first
+one. `append_str` and `append_bytes` refuse a value longer than `u32::MAX`
+bytes, which DuckDB would silently truncate.
+
+`append_time` and `append_timestamp` refuse, before calling DuckDB, a payload
+outside the range DuckDB's SQL produces (`TIME` `00:00:00`–`24:00:00`; a
+`TIMESTAMP` from `290309-12-22 (BC)`, plus `-infinity`). DuckDB stores such a
+value unchecked, and reading the row back later fails or crashes.
 
 ## A chunk at a time
 
-Fewer FFI crossings, and the natural fit when the data already lives in vectors:
+`append_chunk` takes a whole [`DataChunk`] whose column types match the
+appender's active columns. It makes fewer FFI calls than appending row by row
+and suits data that is already in vectors; it is refused while a row appended
+by hand is still open.
 
 ```rust,no_run
 use quack_rs::appender::{AppendError, Appender};
@@ -98,7 +110,7 @@ let b = unsafe { Appender::with_catalog(con, Some(c"mydb"), Some(c"main"), c"eve
 ## Appending a subset of columns
 
 `add_column` narrows the active column list; the omitted columns take their
-`DEFAULT` (or NULL). Both `add_column` and `clear_columns` flush everything
+`DEFAULT` (or NULL). Both `add_column` and `clear_columns` flush every row
 appended so far.
 
 ```rust,no_run
@@ -112,7 +124,9 @@ appender.clear_columns()?;                // back to every column
 ```
 
 Use [`TableDescription::column_has_default`] to find out whether a column *has*
-a default before relying on one.
+a default before relying on one. `append_default()` fails for a default that is
+not a constant, such as `nextval('seq')` or `now()`: DuckDB's appender
+evaluates defaults once, when it is created.
 
 ## Errors arrive late, and invalidate the batch
 
@@ -136,9 +150,11 @@ if let Err(err) = appender.flush() {
 ## A row that fails half-way loses the batch
 
 DuckDB counts the values of the current row and cannot take one back. If a
-`row` closure fails *after* its first value went in, the half-written row can
-be neither finished nor dropped, and DuckDB's `close` then returns success
-while writing **nothing** — every row buffered since the last flush is gone.
+`row` closure fails or panics *after* its first value went in, the half-written
+row can be neither finished nor dropped, and DuckDB's `close` then returns
+success while writing **nothing**: every row buffered since the last flush is
+gone. (DuckDB also flushes by itself each time 204,800 rows accumulate; rows
+written by such a flush are safe.)
 
 quack-rs does not let that pass silently. The appender becomes *poisoned*:
 every later `row`, append, `end_row`, `flush` and `close` returns an error
@@ -155,7 +171,8 @@ After a successful `close()` the appender refuses all further work.
 
 ## Row order and schema changes
 
-- Row-at-a-time rows wait in their own buffer until 2,048 accumulate, while
+- Row-at-a-time rows wait in their own buffer until a full chunk (2,048 rows)
+  accumulates, while
   `append_chunk` adds its rows to the table-bound buffer directly, so a chunk
   lands **ahead of** rows appended before it that are still buffered. Flush
   first if insertion order matters.
@@ -171,7 +188,7 @@ After a successful `close()` the appender refuses all further work.
 | `Appender::with_catalog(con, catalog, schema, table)` (unsafe) | Create fully qualified |
 | `column_count()` / `column_type(i)` | The active column list |
 | `add_column(name)` / `clear_columns()` | Narrow / reset the active column list |
-| `row(|row| ...)` | Append one row, calling `end_row` on success |
+| `row(closure)` | Append one row, calling `end_row` if the closure succeeds |
 | `end_row()` | Finish the current row explicitly |
 | `append_bool/_i8/_i16/_i32/_i64/_i128` | Signed integers and `BOOLEAN` |
 | `append_u8/_u16/_u32/_u64/_u128` | Unsigned integers |
@@ -182,7 +199,7 @@ After a successful `close()` the appender refuses all further work.
 | `append_null()` / `append_default()` | SQL `NULL` / the column's `DEFAULT` |
 | `append_chunk(&chunk)` | Append an entire [`DataChunk`] |
 | `flush()` / `close()` | Flush buffered rows / flush and close |
-| `error_message()` | Message from the last failed operation |
+| `error_message()` | Message from the last failed operation (`Option<String>`) |
 | `append_default_to_chunk(&chunk, col, row)` ¹ | Write a column's `DEFAULT` into a chunk cell |
 | `clear()` ¹ | Discard buffered, unflushed rows (and un-poison the appender) |
 | `error_data()` ¹ | Structured [`ErrorData`] from the last failed operation |
@@ -199,11 +216,10 @@ upgrades the error type in place without changing any method's shape.
 `new` and `with_catalog` are `unsafe`: you must pass a valid, open
 `duckdb_connection` (such as the one provided to your extension's entry point).
 
-Note that both return `Result`. That is not decoration: DuckDB's
-`duckdb_append_*` functions do not check whether the appender was successfully
-created before dereferencing it, so an appender whose creation failed must never
-be used. Because a failed create yields `Err` and no `Appender`, quack-rs makes
-that unreachable.
+Both return `Result` for a reason: DuckDB's `duckdb_append_*` functions do not
+check whether the appender was created successfully before dereferencing it,
+so an appender whose creation failed must never be used. A failed create
+returns `Err` and no `Appender`, so such an appender cannot be reached.
 
 ## Drop
 

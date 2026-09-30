@@ -1,8 +1,9 @@
 # Cast Functions
 
-Cast functions let your extension define how DuckDB converts values from one type to
-another. Once registered, both explicit `CAST(x AS T)` syntax and (optionally) implicit
-coercions will use your callback.
+A DuckDB cast function defines how values of one type are converted to another.
+This page shows how to register one from a Rust extension with quack-rs'
+`CastFunctionBuilder`. Once registered, `CAST(x AS T)` and `TRY_CAST(x AS T)` use
+your callback, and so do implicit conversions if you give the cast an implicit cost.
 
 ## When to use cast functions
 
@@ -39,12 +40,11 @@ unsafe extern "C" fn varchar_to_int(
             Err(e) => {
                 let msg = format!("cannot cast {:?} to INTEGER: {e}", s);
                 if cast_info.cast_mode() == CastMode::Try {
-                    // TRY_CAST: write NULL and record a per-row error
+                    // TRY_CAST: record a per-row error, which also sets the row to NULL
                     unsafe { cast_info.set_row_error(&msg, row as idx_t, output) };
-                    unsafe { writer.set_null(row) };
                 } else {
-                    // Regular CAST: abort the whole query
-                    unsafe { cast_info.set_error(&msg) };
+                    // Regular CAST: fail the whole query
+                    cast_info.set_error(&msg);
                     return false;
                 }
             }
@@ -111,18 +111,19 @@ unsafe {
 Inside the cast callback, retrieve the extra info with
 `CastFunctionInfo::get_extra_info()`. The pointee must be `Send + Sync`: DuckDB
 passes the same pointer to the callback on every thread that runs the cast, and the
-destructor runs on whichever thread releases it (or drops an unregistered builder,
-which is `Send`).
+destructor runs on whichever thread releases it. `CastFunctionBuilder` is `Send`, so
+an unregistered builder may also run the destructor on the thread that drops it.
 
-If `register` returns an error — a missing callback or type, or a source or target
-type that is or contains `ANY`/`INVALID`, which DuckDB refuses — the builder still
-owns the extra info and runs its destructor exactly once. These cases are checked
-in Rust before DuckDB is called because `duckdb_register_cast_function` rejects them
-*before* taking ownership of the pointer.
+If `register` returns an error — a missing callback or type, a bare composite
+`TypeId` (use `new_logical`), a null connection, or a source or target type that is
+or contains `ANY`/`INVALID`, which DuckDB refuses — the builder still owns the extra
+info and runs its destructor exactly once. These cases are checked in Rust before
+DuckDB is called, because `duckdb_register_cast_function` rejects them *before*
+taking ownership of the pointer.
 
 ## TRY_CAST vs CAST
 
-Inside your callback, check [`CastFunctionInfo::cast_mode()`] to distinguish between
+Inside your callback, check `CastFunctionInfo::cast_mode()` to distinguish between
 the two modes:
 
 | Mode | User wrote | Expected behaviour on error |
@@ -184,6 +185,7 @@ cannot always be expressed as a simple `TypeId`).
 
 ## API reference
 
-- [`CastFunctionBuilder`][quack_rs::cast::CastFunctionBuilder] — the main builder
-- [`CastFunctionInfo`][quack_rs::cast::CastFunctionInfo] — info handle inside callbacks
-- [`CastMode`][quack_rs::cast::CastMode] — `Normal` vs `Try` cast mode
+- [`CastFunctionBuilder`](https://docs.rs/quack-rs/latest/quack_rs/cast/builder/struct.CastFunctionBuilder.html) — the builder
+- [`CastFunctionInfo`](https://docs.rs/quack-rs/latest/quack_rs/cast/builder/struct.CastFunctionInfo.html) — the info handle inside callbacks
+- [`CastMode`](https://docs.rs/quack-rs/latest/quack_rs/cast/builder/enum.CastMode.html) — `Normal` or `Try`
+- [`cast_callback!`](https://docs.rs/quack-rs/latest/quack_rs/macro.cast_callback.html) — generates a panic-safe cast callback

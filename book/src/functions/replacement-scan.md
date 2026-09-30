@@ -1,14 +1,16 @@
 # Replacement Scans
 
-A replacement scan lets users write:
+A DuckDB replacement scan lets users query a file by its path alone:
 
 ```sql
 SELECT * FROM 'myfile.myformat'
 ```
 
-and have DuckDB automatically invoke your extension's table-valued scan instead of
-trying to open the path as a built-in file type. This is how DuckDB's built-in CSV,
-Parquet, and JSON readers work.
+When DuckDB finds no table with that name, it calls each registered replacement
+scan in registration order, and one of them can redirect the query to a table
+function (in the example below, `read_myformat('myfile.myformat')`). DuckDB's own
+CSV, Parquet and JSON readers use the same mechanism. This page shows how to
+register one from a Rust extension with quack-rs.
 
 `quack-rs` provides `ReplacementScanBuilder` (a static registration helper) and
 `ReplacementScanInfo` (an ergonomic wrapper for callbacks).
@@ -43,7 +45,10 @@ unsafe {
 ```
 
 > **Note:** Replacement scans are registered on a **database** handle
-> (`duckdb_database`), not a connection. Register them before opening connections.
+> (`duckdb_database`), not a connection, and apply to every connection to that
+> database. In an entry point, `Connection::register_replacement_scan` and
+> `register_replacement_scan_with_data` do the same through the `Connection` you
+> are given.
 
 A raw `delete_callback` must accept a null argument: unlike DuckDB's other
 destructor slots, it is called with `extra_data` even when that is null.
@@ -67,7 +72,7 @@ unsafe extern "C" fn my_scan_callback(
         .unwrap_or("");
 
     if !path.ends_with(".myformat") {
-        return; // pass — DuckDB will try other handlers
+        return; // not ours: DuckDB tries the next replacement scan
     }
 
     // Use ReplacementScanInfo for ergonomic access
@@ -79,16 +84,19 @@ unsafe extern "C" fn my_scan_callback(
 }
 ```
 
+`table_name` is the last part of the table reference: `FROM myschema."f.myformat"`
+reaches the callback as `f.myformat`, so a callback cannot see or honour a schema.
+
 ### `ReplacementScanInfo` methods
 
 | Method | Description |
 |--------|-------------|
 | `set_function(name)` | Redirect to the named table function |
 | `add_varchar_parameter(value)` | Add a VARCHAR parameter to the redirected call |
-| `add_i64_parameter(value)` | Add a BIGINT (i64) parameter (v0.11.0+) |
-| `add_bool_parameter(value)` | Add a BOOLEAN parameter (v0.11.0+) |
-| `add_parameter_raw(duckdb_value)` | Add any typed `duckdb_value` parameter (v0.11.0+) |
-| `set_error(message)` | Report an error (aborts this replacement scan). DuckDB ignores an empty message, so an empty one is replaced with a placeholder |
+| `add_i64_parameter(value)` | Add a BIGINT (`i64`) parameter |
+| `add_bool_parameter(value)` | Add a BOOLEAN parameter |
+| `add_parameter_raw(duckdb_value)` | Add a parameter of any type; DuckDB copies it, so the caller still destroys the value |
+| `set_error(message)` | Report an error, which fails the query. DuckDB ignores an empty message, so an empty one is replaced with a placeholder |
 
 Data passed to `ReplacementScanBuilder::register_with_data` must be `Send + Sync`:
 it lives in the database-wide configuration, is read by the callback from any

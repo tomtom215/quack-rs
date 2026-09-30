@@ -259,8 +259,8 @@ it as an error); test code is exempt.
 
 Example:
 ```rust
-// SAFETY: `states` is a valid array of `count` pointers, each initialized
-// by `init_callback`. We are the only owner of `inner` at this point.
+// SAFETY: `ffi.inner` came from `Box::into_raw` and has not been freed;
+// nothing else holds it, so reclaiming and dropping the box is sound.
 unsafe { drop(Box::from_raw(ffi.inner)) };
 ```
 
@@ -291,7 +291,7 @@ All other warnings are errors in CI.
 Every public item must have a doc comment. Private items with non-obvious
 semantics should also be documented. Doc comments follow these conventions:
 
-- First line: short summary (noun phrase, no trailing period)
+- First line: a one-sentence summary, ending with a period
 - `# Safety`: mandatory on every `unsafe fn`
 - `# Panics`: mandatory if the function can panic in any reachable code path
 - `# Errors`: mandatory on functions returning `Result`
@@ -580,8 +580,8 @@ Before broadening the range to a new major band:
 1. Read the DuckDB changelog for C API changes.
 2. Check the new C API version string (used in `duckdb_rs_extension_api_init`).
 3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed.
-4. Audit all callback signatures against the new `bindgen.rs` output.
-5. Update the range bounds in `Cargo.toml` (both runtime and dev-deps).
+4. Audit all callback signatures against the new `libduckdb-sys` bindings.
+5. Update the `libduckdb-sys` and `duckdb` version requirements in `Cargo.toml`.
 
 Versions follow [Semantic Versioning](https://semver.org/) as Cargo applies it.
 While the crate is pre-1.0, a breaking change to the public API bumps the

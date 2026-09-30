@@ -1,6 +1,7 @@
 # Quick Start
 
-This page gets you from zero to a working DuckDB extension in three steps.
+This page takes you from an empty crate to a DuckDB loadable extension written in Rust,
+loaded into the DuckDB CLI, in three steps.
 
 ---
 
@@ -25,15 +26,15 @@ name = "my_extension"       # must match your extension name — see Pitfall P1
 crate-type = ["cdylib", "rlib"]
 
 [profile.release]
-panic = "unwind"            # required — lets quack-rs turn panics into SQL errors
+panic = "unwind"            # required — quack-rs's panic guards need unwinding (see Installation)
 lto = true
 opt-level = 3
 codegen-units = 1
 strip = true
 ```
 
-> **Start fresh?** Use the [scaffold generator](scaffold.md) to generate a complete,
-> submission-ready project from code.
+> **Starting from scratch?** The [scaffold generator](scaffold.md) generates a complete
+> community extension project, including this `Cargo.toml`.
 
 ---
 
@@ -91,8 +92,9 @@ entry_point!(my_extension_init_c_api, |con| register(con));
 # Build the extension
 cargo build --release
 
-# DuckDB refuses to LOAD a bare .so: append the metadata footer first
-# (`append_metadata` is a binary in the quack-rs repository; see Publishing).
+# DuckDB refuses to LOAD a bare .so: append the metadata footer first.
+# quack-rs ships the `append_metadata` binary for this step.
+cargo install quack-rs --bin append_metadata
 append_metadata target/release/libmy_extension.so my_extension.duckdb_extension \
     --abi-type C_STRUCT --extension-version v0.1.0 \
     --duckdb-version v1.2.0 --platform linux_amd64

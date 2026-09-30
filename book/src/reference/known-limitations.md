@@ -1,5 +1,9 @@
 # Known Limitations
 
+What quack-rs cannot do because the DuckDB C extension API does not allow it,
+DuckDB behaviour an extension should plan around, and former limitations that
+have since been resolved.
+
 ## Window functions are not available
 
 DuckDB **window functions** (`OVER (...)` clauses) are implemented entirely in
@@ -60,8 +64,9 @@ destroyed. The extension cannot tell which states were abandoned, so whatever
 they own is leaked: with `FfiState<T>`, whatever `T` owns on the heap, and the
 box of a `T` too large to store inline (see the next section). The query still
 fails with your message. If that leak matters (a long-lived process whose
-queries often fail this way), keep what a state owns small. Only `finalize` was measured; errors reported from other callbacks were
-not. The behaviour is pinned by
+queries often fail this way), keep what a state owns small. Only `finalize` was
+measured; errors reported from other callbacks were not. The behaviour is
+pinned by
 `aggregate_states_are_not_all_destroyed_when_finalize_fails` in
 `tests/ffi_roundtrip/lifecycle.rs`.
 
@@ -146,9 +151,9 @@ read-only format leaves the writing callbacks unset entirely. See the
 
 ## Arrow interop (resolved behind `duckdb-1-5-4`)
 
-DuckDB's C API has a conversion family (already in 1.4.4) that moves data
-straight between a `duckdb_data_chunk` and the Arrow C Data Interface. quack-rs wraps all eight
-non-deprecated entries in the `arrow` module, with **no `arrow` crate
+DuckDB's C API has a family of conversion functions (present since 1.4.4) that
+move data directly between a `duckdb_data_chunk` and the Arrow C Data
+Interface. quack-rs wraps all eight non-deprecated entries in the `arrow` module, with **no `arrow` crate
 dependency** — see the [Arrow Interop](../duckdb-1-5/arrow.md) chapter.
 
 The remaining fourteen Arrow entries in the C API struct are the older
@@ -158,13 +163,14 @@ The remaining fourteen Arrow entries in the C API struct are the older
 The feature is `duckdb-1-5-4` rather than `duckdb-1-5` because `libduckdb-sys`
 declared the two Arrow ABI records as opaque zero-sized placeholders until
 1.10504.0. The DuckDB functions themselves are present in every release
-quack-rs supports.
+quack-rs supports, but because the feature implies `duckdb-1-5`, an extension
+built with it needs a DuckDB 1.5.0+ engine.
 
 ## Callback accessor wrappers (resolved)
 
-quack-rs now wraps all major **callback accessor** functions — the C API
-functions used *inside* your callbacks to retrieve arguments, set errors,
-access bind data, etc.
+quack-rs wraps the **callback accessor** functions — the C API functions used
+*inside* your callbacks to retrieve arguments, set errors, access bind data,
+and so on:
 
 | Category | Wrapper type | Available |
 |----------|-------------|-----------|
@@ -181,12 +187,14 @@ access bind data, etc.
 | **Copy function sink** | `CopySinkInfo` | `duckdb-1-5` |
 | **Copy function finalize** | `CopyFinalizeInfo` | `duckdb-1-5` |
 
-All callback accessor functions are now wrapped, including `get_client_context`
-on all callback types (returns a `ClientContext`; see the `client_context` module).
+Where the C API provides a client context for a callback — scalar bind and
+init, table function bind, and the four copy-function callbacks — the wrapper
+exposes it as `get_client_context`, which returns a `ClientContext` (see the
+`client_context` module).
 
 ## Complex type creation (resolved)
 
-`LogicalType` now provides constructors for all complex parameterized types:
+`LogicalType` provides constructors for all complex parameterized types:
 
 | Method | Type created |
 |--------|-------------|
@@ -198,22 +206,26 @@ on all callback types (returns a `ClientContext`; see the `client_context` modul
 | `LogicalType::struct_type(fields)` | `STRUCT(...)` |
 | `LogicalType::map(key, value)` | `MAP(K, V)` |
 
-All constructors have `_from_logical` variants for nested complex types.
+The constructors that take child types (`list`, `array`, `map`, `struct_type`,
+`union_type`) have `_from_logical` variants for nested complex types, and each
+constructor has a `try_` form that returns an error instead of panicking.
 Introspection methods (`get_type_id`, `list_child_type`, `struct_child_count`,
 `decimal_width`, etc.) are also available.
 
 ## VARIANT and GEOMETRY types (resolved — exposed behind `duckdb-1-5-3`)
 
-DuckDB v1.5.1 introduced the `VARIANT` type for Iceberg v3 support. As of
-**DuckDB 1.5.3** it is present in the C type enum as `DUCKDB_TYPE_VARIANT` (41),
-and the `GEOMETRY` type (`DUCKDB_TYPE_GEOMETRY`, 40) is present as well.
+The `VARIANT` type (a self-describing nested value, used for example by
+Iceberg v3) entered the C type enum as `DUCKDB_TYPE_VARIANT` (41) in
+**DuckDB 1.5.3**. `GEOMETRY` (`DUCKDB_TYPE_GEOMETRY`, 40) was already present
+earlier in the 1.5.x line.
 
 quack-rs exposes these as `TypeId::Variant` and `TypeId::Geometry`, gated behind
 the **`duckdb-1-5-3`** feature. That feature layers on top of `duckdb-1-5` and
-requires `libduckdb-sys >= 1.10503.1` (DuckDB 1.5.3). The separate gate exists
-because these type-enum values postdate the `duckdb-1-5` feature's 1.5.0 floor
-(`VARIANT` only landed in 1.5.3); keeping them out of `duckdb-1-5` preserves
-compatibility for consumers pinned to libduckdb-sys 1.5.0–1.5.2.
+requires `libduckdb-sys >= 1.10503.0` (DuckDB 1.5.3). The separate gate exists
+because `VARIANT` postdates the `duckdb-1-5` feature's 1.5.0 floor; `GEOMETRY`
+is gated with it so that one feature covers both values. Keeping them out of
+`duckdb-1-5` preserves compatibility for consumers pinned to libduckdb-sys
+1.10500–1.10502 (DuckDB 1.5.0–1.5.2).
 
 ```toml
 [dependencies]
