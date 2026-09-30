@@ -12,6 +12,9 @@
 > `cargo test --all-targets --all-features` on Linux, macOS and Windows,
 > `test-bundled-prebuilt` tests against a prebuilt `libduckdb`, and the
 > `extension-load` job loads a built extension into live DuckDB CLIs.
+> Its verdict that the codebase was "production-grade" is superseded too:
+> later audits (`AUDIT.md`) found defects this review did not, including two
+> heap-corruption paths fixed in 0.16.0 and process aborts fixed in 0.18.0.
 
 ---
 

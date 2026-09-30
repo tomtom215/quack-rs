@@ -52,5 +52,5 @@
   <!-- Tagline: left-aligned to wordmark, refined spacing -->
   <text x="230" y="151"
         font-family="'Liberation Sans', Arial, sans-serif" font-size="16" font-weight="400"
-        letter-spacing="1.8" fill="#526880">DUCKDB · RUST · FAST</text>
+        letter-spacing="1.8" fill="#526880">DUCKDB · RUST · SDK</text>
 </svg>

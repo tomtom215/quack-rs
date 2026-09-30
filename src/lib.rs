@@ -5,7 +5,7 @@
 
 //! # quack-rs
 //!
-//! A production-grade Rust SDK for building `DuckDB` loadable extensions.
+//! A Rust SDK for building `DuckDB` loadable extensions on the `DuckDB` C Extension API.
 //!
 //! ## Overview
 //!
@@ -16,7 +16,8 @@
 //! - Type-safe builders for registering aggregate functions ([`aggregate`])
 //! - Safe vector reading and writing helpers ([`vector`])
 //! - A generic [`FfiState<T>`][aggregate::state::FfiState] that eliminates raw pointer management
-//! - Documented solutions to every known `DuckDB` Rust FFI pitfall
+//! - Documentation of every known `DuckDB` Rust FFI pitfall, with API designs that
+//!   prevent most of them
 //!
 //! ## Quick Start
 //!

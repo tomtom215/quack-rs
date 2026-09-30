@@ -167,7 +167,7 @@ def logo1():
   <!-- Tagline: left-aligned to wordmark, refined spacing -->
   <text x="230" y="151"
         font-family="{FONT}" font-size="16" font-weight="400"
-        letter-spacing="1.8" fill="{TAG_DK}">DUCKDB · RUST · FAST</text>
+        letter-spacing="1.8" fill="{TAG_DK}">DUCKDB · RUST · SDK</text>
 </svg>"""
     _save(svg, "logo1-dark-elegant")
 

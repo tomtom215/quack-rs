@@ -54,7 +54,7 @@
   <text x="624" y="350"
         font-family="'Liberation Sans', 'Helvetica Neue', Arial, sans-serif"
         font-size="30" font-weight="400" letter-spacing="0.5" fill="#6B7280">
-    <tspan x="624" y="342">Production-grade Rust SDK</tspan><tspan x="624" y="378">for DuckDB extensions</tspan>
+    <tspan x="624" y="342">Rust SDK for building</tspan><tspan x="624" y="378">DuckDB extensions</tspan>
   </text>
 
   <!-- Feature pills -->

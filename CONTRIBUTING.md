@@ -324,7 +324,7 @@ quack-rs/
 │   ├── file_system.rs                 # File system access (`DuckDB` 1.5.0+)
 │   ├── instance_cache.rs              # Database instance cache (`DuckDB` 1.5.0+)
 │   ├── interval.rs                    # `DuckDB` `INTERVAL` type conversion utilities
-│   ├── lib.rs                         # A production-grade Rust SDK for building `DuckDB` loadable extensions
+│   ├── lib.rs                         # Crate root: module list and crate-level docs
 │   ├── prelude.rs                     # Convenience re-exports for the most commonly used `quack-rs` items
 │   ├── query.rs                       # Running SQL from inside an extension
 │   ├── secrets.rs                     # Credential handling for extensions

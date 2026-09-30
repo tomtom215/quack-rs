@@ -42,11 +42,27 @@ Rust **1.86.0** or later. This is enforced in `Cargo.toml` with
 
 ### Is quack-rs production-ready?
 
-Yes. It was extracted from
-[duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a
-production DuckDB community extension, where the first 16 of the pitfalls it now
-documents were discovered; the rest came from later audits against DuckDB's own
-source and a running database.
+It is pre-1.0, and you should judge it against your own requirements rather than
+take a yes. What the record shows:
+
+- **The API still changes.** Minor releases before 1.0 can break it; each one lists
+  its breaking changes, with migration notes, in the [changelog](reference/changelog.md).
+- **Audits keep finding real defects.** The review released as 0.16.0 fixed 24
+  defects in earlier releases, including two heap-corruption paths. The 0.18.0 audits fixed further soundness holes,
+  process aborts and wrong answers, and found one serious defect in unreleased
+  code before it was published: aggregate functions returned wrong results in
+  release builds with Cargo's default profile. `AUDIT.md` in the repository
+  records each audit, what it found, and whether each fix was reproduced against
+  a real DuckDB or derived from DuckDB's source.
+- **Some limits are DuckDB's.** The C API has defects quack-rs can only document or
+  work around; see [Known Limitations](reference/known-limitations.md).
+
+It was extracted from
+[duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a DuckDB
+community extension, where the first 16 of the pitfalls it now documents were
+discovered. If you ship an extension built on it, run end-to-end tests that load
+the extension into each DuckDB release you support (see the
+[Testing Guide](testing.md)).
 
 ---
 

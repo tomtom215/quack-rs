@@ -656,6 +656,14 @@ is not grouped.
   specific description to each page and fails on a missing or duplicate
   one; the preview image is a PNG; headings are no longer rendered at half
   opacity; diagrams follow the theme; mermaid is pinned to 11.17.2.
+- The crate, README, book, logo and social-preview image no longer call
+  quack-rs "production-grade" or the logo "FAST"; neither was backed by
+  evidence, and the audits behind this release found serious defects. The
+  crates.io description is now "Rust SDK for building DuckDB loadable
+  extensions on the DuckDB C Extension API". A new README **Status** section
+  and the FAQ state what the record shows instead: pre-1.0 API churn, the
+  defects each audit found (`AUDIT.md`), DuckDB's own limits, and what CI
+  checks.
 
 #### Fourth audit
 
