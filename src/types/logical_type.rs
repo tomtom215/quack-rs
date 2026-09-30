@@ -934,8 +934,12 @@ mod live_tests {
             .map(|n| (n.as_str(), TypeId::Integer))
             .collect();
         assert!(LogicalType::try_union_type(&members[..MAX_UNION_MEMBERS]).is_ok());
-        let err = LogicalType::try_union_type(&members).expect_err("257 members");
-        assert!(err.to_string().contains("at most 256"), "{err}");
+        let err = LogicalType::try_union_type(&members).expect_err("one member too many");
+        assert!(
+            err.to_string()
+                .contains(&format!("at most {MAX_UNION_MEMBERS}")),
+            "{err}"
+        );
     }
 
     /// The fallible forms of the four constructors that had none (AUDIT.md

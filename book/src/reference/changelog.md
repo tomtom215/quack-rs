@@ -354,7 +354,8 @@ is not grouped.
 - A fallible form of every `LogicalType` constructor: the new `try_decimal`,
   `try_array`, `try_array_from_logical`, `try_list_from_logical` and
   `try_map_from_logical` join the existing `try_*` functions. Also
-  `types::logical_type::MAX_UNION_MEMBERS` (256).
+  `types::logical_type::MAX_UNION_MEMBERS` (255: DuckDB 1.5.6 lowered its
+  limit from 256, and asserts it when building the type).
 - `VectorWriter::try_write_varchar` / `try_write_blob`, which return an error
   and write nothing for a value longer than the new
   `vector::string::MAX_STRING_LEN` (`u32::MAX` bytes, DuckDB's string length

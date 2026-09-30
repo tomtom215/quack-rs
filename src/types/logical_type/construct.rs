@@ -24,9 +24,13 @@ use crate::types::TypeId;
 /// The most members a `UNION` may have.
 ///
 /// This is `UnionType::MAX_UNION_MEMBERS` in `DuckDB` (the member tag is a
-/// `UINT8`). `duckdb_create_union_type` does not check it; a type with more
-/// members is only refused later, by the binder.
-pub const MAX_UNION_MEMBERS: usize = 256;
+/// `UINT8`): 256 in 1.4.4 to 1.5.5, lowered to 255 in 1.5.6, where
+/// `LogicalType::UNION` asserts it and the binder refuses a 256-member
+/// `UNION`. The lower value is the one every supported release accepts.
+/// `duckdb_create_union_type` does not check it; a type with more members
+/// is only refused later, by the binder (or, in 1.5.6 built with assertions,
+/// aborts the process).
+pub const MAX_UNION_MEMBERS: usize = 255;
 
 /// Converts `STRUCT` field or `UNION` member names to C strings, enforcing
 /// the rules `DuckDB`'s binder applies to the same type written in SQL.
@@ -721,11 +725,12 @@ mod tests {
         let all: Vec<&str> = owned.iter().map(String::as_str).collect();
         assert_eq!(
             names(&all[..MAX_UNION_MEMBERS], Some(MAX_UNION_MEMBERS)),
-            Ok(256)
+            Ok(MAX_UNION_MEMBERS)
         );
-        let err = names(&all, Some(MAX_UNION_MEMBERS)).expect_err("257 names");
+        let err = names(&all, Some(MAX_UNION_MEMBERS)).expect_err("one name too many");
         assert!(
-            err.contains("257 names") && err.contains("at most 256"),
+            err.contains(&format!("{} names", MAX_UNION_MEMBERS + 1))
+                && err.contains(&format!("at most {MAX_UNION_MEMBERS}")),
             "{err}"
         );
     }

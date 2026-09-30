@@ -635,6 +635,11 @@ identically to v1.5.2 – v1.5.5 under `scripts/check-abi-table.py`), and
 `KNOWN_LAYOUTS` now lists it. From 5.4 it took the API-version bump to v1.5.6
 and the `DUCKDB_API_VERSION_AT_LEAST` bands, but not the two `timestamp_tz_ns`
 entries or the `UsesCAPIV2` routing.
+The whole suite (`cargo test --all-targets --all-features`) passes with
+`libduckdb-sys` 1.10506.0, the v1.5.6 bindings, once `MAX_UNION_MEMBERS` went
+from 256 to 255: v1.5.6 lowered `UnionType::MAX_UNION_MEMBERS` to 255 and
+asserts it in `LogicalType::UNION`, so a 256-member `try_union_type` aborted
+the unit-test process there (VALIDATED).
 
 ### 5.4 Forward risk: DuckDB `main` re-versions the C extension API
 
