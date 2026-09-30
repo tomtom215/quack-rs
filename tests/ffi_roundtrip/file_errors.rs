@@ -8,7 +8,7 @@
 
 use quack_rs::client_context::ClientContext;
 use quack_rs::error_data::DuckDbErrorType;
-use quack_rs::file_system::{FileFlag, FileOpenOptions, FileSystem};
+use quack_rs::file_system::{FileOpenOptions, FileSystem};
 
 use super::Fixture;
 
@@ -66,6 +66,8 @@ fn a_failed_write_is_an_error_and_an_empty_write_is_not() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_write_or_sync_on_dev_full_is_an_error() {
+    use quack_rs::file_system::FileFlag;
+
     let fx = Fixture::open();
     // SAFETY: `con` is open for the whole test.
     let ctx = unsafe { ClientContext::from_connection(fx.con()) }.expect("client context");
