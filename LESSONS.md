@@ -314,7 +314,7 @@ given is a double free.
 it must not unwind. Wrap anything that can panic in
 [`callback::catch_ffi_panic`] and return null.
 
-[`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/struct.ScalarBindInfo.html#method.set_bind_data_copy
+[`ScalarBindInfo::set_bind_data_copy`]: https://docs.rs/quack-rs/latest/quack_rs/scalar/info/struct.ScalarBindInfo.html#method.set_bind_data_copy
 [`callback::catch_ffi_panic`]: https://docs.rs/quack-rs/latest/quack_rs/callback/fn.catch_ffi_panic.html
 
 ---
@@ -784,8 +784,8 @@ the release command, `cargo test --all-targets --all-features`, on all three pla
 
 **The fix**: DuckDB's own C++ codebase contains an internal inline function `CreateAPIv1()`
 (in `duckdb/main/capi/extension_api.hpp`) that constructs the complete `duckdb_ext_api_v1`
-struct, setting every one of the ~573 function-pointer fields to the matching bundled DuckDB
-C symbol.  This is exactly the same struct that DuckDB would send to an extension's
+struct, setting every one of its function-pointer fields (546 with the 1.5.2–1.5.6 headers) to
+the matching bundled DuckDB C symbol.  This is exactly the same struct that DuckDB would send to an extension's
 `init_c_api` callback.
 
 quack-rs now compiles a tiny C++ shim (`src/testing/bundled_api_init.cpp`) that wraps
