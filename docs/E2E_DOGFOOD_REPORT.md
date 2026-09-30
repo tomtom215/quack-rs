@@ -5,6 +5,14 @@
 **Rust toolchain:** 1.93.1 (stable)
 **Platform:** Linux x86_64
 
+> **Note (2026-09-30, before 0.18.0):** This is a historical report of the 0.6.0
+> codebase and is kept as written. Its CI findings no longer describe `ci.yml`:
+> the `test-duckdb-1-5` job tests the `duckdb-1-5`, `duckdb-1-5-3` and
+> `duckdb-1-5-4` features on every PR (ISSUE-2), `test-bundled` also runs
+> `cargo test --all-targets --all-features` on Linux, macOS and Windows,
+> `test-bundled-prebuilt` tests against a prebuilt `libduckdb`, and the
+> `extension-load` job loads a built extension into live DuckDB CLIs.
+
 ---
 
 ## Executive Summary

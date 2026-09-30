@@ -94,8 +94,9 @@ model for extensions: you run inside DuckDB's process, using its memory and thre
 
 `libduckdb-sys = ">=1.4.4, <2"` — the bounded range is intentional.
 
-DuckDB 1.4.x and 1.5.x both expose **C API version `v1.2.0`** (the version string embedded
-in `duckdb_rs_extension_api_init`). `quack-rs` has been E2E tested against both releases.
+DuckDB 1.4.x and 1.5.x all load extensions built for **C API version `v1.2.0`** (the
+version string embedded in `duckdb_rs_extension_api_init`); 1.5.6 declares `v1.5.6` and
+accepts every earlier version. `quack-rs` has been E2E tested against both releases.
 Using a range rather than an exact pin means:
 
 - Extension authors can choose their DuckDB target (pin to `=1.4.4` or `=1.5.0` in their

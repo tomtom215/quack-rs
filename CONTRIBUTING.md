@@ -28,22 +28,22 @@ Thank you for contributing! Please read this document before opening a PR.
 | `rustfmt` | stable | Formatting |
 | `clippy` | stable | Linting |
 | `cargo-deny` | latest | License/advisory checks |
-| DuckDB CLI | 1.5.5 (or 1.4.4 / 1.5.0) | Live extension testing (required) |
+| DuckDB CLI | 1.5.6 (or 1.4.4 / 1.5.0 / 1.5.5) | Live extension testing (required) |
 
 Install the Rust toolchain via [rustup](https://rustup.rs/).
 
 Install DuckDB via `curl` (no system package manager needed). CI's
 `extension-load` job exercises **v1.4.4, v1.5.0, v1.5.5 and `latest`** — the
-floor, the 1.5 floor, the current release, and an early-warning signal.
-Develop against v1.5.5:
+floor, the 1.5 floor, the newest pinned release, and an early-warning signal
+(`latest` is currently v1.5.6). Develop against the current release, v1.5.6:
 
 ```bash
-curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip \
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip \
     -o /tmp/duckdb.zip \
     && unzip -o /tmp/duckdb.zip -d /tmp/ \
     && chmod +x /tmp/duckdb \
     && /tmp/duckdb --version
-# → v1.5.5
+# → v1.5.6
 ```
 
 ---
@@ -306,7 +306,7 @@ quack-rs/
 ├── src/
 │   ├── abi.rs                         # `DuckDB` C Extension API ABI compatibility checking
 │   ├── appender.rs                    # Bulk data appending
-│   ├── arrow.rs                       # Arrow C Data Interface bridge (`DuckDB` 1.5.0+, `duckdb-1-5-4` feature)
+│   ├── arrow.rs                       # Arrow C Data Interface bridge (`duckdb-1-5-4` feature; floor set by the `libduckdb-sys` 1.10504.0 bindings)
 │   ├── callback.rs                    # Panic-safe callback wrapper macros for `DuckDB` extension callbacks
 │   ├── catalog.rs                     # Catalog entry lookup (`DuckDB` 1.5.0+)
 │   ├── chunk_writer.rs                # Auto-sizing chunk writer for table function scan callbacks
@@ -545,7 +545,7 @@ quack-rs/
 │   ├── benchmarks.yml             # Criterion benchmark execution
 │   └── README.md                  # Workflow overview and quality gate summary
 ├── CONTRIBUTING.md                # This file
-├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L14, P1–P12), documented in full
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L19, P1–P12), documented in full
 └── README.md                      # Quick start, SDK overview, badge table
 ```
 
@@ -554,7 +554,7 @@ quack-rs/
 ## PR Checklist
 
 - [ ] SPDX header on every new file
-- [ ] No file exceeds 500 lines
+- [ ] New or split files follow the 500-line guideline (exceed it only where splitting would harm cohesion)
 - [ ] `cargo fmt` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` passes
 - [ ] `cargo test --all-targets` passes
@@ -572,7 +572,7 @@ quack-rs/
 ## Releasing
 
 This crate supports `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.x and 1.5.x).
-The bounded range is intentional: the C API (`v1.2.0`) is stable across these releases,
+The bounded range is intentional: every one of these releases loads C API `v1.2.0` extensions,
 and the `<2` upper bound prevents silent adoption of a future major band.
 Before broadening the range to a new major band:
 
@@ -582,5 +582,8 @@ Before broadening the range to a new major band:
 4. Audit all callback signatures against the new `bindgen.rs` output.
 5. Update the range bounds in `Cargo.toml` (both runtime and dev-deps).
 
-Versions follow [Semantic Versioning](https://semver.org/). Breaking changes to
-public API require a major version bump.
+Versions follow [Semantic Versioning](https://semver.org/) as Cargo applies it.
+While the crate is pre-1.0, a breaking change to the public API bumps the
+**minor** version (`0.17.x` → `0.18.0`) and is marked **Breaking:** in
+`CHANGELOG.md`; see the semantic versioning policy in
+[`RELEASING.md`](RELEASING.md).

@@ -88,7 +88,7 @@ and eliminates every rough edge, so you write **zero lines of C or C++**.
 
 Building a DuckDB extension in Rust — from project setup to community submission — requires navigating undocumented C API contracts, FFI memory rules, and data-encoding specifics found only in DuckDB's source code, which surface as silent corruption, process aborts, or unexplained CI rejections rather than compiler errors. `quack-rs` eliminates these barriers systematically across the complete extension lifecycle — scaffolding, function registration, type-safe data access, aggregate testing, metadata validation, and community submission readiness — with every abstraction backed by a documented, reproducible pitfall in [`LESSONS.md`](./LESSONS.md), making correct behavior automatic and incorrect behavior a compile-time error wherever the type system permits. The result is that any Rust developer can build, test, and ship a production-quality DuckDB extension without prior knowledge of DuckDB internals, covering every extension type exposed by DuckDB's public C Extension API: scalar, aggregate, table, cast, copy, replacement scan, and SQL macro functions.
 
-`quack-rs` encapsulates **30 documented FFI pitfalls** — hard-won knowledge from building
+`quack-rs` encapsulates **31 documented FFI pitfalls** — hard-won knowledge from building
 real DuckDB extensions in Rust:
 
 ```text
@@ -143,7 +143,8 @@ libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
 > **DuckDB compatibility**: `quack-rs` supports DuckDB **1.4.x and 1.5.x**.
-> Every release in that range exposes the same C API version (`v1.2.0`); CI loads
+> Every release in that range loads extensions built for C API version `v1.2.0`
+> (1.4.4 – 1.5.5 declare it; 1.5.6 declares `v1.5.6` and accepts every earlier one); CI loads
 > the example extension into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest release. The upper bound `<2` prevents silent
 > adoption of a future major release that may change the C API. When the C API
 > version changes, `quack-rs` will need to be updated and re-released.
@@ -457,6 +458,7 @@ it. The full analysis — including symptoms, root cause, and minimal reproducti
 | **L16** | Valid Arrow layouts `DuckDB` misimports | Wrong rows, reads past a buffer, heap corruption | `data_chunk_from_arrow` walks the array with its schema and refuses them |
 | **L17** | A `COPY … FROM` reader declares result columns | Database invalidated (assertion builds); column silently dropped (release) | Typed readers refused at bind; documented for raw binds |
 | **L18** | A `LIST` reserve moves every buffer below its child | Writes into freed memory through a cached writer | Documented in the writers' `# Safety` sections |
+| **L19** | A constant's address used as an identity | Aggregate states lost, in release builds with several codegen units only | `FfiState` salts its tag with a hash of `TypeId` |
 
 ### Practical Pitfalls (P)
 
@@ -773,9 +775,9 @@ flowchart TB
 
 3. **Bounded version range**: `libduckdb-sys = ">=1.4.4, <2"` is deliberate.
    The stable part of the C API (357 functions, what the default features use) is
-   unchanged from DuckDB v1.2.0 through v1.5.5; the unstable region the `duckdb-1-5*`
+   unchanged from DuckDB v1.2.0 through v1.5.6; the unstable region the `duckdb-1-5*`
    features reach into differs between releases (459 functions in 1.4.x, 545 in
-   1.5.0–1.5.1, 546 in 1.5.2–1.5.5), which the ABI guard in `abi.rs` checks at load.
+   1.5.0–1.5.1, 546 in 1.5.2–1.5.6), which the ABI guard in `abi.rs` checks at load.
    The upper bound prevents silent adoption of a future major release. When the C API
    version changes, `quack-rs` will be updated.
 
@@ -831,8 +833,9 @@ use `libduckdb-sys` directly — the two libraries compose without conflict.
 **ADR-2: Bounded Version Range**
 
 `libduckdb-sys = ">=1.4.4, <2"` is intentional. Every release from DuckDB 1.4.4 to 1.5.5
-declares C extension API version `v1.2.0`, and the stable part of that API (357
-functions) is unchanged across them; the unstable region differs between releases and is
+declares C extension API version `v1.2.0`, and v1.5.6 declares `v1.5.6` while still
+loading `v1.2.0` extensions; the stable part of the `v1.2.0` API (357 functions) is
+unchanged across all of them; the unstable region differs between releases and is
 checked at load by the ABI guard (`abi.rs`). CI loads the example extension into 1.4.4,
 1.5.0 and 1.5.5. The upper bound `<2` prevents silent adoption
 of a future major-band release that may change the C API version or callback signatures.
@@ -984,7 +987,7 @@ functions themselves are present in every release quack-rs supports.
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the full version history.
 
-**Unreleased (0.18.0)** — Fixes from four further production-readiness audits
+**v0.18.0** (2026-09-30) — Fixes from four further production-readiness audits
 (`AUDIT.md`, sections 7–10): soundness holes in the safe API, process aborts, wrong
 answers and leaks. Each fix has a regression test, and each defect involving DuckDB
 was reproduced against a real DuckDB or derived from its source before it was

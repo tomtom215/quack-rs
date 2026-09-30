@@ -537,17 +537,21 @@ Directives:
 A live DuckDB CLI is **required** for E2E testing. Install it via `curl`
 (no system package manager needed). Every 1.4.x and 1.5.x release uses the same
 C API version (`v1.2.0`); CI's `extension-load` job tests 1.4.4, 1.5.0, 1.5.5
-and the latest release. Develop against the current release, 1.5.5:
+and the latest release (currently 1.5.6). Develop against the current release,
+1.5.6:
 
 ```bash
-# DuckDB 1.5.5 (current release)
-curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip \
+# DuckDB 1.5.6 (current release)
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip \
     -o /tmp/duckdb.zip \
     && unzip -o /tmp/duckdb.zip -d /tmp/ \
     && chmod +x /tmp/duckdb \
     && /tmp/duckdb --version
-# → v1.5.5
+# → v1.5.6
 ```
+
+To match a pinned CI engine instead, substitute `v1.4.4`, `v1.5.0` or `v1.5.5`
+in the URL.
 
 For macOS, replace `linux-amd64` with `osx-universal`. For Windows, use
 `windows-amd64` and unzip to a directory on `%PATH%`.

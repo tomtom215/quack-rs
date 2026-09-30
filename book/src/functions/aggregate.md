@@ -104,7 +104,9 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 The five core callbacks (`state_size`, `init`, `update`, `combine`, `finalize`) must be
 set before `register` — the builder will return an error if any are missing. The
 `destructor` callback is optional, but required whenever you use `FfiState<T>`:
-`FfiState::<T>::destroy_callback` is what drops each `T`.
+`FfiState::<T>::destroy_callback` is what drops each `T`. With `FfiState<T>`, prefer
+`.ffi_state::<T>()`, which sets `state_size`, `init` and `destructor` together — see
+[State Management](aggregate-state.md#wiring-them-up-ffi_statet).
 
 ---
 

@@ -116,7 +116,8 @@ duckdb-1-5 = []
 ## Enables wrappers layered on top of `duckdb-1-5` that require DuckDB **1.5.3+**.
 ## Implies (and re-enables) `duckdb-1-5`.
 ##
-## Requires `libduckdb-sys >= 1.10503.1` (DuckDB 1.5.3) to be resolved by Cargo:
+## Requires `libduckdb-sys >= 1.10503.0` (DuckDB 1.5.3; CI's `test-older-engines`
+## job builds it against exactly that) to be resolved by Cargo:
 ## the gated items reference C type-enum constants that do not exist in
 ## libduckdb-sys 1.5.0–1.5.2, so enabling this feature against an older binding
 ## is a compile error (by design — it surfaces the version mismatch immediately).
@@ -137,15 +138,15 @@ duckdb-1-5-3 = ["duckdb-1-5"]
 ##
 ## Unlike the other version features, the floor here is set by the **bindings**,
 ## not by DuckDB: every one of these functions is present in `duckdb_ext_api_v1`
-## from DuckDB **1.5.0** onward (verified against the v1.5.0 `duckdb_extension.h`),
-## but `libduckdb-sys` declared `ArrowSchema` / `ArrowArray` as opaque
+## from DuckDB **1.4.4** onward (verified against the v1.4.4 and v1.5.0
+## `duckdb_extension.h`), but `libduckdb-sys` declared `ArrowSchema` / `ArrowArray` as opaque
 ## zero-sized bindgen placeholders (`_unused: [u8; 0]`) until **1.10504.0**,
 ## which is the first release to ship the real `#[repr(C)]` Arrow C Data
 ## Interface layouts. You cannot allocate the caller-owned structs these APIs
 ## require before that.
 ##
-## So: requires `libduckdb-sys >= 1.10504.0` to be resolved by Cargo, and a
-## DuckDB **1.5.0+** engine at run time. Enabling it against an older binding is
+## So: requires `libduckdb-sys >= 1.10504.0` to be resolved by Cargo, and, as
+## it implies `duckdb-1-5`, a DuckDB **1.5.0+** engine at run time. Enabling it against an older binding is
 ## a compile error (by design — `src/arrow.rs` carries a `const` assertion that
 ## names the cause).
 ##
@@ -163,10 +164,12 @@ duckdb-1-5-4 = ["duckdb-1-5-3"]
 # 1.5.5 is three new `duckdb_statement_type` enum values, which this crate does
 # not model. There would be nothing for such a feature to gate.
 #
-# Watch upstream `main`: it bumps DUCKDB_EXTENSION_API_VERSION_STRING to
-# "v1.5.6" -- the first bump since v1.2.0 -- and adds
-# `duckdb_create_timestamp_tz_ns` / `duckdb_get_timestamp_tz_ns`. That release
-# will warrant a new feature gate; 1.5.5 does not.
+# Nor a `duckdb-1-5-6` feature: DuckDB 1.5.6 (2026-09) bumps the C API version
+# to v1.5.6 and declares every slot stable, but its 546 declarations are the
+# v1.5.5 ones (scripts/check-abi-table.py hashes them identically), so again
+# there is nothing new to gate. Upstream `main` additionally adds
+# `duckdb_create_timestamp_tz_ns` / `duckdb_get_timestamp_tz_ns`; the release
+# that ships those will warrant a feature gate.
 
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }

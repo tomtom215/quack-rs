@@ -423,8 +423,8 @@ check); CI job `test-older-engines` runs the suite against DuckDB 1.4.4 and
 **Symptom**: code tested against the release `Cargo.lock` pins (1.5.5) aborts
 or misbehaves in an older release the same binary loads into. A default-feature
 extension loads into every release from 1.4.4; a `duckdb-1-5` one built against
-the 1.5.4 bindings has the 546-slot layout of 1.5.2 to 1.5.5, so the ABI guard
-rightly lets it load into all four.
+the 1.5.4 bindings has the 546-slot layout of 1.5.2 to 1.5.6, so the ABI guard
+rightly lets it load into all five.
 
 **Root cause**: a C function's *contract* can change in a release while its
 slot stays put. `duckdb_scalar_function_bind_get_argument` gained its `try`
@@ -533,6 +533,39 @@ and of every STRUCT field and ARRAY element vector below it, down to the next
 
 ---
 
+## L19: Addresses of constants are not identities
+
+**Status**: Fixed in `FfiState` (0.18.0): its per-type tag salt is a hash of
+`TypeId::of::<T>()`, not the address of `type_name::<T>()`. AUDIT.md 10.2
+(High) and 10.8.
+
+**Symptom**: a per-type tag compared across callbacks mismatches only in
+release builds of the user's crate — `FfiState::with_state` returns `None`,
+`destroy_callback` skips states — while debug and fat-LTO builds hide it.
+
+**Root cause**: `core::any::type_name::<T>().as_ptr()` (and a function
+pointer, and the address of any `&'static` constant) can differ between
+codegen units: `rustc` emits a private copy of a constant in each codegen unit
+that uses it, so with `codegen-units > 1` and no fat LTO (Cargo's default
+release profile) two uses of the same constant can have different addresses.
+Rust makes no address-identity guarantee for functions or constants.
+
+**Fix**: derive identity from a value, e.g. hash `TypeId::of::<T>()`.
+
+**Evidence**: a standalone crate taking `type_name::<T>().as_ptr()` for one
+`T` in 8 modules: release profile (`codegen-units = 16`, `lto = false`) → 6
+distinct addresses; dev profile → 1; `codegen-units = 1`, `lto = true` → 1.
+In quack-rs itself, `cargo test --release --lib aggregate::` with
+`CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_PROFILE_RELEASE_LTO=false`
+failed 5 tests on the address salt and passes on the `TypeId` one; the
+end-to-end suite under the same profile failed 10 of 279 (every aggregate:
+NULL or garbage results) and passes all 279. Every other
+CI build is debug or uses the repository's `codegen-units = 1`, fat-LTO
+release profile, which is why the bug got past them; CI's `test` job now
+runs this build.
+
+---
+
 ## P1: Library name must match extension name
 
 **Status**: Must be configured manually in `Cargo.toml`.
@@ -563,7 +596,8 @@ and 1.5.5 with a file stamped `-dv v1.5.5`).
 
 **Root cause**: The `-dv` flag to `append_extension_metadata.py` must be the C API version
 (e.g., `"v1.2.0"`), NOT the DuckDB release version (e.g., `"v1.4.4"` / `"v1.5.0"` / `"v1.5.1"`).
-DuckDB v1.4.x and v1.5.x (including v1.5.1) all use C API version v1.2.0 (confirmed by E2E tests).
+DuckDB v1.4.x and v1.5.0 – v1.5.5 all declare C API version v1.2.0 (confirmed by E2E tests); v1.5.6
+declares v1.5.6 and still loads v1.2.0 extensions.
 
 **Fix**: Use `quack_rs::DUCKDB_API_VERSION` constant for the init call, and use the same
 version string with `append_extension_metadata.py -dv v1.2.0`.
@@ -742,6 +776,12 @@ compiled.  The release workflow ran `cargo test --all-targets --all-features`, w
 enable `bundled-test`.  With `fail-fast: true`, macOS happened to fail first; the Linux and
 Windows jobs were also broken but were cancelled before reporting.
 
+**It happened again at v0.18.0** (2026-09): the release workflow failed on Windows in a
+`FileFlag::CreateNew` test while main was green. DuckDB's Windows file system ignores the
+exclusive-create flag (`O_EXCL` semantics), so an existing file opened instead of being refused,
+and PR CI ran no `duckdb-1-5*` tests on Windows or macOS. CI's `test-bundled` job now also runs
+the release command, `cargo test --all-targets --all-features`, on all three platforms.
+
 **The fix**: DuckDB's own C++ codebase contains an internal inline function `CreateAPIv1()`
 (in `duckdb/main/capi/extension_api.hpp`) that constructs the complete `duckdb_ext_api_v1`
 struct, setting every one of the ~573 function-pointer fields to the matching bundled DuckDB
@@ -775,7 +815,7 @@ used by extension authors and by `libduckdb-sys` bindgen) and `extension_api.hpp
 used by DuckDB's C++ extension-loader).  Both are maintained in the same DuckDB repository
 release and always have identical field counts and field *order* — verified by
 `scripts/check-abi-table.py`, which re-derives both from every release tag (459 entries for
-DuckDB 1.4.x, 545 for 1.5.0–1.5.1, 546 for 1.5.2–1.5.5).
+DuckDB 1.4.x, 545 for 1.5.0–1.5.1, 546 for 1.5.2–1.5.6).
 
 **This is a genuine DuckDB ecosystem discovery**: the combination of `loadable-extension`
 dispatch and bundled DuckDB is not documented anywhere in the `duckdb-rs` or `libduckdb-sys`
@@ -800,7 +840,7 @@ it at compiled-in offsets. The struct has two regions:
 
 | Region | Slots | Guarantee |
 |--------|-------|-----------|
-| Stable | 0–356 | Frozen since v1.2.0 — same slots, order and signatures in every release through v1.5.5 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
+| Stable | 0–356 | Frozen since v1.2.0 — same slots, order and signatures in every release through v1.5.6 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
 | Unstable | 357+ | DuckDB **inserts** entries in the middle, shifting every later slot |
 
 | DuckDB | Total slots | What moved |
@@ -809,10 +849,11 @@ it at compiled-in offsets. The struct has two regions:
 | v1.3.0 – v1.3.2 | 428 | appended |
 | v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` renamed to `duckdb_create_bignum`; appended |
 | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
-| v1.5.2 – v1.5.5 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
+| v1.5.2 – v1.5.6 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
 
-Everything behind quack-rs's `duckdb-1-5` / `duckdb-1-5-3` features — 105 C API
-functions covering scalar bind/init, copy functions, catalog access, `ErrorData`,
+Everything behind quack-rs's `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4` features — 130 C API
+functions (of the tail's 189 slots) covering scalar bind/init, copy functions, the Arrow
+bridge, catalog access, `ErrorData`,
 `FileSystem`, `Expression`, `SelectionVector`, config options, table descriptions
 and the client context — sits in the unstable region.
 

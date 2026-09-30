@@ -34,9 +34,10 @@
 //! # `DuckDB` version compatibility
 //!
 //! [`Connection`] and [`Registrar`] provide a stable API across `DuckDB` 1.4.x
-//! and 1.5.x. The underlying C API version string (`"v1.2.0"`) is unchanged
-//! across both releases, confirmed by E2E tests against both `DuckDB` 1.4.4 and
-//! `DuckDB` 1.5.0.
+//! and 1.5.x. The underlying C API version string (`"v1.2.0"`) loads in every
+//! one of them: E2E tests confirm it for `DuckDB` 1.4.4 and 1.5.0, and 1.5.6,
+//! which declares `v1.5.6`, accepts any earlier C API version (its
+//! `VersioningUtils::IsSupportedCAPIVersion`).
 //!
 //! When a future `DuckDB` release changes the C API version or adds new
 //! registration surface, additional methods will be added to [`Connection`]
@@ -151,7 +152,10 @@ pub trait Registrar {
     ///
     /// # Safety
     ///
-    /// The underlying connection must be valid for the duration of this call.
+    /// The underlying connection must be valid for the duration of this call,
+    /// and the builder's raw callbacks must fit the calls `DuckDB` makes: its
+    /// `state_size`, `init`, `destructor` and data callbacks must all describe
+    /// the same state (see [`Registrar`]'s "Why every method is `unsafe`").
     unsafe fn register_aggregate(
         &self,
         builder: AggregateFunctionBuilder,
@@ -161,7 +165,9 @@ pub trait Registrar {
     ///
     /// # Safety
     ///
-    /// The underlying connection must be valid for the duration of this call.
+    /// The underlying connection must be valid for the duration of this call,
+    /// and within each overload the raw callbacks must all describe the same
+    /// state (see [`Registrar`]'s "Why every method is `unsafe`").
     unsafe fn register_aggregate_set(
         &self,
         builder: AggregateFunctionSetBuilder,

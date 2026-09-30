@@ -92,8 +92,20 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --all-targets
+      # Every other job builds tests in debug or with the repository's release
+      # profile (one codegen unit, fat LTO). A user's crate usually has Cargo's
+      # default release profile: 16 codegen units, no fat LTO, where rustc gives
+      # each codegen unit its own copy of a constant. `FfiState` salted its tag
+      # with such a constant's address, so its callbacks disagreed on the tag
+      # and every aggregate state was lost; four existing unit tests fail that
+      # way, and only this build runs them so.
+      - name: Unit tests with 16 codegen units and no fat LTO
+        run: cargo test --release --lib --features duckdb-1-5-4
+        env:
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_LTO: "false"
       # `--all-targets` expands to --lib --bins --tests --benches --examples,
-      # which EXCLUDES doctests. Without this step the ~125 examples in the
+      # which EXCLUDES doctests. Without this step the ~200 examples in the
       # rustdoc were never compiled by CI -- and for an SDK the rustdoc is the
       # product. Linux only: doctests are platform-independent here.
       - if: runner.os == 'Linux'
@@ -115,7 +127,25 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo test --all-targets --features bundled-test
+      # --no-fail-fast: cargo otherwise stops at the first failing test
+      # binary, hiding failures in the ones after it.
+      - run: cargo test --all-targets --features bundled-test --no-fail-fast
+      # The release workflow's `test · <OS>` command. Without it, nothing ran
+      # the `duckdb-1-5*` tests against a real DuckDB on macOS or Windows
+      # before a tag, and v0.18.0's first tag failed on Windows while main was
+      # green (LESSONS.md, "Why macOS looked different", is the first time this
+      # happened). The extra quack-rs features leave the duckdb/libduckdb-sys
+      # features unchanged, so the DuckDB built by the step above is reused.
+      - name: Test --all-features (as release.yml does)
+        if: ${{ !cancelled() }}
+        run: cargo test --all-targets --all-features --no-fail-fast
+      # The release workflow's `doc` job: the only rustdoc pass over the
+      # `_duckdb-testing` items (`testing::InMemoryDb`).
+      - name: Doc --all-features (as release.yml does)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
   # Exercises the `bundled-test-prebuilt` path: link a pre-built libduckdb
   # instead of compiling DuckDB from C++ source. Combined with duckdb-1-5-4 this
@@ -185,7 +215,8 @@ jobs:
     # (v1.5.5), but quack-rs supports every release from v1.4.4, and a
     # `duckdb-1-5` build loads into v1.5.0 to v1.5.4 too. Their C APIs differ
     # in places (v1.4.5 is the last 1.4 release; v1.5.3 and v1.5.4 are the
-    # oldest the duckdb-1-5-3 and duckdb-1-5-4 features load into): before
+    # first whose bindings the duckdb-1-5-3 and duckdb-1-5-4 features compile
+    # against): before
     # v1.5.5 `duckdb_scalar_function_bind_get_argument`
     # copies outside any `try` (a subquery argument aborted the process);
     # before v1.5.4 `duckdb_create_decimal_type` validates nothing; before
@@ -209,7 +240,8 @@ jobs:
           - engine: v1.5.0
             crate: 1.10500.0
             features: bundled-test-prebuilt,duckdb-1-5
-          # The oldest release each version feature loads into.
+          # The first release whose bindings each version feature compiles
+          # against.
           - engine: v1.5.3
             crate: 1.10503.0
             features: bundled-test-prebuilt,duckdb-1-5-3
@@ -368,11 +400,10 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # Use --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
-      # duckdb-1-5) instead of --all-features
-      # because bundled-test requires DuckDB headers from libduckdb-sys, which may
-      # not be compiled yet when the build script runs (build scripts only
-      # wait for [build-dependencies], not [dependencies]).
+      # --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
+      # duckdb-1-5) rather than --all-features, which would compile DuckDB
+      # from source here; `test-bundled` documents --all-features on Linux,
+      # where that build is already cached.
       - run: cargo doc --no-deps --features duckdb-1-5-4
         env:
           RUSTDOCFLAGS: "-D warnings"

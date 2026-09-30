@@ -23,7 +23,7 @@ quack_rs
 ├── connection       Connection facade + Registrar trait (version-agnostic registration)
 ├── callback         scalar_callback!, table_scan_callback!, … — panic-safe callback wrapper macros
 ├── aggregate
-│   ├── state        FfiState<T> — raw-pointer lifecycle wrapper
+│   ├── state        FfiState<T> — tagged state slot: T inline (≤ 256 bytes, ≤ usize-aligned) or boxed
 │   ├── callbacks    Type aliases for the 6 DuckDB aggregate callback signatures
 │   ├── info         AggregateFunctionInfo — callback info wrapper
 │   └── builder/
@@ -191,8 +191,9 @@ callback's `set_error`, or `access.set_error` at load.
 ### 3. Bounded version range
 
 `libduckdb-sys = ">=1.4.4, <2"` — the range is intentional. Every release from
-1.4.4 to 1.5.5 declares C API `v1.2.0`, and its stable part (357 functions) is
-unchanged across them; the unstable region differs between releases (459 / 545 /
+1.4.4 to 1.5.5 declares C API `v1.2.0` (v1.5.6 declares `v1.5.6` and still loads
+`v1.2.0` extensions), and the `v1.2.0` stable part (357 functions) is unchanged
+across them; the unstable region differs between releases (459 / 545 /
 546 functions) and is checked at load by `abi.rs`. The upper bound prevents silent
 adoption of a new major-band whose C API may introduce breaking changes.
 
@@ -307,7 +308,7 @@ flowchart TD
     UPDATE["**update**(info, chunk, states[])<br/>Process one input batch · states[i] maps to chunk row i"]
     COMBINE["**combine**(info, source[], target[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: copy ALL config fields from source → target"]
     FINAL["**finalize**(info, source[], result, count, offset)<br/>Write group results to the output vector"]
-    DESTROY["**destroy**(states[], count)<br/>Free heap memory — FfiState&lt;T&gt; handles this"]
+    DESTROY["**destroy**(states[], count)<br/>Drop T (and free its box, if boxed) — FfiState&lt;T&gt; handles this"]
 
     style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```

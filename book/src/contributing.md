@@ -157,7 +157,7 @@ quack-rs/
 ├── src/
 │   ├── abi.rs                         # `DuckDB` C Extension API ABI compatibility checking
 │   ├── appender.rs                    # Bulk data appending
-│   ├── arrow.rs                       # Arrow C Data Interface bridge (`DuckDB` 1.5.0+, `duckdb-1-5-4` feature)
+│   ├── arrow.rs                       # Arrow C Data Interface bridge (`duckdb-1-5-4` feature; floor set by the `libduckdb-sys` 1.10504.0 bindings)
 │   ├── callback.rs                    # Panic-safe callback wrapper macros for `DuckDB` extension callbacks
 │   ├── catalog.rs                     # Catalog entry lookup (`DuckDB` 1.5.0+)
 │   ├── chunk_writer.rs                # Auto-sizing chunk writer for table function scan callbacks
@@ -390,7 +390,7 @@ quack-rs/
 ├── .github/workflows/ci.yml       # CI pipeline
 ├── .github/workflows/docs.yml     # GitHub Pages deployment
 ├── CONTRIBUTING.md
-├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L14, P1–P12)
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L19, P1–P12)
 ├── CHANGELOG.md
 └── README.md
 ```
@@ -400,7 +400,7 @@ quack-rs/
 ## Releasing
 
 quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering DuckDB 1.4.x
-and 1.5.x, whose C API (`v1.2.0`) is stable across both releases. The `<2` upper bound
+and 1.5.x, every one of which loads C API `v1.2.0` extensions. The `<2` upper bound
 prevents silent adoption of a future major release that may change the C API.
 Before broadening the range to a new major band:
 
@@ -410,8 +410,11 @@ Before broadening the range to a new major band:
 4. Audit all callback signatures against the new `bindgen.rs` output
 5. Update the range bounds in `Cargo.toml` (runtime and dev-deps)
 
-Versions follow [Semantic Versioning](https://semver.org/). Breaking changes
-to the public API require a major version bump.
+Versions follow [Semantic Versioning](https://semver.org/) as Cargo applies it.
+While the crate is pre-1.0, a breaking change to the public API bumps the
+**minor** version (`0.17.x` → `0.18.0`) and is marked **Breaking:** in
+`CHANGELOG.md`; see the semantic versioning policy in
+[`RELEASING.md`](https://github.com/tomtom215/quack-rs/blob/main/RELEASING.md).
 
 ---
 

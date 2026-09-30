@@ -11,8 +11,9 @@ libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
 > **Why `>=1.4.4, <2`?**
-> DuckDB 1.4.x and 1.5.x expose the same C API version (`v1.2.0`), so `quack-rs` supports
-> both with a single bounded range. The `<2` upper bound prevents silent adoption of a future
+> Every DuckDB 1.4.x and 1.5.x release loads extensions built for C API version `v1.2.0`
+> (1.5.6 declares `v1.5.6` and accepts every earlier one), so `quack-rs` supports both
+> with a single bounded range. The `<2` upper bound prevents silent adoption of a future
 > major release whose C API may change in breaking ways — making any such upgrade an explicit,
 > auditable decision. See [Extension Anatomy](../concepts/anatomy.md#version-support).
 

@@ -15,8 +15,10 @@ and destruction — so you never write raw pointer code for state management.
 
 ## `AggregateState` trait
 
-Any type that is `Default + Send + 'static` can be used as aggregate state by implementing
-the `AggregateState` marker trait:
+Any type that is `Default + Send + Sync + 'static` can be used as aggregate state by
+implementing the `AggregateState` marker trait. (The `Sync` bound is new in 0.18.0: a window's
+segment tree lets several threads read the same state as a `combine` source at once, so a state
+containing a `Cell` or `RefCell` would race.)
 
 ```rust
 use quack_rs::aggregate::AggregateState;
@@ -98,6 +100,44 @@ FfiState::<MyState>::destroy_callback(states, count);
 // Effect: for each state whose tag matches: clear the tag, then drop the T
 # }
 ```
+
+### Wiring them up: `ffi_state::<T>()`
+
+The recommended way to register those three callbacks is `ffi_state::<T>()`
+(new in 0.18.0). It installs `size_callback`, `init_callback` and
+`destroy_callback` for the same `T` in one call, so the size DuckDB allocates
+and the state `init` writes cannot disagree — wiring them one by one, a size
+callback for one type with an init callback for another writes past DuckDB's
+allocation:
+
+```rust
+# use libduckdb_sys::{duckdb_aggregate_state, duckdb_connection, duckdb_data_chunk,
+#     duckdb_function_info, duckdb_vector, idx_t};
+# use quack_rs::prelude::*;
+# #[derive(Default, Debug)] struct MyState { config: usize, total: i64 }
+# impl AggregateState for MyState {}
+# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
+# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
+# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
+    unsafe {
+        AggregateFunctionBuilder::new("my_agg")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .ffi_state::<MyState>()   // state_size + init + destructor
+            .update(update)
+            .combine(combine)
+            .finalize(finalize)
+            .register(con)?;
+    }
+    Ok(())
+}
+```
+
+`AggregateOverloadBuilder` has the same method, for each overload of an
+[`AggregateFunctionSetBuilder`](aggregate-sets.md). `update`, `combine` and
+`finalize` still read the state through `FfiState::<T>::with_state` /
+`with_state_mut` with the same `T`.
 
 ### Accessing state in callbacks
 

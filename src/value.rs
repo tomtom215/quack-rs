@@ -178,8 +178,8 @@ impl Value {
     /// diagnostics and error messages, where it works for any value type.
     ///
     /// Returns `None` if the handle is null, the rendered text is not valid
-    /// UTF-8, or the value holds a timestamp `DuckDB` cannot render (see
-    /// [`as_str`][Self::as_str]).
+    /// UTF-8, or the value is one `DuckDB` cannot render (see
+    /// [`UNRENDERABLE`]).
     #[cfg(feature = "duckdb-1-5")]
     #[must_use]
     pub fn display_string(&self) -> Option<String> {
@@ -299,8 +299,9 @@ impl Value {
 /// What [`Value::as_str`] reports for a value `DuckDB` cannot render.
 ///
 /// That is a value holding a timestamp or time payload outside the range
-/// `DuckDB` converts, or an `ARRAY` / `UNION` of a temporal type, whose
-/// elements the C API gives no way to check first.
+/// `DuckDB` converts, a `DECIMAL` wider than its type, a `VARIANT`, a
+/// `GEOMETRY` or a type quack-rs does not know, or an `ARRAY` / `UNION` that
+/// could hold one, whose elements the C API gives no way to check first.
 pub const UNRENDERABLE: &str = "Value cannot be rendered: it holds a timestamp or time payload \
      outside the range DuckDB converts, a DECIMAL wider than its type, a VARIANT, a GEOMETRY or a \
      type quack-rs does not know (or an ARRAY / UNION that could hold one, which cannot be \

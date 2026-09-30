@@ -191,8 +191,9 @@ pub trait AggregateState: Default + Send + Sync + 'static {}
 /// // .ffi_state::<MyState>()
 /// ```
 ///
-/// **Breaking** in 0.18.0: `FfiState<T>` was a two-word struct with a public
-/// `inner: *mut T` field that always boxed `T`. The layout is now private.
+/// **Breaking** in 0.18.0: `FfiState<T>` was a one-word `#[repr(C)]` struct
+/// with a public `inner: *mut T` field that always boxed `T`. The layout is
+/// now private.
 pub struct FfiState<T: AggregateState> {
     _state: core::marker::PhantomData<fn() -> T>,
 }
@@ -224,20 +225,47 @@ impl<T: AggregateState> FfiState<T> {
     /// The tag a slot carries once initialised for this `T`: `boxed` is the
     /// box's address for a boxed `T`, and zero for an inline one.
     ///
-    /// `TAG_KEY` is salted with the address of `T`'s type name, which differs
-    /// between types whose names differ, so a slot initialised for one
-    /// aggregate's state type is not accepted by another's destructor. The
-    /// salt's low bit is cleared, so the key stays odd and never zero: a zeroed
-    /// slot never matches.
+    /// `TAG_KEY` is salted with a hash of `T`'s [`TypeId`](core::any::TypeId),
+    /// which differs between types, so a slot initialised for one aggregate's
+    /// state type is not accepted by another's destructor. The salt's low bit
+    /// is cleared, so the key stays odd and never zero: a zeroed slot never
+    /// matches.
+    ///
+    /// The salt must be the same in every callback. An address is not: the
+    /// salt was once the address of `type_name::<T>()`, and rustc gives each
+    /// codegen unit that uses a constant its own copy, so under Cargo's
+    /// default release profile (16 codegen units, no fat LTO) `init`,
+    /// `with_state` and `destroy` could each see a different address.
     fn tag_for(boxed: *const T) -> usize {
-        let salt = Self::salt(core::any::type_name::<T>().as_ptr() as usize);
-        (boxed as usize) ^ Self::TAG_KEY ^ salt
+        (boxed as usize) ^ Self::TAG_KEY ^ Self::salt(Self::type_hash())
     }
 
-    /// `name_addr` with its low bit cleared, so that `TAG_KEY ^ salt` stays
-    /// odd.
-    const fn salt(name_addr: usize) -> usize {
-        name_addr & !1
+    /// FNV-1a over `T`'s `TypeId`, as its `Hash` impl feeds it: the same
+    /// value wherever it is computed, and a constant once optimised.
+    fn type_hash() -> usize {
+        struct Fnv(u64);
+        impl core::hash::Hasher for Fnv {
+            fn finish(&self) -> u64 {
+                self.0
+            }
+            fn write(&mut self, bytes: &[u8]) {
+                for &byte in bytes {
+                    self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3);
+                }
+            }
+        }
+        let mut hasher = Fnv(0xCBF2_9CE4_8422_2325);
+        core::hash::Hash::hash(&core::any::TypeId::of::<T>(), &mut hasher);
+        // Truncation on 32-bit targets keeps the low half, which is as good a
+        // salt as any.
+        #[allow(clippy::cast_possible_truncation)]
+        let hash = core::hash::Hasher::finish(&hasher) as usize;
+        hash
+    }
+
+    /// `hash` with its low bit cleared, so that `TAG_KEY ^ salt` stays odd.
+    const fn salt(hash: usize) -> usize {
+        hash & !1
     }
 
     /// The payload: `T` itself, or the `Box<T>`'s pointer.
@@ -672,10 +700,8 @@ mod tests {
         // Pin the whole structure `addr ^ TAG_KEY ^ salt` against `TAG_KEY`
         // and the salt directly. Asserting only `tag ^ key == addr` is weaker:
         // it also holds when the second XOR is an AND and `addr` is a submask
-        // of the salt, and the salt is the type-name pointer, so whether that
-        // coincidence occurs depends on the run's address layout -- the
-        // assertion below does not.
-        let salt = FfiState::<Counter>::salt(core::any::type_name::<Counter>().as_ptr() as usize);
+        // of the salt.
+        let salt = FfiState::<Counter>::salt(FfiState::<Counter>::type_hash());
         let key = FfiState::<Counter>::TAG_KEY ^ salt;
         // An inline state (null box) carries the key itself.
         assert_eq!(FfiState::<Counter>::tag_for(core::ptr::null()), key);
@@ -688,17 +714,68 @@ mod tests {
         }
     }
 
-    /// The key is odd, whatever the type name's address, so no zeroed slot
-    /// and no aligned box address can produce a tag of zero.
+    /// The key is odd, whatever the type hash, so no zeroed slot and no
+    /// aligned box address can produce a tag of zero.
     #[test]
     fn the_salt_clears_the_low_bit_so_the_key_stays_odd() {
-        for name_addr in [0x1000_usize, 0x1001, 0x7FFF_FFFF, usize::MAX] {
-            let salt = FfiState::<Counter>::salt(name_addr);
-            assert_eq!(salt & 1, 0, "{name_addr:#x}");
-            assert_eq!(salt | 1, name_addr | 1, "{name_addr:#x}");
+        for hash in [0x1000_usize, 0x1001, 0x7FFF_FFFF, usize::MAX] {
+            let salt = FfiState::<Counter>::salt(hash);
+            assert_eq!(salt & 1, 0, "{hash:#x}");
+            assert_eq!(salt | 1, hash | 1, "{hash:#x}");
             assert_eq!((FfiState::<Counter>::TAG_KEY ^ salt) & 1, 1);
         }
     }
+
+    /// Different state types get different salts, so one aggregate's
+    /// destructor does not accept another's slots.
+    #[test]
+    fn distinct_types_have_distinct_salts() {
+        let salts = [
+            FfiState::<Counter>::salt(FfiState::<Counter>::type_hash()),
+            FfiState::<Big>::salt(FfiState::<Big>::type_hash()),
+            FfiState::<Zst>::salt(FfiState::<Zst>::type_hash()),
+            FfiState::<Odd>::salt(FfiState::<Odd>::type_hash()),
+        ];
+        for (i, a) in salts.iter().enumerate() {
+            for b in &salts[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    /// Regression: the salt was the address of `type_name::<T>()`, and rustc
+    /// gives each codegen unit its own copy of a constant, so callbacks in
+    /// different codegen units computed different tags for one type and
+    /// `with_state` / `destroy` rejected every state. Each module below tends
+    /// to land in its own codegen unit; with the address salt, a release build
+    /// with 16 codegen units and no fat LTO got 6 distinct tags from 8 of them.
+    /// Only such a build can fail here: CI runs this test that way.
+    #[test]
+    fn the_tag_is_the_same_in_every_codegen_unit() {
+        let tags = [
+            cgu1::tag(),
+            cgu2::tag(),
+            cgu3::tag(),
+            cgu4::tag(),
+            cgu5::tag(),
+            cgu6::tag(),
+            cgu7::tag(),
+            cgu8::tag(),
+        ];
+        assert!(tags.iter().all(|&t| t == tags[0]), "{tags:x?}");
+    }
+
+    macro_rules! tag_in_own_module {
+        ($($m:ident),*) => {$(
+            mod $m {
+                #[inline(never)]
+                pub fn tag() -> usize {
+                    super::FfiState::<super::Counter>::tag_for(core::ptr::null())
+                }
+            }
+        )*};
+    }
+    tag_in_own_module!(cgu1, cgu2, cgu3, cgu4, cgu5, cgu6, cgu7, cgu8);
 
     #[test]
     fn a_small_state_is_stored_inline_after_a_tag() {

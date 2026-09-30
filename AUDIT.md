@@ -361,7 +361,7 @@ memory is the harder half.
 |---|---|---|
 | `miri` | Pointer provenance, aliasing, initialisation, leaks, over the pure-Rust half | Found D5 and D4. Ran with default features until 2026-09, which `cfg`'d out every `duckdb-1-5*` module — including `src/arrow.rs`, the largest block of pure-Rust `unsafe` in the crate. Now runs `--features duckdb-1-5-4`, so the claim in this row is true for the first time. |
 | `leak-check` | LeakSanitizer over the end-to-end suite against a real libduckdb — the only way a missing `duckdb_destroy_*` is visible | Found D6; now zero leaks across 58 end-to-end tests |
-| `asan` | AddressSanitizer over the same suite — out-of-bounds writes and use-after-free, the class behind the two heap-corruption defects in v0.16.0. Added 2026-09-20, informational until it had a green run on main; blocking since 2026-09 (section 7). | Green on main (84 tests) and on the 125-test suite locally, with no suppressions |
+| `asan` | AddressSanitizer over the same suite — out-of-bounds writes and use-after-free, the class behind the two heap-corruption defects in v0.16.0. Added 2026-09-20, informational until it had a green run on main; blocking since 2026-09 (section 7). | As of 2026-09-23: green on main (84 tests) and on the then 125-test suite locally, with no suppressions. (2026-09-30: the end-to-end suite has since grown to 279 tests; later runs are in 7.6–10.8.) |
 | `fuzz` | `cargo-fuzz` over the description.yml parser, the `duckdb_string_t` decoder and the validators | ~32M execs, no crashes |
 | `semver` | `cargo-semver-checks` against the published crate — the API *is* the product | — |
 
@@ -630,6 +630,12 @@ have 548 slots; that is the `main` header (5.4), not the 1.5 branch. The escape 
 documented; the trade-off is sound, but it should be a conscious release-cadence
 commitment rather than an implicit one.
 
+2026-09-30: v1.5.6 shipped with that 546-slot layout (its declarations hash
+identically to v1.5.2 – v1.5.5 under `scripts/check-abi-table.py`), and
+`KNOWN_LAYOUTS` now lists it. From 5.4 it took the API-version bump to v1.5.6
+and the `DUCKDB_API_VERSION_AT_LEAST` bands, but not the two `timestamp_tz_ns`
+entries or the `UsesCAPIV2` routing.
+
 ### 5.4 Forward risk: DuckDB `main` re-versions the C extension API
 
 This is the largest single item on the horizon, and it is not yet released.
@@ -664,6 +670,8 @@ byte-identical to it (both fetched 2026-09-24), rework
   `<name>_init_c_api_v2`" error. Not changed yet: no released DuckDB routes this
   way (v1.5.5 is the newest tag, and the 1.5 branch has no `UsesCAPIV2`), so
   neither a V2 entry point nor a v1.5.6 pin can be tested against one.
+  (2026-09-30: v1.5.6 is out; its `extension_load.cpp` is byte-identical to
+  v1.5.5's, so it still calls `<name>_init_c_api` for `C_STRUCT_UNSTABLE`.)
 
 If this lands as designed it *fixes* the problem `abi.rs` exists to guard
 against, from 1.5.6 onward. Until then `abi.rs` is doing necessary work. When it
@@ -672,7 +680,9 @@ understands bands rather than slot counts, and a decision about which API versio
 the scaffold should target by default.
 
 `scripts/check-abi-table.py` will flag the slot-count change; it will not flag
-the *versioning* change, because that is not what it looks at. Worth watching
+the *versioning* change, because that is not what it looks at. (v1.5.6's bands
+did trip its stable-prefix rule; it now evaluates the bands for a v1.2.0
+target.) Worth watching
 `duckdb/duckdb` releases directly.
 
 ### 5.5 Smaller notes
@@ -714,9 +724,9 @@ schedule is 5.4.
 
 ---
 
-## 7. Second audit, September 2026 (v0.17.0 → 0.18.0)
+## 7. Second audit, September 2026 (0.17.0 (unpublished) → 0.18.0)
 
-Reviewed at `6455238` (v0.17.0 plus #121/#122) against **DuckDB 1.5.5**
+Reviewed at `6455238` (0.17.0 (unpublished) plus #121/#122) against **DuckDB 1.5.5**
 (prebuilt `libduckdb`, x86-64 Linux, `libduckdb-sys 1.10505.0`), with the DuckDB
 v1.5.5 source tree as the reference and the 1.4.4 and 1.5.0 CLIs and libraries
 for cross-version checks.
@@ -1179,7 +1189,12 @@ Safety or documentation obligation).
 - *Nonzero Arrow parent offset* imported the wrong rows (VALIDATED; upstream
   item 15). Refused.
 - *`destroy` on never-initialised states* (VALIDATED; upstream item 10).
-  `FfiState` carries an address-derived tag.
+  `FfiState` carries an address-derived tag. (2026-09-30: superseded. The
+  fifth audit replaced this tag with one derived from the slot's contents and
+  stored small states inline (10.2, High: moved states were never dropped),
+  and the tag's per-type salt, the address of `type_name::<T>()`, was then
+  replaced by a hash of `TypeId::of::<T>()` because that address is not
+  unique across codegen units (10.2, High; Pitfall L19).)
 - *4 GiB and over* stored modulo 2^32 by `append_bytes`, `bind_str`,
   `bind_blob` (VALIDATED for append; bind source-traced). Refused.
 - *Catalog entry handle lifetime* (VALIDATED). `CatalogEntry` owns its data.
@@ -1384,6 +1399,16 @@ DuckDB's source, cited), CONTRACT (a Safety or documentation obligation).
   in-range values, and a `GEOMETRY` from malformed WKB each made
   `duckdb_get_varchar` throw through the C API (upstream item 22). The render
   guard is now an allow-list.
+- *A `DECIMAL(38, 38)` rendered with an unwritten first byte* (VALIDATED,
+  `tests/ffi_roundtrip/value_render.rs`,
+  `a_decimal_wider_than_its_type_is_not_rendered`; cause PROVEN from
+  `DecimalToString::FormatDecimal`, which skips the integer digits when
+  `width == scale`). `sum` over two `0.6::DECIMAL(38, 38)` builds 1.2 in a
+  type with no integer digits; the text starts with whatever byte was there,
+  and rendering aborts when that byte is not valid UTF-8 (item 22). The
+  render guard renders a `DECIMAL` only if its payload fits its width
+  (`src/value/render_guard.rs`). (Added 2026-09-30; in the CHANGELOG's
+  `### Fixed` since the pass.)
 - *`ListBuilder` aborted on a large list of a wide type* (VALIDATED). DuckDB's
   ceiling is 2^37 bytes per child buffer after rounding to a power of two, not
   2^37 elements (item 23). The limit is computed from the child type, and
@@ -1407,14 +1432,12 @@ DuckDB's source, cited), CONTRACT (a Safety or documentation obligation).
   selection vector out of bounds (SIGSEGV on 1.5.0-1.5.2, an AddressSanitizer
   `heap-buffer-overflow` on 1.5.5). Both are item 24; the walk now judges a
   zero-row list's child as `DuckDB` does (by row count, not offset) and
-  refuses a dictionary fixed-size-list child under a map.
-- *That walk let a run-end-encoded child of a zero-row list through when the
-  list's offset was not 0* (VALIDATED: SIGSEGV on 1.5.5 through
-  `data_chunk_from_arrow`, and on all eight releases in plain C; item 24's
-  second site). DuckDB takes a list it converts as zero rows for empty
-  whatever its offsets say and reads its child as a plain array; the walk
-  judged emptiness by the offsets. Found by a fresh review after the fixes
-  above; the walk now judges by the row count.
+  refuses a dictionary fixed-size-list child under a map. The run-end case is
+  item 24's second site: DuckDB takes a list it converts as zero rows for
+  empty whatever its offsets say and reads its child as a plain array, while
+  the walk judged emptiness by the offsets. A fresh review after the fixes
+  above found it too. (2026-09-30: merged with a second entry that recorded
+  the run-end case again.)
 
 **High**
 
@@ -1422,6 +1445,12 @@ DuckDB's source, cited), CONTRACT (a Safety or documentation obligation).
   eight releases): offsets below the top level, nested dictionaries, recoded
   union codes, and `null_count = -1` dictionaries and unions (items 24, 26,
   28, 31 and 32). Refused.
+- *A null-typed Arrow field below the top level read as valid after its
+  first row* (VALIDATED, `tests/ffi_roundtrip/arrow_layout.rs`,
+  `null_type_children_read_null_in_every_row`). DuckDB imports such a field
+  as a constant vector, which the readers index as flat. The column is now
+  flattened whenever its type holds `NULL` at any depth, not only at the
+  top. (Added 2026-09-30; in the CHANGELOG's `### Fixed` since the pass.)
 
 - *Moved aggregate states were never dropped* (VALIDATED): the fourth audit's
   address-derived tag failed for every state radix repartitioning moved. The
@@ -1478,12 +1507,55 @@ DuckDB's source, cited), CONTRACT (a Safety or documentation obligation).
   layout walk refuses a row count above it at any node. On 64-bit that
   also refuses a length past 2^37, which threw through the C API before
   (item 4's case).
+- *On a 32-bit target, a `ListBuilder` row of more than 2^31 elements under
+  a larger `with_element_limit` reserved nothing* (PROVEN by computation;
+  the pure `reservation` in `src/vector/list_builder.rs` is pinned at the
+  `usize` overflow point by a unit test, `the_reservation_is_a_power_of_two_capped_at_the_limit_even_past_usize`;
+  not run on a 32-bit target). `next_power_of_two` overflowed to 0 in a
+  release build, so the reservation was 0 while the closure still wrote the
+  row, past the child. `checked_next_power_of_two` now falls back to the
+  limit. Limited to 32-bit targets, like the row above. (Added 2026-09-30;
+  in the CHANGELOG's `### Fixed` since the pass.)
+- *`FfiState`'s per-type salt used the address of `type_name::<T>()`, which
+  is not unique across codegen units* (VALIDATED: with Cargo's default
+  release profile forced on quack-rs's own unit tests,
+  `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_PROFILE_RELEASE_LTO=false cargo test --release --lib aggregate::`,
+  the old code fails 5 of 46 tests, four of them pre-existing
+  (`init_access_and_destroy_a_boxed_state`,
+  `init_access_and_destroy_an_inline_state`,
+  `the_initial_value_is_t_default`,
+  `ffi_state_installs_all_three_state_callbacks_for_one_type`), and the fix
+  passes all 47; CI's `test` job now runs that build. End to end, the same
+  profile on `cargo test --release --features bundled-test,duckdb-1-5-4
+  --test ffi_roundtrip` fails 10 of 279 tests on the old code — every
+  aggregate test; a sum returned NULL instead of 134209536, and
+  `counted_sum` over 0 .. 1,999,999 returned
+  2581248584435627165606484551665680 instead of 1999999000000 — and passes
+  279 of 279 with the fix).
+  `rustc` emits a private copy of the string in each codegen unit that uses
+  it: 8 modules gave 6 distinct addresses under Cargo's default release
+  profile (`codegen-units = 16`, no fat LTO), 1 in a debug build and 1 with
+  `codegen-units = 1`, `lto = true`. If the callbacks of one aggregate are
+  instantiated in different codegen units, `with_state` / `with_state_mut`
+  return `None` and `destroy_callback` skips states, so every aggregate
+  built on `FfiState` returns wrong results in such a build.
+  The salt is now a hash of `TypeId::of::<T>()`. Pitfall L19; 10.8 records
+  the same trap for function addresses. (Added 2026-09-30, after the pass.)
 
 **Medium**
 
 - A `row` closure panicking mid-row committed a half row (VALIDATED; the
-  appender is poisoned). `FileHandle` drop could abort when the close threw,
-  and `seek` past `i64::MAX` returned `Ok` on tmpfs (VALIDATED). `CombineFn`'s
+  appender is poisoned). `FileHandle` drop could abort when the close threw
+  (PROVEN from `file_system-c.cpp`: `duckdb_destroy_file_handle` calls
+  `Close()` outside any `try`; no regression test), and `seek` past
+  `i64::MAX` returned `Ok` on tmpfs (VALIDATED,
+  `tests/ffi_roundtrip/file_errors.rs`). (2026-09-30: this sentence first
+  labelled both VALIDATED. `file_errors.rs` tests `/dev/full` write and sync
+  errors and the seek, not a throwing `Close()`: no file system whose
+  `Close()` throws is reachable offline — DuckDB's local file system never
+  throws there (`local_file_system.cpp`), and the C API cannot register
+  one — so the drop fix in `src/file_system.rs` rests on the source reading.)
+  `CombineFn`'s
   documentation advised a `combine` that gave 4985 of 5000 window rows wrong
   (VALIDATED; Pitfall L15). Catalog lookups outside DuckDB's own catalog type
   (PROVEN from `catalog.cpp`; no offline reproducer). `MockRegistrar` accepted
@@ -1617,7 +1689,7 @@ exceptions"):
 | `duckdb_catalog_get_entry` | a failed autoload; a catalog that is not DuckDB's own | autoloading names and non-`duckdb` catalogs refused | item 2; PROVEN |
 | `duckdb_config_option_set_default_value` | a default that does not cast | converted by SQL first | item 3 |
 | `duckdb_data_chunk_from_arrow` | chunk allocation before its `try` | negative lengths, and row counts above `MAX_CAPACITY` at any node, refused; an allocation below that the system cannot satisfy is documented | item 4 |
-| `duckdb_destroy_file_handle` | a `Close()` that throws | closes through `duckdb_file_handle_close` first; leaks on failure | `file_errors.rs` |
+| `duckdb_destroy_file_handle` | a `Close()` that throws | closes through `duckdb_file_handle_close` first; leaks on failure | PROVEN (`file_system-c.cpp`); no test, as no file system whose `Close()` throws is reachable offline (2026-09-30: this cell first cited `file_errors.rs`, which tests write, sync and seek errors) |
 | `duckdb_client_context_get_config_option` | a missing setting (debug builds); a throwing getter | documented; no getter throws for a stored state (source, 1.5.5) | P12; 150 / 157 settings read |
 | any allocating call | allocation failure | documented; `duckdb_prepare` leaves a freed statement (item 36) | known limitations |
 
@@ -1677,7 +1749,10 @@ Local runs are x86-64 Linux against the prebuilt DuckDB 1.5.5 unless stated.
   runs both targets. CI's Miri failed once in this pass, at `ed5e381`, on
   one of this pass's own tests, which compared function addresses; Rust
   guarantees no address identity for functions. The test now runs the
-  callbacks instead (`cb02176`).
+  callbacks instead (`cb02176`). (2026-09-30: the same trap held for the
+  address of a constant: `FfiState`'s salt, the address of
+  `type_name::<T>()`, differs between codegen units in release builds;
+  10.2, High, and Pitfall L19.)
 - **Fuzzing,** libFuzzer via cargo-fuzz: `value_render` against a live DuckDB
   1.5.5, 4,047,724 runs in 10,801 s; `description_yml`, 107,229,512 runs in
   7,201 s; `duck_string`, 5,275,667,662 runs in 7,201 s (built before the

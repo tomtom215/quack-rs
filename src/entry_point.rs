@@ -425,7 +425,8 @@ where
     // Step 1: Initialize the DuckDB C API.
     //
     // PITFALL P2: Use the C API version, not the DuckDB release version.
-    // DuckDB v1.4.x and v1.5.x use C API version v1.2.0.
+    // Every DuckDB 1.4.x and 1.5.x release loads C API version v1.2.0 (1.5.6
+    // declares v1.5.6 and accepts every earlier version).
     //
     // `duckdb_rs_extension_api_init` builds a CString from `api_version` and
     // unwraps; an interior NUL would panic across the C entry point.
@@ -507,7 +508,8 @@ where
     // the C API version (e.g. "v1.2.0"), NOT the DuckDB release version.
     //
     // PITFALL P2: Use the C API version, not the DuckDB release version.
-    // DuckDB v1.4.x and v1.5.x use C API version v1.2.0.
+    // Every DuckDB 1.4.x and 1.5.x release loads C API version v1.2.0 (1.5.6
+    // declares v1.5.6 and accepts every earlier version).
     //
     // `duckdb_rs_extension_api_init` builds a CString from `api_version` and
     // unwraps; an interior NUL would panic across the C entry point.

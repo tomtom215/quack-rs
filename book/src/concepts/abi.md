@@ -13,7 +13,7 @@ the wrong slot.
 
 | Region | Slots | Guarantee |
 |--------|-------|-----------|
-| Stable | `0 .. 357` | Frozen since DuckDB v1.2.0 — same slots, same order, same signatures in every release through v1.5.5 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
+| Stable | `0 .. 357` | Frozen since DuckDB v1.2.0 — same slots, same order, same signatures in every release through v1.5.6 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
 | Unstable | `357 ..` | DuckDB **inserts** new entries in the middle, shifting every later slot |
 
 The stable prefix is what makes "build once, load anywhere" possible. The
@@ -25,9 +25,15 @@ unstable tail is not append-only:
 | v1.3.0 – v1.3.2 | 428 | appended |
 | v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` → `duckdb_create_bignum`; appended |
 | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
-| v1.5.2 – v1.5.5 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
+| v1.5.2 – v1.5.6 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
 
-Four out of the last four minor/patch families moved something.
+DuckDB v1.5.6 declares all 546 slots stable for extensions that target C API
+v1.5.6 (earlier releases declared only the first 357 stable). The layout itself
+is unchanged from v1.5.2, and quack-rs targets C API v1.2.0, so the guard below
+still applies.
+
+Every family since v1.2 changed the unstable tail, and twice (v1.5.0 and v1.5.2) an
+insertion in the middle shifted every later slot.
 
 ## Which half are you using?
 

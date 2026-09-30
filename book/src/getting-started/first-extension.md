@@ -103,9 +103,12 @@ unsafe extern "C" fn wc_state_init(info: duckdb_function_info, state: duckdb_agg
 }
 ```
 
-`size_callback` returns `size_of::<*mut WordCountState>()` — DuckDB allocates a pointer-slot
-per group. `init_callback` runs `Box::new(WordCountState::default())` and writes the pointer
-into that slot.
+`size_callback` returns `FfiState::<WordCountState>::size()` — one `usize` tag word followed
+by the state. A `T` aligned no more strictly than `usize` and at most 256 bytes (like
+`WordCountState`) is stored inline in the bytes DuckDB allocates per group; a larger or more
+strictly aligned `T` is boxed, and the slot holds the `Box` pointer. `init_callback` writes
+`WordCountState::default()` into the slot (or boxes it), then sets the tag — a value salted per
+state type, so a destructor only drops states that were initialised for its own `T`.
 
 ### 1c. `update` — accumulate one batch
 

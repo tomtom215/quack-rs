@@ -157,10 +157,11 @@ Every `quack-rs = "0.X"` / `version = "0.X"` snippet a reader copies — in
 commit that gets tagged is that PR's merge commit, so a snippet bumped in a
 follow-up PR is wrong in the tagged source, in the published `.crate` (whose
 README is what crates.io renders) and in the docs.rs build of the release.
-Find the stale ones with, for example:
+Find the stale ones by grepping for the previous version, for example (replace
+`<PREV>` with the previous minor, dots escaped — `0\.17` when releasing 0.18.0):
 
 ```bash
-git grep -n '0\.17' -- README.md book/src Cargo.toml CITATION.cff src/lib.rs
+git grep -n '<PREV>' -- README.md book/src Cargo.toml CITATION.cff src/lib.rs
 ```
 
 ### Step 4 — Commit the version bump
@@ -382,8 +383,11 @@ repository secret.
 
 ### `publish` fails: crate already published
 
-crates.io versions are immutable — you cannot overwrite a published version.
-Create a patch release instead (e.g., `0.3.1`).
+A re-run of `publish` after a successful upload is not a failure: the job
+recognises cargo's "already exists on crates.io index" (or, from older cargo,
+"already uploaded") and skips. Otherwise, crates.io versions are immutable —
+you cannot overwrite a published version. Create a patch release instead
+(e.g., `0.3.1`).
 
 ---
 
@@ -398,5 +402,8 @@ Every release produces and attaches:
 | SLSA provenance attestation | Signed link between artifact and workflow run |
 | GitHub release notes | Extracted from `CHANGELOG.md` |
 
-The `.crate` file is identical to what crates.io serves. Download and verify it
-independently with `sha256sum` or `gh attestation verify`.
+The attached `.crate` is the one the `package` job built and attested. The
+`publish` job packages again from the same tagged commit, so what crates.io
+serves should hash the same, but nothing in the workflow checks that: compare
+`sha256sum` of `https://static.crates.io/crates/quack-rs/quack-rs-X.Y.Z.crate`
+against `SHA256SUMS`, or check the attached file with `gh attestation verify`.

@@ -45,6 +45,7 @@ jobs:
   validate:
     name: Validate release tag
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version:       ${{ steps.meta.outputs.version }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
@@ -125,6 +126,7 @@ jobs:
     name: CI / ${{ matrix.name }}
     needs: validate
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       # `false`, per LESSONS.md: a release once shipped with Linux and Windows
       # broken because macOS failed first and cancelled them before they
@@ -135,15 +137,15 @@ jobs:
           - name: "test · Linux"
             os: ubuntu-latest
             toolchain: stable
-            command: cargo test --all-targets --all-features
+            command: cargo test --all-targets --all-features --no-fail-fast
           - name: "test · macOS"
             os: macos-latest
             toolchain: stable
-            command: cargo test --all-targets --all-features
+            command: cargo test --all-targets --all-features --no-fail-fast
           - name: "test · Windows"
             os: windows-latest
             toolchain: stable
-            command: cargo test --all-targets --all-features
+            command: cargo test --all-targets --all-features --no-fail-fast
           # `--all-targets` does not include doctests, and for an SDK the
           # rustdoc examples are part of the product (CONTRIBUTING.md gate 2b).
           - name: "doctest · Linux"
@@ -190,6 +192,7 @@ jobs:
     name: Security audit (cargo-deny)
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -216,6 +219,7 @@ jobs:
     name: Package and attest
     needs: [ci, security]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write      # OIDC token for SLSA attestation
@@ -277,6 +281,7 @@ jobs:
     name: Publish dry-run
     needs: [ci, security]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -298,6 +303,7 @@ jobs:
     name: Create GitHub release
     needs: [validate, package, publish-dry-run]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write  # create release, upload assets
     steps:
@@ -378,7 +384,9 @@ jobs:
             echo "::notice::GitHub release updated: $RELEASE_URL"
           else
             echo "::group::Creating GitHub release ${TAG}"
-            gh release create "$TAG" \
+            # --verify-tag: without it gh creates a missing tag at the
+            # default branch's HEAD instead of failing.
+            gh release create "$TAG" --verify-tag \
               $PRE_FLAG \
               --title "${CRATE} ${TAG}" \
               --notes-file release_notes.md \
@@ -413,6 +421,7 @@ jobs:
     name: Publish to crates.io
     needs: [validate, github-release]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # The 'crates-io' environment requires a manual approval step.
     # Configure it at: Settings → Environments → crates-io → Required reviewers
     environment:
@@ -441,7 +450,9 @@ jobs:
           # Idempotent: if a re-run publishes the same version that's
           # already on crates.io, treat it as success rather than failing.
           if ! cargo publish 2>&1 | tee /tmp/publish.log; then
-            if grep -q "already uploaded" /tmp/publish.log; then
+            # cargo checks the index first ("already exists on crates.io
+            # index"); older cargo failed later at upload ("already uploaded").
+            if grep -qE "already exists on|already uploaded" /tmp/publish.log; then
               echo "::warning::$CRATE v$VERSION is already published — skipping."
             else
               echo "::error::cargo publish failed"

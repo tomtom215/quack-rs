@@ -4,8 +4,10 @@
 
 The `duckdb_ext_api_v1` struct that DuckDB hands to a loadable extension is an
 array of function pointers. Its *stable* prefix has been frozen since DuckDB
-v1.2.0, but the *unstable* remainder gains entries in the middle between
-releases, which shifts every later slot. quack-rs pins a verified
+v1.2.0, but the *unstable* remainder gained entries in the middle between
+releases, which shifts every later slot. (v1.5.6 declares every slot stable
+for extensions targeting C API v1.5.6, with the layout of v1.5.2 - v1.5.5; the
+prefix checked here is still the one a v1.2.0 target relies on.) quack-rs pins a verified
 `DuckDB release -> slot count` table in `src/abi.rs` so a layout mismatch is
 caught at LOAD time instead of mis-dispatching.
 
@@ -103,78 +105,75 @@ def normalise(declaration: str) -> str:
     return text.replace("(void)", "()")
 
 
-def struct_declarations(header: str, *, unstable: bool) -> list[str]:
-    """Ordered, normalised function-pointer declarations in `duckdb_ext_api_v1`.
+# `#if DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`: from v1.5.6 the header gates each
+# band of slots on the C API version the extension targets.
+AT_LEAST = re.compile(r"^#if\s+DUCKDB_API_VERSION_AT_LEAST\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$")
 
-    The layout fingerprint is taken over these rather than over the names
-    alone, so a release that changes a signature but keeps every name is
-    caught too.
+
+def _struct_entries(header: str, *, unstable: bool, api: tuple[int, int, int] | None) -> list[str]:
+    """Raw declarations of `duckdb_ext_api_v1`, in order, as the preprocessor
+    would leave them.
+
+    `unstable` mirrors whether `DUCKDB_EXTENSION_API_VERSION_UNSTABLE` is
+    defined. `api` is the C API version the extension targets, which decides
+    each `DUCKDB_API_VERSION_AT_LEAST(...)` band (v1.5.6 and later); `None`
+    means the newest, i.e. every band. Any other `#if` is taken as true: the
+    older headers' only other conditions test the target version against
+    v1.2.0, which every target satisfies. A directive's `\\` continuation
+    lines belong to the directive, not to the next declaration.
     """
-    start = header.index("typedef struct {")
-    end = header.index("} duckdb_ext_api_v1;")
-    decls: list[str] = []
+    body = header[header.index("typedef struct {"):header.index("} duckdb_ext_api_v1;")]
+    entries: list[str] = []
     buf = ""
     stack: list[bool] = []
-    for line in header[start:end].split("\n"):
+    continued = False
+    for line in body.split("\n")[1:]:  # [1:] skips the `typedef struct {` line
         stripped = line.strip()
-        if stripped.startswith("#ifdef DUCKDB_EXTENSION_API_VERSION_UNSTABLE"):
-            stack.append(unstable)
-            continue
-        if stripped.startswith("#if"):
-            stack.append(True)
-            continue
-        if stripped.startswith("#endif"):
-            if stack:
-                stack.pop()
+        if continued:
+            continued = stripped.endswith("\\")
             continue
         if stripped.startswith("#"):
+            continued = stripped.endswith("\\")
+            if stripped.startswith("#ifdef DUCKDB_EXTENSION_API_VERSION_UNSTABLE"):
+                stack.append(unstable)
+            elif match := AT_LEAST.match(stripped):
+                band = tuple(int(g) for g in match.groups())
+                stack.append(api is None or band <= api)
+            elif stripped.startswith("#if"):
+                stack.append(True)
+            elif stripped.startswith("#endif") and stack:
+                stack.pop()
             continue
         if not all(stack):
             continue
         buf += "\n" + stripped
         if buf.strip().endswith(";"):
             if FN_PTR.search(buf):
-                decls.append(normalise(buf))
+                entries.append(buf)
             buf = ""
-    return decls
+    return entries
 
 
-def struct_fields(header: str, *, unstable: bool) -> list[str]:
+def struct_declarations(header: str, *, unstable: bool, api: tuple[int, int, int] | None = None) -> list[str]:
+    """Ordered, normalised function-pointer declarations in `duckdb_ext_api_v1`.
+
+    The layout fingerprint is taken over these rather than over the names
+    alone, so a release that changes a signature but keeps every name is
+    caught too.
+    """
+    return [normalise(entry) for entry in _struct_entries(header, unstable=unstable, api=api)]
+
+
+def struct_fields(header: str, *, unstable: bool, api: tuple[int, int, int] | None = None) -> list[str]:
     """Ordered function-pointer names in `duckdb_ext_api_v1`.
 
-    `unstable` mirrors whether `DUCKDB_EXTENSION_API_VERSION_UNSTABLE` is
-    defined. libduckdb-sys defines it when generating the loadable-extension
-    bindings, and DuckDB defines it when building the struct it hands out, so
-    `unstable=True` is the layout that actually matters at runtime.
+    libduckdb-sys defines `DUCKDB_EXTENSION_API_VERSION_UNSTABLE` and targets
+    the newest C API when generating the loadable-extension bindings, and
+    DuckDB builds the struct it hands out the same way, so `unstable=True,
+    api=None` is the layout that actually matters at runtime.
     """
-    start = header.index("typedef struct {")
-    end = header.index("} duckdb_ext_api_v1;")
-    fields: list[str] = []
-    buf = ""
-    stack: list[bool] = []
-    for line in header[start:end].split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("#ifdef DUCKDB_EXTENSION_API_VERSION_UNSTABLE"):
-            stack.append(unstable)
-            continue
-        if stripped.startswith("#if"):
-            stack.append(True)
-            continue
-        if stripped.startswith("#endif"):
-            if stack:
-                stack.pop()
-            continue
-        if stripped.startswith("#"):
-            continue
-        if not all(stack):
-            continue
-        buf += " " + stripped
-        if buf.strip().endswith(";"):
-            match = FN_PTR.search(buf)
-            if match:
-                fields.append(match.group(1))
-            buf = ""
-    return fields
+    return [FN_PTR.search(entry).group(1)  # type: ignore[union-attr]
+            for entry in _struct_entries(header, unstable=unstable, api=api)]
 
 
 def release_tags(*, attempts: int = 3) -> list[str] | None:
@@ -269,6 +268,7 @@ def main() -> int:
 
     rows: list[tuple[tuple[int, int, int], int]] = []
     stable_counts: set[int] = set()
+    stable_prefixes: dict[str, list[str]] = {}
     layout_by_slots: dict[int, str] = {}
     problems: list[str] = []
     unfetchable: list[str] = []
@@ -283,7 +283,11 @@ def main() -> int:
             unfetchable.append(tag)
             continue
         full = struct_fields(header, unstable=True)
-        stable = struct_fields(header, unstable=False)
+        # The prefix a stable-only extension relies on: what it sees when it
+        # targets C API v1.2.0 without the unstable surface. From v1.5.6 the
+        # header also declares later slots stable, for extensions targeting a
+        # newer C API; those are not part of this prefix.
+        stable = struct_fields(header, unstable=False, api=FIRST_RELEASE)
         # Over whole declarations, not names: two layouts with the same slot
         # count and names but a changed signature must not look the same.
         declarations = struct_declarations(header, unstable=True)
@@ -294,6 +298,10 @@ def main() -> int:
         if full[: len(stable)] != stable:
             problems.append(f"{tag}: the stable prefix is not a prefix of the full struct")
         stable_counts.add(len(stable))
+        # v1.4.0 renamed slots 114 and 138 `varint` -> `bignum`; the two types
+        # have the same layout (see STABLE_API_SLOT_COUNT's doc in src/abi.rs),
+        # and that rename is the only change the stable prefix has ever seen.
+        stable_prefixes[tag] = [d.replace("varint", "bignum") for d in declarations[: len(stable)]]
 
         previous = layout_by_slots.setdefault(len(full), digest)
         if previous != digest:
@@ -318,12 +326,24 @@ def main() -> int:
 
     table, stable_const = parse_rust_table()
 
-    if len(stable_counts) != 1:
-        problems.append(f"stable prefix size is not constant across releases: {sorted(stable_counts)}")
-    elif stable_const not in stable_counts:
+    # What STABLE_API_SLOT_COUNT promises: its slots are declared stable in
+    # every release, with the same declarations in the same order. The
+    # stable count itself may grow: v1.5.6 declares 47 slots stable (357..403,
+    # deprecated functions that sat at those positions all along) that earlier
+    # headers kept under `#ifdef DUCKDB_EXTENSION_API_VERSION_UNSTABLE`.
+    if min(stable_counts) != stable_const:
         problems.append(
-            f"STABLE_API_SLOT_COUNT is {stable_const} but upstream headers say {stable_counts.pop()}"
+            f"STABLE_API_SLOT_COUNT is {stable_const} but the smallest stable prefix "
+            f"upstream declares is {min(stable_counts)} (per release: {sorted(stable_counts)})"
         )
+    else:
+        reference_tag = next(iter(stable_prefixes))
+        reference = stable_prefixes[reference_tag][:stable_const]
+        for tag, prefix in stable_prefixes.items():
+            if prefix[:stable_const] != reference:
+                problems.append(
+                    f"{tag}: the first {stable_const} declarations differ from {reference_tag}'s"
+                )
 
     if table != derived:
         if unfetchable:
