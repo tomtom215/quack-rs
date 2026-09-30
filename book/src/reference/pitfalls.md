@@ -1,10 +1,13 @@
 # Pitfall Catalog
 
-All known DuckDB Rust FFI pitfalls, discovered while building
+The 31 known pitfalls of writing a DuckDB extension in Rust against the C
+extension API, with the symptom, root cause and fix for each. The first were
+found while building
 [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a
-production DuckDB community extension. Every future developer who builds a Rust
-DuckDB extension will hit the majority of these. quack-rs makes most of them
-impossible.
+production DuckDB community extension; the rest while building and auditing
+quack-rs. Most of them affect any Rust extension that calls the C API
+directly, and quack-rs prevents most of them. The [summary](#summary) at the
+end lists each one with its status.
 
 ---
 
@@ -91,7 +94,7 @@ init callbacks.
 
 **Status**: Made impossible by `init_extension` and the callback guards (which require `panic = "unwind"`).
 
-**Symptom**: Extension causes DuckDB to crash or behave unpredictably.
+**Symptom**: The whole DuckDB process aborts when an extension callback panics.
 
 **Root cause**: a panic cannot unwind out of an `extern "C"` function. Since
 Rust 1.81 the runtime aborts the process when one tries (before 1.81 it was
@@ -620,7 +623,7 @@ crate-type = ["cdylib", "rlib"]
 
 ## P2: Metadata version is C API version, not DuckDB version
 
-**Status**: `DUCKDB_API_VERSION` constant encodes the correct value.
+**Status**: The `DUCKDB_API_VERSION` constant holds the correct value.
 
 **Symptom**: The metadata script succeeds, and `LOAD` then refuses the file:
 "The file was built for DuckDB C API version 'v1.5.5', but we can only load
@@ -629,10 +632,17 @@ and 1.5.5 with a file stamped `-dv v1.5.5`).
 
 **Root cause**: The `-dv` flag to `append_extension_metadata.py` must be the
 C API version (`v1.2.0`), not the DuckDB release version (`v1.4.4`). These are
-different strings.
+different strings. DuckDB 1.4.x and 1.5.0 – 1.5.5 declare C API version
+`v1.2.0`; 1.5.6 declares `v1.5.6` and still loads `v1.2.0` extensions.
 
 **Fix**: Use `quack_rs::DUCKDB_API_VERSION` (`"v1.2.0"`) in `init_extension`,
 and use the same version with `append_extension_metadata.py -dv v1.2.0`.
+
+This holds only for the `C_STRUCT` ABI type. For `C_STRUCT_UNSTABLE` and `CPP`,
+`-dv` is the *exact DuckDB release*: with `USE_UNSTABLE_C_API=1` (required when
+you use quack-rs's `duckdb-1-5` features; see [P10](#p10)),
+`TARGET_DUCKDB_VERSION` must be a real release such as `v1.5.6`, and `v1.2.0`
+would pin the binary to DuckDB v1.2.0. `ScaffoldConfig` validates this pairing.
 
 ---
 
@@ -758,10 +768,11 @@ miss it entirely.
 the main `libduckdb-sys` dependency) and `bundled` (pulled in by the
 `duckdb` crate's `features = ["bundled"]`) into a single `libduckdb-sys` build
 with **both features active**. In `loadable-extension` mode every DuckDB C API
-call is routed through an `AtomicPtr<fn>` dispatch table, which is normally
-populated at extension-load time when DuckDB calls
-`duckdb_rs_extension_api_init`. In `cargo test`, no DuckDB host process loads
-the extension, so the table stays uninitialised and every call panics.
+call is routed through a dispatch table of one `AtomicPtr` per function, which
+is normally populated at load time, when DuckDB calls the extension's entry
+point and the entry point calls `duckdb_rs_extension_api_init`. In
+`cargo test`, no DuckDB host process loads the extension, so the table stays
+uninitialised and every call panics.
 
 **Discovery**: This was triggered by the crates.io release workflow (which runs
 `cargo test --all-targets --all-features`) failing on macOS. Regular CI at the time
@@ -782,8 +793,10 @@ during development and code review.
    ```
 
 2. `build.rs` — compiles the shim (via the `cc` crate) only when the
-   `bundled-test` feature is active, locating the DuckDB headers from the
-   `libduckdb-sys` build output directory.
+   `bundled-test` or `bundled-test-prebuilt` feature is active. It finds the
+   DuckDB headers through `DEP_DUCKDB_INCLUDE` (published by
+   `libduckdb-sys >= 1.10503`), falling back to the `libduckdb-sys` build
+   output directory or, for a prebuilt library, `DUCKDB_INCLUDE_DIR`.
 
 3. `InMemoryDb::open()` — calls `init_dispatch_table_once()` before opening
    the connection. That function calls `quack_rs_create_api_v1()` once and
@@ -843,8 +856,12 @@ it at compiled-in offsets. The struct has two regions:
 moves everything after it. An extension compiled against one layout and loaded
 by another calls the wrong function through the right offset.
 
-**Your action**: nothing, if you use `init_extension` — it verifies the layout
-and refuses a mismatch. Two knobs matter:
+**Your action**: use `init_extension`, which verifies the layout and refuses a
+mismatch. If you enable a `duckdb-1-5*` feature, also stamp the binary
+`C_STRUCT_UNSTABLE` with the exact DuckDB release (`USE_UNSTABLE_C_API=1` and a
+real `TARGET_DUCKDB_VERSION`, or `append_metadata --abi-type C_STRUCT_UNSTABLE
+--duckdb-version vX.Y.Z`), so that DuckDB itself refuses to load it into any
+other release. Two knobs matter:
 
 - `QUACK_RS_TARGET_DUCKDB_VERSION` at build time stamps the release you built
   against, so a `DuckDB` newer than quack-rs's table is still accepted when your
@@ -855,7 +872,8 @@ and refuses a mismatch. Two knobs matter:
   default.
 
 If your extension enables no `duckdb-1-5*` feature it only calls into the stable
-prefix, and `StableOnly` accepts every release from v1.2.0 on.
+prefix: the check reports `AbiCheck::StableOnly`, and the extension loads into
+every release from v1.2.0 on.
 
 ---
 
@@ -890,7 +908,9 @@ only reliable check is reading the implementation in `DuckDB`'s
 **Your action**: before calling `duckdb_free` on anything the C API returned,
 read the implementation. `const char *` is a strong hint that it is borrowed,
 but `duckdb_parameter_name` proves it is only a hint. Every `duckdb_free` site
-in quack-rs was audited this way — see `LESSONS.md` P11 for the full table.
+in quack-rs was audited this way; see
+[`LESSONS.md` P11](https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md#p11-const-char--returns-are-borrowed--freeing-one-corrupts-the-heap)
+for the full table.
 
 **How it was found**: by writing the first live test for copy functions. The
 module had 16 unit tests and none of them registered a copy function against a
