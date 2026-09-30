@@ -67,7 +67,8 @@ pub struct DuckInterval {
     pub months: i32,
     /// Calendar days component.
     pub days: i32,
-    /// Sub-day microseconds component.
+    /// Microseconds component. `DuckDB` does not fold it into days:
+    /// `INTERVAL '48 hours'` has 0 days and 172,800,000,000 microseconds.
     pub micros: i64,
 }
 

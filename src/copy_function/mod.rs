@@ -83,8 +83,9 @@ pub type CopyBindFn = unsafe extern "C" fn(info: duckdb_copy_function_bind_info)
 /// temporary name, which `DuckDB` renames afterwards.
 pub type CopyGlobalInitFn = unsafe extern "C" fn(info: duckdb_copy_function_global_init_info);
 
-/// Sink callback — called for each data chunk to write data, from several
-/// threads at once.
+/// Sink callback — called for each data chunk to write data. With
+/// `PER_THREAD_OUTPUT` or `PARTITION_BY` it runs on several threads at once;
+/// with neither, not in parallel (see the module docs).
 pub type CopySinkFn =
     unsafe extern "C" fn(info: duckdb_copy_function_sink_info, chunk: duckdb_data_chunk);
 

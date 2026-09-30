@@ -342,13 +342,22 @@ pub unsafe fn query_progress(con: duckdb_connection) -> QueryProgress {
 /// ```rust,no_run
 /// # use quack_rs::query::OwnedConnection;
 /// # fn demo(con: &OwnedConnection) -> Result<(), quack_rs::error::ExtensionError> {
+/// use std::sync::mpsc::{channel, RecvTimeoutError};
+/// use std::time::Duration;
+///
 /// let watchdog = con.interrupt_handle();
+/// let (done, finished) = channel::<()>();
 /// std::thread::scope(|scope| {
-///     scope.spawn(|| {
-///         std::thread::sleep(std::time::Duration::from_secs(30));
-///         watchdog.cancel();
+///     // Cancels the query only if it is still running after 30 s; returns
+///     // as soon as it finishes.
+///     scope.spawn(move || {
+///         if finished.recv_timeout(Duration::from_secs(30)) == Err(RecvTimeoutError::Timeout) {
+///             watchdog.cancel();
+///         }
 ///     });
-///     con.query("SELECT count(*) FROM huge_table")
+///     let result = con.query("SELECT count(*) FROM huge_table");
+///     drop(done);
+///     result
 /// })?;
 /// # Ok(())
 /// # }
