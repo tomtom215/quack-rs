@@ -337,7 +337,7 @@ without any DuckDB dependency:
 ```mermaid
 flowchart LR
     N["new()"] --> U["update() × N"]
-    U --> C["combine() *(optional)*"]
+    U --> C["combine() <i>(optional)</i>"]
     C --> F["finalize()"]
 ```
 

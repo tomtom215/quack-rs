@@ -1,4 +1,4 @@
-# NULL Handling
+# NULL Handling in Functions
 
 This page explains how NULL inputs reach the scalar and aggregate functions of a
 DuckDB extension written in Rust, and how to give them SQL NULL semantics.

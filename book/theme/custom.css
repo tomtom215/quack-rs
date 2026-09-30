@@ -38,13 +38,16 @@ html:not(.ayu):not(.coal):not(.navy) .book-logo-light { display: inline-block; }
 
 /* ── Typography ─────────────────────────────────────────────────────────── */
 :root {
-  --mono-font: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace,
-    SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  /* "Source Code Pro" is the face mdBook self-hosts (fonts/fonts.css): the
+     fallback when none of the preferred fonts is installed. */
+  --mono-font: "JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro",
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+/* No font-size here: mdBook already sizes `code` (--code-font-size), and
+   sizing `pre` as well compounded to ~0.77em inside code blocks. */
 code, kbd, pre {
   font-family: var(--mono-font);
-  font-size: 0.875em;
 }
 
 /* ── Content width ───────────────────────────────────────────────────────── */
@@ -55,15 +58,15 @@ code, kbd, pre {
 /* ── Inline code ─────────────────────────────────────────────────────────── */
 /* light */
 .light code:not(pre > code),
-.rust code:not(pre > code),
-.ayu code:not(pre > code) {
+.rust code:not(pre > code) {
   background: rgba(0, 0, 0, 0.06);
   border-radius: 3px;
   padding: 1px 5px;
 }
-/* dark */
+/* dark (ayu is a dark theme too) */
 .navy code:not(pre > code),
-.coal code:not(pre > code) {
+.coal code:not(pre > code),
+.ayu code:not(pre > code) {
   background: rgba(255, 255, 255, 0.08);
   border-radius: 3px;
   padding: 1px 5px;
@@ -115,14 +118,14 @@ td {
 
 /* light mode table stripes */
 .light tr:nth-child(even),
-.rust tr:nth-child(even),
-.ayu tr:nth-child(even) {
+.rust tr:nth-child(even) {
   background: rgba(0, 0, 0, 0.04);
 }
 
 /* dark mode table stripes */
 .navy tr:nth-child(even),
-.coal tr:nth-child(even) {
+.coal tr:nth-child(even),
+.ayu tr:nth-child(even) {
   background: rgba(255, 255, 255, 0.04);
 }
 
@@ -132,10 +135,18 @@ h1, h2, h3 {
 }
 
 h1 {
-  border-bottom: 2px solid currentColor;
+  /* A softened rule without fading the heading text itself. */
+  border-bottom: 2px solid color-mix(in srgb, currentColor 30%, transparent);
   padding-bottom: 0.25em;
   margin-bottom: 0.75em;
-  opacity: 0.9;
+}
+
+/* Section separators (`---`): mdBook's default is a bright full-contrast
+   line in the dark themes. */
+main hr {
+  border: none;
+  border-top: 1px solid var(--table-border-color);
+  margin: 2em 0;
 }
 
 /* ── Nav sidebar ─────────────────────────────────────────────────────────── */
@@ -171,13 +182,15 @@ h1 {
   margin-right: 4px;
 }
 
-/* ── Anchor links ────────────────────────────────────────────────────────── */
-a.header {
-  opacity: 0.5;
-  font-size: 0.8em;
+/* ── Mermaid diagrams (book/theme/mermaid-loader.js) ─────────────────────── */
+.mermaid-diagram {
+  text-align: center;
+  overflow-x: auto;
+  margin: 1.2em 0;
 }
-a.header:hover {
-  opacity: 1;
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
 }
 
 /* ── Print: hide sidebar ─────────────────────────────────────────────────── */

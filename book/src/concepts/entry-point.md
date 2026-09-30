@@ -134,15 +134,15 @@ pub unsafe extern "C" fn my_extension_init_c_api(
 
 ```mermaid
 flowchart TD
-    A["**1. duckdb_rs_extension_api_init**(info, access, version)<br/>Fills the global AtomicPtr dispatch table"]
-    L["**2. ABI layout check**<br/>Applies the AbiPolicy (Strict by default)"]
-    B["**3. access.get_database**(info)<br/>Returns the duckdb_database handle"]
-    C["**4. duckdb_connect**(db, &amp;mut con)<br/>Opens a connection for function registration"]
-    D["**5. register**(con) ← your closure<br/>A panic becomes an error"]
-    E["**6. duckdb_disconnect**(&amp;mut con)<br/>Always runs, even if registration failed"]
+    A["<b>1. duckdb_rs_extension_api_init</b>(info, access, version)<br/>Fills the global AtomicPtr dispatch table"]
+    L["<b>2. ABI layout check</b><br/>Applies the AbiPolicy (Strict by default)"]
+    B["<b>3. access.get_database</b>(info)<br/>Returns the duckdb_database handle"]
+    C["<b>4. duckdb_connect</b>(db, &amp;mut con)<br/>Opens a connection for function registration"]
+    D["<b>5. register</b>(con) ← your closure<br/>A panic becomes an error"]
+    E["<b>6. duckdb_disconnect</b>(&amp;mut con)<br/>Always runs, even if registration failed"]
     F{Error?}
-    G["return **true**"]
-    H["return **false**<br/>error reported via access.set_error"]
+    G["return <b>true</b>"]
+    H["return <b>false</b><br/>error reported via access.set_error"]
 
     A --> L --> B --> C --> D --> E --> F
     L -->|refused| H

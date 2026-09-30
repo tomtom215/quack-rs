@@ -646,6 +646,19 @@ is not grouped.
   the same bytes as Linux; fuzz seeds and images are binary.
 - The book's aggregate examples and `hello-ext` register state with
   `ffi_state::<T>()` instead of wiring `FfiState`'s three callbacks by hand.
+- The book was reviewed page by page against the source. Corrected, among
+  others: pages that said every extension binary is tied to one DuckDB
+  release and should pin `libduckdb-sys` exactly (true only for builds that
+  use the unstable API), an out-of-bounds `ChunkWriter` example, the
+  instance cache's lifetime (it holds weak references), `AbiPolicy::Warn`
+  (it prints to stderr), and links that rendered as literal brackets.
+- The site's custom `<head>` was never rendered (`book.toml` did not point
+  mdBook at `book/theme`), so every page shipped an empty description and no
+  canonical or Open Graph tags. `scripts/seo-postbuild.py`, run by
+  `docs.yml` and by CI's `book` job, now writes a canonical URL and a
+  specific description to each page and fails on a missing or duplicate
+  one; the preview image is a PNG; headings are no longer rendered at half
+  opacity; diagrams follow the theme; mermaid is pinned to 11.17.2.
 
 #### Fourth audit
 

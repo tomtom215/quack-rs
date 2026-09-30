@@ -1,4 +1,4 @@
-# State Management
+# Aggregate State
 
 This page covers aggregate state in a DuckDB aggregate function written in Rust:
 the `AggregateState` trait and `FfiState<T>`, which manages each state's lifecycle

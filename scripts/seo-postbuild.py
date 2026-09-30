@@ -56,33 +56,115 @@ HOME_SOURCE = "introduction.md"
 HOME_TITLE = "quack-rs: the Rust SDK for DuckDB loadable extensions"
 NOINDEX = {"404.html", "print.html"}
 
-# Keyed by the page's source path under book/src. Only for pages whose first
-# paragraph is not a usable summary; everything else is derived.
+# Keyed by the page's source path under book/src, for pages whose first
+# paragraph is not a complete, specific summary within MAX_LEN (a derived
+# description is cut with an ellipsis). The rest are derived. Each must fit
+# MAX_LEN; main() refuses one that does not.
 DESCRIPTION_OVERRIDES = {
-    "introduction.md": (
-        "quack-rs is a Rust SDK for DuckDB loadable extensions, no C or C++ "
-        "needed: scalar, aggregate, table, cast, copy and replacement-scan "
-        "functions, SQL macros."
+    'introduction.md': (
+        'quack-rs is a Rust SDK for DuckDB loadable extensions, no C or C++ needed: scalar, aggregate, table, cast, copy and replacement-scan functions, SQL macros.'
     ),
-    "getting-started/quick-start.md": (
-        "Build a working DuckDB extension in Rust with quack-rs in three steps: "
-        "add the dependency, write the extension, then build and load it in DuckDB."
+    'faq.md': (
+        'Answers to common questions about quack-rs: supported DuckDB versions, panics and unwinding, SQL macros, testing, publishing, and LOAD errors.'
     ),
-    "getting-started/installation.md": (
-        "Add quack-rs to a DuckDB extension crate: the Cargo.toml dependencies, "
-        "the required cdylib and panic settings, the MSRV and test dependencies."
+    'getting-started/quick-start.md': (
+        'Build a DuckDB loadable extension in Rust with quack-rs in three steps, from an empty crate to a function you can call in the DuckDB CLI.'
     ),
-    "getting-started/first-extension.md": (
-        "A walkthrough of hello-ext, the reference DuckDB extension bundled with "
-        "quack-rs: an aggregate, scalar, table and cast function, end to end."
+    'getting-started/installation.md': (
+        'The Cargo.toml dependencies, release profile and minimum Rust version a DuckDB extension built with quack-rs needs, and why panic must be unwind.'
     ),
-    "functions/replacement-scan.md": (
-        "Replacement scans let users write SELECT * FROM 'file.myformat' and have "
-        "your Rust extension scan it, the way DuckDB's CSV and Parquet readers work."
+    'getting-started/first-extension.md': (
+        'A step-by-step walkthrough of a DuckDB extension in Rust: a scalar function, an aggregate with FfiState, registration and the entry point.'
     ),
-    "functions/copy-functions.md": (
-        "Implement a custom COPY file format for DuckDB in Rust: bind, sink and "
-        "finalize callbacks for COPY TO, and a table function for COPY FROM."
+    'getting-started/scaffold.md': (
+        'Generate a complete DuckDB community extension project in Rust with quack-rs: Cargo.toml, Makefile, CI workflow, description.yml and SQL tests.'
+    ),
+    'concepts/anatomy.md': (
+        'What DuckDB expects of a loadable extension written in Rust: the shared library, the entry-point symbol, the C API dispatch table and binary compatibility.'
+    ),
+    'concepts/errors.md': (
+        'How quack-rs reports errors: the ExtensionError type, propagating errors with ?, and turning them into DuckDB errors instead of panics at the FFI boundary.'
+    ),
+    'concepts/types.md': (
+        'How quack-rs describes DuckDB column types: the TypeId enum, LogicalType for parameterized types such as DECIMAL, LIST and STRUCT, and the Rust mappings.'
+    ),
+    'concepts/abi.md': (
+        'Which DuckDB releases a quack-rs extension binary loads into, the stable and unstable C API regions, and the load-time layout check that guards them.'
+    ),
+    'contributing.md': (
+        'How to build, test and contribute to quack-rs: the toolchain, the quality gates every pull request passes, the test strategy and the code standards.'
+    ),
+    'data/nulls-and-strings.md': (
+        'Check for NULL before reading a DuckDB vector, write NULL output correctly, and read and write VARCHAR and BLOB values from a Rust extension.'
+    ),
+    'data/dates-and-times.md': (
+        'Read and write DuckDB DATE, TIME, TIMESTAMP, DECIMAL and HUGEINT values in Rust: their storage formats and the checked conversions quack-rs offers.'
+    ),
+    'data/running-sql.md': (
+        'Run SQL from a DuckDB extension written in Rust: queries, prepared statements with typed binds, streaming results, and cancelling a running query.'
+    ),
+    'data/appender.md': (
+        "Bulk-insert rows into a DuckDB table from a Rust extension with quack-rs's Appender: appending rows and chunks, flushing, and how errors poison it."
+    ),
+    'data/table-description.md': (
+        'Read the column metadata of an existing DuckDB table from a Rust extension with TableDescription: column names, types and DEFAULT values.'
+    ),
+    'data/values-and-parameters.md': (
+        'Work with DuckDB Value handles in Rust: bind-time parameters, COPY options and folded constants, with typed getters and constructors for every type.'
+    ),
+    'duckdb-1-5/arrow.md': (
+        'Convert between DuckDB data chunks and the Arrow C Data Interface in a Rust extension with quack-rs, with no arrow crate dependency (duckdb-1-5-4 feature).'
+    ),
+    'duckdb-1-5/expression.md': (
+        "Inspect and constant-fold a scalar function's argument expressions at bind time in a Rust DuckDB extension with quack-rs's Expression (DuckDB 1.5)."
+    ),
+    'duckdb-1-5/file-system.md': (
+        "Read and write files through DuckDB's virtual file system (local files, httpfs, S3) from a Rust extension with quack-rs's FileSystem and FileHandle."
+    ),
+    'duckdb-1-5/selection-vector.md': (
+        'Filter or reorder a DuckDB vector without copying it: SelectionVector in a Rust extension with quack-rs, and dictionary vectors built from one.'
+    ),
+    'functions/aggregate.md': (
+        'Write a DuckDB aggregate function in Rust with quack-rs: the state, update, combine and finalize callbacks, their signatures, and registration.'
+    ),
+    'functions/aggregate-state.md': (
+        "Manage aggregate state in a Rust DuckDB extension: the AggregateState trait, FfiState<T>'s inline or boxed storage, and ffi_state::<T>() registration."
+    ),
+    'functions/cast-functions.md': (
+        'Register a DuckDB cast function in Rust with quack-rs to convert values between types, including custom types, with per-row error handling.'
+    ),
+    'functions/null-handling.md': (
+        'How NULL inputs reach DuckDB scalar and aggregate functions written in Rust, and how to give them SQL NULL semantics with quack-rs.'
+    ),
+    'functions/replacement-scan.md': (
+        "A DuckDB replacement scan lets users query a file by path, as in SELECT * FROM 'data.myformat', and routes it to a table function in your Rust extension."
+    ),
+    'functions/copy-functions.md': (
+        'Implement a custom COPY file format for DuckDB in Rust: bind, sink and finalize callbacks for COPY TO, and a table function for COPY FROM.'
+    ),
+    'publishing.md': (
+        'Publish a DuckDB extension written in Rust to the community extensions repository: description.yml, versioning, release profile and compatibility.'
+    ),
+    'testing.md': (
+        "Test a DuckDB extension written in Rust: unit tests with quack-rs's test harnesses, in-process tests against a bundled DuckDB, and SQLLogicTest suites."
+    ),
+    'reference/type-id.md': (
+        'Reference for quack_rs::types::TypeId, the enum of DuckDB column types quack-rs accepts: each variant, its C API constant, SQL name and feature gate.'
+    ),
+    'reference/known-limitations.md': (
+        'What the DuckDB C extension API does not allow, DuckDB behaviour a Rust extension should plan around, and limitations quack-rs has since removed.'
+    ),
+    'reference/changelog.md': (
+        'The quack-rs changelog: every release of the Rust SDK for DuckDB extensions, with added, changed, fixed and security entries and migration notes.'
+    ),
+    'security/secrets.md': (
+        "Handle credentials in a DuckDB extension written in Rust with quack-rs's SecretEntry, which redacts Debug output and zeroizes memory on drop."
+    ),
+    'security/tls.md': (
+        "Inject TLS configuration into a DuckDB extension written in Rust through quack-rs's TlsConfigProvider, and audit a provider for insecure settings."
+    ),
+    'security/warnings.md': (
+        "Emit structured security warnings with severities and CWE identifiers from a DuckDB extension written in Rust, using quack-rs's warning collector."
     ),
 }
 
@@ -219,6 +301,10 @@ def process(page: Path, rel: str) -> tuple[str, str] | None:
 
 
 def main() -> int:
+    too_long = {k: len(v) for k, v in DESCRIPTION_OVERRIDES.items() if len(v) > MAX_LEN}
+    if too_long:
+        print(f"description override longer than {MAX_LEN} characters: {too_long}", file=sys.stderr)
+        return 1
     parser = argparse.ArgumentParser(description="Add per-page SEO tags to a built mdBook.")
     parser.add_argument("build_dir", nargs="?", type=Path, default=DEFAULT_BUILD)
     args = parser.parse_args()

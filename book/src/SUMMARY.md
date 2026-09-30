@@ -23,12 +23,12 @@
 
 - [Scalar Functions](functions/scalar.md)
 - [Aggregate Functions](functions/aggregate.md)
-  - [State Management](functions/aggregate-state.md)
+  - [Aggregate State](functions/aggregate-state.md)
   - [Overloading with Function Sets](functions/aggregate-sets.md)
 - [Table Functions](functions/table-functions.md)
 - [Replacement Scans](functions/replacement-scan.md)
 - [Cast Functions](functions/cast-functions.md)
-- [NULL Handling](functions/null-handling.md)
+- [NULL Handling in Functions](functions/null-handling.md)
 - [SQL Macros](functions/sql-macros.md)
 - [Copy Functions](functions/copy-functions.md)
 

@@ -43,6 +43,7 @@
   </g>
 
   <!-- Wordmark -->
+  <g transform="translate(60,0)">
   <text x="620" y="290"
         font-family="'Liberation Sans', 'Helvetica Neue', Arial, sans-serif"
         font-size="120" font-weight="700" letter-spacing="-3">
@@ -52,29 +53,29 @@
   <!-- Tagline -->
   <text x="624" y="350"
         font-family="'Liberation Sans', 'Helvetica Neue', Arial, sans-serif"
-        font-size="32" font-weight="400" letter-spacing="0.5" fill="#6B7280">
-    Production-grade Rust SDK for DuckDB extensions
+        font-size="30" font-weight="400" letter-spacing="0.5" fill="#6B7280">
+    <tspan x="624" y="342">Production-grade Rust SDK</tspan><tspan x="624" y="378">for DuckDB extensions</tspan>
   </text>
 
   <!-- Feature pills -->
   <g font-family="'Liberation Sans', 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="500">
-    <rect x="620" y="390" width="120" height="36" rx="18" fill="#F3F4F6"/>
-    <text x="680" y="414" text-anchor="middle" fill="#374151">Scalar</text>
+    <rect x="620" y="410" width="120" height="36" rx="18" fill="#F3F4F6"/>
+    <text x="680" y="434" text-anchor="middle" fill="#374151">Scalar</text>
 
-    <rect x="756" y="390" width="150" height="36" rx="18" fill="#F3F4F6"/>
-    <text x="831" y="414" text-anchor="middle" fill="#374151">Aggregate</text>
+    <rect x="756" y="410" width="150" height="36" rx="18" fill="#F3F4F6"/>
+    <text x="831" y="434" text-anchor="middle" fill="#374151">Aggregate</text>
 
-    <rect x="922" y="390" width="110" height="36" rx="18" fill="#F3F4F6"/>
-    <text x="977" y="414" text-anchor="middle" fill="#374151">Table</text>
+    <rect x="922" y="410" width="110" height="36" rx="18" fill="#F3F4F6"/>
+    <text x="977" y="434" text-anchor="middle" fill="#374151">Table</text>
 
-    <rect x="620" y="440" width="100" height="36" rx="18" fill="#F3F4F6"/>
-    <text x="670" y="464" text-anchor="middle" fill="#374151">Cast</text>
+    <rect x="620" y="460" width="100" height="36" rx="18" fill="#F3F4F6"/>
+    <text x="670" y="484" text-anchor="middle" fill="#374151">Cast</text>
 
-    <rect x="736" y="440" width="100" height="36" rx="18" fill="#F3F4F6"/>
-    <text x="786" y="464" text-anchor="middle" fill="#374151">Copy</text>
+    <rect x="736" y="460" width="100" height="36" rx="18" fill="#F3F4F6"/>
+    <text x="786" y="484" text-anchor="middle" fill="#374151">Copy</text>
 
-    <rect x="852" y="440" width="180" height="36" rx="18" fill="#F3F4F6"/>
-    <text x="942" y="464" text-anchor="middle" fill="#374151">SQL Macros</text>
+    <rect x="852" y="460" width="180" height="36" rx="18" fill="#F3F4F6"/>
+    <text x="942" y="484" text-anchor="middle" fill="#374151">SQL Macros</text>
   </g>
 
   <!-- URL -->
@@ -83,4 +84,5 @@
         font-size="22" fill="#9CA3AF">
     quack-rs.com
   </text>
+  </g>
 </svg>

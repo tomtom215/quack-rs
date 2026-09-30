@@ -36,7 +36,7 @@ also has a `combine` step that merges partial results from parallel workers.
 
 ```mermaid
 flowchart TD
-    REG["**Registration**<br/>AggregateFunctionBuilder<br/>→ duckdb_register_aggregate_function"]
+    REG["<b>Registration</b><br/>AggregateFunctionBuilder<br/>→ duckdb_register_aggregate_function"]
 
     REG     --> SIZE
     SIZE    --> INIT
@@ -45,12 +45,12 @@ flowchart TD
     COMBINE --> FINAL
     FINAL   --> DESTROY
 
-    SIZE["**state_size**()<br/>How many bytes to allocate per group?"]
-    INIT["**state_init**(state)<br/>Initialise a fresh state"]
-    UPDATE["**update**(chunk, states[])<br/>Process one input batch<br/>(NULL rows included — check is_valid)"]
-    COMBINE["**combine**(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
-    FINAL["**finalize**(states[], out, count, offset)<br/>Write count results at out[offset..], once per result batch"]
-    DESTROY["**state_destroy**(states[], count)<br/>Free memory — after finalize and for combine<br/>sources after the merge (not every state: see Known Limitations)"]
+    SIZE["<b>state_size</b>()<br/>How many bytes to allocate per group?"]
+    INIT["<b>state_init</b>(state)<br/>Initialise a fresh state"]
+    UPDATE["<b>update</b>(chunk, states[])<br/>Process one input batch<br/>(NULL rows included — check is_valid)"]
+    COMBINE["<b>combine</b>(src[], tgt[], count)<br/>Merge partial results from parallel workers<br/>⚠️ Pitfall L1: target starts fresh — copy ALL config fields"]
+    FINAL["<b>finalize</b>(states[], out, count, offset)<br/>Write count results at out[offset..], once per result batch"]
+    DESTROY["<b>state_destroy</b>(states[], count)<br/>Free memory — after finalize and for combine<br/>sources after the merge (not every state: see Known Limitations)"]
 
     style COMBINE fill:#fff3cd,stroke:#e6ac00,color:#333
 ```
