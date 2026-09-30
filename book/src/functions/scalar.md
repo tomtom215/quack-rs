@@ -1,8 +1,9 @@
 # Scalar Functions
 
-Scalar functions transform a batch of input rows into a corresponding batch of output values.
-They are the most common DuckDB extension pattern — equivalent to SQL's built-in functions
-like `length()`, `upper()`, or `sin()`.
+A DuckDB scalar function returns one output value per input row, like the built-in
+`length()`, `upper()` or `sin()`. This page shows how to write one in Rust with quack-rs:
+as a raw callback registered through `ScalarFunctionBuilder`, as a safe closure with
+`map1` / `map2`, or as a set of overloads with `ScalarFunctionSetBuilder`.
 
 ---
 
@@ -26,6 +27,10 @@ Inside the function, you:
 1. Create a `VectorReader` for each input column
 2. Create a `VectorWriter` for the output
 3. Loop over rows, checking for NULLs and transforming values
+
+A panic that unwinds out of an `extern "C"` function aborts the process. Generate the
+function with `scalar_callback!`, which reports a panic as a SQL error, or use the
+closure constructors below ([Error Handling](../concepts/errors.md#no-panics)).
 
 ---
 
@@ -52,8 +57,12 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 }
 ```
 
-The builder validates that `returns` and `function` are set before calling
-`duckdb_register_scalar_function`. If DuckDB reports failure, `register` returns `Err`.
+Before calling `duckdb_register_scalar_function`, `register` checks that `returns` and
+`function` are set and that no parameter or return type is a bare composite `TypeId`
+(`List`, `Decimal`, …; use the `*_logical` methods for those). It also refuses a
+signature that `duckdb_functions()` already lists under the same name, built-ins
+included: DuckDB would otherwise silently replace that overload for every connection,
+or make every call ambiguous. If DuckDB reports failure, `register` returns `Err`.
 
 ### Validated registration
 
@@ -75,9 +84,10 @@ ScalarFunctionBuilder::try_new(name)?   // validates name before building
 ```
 
 `try_new` validates the name as an unquoted SQL identifier: `[A-Za-z_][A-Za-z0-9_]*`,
-at most 256 characters. Mixed case is allowed (DuckDB itself ships
+at most 256 characters, and not a DuckDB keyword that cannot be called as a function
+unquoted (`order`, `coalesce`). Mixed case is allowed (DuckDB itself ships
 `formatReadableSize`). `new` does **not** validate: it only panics if the name
-contains an interior NUL byte, so use it for compile-time-known names only.
+contains an interior NUL byte, so use it for names known at compile time.
 
 ### Closures
 
@@ -85,9 +95,9 @@ contains an interior NUL byte, so use it for compile-time-known names only.
 `map2_opt` build the whole function from a Rust closure and return a
 `TypedScalarFunctionBuilder`. Its signature is fixed by the closure's types, so it
 deliberately offers only `name()`, `volatile()` and `register(con)` — no `returns`,
-`param`, `function` or `extra_info`, any of which would make DuckDB hand the
-closure vectors of a different width than it reads and writes. Register it through
-a `Registrar` with `register_typed_scalar`.
+`param`, `function`, `extra_info`, `bind` or `init`, any of which could make DuckDB
+hand the closure vectors of a different type than it reads and writes. Register it
+with `register(con)`, or through a `Registrar` with `register_typed_scalar`.
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -151,7 +161,8 @@ unsafe extern "C" fn double_it(
 #         .function(double_it).register(con).unwrap();
 # }
 # assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
-# assert_eq!(query_i64(con, "SELECT double_it(NULL::BIGINT)"), None);
+# // From a column, not a literal: `double_it(NULL::BIGINT)` is constant-folded.
+# assert_eq!(query_i64(con, "SELECT double_it(i) FROM (VALUES (NULL::BIGINT)) t(i)"), None);
 ```
 
 ---
@@ -213,7 +224,7 @@ unsafe extern "C" fn shout(
 
 ---
 
-## Overloading with Function Sets
+## Overloading with function sets
 
 If your function accepts different parameter types or arities, use `ScalarFunctionSetBuilder`
 to register multiple overloads under a single name:
@@ -257,17 +268,20 @@ on every individual function before adding it to the set
 `extra_info`, `varargs` / `varargs_logical`, `volatile`, and (DuckDB 1.5+)
 `bind` / `init`. `register` checks every overload for a return type and a
 callback before it creates any DuckDB handle, and the error names the overload's
-index. A varargs type counts as part of an overload's signature, so `f(BIGINT)`
-and `f(BIGINT, BIGINT...)` may share a set.
+index. It also refuses two overloads that accept the same call: the same argument
+types, or, with varargs, the same types at some argument count. `f(BIGINT)` and
+`f(BIGINT, BIGINT...)` both accept `f(1)`, so they cannot share a set; DuckDB would
+accept the set and then fail every such call as ambiguous. An overload that matches
+an existing function's signature is refused as for `ScalarFunctionBuilder`.
 
 ---
 
-## NULL Handling
+## NULL handling
 
 Your callback receives NULL rows whatever the setting: under the default,
 `DefaultNullHandling`, it *promises* NULL-in-NULL-out and must write the NULLs
-itself — call `chunk.propagate_nulls(&mut writer)` at the end, or use the typed
-`map1` / `map2` constructors, which do it for you
+itself — call `chunk.propagate_nulls(&mut writer)` at the end, or use the closure
+constructors (`map1`, `map2` and their `_str` forms), which do it for you
 ([Pitfall L8](../reference/pitfalls.md#l8-default_null_handling-does-not-propagate-nulls-for-scalar-functions),
 [NULL handling](null-handling.md)). A function that means to return non-NULL for
 NULL input (e.g., a `COALESCE`-like function) sets `SpecialNullHandling`:
@@ -290,8 +304,8 @@ ScalarFunctionBuilder::new("coalesce_custom")
 # }
 ```
 
-With `SpecialNullHandling`, your callback must check `VectorReader::is_valid(row)`
-and handle NULLs yourself.
+With `SpecialNullHandling`, the callback must check `VectorReader::is_valid(row)`
+itself and decide what each NULL input produces.
 
 ---
 
@@ -400,8 +414,10 @@ ScalarFunctionBuilder::new("merge_lists")
 
 ### `volatile()`
 
-Marks the function as volatile, meaning DuckDB will not cache or reuse its
-results across calls with the same arguments. Maps to
+Marks the function as volatile: DuckDB re-evaluates it for every row, even when
+its arguments are constant (as for `random()`), and never merges two identical
+calls in one query. Without it, DuckDB may evaluate a call with constant
+arguments only once. Maps to
 `duckdb_scalar_function_set_volatile`. Also available on the closure-built
 `TypedScalarFunctionBuilder`.
 
@@ -422,7 +438,7 @@ ScalarFunctionBuilder::new("random_int")
 
 ---
 
-## DuckDB 1.5.0 Additions (`duckdb-1-5`)
+## DuckDB 1.5.0 additions (`duckdb-1-5`)
 
 The following `ScalarFunctionBuilder` methods are available when the `duckdb-1-5`
 feature is enabled:
@@ -434,10 +450,12 @@ types and set the return type dynamically. Maps to
 `duckdb_scalar_function_set_bind`.
 
 The callback takes a `RawScalarBindInfo` (wrap it with `ScalarBindInfo::new`),
-not a bare `duckdb_bind_info`: `DuckDB` passes a table function's bind callback
+not a bare `duckdb_bind_info`: DuckDB passes a table function's bind callback
 a different, larger struct, and a callback written for one kind of function
 corrupts memory on the other, so the types keep them apart. `init` takes a
-`RawScalarInitInfo` for the same reason.
+`RawScalarInitInfo` for the same reason. Generate panic-safe callbacks with
+`scalar_bind_callback!` and `scalar_init_callback!`; the table-function macros
+do not type-check here.
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -482,21 +500,60 @@ ScalarFunctionBuilder::new("stateful_fn")
 ### Typed bind data and local state
 
 `ScalarBindData<T>` and `ScalarLocalState<T>` store a Rust value from the bind
-and init callbacks with a generated, panic-safe destructor:
+and init callbacks with a generated, panic-safe destructor, so no hand-written
+`Box::from_raw` is needed. A function that multiplies its argument by a factor
+fixed at bind time, and counts the rows each thread processes:
 
 ```rust
-# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
-#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# use quack_rs::scalar::{ScalarBindData, ScalarBindInfo, ScalarFunctionInfo};
-# unsafe fn demo(bind_info: ScalarBindInfo, fn_info: ScalarFunctionInfo) {
+use quack_rs::scalar::{
+    ScalarBindData, ScalarBindInfo, ScalarFunctionInfo, ScalarInitInfo, ScalarLocalState,
+};
+
 #[derive(Clone)]
 struct Factor(i64);
 
-// in the bind callback
-ScalarBindData::set(&bind_info, Factor(10));
-// in the function callback
-let factor = unsafe { ScalarBindData::<Factor>::get(&fn_info) };
+quack_rs::scalar_bind_callback!(scaled_bind, |info| {
+    // SAFETY: `info` is the argument of the running bind callback.
+    let bind = unsafe { ScalarBindInfo::new(info) };
+    ScalarBindData::set(&bind, Factor(10));
+});
+
+quack_rs::scalar_init_callback!(scaled_init, |info| {
+    // SAFETY: `info` is the argument of the running init callback.
+    let init = unsafe { ScalarInitInfo::new(info) };
+    ScalarLocalState::set(&init, 0_u64); // rows this thread has processed
+});
+
+quack_rs::scalar_callback!(scaled, |info, input, output| {
+    // SAFETY: DuckDB passes valid handles to the running callback.
+    let fn_info = unsafe { ScalarFunctionInfo::new(info) };
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    // SAFETY: `scaled_bind` stored a `Factor`, and nothing else did.
+    let factor = unsafe { ScalarBindData::<Factor>::get(&fn_info) }.map_or(1, |f| f.0);
+    // SAFETY: `scaled_init` stored a `u64` on this thread; no other borrow is live.
+    if let Some(rows) = unsafe { ScalarLocalState::<u64>::get_mut(&fn_info) } {
+        *rows += chunk.size() as u64;
+    }
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        // A NULL row holds an arbitrary value; `wrapping_mul` keeps it from
+        // overflowing, and `propagate_nulls` below overwrites it with NULL.
+        unsafe { writer.write_i64(row, reader.read_i64(row).wrapping_mul(factor)) };
+    }
+    unsafe { chunk.propagate_nulls(&mut writer) };
+});
+
+# unsafe fn demo(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
+ScalarFunctionBuilder::new("scaled")
+    .param(TypeId::BigInt)
+    .returns(TypeId::BigInt)
+    .bind(scaled_bind)
+    .init(scaled_init)
+    .function(scaled)
+    .register(con)?;
+# Ok(())
 # }
 ```
 
@@ -520,9 +577,11 @@ let factor = unsafe { ScalarBindData::<Factor>::get(&fn_info) };
 
 ## Extra info
 
-Attach arbitrary data to a scalar function using `extra_info`. This is useful for
-parameterising the function behaviour (e.g., a locale or configuration struct).
-The method is available on both `ScalarFunctionBuilder` and `ScalarOverloadBuilder`.
+Attach arbitrary data to a scalar function using `extra_info`, for example a locale
+or a configuration struct that parameterises its behaviour. The method is available
+on both `ScalarFunctionBuilder` and `ScalarOverloadBuilder`. The pointee must be
+`Send + Sync`: DuckDB passes the same pointer to the callback on every thread that
+runs the function, and the destructor runs on whichever thread releases it.
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -559,7 +618,7 @@ function callback. It exposes:
 
 - `get_extra_info() -> *mut c_void` — retrieves the extra-info pointer set during
   registration
-- `set_error(message)` — reports an error, causing DuckDB to abort the query
+- `set_error(message)` — reports an error, which fails the query
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -589,7 +648,12 @@ With the `duckdb-1-5` feature, `ScalarFunctionInfo` also provides:
 bind callback. It exposes:
 
 - `argument_count() -> u64` — number of arguments
-- `get_argument(index) -> duckdb_expression` — argument expression at `index`
+- `argument(index) -> Option<Expression>` — the argument at `index` as an RAII
+  `Expression`, before DuckDB casts it to the parameter type. On DuckDB before
+  1.5.5 it fails the bind and returns `None`, because those releases abort the
+  process when the argument is a scalar subquery
+- `get_argument(index) -> duckdb_expression` — the raw handle, with that hazard left
+  to the caller
 - `get_extra_info() -> *mut c_void` — the extra-info pointer from registration
 - `set_bind_data(data, destroy)` — stores per-query data retrievable during execution
 - `set_bind_data_copy(copy)` — the callback DuckDB uses to duplicate that data when it

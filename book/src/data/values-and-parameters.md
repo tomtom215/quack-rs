@@ -1,8 +1,12 @@
 # Values & Parameter Extraction
 
-When a table function receives bind-time parameters, DuckDB passes them as
-`duckdb_value` handles. These handles are heap-allocated and must be destroyed
-after use. The `Value` wrapper handles this automatically via RAII.
+DuckDB hands an extension single values — a table function's bind-time
+parameters, the options of a `COPY` statement, a folded constant expression — as
+`duckdb_value` handles, which are heap-allocated and must be destroyed after
+use. quack-rs wraps them in `Value`, which destroys the handle on drop and reads
+it through typed getters that return `Option` instead of aborting on SQL `NULL`.
+This page covers reading parameters with `Value`, building values, and nested
+(`LIST`, `STRUCT`, `MAP`) values.
 
 ---
 
@@ -50,7 +54,7 @@ unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
 
 | Method | Reads as | Rust type |
 |--------|----------|-----------|
-| `as_str()` | any scalar, rendered as text | `Result<String, ExtensionError>` |
+| `as_str()` | any value, cast to text | `Result<String, ExtensionError>` |
 | `as_blob()` | BLOB only | `Result<Vec<u8>, ExtensionError>` |
 | `as_i8()` | TINYINT | `Option<i8>` |
 | `as_i16()` | SMALLINT | `Option<i16>` |
@@ -65,7 +69,7 @@ unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
 | `as_f32()` | FLOAT | `Option<f32>` |
 | `as_f64()` | DOUBLE | `Option<f64>` |
 | `as_bool()` | BOOLEAN | `Option<bool>` |
-| `as_date()`, `as_time()`, `as_timestamp()`, … | the temporal types | `Option<i32>` / `Option<i64>` / … |
+| `as_date()`, `as_time()`, `as_time_tz()`, `as_timestamp()`, … | the temporal types | `Option<i32>` / `Option<i64>` / `Option<u64>` |
 | `as_interval()`, `as_uuid()` | INTERVAL, UUID | `Option<DuckInterval>`, `Option<u128>` |
 | `as_decimal()` | DECIMAL only (no cast) | `Option<Decimal>` |
 | `as_enum_index()` | ENUM only (no cast) | `Option<u64>` |
@@ -83,24 +87,29 @@ reads as `Some(42)` through `as_i64()`, a `DOUBLE` `1.5` as `Some(2)` through
   outside `TIMESTAMP_NS`'s 1677–2262 range read with `as_timestamp_ns()`, or
   a result outside the target type's range.
 
-No getter calls into DuckDB in the first three cases — DuckDB's own
-`duckdb_get_*` functions abort the process on a SQL `NULL` and crash on a null
-handle — and none modifies the value it reads (DuckDB's getters cast the value
-in place; quack-rs reads from a copy). The temporal cases are checked before
+No getter calls a `duckdb_get_*` function in the first three cases — those
+functions abort the process on a SQL `NULL` and crash on a null handle — and
+none modifies the value it reads (DuckDB's getters cast the value in place;
+quack-rs reads from a copy). The temporal cases are checked before
 the call too: DuckDB converts those pairs with a cast that throws a C++
 exception instead of failing, which aborts the process from Rust.
 
 ### Building values
 
 `Value::bigint`, `Value::varchar`, `Value::date`, `Value::interval` and the
-other scalar constructors are infallible. The temporal constructors that take
-a raw 64-bit payload — `time`, `time_tz`, `time_ns`, `timestamp`,
-`timestamp_tz`, `timestamp_s`, `timestamp_ms`, `timestamp_ns` — return
-`Result`: DuckDB stores any payload unchecked, and rendering or casting an
-out-of-range one aborts, crashes or prints garbage, so quack-rs accepts
-exactly the range DuckDB's SQL produces (`TIME` `00:00:00`–`24:00:00`, the
-`TIMESTAMP` span `290309-12-22 (BC)`–`294247-01-10` plus `±infinity`, and so
-on) and returns an error otherwise.
+other scalar constructors are infallible, with two exceptions that return
+`Result<Value, ExtensionError>`:
+
+- The temporal constructors that take a raw 64-bit payload — `time`,
+  `time_tz`, `time_ns` (with `duckdb-1-5`), `timestamp`, `timestamp_tz`,
+  `timestamp_s`, `timestamp_ms` and `timestamp_ns`. DuckDB stores any payload
+  unchecked, and rendering or casting an out-of-range one aborts, crashes or
+  prints garbage, so quack-rs accepts exactly the range DuckDB's SQL produces
+  (`TIME` `00:00:00`–`24:00:00`, the `TIMESTAMP` span
+  `290309-12-22 (BC)`–`294247-01-10` plus `±infinity`, and so on) and returns
+  an error otherwise.
+- `Value::decimal(width, scale, unscaled)`, which checks that `width` is
+  `1..=38`, `scale <= width` and `unscaled` has at most `width` digits.
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -130,8 +139,9 @@ let bytes = unsafe { bind_info.get_parameter_value(0) }.as_blob()?;
 
 ### Defaulting variants
 
-The integer, float, bool and string getters have an `_or(default)` variant
-that returns `default` wherever the plain getter returns `None` (or `Err`):
+The integer (except `as_u128`), float, bool and string getters have an
+`_or(default)` variant that returns `default` wherever the plain getter returns
+`None` (or `Err`); `as_str_or_default()` returns an empty string:
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -165,7 +175,8 @@ if val.is_sql_null() {
 
 ## Escape hatch
 
-If you need the raw handle for an API not yet wrapped:
+If you need the raw handle for an API quack-rs does not wrap, `as_raw()` borrows
+it and `into_raw()` takes ownership:
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -180,41 +191,32 @@ let raw: duckdb_value = val.into_raw();  // takes ownership, no auto-destroy
 # }
 ```
 
----
+## Nested values
 
-## `DataChunk`
+A parameter of type `LIST`, `STRUCT` or `MAP` is read element by element; each
+accessor that returns a `Value` returns an owned one.
 
-Scan callbacks receive a `duckdb_data_chunk` for output. The `DataChunk` wrapper
-provides ergonomic access:
+| Method | Returns |
+|--------|---------|
+| `list_len()` | Number of elements of a `LIST` (0 for any other type) |
+| `list_child(i)` / `list_items()` | Element `i` (`Option<Value>`) / all elements (`Vec<Value>`) |
+| `struct_field_names()` | Field names of a `STRUCT`, in order |
+| `struct_child(i)` | Field `i` of a `STRUCT` (`Option<Value>`); fields are positional |
+| `map_len()`, `map_key(i)`, `map_value(i)` | Number of pairs; key / value of pair `i` |
 
 ```rust
-# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
-#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
-# use quack_rs::prelude::*;
-use quack_rs::data_chunk::DataChunk;
-
-unsafe extern "C" fn my_scan(info: duckdb_function_info, output: duckdb_data_chunk) {
-    let chunk = unsafe { DataChunk::from_raw(output) };
-
-    // Get a writer for column 0
-    let mut writer = unsafe { chunk.writer(0) };
-    unsafe { writer.write_i64(0, 42) };
-
-    // Set the output row count (0 = end of stream)
-    unsafe { chunk.set_size(1) };
-}
+# use quack_rs::value::Value;
+# fn demo(options: &Value) -> Option<String> {
+let names = options.struct_field_names();
+let idx = names.iter().position(|n| n == "compression")?;
+options.struct_child(idx)?.as_str().ok()
+# }
 ```
 
-### Methods
+To build one, `Value::list_value` and `Value::array_value` take the **element**
+type and the items, `Value::struct_value` the `STRUCT` type and one value per
+field, and `Value::enum_value` the `ENUM` type and an index; `Value::map` and
+`Value::union_value` need `duckdb-1-5`. All return `Result<Value, ExtensionError>`.
 
-| Method | Description |
-|--------|-------------|
-| `size()` | Current row count |
-| `set_size(n)` | Set row count (0 signals end of stream) |
-| `column_count()` | Number of columns |
-| `vector(col)` | Raw `duckdb_vector` handle |
-| `writer(col)` | `VectorWriter` for a column |
-| `reader(col)` | `VectorReader` for a column |
-
-`DataChunk` is non-owning — it does not destroy the chunk on drop. DuckDB
-manages the chunk's lifetime.
+`DataChunk`, which wraps the chunk a scan callback writes its output to, is
+described in [Reading & Writing Vectors](vectors.md#datachunk).

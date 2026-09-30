@@ -1,12 +1,15 @@
 # Type System
 
-quack-rs provides `TypeId` and `LogicalType` to bridge Rust types and DuckDB column types.
+quack-rs describes DuckDB column types with two types: `TypeId`, a plain enum of DuckDB's
+type ids, and `LogicalType`, an owned handle for full type descriptions such as
+`DECIMAL(18, 3)`, `LIST(VARCHAR)` or a `STRUCT`. This page also maps each DuckDB type to its
+Rust type and vector read/write methods.
 
 ---
 
 ## `TypeId`
 
-`TypeId` is an ergonomic enum covering DuckDB's column types (the `GEOMETRY` and
+`TypeId` is an enum covering DuckDB's column types (the `GEOMETRY` and
 `VARIANT` types added in DuckDB 1.5.x are exposed behind the `duckdb-1-5-3`
 feature — see [Known Limitations](../reference/known-limitations.md)). The list below
 names the variants; it is a listing, not compilable code:
@@ -57,7 +60,7 @@ TypeId::Geometry         // duckdb-1-5-3
 TypeId::Variant          // duckdb-1-5-3
 ```
 
-`TypeId` is `Copy`, `Clone`, `Debug`, `PartialEq`, `Eq`, and `Display`.
+`TypeId` implements `Copy`, `Clone`, `Debug`, `PartialEq`, `Eq`, `Hash` and `Display`.
 
 ### SQL name
 
@@ -76,7 +79,8 @@ You rarely need this directly — it's called internally by `LogicalType::new`.
 ### Reverse conversion
 
 `TypeId::from_duckdb_type(raw)` converts a raw `DUCKDB_TYPE` constant back into a `TypeId`.
-Panics if the value does not match any known constant.
+It panics if the value does not match any known constant; `TypeId::try_from_duckdb_type(raw)`
+returns `None` instead.
 
 ```rust
 use quack_rs::types::TypeId;
@@ -89,8 +93,8 @@ assert_eq!(type_id, TypeId::BigInt);
 
 ## `LogicalType`
 
-`LogicalType` is a RAII wrapper around DuckDB's `duckdb_logical_type`. It is used internally
-by the function builders.
+`LogicalType` is an RAII wrapper around DuckDB's `duckdb_logical_type`. Creating one calls
+into DuckDB, so this block is compiled but not run:
 
 ```rust,no_run
 use quack_rs::types::{LogicalType, TypeId};
@@ -105,8 +109,10 @@ let lt = LogicalType::new(TypeId::Varchar);
 > preventing the memory leak that occurs when calling the DuckDB C API directly.
 > See [Pitfall L7](../reference/pitfalls.md#l7-logicaltype-memory-leak).
 
-You almost never need to create `LogicalType` directly. The function builders
-(`ScalarFunctionBuilder`, `AggregateFunctionBuilder`) create and destroy them internally.
+For a type a `TypeId` fully describes, pass the `TypeId` to a builder's `param` or `returns`
+method; the builder creates and destroys the `LogicalType` internally. For a parameterized
+type (`DECIMAL`, `LIST`, `MAP`, `STRUCT`, `UNION`, `ENUM`, `ARRAY`), build a `LogicalType` and
+pass it to `param_logical` or `returns_logical`.
 
 ### Constructors
 
@@ -127,9 +133,16 @@ You almost never need to create `LogicalType` directly. The function builders
 | `LogicalType::array(element_type, size)` | `ARRAY<element_type>[size]` from a `TypeId` |
 | `LogicalType::array_from_logical(element, size)` | `ARRAY<element>[size]` from an existing `LogicalType` |
 
+Every constructor except `from_raw` panics on invalid input (for example a composite
+`TypeId` passed to `new`, or a `DECIMAL` width outside 1–38) and has a `try_*` counterpart
+(`try_new`, `try_decimal`, `try_struct_type`, …) that returns
+`Result<LogicalType, LogicalTypeError>` instead. `UNION` types accept at most
+`MAX_UNION_MEMBERS` (255) members.
+
 ### Introspection methods
 
-All introspection methods are `unsafe` (require a valid DuckDB runtime handle).
+All introspection methods are `unsafe`: they call into DuckDB, so the handle must be valid
+and the C API initialized.
 
 | Method | Returns | Applicable to |
 |--------|---------|---------------|
@@ -159,7 +172,7 @@ All introspection methods are `unsafe` (require a valid DuckDB runtime handle).
 ## Rust type ↔ DuckDB type mapping
 
 When reading from or writing to vectors, use the corresponding `VectorReader`/`VectorWriter`
-method:
+method. The most common types:
 
 | DuckDB type | `TypeId` | Reader method | Writer method |
 |-------------|----------|---------------|---------------|
@@ -174,7 +187,17 @@ method:
 | `UBIGINT` | `UBigInt` | `read_u64` | `write_u64` |
 | `FLOAT` | `Float` | `read_f32` | `write_f32` |
 | `DOUBLE` | `Double` | `read_f64` | `write_f64` |
+| `HUGEINT` | `HugeInt` | `read_i128` | `write_i128` |
+| `UHUGEINT` | `UHugeInt` | `read_u128` | `write_u128` |
 | `VARCHAR` | `Varchar` | `read_str` | `write_varchar` |
+| `BLOB` | `Blob` | `read_blob` | `write_blob` |
+| `UUID` | `Uuid` | `read_uuid` | `write_uuid` |
+| `DATE` | `Date` | `read_date` | `write_date` |
+| `TIME` | `Time` | `read_time` | `write_time` |
+| `TIMESTAMP` | `Timestamp` | `read_timestamp` | `write_timestamp` |
 | `INTERVAL` | `Interval` | `read_interval` | `write_interval` |
+
+The timestamp variants (`TIMESTAMP_S`, `_MS`, `_NS`, `TIMESTAMPTZ`), `TIMETZ` and `DECIMAL`
+have matching `read_*`/`write_*` methods as well.
 
 NULLs are handled separately — see [NULL Handling & Strings](../data/nulls-and-strings.md).

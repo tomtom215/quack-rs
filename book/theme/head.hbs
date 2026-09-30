@@ -1,7 +1,7 @@
 <!-- Site-wide SEO tags. The per-page tags (canonical, meta description,
      og:title, og:description, og:url) are written into the built HTML by
      scripts/seo-postbuild.py, because mdBook 0.4 cannot turn a chapter's
-     source path (`{{ path }}`, e.g. "functions/scalar.md") into its public
+     source path (e.g. "functions/scalar.md") into its public
      URL from a template. -->
 <meta name="author" content="Tom F." />
 
@@ -20,7 +20,7 @@
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:image" content="https://quack-rs.com/assets/og-image.png" />
 <meta name="twitter:image:alt" content="quack-rs: production-grade Rust SDK for DuckDB extensions" />
-{{#if (eq path "introduction.md")}}
+{{#if (or (eq path "introduction.md") (eq path "index.md"))}}
 
 <!-- Structured data (JSON-LD), home page only. -->
 <script type="application/ld+json">

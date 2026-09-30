@@ -1,27 +1,29 @@
 # INTERVAL Type
 
 DuckDB's `INTERVAL` type represents a duration with three independent components:
-months, days, and sub-day microseconds. The `quack_rs::interval` module provides
-the `DuckInterval` struct and safe conversion utilities.
+months, days and microseconds. The `quack_rs::interval` module provides the
+`DuckInterval` struct, which matches DuckDB's in-memory layout, and overflow-safe
+conversions to microseconds.
 
 ---
 
 ## Why a custom struct?
 
-> **Pitfall P8** — The `INTERVAL` struct layout and its conversion semantics are
-> not documented in the Rust bindings. This module encodes that knowledge.
+> **Pitfall P8**: the Rust bindings do not document the `INTERVAL` layout or how
+> DuckDB converts intervals. `DuckInterval` and the functions below encode both.
+> See [Pitfall P8](../reference/pitfalls.md#p8-interval-struct-layout-is-undocumented).
 
 DuckDB's C `duckdb_interval` struct is 16 bytes with this exact layout:
 
 ```text
 offset 0:  months (i32)  — calendar months
 offset 4:  days   (i32)  — calendar days
-offset 8:  micros (i64)  — sub-day microseconds
+offset 8:  micros (i64)  — microseconds (not limited to one day)
 total:     16 bytes
 ```
 
-`DuckInterval` is `#[repr(C)]` with the same field order and is verified at
-compile time to be exactly 16 bytes.
+`DuckInterval` is `#[repr(C)]` with the same field order, and a compile-time
+assertion checks that it is exactly 16 bytes.
 
 ---
 
@@ -41,7 +43,7 @@ using `read_interval_at` internally.
 
 ---
 
-## DuckInterval fields
+## `DuckInterval` fields
 
 ```rust
 use quack_rs::interval::DuckInterval;
@@ -49,11 +51,15 @@ use quack_rs::interval::DuckInterval;
 let iv = DuckInterval {
     months: 1,    // 1 calendar month
     days: 15,     // 15 calendar days
-    micros: 3600_000_000,  // 1 hour in microseconds
+    micros: 3_600_000_000, // 1 hour in microseconds
 };
 ```
 
-Fields are public and can be constructed directly.
+The fields are public, so a `DuckInterval` can be built directly.
+
+The derived `PartialEq`, `Eq` and `Hash` compare the three fields, so
+`{ months: 1, .. }` and `{ days: 30, .. }` are different values here, while in
+SQL `INTERVAL '1 month' = INTERVAL '30 days'` is true.
 
 ### Zero interval
 
@@ -68,9 +74,16 @@ let zero = DuckInterval::default(); // same
 
 ## Converting to microseconds
 
-Intervals are not directly comparable because months and days have variable
-lengths in wall-clock time. When you need a single numeric value, convert to
-microseconds using the DuckDB approximation: **1 month = 30 days**.
+Months and days have no fixed length in wall-clock time, so an interval has no
+single exact length. When you need one number, for ordering or bucketing,
+convert to microseconds with the approximation DuckDB uses when it compares
+intervals and in `epoch_us(interval)`: **1 month = 30 days**.
+
+This is not date arithmetic: DuckDB adds an interval to a date by calendar
+months (`DATE '2024-01-31' + INTERVAL 1 MONTH` is `2024-02-29`). It also matches
+SQL comparison only when the three fields share a sign: `INTERVAL '1 month' -
+INTERVAL '1 day'` converts to the same total as `INTERVAL '29 days'` but compares
+greater in SQL.
 
 ### Checked conversion (returns `Option`)
 
@@ -89,10 +102,11 @@ let us: Option<i64> = iv.to_micros();
 # assert_eq!(us, Some(86_400_000_000 + 500_000));
 ```
 
-Returns `None` if the result would overflow `i64`. This can happen with extreme
-values (e.g., `months: i32::MAX`).
+Returns `None` if the total does not fit in an `i64`, which takes extreme values
+such as `months: i32::MAX, days: i32::MAX, micros: i64::MAX`. The sum is computed
+exactly, so large fields of opposite signs that cancel out still convert.
 
-### Saturating conversion (never panics)
+### Saturating conversion (returns `i64`)
 
 ```rust
 # use quack_rs::interval::DuckInterval;
@@ -107,7 +121,9 @@ let us: i64 = iv.to_micros_saturating();
 # assert_eq!(interval_to_micros_saturating(iv), i64::MAX);
 ```
 
-Use the saturating form in FFI callbacks where panics are not allowed.
+The saturating form clamps an out-of-range total to `i64::MAX` or `i64::MIN`.
+Neither form panics; use the checked form when an overflow must be reported
+rather than clamped.
 
 ---
 
@@ -141,8 +157,9 @@ let iv = unsafe { read_interval_at(data_ptr, row_idx) };
 # }
 ```
 
-In practice you should use `VectorReader::read_interval(row)` instead, which
-handles all safety invariants.
+In practice, use `VectorReader::read_interval(row)`, which computes the data
+pointer for you; its remaining `unsafe` contract is the row index and the
+column type.
 
 ---
 
@@ -180,6 +197,7 @@ unsafe extern "C" fn update(
 
 ## Memory layout verification
 
-`DuckInterval` includes a compile-time assertion that validates its size and
-alignment against DuckDB's C struct. If the assertion fails, the crate will not
-compile — catching any future mismatch at build time rather than runtime.
+A compile-time assertion checks that `DuckInterval` is 16 bytes with at least
+4-byte alignment, the layout of DuckDB's `duckdb_interval`. If it fails, the
+crate does not compile, so a layout change is caught at build time rather than
+at run time.

@@ -1,6 +1,8 @@
 # Error Handling
 
-quack-rs uses a single error type throughout: `ExtensionError`.
+quack-rs reports every error through one type, `ExtensionError`, and the `ExtResult<T>`
+alias. This page covers creating and propagating errors, how they reach DuckDB, and why
+extension code must not panic.
 
 ---
 
@@ -24,12 +26,11 @@ let e = ExtensionError::from_error(some_std_error);
 `ExtensionError` implements:
 - `std::error::Error`
 - `Display`, `Debug`, `Clone`, `PartialEq`, `Eq`
-- `From<&str>`, `From<String>`, `From<Box<dyn Error>>`
+- `From<&str>`, `From<String>`, `From<Box<dyn Error>>`, `From<Box<dyn Error + Send + Sync>>`
 - `From<std::io::Error>`, `From<std::ffi::NulError>`, `From<std::fmt::Error>`
 
-The `From<std::io::Error>` impl is especially useful for extensions that
-allocate runtime resources (e.g., tokio) during initialization — the `?`
-operator works directly without `.map_err()`:
+The `From<std::io::Error>` impl lets extensions that allocate runtime resources
+during initialization (a tokio runtime, for example) use `?` without `.map_err()`:
 
 ```rust
 # use quack_rs::connection::Connection;
@@ -67,7 +68,7 @@ In your registration function:
 # unsafe extern "C" fn my_fn(_: duckdb_function_info, _: duckdb_data_chunk, _: duckdb_vector) {}
 fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
     unsafe {
-        ScalarFunctionBuilder::new("my_fn")
+        ScalarFunctionBuilder::try_new("my_fn")?
             .param(TypeId::BigInt)
             .returns(TypeId::BigInt)
             .function(my_fn)
@@ -88,9 +89,9 @@ If any registration call fails, `?` returns the error from `register`, which
 
 ## Error reporting to DuckDB
 
-`init_extension` converts `ExtensionError` to a `CString` for the DuckDB error callback
-with `to_c_string`. A C string cannot hold a NUL byte, so each one is replaced with
-`?` and the rest of the message is kept:
+`init_extension` converts the `ExtensionError` to a C string for DuckDB's `set_error`
+callback, following the same rule as `ExtensionError::to_c_string`: a C string cannot
+hold a NUL byte, so each one is replaced with `?` and the rest of the message is kept:
 
 ```rust
 use quack_rs::error::ExtensionError;
@@ -103,9 +104,9 @@ DuckDB surfaces this string to the user as the extension load error.
 
 ---
 
-## No panics, ever
+## No panics
 
-The cardinal rule of DuckDB extension development:
+The central rule of DuckDB extension development:
 
 > **Never `unwrap()`, `expect()`, or `panic!()` in any code path that DuckDB may call.**
 
@@ -145,5 +146,6 @@ let s = FfiState::<MyState>::with_state_mut(state_ptr).unwrap(); // panics if No
 
 ### In `init_extension`
 
-`init_extension` wraps everything in `match` and reports errors via `set_error` — it can
-never panic regardless of what your registration closure returns.
+`init_extension` reports every error via `set_error` and does not panic itself. It also
+runs your registration closure under `catch_unwind`, so a panic there becomes a load error
+rather than a process abort (with `panic = "unwind"`).

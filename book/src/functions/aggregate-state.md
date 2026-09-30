@@ -1,11 +1,13 @@
 # State Management
 
-`FfiState<T>` manages the lifecycle of aggregate state — allocation, initialization, access,
-and destruction — so you never write raw pointer code for state management.
+This page covers aggregate state in a DuckDB aggregate function written in Rust:
+the `AggregateState` trait and `FfiState<T>`, which manages each state's lifecycle
+(allocation, initialisation, access and destruction) so that you do not write
+raw-pointer code for it.
 
-> **Known DuckDB limitation.** C-API aggregates — which is to say every
-> `FfiState<T>` user — read out of bounds under `agg(x) OVER ()` (whole-partition window frames)
-> and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
+> **Known DuckDB limitation.** Every C-API aggregate, and so every aggregate that
+> uses `FfiState<T>`, reads out of bounds under `agg(x) OVER ()` (whole-partition
+> window frames) and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
 > [Aggregate Functions](aggregate.md#known-duckdb-limitation) for the details and
 > DuckDB source lines. Do not use C-API aggregates in those two query shapes.
 >
@@ -16,9 +18,10 @@ and destruction — so you never write raw pointer code for state management.
 ## `AggregateState` trait
 
 Any type that is `Default + Send + Sync + 'static` can be used as aggregate state by
-implementing the `AggregateState` marker trait. (The `Sync` bound is new in 0.18.0: a window's
-segment tree lets several threads read the same state as a `combine` source at once, so a state
-containing a `Cell` or `RefCell` would race.)
+implementing the `AggregateState` marker trait. The `Sync` bound is new in 0.18.0: a
+window's segment tree lets several threads read the same state as a `combine` source at
+once, so a state containing a `Cell` or `RefCell` would race. Use atomics or a `Mutex`
+instead, or keep that data outside the state.
 
 ```rust
 use quack_rs::aggregate::AggregateState;
@@ -32,19 +35,21 @@ struct MyState {
 impl AggregateState for MyState {}
 ```
 
-`AggregateState` has no required methods. The `Default` bound is used in `state_init` to
-create fresh states.
+`AggregateState` has no required methods. `state_init` uses `Default` to create each
+fresh state.
 
 ---
 
 ## `FfiState<T>`
 
 `FfiState<T>` names the layout of the bytes DuckDB allocates for each group's
-state, and the callbacks that manage them. It is never constructed itself.
+state, and the callbacks that manage them. The type itself is never constructed.
 
-A small `T` — aligned no more strictly than `usize`, and at most 256 bytes —
-is stored in those bytes directly. A larger or more strictly aligned `T` is
-boxed, and the slot holds the pointer. Either way the slot starts with a tag:
+A small `T`, aligned no more strictly than `usize` and at most 256 bytes, is
+stored in those bytes directly. A larger or more strictly aligned `T` is boxed,
+and the slot holds the pointer. On wasm32, where `usize` is 4 bytes but `u64`,
+`i64` and `f64` are 8-byte aligned, a state containing one of them is therefore
+boxed. Either way the slot starts with a tag.
 
 ### Memory layout
 
@@ -57,22 +62,24 @@ DuckDB-allocated slot (state_size bytes, a multiple of sizeof(usize)):
 ```
 
 Storing `T` inline matters because DuckDB 1.4.4 to 1.5.5 does not destroy
-every state: when a grouped aggregate's result scan stops early (a `LIMIT`
+every state. When a grouped aggregate's result scan stops early (a `LIMIT`
 above it, an error, an interrupt), the states it never reached are never
-destroyed. An inline `T`'s bytes are DuckDB's, and DuckDB frees them with the
-hash table; only what `T` itself owns on the heap, or a boxed `T`'s box,
-leaks. See [Known Limitations](../reference/known-limitations.md).
+destroyed; so is one state per row of a window frame with `EXCLUDE`. An inline
+`T`'s bytes belong to DuckDB, which frees them with the hash table; only what
+`T` itself owns on the heap, or a boxed `T`'s box, leaks. See
+[Known Limitations](../reference/known-limitations.md#grouped-aggregate-states-the-scan-never-reaches-are-never-destroyed-duckdb-defect).
 
-The tag marks the slot initialised. When one `state_init` call fails — a
-panicking `T::default()`, say — DuckDB 1.4.4 to 1.5.5 still runs the
+The tag marks the slot initialised. When one `state_init` call fails (a
+panicking `T::default()`, say), DuckDB 1.4.4 to 1.5.5 still runs the
 destructor over every state it created, including states whose `state_init`
 never ran, so a slot can hold arbitrary bytes. `destroy_callback` drops only a
-slot carrying the tag `init_callback` wrote, and clears it first. The tag is
-derived from `T` (and a boxed slot's pointer), not from the slot's address,
-because DuckDB moves states by copying their bytes. That makes dropping
-garbage a matter of chance — uninitialised bytes equal to the tag — rather
-than a certainty; see `docs/upstream-duckdb-reports.md` for the DuckDB
-defect.
+slot carrying the tag `init_callback` wrote, and clears the tag first. The tag
+is derived from a hash of `T`'s `TypeId` (and, for a boxed `T`, the box's
+address), not from the slot's address, because DuckDB moves states by copying
+their bytes. The check turns dropping garbage from a certainty into a matter
+of chance: uninitialised bytes that happen to equal the tag. It mitigates the
+DuckDB defect (described in the repository's `docs/upstream-duckdb-reports.md`);
+it cannot guarantee against it.
 
 ### Lifecycle callbacks
 
@@ -86,7 +93,8 @@ defect.
 #     state: duckdb_aggregate_state, states: *mut duckdb_aggregate_state, count: idx_t) {
 // state_size: DuckDB calls this whenever an operator sizes its state buffers
 FfiState::<MyState>::size_callback(_info);
-// Returns: FfiState::<MyState>::size() (a tag word, then the i64 and usize inline)
+// Returns: FfiState::<MyState>::size() (on a 64-bit target, a tag word, then the
+// usize and i64 inline)
 
 // state_init: DuckDB calls this for every state slot it allocates, combine
 // targets included
@@ -106,9 +114,9 @@ FfiState::<MyState>::destroy_callback(states, count);
 The recommended way to register those three callbacks is `ffi_state::<T>()`
 (new in 0.18.0). It installs `size_callback`, `init_callback` and
 `destroy_callback` for the same `T` in one call, so the size DuckDB allocates
-and the state `init` writes cannot disagree — wiring them one by one, a size
-callback for one type with an init callback for another writes past DuckDB's
-allocation:
+and the state `init` writes cannot disagree. Wired one by one with the
+`state_size`, `init` and `destructor` setters, a size callback for one type
+paired with an init callback for a larger one writes past DuckDB's allocation.
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_connection, duckdb_data_chunk,
@@ -135,9 +143,9 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 ```
 
 `AggregateOverloadBuilder` has the same method, for each overload of an
-[`AggregateFunctionSetBuilder`](aggregate-sets.md). `update`, `combine` and
-`finalize` still read the state through `FfiState::<T>::with_state` /
-`with_state_mut` with the same `T`.
+[`AggregateFunctionSetBuilder`](aggregate-sets.md); the set builder itself has
+none. `update`, `combine` and `finalize` still read the state through
+`FfiState::<T>::with_state` / `with_state_mut` with the same `T`.
 
 ### Accessing state in callbacks
 
@@ -160,9 +168,11 @@ if let Some(st) = FfiState::<MyState>::with_state_mut(state_ptr) {
 # }
 ```
 
-Both methods return `Option<&T>` / `Option<&mut T>`. They return `None` if the slot's
-tag does not match (which happens after `destroy_callback` or if initialization failed). Using `Option`
-rather than panicking on null is what keeps the extension panic-free.
+The methods return `Option<&T>` and `Option<&mut T>` respectively: `None` if the
+slot's tag does not match, which happens after `destroy_callback` has run or when
+`T::default()` panicked in `state_init`. Returning `Option` instead of panicking
+keeps a panic from unwinding across the FFI boundary
+([Pitfall L3](../reference/pitfalls.md#l3-no-panic-across-ffi-boundaries)).
 
 ---
 
