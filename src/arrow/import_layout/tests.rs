@@ -328,18 +328,25 @@ fn a_node_with_more_rows_than_one_vector_holds_is_refused() {
             Node::new(1, 0, 0, vec![vec![], i32s(&[20])]),
         ])
     };
-    let at_limit = i64::try_from(max).expect("fits");
+    // A list child's reserve rounds up to a power of two, so the limit is the
+    // largest power of two within `max`: `max` itself on a 64-bit target
+    // (2^37), 2^27 on a 32-bit one (`max` is 2^28 - 1 there).
+    let at_limit = i64::try_from(max_rows(max)).expect("fits");
     assert_eq!(
         check_column(at_limit, ree(at_limit), ree_shape.clone()),
         Ok(())
     );
     let err = check_column(at_limit + 1, ree(at_limit + 1), ree_shape).expect_err("too long");
     assert!(err.contains("more rows than one DuckDB vector"), "{err}");
+    assert!(err.contains(&format!("at most {at_limit}")), "{err}");
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(max_rows(max), max);
     // With a 32-bit target's limit: 2^28 - 1 sixteen-byte elements.
     let wasm32 = (1_u64 << 28) - 1;
     assert!(fits_one_vector(1 << 27, wasm32));
     assert!(!fits_one_vector((1 << 27) + 1, wasm32));
     assert!(!fits_one_vector(u64::MAX, wasm32));
+    assert_eq!(max_rows(wasm32), 1 << 27);
 }
 
 /// A list `DuckDB` converts as zero rows takes its empty branch whatever its

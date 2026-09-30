@@ -21,10 +21,12 @@ regression test where one could be written, and the trait-bound fixes are
 pinned by `compile_fail` doctests. The exceptions: the fixes `AUDIT.md`
 marks PROVEN only, among them the entry points' NULL `duckdb_database*`,
 `AbiPolicy::Warn`'s `eprintln!` and catalog lookups in a catalog that is not
-`"duckdb"`; and the `FileHandle` drop fix, which has no test because no file
-system `DuckDB` ships throws from `Close()`. The 32-bit size fixes are
-unit-tested with a 32-bit allocation bound on a 64-bit host; no test runs on
-a 32-bit target.
+`"duckdb"`. The `FileHandle` drop fix is tested by swapping failing C API
+stubs into the dispatch table, since no file system `DuckDB` ships throws
+from `Close()`. The 32-bit size fixes are unit-tested on wasm32 itself (CI's
+`wasm` job runs the unit tests under node); what `DuckDB` does with an
+oversized allocation there is derived from its source, as no wasm32 build
+of `DuckDB` is available to test against.
 Several fixes close holes in the *safe* API — places where safe code could
 cause undefined behaviour, a data race or a process abort — and those needed
 signature or trait-bound changes, so this is a breaking release; it follows
@@ -626,6 +628,24 @@ is not grouped.
   `publish` recognises current cargo's "already exists on crates.io index"
   (it matched only the older "already uploaded"); every job has a
   `timeout-minutes`.
+- The unit tests run on wasm32, the one 32-bit target quack-rs supports: the
+  `wasm` job installs emsdk 6.0.10 and runs `cargo test --lib` under node,
+  with and without `duckdb-1-5-4`. Before, it only compiled for wasm32, so
+  the 32-bit size limits were only ever tested with 64-bit values. Two tests
+  assumed a 64-bit target and were corrected. `criterion` is now a non-wasm
+  dev-dependency (its rayon dependency does not build for wasm32).
+- `tests/file_handle_close.rs` tests `FileHandle`'s `Drop` when the close
+  fails, by swapping stubs into the C API dispatch table; it fails on the
+  old `Drop`, which destroyed without closing first.
+- `tests/ffi_roundtrip/file_errors.rs` runs on every platform: a failed
+  write through a read-only handle, and a seek past `i64::MAX`, which is
+  asserted to be refused with `InvalidInput`. Only the `/dev/full` sync
+  failure, which has no portable trigger, stays Linux-only. The over-4 GiB
+  string test runs on macOS as well as Linux.
+- `.gitattributes`: text files are LF in every checkout, so Windows CI tests
+  the same bytes as Linux; fuzz seeds and images are binary.
+- The book's aggregate examples and `hello-ext` register state with
+  `ffi_state::<T>()` instead of wiring `FfiState`'s three callbacks by hand.
 
 #### Fourth audit
 
@@ -1058,6 +1078,11 @@ is not grouped.
 
 #### Fifth audit
 
+- On a 32-bit target the Arrow layout walk's refusal of an oversized row
+  count named `vector::ops::MAX_CAPACITY` (2^28 - 1) as the limit while
+  refusing exactly that many rows: a list child's reserve rounds up to a
+  power of two, so the limit is 2^27. The message now states the effective
+  limit. Found by the first run of the unit tests on wasm32.
 - **Rendering a value aborted the process** for values ordinary SQL builds:
   a `VARIANT` holding an out-of-range timestamp, a `DECIMAL(38, 0)` holding
   `i128::MIN` (from `sum` over two in-range values), and a `GEOMETRY` built

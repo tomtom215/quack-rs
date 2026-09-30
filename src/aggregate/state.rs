@@ -567,9 +567,10 @@ mod tests {
 
     const WORD: usize = core::mem::size_of::<usize>();
 
+    /// Word-sized and word-aligned, so inline on every target.
     #[derive(Default, Debug, PartialEq)]
     struct Counter {
-        value: u64,
+        value: usize,
     }
     impl AggregateState for Counter {}
 
@@ -788,6 +789,12 @@ mod tests {
         assert_eq!(FfiState::<Odd>::size(), 2 * WORD);
         const { assert!(FfiState::<AtLimit>::INLINE) };
         assert_eq!(FfiState::<AtLimit>::size(), WORD + INLINE_LIMIT);
+        // A `u64` is 8-aligned on wasm32 too, where `usize` is 4 bytes, so a
+        // state holding one is boxed there and inline on 64-bit targets.
+        assert_eq!(
+            FfiState::<Tracked>::INLINE,
+            core::mem::align_of::<u64>() <= WORD
+        );
     }
 
     #[test]
@@ -851,7 +858,7 @@ mod tests {
 
     #[test]
     fn init_access_and_destroy_an_inline_state() {
-        lifecycle::<Counter, u64>(|c| c.value, |c| c.value = 42, 42);
+        lifecycle::<Counter, usize>(|c| c.value, |c| c.value = 42, 42);
     }
 
     #[test]

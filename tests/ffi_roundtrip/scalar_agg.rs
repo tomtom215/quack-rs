@@ -132,9 +132,10 @@ fn a_panic_payload_whose_drop_panics_becomes_a_sql_error() {
 /// `DuckDB` narrows the length with a plain cast in release builds
 /// (`StringVector::AddStringOrBlob`). It must fail the query instead.
 ///
-/// Linux only: the 4 GiB buffer is `calloc`ed and never written, so it costs
-/// no physical memory there; other platforms may commit it eagerly.
-#[cfg(target_os = "linux")]
+/// Linux and macOS only: the 4 GiB buffer is `calloc`ed and never written,
+/// and both back a large `calloc` with lazily zero-filled pages, so it costs
+/// no physical memory; Windows commits it against the page file.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_string_result_over_duckdbs_limit_is_an_error_not_a_truncation() {
     let fx = Fixture::open();

@@ -1,0 +1,12 @@
+# Every text file is LF in the repository and in every checkout, Windows
+# included. Several tests read repository files at run time or through
+# `include_str!` (tests/integration_test.rs, src/prelude.rs, the
+# description.yml corpus), and the book's doctest harness includes each page
+# verbatim, so a CRLF checkout would test different bytes than CI's Linux jobs.
+* text=auto eol=lf
+
+# Binary: never converted, never diffed as text. Fuzz seeds, text or not,
+# must reach the fuzzer byte for byte (one exercises an escaped newline).
+*.png binary
+*.bin binary
+fuzz/seeds/** binary

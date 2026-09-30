@@ -81,6 +81,10 @@ unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: i
 }
 ```
 
+You rarely need even this wrapper: `.ffi_state::<MyState>()` on the aggregate
+builder installs `destroy_callback` together with `FfiState<MyState>`'s size and
+init callbacks.
+
 ---
 
 ## L3: No panic across FFI boundaries

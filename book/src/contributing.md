@@ -344,6 +344,7 @@ quack-rs/
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
+│   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
@@ -359,7 +360,7 @@ quack-rs/
 │       ├── chunk_writer.rs            # `ChunkWriter` against a chunk `DuckDB` allocated
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
 │       ├── copy_from_columns.rs       # A typed `COPY … FROM` reader that declares a column is refused
-│       ├── file_errors.rs             # `FileHandle` reports the write and sync failures `DuckDB` reports
+│       ├── file_errors.rs             # `FileHandle` reports write, sync and seek failures, and refuses a seek past `i64::MAX`
 │       ├── handles_api.rs             # `StructWriter` child handles and `InMemoryDb::execute`'s row count
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
 │       ├── list_limits.rs             # `ListBuilder` stops at `DuckDB`'s byte ceiling, not an element count

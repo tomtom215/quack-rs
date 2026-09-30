@@ -440,6 +440,12 @@ const fn fits_one_vector(rows: u64, max: u64) -> bool {
     }
 }
 
+/// The most rows [`fits_one_vector`] accepts: the largest power of two no
+/// greater than `max` (which is at least 1).
+const fn max_rows(max: u64) -> u64 {
+    1 << max.ilog2()
+}
+
 /// Checks `node`, reached with `ctx`, and everything below it.
 ///
 /// # Safety
@@ -462,8 +468,11 @@ unsafe fn check_node(
     if !fits_one_vector(ctx.size, max) {
         return Err(format!(
             "{} rows here is more rows than one DuckDB vector can hold on this target \
-             ({max}); DuckDB would size the vector before its error handling starts",
-            ctx.size
+             (at most {}: a list child's reserve rounds up to a power of two, and \
+             {max} elements fit one allocation); DuckDB would size the vector before \
+             its error handling starts",
+            ctx.size,
+            max_rows(max)
         ));
     }
     let children = usize::try_from(node.n_children).unwrap_or(0);

@@ -66,17 +66,6 @@ struct WordCountState {
 
 impl AggregateState for WordCountState {}
 
-unsafe extern "C" fn wc_state_size(_info: duckdb_function_info) -> idx_t {
-    FfiState::<WordCountState>::size_callback(_info)
-}
-
-unsafe extern "C" fn wc_state_init(
-    info: duckdb_function_info,
-    state: duckdb_aggregate_state,
-) {
-    unsafe { FfiState::<WordCountState>::init_callback(info, state) };
-}
-
 unsafe extern "C" fn wc_update(
     _info: duckdb_function_info,
     input: duckdb_data_chunk,
@@ -131,13 +120,6 @@ unsafe extern "C" fn wc_finalize(
     }
 }
 
-unsafe extern "C" fn wc_state_destroy(
-    states: *mut duckdb_aggregate_state,
-    count: idx_t,
-) {
-    unsafe { FfiState::<WordCountState>::destroy_callback(states, count) };
-}
-
 // ============================================================================
 // Aggregate Set: typed_sum(BIGINT, BIGINT) → BIGINT
 //                typed_sum(BIGINT, BIGINT, BIGINT) → BIGINT
@@ -152,17 +134,6 @@ struct TypedSumState {
 }
 
 impl AggregateState for TypedSumState {}
-
-unsafe extern "C" fn ts_state_size(_info: duckdb_function_info) -> idx_t {
-    FfiState::<TypedSumState>::size_callback(_info)
-}
-
-unsafe extern "C" fn ts_state_init(
-    info: duckdb_function_info,
-    state: duckdb_aggregate_state,
-) {
-    unsafe { FfiState::<TypedSumState>::init_callback(info, state) };
-}
 
 unsafe extern "C" fn ts_update(
     _info: duckdb_function_info,
@@ -221,13 +192,6 @@ unsafe extern "C" fn ts_finalize(
             None => unsafe { writer.set_null(offset as usize + i) },
         }
     }
-}
-
-unsafe extern "C" fn ts_state_destroy(
-    states: *mut duckdb_aggregate_state,
-    count: idx_t,
-) {
-    unsafe { FfiState::<TypedSumState>::destroy_callback(states, count) };
 }
 
 // ============================================================================
@@ -904,12 +868,10 @@ unsafe fn register_all(con: &Connection) -> Result<(), ExtensionError> {
             AggregateFunctionBuilder::new("word_count")
                 .param(TypeId::Varchar)
                 .returns(TypeId::BigInt)
-                .state_size(wc_state_size)
-                .init(wc_state_init)
+                .ffi_state::<WordCountState>() // state_size + init + destructor
                 .update(wc_update)
                 .combine(wc_combine)
-                .finalize(wc_finalize)
-                .destructor(wc_state_destroy),
+                .finalize(wc_finalize),
         )?;
 
         // ── Aggregate Set: typed_sum (2 and 3 arg overloads) ────────────
@@ -918,12 +880,10 @@ unsafe fn register_all(con: &Connection) -> Result<(), ExtensionError> {
                 .returns(TypeId::BigInt)
                 .overloads(2..=3, |n, builder| {
                     let mut b = builder
-                        .state_size(ts_state_size)
-                        .init(ts_state_init)
+                        .ffi_state::<TypedSumState>()
                         .update(ts_update)
                         .combine(ts_combine)
-                        .finalize(ts_finalize)
-                        .destructor(ts_state_destroy);
+                        .finalize(ts_finalize);
                     for _ in 0..n {
                         b = b.param(TypeId::BigInt);
                     }

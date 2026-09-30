@@ -32,12 +32,11 @@ For a single signature, use `AggregateFunctionBuilder` directly.
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
-# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# #[derive(Default)] struct RetentionState { hits: u32 }
+# impl AggregateState for RetentionState {}
 # unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
 # unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
-# unsafe extern "C" fn state_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 use quack_rs::aggregate::AggregateFunctionSetBuilder;
 use quack_rs::types::TypeId;
 
@@ -48,12 +47,10 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
             .overloads(2..=3, |n, builder| {
                 // Each overload gets `n` BOOLEAN parameters
                 let b = (0..n).fold(builder, |b, _| b.param(TypeId::Boolean));
-                b.state_size(state_size)
-                    .init(state_init)
+                b.ffi_state::<RetentionState>() // state_size + init + destructor
                     .update(update)
                     .combine(combine)
                     .finalize(finalize)
-                    .destructor(state_destroy)
             })
             .register(con)?;
     }
@@ -86,13 +83,13 @@ Set the return type on the overload with `AggregateOverloadBuilder::returns` (or
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# unsafe extern "C" fn int_state_size(_: duckdb_function_info) -> idx_t { 0 }
-# unsafe extern "C" fn int_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# #[derive(Default)] struct IntState { sum: i64 }
+# impl AggregateState for IntState {}
 # unsafe extern "C" fn int_update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
 # unsafe extern "C" fn int_combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn int_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
-# unsafe extern "C" fn str_state_size(_: duckdb_function_info) -> idx_t { 0 }
-# unsafe extern "C" fn str_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# #[derive(Default)] struct StrState { longest: String }
+# impl AggregateState for StrState {}
 # unsafe extern "C" fn str_update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
 # unsafe extern "C" fn str_combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn str_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
@@ -105,8 +102,7 @@ AggregateFunctionSetBuilder::new("my_agg")
         AggregateOverloadBuilder::new()
             .param(TypeId::Integer)
             .returns(TypeId::Integer)      // my_agg(INTEGER) -> INTEGER
-            .state_size(int_state_size)
-            .init(int_init)
+            .ffi_state::<IntState>()
             .update(int_update)
             .combine(int_combine)
             .finalize(int_finalize),
@@ -115,8 +111,7 @@ AggregateFunctionSetBuilder::new("my_agg")
         AggregateOverloadBuilder::new()
             .param(TypeId::Varchar)
             .returns(TypeId::Varchar)      // my_agg(VARCHAR) -> VARCHAR
-            .state_size(str_state_size)
-            .init(str_init)
+            .ffi_state::<StrState>()
             .update(str_update)
             .combine(str_combine)
             .finalize(str_finalize),
@@ -127,7 +122,10 @@ AggregateFunctionSetBuilder::new("my_agg")
 ```
 
 Each overload carries its own callbacks, so overloads with different parameter
-types can use different state types.
+types can use different state types: call `ffi_state::<T>()` on each overload
+with that overload's state type (`AggregateFunctionSetBuilder` itself has no
+`ffi_state`), and read it in that overload's `update`, `combine` and `finalize`
+with `FfiState::<T>::with_state` / `with_state_mut` for the same `T`.
 
 ### Which return type wins
 
@@ -183,12 +181,11 @@ builder as a default, rather than repeating it on every overload:
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
-# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# #[derive(Default)] struct RetentionState { hits: u32 }
+# impl AggregateState for RetentionState {}
 # unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
 # unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
-# unsafe extern "C" fn destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 use quack_rs::aggregate::AggregateFunctionSetBuilder;
 use quack_rs::types::{LogicalType, TypeId};
@@ -197,12 +194,10 @@ AggregateFunctionSetBuilder::new("retention")
     .returns_logical(LogicalType::list(TypeId::Boolean))  // default for every overload
     .overloads(2..=32, |n, builder| {
         (0..n).fold(builder, |b, _| b.param(TypeId::Boolean))
-            .state_size(state_size)
-            .init(state_init)
+            .ffi_state::<RetentionState>()
             .update(update)
             .combine(combine)
             .finalize(finalize)
-            .destructor(destroy)
     })
     .register(con)?;
 # Ok(())

@@ -75,12 +75,11 @@ needs.
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
-# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# #[derive(Default)] struct MyState { count: i64 }
+# impl AggregateState for MyState {}
 # unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
 # unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
-# unsafe extern "C" fn state_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::TypeId;
 
@@ -89,12 +88,10 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
         AggregateFunctionBuilder::new("my_agg")
             .param(TypeId::Varchar)       // input type(s)
             .returns(TypeId::BigInt)      // output type
-            .state_size(state_size)
-            .init(state_init)
+            .ffi_state::<MyState>()       // state_size + init + destructor
             .update(update)
             .combine(combine)
             .finalize(finalize)
-            .destructor(state_destroy)
             .register(con)?;
     }
     Ok(())
@@ -104,13 +101,21 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 The five core callbacks (`state_size`, `init`, `update`, `combine`, `finalize`) must be
 set before `register` — the builder will return an error if any are missing. The
 `destructor` callback is optional, but required whenever you use `FfiState<T>`:
-`FfiState::<T>::destroy_callback` is what drops each `T`. With `FfiState<T>`, prefer
-`.ffi_state::<T>()`, which sets `state_size`, `init` and `destructor` together — see
-[State Management](aggregate-state.md#wiring-them-up-ffi_statet).
+`FfiState::<T>::destroy_callback` is what drops each `T`. `.ffi_state::<MyState>()`
+sets `state_size`, `init` and `destructor` together from `FfiState<MyState>`, so the
+three cannot describe different states — see
+[State Management](aggregate-state.md#wiring-them-up-ffi_statet). `update`, `combine`
+and `finalize` read the state through `FfiState::<MyState>::with_state` /
+`with_state_mut` with the same type.
 
 ---
 
 ## Callback signatures
+
+With `FfiState<T>` you do not write `state_size`, `init` or `destroy` yourself:
+`ffi_state::<T>()` installs `FfiState::<T>::size_callback`, `init_callback` and
+`destroy_callback`. The wrappers below show what each of those does, and the
+signature DuckDB calls it with.
 
 ### `state_size`
 
@@ -285,12 +290,11 @@ For functions that accept or return parameterized types like `LIST(BIGINT)`,
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
-# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# #[derive(Default)] struct MyState { count: i64 }
+# impl AggregateState for MyState {}
 # unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
 # unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
-# unsafe extern "C" fn state_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::{LogicalType, TypeId};
 
@@ -300,12 +304,10 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
             .param(TypeId::Boolean)
             .param(TypeId::Boolean)
             .returns_logical(LogicalType::list(TypeId::Boolean))  // LIST(BOOLEAN)
-            .state_size(state_size)
-            .init(state_init)
+            .ffi_state::<MyState>()                                // state_size + init + destructor
             .update(update)
             .combine(combine)
             .finalize(finalize)
-            .destructor(state_destroy)
             .register(con)?;
     }
     Ok(())
@@ -344,12 +346,11 @@ for parameterising the function behaviour (e.g., passing configuration):
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# unsafe extern "C" fn state_size(_: duckdb_function_info) -> idx_t { 0 }
-# unsafe extern "C" fn state_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# #[derive(Default)] struct MyState { count: i64 }
+# impl AggregateState for MyState {}
 # unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
 # unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
-# unsafe extern "C" fn state_destroy(_: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn my_destroy(p: *mut std::os::raw::c_void) {
 #     drop(unsafe { Box::from_raw(p.cast::<u64>()) });
 # }
@@ -362,12 +363,10 @@ unsafe {
         .param(TypeId::BigInt)
         .returns(TypeId::BigInt)
         .extra_info(config, Some(my_destroy))
-        .state_size(state_size)
-        .init(state_init)
+        .ffi_state::<MyState>()  // state_size + init + destructor
         .update(update)
         .combine(combine)
         .finalize(finalize)
-        .destructor(state_destroy)
         .register(con)?;
 }
 # Ok(())

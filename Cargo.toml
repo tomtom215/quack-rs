@@ -187,13 +187,17 @@ cc = "1"
 # dependency activated only by `bundled-test` / `bundled-test-prebuilt`, so that
 # a plain `cargo test` (and every downstream consumer's lockfile) stays free of
 # the DuckDB + arrow tree.
-criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
 # tempfile is version-pinned for reproducible dev builds. It was originally held
 # back to avoid getrandom >=0.4 (edition2024 / Rust >=1.85) when MSRV was 1.84.1;
 # now that MSRV is 1.86.0 that constraint no longer applies, but the pin is kept
 # to avoid unrelated dev-dependency churn. proptest only needs `tempfile ^3`.
 tempfile = "=3.27.0"
+
+# Only the benchmark uses criterion, and its rayon dependency does not build
+# for wasm32; the `wasm` CI job runs the unit tests there.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "interval_bench"

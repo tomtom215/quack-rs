@@ -609,6 +609,13 @@ visible.
 
 ### 5.2 wasm32 is compile-checked only
 
+(2026-09-30: no longer so. The `wasm` job runs every unit test on
+wasm32-unknown-emscripten under node, with and without `duckdb-1-5-4`: 822
+and 943 tests, including the `duckdb_string_t` decoder's. The first run found
+two tests that assumed a 64-bit target and an Arrow row-limit message that
+contradicted itself on 32-bit; all fixed. Nothing that needs a `DuckDB`
+runs there: that still needs DuckDB-Wasm.)
+
 CI runs `cargo check --lib --target wasm32-unknown-emscripten`. Nothing executes.
 The one place pointer width genuinely matters is the `duckdb_string_t` decoder,
 where the pointer occupies bytes 8..12 of a 16-byte union and the high half is
@@ -1499,7 +1506,9 @@ DuckDB's source, cited), CONTRACT (a Safety or documentation obligation).
 - *On a 32-bit target, `ListBuilder`, `OwnedVector::new` and
   `data_chunk_from_arrow` could make DuckDB allocate a buffer whose size
   wraps* (PROVEN from DuckDB's source and computed; not run, as no wasm32
-  DuckDB was available). DuckDB sizes buffers as a 64-bit `idx_t`, checks
+  DuckDB was available. 2026-09-30: quack-rs's side — the byte limits and
+  the Arrow row bound — is now VALIDATED by the unit tests on wasm32 in CI's
+  `wasm` job; DuckDB's side still rests on its source). DuckDB sizes buffers as a 64-bit `idx_t`, checks
   them only against 2^48 (`Allocator::AllocateData`), and hands them to
   `malloc`, which narrows them to a 32-bit `size_t`. The limits bounded
   element counts, not bytes: a `BIGINT` or `VARCHAR` list child could
@@ -1516,7 +1525,7 @@ DuckDB's source, cited), CONTRACT (a Safety or documentation obligation).
   a larger `with_element_limit` reserved nothing* (PROVEN by computation;
   the pure `reservation` in `src/vector/list_builder.rs` is pinned at the
   `usize` overflow point by a unit test, `the_reservation_is_a_power_of_two_capped_at_the_limit_even_past_usize`;
-  not run on a 32-bit target). `next_power_of_two` overflowed to 0 in a
+  2026-09-30: VALIDATED, that test now runs on wasm32 in CI's `wasm` job). `next_power_of_two` overflowed to 0 in a
   release build, so the reservation was 0 while the closure still wrote the
   row, past the child. `checked_next_power_of_two` now falls back to the
   limit. Limited to 32-bit targets, like the row above. (Added 2026-09-30;
@@ -1552,7 +1561,9 @@ DuckDB's source, cited), CONTRACT (a Safety or documentation obligation).
 - A `row` closure panicking mid-row committed a half row (VALIDATED; the
   appender is poisoned). `FileHandle` drop could abort when the close threw
   (PROVEN from `file_system-c.cpp`: `duckdb_destroy_file_handle` calls
-  `Close()` outside any `try`; no regression test), and `seek` past
+  `Close()` outside any `try`; 2026-09-30: VALIDATED by
+  `tests/file_handle_close.rs`, which swaps a failing close into the C API
+  dispatch table and fails on the old `Drop`), and `seek` past
   `i64::MAX` returned `Ok` on tmpfs (VALIDATED,
   `tests/ffi_roundtrip/file_errors.rs`). (2026-09-30: this sentence first
   labelled both VALIDATED. `file_errors.rs` tests `/dev/full` write and sync
@@ -1694,7 +1705,7 @@ exceptions"):
 | `duckdb_catalog_get_entry` | a failed autoload; a catalog that is not DuckDB's own | autoloading names and non-`duckdb` catalogs refused | item 2; PROVEN |
 | `duckdb_config_option_set_default_value` | a default that does not cast | converted by SQL first | item 3 |
 | `duckdb_data_chunk_from_arrow` | chunk allocation before its `try` | negative lengths, and row counts above `MAX_CAPACITY` at any node, refused; an allocation below that the system cannot satisfy is documented | item 4 |
-| `duckdb_destroy_file_handle` | a `Close()` that throws | closes through `duckdb_file_handle_close` first; leaks on failure | PROVEN (`file_system-c.cpp`); no test, as no file system whose `Close()` throws is reachable offline (2026-09-30: this cell first cited `file_errors.rs`, which tests write, sync and seek errors) |
+| `duckdb_destroy_file_handle` | a `Close()` that throws | closes through `duckdb_file_handle_close` first; leaks on failure | `tests/file_handle_close.rs`: a failing close stubbed into the dispatch table (no file system whose `Close()` throws is reachable offline). 2026-09-30: this cell first cited `file_errors.rs`, which tests write, sync and seek errors |
 | `duckdb_client_context_get_config_option` | a missing setting (debug builds); a throwing getter | documented; no getter throws for a stored state (source, 1.5.5) | P12; 150 / 157 settings read |
 | any allocating call | allocation failure | documented; `duckdb_prepare` leaves a freed statement (item 36) | known limitations |
 

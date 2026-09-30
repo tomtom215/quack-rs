@@ -225,8 +225,8 @@ Set it anyway when it is true; it is what DuckDB expects.
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-# unsafe extern "C" fn my_state_size(_: duckdb_function_info) -> idx_t { 0 }
-# unsafe extern "C" fn my_init(_: duckdb_function_info, _: duckdb_aggregate_state) {}
+# #[derive(Default)] struct CountState { count: i64 }
+# impl AggregateState for CountState {}
 # unsafe extern "C" fn my_update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
 # unsafe extern "C" fn my_combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
 # unsafe extern "C" fn my_finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
@@ -238,8 +238,7 @@ AggregateFunctionBuilder::new("count_with_nulls")
     .param(TypeId::BigInt)
     .returns(TypeId::BigInt)
     .null_handling(NullHandling::SpecialNullHandling)
-    .state_size(my_state_size)
-    .init(my_init)
+    .ffi_state::<CountState>()
     .update(my_update)   // counts rows whose value is NULL, too
     .combine(my_combine)
     .finalize(my_finalize)

@@ -303,7 +303,7 @@ jobs:
   wasm:
     name: WASM (wasm32-unknown-emscripten)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -319,6 +319,31 @@ jobs:
       # it would pull the bundled-DuckDB test path, which requires em++.
       - run: cargo check --lib --target wasm32-unknown-emscripten
       - run: cargo check --lib --features duckdb-1-5-4 --target wasm32-unknown-emscripten
+      # Checking is not running. wasm32 is the one 32-bit target quack-rs
+      # supports, and the 32-bit size limits (`vector::ops::MAX_CAPACITY`,
+      # `ListBuilder`'s reservation, the Arrow row-count bound) only take their
+      # 32-bit values there, so the unit tests run on it under node. The first
+      # run found two tests that assumed a 64-bit target and a limit message
+      # that contradicted itself on 32-bit. emsdk is pinned by tag and commit
+      # (a2b9277 is 6.0.10); the default 16 MB heap cannot grow, which some
+      # tests need.
+      - name: Install emsdk 6.0.10
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          cd "$RUNNER_TEMP/emsdk"
+          git checkout --quiet a2b92777574c2feda07994cd4f1079a3dfc151f8
+          ./emsdk install 6.0.10
+          ./emsdk activate 6.0.10
+      - name: Unit tests on wasm32 (node)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUNNER: node
+          RUSTFLAGS: "-D warnings -C link-arg=-sALLOW_MEMORY_GROWTH=1 -C link-arg=-sMAXIMUM_MEMORY=4GB"
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          cargo test --lib --target wasm32-unknown-emscripten
+          cargo test --lib --features duckdb-1-5-4 --target wasm32-unknown-emscripten
 
   clippy:
     name: Clippy
