@@ -2109,7 +2109,16 @@ this section, unless stated.
 - **Workflows:** `check-workflow-expressions.py` (6 files) and the new
   `check-ci-aggregate.py` (34 blocking jobs) pass; the latter's standard-library
   parser agrees with PyYAML on all 37 jobs. Every action SHA introduced was read
-  from `git ls-remote` of its repository. GitHub Actions itself was not run:
-  this pass cannot trigger it, so the restructured `release.yml`, the
-  `workflow_call` of `ci.yml` and the `docs.yml` deploy are verified by parse
-  and review only, until they first run.
+  from `git ls-remote` of its repository.
+- **CI on GitHub's runners:** `ci.yml` ran on this branch. The first run found
+  three things no local run had: an `http` secret's `bearer_token` is shown in
+  full by DuckDB 1.4.4 and 1.5.0 (the secrets test had assumed 1.5.3+
+  redaction; fixed, then reproduced and passed locally against libduckdb
+  1.4.4, 180/180), a scaffold test that spawns `python3`, which Miri cannot
+  run, and two `try_f64_to_*` unit tests that computed 2^127 and 2^128 with
+  `powi`, which Miri perturbs (seed-dependent under `-Zmiri-disable-isolation`;
+  reproduced with seeds 1 and 3, fixed with exact literals, passing for seeds
+  1 to 5). With those fixed, run 655 (`518ac42`) passed all 53 jobs, `CI passed`
+  (`ci-ok`) among them; the run before showed `ci-ok` failing when Miri did, as
+  intended. `release.yml` and the `docs.yml` deploy cannot run from a branch:
+  they are verified by parse and review only, until the first release.
