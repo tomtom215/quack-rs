@@ -68,7 +68,7 @@ use super::yaml11;
 ///
 /// repo:
 ///   github: janedoe/duckdb-my-ext
-///   ref: main
+///   ref: 4f1c2e9a7b3d5c8e1f0a2b4c6d8e0f1a3b5c7d9e
 /// ";
 ///
 /// let desc = parse_description_yml(yml).unwrap();
@@ -179,6 +179,7 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     if git_ref.is_empty() {
         return Err(missing("repo.ref"));
     }
+    warn_unless_commit_hash(&git_ref, &mut warnings);
     let git_ref_next = repo.scalar("ref_next")?;
 
     warn_about_yaml_1_1_retyping(&[&extension, &repo], &mut warnings);
@@ -268,7 +269,10 @@ impl<'a> Fields<'a> {
     fn scalar(&self, key: &str) -> Result<String, ExtensionError> {
         match self.get(key).map(|e| (&e.value, e.line)) {
             None | Some((Value::Null, _)) => Ok(String::new()),
-            Some((Value::Scalar(s), _)) => Ok(s.trim().to_string()),
+            // Not trimmed: the reader already strips a plain scalar, so trimming
+            // here would only alter a quoted one — `name: " my_ext"` is
+            // " my_ext" to PyYAML and the community build.
+            Some((Value::Scalar(s), _)) => Ok(s.clone()),
             Some((_, line)) => Err(ExtensionError::new(format!(
                 "description.yml: line {line}: '{}.{key}' must be a single value, not a list \
                  or mapping",
@@ -365,4 +369,22 @@ impl<'a> Fields<'a> {
             ))),
         }
     }
+}
+
+/// Warns when `repo.ref` is not a commit hash: the community build checks out
+/// exactly that ref, so a branch builds whatever it points at on the day.
+fn warn_unless_commit_hash(git_ref: &str, warnings: &mut Vec<String>) {
+    if !is_commit_hash(git_ref) {
+        warnings.push(format!(
+            "repo.ref '{git_ref}' is not a commit hash: the community build checks out \
+             exactly this ref, so a branch builds whatever it points at on the day, and \
+             DuckDB's documentation asks for the hash of the commit to build"
+        ));
+    }
+}
+
+/// Whether `git_ref` looks like a commit hash: 7 to 64 hexadecimal digits
+/// (an abbreviated or full SHA-1, or a SHA-256 object name).
+fn is_commit_hash(git_ref: &str) -> bool {
+    (7..=64).contains(&git_ref.len()) && git_ref.bytes().all(|b| b.is_ascii_hexdigit())
 }

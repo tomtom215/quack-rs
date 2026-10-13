@@ -233,7 +233,7 @@ impl TableFunctionBuilder {
     ///
     /// Use this for parameterized types that [`TypeId`] cannot express, such as
     /// `LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`.
-    #[mutants::skip] // position arithmetic tested via E2E (requires DuckDB runtime)
+    #[cfg_attr(test, mutants::skip)] // position arithmetic tested via E2E (requires DuckDB runtime)
     pub fn param_logical(mut self, logical_type: LogicalType) -> Self {
         let position = self.params.len() + self.logical_params.len();
         self.logical_params.push((position, logical_type));
@@ -480,9 +480,21 @@ impl TableFunctionBuilder {
             super::collision::record_registered(snapshot, &name);
             Ok(())
         } else {
+            // The name and callbacks were checked above, which leaves two causes
+            // in `duckdb_register_table_function` (`table_function-c.cpp`): a
+            // parameter type containing `INVALID`, or the catalog throwing. The
+            // catalog throws on a duplicate name on v1.4.x only, and the check
+            // above cannot rule a duplicate out: a snapshot does not see a table
+            // function registered on the raw connection after it was listed. So
+            // the aggregate name-clash hint does not apply, and the message must
+            // not claim the name is free.
             Err(ExtensionError::new(format!(
-                "duckdb_register_table_function failed for '{name}': {hint}",
-                hint = crate::error::REGISTRATION_FAILURE_HINT
+                "duckdb_register_table_function failed for '{name}': the C API reports no \
+                 reason. The name was not taken when the catalog was last listed, so the \
+                 likely cause is an invalid parameter or named-parameter type or, on DuckDB \
+                 v1.4.x, a table function of the same name registered on the raw connection \
+                 since then (a direct TableFunctionBuilder::register, another extension's \
+                 LOAD or an autoload)"
             )))
         }
     }
@@ -733,14 +745,14 @@ impl TableFunctionHandle {
     ///
     /// `None` for a type this build of quack-rs has no [`TypeId`] for.
     #[must_use]
-    #[mutants::skip] // covered by tests/ffi_roundtrip.rs, which `--lib` does not run
+    #[cfg_attr(test, mutants::skip)] // covered by tests/ffi_roundtrip.rs, which `--lib` does not run
     pub fn param_types(&self) -> &[Option<TypeId>] {
         &self.param_types
     }
 }
 
 impl Drop for TableFunctionHandle {
-    #[mutants::skip] // frees a DuckDB handle; nothing observable without a runtime
+    #[cfg_attr(test, mutants::skip)] // frees a DuckDB handle; nothing observable without a runtime
     fn drop(&mut self) {
         // SAFETY: `self.func` was created by `duckdb_create_table_function` and
         // is destroyed exactly once. DuckDB copies the function on register and
@@ -750,7 +762,7 @@ impl Drop for TableFunctionHandle {
 }
 
 impl core::fmt::Debug for TableFunctionHandle {
-    #[mutants::skip] // Debug rendering is not a behavioural contract
+    #[cfg_attr(test, mutants::skip)] // Debug rendering is not a behavioural contract
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TableFunctionHandle")
             .field("func", &self.func)

@@ -24,13 +24,15 @@ documents all 31 known pitfalls, and its API prevents most of them. See the
 
 ### What DuckDB version does quack-rs target?
 
-quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` and supports DuckDB 1.4.x
-and 1.5.x. CI loads a built extension into DuckDB v1.4.4, v1.5.0, v1.5.5 and the
-latest release.
+quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` and supports DuckDB 1.4.4 and
+later 1.x releases. Releases before 1.4.4 are not supported. CI runs the test
+suite against DuckDB v1.4.4, v1.4.5, v1.5.0, v1.5.3, v1.5.4, v1.5.5 and v1.5.6,
+and loads a built extension into v1.4.4, v1.5.0, v1.5.5, v1.5.6 and the latest
+release.
 
 The C API version passed to the dispatch-table initializer is `"v1.2.0"`,
-available as `quack_rs::DUCKDB_API_VERSION`. Every DuckDB 1.4.x and 1.5.x
-release loads extensions built for it (1.5.6 declares C API `v1.5.6`, but still
+available as `quack_rs::DUCKDB_API_VERSION`. Every supported DuckDB release
+(1.4.4 and later) loads extensions built for it (1.5.6 declares C API `v1.5.6`, but still
 accepts `v1.2.0`). The C API version is a separate identifier from the DuckDB
 release and from the `libduckdb-sys` crate version (e.g. `1.10505.0` for
 DuckDB 1.5.5).
@@ -213,8 +215,12 @@ before you pick one.
 
 ### Do I need to set up CI manually?
 
-No. `generate_scaffold` produces `.github/workflows/extension-ci.yml` which
-builds and tests your extension on Linux, macOS, and Windows automatically.
+No. `generate_scaffold` produces two workflows. `extension-ci.yml` builds,
+lints and tests the extension natively on Linux, macOS and Windows, and checks it
+builds on the minimum Rust version. `MainDistributionPipeline.yml` runs DuckDB's
+own `extension-ci-tools` distribution workflow — the one the community build uses
+— for every platform not listed in `excluded_platforms` (the scaffold excludes the
+WebAssembly and MinGW targets by default).
 
 ### Can my extension be installed with `INSTALL ... FROM community`?
 
@@ -265,7 +271,7 @@ fresh from the scaffold, add it once (`git submodule update --init` does nothing
 until it has been added):
 
 ```bash
-git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
 ```
 
 In a clone of a repository that already has the submodule:

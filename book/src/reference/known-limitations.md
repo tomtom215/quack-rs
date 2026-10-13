@@ -9,17 +9,19 @@ have since been resolved.
 DuckDB **window functions** (`OVER (...)` clauses) are implemented entirely in
 DuckDB's C++ layer and have **no counterpart in the public C extension API**.
 
-This is not a gap in `quack-rs` or in `libduckdb-sys` — the relevant symbol
-(`duckdb_create_window_function`) simply does not exist in the C API:
+This is not a gap in `quack-rs` or in `libduckdb-sys`: the C API has no function for
+registering a window function, and no symbol such as `duckdb_create_window_function`
+exists in `duckdb.h` or `duckdb_extension.h`. DuckDB's C++ API does support window
+functions, through its own C++ classes rather than a function of that name.
 
-| Symbol | C API (1.4.x)? | C API (1.5.0+)? | C++ API? |
-|--------|----------------|-----------------|----------|
-| `duckdb_create_window_function` | **No** | **No** | Yes |
-| `duckdb_create_copy_function`   | **No** | **Yes** | Yes |
-| `duckdb_create_scalar_function` | Yes    | Yes     | Yes |
-| `duckdb_create_aggregate_function` | Yes | Yes     | Yes |
-| `duckdb_create_table_function`  | Yes    | Yes     | Yes |
-| `duckdb_create_cast_function`   | Yes    | Yes     | Yes |
+| Kind of function | C API symbol | C API (1.4.4, 1.4.5) | C API (1.5.0+) | C++ API |
+|------------------|--------------|----------------------|----------------|---------|
+| Window function | *(none)* | **No** | **No** | Yes |
+| `COPY` function | `duckdb_create_copy_function` | **No** | **Yes** | Yes |
+| Scalar function | `duckdb_create_scalar_function` | Yes | Yes | Yes |
+| Aggregate function | `duckdb_create_aggregate_function` | Yes | Yes | Yes |
+| Table function | `duckdb_create_table_function` | Yes | Yes | Yes |
+| Cast function | `duckdb_create_cast_function` | Yes | Yes | Yes |
 
 **What this means for your extension:**
 

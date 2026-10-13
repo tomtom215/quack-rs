@@ -396,7 +396,7 @@ fn generated_calls_are_laid_out_as_rustfmt_lays_them_out() {
     let short = lib("abcd");
     assert!(
         short.contains(
-            "    SqlMacro::scalar(\"abcd_hello\", &[\"name\"], \"concat('Hello from abcd! ', name)\")\n"
+            "    SqlMacro::scalar(\"abcd_hello\", &[\"name\"], \"'Hello from abcd! ' || name\")\n"
         ),
         "{short}"
     );
@@ -404,10 +404,16 @@ fn generated_calls_are_laid_out_as_rustfmt_lays_them_out() {
         short.contains("\nquack_rs::entry_point!(abcd_init_c_api, register);\n"),
         "{short}"
     );
-    let five = lib("abcde");
+    // With the `||` body, 7 characters is the longest name that fits.
+    let seven = lib("abcdefg");
     assert!(
-        five.contains("    SqlMacro::scalar(\n        \"abcde_hello\",\n"),
-        "{five}"
+        seven.contains("    SqlMacro::scalar(\"abcdefg_hello\", &[\"name\"], "),
+        "{seven}"
+    );
+    let eight = lib("abcdefgh");
+    assert!(
+        eight.contains("    SqlMacro::scalar(\n        \"abcdefgh_hello\",\n"),
+        "{eight}"
     );
     let n39 = "a".repeat(39);
     assert!(lib(&n39).contains(&format!(

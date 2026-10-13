@@ -41,7 +41,7 @@ fn require_blob(id: Option<TypeId>) -> Result<(), ExtensionError> {
 ///
 /// `data` must be null or a `duckdb_blob::data` pointer from
 /// `duckdb_get_blob` that has not been freed.
-#[mutants::skip] // DuckDB allocator effects are not observable from safe Rust tests.
+#[cfg_attr(test, mutants::skip)] // DuckDB allocator effects are not observable from safe Rust tests.
 unsafe fn free_blob_data(data: *mut core::ffi::c_void) {
     if !data.is_null() {
         // SAFETY: `data` is non-null (checked just above). This private helper's only

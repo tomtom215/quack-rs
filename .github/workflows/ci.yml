@@ -10,10 +10,11 @@
 #       abi-table, platform-table, spdx-list, autoload-entries, book,
 #       msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
 #       abi-guard-layout, publish-dry-run, security, osv-scan, nightly, miri,
-#       leak-check, asan, semver, fuzz.
+#       leak-check, asan, semver, fuzz, ci-ok (the aggregate required check).
 #
-# `dtolnay/rust-toolchain` is pinned, in every workflow, to d103106 -- a commit
-# on the action's `master` branch (2026-09-03). The action's per-toolchain
+# `dtolnay/rust-toolchain` is pinned, in every workflow, to e2a55d2 -- a commit
+# on the action's `master` branch (2026-10-08; it moved action inputs into
+# environment variables, upstream #187). The action's per-toolchain
 # branches (`stable`, `nightly`, ...) are regenerated, so a commit taken from
 # one of them stops being reachable from any ref and can be garbage-collected;
 # the previous pin, 631a55b, was such a commit. On `master` the `toolchain:`
@@ -34,6 +35,9 @@ on:
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:
+  # release.yml runs this whole workflow as its CI gate, so a release passes
+  # exactly the checks a pull request does.
+  workflow_call:
 
 # CI builds and executes code from pull requests (cargo test, cargo fuzz, the
 # scaffold end-to-end job) and never writes anything back to GitHub, so it gets
@@ -44,8 +48,13 @@ permissions:
 # Cancel in-progress runs for the same branch/PR — saves CI minutes when
 # multiple commits are pushed in quick succession.  Main-branch pushes
 # are NOT cancelled so merge builds always complete.
+#
+# The group starts with a literal `ci-`, not `github.workflow`: when
+# release.yml calls this workflow, `github.workflow` is "Release", and
+# GitHub compares group names case-insensitively, so `Release-<tag>` would
+# collide with release.yml's own `release-<tag>` group and wait on itself.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ci-${{ github.head_ref || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
@@ -69,7 +78,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -87,7 +96,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -123,7 +132,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -160,7 +169,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -212,7 +221,7 @@ jobs:
 
   test-older-engines:
     # Every other test job runs against the DuckDB release Cargo.lock pins
-    # (v1.5.5), but quack-rs supports every release from v1.4.4, and a
+    # (v1.5.6), but quack-rs supports every release from v1.4.4, and a
     # `duckdb-1-5` build loads into v1.5.0 to v1.5.4 too. Their C APIs differ
     # in places (v1.4.5 is the last 1.4 release; v1.5.3 and v1.5.4 are the
     # first whose bindings the duckdb-1-5-3 and duckdb-1-5-4 features compile
@@ -248,11 +257,15 @@ jobs:
           - engine: v1.5.4
             crate: 1.10504.0
             features: bundled-test-prebuilt,duckdb-1-5-4
+          # The release Cargo.lock pinned until it moved to v1.5.6.
+          - engine: v1.5.5
+            crate: 1.10505.0
+            features: bundled-test-prebuilt,duckdb-1-5-4
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -286,7 +299,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -308,7 +321,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
           targets: wasm32-unknown-emscripten
@@ -353,7 +366,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
           components: clippy
@@ -372,7 +385,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: beta
           components: clippy
@@ -407,7 +420,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
           components: rustfmt
@@ -421,7 +434,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -455,6 +468,9 @@ jobs:
       # `run:` block as an opaque string. See scripts/check-workflow-expressions.py.
       - name: Workflow files contain no invalid expressions
         run: scripts/check-workflow-expressions.py
+      # `ci-ok` is the one required check; it is only as good as its `needs`.
+      - name: The ci-ok job waits on every blocking job
+        run: scripts/check-ci-aggregate.py
 
   msrv:
     name: MSRV (1.86.0)
@@ -464,7 +480,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: "1.86.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -494,7 +510,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -514,7 +530,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -532,7 +548,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -550,7 +566,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -569,7 +585,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -703,15 +719,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+          # The versioned-site step below builds each release line from its tag.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       # docs.yml builds the book only when main is pushed, so a broken page
-      # was found after merge. Same mdBook version as docs.yml.
-      - name: Install mdBook 0.4.40
+      # was found after merge. The version is the one book/mdbook-version pins,
+      # which docs.yml's build script also reads.
+      - name: Install mdBook
         env:
           RUSTFLAGS: ""
-        run: cargo install mdbook --locked --version "0.4.40"
+        run: cargo install mdbook --locked --version "$(cat book/mdbook-version)"
       - run: mdbook build
       # Per-page description, canonical and og: tags, as docs.yml deploys
       # them; fails on a missing or duplicate description or title, or a
@@ -724,6 +744,11 @@ jobs:
       - run: cargo doc --no-deps --features duckdb-1-5-4
       - name: Book and README links resolve
         run: python3 scripts/check-book-links.py
+      # What docs.yml deploys: every release line from its tag, main as
+      # /dev/ with its rustdoc, the version menu and the SEO split between
+      # the root and the copies. Fails on a build error or a failed check.
+      - name: Versioned site builds
+        run: python3 scripts/build-versioned-site.py --out site --dev-api target/doc
 
   msrv-vs-duckdb-ci:
     name: MSRV vs DuckDB's extension CI
@@ -756,7 +781,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      # The README claims "quack-rs supports DuckDB 1.4.x and 1.5.x". One
+      # The README claims quack-rs supports DuckDB 1.4.4 and later 1.x. One
       # `releases/latest` run samples a single point of that claim and silently
       # retargets whenever DuckDB ships. hello-ext uses only the frozen stable
       # prefix and is stamped `C_STRUCT` + `v1.2.0`, so it is supposed to load
@@ -766,12 +791,12 @@ jobs:
       # `latest` stays in the matrix as the early-warning signal for a DuckDB
       # that has not been pinned here yet.
       matrix:
-        duckdb: ["v1.4.4", "v1.5.0", "v1.5.5", "latest"]
+        duckdb: ["v1.4.4", "v1.5.0", "v1.5.5", "v1.5.6", "latest"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -808,9 +833,10 @@ jobs:
             exit 1
           }
       - name: Stamp the extension metadata footer
-        # Loading a bare .so skips DuckDB's metadata validation entirely, so the
-        # footer this crate writes would never be exercised. Go through the real
-        # .duckdb_extension path instead.
+        # DuckDB refuses to LOAD a file that does not end in .duckdb_extension
+        # ("Permission Error: DuckDB extensions are files ending with
+        # '.duckdb_extension'") and one without a valid metadata footer, so the
+        # footer append_metadata writes is what this job exercises.
         run: |
           set -euo pipefail
           SO="examples/hello-ext/target/release/libhello_ext.so"
@@ -850,12 +876,12 @@ jobs:
   scaffold-e2e:
     name: Scaffold end-to-end (build, stamp, load, query)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -890,7 +916,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release --bin append_metadata
-          cargo run --release --example scaffold_to_dir -- /tmp/scaffolded
+          cargo run --release --example scaffold_to_dir -- my_analytics /tmp/scaffolded
           # Build against this working copy rather than the published crate.
           python3 - <<'PY'
           import re, pathlib
@@ -904,7 +930,17 @@ jobs:
           assert n == 1, f"expected exactly one quack-rs dependency line, rewrote {n}"
           p.write_text(s)
           PY
+          # The generated project declares quack-rs's MSRV and resolves with
+          # resolver 3; a fresh lock file must build on that toolchain (it
+          # used to pull zopfli 0.8.4, which needs Rust 1.88). The lock file
+          # it writes is what the stable builds below reuse.
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' /tmp/scaffolded/Cargo.toml)
+          test -n "$msrv"
+          rustup toolchain install "$msrv" --profile minimal
+          (cd /tmp/scaffolded && cargo "+$msrv" generate-lockfile && cargo "+$msrv" build --release)
           (cd /tmp/scaffolded && cargo build --release)
+          # crate-type = ["cdylib", "rlib"] must still produce the cdylib.
+          test -f /tmp/scaffolded/target/release/libmy_analytics.so
           ./target/release/append_metadata \
             /tmp/scaffolded/target/release/libmy_analytics.so \
             /tmp/scaffolded/my_analytics.duckdb_extension \
@@ -913,11 +949,17 @@ jobs:
           cat > /tmp/scaffold_probe.sql <<'SQL'
           LOAD '/tmp/scaffolded/my_analytics.duckdb_extension';
           SELECT my_analytics_hello('world');
+          SELECT coalesce(my_analytics_hello(NULL), 'NULL-propagated');
           SQL
           ./duckdb -unsigned -csv -noheader -c "$(cat /tmp/scaffold_probe.sql)" | tee /tmp/scaffold.log
           grep -q 'Hello from my_analytics! world' /tmp/scaffold.log || {
             echo "::error::scaffolded extension did not answer correctly"
             echo "DuckDB $(./duckdb --version) actually produced:"
+            cat /tmp/scaffold.log
+            exit 1
+          }
+          grep -q 'NULL-propagated' /tmp/scaffold.log || {
+            echo "::error::my_analytics_hello(NULL) did not return NULL"
             cat /tmp/scaffold.log
             exit 1
           }
@@ -929,25 +971,53 @@ jobs:
           cd /tmp/scaffolded
           cargo fmt -- --check
           cargo clippy --all-targets -- -D warnings
+          # A description whose lines read as Markdown blocks (a list item with
+          # a lazy continuation, a quote, a fence, an indented line) used to
+          # trip clippy::doc_lazy_continuation or become a doctest that does
+          # not compile; with the rlib crate type, `cargo test` runs doctests.
+          cd "$GITHUB_WORKSPACE"
+          cargo run --release --example scaffold_to_dir -- md_desc /tmp/md_desc \
+            --description "$(printf 'Functions:\n- one\nand more\n> quote\nlazy\n```rust\n    let x = ;\n1. first')"
+          sed -i "s|quack-rs = { version = \"[^\"]*\" }|quack-rs = { path = \"$GITHUB_WORKSPACE\" }|" /tmp/md_desc/Cargo.toml
+          grep -q "quack-rs = { path = " /tmp/md_desc/Cargo.toml
+          cd /tmp/md_desc
+          cargo fmt -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
       - name: Generated project's own make configure / release / test
         # The steps above stamp with quack-rs's own tool. The generated CI
         # builds through extension-ci-tools' Makefiles instead and runs the
         # SQLLogicTest in test/sql, so run that path too, with DUCKDB_PLATFORM
         # empty as the generated CI sets it on Linux (`linux_amd64` makes
-        # base.Makefile print "Skipping tests.." and pass). The git repository
-        # gives `make configure` a version to stamp; extension-ci-tools is
-        # pinned to the commit this was checked against.
+        # base.Makefile print "Skipping tests.." and pass). The commands are
+        # the book's "After scaffolding" sequence, with extension-ci-tools at
+        # the branch the generated .gitmodules and distribution workflow name
+        # (so a branch that does not exist fails here).
         env:
           DUCKDB_PLATFORM: ""
+          GIT_AUTHOR_NAME: ci
+          GIT_AUTHOR_EMAIL: ci@example.invalid
+          GIT_COMMITTER_NAME: ci
+          GIT_COMMITTER_EMAIL: ci@example.invalid
         run: |
           set -euo pipefail
           cd /tmp/scaffolded
+          ref=$(git config -f .gitmodules submodule.extension-ci-tools.branch)
+          grep -q "_extension_distribution.yml@$ref\$" .github/workflows/MainDistributionPipeline.yml
           git init -q
-          git -c user.name=ci -c user.email=ci@example.invalid add -A
-          git -c user.name=ci -c user.email=ci@example.invalid commit -qm scaffold
-          git clone -q https://github.com/duckdb/extension-ci-tools extension-ci-tools
-          git -C extension-ci-tools checkout -q 39ffc46ca8c70021d741c7be2e7bcadf3fd1c503
+          git submodule add -q -b "$ref" https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+          # Before the first commit, extension-ci-tools' version detection
+          # records git's error message, which overflows the footer's 32-byte
+          # version field; the generated Makefile falls back to Cargo.toml's.
+          mkdir -p configure
+          make extension_version
+          test "$(cat configure/extension_version.txt)" = "v0.1.0" || {
+            echo "::error::uncommitted repo: extension version is '$(cat configure/extension_version.txt)', expected v0.1.0"; exit 1; }
+          rm -rf configure
+          git add -A
+          git commit -qm scaffold
           make configure release test 2>&1 | tee /tmp/scaffold_make.log
+          test "$(cat configure/extension_version.txt)" = "$(git log -1 --format=%h)"
           if grep -q 'Skipping tests' /tmp/scaffold_make.log; then
             echo "::error::the generated project's SQLLogicTest was skipped"; exit 1
           fi
@@ -966,7 +1036,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1102,7 +1172,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1197,7 +1267,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1221,15 +1291,15 @@ jobs:
           # a new rustc warning in any of their dependencies would
           # break CI for a reason unrelated to this repo.
           RUSTFLAGS: ""
-        run: cargo install cargo-deny --locked --version "0.19.0"
+        run: cargo install cargo-deny --locked --version "0.20.2"
       - name: Run cargo-deny check
         run: cargo deny check
 
   # OSV / GHSA advisory scan. The cargo-deny job above consults only the RustSec
   # advisory database; OSV.dev aggregates GHSA *and* RustSec, so GHSA-only
   # advisories that RustSec has not mirrored (e.g. GHSA-3pv8-6f4r-ffg2 in `tar`)
-  # are caught here. Scans both lockfiles — `tar` reaches the example via the
-  # `libduckdb-sys` build-dependency. The binary is version- and checksum-pinned.
+  # are caught here. Scans every committed lockfile — `tar` reaches the example
+  # via the `libduckdb-sys` build-dependency. The binary is version- and checksum-pinned.
   osv-scan:
     name: Security (OSV / GHSA)
     runs-on: ubuntu-latest
@@ -1238,26 +1308,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - name: Install osv-scanner (pinned, checksum-verified)
         run: |
-          VER=2.3.8
-          SHA=bc98e15319ed0d515e3f9235287ba53cdc5535d576d24fd573978ecfe9ab92dc
+          VER=2.7.0
+          # From the release's osv-scanner_SHA256SUMS (linux_amd64).
+          SHA=160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
           curl -fsSL -o osv-scanner \
             "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
           echo "${SHA}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
-      - name: Scan lockfiles (root + example) against OSV
+      - name: Scan every committed lockfile against OSV
         run: |
-          # All three committed lockfiles. fuzz/Cargo.lock was missing: its
-          # dependencies are CI-only, but an unscanned lockfile is an unscanned
-          # lockfile.
+          # All four committed lockfiles. fuzz/Cargo.lock and then
+          # book/doctest/Cargo.lock were missing: their dependencies are
+          # CI-only, but an unscanned lockfile is an unscanned lockfile.
           ./osv-scanner --config=osv-scanner.toml \
             --lockfile=Cargo.lock \
             --lockfile=examples/hello-ext/Cargo.lock \
-            --lockfile=fuzz/Cargo.lock
+            --lockfile=fuzz/Cargo.lock \
+            --lockfile=book/doctest/Cargo.lock
 
   nightly:
     name: Nightly (informational)
@@ -1268,7 +1340,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1286,7 +1358,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: nightly
           components: miri, rust-src
@@ -1348,7 +1420,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: nightly
           components: rust-src
@@ -1415,7 +1487,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: nightly
           components: rust-src
@@ -1453,7 +1525,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1468,7 +1540,7 @@ jobs:
           # a new rustc warning in any of their dependencies would
           # break CI for a reason unrelated to this repo.
           RUSTFLAGS: ""
-        run: cargo install cargo-semver-checks --locked --version "0.50.0"
+        run: cargo install cargo-semver-checks --locked --version "0.51.0"
       - name: Check the public API against the last published release
         # cargo-semver-checks derives what to enforce from the version bump.
         # When the bump is itself breaking (a major bump, or a minor bump of a
@@ -1506,12 +1578,16 @@ jobs:
   fuzz:
     name: Fuzz (smoke)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 60 s per target on a push or pull request; 10 minutes per target on the
+    # weekly schedule, which is long enough to grow the corpus meaningfully.
+    timeout-minutes: 90
+    env:
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '600' || '60' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -1522,8 +1598,16 @@ jobs:
       # input in a real extension.
       #
       # A short smoke run per PR, not a campaign: it catches a newly introduced
-      # panic without holding up review. The committed seeds live in `fuzz/seeds`;
-      # `fuzz/corpus` is generated from them.
+      # panic without holding up review. The weekly scheduled run is the
+      # campaign: longer, and resuming from the corpus the previous scheduled
+      # run left in the cache. The committed seeds live in `fuzz/seeds`;
+      # `fuzz/corpus` is generated from them plus that cache.
+      - name: Restore the fuzz corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
       - name: Install cargo-fuzz
         env:
           # Do not build third-party tools with warnings-as-errors:
@@ -1554,7 +1638,7 @@ jobs:
             mkdir -p "fuzz/corpus/$target"
             cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
             cargo +nightly fuzz run --fuzz-dir fuzz "$target" -- \
-              -max_total_time=60 -rss_limit_mb=4096
+              -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=4096
             echo "::endgroup::"
           done
         env:
@@ -1581,6 +1665,75 @@ jobs:
             mkdir -p "fuzz/corpus/$target"
             cp -r "fuzz/seeds/$target/." "fuzz/corpus/$target/"
             cargo +nightly fuzz run --fuzz-dir fuzz --features live "$target" -- \
-              -max_total_time=60 -rss_limit_mb=4096
+              -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=4096
             echo "::endgroup::"
           done
+      # Only the scheduled campaign saves the corpus, so a pull request's run
+      # can neither grow nor replace what the next campaign starts from.
+      - name: Save the fuzz corpus
+        if: github.event_name == 'schedule'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+
+  # The one check branch protection should require. Every blocking job is in
+  # `needs` (scripts/check-ci-aggregate.py, run by the `doc` job, fails when one
+  # is missing), so adding or renaming a job never silently drops it from the
+  # required set. `if: always()` makes this run, and fail, when a dependency
+  # failed or was cancelled, instead of being skipped — a skipped required
+  # check counts as passing.
+  ci-ok:
+    name: CI passed
+    if: always()
+    needs:
+      - check
+      - test
+      - test-bundled
+      - test-bundled-prebuilt
+      - test-older-engines
+      - test-duckdb-1-5
+      - wasm
+      - clippy
+      - fmt
+      - doc
+      - msrv
+      - dependency-floor
+      - bench-compile
+      - example-check
+      - scaffold-compile
+      - symbol-check
+      - abi-table
+      - platform-table
+      - spdx-list
+      - autoload-entries
+      - book
+      - msrv-vs-duckdb-ci
+      - extension-load
+      - scaffold-e2e
+      - abi-guard
+      - abi-guard-layout
+      - publish-dry-run
+      - security
+      - osv-scan
+      - miri
+      - leak-check
+      - asan
+      - semver
+      - fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every blocking job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ["RESULTS"])
+          bad = {job: r["result"] for job, r in results.items() if r["result"] != "success"}
+          for job, result in sorted(bad.items()):
+              print(f"::error::{job}: {result}")
+          print(f"{len(results) - len(bad)}/{len(results)} blocking jobs succeeded")
+          sys.exit(1 if bad else 0)
+          PY

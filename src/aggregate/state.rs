@@ -152,7 +152,8 @@ impl core::hash::Hasher for Fnv1a {
 ///
 /// # States `DuckDB` never destroys
 ///
-/// `DuckDB` 1.4.4 to 1.5.5 destroys a grouped aggregate's states as its result
+/// `DuckDB` 1.4.4 to 1.5.5 (not re-measured on 1.5.6) destroys a grouped
+/// aggregate's states as its result
 /// scan passes them. When the scan stops early — a `LIMIT` above the
 /// aggregate, an error raised above it, an interrupt — the states it did not
 /// reach are never destroyed (`docs/upstream-duckdb-reports.md`, item 20):
@@ -169,7 +170,8 @@ impl core::hash::Hasher for Fnv1a {
 /// # States `DuckDB` never initialised
 ///
 /// When a `state_init` call fails — a panicking `T::default()`, or an
-/// allocation failure — `DuckDB` 1.4.4 to 1.5.5 still calls the destructor
+/// allocation failure — `DuckDB` 1.4.4 to 1.5.5 (not re-measured on 1.5.6)
+/// still calls the destructor
 /// on every state row it had created, initialised or not
 /// (`RowOperations::InitializeStates` is not exception-safe; see
 /// `docs/upstream-duckdb-reports.md`). That includes the states of *other*

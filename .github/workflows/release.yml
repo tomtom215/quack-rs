@@ -8,9 +8,16 @@
 #
 # Job dependency graph:
 #
-#   validate ──┬──► ci (matrix) ──┬──► package ─────────┬──► github-release ──► publish
-#              └──► security ────┘                     │                       (crates-io env)
-#                                └──► publish-dry-run ─┘
+#   validate ──► ci (the whole of ci.yml) ──► package ──► publish ──► github-release ──► docs
+#                                                       (crates-io env)
+#
+# `ci` runs ci.yml itself (workflow_call), so a release passes every gate a
+# pull request does — semver, Miri, the sanitizers, extension-load on every
+# pinned DuckDB — rather than a hand-copied subset that drifts.
+#
+# The GitHub release is created only after crates.io has the crate, so a
+# rejected crates-io approval leaves no public release for a version that
+# was never published.
 
 name: Release
 
@@ -54,6 +61,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      # RELEASING.md tags releases with `git tag -s` from main. Nothing checked
+      # either: a lightweight tag, or a tag on a commit that never reached
+      # main, got a package, an attestation and a GitHub release. The tagged
+      # commit must be on main so that what is released is what was reviewed.
+      # (This file runs from the tagged tree, so a repository rule restricting
+      # who may create `v*` tags is the control against an edited workflow.)
+      - name: Tag is annotated and on main
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if [[ "$(git cat-file -t "refs/tags/$TAG")" != "tag" ]]; then
+            echo "::error::Tag '$TAG' is a lightweight tag. Release tags are annotated and signed: git tag -s '$TAG' -m 'Release $TAG' (RELEASING.md Step 5)."
+            exit 1
+          fi
+          git fetch --no-tags --quiet origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag '$TAG' points at $GITHUB_SHA, which is not on main. Merge the release commit to main and tag it there."
+            exit 1
+          fi
+          echo "::notice::Tag $TAG is annotated and points at a commit on main."
 
       - name: Extract version metadata
         id: meta
@@ -93,9 +124,10 @@ jobs:
 
       - name: Verify Cargo.toml version matches tag
         shell: bash
+        env:
+          TAG_VER: ${{ steps.meta.outputs.version }}
         run: |
           CARGO_VER=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          TAG_VER="${{ steps.meta.outputs.version }}"
 
           echo "::group::Version consistency"
           printf 'Cargo.toml: %s\n' "$CARGO_VER"
@@ -111,113 +143,30 @@ jobs:
 
       - name: Verify CHANGELOG entry exists
         shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          VERSION="${{ steps.meta.outputs.version }}"
-
-          if ! grep -qE "^## \[$VERSION\]" CHANGELOG.md; then
-            echo "::error file=CHANGELOG.md::No '## [$VERSION]' entry in CHANGELOG.md."
+          # `.` and `+` in a version are regex metacharacters; match literally,
+          # and require the dated heading RELEASING.md Step 2 writes.
+          if ! grep -qF "## [$VERSION] - " CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::No dated '## [$VERSION] - YYYY-MM-DD' entry in CHANGELOG.md."
             echo "Add release notes before tagging."
             exit 1
           fi
           echo "::notice::CHANGELOG.md entry found for v$VERSION"
 
-# ── Job 2: Full CI gate (parallel matrix) ────────────────────────────────────
+# ── Job 2: Every CI gate, by running ci.yml itself ──────────────────────────
   ci:
-    name: CI / ${{ matrix.name }}
+    name: CI
     needs: validate
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-    strategy:
-      # `false`, per LESSONS.md: a release once shipped with Linux and Windows
-      # broken because macOS failed first and cancelled them before they
-      # reported. Every platform must report.
-      fail-fast: false
-      matrix:
-        include:
-          - name: "test · Linux"
-            os: ubuntu-latest
-            toolchain: stable
-            command: cargo test --all-targets --all-features --no-fail-fast
-          - name: "test · macOS"
-            os: macos-latest
-            toolchain: stable
-            command: cargo test --all-targets --all-features --no-fail-fast
-          - name: "test · Windows"
-            os: windows-latest
-            toolchain: stable
-            command: cargo test --all-targets --all-features --no-fail-fast
-          # `--all-targets` does not include doctests, and for an SDK the
-          # rustdoc examples are part of the product (CONTRIBUTING.md gate 2b).
-          - name: "doctest · Linux"
-            os: ubuntu-latest
-            toolchain: stable
-            command: cargo test --doc --features duckdb-1-5-4
-          - name: "clippy"
-            os: ubuntu-latest
-            toolchain: stable
-            components: clippy
-            command: cargo clippy --all-targets -- -D warnings
-          - name: "fmt"
-            os: ubuntu-latest
-            toolchain: stable
-            components: rustfmt
-            command: cargo fmt -- --check
-          - name: "doc"
-            os: ubuntu-latest
-            toolchain: stable
-            command: cargo doc --no-deps --all-features
-          # `+1.86.0` is required: `rust-toolchain.toml` pins `channel =
-          # "stable"` and overrides the rustup default this action sets, so a
-          # bare `cargo check` would run stable and gate nothing.
-          - name: "MSRV 1.86.0"
-            os: ubuntu-latest
-            toolchain: "1.86.0"
-            command: cargo +1.86.0 check
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
-        with:
-          toolchain: ${{ matrix.toolchain }}
-          components: ${{ matrix.components || '' }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: ${{ matrix.name }}
-        run: ${{ matrix.command }}
-        env:
-          RUSTDOCFLAGS: "-D warnings"
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
 
-# ── Job 3: Security audit ─────────────────────────────────────────────────────
-  security:
-    name: Security audit (cargo-deny)
-    needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-targets: false
-      - name: Install cargo-deny
-        env:
-          # Do not build third-party tools with warnings-as-errors:
-          # a new rustc warning in any of their dependencies would
-          # break CI for a reason unrelated to this repo.
-          RUSTFLAGS: ""
-        run: cargo install cargo-deny --locked --version "0.19.0"
-      - name: Run cargo-deny
-        run: |
-          echo "::group::cargo deny check"
-          cargo deny check
-          echo "::endgroup::"
-          echo "::notice::No license, advisory, or source policy violations found"
-
-# ── Job 4: Package crate and generate provenance ─────────────────────────────
+# ── Job 3: Package crate and generate provenance ─────────────────────────────
   package:
     name: Package and attest
-    needs: [ci, security]
+    needs: [ci]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -230,21 +179,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # No cache in this job or in `publish`: a tag-triggered run can restore
+      # caches the default branch saved, and this job holds the attestation
+      # token. Release speed does not matter.
 
       - name: cargo package
         id: pkg
         shell: bash
         run: |
           echo "::group::Package contents (files included in .crate)"
-          cargo package --list --no-verify
+          cargo package --list --no-verify --locked
           echo "::endgroup::"
 
           echo "::group::Build .crate archive"
-          cargo package --no-verify
+          cargo package --no-verify --locked
           echo "::endgroup::"
 
           CRATE_FILE=$(ls target/package/*.crate)
@@ -267,7 +218,7 @@ jobs:
           subject-path: target/package/*.crate
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-artifacts
           path: |
@@ -276,32 +227,10 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-# ── Job 5: Publish dry-run (validates package is publishable) ─────────────────
-  publish-dry-run:
-    name: Publish dry-run
-    needs: [ci, security]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: cargo publish --dry-run
-        shell: bash
-        run: |
-          echo "::group::cargo publish --dry-run"
-          cargo publish --dry-run
-          echo "::endgroup::"
-          echo "::notice::Dry-run succeeded — package passes crates.io validation"
-
-# ── Job 6: Create GitHub release with artifacts & release notes ───────────────
+# ── Job 5: Create GitHub release with artifacts & release notes ───────────────
   github-release:
     name: Create GitHub release
-    needs: [validate, package, publish-dry-run]
+    needs: [validate, package, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -312,7 +241,7 @@ jobs:
           persist-credentials: false
 
       - name: Download release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-artifacts
           path: release-artifacts/
@@ -320,17 +249,19 @@ jobs:
       - name: Extract CHANGELOG section for this version
         id: notes
         shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          REPO: ${{ github.repository }}
         run: |
-          VERSION="${{ needs.validate.outputs.version }}"
-
           echo "::group::Extracting release notes for v$VERSION"
 
           # Extract everything between ## [VERSION] and the next ## [ heading
-          awk "
-            /^## \[$VERSION\]/ { found=1; next }
-            found && /^## \[/  { exit }
-            found              { print }
-          " CHANGELOG.md > release_notes.md
+          # index(), not a regex: `.` and `+` in the version are literal.
+          awk -v heading="## [$VERSION] - " '
+            index($0, heading) == 1 { found=1; next }
+            found && /^## \[/       { exit }
+            found                   { print }
+          ' CHANGELOG.md > release_notes.md
 
           if [[ ! -s release_notes.md ]]; then
             echo "::error::Empty release notes extracted for $VERSION"
@@ -345,7 +276,7 @@ jobs:
           # to the full section in CHANGELOG.md at this tag. Characters, not
           # bytes, are what GitHub counts, hence Python rather than `wc -c`.
           python3 scripts/release-notes-fit.py release_notes.md \
-            "https://github.com/${{ github.repository }}/blob/v${VERSION}/CHANGELOG.md"
+            "https://github.com/${REPO}/blob/v${VERSION}/CHANGELOG.md"
 
           echo "Release notes preview:"
           cat release_notes.md
@@ -361,17 +292,18 @@ jobs:
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          IS_PRE: ${{ needs.validate.outputs.is_prerelease }}
+          CRATE: ${{ needs.validate.outputs.crate_name }}
+          REPO: ${{ github.repository }}
         shell: bash
         run: |
-          VERSION="${{ needs.validate.outputs.version }}"
-          IS_PRE="${{ needs.validate.outputs.is_prerelease }}"
-          CRATE="${{ needs.validate.outputs.crate_name }}"
           TAG="v${VERSION}"
 
           PRE_FLAG=""
           [[ "$IS_PRE" == "true" ]] && PRE_FLAG="--prerelease"
 
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
 
           # Idempotent: if a release already exists (e.g. created by GitHub
           # Desktop or the web UI when pushing a tag), update it in place
@@ -421,14 +353,13 @@ jobs:
             ls -lh release-artifacts/
             echo "\`\`\`"
             echo ""
-            echo "### Next step"
-            echo "Approve the **crates-io** deployment environment to publish to crates.io."
+            echo "The crate is already on crates.io: the publish job runs first."
           } >> "$GITHUB_STEP_SUMMARY"
 
-# ── Job 7: Publish to crates.io (protected environment, requires approval) ────
+# ── Job 4: Publish to crates.io (protected environment, requires approval) ────
   publish:
     name: Publish to crates.io
-    needs: [validate, github-release]
+    needs: [validate, package]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # The 'crates-io' environment requires a manual approval step.
@@ -438,27 +369,53 @@ jobs:
       url: https://crates.io/crates/${{ needs.validate.outputs.crate_name }}
     permissions:
       contents: read
+      id-token: write  # OIDC token for crates.io Trusted Publishing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # Preferred credential: crates.io Trusted Publishing, which exchanges
+      # this job's OIDC token for a short-lived crates.io token (revoked when
+      # the job ends), scoped by the trusted-publisher configuration on
+      # crates.io: this repository, this workflow file, the `crates-io`
+      # environment. One-time setup: RELEASING.md, Prerequisites.
+      # `continue-on-error` makes the CARGO_REGISTRY_TOKEN fallback reachable
+      # until that setup is done; the next step refuses to run with neither.
+      - name: Obtain a crates.io token via Trusted Publishing
+        id: trusted
+        continue-on-error: true
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
 
       - name: Publish to crates.io
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          TRUSTED_TOKEN: ${{ steps.trusted.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          CRATE: ${{ needs.validate.outputs.crate_name }}
         shell: bash
         run: |
-          VERSION="${{ needs.validate.outputs.version }}"
-          CRATE="${{ needs.validate.outputs.crate_name }}"
+          if [[ -n "$TRUSTED_TOKEN" ]]; then
+            echo "Publishing with a Trusted Publishing token."
+            export CARGO_REGISTRY_TOKEN="$TRUSTED_TOKEN"
+          elif [[ -n "$FALLBACK_TOKEN" ]]; then
+            echo "::warning::Trusted Publishing is not configured (or the exchange failed); using the CARGO_REGISTRY_TOKEN secret. See RELEASING.md, Prerequisites."
+            export CARGO_REGISTRY_TOKEN="$FALLBACK_TOKEN"
+          else
+            echo "::error::No crates.io credential: configure Trusted Publishing or the CARGO_REGISTRY_TOKEN secret (RELEASING.md, Prerequisites)."
+            exit 1
+          fi
 
           echo "::group::cargo publish — $CRATE v$VERSION"
+          # --no-verify: ci.yml's publish-dry-run job already built this exact
+          # commit from its packaged sources. Verifying again here would run
+          # every dependency's build script with the token in the environment.
           # Idempotent: if a re-run publishes the same version that's
           # already on crates.io, treat it as success rather than failing.
-          if ! cargo publish 2>&1 | tee /tmp/publish.log; then
+          if ! cargo publish --locked --no-verify 2>&1 | tee /tmp/publish.log; then
             # cargo checks the index first ("already exists on crates.io
             # index"); older cargo failed later at upload ("already uploaded").
             if grep -qE "already exists on|already uploaded" /tmp/publish.log; then
@@ -469,6 +426,7 @@ jobs:
             fi
           fi
           echo "::endgroup::"
+          unset CARGO_REGISTRY_TOKEN
 
           CRATES_URL="https://crates.io/crates/${CRATE}/${VERSION}"
           DOCS_URL="https://docs.rs/${CRATE}/${VERSION}"
@@ -485,3 +443,62 @@ jobs:
             echo ""
             echo "> docs.rs may take a few minutes to build and index the documentation."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download the attested artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-artifacts
+          path: release-artifacts/
+
+      # The attestation and SHA256SUMS describe the `.crate` the `package` job
+      # built; crates.io serves the one `cargo publish` just built. `cargo
+      # package` is reproducible (crates.io's 0.18.0 is byte-identical to a
+      # local `cargo package` of the v0.18.0 tag), so the two must match; a
+      # difference means the attestation does not describe what users get.
+      - name: crates.io serves the attested .crate
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          CRATE: ${{ needs.validate.outputs.crate_name }}
+        shell: bash
+        run: |
+          FILE="${CRATE}-${VERSION}.crate"
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsSL -A "quack-rs release check" -o "/tmp/$FILE" \
+                "https://static.crates.io/crates/${CRATE}/${FILE}"; then
+              break
+            fi
+            echo "crates.io does not serve $FILE yet (attempt $attempt); retrying in 20s"
+            sleep 20
+          done
+          test -s "/tmp/$FILE" || { echo "::error::could not download $FILE from crates.io"; exit 1; }
+          want=$(awk -v f="$FILE" '$2 == f || $2 == "./" f { print $1 }' release-artifacts/SHA256SUMS)
+          got=$(sha256sum "/tmp/$FILE" | awk '{ print $1 }')
+          echo "attested:  $want"
+          echo "crates.io: $got"
+          if [[ -z "$want" || "$want" != "$got" ]]; then
+            echo "::error::crates.io's $FILE does not match the attested artifact."
+            exit 1
+          fi
+          echo "::notice::crates.io serves the attested $FILE (sha256 $got)."
+
+# ── Job 6: Publish the release's book (quack-rs.com/ and /vX.Y/) ──────────────
+  docs:
+    name: Deploy the versioned book
+    needs: [validate, github-release]
+    # A prerelease gets no book of its own (scripts/build-versioned-site.py
+    # skips prerelease tags); main's /dev/ already shows it.
+    if: needs.validate.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      # docs.yml rebuilds every version from the tags. It runs on main, not
+      # on this tag, because the github-pages environment only deploys main.
+      - name: Dispatch docs.yml on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh workflow run docs.yml --repo "$REPO" --ref main
+          echo "::notice::Dispatched docs.yml on main; the book for this release appears at https://quack-rs.com/ when it finishes."

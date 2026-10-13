@@ -377,6 +377,49 @@ fn a_registration_made_on_the_raw_connection_is_invisible_to_the_snapshot() {
     }
 }
 
+/// What the registration reports when that duplicate reaches `DuckDB`. On
+/// v1.4.x the call fails, and the message must name the possible duplicate
+/// rather than claim the name is free — it did, and pointed at parameter types
+/// for what was a name clash. v1.5.x reports success, which is left to the test
+/// above.
+#[test]
+fn a_duplicate_the_snapshot_missed_is_named_in_the_v1_4_failure() {
+    let fx = Fixture::open();
+    let version = fx
+        .scalar("SELECT version()", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .expect("version() is never NULL");
+    let fails_on_duplicate = quack_rs::abi::parse_version(&version).is_some_and(|v| v < (1, 5, 0));
+    // SAFETY: the fixture's handles outlive `con`.
+    let con = unsafe { Connection::from_raw(fx.con(), fx.db()) };
+    // SAFETY: the connection is valid for these calls; the middle call
+    // bypasses the snapshot.
+    let second = unsafe {
+        con.register_table(table("loads_the_snapshot"))
+            .expect("first");
+        table("added_behind_the_snapshot")
+            .register(con.as_raw_connection())
+            .expect("raw");
+        con.register_table(table("added_behind_the_snapshot"))
+    };
+    if fails_on_duplicate {
+        let e = second.expect_err("v1.4.x fails a duplicate table function");
+        let msg = e.as_str();
+        assert!(
+            msg.contains("duckdb_register_table_function failed for 'added_behind_the_snapshot'")
+                && msg.contains("same name registered on the raw connection"),
+            "{version}: the failure does not name the possible duplicate: {msg}"
+        );
+        assert!(
+            !msg.contains("the name is free"),
+            "{version}: the failure claims the name is free: {msg}"
+        );
+    } else {
+        second.unwrap_or_else(|e| panic!("{version}: v1.5.x reports success: {e}"));
+    }
+}
+
 /// The same hazard in the table-function and config-option name checks: a
 /// `lower` macro made `lower(function_name) = lower($1)` true for every row,
 /// so every table function name counted as taken. Both queries now qualify

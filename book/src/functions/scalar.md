@@ -109,6 +109,40 @@ ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?.register(con)?;
 # }
 ```
 
+A closure can also return `Option<R>`, where `None` is SQL `NULL`, and the
+`try_map1` / `try_map2` / `try_map3` / `try_map1_str` / `try_map2_str`
+constructors take a closure returning `Result<R, E>`. An `Err` fails the query
+with the error's `Display` text, through the same channel a caught panic uses.
+`map3` and `try_map3` take three arguments. NULL arguments still never reach the
+closure; the `*_opt` constructors are the way to see them.
+
+```rust
+# use libduckdb_sys::duckdb_connection;
+# use quack_rs::prelude::*;
+# unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
+// `None` is SQL NULL.
+ScalarFunctionBuilder::map1_str("email_domain", |s: &str| {
+    s.split_once('@').map(|(_, domain)| domain.to_owned())
+})?
+.register(con)?;
+
+// `Err` fails the query with its message; `Ok(None)` is NULL.
+ScalarFunctionBuilder::try_map1_str("parse_int", |s: &str| {
+    if s.is_empty() {
+        return Ok(None);
+    }
+    s.trim()
+        .parse::<i64>()
+        .map(Some)
+        .map_err(|e| format!("parse_int({s:?}): {e}"))
+})?
+.register(con)?;
+
+ScalarFunctionBuilder::map3("lerp", |a: f64, b: f64, t: f64| a + (b - a) * t)?.register(con)?;
+# Ok(())
+# }
+```
+
 ---
 
 ## Complete example: `double_it(BIGINT) → BIGINT`

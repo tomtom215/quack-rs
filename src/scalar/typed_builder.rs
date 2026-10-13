@@ -73,7 +73,7 @@ impl TypedScalar {
     /// `output` must be the valid result vector for `chunk`'s invocation.
     // A mismatch cannot be produced through this crate's public API any more;
     // the end-to-end suite reaches it through a hand-written `Registrar`.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     unsafe fn check_signature(
         &self,
         chunk: &DataChunk,

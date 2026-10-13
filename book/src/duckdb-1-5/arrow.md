@@ -140,7 +140,7 @@ It also refuses a **zero-row** array. DuckDB passes `arrow_array->length`
 through as the chunk's capacity, and a capacity of zero trips a
 `D_ASSERT(size > 0)` that aborts a debug build of DuckDB, while a release build
 carries on. Skip empty batches, or create the empty chunk directly with
-`duckdb_create_data_chunk`.
+[`OwnedDataChunk::new`](https://docs.rs/quack-rs/latest/quack_rs/query/struct.OwnedDataChunk.html#method.new).
 
 What it cannot check, and what `data_chunk_from_arrow`'s `# Safety` section
 therefore makes the caller's job:

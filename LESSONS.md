@@ -253,7 +253,7 @@ records the column count of the schema it was built from.
 
 ---
 
-## L10: Scalar bind data is dropped when `DuckDB` copies the expression
+## L10: Scalar bind data is dropped when DuckDB copies the expression
 
 **Status**: Fixable only from the extension, and now possible:
 [`ScalarBindInfo::set_bind_data_copy`].
@@ -265,7 +265,7 @@ reported: the callback simply runs without the state it bound, so the answer is
 quietly wrong.
 
 **Root cause**: `duckdb_scalar_function_set_bind_data` registers the pointer and
-its destructor, but *not* how to duplicate it. `DuckDB` copies a bound
+its destructor, but *not* how to duplicate it. DuckDB copies a bound
 expression whenever it duplicates a plan, and `CScalarFunctionBindData::Copy()`
 in `src/main/capi/scalar_function-c.cpp` (read at `v1.5.5`; byte-identical in
 `v1.5.4`) only fills the copy in when a copy callback exists:
@@ -321,7 +321,7 @@ it must not unwind. Wrap anything that can panic in
 
 ## L11: C API aggregates crash under `agg(x) OVER ()` and `agg(x ORDER BY y)`
 
-**Status**: A `DuckDB` defect, reported upstream as
+**Status**: A DuckDB defect, reported upstream as
 [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Cannot be prevented or detected from an extension;
 documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` and
 `FfiState`.
@@ -345,7 +345,7 @@ callback, called from `CAPIAggregateUpdate`.
 **Fix**: none on the extension side — the callback receives a raw
 `duckdb_aggregate_state *` and cannot tell a constant vector from a flat one,
 and reading `states[1]` to find out is itself the out-of-bounds read. Until
-`DuckDB` fixes it, document for your users that the aggregate must not be used
+DuckDB fixes it, document for your users that the aggregate must not be used
 in those two query shapes. Frames that are not whole-partition (`ROWS BETWEEN 5
 PRECEDING AND CURRENT ROW`, segment-tree windows) and `DISTINCT` windows were
 checked and work.
@@ -465,25 +465,25 @@ requires `Sync` for the same reason.
 
 ---
 
-## L16: A valid Arrow array is not always one `DuckDB` imports correctly
+## L16: A valid Arrow array is not always one DuckDB imports correctly
 
 **Status**: Fixed in quack-rs: `data_chunk_from_arrow` walks the array with its
-schema and refuses the layouts `DuckDB` 1.4.4 to 1.5.5 mishandles
+schema and refuses the layouts DuckDB 1.4.4 to 1.5.5 mishandles
 (`src/arrow/import_layout.rs`, `tests/ffi_roundtrip/arrow_layout.rs`;
 `docs/upstream-duckdb-reports.md`, items 9, 24 to 29 and 31 to 33).
 
 **Symptom**: an array that arrow-rs or another producer built, valid by the
 Arrow specification, imports with values from the wrong rows, reads past a
-buffer, or corrupts the heap. Arrays `DuckDB` exported itself never show it,
+buffer, or corrupts the heap. Arrays DuckDB exported itself never show it,
 which is why round-trip tests pass.
 
-**Root cause**: `DuckDB`'s importer tracks where a node's rows start with two
+**Root cause**: DuckDB's importer tracks where a node's rows start with two
 parameters, `parent_offset` and `nested_offset`, and some paths pass the wrong
 one: a struct gives its children only its own offset, union members start at
 row 0, a dictionary's validity ignores the list's offset. List views, recoded
 union type ids and nested dictionaries are mishandled too.
 
-**Fix**: never assume a producer's layout matches the one `DuckDB` writes.
+**Fix**: never assume a producer's layout matches the one DuckDB writes.
 Test an importer with hand-built arrays that put offsets at every level, and
 refuse what the engine cannot import rather than return wrong values.
 
@@ -497,7 +497,7 @@ message); documented for raw ones on `CopyFunctionBuilder::copy_from` and
 `tests/ffi_roundtrip/copy_from_columns.rs`;
 `docs/upstream-duckdb-reports.md`, item 37.
 
-**Symptom**: on a `DuckDB` built with assertions, `COPY t FROM …` fails with
+**Symptom**: on a DuckDB built with assertions, `COPY t FROM …` fails with
 `chunk.ColumnCount() == types.size()` and the database is invalidated. A
 release build silently drops the extra column, so the bug hides in testing.
 
@@ -627,8 +627,10 @@ In duckdb-behavioral, 435 unit tests passed while the extension had three critic
 3. Wrong results from window_funnel (combine not propagating config)
 
 **Fix**: Always run E2E tests using the actual DuckDB CLI, loading the
-packaged `.duckdb_extension` (DuckDB refuses a bare `.so`; append the metadata
-footer with `append_metadata`, and start the CLI with `-unsigned`):
+packaged `.duckdb_extension`. DuckDB refuses a bare `.so` ("DuckDB extensions are
+files ending with '.duckdb_extension'"), and refuses a renamed `.so` that has no metadata
+footer ("The metadata at the end of the file is invalid"), so append the footer with
+`append_metadata` and start the CLI with `-unsigned`:
 ```sql
 LOAD './my_extension.duckdb_extension';
 SELECT my_function(col) FROM ...;
@@ -651,7 +653,7 @@ cannot create the gitlink git needs, so `git submodule update --init` finds
 nothing to do and exits 0 without cloning anything. Add it once:
 
 ```bash
-git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
 ```
 
 In a **clone** of a repository that already has the submodule:
@@ -965,15 +967,15 @@ implementation. `const char *` is a strong hint that it is borrowed, but
 ## P12: `duckdb_client_context_get_config_option` aborts on a missing setting (debug builds)
 
 **Status**: Documented on `ClientContext::config_option`; the abort-free
-alternative is SQL. This is a `DuckDB` defect, not a quack-rs one.
+alternative is SQL. This is a DuckDB defect, not a quack-rs one.
 
 **Symptom**: `Assertion 'scope != SettingScope::INVALID' failed` and a
 `SIGABRT`, when asking for a configuration option that does not exist — but only
-against a `DuckDB` built with debug assertions. Release builds return `NULL`
+against a DuckDB built with debug assertions. Release builds return `NULL`
 exactly as documented, so this never reproduces for end users and always
-reproduces in a test suite that links a debug `DuckDB`.
+reproduces in a test suite that links a debug DuckDB.
 
-**Root cause** (`DuckDB` 1.5.5):
+**Root cause** (DuckDB 1.5.5):
 
 ```cpp
 // src/main/capi/config_options-c.cpp
@@ -1042,8 +1044,13 @@ extension:
 
 repo:
   github: yourorg/your_extension
-  ref: main
+  ref: 0123456789abcdef0123456789abcdef01234567  # the commit to build, never a branch
 ```
+
+`repo.ref` is the commit the community build checks out; a branch name would
+build whatever the branch points at on the day. The book's
+[Publishing page](https://quack-rs.com/publishing.html) shows the exact file the
+scaffold generates.
 
 Use `quack_rs::validate` to check name, version, and license before submission,
 or use `quack_rs::scaffold::generate_scaffold` to auto-generate all project files.
@@ -1095,16 +1102,22 @@ Key points:
 - **Unstable** extensions may change or remove functionality at any time
 - **Pre-release** extensions follow semver but the API may still have breaking changes in minor versions
 - **Stable** extensions guarantee backwards-compatible APIs; breaking changes require a major version bump
-- Use `quack_rs::validate::validate_extension_version` to accept all three formats
+- `quack_rs::validate::validate_extension_version` accepts these three and anything
+  else the community build accepts: up to 64 characters from `[A-Za-z0-9._+-]`
 - Use `quack_rs::validate::semver::classify_extension_version` to determine the stability tier
 
 ### Extension Binary Compatibility
 
-Extension binaries are tied to a specific DuckDB version and platform. Key implications:
+Extension binaries are tied to a platform, and to DuckDB versions according to
+the ABI type stamped in their metadata footer:
 
-- New binaries must be built for each DuckDB release
-- Extensions compiled for one DuckDB version will not load in another
-- DuckDB verifies binary compatibility before loading and will refuse mismatched binaries
+- A `C_STRUCT` extension declares a C extension API version (quack-rs stamps
+  `v1.2.0`) and loads into every DuckDB release that provides that API — every
+  release from 1.4.4 through 1.5.6, for quack-rs's stable-API surface. One
+  binary serves them all.
+- A `C_STRUCT_UNSTABLE` or `CPP` extension declares an exact DuckDB release and
+  loads only into that release, so it is rebuilt for each one.
+- DuckDB verifies the footer before loading and refuses a mismatched binary
 - All official extensions are cryptographically signed by the DuckDB team
 - Unsigned extensions require `allow_unsigned_extensions` to load (development only)
 - The DuckDB extension template provides CI workflows for automated cross-platform builds
@@ -1122,31 +1135,6 @@ The community extension CI uses specific compiler versions and system libraries.
 
 ## Architecture Decision Records
 
-> **Note**: ADR-1 through ADR-3 (design principles) are in
-> [README.md](./README.md#architecture-decision-records). The ADRs below cover
-> implementation-level decisions specific to FFI integration.
-
-### ADR-4: `libduckdb-sys` only at runtime (no `duckdb` crate)
-
-The `duckdb` crate provides a high-level Rust API but also includes a bundled DuckDB (via
-the `bundled` feature). For loadable extensions, we must NOT bundle DuckDB — we link against
-the DuckDB that loads us. The `libduckdb-sys` with `loadable-extension` feature provides
-exactly this: lazy-initialized function pointers populated by DuckDB at load time.
-
-### ADR-5: Function sets instead of varargs
-
-`duckdb_aggregate_function_set_varargs` does not exist for aggregate functions. For variadic
-signatures (e.g., `retention(c1, c2, ..., c32)`), you must register N overloads using a
-`duckdb_aggregate_function_set`. `AggregateFunctionSetBuilder` handles this.
-
-> **Note (DuckDB 1.5.0)**: Scalar functions now support varargs directly via
-> `ScalarFunctionBuilder::varargs()` (requires the `duckdb-1-5` feature). This limitation
-> still applies to aggregate functions, which must use function sets for variadic signatures.
-
-### ADR-6: Custom C entry point instead of `duckdb-loadable-macros`
-
-`duckdb-loadable-macros` relies on `extract_raw_connection` which uses the internal
-`Rc<RefCell<InnerConnection>>` layout. This is fragile and causes SEGFAULTs when the layout
-changes. The correct approach is a hand-written C entry point that calls
-`duckdb_rs_extension_api_init`, `get_database`, and `duckdb_connect` directly.
-`quack_rs::entry_point::init_extension` encapsulates this correctly.
+All six ADRs (the design principles ADR-1 to ADR-3, and the FFI-integration
+decisions ADR-4 to ADR-6) are in
+[docs/architecture.md](docs/architecture.md#architecture-decision-records).

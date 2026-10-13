@@ -295,6 +295,7 @@ impl SqlMacro {
         }
         // SAFETY: caller guarantees con is valid and open.
         unsafe { execute_sql(con, &sql) }
+            .map_err(|e| ExtensionError::new(format!("macro '{}': {e}", self.name)))
     }
 
     /// Returns the macro name.

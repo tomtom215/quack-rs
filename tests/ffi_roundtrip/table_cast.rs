@@ -1659,7 +1659,8 @@ fn a_catalog_entry_keeps_its_name_after_the_table_is_dropped() {
 /// The fourth audit's F8, pinned so the cast docs stay true: registering a
 /// cast for a pair `DuckDB` already casts replaces the built-in one for the
 /// whole database — every connection, and the implicit cast an `INSERT`
-/// performs — and registering it again replaces it again, with no error.
+/// performs. A second registration for the same pair, with a different
+/// callback, succeeds and changes nothing: the first one keeps answering.
 mod cast_replaces_the_builtin {
     use super::{Fixture, TypeId};
     use quack_rs::cast::CastFunctionBuilder;
@@ -1691,6 +1692,16 @@ mod cast_replaces_the_builtin {
         ok
     });
 
+    // A cast that answers 42 for every row; registered second, it must lose.
+    quack_rs::cast_callback!(always_42, |_info, count, _input, output| {
+        let rows = usize::try_from(count).unwrap_or(0);
+        let mut writer = unsafe { VectorWriter::new(output) };
+        for row in 0..rows {
+            unsafe { writer.write_i32(row, 42) };
+        }
+        true
+    });
+
     #[test]
     fn a_varchar_to_integer_cast_replaces_the_builtin_for_the_whole_database() {
         let fx = Fixture::open();
@@ -1706,7 +1717,18 @@ mod cast_replaces_the_builtin {
                 .register(fx.con())
         };
         register().expect("register");
-        register().expect("a second registration is not refused either");
+        // SAFETY: `con` is open; the callback matches `CastFn`.
+        unsafe {
+            CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)
+                .function(always_42)
+                .register(fx.con())
+        }
+        .expect("a second registration for the pair is not refused");
+        assert_eq!(
+            fx.scalar("SELECT '7'::INTEGER", |r, i| unsafe { r.read_i32(i) }),
+            Some(7),
+            "the first registration still answers; the second was dropped"
+        );
         assert!(super::error_of(&fx, "SELECT ' 7'::INTEGER").contains("Conversion Error"));
         // SAFETY: the fixture's database outlives the connection.
         let other = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
@@ -1719,6 +1741,98 @@ mod cast_replaces_the_builtin {
             super::error_of(&fx, "INSERT INTO cast_target VALUES (' 7')")
                 .contains("Conversion Error"),
             "an INSERT's implicit cast"
+        );
+    }
+}
+
+/// `CastMode::Try` is not only `TRY_CAST`: `DuckDB` also uses it for the casts
+/// it applies to single values, such as converting a table function's argument
+/// to the parameter's type. There, the callback's `false` is what turns a
+/// failed row into an error; the cast docs say so, and this pins it.
+mod cast_mode_in_value_casts {
+    use super::{error_of, Fixture, TableFunctionBuilder, TypeId};
+    use quack_rs::cast::{CastFunctionBuilder, CastFunctionInfo, CastMode};
+    use quack_rs::vector::{VectorReader, VectorWriter};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static SAW_TRY: AtomicBool = AtomicBool::new(false);
+
+    // Digits only; nulls each failed row and returns `false` if any failed.
+    quack_rs::cast_callback!(digits_only, |info, count, input, output| {
+        let info = unsafe { CastFunctionInfo::new(info) };
+        if info.cast_mode() == CastMode::Try {
+            SAW_TRY.store(true, Ordering::SeqCst);
+        }
+        let rows = usize::try_from(count).unwrap_or(0);
+        let reader = unsafe { VectorReader::from_vector(input, rows) };
+        let mut writer = unsafe { VectorWriter::new(output) };
+        let mut all_ok = true;
+        for row in 0..rows {
+            let s = unsafe { reader.read_str(row) };
+            let parsed = s
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| s.parse::<i64>().ok())
+                .flatten();
+            if let Some(v) = parsed {
+                unsafe { writer.write_i64(row, v) };
+            } else {
+                all_ok = false;
+                unsafe { info.set_row_error("not a number", row as u64, output) };
+            }
+        }
+        all_ok
+    });
+
+    #[test]
+    fn a_table_function_argument_is_cast_in_try_mode_and_false_raises() {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open; the callback matches `CastFn`.
+        unsafe {
+            CastFunctionBuilder::new(TypeId::Varchar, TypeId::BigInt)
+                .function(digits_only)
+                .implicit_cost(1)
+                .register(fx.con())
+        }
+        .expect("register cast");
+        let builder = TableFunctionBuilder::new("echo_param")
+            .param(TypeId::BigInt)
+            .with_state::<i64, _>(|bind| {
+                bind.add_result_column("n", TypeId::BigInt);
+                // SAFETY: parameter 0 was declared above.
+                Ok(unsafe { bind.get_parameter_value(0) }.as_i64_or(-1))
+            })
+            .scan(|state, chunk| {
+                if *state == i64::MIN {
+                    unsafe { chunk.set_size(0) };
+                    return Ok(());
+                }
+                unsafe {
+                    chunk.writer(0).write_i64(0, *state);
+                    chunk.set_size(1);
+                }
+                *state = i64::MIN;
+                Ok(())
+            })
+            .build()
+            .expect("build");
+        // SAFETY: `con` is open.
+        unsafe { builder.register(fx.con()) }.expect("register echo_param");
+
+        let v = error_of(&fx, "SELECT * FROM echo_param('abc'::VARCHAR)");
+        assert!(
+            SAW_TRY.load(Ordering::SeqCst),
+            "the argument cast ran in Try mode"
+        );
+        assert!(
+            v.contains("Failed to cast value") && v.contains("not a number"),
+            "{v}"
+        );
+        assert_eq!(
+            fx.scalar("SELECT n FROM echo_param('42'::VARCHAR)", |r, i| unsafe {
+                r.read_i64(i)
+            }),
+            Some(42)
         );
     }
 }

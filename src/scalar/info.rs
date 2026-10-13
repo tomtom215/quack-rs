@@ -92,7 +92,7 @@ impl ScalarFunctionInfo {
     /// (see [`message_to_c_string`][crate::callback::message_to_c_string]),
     /// and an empty message by [`EMPTY_ERROR_PLACEHOLDER`], since `DuckDB`
     /// would otherwise report only an error-type prefix.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
@@ -207,7 +207,7 @@ impl ScalarBindInfo {
     }
 
     /// Returns the number of arguments passed to the scalar function.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     pub fn argument_count(&self) -> u64 {
         // SAFETY: self.info is valid per constructor contract.
@@ -467,7 +467,7 @@ impl ScalarBindInfo {
     /// (see [`message_to_c_string`][crate::callback::message_to_c_string]),
     /// and an empty message by [`EMPTY_ERROR_PLACEHOLDER`], since `DuckDB`
     /// would otherwise report only an error-type prefix.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
@@ -497,7 +497,7 @@ impl ScalarBindInfo {
     }
 
     /// Returns the raw `duckdb_bind_info` handle.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     #[inline]
     pub const fn as_raw(&self) -> duckdb_bind_info {
@@ -588,7 +588,7 @@ impl ScalarInitInfo {
     /// (see [`message_to_c_string`][crate::callback::message_to_c_string]),
     /// and an empty message by [`EMPTY_ERROR_PLACEHOLDER`], since `DuckDB`
     /// would otherwise report only an error-type prefix.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
@@ -618,7 +618,7 @@ impl ScalarInitInfo {
     }
 
     /// Returns the raw `duckdb_init_info` handle.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     #[inline]
     pub const fn as_raw(&self) -> duckdb_init_info {

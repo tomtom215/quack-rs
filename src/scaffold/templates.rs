@@ -50,10 +50,20 @@ pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
 name = "{name}"
 version = "{version}"
 edition = "2021"
+# The oldest Rust this project builds with: quack-rs's own MSRV, which is also
+# the toolchain extension-ci-tools uses for its wasm builds. Raise it only
+# together with the `msrv` job in .github/workflows/extension-ci.yml.
+rust-version = "{msrv}"
+# Rust-version-aware dependency resolution: `cargo update` and a fresh
+# `generate-lockfile` pick the newest versions that still support
+# `rust-version`, instead of versions that need a newer compiler.
+resolver = "3"
 
 [lib]
 name = "{name}"
-crate-type = ["cdylib"]
+# cdylib: the .so/.dylib/.dll DuckDB loads. rlib: lets tests/, examples and
+# doctests link the crate as a library.
+crate-type = ["cdylib", "rlib"]
 
 # WASM support: staticlib target for emcc compilation.
 # See extension-ci-tools for details.
@@ -80,6 +90,7 @@ strip = true
 "#,
         name = config.name,
         version = config.version,
+        msrv = env!("CARGO_PKG_RUST_VERSION"),
         quack_rs = quack_rs_dependency_version(),
         libduckdb_sys = libduckdb_sys,
         libduckdb_sys_note = libduckdb_sys_note,
@@ -125,8 +136,9 @@ pub(super) fn generate_makefile(config: &ScaffoldConfig) -> String {
     } else {
         ("", "", "")
     };
+    let ci_tools_ref = super::extension_ci_tools_ref(config);
     format!(
-        r"# DuckDB Rust extension Makefile.
+        r#"# DuckDB Rust extension Makefile.
 # Delegates to cargo for building and to extension-ci-tools for metadata.
 
 .PHONY: all configure debug release test test_debug test_release clean clean_all{phony_check}
@@ -140,13 +152,27 @@ EXT_CONFIG=$(PROJ_DIR)extension_config.cmake
 USE_UNSTABLE_C_API={unstable}
 TARGET_DUCKDB_VERSION={target_version}
 {declare_block}
+# Extension version written into the metadata footer. extension-ci-tools reads
+# it from git (the tag on HEAD, else the short commit hash) -- and in a
+# repository with no commit yet it records git's error message instead, which
+# overflows the footer's 32-byte version field and leaves a file DuckDB refuses
+# to load ('Unknown ABI type for extension'). Until HEAD exists, fall back to
+# the package version in Cargo.toml. Set EXTENSION_VERSION to override both;
+# after the first commit, run `make clean_all configure` to switch to git.
+ifeq ($(EXTENSION_VERSION),)
+ifeq ($(shell git rev-parse --verify --quiet HEAD 2>/dev/null),)
+EXTENSION_VERSION := v$(shell sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
+endif
+endif
+
 all: configure release
 
 # Include extension-ci-tools build rules. A freshly generated project has a
 # .gitmodules but no submodule yet, and `git submodule update --init` does
-# nothing until the submodule has been added once (LESSONS.md P4).
+# nothing until the submodule has been added once (LESSONS.md P4). Use the
+# branch the distribution workflow names as `ci_tools_version`.
 ifeq ($(wildcard extension-ci-tools/makefiles/c_api_extensions/base.Makefile),)
-$(error extension-ci-tools is missing. In a new repository run: git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools -- in a clone of an existing one: git submodule update --init --recursive)
+$(error extension-ci-tools is missing. In a new repository run: git submodule add -b {ci_tools_ref} https://github.com/duckdb/extension-ci-tools.git extension-ci-tools -- in a clone of an existing one: git submodule update --init --recursive)
 endif
 include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
 include extension-ci-tools/makefiles/c_api_extensions/rust.Makefile
@@ -162,8 +188,9 @@ test_release: test_extension_release
 
 clean: clean_build clean_rust
 clean_all: clean_configure clean
-",
+"#,
         name = config.name,
+        ci_tools_ref = ci_tools_ref,
         abi_note = abi_note,
         unstable = unstable,
         target_version = config.target_duckdb_version,
@@ -210,7 +237,9 @@ use quack_rs::prelude::*;
 // Example: a simple SQL macro. Replace with your own functions.
 // ---------------------------------------------------------------------------
 
-/// The example function: `{name}_hello(name)` greets `name`.
+/// The example function: `{name}_hello(name)` greets `name`. `||` returns NULL
+/// when `name` is NULL, as SQL functions conventionally do (`concat` would
+/// skip the NULL and still return a greeting).
 fn hello_macro() -> Result<SqlMacro, ExtensionError> {{
     {hello_call}
 }}
@@ -245,7 +274,7 @@ mod tests {{
     fn hello_macro_renders_the_expected_sql() -> Result<(), ExtensionError> {{
         assert_eq!(
             hello_macro()?.to_sql(),
-            r#"CREATE OR REPLACE MACRO "{name}_hello"("name") AS (concat('Hello from {name}! ', name))"#
+            r#"CREATE OR REPLACE MACRO "{name}_hello"("name") AS ('Hello from {name}! ' || name)"#
         );
         Ok(())
     }}
@@ -279,7 +308,7 @@ fn hello_macro_call(name: &str) -> String {
     let args = [
         format!("\"{name}_hello\""),
         String::from("&[\"name\"]"),
-        format!("\"concat('Hello from {name}! ', name)\""),
+        format!("\"'Hello from {name}! ' || name\""),
     ];
     let one_line = args.join(", ");
     if one_line.len() <= 60 {
@@ -312,7 +341,16 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
         name = yaml_quoted(&config.name),
         description = yaml_quoted(&config.description),
         version = yaml_quoted(&config.version),
-        license = config.license,
+        // Normalised to single spaces: the SPDX check splits an expression on
+        // any whitespace, so `MIT\nOR Apache-2.0` passes it, but a raw line
+        // break here would end the YAML scalar.
+        license = yaml_quoted(
+            &config
+                .license
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
     );
 
     if !config.excluded_platforms.is_empty() {
@@ -359,12 +397,35 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
     yml
 }
 
-pub(super) fn generate_gitmodules() -> String {
-    "[submodule \"extension-ci-tools\"]\n\tpath = extension-ci-tools\n\turl = https://github.com/duckdb/extension-ci-tools\n".to_string()
+/// `.gitmodules`, tracking the extension-ci-tools branch the distribution
+/// workflow builds with, so `git submodule update --remote` stays on it.
+pub(super) fn generate_gitmodules(config: &ScaffoldConfig) -> String {
+    format!(
+        "[submodule \"extension-ci-tools\"]\n\
+         \tpath = extension-ci-tools\n\
+         \turl = https://github.com/duckdb/extension-ci-tools\n\
+         \tbranch = {}\n",
+        super::extension_ci_tools_ref(config)
+    )
 }
 
+/// `.gitignore`: build output, the `make configure` state (venv, platform and
+/// version files) and what `make test` leaves behind, as in
+/// `duckdb/extension-template-rs`. `Cargo.lock` is deliberately tracked: the
+/// extension is a binary, and its lock file is what makes builds repeatable.
 pub(super) fn generate_gitignore() -> String {
-    "/target\n*.duckdb\n*.wal\nbuild/\n.env\n__pycache__/\n".to_string()
+    "/target\n\
+     /build/\n\
+     /configure/\n\
+     /duckdb_unittest_tempdir/\n\
+     /test/bin/\n\
+     venv/\n\
+     .idea/\n\
+     *.duckdb\n\
+     *.wal\n\
+     .env\n\
+     __pycache__/\n"
+        .to_string()
 }
 
 pub(super) fn generate_cargo_config() -> String {
@@ -397,15 +458,19 @@ pub(super) fn generate_wasm_lib() -> String {
 pub(super) fn generate_extension_config_cmake(config: &ScaffoldConfig) -> String {
     let name = &config.name;
     let github_repo = &config.github_repo;
+    let git_ref = &config.git_ref;
     format!(
         "# Extension configuration for `DuckDB`'s build system.\n\
          # Required by extension-ci-tools even for pure-Rust (cargo) extensions.\n\
          # See: https://github.com/duckdb/extension-ci-tools\n\
+         #\n\
+         # GIT_TAG is the same revision as `repo.ref` in description.yml: a commit\n\
+         # hash, never a branch, so a build from this file is reproducible.\n\
          \n\
          duckdb_extension_load({name}\n\
          \tLOAD_TESTS\n\
          \tGIT_URL https://github.com/{github_repo}\n\
-         \tGIT_TAG main\n\
+         \tGIT_TAG {git_ref}\n\
          )\n"
     )
 }
@@ -443,6 +508,12 @@ pub(super) fn generate_sqllogictest(config: &ScaffoldConfig) -> String {
          Hello from {name}! a\n\
          Hello from {name}! b\n\
          \n\
+         # NULL in, NULL out.\n\
+         query T\n\
+         SELECT {name}_hello(NULL);\n\
+         ----\n\
+         NULL\n\
+         \n\
          # ---- Add a test like these for each function you add. ----\n\
          # For example, an aggregate you register as {name}_count:\n\
          # query I\n\
@@ -450,96 +521,5 @@ pub(super) fn generate_sqllogictest(config: &ScaffoldConfig) -> String {
          # ----\n\
          # 3\n\
          "
-    )
-}
-
-/// Generates a GitHub Actions CI workflow for the extension repository.
-///
-/// This workflow builds and tests the extension on all `DuckDB` community extension
-/// platforms using `extension-ci-tools`. It is separate from quack-rs's own CI.
-pub(super) fn generate_extension_ci(config: &ScaffoldConfig) -> String {
-    let name = &config.name;
-    format!(
-        r"# GitHub Actions CI for the {name} DuckDB extension.
-# Generated by the quack-rs scaffold — customize as needed.
-#
-# The build goes through extension-ci-tools' Makefiles (see ./Makefile), which
-# need the git submodule and a Python 3 virtualenv. `make configure` creates the
-# venv, writes configure/platform.txt and resolves the extension version;
-# `make release` builds the cdylib and appends the DuckDB extension metadata
-# footer; `make test` runs the SQLLogicTests in test/sql against a real DuckDB
-# with the extension loaded.
-
-name: Extension CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-env:
-  CARGO_TERM_COLOR: always
-
-jobs:
-  build:
-    name: Build and test (${{{{ matrix.platform }}}})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux_amd64
-          - os: macos-latest
-            platform: osx_arm64
-          - os: windows-latest
-            platform: windows_amd64
-    runs-on: ${{{{ matrix.os }}}}
-    env:
-      # Empty on Linux, so extension-ci-tools detects the platform itself:
-      # its base.Makefile sets SKIP_TESTS=1 whenever DUCKDB_PLATFORM is
-      # linux_amd64, which would turn the SQLLogicTest step into a no-op.
-      DUCKDB_PLATFORM: ${{{{ matrix.os != 'ubuntu-latest' && matrix.platform || '' }}}}
-    steps:
-      # Every action is SHA-pinned. A tag or branch is a moving target that the
-      # action's owner can repoint at any time, and a workflow step runs
-      # arbitrary code in your CI.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: recursive
-
-      # Pinned to a commit on the action's `master` branch (2026-09-03), whose
-      # `toolchain:` input is required. Pinning the action does not pin your
-      # Rust version: `toolchain: stable` installs the current stable release
-      # on every run.
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
-        with:
-          toolchain: stable
-          components: clippy, rustfmt
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
-        with:
-          python-version: '3.12'
-
-      - name: Lint
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cargo fmt -- --check
-          cargo clippy --all-targets -- -D warnings
-
-      - name: Unit tests
-        run: cargo test
-
-      - name: Configure (venv, platform, version)
-        run: make configure
-
-      - name: Build extension with metadata
-        run: make release
-
-      - name: SQLLogicTest (end to end)
-        run: make test
-"
     )
 }

@@ -23,6 +23,14 @@
 //!     ScalarFunctionBuilder::map2("add", |a: i64, b: i64| a + b)?.register(con)?;
 //!     ScalarFunctionBuilder::map1_str("shout", |s: &str| s.to_uppercase())?
 //!         .register(con)?;
+//!     // `None` is SQL NULL.
+//!     ScalarFunctionBuilder::map1_str("email_domain", |s: &str| {
+//!         s.split_once('@').map(|(_, domain)| domain.to_owned())
+//!     })?
+//!     .register(con)?;
+//!     // `Err` fails the query with its message.
+//!     ScalarFunctionBuilder::try_map1_str("parse_int", |s: &str| s.trim().parse::<i64>())?
+//!         .register(con)?;
 //! }
 //! # Ok(())
 //! # }
@@ -33,15 +41,25 @@
 //! - **Types.** Parameter and return types are derived from the closure's
 //!   signature, so a mismatch is a compile error rather than a registration
 //!   failure or a misread vector.
-//! - **NULLs.** `map1` / `map2` / `map1_str` / `map2_str` implement SQL's
-//!   NULL-in-NULL-out: a row with any NULL argument is skipped and its result
-//!   set NULL. `DuckDB` does *not* do this for you — see
+//! - **NULLs.** `map1` / `map2` / `map3` / `map1_str` / `map2_str` and their
+//!   `try_*` forms implement SQL's NULL-in-NULL-out: a row with any NULL
+//!   argument is skipped and its result set NULL. `DuckDB` does *not* do this for you — see
 //!   [`DataChunk::propagate_nulls`][crate::data_chunk::DataChunk::propagate_nulls].
 //!   The `*_opt` variants hand the closure `Option`s instead and register
 //!   [`SpecialNullHandling`][crate::types::NullHandling::SpecialNullHandling].
+//! - **NULL results.** Every constructor accepts a closure returning
+//!   `Option<R>`: `None` writes SQL NULL for that row. This is independent of
+//!   NULL *arguments* — the NULL-propagating constructors still never call the
+//!   closure for those.
 //! - **Panics and errors.** The closure runs inside `catch_unwind`, and a panic
-//!   or an `Err` becomes a `DuckDB` error on that query rather than a process
-//!   abort or a wrong answer.
+//!   becomes a `DuckDB` error on that query rather than a process abort. The
+//!   `try_*` constructors ([`try_map1`][ScalarFunctionBuilder::try_map1],
+//!   [`try_map2`][ScalarFunctionBuilder::try_map2],
+//!   [`try_map3`][ScalarFunctionBuilder::try_map3],
+//!   [`try_map1_str`][ScalarFunctionBuilder::try_map1_str],
+//!   [`try_map2_str`][ScalarFunctionBuilder::try_map2_str]) take a closure
+//!   returning `Result<R, E>`; an `Err` fails the query with `E`'s `Display`
+//!   text. Return `Ok(None)` for NULL and `Err` for bad input.
 //! - **A fixed signature.** They return a
 //!   [`TypedScalarFunctionBuilder`], not a [`ScalarFunctionBuilder`]: it has no
 //!   `returns` / `param` / `function` / `extra_info`, because redeclaring the
@@ -68,6 +86,9 @@ use crate::scalar::builder::ScalarFunctionBuilder;
 use crate::scalar::typed_builder::TypedScalarFunctionBuilder;
 use crate::types::{NullHandling, TypeId};
 use crate::vector::{VectorReader, VectorWriter};
+
+mod fallible;
+mod ternary;
 
 /// A Rust type that maps 1:1 onto a `DuckDB` scalar column type.
 ///
@@ -97,7 +118,9 @@ pub unsafe trait ScalarValue: Copy + Send + Sync + 'static {
 /// A Rust type a scalar closure can return.
 ///
 /// Implemented for every [`ScalarValue`], plus `String` and `Vec<u8>` for
-/// `VARCHAR` and `BLOB` results.
+/// `VARCHAR` and `BLOB` results, and for `Option<R>` of any of them: `None`
+/// writes SQL NULL for that row, so a closure can return NULL for some
+/// non-NULL inputs.
 ///
 /// # Safety
 ///
@@ -187,6 +210,40 @@ unsafe impl ScalarOut for Vec<u8> {
     }
 }
 
+/// `None` is SQL NULL.
+///
+/// The column type is `R`'s; `Some(v)` writes `v` exactly as `R` would, and
+/// `None` marks the row NULL through [`VectorWriter::set_null`]. This lets
+/// [`map1`][ScalarFunctionBuilder::map1] and its siblings return NULL for an
+/// input that is not NULL — `map1_str("domain", |s: &str| s.split_once('@')
+/// .map(|(_, d)| d.to_owned()))` — without dropping to
+/// [`scalar_callback!`][crate::scalar_callback].
+///
+/// It does not change how NULL *arguments* are treated: the NULL-propagating
+/// constructors still skip a row with a NULL argument and write NULL without
+/// calling the closure. Use the `*_opt` constructors to see NULL arguments.
+// SAFETY: both arms uphold `R::write`'s contract: `Some` forwards to it with
+// the same writer and row, and `None` only touches the validity mask of a row
+// the caller guarantees is in bounds. `type_id` is `R`'s, so the vector the
+// caller provides is the one `R::write` expects.
+unsafe impl<R: ScalarOut> ScalarOut for Option<R> {
+    #[inline]
+    fn type_id() -> TypeId {
+        R::type_id()
+    }
+    #[inline]
+    unsafe fn write(writer: &mut VectorWriter, row: usize, value: Self) {
+        match value {
+            // SAFETY: forwarded from this method's own contract; the vector's
+            // type is `R::type_id()`.
+            Some(value) => unsafe { R::write(writer, row, value) },
+            // SAFETY: `row` is within the vector's capacity per this method's
+            // contract.
+            None => unsafe { writer.set_null(row) },
+        }
+    }
+}
+
 impl ScalarFunctionBuilder {
     /// A unary scalar function from a safe closure, with SQL NULL propagation.
     ///
@@ -255,7 +312,7 @@ impl ScalarFunctionBuilder {
     // `tests/ffi_roundtrip.rs` asserts that map2 NULLs out a row where
     // *either* argument is NULL, reading from a real column rather than a
     // constant-folded literal.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn map2<A, B, R, F>(name: &str, f: F) -> Result<TypedScalarFunctionBuilder, ExtensionError>
     where
         A: ScalarValue,
@@ -452,7 +509,7 @@ impl ScalarFunctionBuilder {
     // `tests/ffi_roundtrip.rs` asserts that map2_str NULLs out a row where
     // *either* argument is NULL, reading from a real column rather than a
     // constant-folded literal.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn map2_str<R, F>(name: &str, f: F) -> Result<TypedScalarFunctionBuilder, ExtensionError>
     where
         R: ScalarOut,
@@ -485,52 +542,4 @@ impl ScalarFunctionBuilder {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scalar_value_type_ids_match_their_rust_widths() {
-        assert_eq!(<i8 as ScalarValue>::type_id(), TypeId::TinyInt);
-        assert_eq!(<u64 as ScalarValue>::type_id(), TypeId::UBigInt);
-        assert_eq!(<f32 as ScalarValue>::type_id(), TypeId::Float);
-        assert_eq!(<i128 as ScalarValue>::type_id(), TypeId::HugeInt);
-        assert_eq!(<bool as ScalarValue>::type_id(), TypeId::Boolean);
-        assert_eq!(<String as ScalarOut>::type_id(), TypeId::Varchar);
-        assert_eq!(<Vec<u8> as ScalarOut>::type_id(), TypeId::Blob);
-    }
-
-    /// Building a typed function touches no `DuckDB` API: the only `DuckDB`
-    /// work is in `register`. Before the third audit `from_exec` built a
-    /// `LogicalType` per slot to check it, so every constructor panicked in a
-    /// unit test (no dispatch table) and built handles nobody needed.
-    #[test]
-    fn every_typed_constructor_builds_without_a_live_duckdb() {
-        let built = [
-            ScalarFunctionBuilder::map1("m1", |x: i64| x * 2),
-            ScalarFunctionBuilder::map2("m2", |a: i32, b: f64| f64::from(a) + b),
-            ScalarFunctionBuilder::map1_opt("m1o", |x: Option<u8>| x.map(u16::from)),
-            ScalarFunctionBuilder::map2_opt("m2o", |a: Option<i128>, b: Option<bool>| {
-                a.filter(|_| b.unwrap_or(false))
-            }),
-            ScalarFunctionBuilder::map1_str("m1s", |s: &str| s.to_uppercase()),
-            ScalarFunctionBuilder::map2_str("m2s", |a: &str, b: &str| [a, b].concat().into_bytes()),
-        ];
-        let names: Vec<_> = built
-            .into_iter()
-            .map(|b| {
-                b.expect("builds with no DuckDB")
-                    .volatile()
-                    .name()
-                    .to_owned()
-            })
-            .collect();
-        assert_eq!(names, ["m1", "m2", "m1o", "m2o", "m1s", "m2s"]);
-    }
-
-    #[test]
-    fn an_invalid_name_is_rejected_before_anything_is_allocated() {
-        let err = ScalarFunctionBuilder::map1("has spaces", |x: i64| x)
-            .expect_err("a name with a space is not a SQL identifier");
-        assert_ne!(err.as_str(), "");
-    }
-}
+mod tests;

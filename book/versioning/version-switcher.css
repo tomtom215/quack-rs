@@ -1,0 +1,47 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright 2026 Tom F.
+ *
+ * Styles for book/versioning/version-switcher.js. Colours come from the
+ * mdBook theme variables so the menu and banner follow the reader's theme. */
+
+.qrs-version-select {
+  /* mdBook's menu bar gives its children the bar's full height. */
+  align-self: center;
+  height: auto;
+  max-width: 11em;
+  margin-inline-start: 0.6em;
+  padding: 0.15em 0.3em;
+  font-size: 1.3rem;
+  line-height: normal;
+  color: var(--icons);
+  background: var(--bg);
+  border: 1px solid var(--searchbar-border-color, var(--icons));
+  border-radius: 4px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.qrs-version-select:hover,
+.qrs-version-select:focus {
+  color: var(--icons-hover);
+}
+
+.qrs-version-banner {
+  margin: 1em 0 1.5em;
+  padding: 0.75em 1em;
+  border-inline-start: 4px solid var(--links);
+  background: var(--quote-bg);
+  border-radius: 4px;
+  font-size: 0.95em;
+}
+
+@media (max-width: 600px) {
+  .qrs-version-select {
+    max-width: 7em;
+    margin-inline-start: 0.3em;
+  }
+}
+
+.qrs-nowrap {
+  white-space: nowrap;
+}

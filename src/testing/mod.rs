@@ -62,7 +62,7 @@
 //! - Multi-group aggregation results
 //! - Extension loading without crash
 //!
-//! See the [testing guide](https://quack-rs.com/testing) and `LESSONS.md` Pitfall P3 for details.
+//! See the [testing guide](https://quack-rs.com/testing.html) and `LESSONS.md` Pitfall P3 for details.
 //!
 //! # Why you need both unit tests AND E2E tests
 //!

@@ -47,7 +47,7 @@ pub use validity::ValidityBitmap;
 pub use writer::VectorWriter;
 
 /// Returns the default vector size used by `DuckDB` (typically 2048).
-#[mutants::skip]
+#[cfg_attr(test, mutants::skip)]
 pub fn vector_size() -> u64 {
     // SAFETY: this call takes no arguments and reads a compile-time constant.
     unsafe { libduckdb_sys::duckdb_vector_size() as u64 }

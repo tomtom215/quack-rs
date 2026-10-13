@@ -204,7 +204,7 @@ impl ScalarFunctionBuilder {
     ///
     /// The parameter position is determined by the total number of `param` and
     /// `param_logical` calls made so far.
-    #[mutants::skip] // position arithmetic tested via E2E
+    #[cfg_attr(test, mutants::skip)] // position arithmetic tested via E2E
     pub fn param_logical(mut self, logical_type: LogicalType) -> Self {
         let position = self.params.len() + self.logical_params.len();
         self.logical_params.push((position, logical_type));
@@ -248,7 +248,7 @@ impl ScalarFunctionBuilder {
     /// A composite `type_id` (see [`TypeId::is_composite`]) makes
     /// [`register`][Self::register] return an error naming the varargs slot;
     /// use [`varargs_logical`][Self::varargs_logical] for those types.
-    #[mutants::skip] // tested via E2E
+    #[cfg_attr(test, mutants::skip)] // tested via E2E
     pub fn varargs(mut self, type_id: TypeId) -> Self {
         self.varargs = Some(super::signature::Varargs::Id(type_id));
         self
@@ -258,7 +258,7 @@ impl ScalarFunctionBuilder {
     ///
     /// Identical to [`varargs`][Self::varargs] but accepts a [`LogicalType`]
     /// for parameterized types.
-    #[mutants::skip] // tested via E2E
+    #[cfg_attr(test, mutants::skip)] // tested via E2E
     pub fn varargs_logical(mut self, logical_type: LogicalType) -> Self {
         self.varargs = Some(super::signature::Varargs::Logical(logical_type));
         self
@@ -271,7 +271,7 @@ impl ScalarFunctionBuilder {
     /// optimized by `DuckDB` to only execute once for constant arguments.
     /// Maps to `duckdb_scalar_function_set_volatile`, part of the stable C API
     /// since v1.2.0, so no feature flag is needed.
-    #[mutants::skip] // tested via E2E
+    #[cfg_attr(test, mutants::skip)] // tested via E2E
     pub const fn volatile(mut self) -> Self {
         self.volatile = true;
         self
@@ -287,12 +287,13 @@ impl ScalarFunctionBuilder {
     ///
     /// Guard it against panics with
     /// [`scalar_bind_callback!`](crate::scalar_bind_callback), **not**
-    /// `table_bind_callback!`: the two share a C signature, so the compiler
-    /// accepts either, but the table macro reports a panic through the table
-    /// function's `duckdb_bind_set_error`, which writes past the smaller scalar
-    /// bind info and corrupts the stack.
+    /// `table_bind_callback!`. The compiler refuses the table macro here — its
+    /// function takes a table function's bind info, not a
+    /// [`RawScalarBindInfo`](crate::scalar::RawScalarBindInfo) — because a
+    /// table callback reports a panic through `duckdb_bind_set_error`, which
+    /// would write past the smaller scalar bind info and corrupt the stack.
     #[cfg(feature = "duckdb-1-5")]
-    #[mutants::skip] // DuckDB 1.5+ feature, tested via E2E
+    #[cfg_attr(test, mutants::skip)] // DuckDB 1.5+ feature, tested via E2E
     pub fn bind(mut self, f: ScalarBindFn) -> Self {
         self.bind = Some(f);
         self
@@ -307,12 +308,13 @@ impl ScalarFunctionBuilder {
     ///
     /// Guard it against panics with
     /// [`scalar_init_callback!`](crate::scalar_init_callback), **not**
-    /// `table_init_callback!`: the two share a C signature, so the compiler
-    /// accepts either, but the table macro reports a panic through the table
-    /// function's `duckdb_init_set_error`, which writes past the smaller scalar
-    /// init info and corrupts the stack.
+    /// `table_init_callback!`. The compiler refuses the table macro here — its
+    /// function takes a table function's init info, not a
+    /// [`RawScalarInitInfo`](crate::scalar::RawScalarInitInfo) — because a
+    /// table callback reports a panic through `duckdb_init_set_error`, which
+    /// would write past the smaller scalar init info and corrupt the stack.
     #[cfg(feature = "duckdb-1-5")]
-    #[mutants::skip] // DuckDB 1.5+ feature, tested via E2E
+    #[cfg_attr(test, mutants::skip)] // DuckDB 1.5+ feature, tested via E2E
     pub fn init(mut self, f: ScalarInitFn) -> Self {
         self.init = Some(f);
         self

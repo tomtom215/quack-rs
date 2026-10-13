@@ -60,15 +60,7 @@ fn append_default_to_chunk_writes_the_columns_default() {
     fx.query("CREATE TABLE defs (a INTEGER DEFAULT 42)");
     // SAFETY: `con` is open and the table exists.
     let appender = unsafe { Appender::new(fx.con(), None, c"defs") }.expect("create");
-    let int = LogicalType::new(TypeId::Integer);
-    let mut types = [int.as_raw()];
-    // SAFETY: one live logical type; DuckDB copies it and returns an owned chunk.
-    let chunk = unsafe {
-        OwnedDataChunk::from_raw(libduckdb_sys::duckdb_create_data_chunk(
-            types.as_mut_ptr(),
-            1,
-        ))
-    };
+    let chunk = OwnedDataChunk::new(&[LogicalType::new(TypeId::Integer)]).expect("chunk");
     // SAFETY: the chunk has one INTEGER column and room for row 0.
     unsafe { chunk.writer(0).write_i32(0, 0) };
     appender

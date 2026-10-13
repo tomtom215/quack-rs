@@ -244,7 +244,7 @@ impl Drop for OwnedVector {
     // The only effect is a `duckdb_destroy_vector`, which needs a live engine to
     // reach and a leak checker to observe. That is what CI's LeakSanitizer job
     // over the end-to-end suite is for; a `--lib` run cannot see it.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     fn drop(&mut self) {
         // SAFETY: `self.vector` was allocated by `duckdb_create_vector` and is
         // destroyed exactly once.
@@ -345,7 +345,14 @@ pub unsafe fn slice(vector: duckdb_vector, sel: &SelectionVector, len: usize) {
 /// # Safety
 ///
 /// - `vector` must be a valid, writable vector.
-/// - `value`'s type must match the vector's, or `DuckDB` will reinterpret it.
+/// - `value`'s logical type must equal the vector's exactly. `DuckDB` does not
+///   reinterpret a mismatched value: it sizes the buffers from the value's
+///   type, casts the value (aborting the process when the cast throws, as for
+///   `'abc'` into `BIGINT`), and writes data of the vector's type into those
+///   buffers, so a narrower value type can overflow them and a `NULL` of the
+///   wrong type (such as [`Value::null_value`]) leaves a `LIST` vector without
+///   its child buffer. To fill a vector with `NULL`, use a typed `NULL` of the
+///   vector's own type.
 /// - As with [`slice()`], the result is not a flat vector: do not read it back
 ///   through a [`VectorReader`][crate::vector::VectorReader].
 pub unsafe fn reference_value(vector: duckdb_vector, value: &Value) {

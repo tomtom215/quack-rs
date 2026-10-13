@@ -167,6 +167,52 @@ and the C API initialized.
 | `array_size()` | `u64` | `ARRAY` |
 | `array_child_type()` | `LogicalType` | `ARRAY` |
 
+### Custom types: `set_alias` and `register`
+
+An extension can add a named type to SQL, as `CREATE TYPE` does. Build the
+underlying `LogicalType`, give it a name with `set_alias`, then call
+`register(con)` from your entry point. After that, users can write the name
+anywhere a type name goes:
+
+```sql
+SELECT 'happy'::mood;
+CREATE TABLE diary(day DATE, m mood);
+```
+
+```rust
+use quack_rs::types::LogicalType;
+# use quack_rs::query::OwnedConnection;
+# std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
+# let mut db = std::ptr::null_mut();
+# unsafe { assert_eq!(libduckdb_sys::duckdb_open(std::ptr::null(), &mut db), libduckdb_sys::DuckDBSuccess); }
+# let con = unsafe { OwnedConnection::open(db) }.unwrap();
+
+let mood = LogicalType::enum_type(&["sad", "ok", "happy"]);
+unsafe {
+    mood.set_alias("mood");
+    mood.register(con.as_raw()).unwrap();
+}
+
+// Registering the same name again fails: the name is taken.
+assert!(unsafe { mood.register(con.as_raw()) }.is_err());
+# drop(mood); // DuckDB keeps its own copy
+# con.execute("CREATE TABLE diary(m mood)").unwrap();
+# con.execute("INSERT INTO diary VALUES ('happy')").unwrap();
+# let mut result = con.query("SELECT m::VARCHAR FROM diary").unwrap();
+# let chunk = result.next_chunk().unwrap().unwrap();
+# let reader = unsafe { chunk.reader(0) };
+# assert_eq!(unsafe { reader.read_str(0) }, "happy");
+```
+
+- `set_alias(name)` panics if `name` contains a NUL byte; `try_set_alias(name)`
+  returns an error instead. `get_alias()` reads the alias back.
+- `register(con)` returns an error if the type has no alias, if the name already
+  exists in the catalog, or if the type is or contains `ANY` or `INVALID`.
+- All three are `unsafe`: they call into DuckDB, and `register` needs a valid,
+  open connection.
+- The `LogicalType` is still yours after `register`, and is destroyed when it is
+  dropped. DuckDB keeps its own copy.
+
 ---
 
 ## Rust type ↔ DuckDB type mapping

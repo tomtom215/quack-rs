@@ -16,8 +16,9 @@
 //! cannot ask `DuckDB` for a credential through the C API at all.
 //!
 //! What it *can* do is query the `duckdb_secrets()` table function, and
-//! [`list_duckdb_secrets`] does exactly that. But that only gets you metadata:
-//! `DuckDB` **redacts** sensitive fields there. Verified against `DuckDB` 1.5.5:
+//! [`list_duckdb_secrets`] does exactly that. `DuckDB` **redacts** there the
+//! fields each secret type declares sensitive — and only those. Verified
+//! against `DuckDB` 1.5.5:
 //!
 //! ```text
 //! CREATE SECRET s (TYPE s3, KEY_ID 'AKIAEXAMPLE', SECRET 'super-secret-value');
@@ -25,8 +26,15 @@
 //! -- ...;key_id=AKIAEXAMPLE;secret=redacted
 //! ```
 //!
-//! So an extension that needs the credential itself must obtain it some other
-//! way — an environment variable, a config option, a file, its own key store.
+//! That is not a guarantee that `secret_string` holds no credential: the
+//! built-in `http` type renders `extra_http_headers` — an `Authorization`
+//! header included — in full, a secret type that declares no sensitive keys is
+//! rendered whole, and what counts as sensitive changes between releases: an
+//! `http` secret's `bearer_token` is redacted by `DuckDB` 1.5.3 and later but
+//! shown in full by 1.4.4 and 1.5.0 (checked in CI; 1.5.1 and 1.5.2 untested). Treat
+//! `secret_string` as sensitive, and do not rely on it as a credential source
+//! either: an extension that needs a credential must obtain it some other way —
+//! an environment variable, a config option, a file, its own key store.
 //!
 //! # What this module is for
 //!
@@ -64,7 +72,9 @@
 //! use quack_rs::secrets::{SecretEntry, SecretsManager};
 //!
 //! struct MySecrets {
-//!     // In practice, backed by DuckDB's CREATE SECRET storage
+//!     // In practice, the extension's own credential source: environment
+//!     // variables, a config option, a file. The C API offers no route to
+//!     // DuckDB's CREATE SECRET storage (see above).
 //!     entries: Vec<SecretEntry>,
 //! }
 //!
@@ -98,12 +108,14 @@ use crate::vector::complex::ListVector;
 
 /// Metadata about one secret the user has configured in `DuckDB`.
 ///
-/// Deliberately **not** a [`SecretEntry`]: it carries no credential material,
-/// because `DuckDB` does not hand any out. `secret_string` is `DuckDB`'s own
-/// rendering with sensitive fields replaced by `redacted`.
+/// Not a [`SecretEntry`]: `DuckDB` hands out no credential as such.
+/// `secret_string` is `DuckDB`'s own rendering, with the fields the secret
+/// type declares sensitive replaced by `redacted` — which can still leave
+/// credentials in it (see [`list_duckdb_secrets`]). `Debug` therefore prints
+/// its length, not its text.
 ///
 /// Returned by [`list_duckdb_secrets`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DuckDbSecretInfo {
     /// The secret's name, as given to `CREATE SECRET`.
@@ -118,9 +130,27 @@ pub struct DuckDbSecretInfo {
     pub storage: String,
     /// The URI prefixes the secret applies to, e.g. `s3://bucket/`.
     pub scope: Vec<String>,
-    /// `DuckDB`'s own rendering of the secret, **with sensitive fields
-    /// redacted**. Useful for diagnostics; useless as a credential source.
+    /// `DuckDB`'s own rendering of the secret, with the fields its type
+    /// declares sensitive redacted. **It can still contain credentials** (an
+    /// `http` secret's `extra_http_headers`, for one), so do not log it.
     pub secret_string: String,
+}
+
+impl fmt::Debug for DuckDbSecretInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DuckDbSecretInfo")
+            .field("name", &self.name)
+            .field("secret_type", &self.secret_type)
+            .field("provider", &self.provider)
+            .field("persistent", &self.persistent)
+            .field("storage", &self.storage)
+            .field("scope", &self.scope)
+            .field(
+                "secret_string",
+                &format_args!("<{} bytes, not shown>", self.secret_string.len()),
+            )
+            .finish()
+    }
 }
 
 /// Lists the secrets configured in the `DuckDB` instance behind `connection`.
@@ -128,13 +158,20 @@ pub struct DuckDbSecretInfo {
 /// This queries the `duckdb_secrets()` table function, which is the only route
 /// an extension has: the extension C API has no secret functions at all.
 ///
-/// # This cannot return credentials
+/// # What it returns, and what it can leak
 ///
-/// `DuckDB` redacts sensitive fields. A secret created as
-/// `(TYPE s3, KEY_ID 'AKIA…', SECRET 'super-secret-value')` comes back as
-/// `…;key_id=AKIA…;secret=redacted`. Use this to discover *which* secrets exist
-/// and what they cover — to choose a scope, or to tell the user which one is
-/// missing — not to authenticate with them.
+/// `DuckDB` redacts the fields each secret type declares sensitive. A secret
+/// created as `(TYPE s3, KEY_ID 'AKIA…', SECRET 'super-secret-value')` comes
+/// back as `…;key_id=AKIA…;secret=redacted`. Use this to discover *which*
+/// secrets exist and what they cover — to choose a scope, or to tell the user
+/// which one is missing — not to authenticate with them.
+///
+/// Redaction is per field, so `secret_string` can still hold a credential: an
+/// `http` secret's `extra_http_headers` (an `Authorization` header, say) is
+/// rendered in full, as is every field of a secret type that declares none
+/// sensitive, and on `DuckDB` 1.4.4 and 1.5.0 even an `http` secret's
+/// `bearer_token`. Do not log `secret_string`; [`DuckDbSecretInfo`]'s `Debug` omits
+/// it for that reason.
 ///
 /// # Errors
 ///
@@ -423,7 +460,7 @@ impl SecretEntry {
 impl Drop for SecretEntry {
     // One delegation. Replacing the body with `()` is unobservable from a test —
     // see `zeroize_in_place`, which carries the behaviour and is tested directly.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     fn drop(&mut self) {
         self.zeroize_in_place();
     }

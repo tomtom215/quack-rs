@@ -92,7 +92,10 @@ init callbacks.
 
 ## L3: No panic across FFI boundaries
 
-**Status**: Made impossible by `init_extension` and the callback guards (which require `panic = "unwind"`).
+**Status**: Prevented for the entry point and for every callback defined with a
+`*_callback!` macro or a closure-based builder; these guards require
+`panic = "unwind"`. A raw `unsafe extern "C" fn` that you pass to a builder
+yourself is not guarded.
 
 **Symptom**: The whole DuckDB process aborts when an extension callback panics.
 
@@ -122,8 +125,15 @@ let st = unsafe { FfiState::<MyState>::with_state_mut(state_ptr) }.unwrap(); // 
 # }
 ```
 
-quack-rs's callback macros and typed builders catch a panic and report it as a
-SQL error. That requires `panic = "unwind"` in the release profile, which is
+The entry-point macros, the `*_callback!` macros in `quack_rs::callback`, the
+closure-based builders (`ScalarFunctionBuilder::map1` and its siblings,
+`TypedTableFunctionBuilder`) and `FfiState`'s callbacks catch a panic and report
+it as a SQL error. A raw `unsafe extern "C" fn` that you pass to a builder
+yourself is installed as written, with no guard: define it with the matching
+`*_callback!` macro, or wrap its body in `quack_rs::callback::catch_ffi_panic`
+and report the `Err` it returns yourself.
+
+All of these guards require `panic = "unwind"` in the release profile, which is
 what the scaffold generates and what `validate_release_profile` insists on:
 under `panic = "abort"` nothing can be caught.
 
@@ -672,7 +682,7 @@ cannot create the gitlink git needs, so `git submodule update --init` finds
 nothing to do and exits 0 without cloning anything. Add it once:
 
 ```bash
-git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
 ```
 
 In a **clone** of a repository that already has the submodule:
@@ -966,7 +976,7 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 |---------|------------|-------------|
 | L1: combine config fields | Testable | Test with `AggregateTestHarness::combine` |
 | L2: state double-free | Prevented | Use `FfiState::destroy_callback` |
-| L3: panic across FFI | Prevented | Use `init_extension`, no `unwrap` in callbacks |
+| L3: panic across FFI | Prevented (guarded callbacks) | Use the `entry_point!` macros and a `*_callback!` macro or closure builder for each callback; no `unwrap` in raw callbacks |
 | L4: NULL silently dropped (no validity mask) | Prevented | Use `VectorWriter::set_null` |
 | L5: bool UB | Prevented | Use `VectorReader::read_bool` |
 | L6: function set name | Prevented | Use `AggregateFunctionSetBuilder` |

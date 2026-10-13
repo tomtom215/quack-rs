@@ -33,7 +33,7 @@ use crate::validate::validate_function_name;
 /// `agg(x) OVER ()` and `agg(x ORDER BY y)` — a `DuckDB` C API defect. See
 /// [`AggregateFunctionBuilder`][crate::aggregate::AggregateFunctionBuilder#known-duckdb-limitation].
 ///
-/// # ADR-2: Function sets for variadic signatures
+/// # ADR-5: Function sets for variadic signatures
 ///
 /// `DuckDB` does not support true varargs for aggregate functions. For functions
 /// that accept 2–32 boolean conditions, register 31 overloads.
@@ -367,7 +367,7 @@ impl AggregateFunctionSetBuilder {
     ///
     /// Returns `ExtensionError` if:
     /// - No overloads were added.
-    /// - A parameter, varargs or return type was given as a bare composite
+    /// - A parameter or return type was given as a bare composite
     ///   [`TypeId`] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
     ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
     ///   it as a [`LogicalType`] and use the `*_logical` method; the error

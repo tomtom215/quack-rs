@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+# Routes security reports away from the public tracker (SECURITY.md) and
+# points usage questions at the documentation before a blank issue.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/tomtom215/quack-rs/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue (see SECURITY.md).
+  - name: Documentation
+    url: https://quack-rs.com/
+    about: The quack-rs book — getting started, every function kind, testing and publishing.

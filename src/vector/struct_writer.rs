@@ -76,7 +76,7 @@ impl StructWriter {
     }
 
     /// Returns the number of fields in this struct writer.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     #[inline]
     pub fn field_count(&self) -> usize {

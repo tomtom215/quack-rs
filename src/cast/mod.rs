@@ -27,19 +27,23 @@
 //!
 //! # TRY CAST vs normal CAST
 //!
-//! When the user writes `TRY_CAST(x AS T)`, `DuckDB` passes
-//! [`CastMode::Try`] to your callback (via
-//! [`CastFunctionInfo::cast_mode`]). In this mode, call
-//! [`CastFunctionInfo::set_row_error`] for each row that fails to convert:
-//! it records the message **and** sets that row to `NULL`.
+//! [`CastFunctionInfo::cast_mode`] reports [`CastMode::Try`] whenever `DuckDB`
+//! asks for errors to be collected rather than thrown — for `TRY_CAST(x AS T)`,
+//! and also for the casts `DuckDB` applies to single values internally, such
+//! as converting a table function's argument to its declared parameter type
+//! (`Value::CastAs`). In this mode, call [`CastFunctionInfo::set_row_error`]
+//! for each row that fails to convert: it records the message **and** sets
+//! that row to `NULL`.
 //!
-//! The callback's return value only matters in a normal `CAST`, where
-//! `false` fails the query with the message you set. In `TRY_CAST` mode
-//! `DuckDB` ignores it (`src/execution/expression_executor/execute_cast.cpp`),
-//! so returning `false` does **not** turn the chunk into `NULL`s: a row you
-//! did not null keeps whatever the output vector held. See [`CastFn`] for
-//! details; [`cast_callback!`][crate::cast_callback] nulls every row for you
-//! only when the body panics.
+//! **Return `false` whenever a row failed, in either mode.** In a normal
+//! `CAST`, `false` fails the query with the message you set. In a `TRY_CAST`,
+//! `DuckDB` ignores the return value
+//! (`src/execution/expression_executor/execute_cast.cpp`), so the rows you
+//! nulled are the answer — returning `false` does **not** null anything for
+//! you. In an internal value cast, `false` is the only signal: `DuckDB` throws
+//! `Failed to cast value: <your message>`, whereas `true` hands back a `NULL`
+//! silently. See [`CastFn`] for details; [`cast_callback!`][crate::cast_callback]
+//! nulls every row for you only when the body panics.
 //!
 //! # A cast replaces `DuckDB`'s own for that pair
 //!
@@ -47,12 +51,18 @@
 //! `VARCHAR → INTEGER`, say — **replaces the built-in conversion for the whole
 //! database**: every connection, `TRY_CAST`, and the implicit casts `DuckDB`
 //! inserts, such as the one an `INSERT` of a string into an `INTEGER` column
-//! performs. Registering the same pair again replaces it again. Neither is
-//! refused or reported (`CastFunctionSet::RegisterCastFunction`), and the C API
-//! offers no way to ask whether a pair is already cast. Overriding is sometimes
+//! performs.
+//!
+//! **The first registration for a pair wins.** Registering a cast for a pair
+//! that an extension has already registered — this one or another — succeeds
+//! and does nothing: `DuckDB` files casts in a `std::map` with `insert`, which
+//! never overwrites (`MapCastInfo::AddEntry`, `cast_function_set.cpp`), and
+//! frees the new registration's `extra_info` at once. Neither case is refused
+//! or reported, and the C API offers no way to ask whether a pair is already
+//! cast. Overriding is sometimes
 //! the point; when it is not, register casts to or from a type the extension
 //! owns (a named type from [`LogicalType::register`][crate::types::LogicalType::register]).
-//! `tests/ffi_roundtrip/table_cast.rs` pins this behaviour.
+//! `tests/ffi_roundtrip/table_cast.rs` pins both behaviours.
 //!
 //! # Example: register a VARCHAR → INTEGER cast
 //!

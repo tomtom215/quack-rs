@@ -75,8 +75,8 @@
 //! allocates nothing and carries on — so whether an empty batch works depends
 //! on how the engine happens to have been compiled, which is not a contract
 //! worth exposing. Skip empty batches, or build the empty chunk directly with
-//! `duckdb_create_data_chunk`, which defaults to a full-size capacity and is
-//! unaffected.
+//! [`OwnedDataChunk::new`][crate::query::OwnedDataChunk::new], which allocates
+//! a full-size capacity and is unaffected.
 //!
 //! # What it still cannot check
 //!

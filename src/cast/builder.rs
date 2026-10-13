@@ -24,18 +24,22 @@ use crate::types::{LogicalType, TypeId};
 
 // ── Cast mode ─────────────────────────────────────────────────────────────────
 
-/// Whether the cast is called as a regular `CAST` or a `TRY_CAST`.
+/// Whether `DuckDB` wants cast failures thrown or collected.
 ///
 /// In [`Try`][CastMode::Try] mode, conversion failures should write `NULL` for
-/// the failed row and call [`CastFunctionInfo::set_row_error`] rather than
-/// aborting the whole query. See [`CastFn`] for what `DuckDB` does with the
-/// callback's return value in each mode — in particular, returning `false`
-/// in `Try` mode does **not** null anything.
+/// the failed row and call [`CastFunctionInfo::set_row_error`], and the
+/// callback should still return `false` if any row failed. See [`CastFn`] for
+/// what `DuckDB` does with the callback's return value in each mode — in
+/// particular, returning `false` in `Try` mode does **not** null anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastMode {
-    /// Regular `CAST` — any failure aborts the query.
+    /// Failures are errors: a regular `CAST`, including the implicit casts
+    /// `DuckDB` inserts into a query.
     Normal,
-    /// `TRY_CAST` — failures produce `NULL`; use per-row error reporting.
+    /// Failures are collected: `TRY_CAST`, and the casts `DuckDB` applies to
+    /// single values internally (`Value::CastAs`, as when a table function's
+    /// argument is converted to its parameter type), which throw when the
+    /// callback returns `false`.
     Try,
 }
 
@@ -111,7 +115,7 @@ impl CastFunctionInfo {
     ///
     /// An interior null byte in `message` is replaced by `?`. An empty message is replaced by
     /// [`EMPTY_ERROR_PLACEHOLDER`][Self::EMPTY_ERROR_PLACEHOLDER].
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = error_cstring(message, Self::EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
@@ -179,16 +183,24 @@ impl CastFunctionInfo {
 ///   [`CAST_FAILED_WITHOUT_MESSAGE`][crate::callback::CAST_FAILED_WITHOUT_MESSAGE];
 ///   a hand-written callback makes `DuckDB` report `Conversion Error: `
 ///   followed by nothing.
-/// - **`Try`** (`TRY_CAST`): **nothing**. `DuckDB` discards the return value
-///   (`src/execution/expression_executor/execute_cast.cpp` calls the bound
-///   cast function and ignores what it returns; `CAPICastFunction` only
+/// - **`Try`** in a `TRY_CAST`: **nothing**. `DuckDB` discards the return
+///   value (`src/execution/expression_executor/execute_cast.cpp` calls the
+///   bound cast function and ignores what it returns; `CAPICastFunction` only
 ///   records the message). Every row of `output` is returned as it stands —
 ///   a row the callback never wrote holds whatever the vector held before,
 ///   which can be a previous chunk's value. So in `Try` mode, call
 ///   [`set_row_error`][CastFunctionInfo::set_row_error] (or set the row to
 ///   `NULL` yourself) for **every** row that failed; returning `false` is not
-///   a substitute. This matches `DuckDB`'s own casts, whose `TRY_CAST` loops
-///   null each failed row individually and return `false` only as a summary.
+///   a substitute.
+/// - **`Try`** in an internal value cast (`Value::CastAs`, used for example to
+///   convert a table function's argument to its parameter type): `false`
+///   makes `DuckDB` throw `Failed to cast value:` followed by the message you
+///   set; `true` returns the row as written, so a failed row you nulled
+///   becomes a silent `NULL` argument.
+///
+/// So null each failed row **and** return `false` if any row failed: that is
+/// right in all three cases, and it is what `DuckDB`'s own casts do — their
+/// `TRY_CAST` loops null each failed row and return `false` as a summary.
 ///
 /// A panic inside a [`cast_callback!`][crate::cast_callback] body is the one
 /// case quack-rs handles for you: in `Try` mode every row of the chunk is set
@@ -499,10 +511,13 @@ impl CastFunctionBuilder {
         if result == DuckDBSuccess {
             Ok(())
         } else {
-            Err(ExtensionError::new(format!(
-                "duckdb_register_cast_function failed: {}",
-                crate::error::REGISTRATION_FAILURE_HINT
-            )))
+            // Casts have no name to clash on, so the name-clash hint the other
+            // builders give does not apply.
+            Err(ExtensionError::new(
+                "duckdb_register_cast_function failed: the C API reports no reason, and every \
+                 cause quack-rs can detect (a missing function, an ANY or INVALID type) was \
+                 ruled out before the call",
+            ))
         }
     }
 }

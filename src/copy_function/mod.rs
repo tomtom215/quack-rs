@@ -269,7 +269,7 @@ impl CopyFunctionBuilder {
     // The parameter contract below is pinned by
     // `copy_from_rejects_a_reader_whose_parameters_do_not_match_the_contract`
     // in tests/ffi_roundtrip.rs, which the `--lib` mutants run does not execute.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn copy_from(
         mut self,
         table_function: TableFunctionHandle,

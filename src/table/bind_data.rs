@@ -121,7 +121,7 @@ impl<T: 'static> FfiBindData<T> {
     // `duckdb_bind_get_bind_data` to call. The `-> Option<&T> with None` mutant
     // is therefore the function itself: equivalent by construction, unkillable
     // by any test.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub const fn get_from_bind<'a>(info: duckdb_bind_info) -> Option<&'a T> {
         // The C API has no `duckdb_bind_get_bind_data`: bind data is write-only
         // during bind. This never calls DuckDB (in particular not

@@ -26,6 +26,12 @@ exclude = [
     "AUDIT.md",
     "RELEASING.md",
     "LESSONS.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "GOVERNANCE.md",
+    # Repository tooling (CI checks, the book and release scripts); nothing in
+    # the build uses it.
+    "scripts/",
     "clippy.toml",
     "codecov.yml",
     ".cargo/",
@@ -174,7 +180,6 @@ duckdb-1-5-4 = ["duckdb-1-5-3"]
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 duckdb = { version = ">=1.4.4, <2", optional = true }
-mutants = "0.0.4"
 
 [build-dependencies]
 # Used only when `bundled-test` / `bundled-test-prebuilt` is active: compiles the
@@ -183,6 +188,9 @@ mutants = "0.0.4"
 cc = "1"
 
 [dev-dependencies]
+# Only for `#[cfg_attr(test, mutants::skip)]`, the form cargo-mutants
+# documents for crates that should not make every dependant build `mutants`.
+mutants = "0.0.4"
 # `duckdb` is intentionally NOT a dev-dependency: it is an optional regular
 # dependency activated only by `bundled-test` / `bundled-test-prebuilt`, so that
 # a plain `cargo test` (and every downstream consumer's lockfile) stays free of

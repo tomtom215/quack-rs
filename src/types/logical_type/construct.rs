@@ -637,10 +637,18 @@ impl LogicalType {
     ///
     /// # Errors
     ///
-    /// Returns an error if a member name contains a null byte, or if
-    /// `duckdb_create_enum_type` returns null (it does for duplicate members).
+    /// Returns an error if a member name contains a null byte, if two members
+    /// are equal (compared exactly, as `DuckDB` does: `'a'` and `'A'` are
+    /// distinct members), or if `duckdb_create_enum_type` returns null.
     pub fn try_enum_type(members: &[&str]) -> Result<Self, LogicalTypeError> {
         const API: &str = "duckdb_create_enum_type";
+        let mut seen = std::collections::HashSet::with_capacity(members.len());
+        if let Some(dup) = members.iter().find(|&&m| !seen.insert(m)) {
+            return Err(LogicalTypeError::with_detail(
+                API,
+                format!("duplicate ENUM member {dup:?}"),
+            ));
+        }
         let c_names: Vec<CString> = members
             .iter()
             .map(|&n| {
@@ -697,6 +705,17 @@ mod tests {
         checked_names("STRUCT field", "api", list.iter().copied(), max)
             .map(|v| v.len())
             .map_err(|e| e.to_string())
+    }
+
+    /// The duplicate check runs before `DuckDB` is called, so it needs no
+    /// database; it must name the repeated member, not the first one.
+    #[test]
+    fn a_duplicate_enum_member_is_named_without_calling_duckdb() {
+        let err = LogicalType::try_enum_type(&["a", "b", "b"]).expect_err("duplicate");
+        assert!(
+            err.to_string().contains("duplicate ENUM member \"b\""),
+            "{err}"
+        );
     }
 
     #[test]

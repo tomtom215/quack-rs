@@ -26,7 +26,7 @@ impl<'conn> ArrowOptions<'conn> {
     /// `duckdb_connection_get_arrow_options` has no error channel: it writes
     /// null when the allocation throws. That is reported here as an
     /// [`ExtensionError`].
-    #[mutants::skip] // FFI wrapper — needs a live DuckDB connection
+    #[cfg_attr(test, mutants::skip)] // FFI wrapper — needs a live DuckDB connection
     pub fn from_connection(connection: &'conn OwnedConnection) -> Result<Self, ExtensionError> {
         // SAFETY: `connection` is open, and the borrow keeps it open for all of
         // 'conn, which is as long as the returned options can be used.
@@ -47,7 +47,7 @@ impl<'conn> ArrowOptions<'conn> {
     /// disconnected for all of `'conn` (the caller picks `'conn`; choose one no
     /// longer than the connection stays open). See the type-level
     /// [lifetime](Self#lifetime) docs.
-    #[mutants::skip] // FFI wrapper — needs a live DuckDB connection
+    #[cfg_attr(test, mutants::skip)] // FFI wrapper — needs a live DuckDB connection
     pub unsafe fn from_raw_connection(
         connection: duckdb_connection,
     ) -> Result<Self, ExtensionError> {
@@ -85,7 +85,7 @@ impl<'conn> ArrowOptions<'conn> {
     /// connection's `ClientContext`, and a [`QueryResult`] can outlive its
     /// connection, so nothing checks this. See the type-level
     /// [lifetime](Self#lifetime) docs.
-    #[mutants::skip] // FFI wrapper — needs a live DuckDB result
+    #[cfg_attr(test, mutants::skip)] // FFI wrapper — needs a live DuckDB result
     pub unsafe fn from_result(result: &QueryResult) -> Result<Self, ExtensionError> {
         // `duckdb_result_get_arrow_options` takes a `duckdb_result *` but only
         // reads `internal_data`, so a copy of the POD struct is enough — the
@@ -142,7 +142,7 @@ impl<'conn> ArrowOptions<'conn> {
 }
 
 impl Drop for ArrowOptions<'_> {
-    #[mutants::skip] // frees a DuckDB handle; nothing observable without a runtime
+    #[cfg_attr(test, mutants::skip)] // frees a DuckDB handle; nothing observable without a runtime
     fn drop(&mut self) {
         if self.raw.is_null() {
             return;
@@ -154,7 +154,7 @@ impl Drop for ArrowOptions<'_> {
 }
 
 impl core::fmt::Debug for ArrowOptions<'_> {
-    #[mutants::skip] // Debug rendering is not a behavioural contract
+    #[cfg_attr(test, mutants::skip)] // Debug rendering is not a behavioural contract
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ArrowOptions")
             .field("raw", &self.raw)

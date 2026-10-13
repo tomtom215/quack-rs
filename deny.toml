@@ -22,6 +22,9 @@ no-default-features = false
 # A crate whose license cannot be detected above this threshold is flagged.
 confidence-threshold = 0.8
 
+# Fail on an `allow` entry no dependency uses, so the list cannot grow stale.
+unused-allowed-license = "deny"
+
 # SPDX license identifiers that are acceptable across all dependency crates.
 allow = [
     "MIT",
@@ -30,11 +33,9 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
-    "OpenSSL",
     "CDLA-Permissive-2.0",
 ]
 
@@ -43,8 +44,9 @@ allow = [
 # RustSec advisory database
 db-urls = ["https://github.com/rustsec/advisory-db"]
 
-# Yanked crates: warn rather than fail (may be pinned intentionally)
-yanked = "warn"
+# A yanked crate in the lockfile fails the build: yanking usually means a
+# soundness or security bug, and Cargo.lock is what CI and releases build.
+yanked = "deny"
 
 # IDs of advisories to explicitly ignore (document reason in comment).
 # Example: ignore = ["RUSTSEC-2023-0001"]  # false positive for our usage pattern

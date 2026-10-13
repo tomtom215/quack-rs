@@ -39,6 +39,28 @@ updates:
     commit-message:
       prefix: "chore(deps/example)"
 
+  # ── Cargo dependencies of the CI-only crates ────────────────────────────────
+  # The fuzz targets and the book's doctest harness have their own committed
+  # lockfiles (scanned by ci.yml's osv-scan job), so they get updates too.
+  - package-ecosystem: cargo
+    directories:
+      - "/fuzz"
+      - "/book/doctest"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps/ci)"
+    groups:
+      ci-crates:
+        patterns:
+          - "*"
+
   # ── GitHub Actions ────────────────────────────────────────────────────────────
   - package-ecosystem: github-actions
     directory: "/"
@@ -53,3 +75,8 @@ updates:
       - "github-actions"
     commit-message:
       prefix: "chore(ci)"
+    # One PR for every action bump rather than one per action.
+    groups:
+      actions:
+        patterns:
+          - "*"

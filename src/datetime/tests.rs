@@ -67,6 +67,64 @@ mod unit {
         );
         assert_eq!(TIMESTAMP_NEGATIVE_INFINITY_MICROS, i64::MIN + 1);
     }
+
+    // The checked conversions refuse these inputs before calling `DuckDB`, so
+    // they run without a database. (Reaching `DuckDB` here would panic: the
+    // dispatch table is not initialised.) The accepted side, and agreement
+    // with `DuckDB`'s own failures, are in `live_tests`.
+
+    #[test]
+    fn try_f64_to_hugeint_refuses_without_calling_duckdb() {
+        // Exact literals, not `2f64.powi(127)`: Miri perturbs `powi`'s result.
+        let two_127 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0_f64;
+        // SAFETY: every input is refused before the `DuckDB` call.
+        unsafe {
+            for refused in [
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                two_127,
+                -two_127,
+                1e40,
+                -1e40,
+            ] {
+                assert_eq!(try_f64_to_hugeint(refused), None, "{refused}");
+            }
+        }
+    }
+
+    #[test]
+    fn try_f64_to_uhugeint_refuses_without_calling_duckdb() {
+        // Exact literals, not `2f64.powi(128)`: Miri perturbs `powi`'s result.
+        let two_128 = 340_282_366_920_938_463_463_374_607_431_768_211_456.0_f64;
+        // SAFETY: every input is refused before the `DuckDB` call.
+        unsafe {
+            for refused in [
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                -1.0,
+                -f64::MIN_POSITIVE,
+                two_128,
+            ] {
+                assert_eq!(try_f64_to_uhugeint(refused), None, "{refused}");
+            }
+        }
+    }
+
+    #[test]
+    fn try_f64_to_decimal_refuses_an_invalid_width_or_scale_without_calling_duckdb() {
+        // SAFETY: every input is refused before the `DuckDB` call.
+        unsafe {
+            for (width, scale) in [(0, 0), (39, 0), (4, 5), (38, 39)] {
+                assert_eq!(
+                    try_f64_to_decimal(1.0, width, scale),
+                    None,
+                    "{width} {scale}"
+                );
+            }
+        }
+    }
 }
 
 /// Conversions checked against a live `DuckDB`.
@@ -438,6 +496,105 @@ mod live_tests {
             assert_eq!(decimal_to_f64(decimal(4, 5)), None);
             let widest = decimal_to_f64(decimal(38, 38)).expect("valid");
             assert!((widest - 1e-38).abs() < 1e-50, "{widest}");
+        }
+    }
+
+    // ─── The checked f64 conversions mirror DuckDB's failure conditions ─────
+
+    #[test]
+    fn try_f64_to_hugeint_refuses_exactly_what_duckdb_zeroes() {
+        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
+        // Exact literals, not `2f64.powi(127)`: Miri perturbs `powi`'s result.
+        let two_127 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0_f64;
+        let below = f64::from_bits(two_127.to_bits() - 1); // largest double < 2^127
+                                                           // SAFETY: InMemoryDb::open() initialised the dispatch table.
+        unsafe {
+            for refused in [
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                two_127,
+                -two_127,
+                1e40,
+            ] {
+                assert_eq!(try_f64_to_hugeint(refused), None, "{refused}");
+                // DuckDB itself fails these: it answers 0.
+                assert_eq!(f64_to_hugeint(refused), 0, "{refused}");
+            }
+            for accepted in [below, -below, 42.9, -42.9, 0.4, 0.0] {
+                assert_eq!(
+                    try_f64_to_hugeint(accepted),
+                    Some(f64_to_hugeint(accepted)),
+                    "{accepted}"
+                );
+            }
+            assert_ne!(f64_to_hugeint(below), 0);
+            assert_eq!(try_f64_to_hugeint(-42.9), Some(-42));
+            assert_eq!(try_f64_to_hugeint(0.4), Some(0));
+        }
+    }
+
+    #[test]
+    fn try_f64_to_uhugeint_refuses_exactly_what_duckdb_zeroes() {
+        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
+        // Exact literals, not `2f64.powi(128)`: Miri perturbs `powi`'s result.
+        let two_128 = 340_282_366_920_938_463_463_374_607_431_768_211_456.0_f64;
+        let below = f64::from_bits(two_128.to_bits() - 1);
+        // SAFETY: InMemoryDb::open() initialised the dispatch table.
+        unsafe {
+            for refused in [f64::NAN, f64::INFINITY, -1.0, -0.5, two_128] {
+                assert_eq!(try_f64_to_uhugeint(refused), None, "{refused}");
+                assert_eq!(f64_to_uhugeint(refused), 0, "{refused}");
+            }
+            for accepted in [below, 42.9, 0.0, -0.0] {
+                assert_eq!(
+                    try_f64_to_uhugeint(accepted),
+                    Some(f64_to_uhugeint(accepted)),
+                    "{accepted}"
+                );
+            }
+            assert_ne!(f64_to_uhugeint(below), 0);
+            assert_eq!(try_f64_to_uhugeint(42.9), Some(42));
+        }
+    }
+
+    #[test]
+    fn try_f64_to_decimal_is_none_where_duckdb_returns_width_zero() {
+        let _db = InMemoryDb::open().expect("open in-memory DuckDB");
+        // SAFETY: InMemoryDb::open() initialised the dispatch table.
+        unsafe {
+            for (value, width, scale) in [
+                (1e30, 18, 2),
+                (f64::NAN, 18, 2),
+                (f64::INFINITY, 18, 2),
+                (1.5, 40, 2),
+                (1.5, 4, 5),
+                (1000.0, 4, 1),
+            ] {
+                assert_eq!(
+                    try_f64_to_decimal(value, width, scale),
+                    None,
+                    "{value} {width} {scale}"
+                );
+                assert_eq!(
+                    f64_to_decimal(value, width, scale).width,
+                    0,
+                    "{value} {width} {scale}"
+                );
+            }
+            assert_eq!(try_f64_to_decimal(0.4, 0, 0), None);
+            let ok = try_f64_to_decimal(999.9, 4, 1).expect("fits DECIMAL(4,1)");
+            assert_eq!((ok.width, ok.scale, ok.value), (4, 1, 9_999));
+            let zero = try_f64_to_decimal(0.0, 18, 3).expect("zero fits");
+            assert_eq!((zero.width, zero.scale, zero.value), (18, 3, 0));
+            assert_eq!(
+                decimal_to_f64(Decimal {
+                    width: 0,
+                    scale: 0,
+                    value: 0
+                }),
+                None
+            );
         }
     }
 }

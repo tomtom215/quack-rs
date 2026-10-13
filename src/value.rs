@@ -267,7 +267,12 @@ impl Value {
         crate::types::TypeId::try_from_duckdb_type(raw_id)
     }
 
-    /// Returns `true` if the underlying handle is null.
+    /// Returns `true` if the underlying **handle** is null — not whether the
+    /// value is SQL `NULL`.
+    ///
+    /// A SQL `NULL` (for example a `NULL` passed to a table function's
+    /// parameter) has a valid handle, so this returns `false` for it. To test
+    /// for SQL `NULL`, use [`is_sql_null`][Self::is_sql_null].
     #[inline]
     #[must_use]
     pub const fn is_null(&self) -> bool {

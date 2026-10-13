@@ -154,8 +154,8 @@ impl ReplacementScanInfo {
     /// Use this when you need to pass non-VARCHAR parameters (INTEGER, BIGINT,
     /// BOOLEAN, etc.) that aren't covered by [`add_varchar_parameter`][Self::add_varchar_parameter].
     ///
-    /// The value is consumed by `DuckDB`; the caller must destroy it after this call
-    /// (`DuckDB` copies the value internally).
+    /// `DuckDB` copies the value; the caller still owns `value` and must destroy
+    /// it after this call.
     ///
     /// # Safety
     ///
@@ -220,7 +220,7 @@ impl ReplacementScanInfo {
     /// an empty message would be silently ignored and the query would fall through
     /// to "table does not exist". It is replaced with
     /// [`EMPTY_ERROR_PLACEHOLDER`][Self::EMPTY_ERROR_PLACEHOLDER] instead.
-    #[mutants::skip] // FFI call requires DuckDB runtime; `error_cstring` is unit-tested
+    #[cfg_attr(test, mutants::skip)] // FFI call requires DuckDB runtime; `error_cstring` is unit-tested
     pub fn set_error(&self, message: &str) {
         let c_msg = error_cstring(message);
         // SAFETY: self.info is valid.

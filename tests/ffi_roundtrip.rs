@@ -2691,6 +2691,34 @@ fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
         .find(|s| s.name == "probe_http")
         .expect("the http secret");
     assert!(http.scope.is_empty(), "unexpected scope: {:?}", http.scope);
+
+    // Redaction is per field: an http secret's extra headers come back in
+    // full, so `secret_string` is not credential-free and `Debug` omits it.
+    fx.query(
+        "CREATE SECRET probe_hdr (TYPE http, BEARER_TOKEN 'tok-hidden', \
+         EXTRA_HTTP_HEADERS MAP{'Authorization': 'Bearer topsecret-123'})",
+    );
+    // SAFETY: as above.
+    let secrets = unsafe { list_duckdb_secrets(fx.con()) }.expect("query duckdb_secrets()");
+    let hdr = secrets
+        .iter()
+        .find(|s| s.name == "probe_hdr")
+        .expect("the header secret");
+    // DuckDB 1.5.3 and later redact `bearer_token`; 1.4.4 and 1.5.0 render it
+    // in full too (CI's older-engine jobs), so only the header is asserted on
+    // every engine.
+    assert!(
+        hdr.secret_string.contains("topsecret-123"),
+        "DuckDB renders extra_http_headers in full (the documented hazard): {}",
+        hdr.secret_string
+    );
+    let debug = format!("{hdr:?}");
+    assert!(!debug.contains("topsecret-123"), "Debug leaked it: {debug}");
+    assert!(!debug.contains("tok-hidden"), "Debug leaked it: {debug}");
+    assert!(
+        debug.contains("probe_hdr") && debug.contains("bytes, not shown"),
+        "{debug}"
+    );
 }
 
 /// The fourth audit's T2. The scope list was read by casting it to `VARCHAR`
@@ -5992,6 +6020,8 @@ mod file_errors;
 mod lifecycle;
 #[path = "ffi_roundtrip/list_limits.rs"]
 mod list_limits;
+#[path = "ffi_roundtrip/owned_chunk.rs"]
+mod owned_chunk;
 #[path = "ffi_roundtrip/value_render.rs"]
 mod value_render;
 
@@ -6029,3 +6059,6 @@ mod appender_api;
 
 #[path = "ffi_roundtrip/handles_api.rs"]
 mod handles_api;
+
+#[path = "ffi_roundtrip/typed_scalar_opt.rs"]
+mod typed_scalar_opt;

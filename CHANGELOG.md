@@ -7,8 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This section comes out of a sixth review (`AUDIT.md` section 11): seven
+parallel audits (soundness in three parts, documentation, developer
+experience, C API coverage, and CI and supply chain against the a2a-rust
+bar), then fixes. It adds public API, so by `RELEASING.md`'s policy the next
+release is a minor one. Nothing here removes or changes the signature of an
+existing public item; the behaviour changes are listed under Changed.
+
+### Added
+
+- **Versioned documentation.** quack-rs.com now serves the latest release at
+  `/`, every supported release line at `/vX.Y/` (from 0.16 on), and `main` at
+  `/dev/` with its rustdoc at `/dev/api/`. A version menu sits in every page's
+  menu bar, and a banner marks pages that are not the latest release. Copies
+  other than the root are `noindex` with their canonical URL at the root.
+  `scripts/build-versioned-site.py` builds the site (each release with the
+  mdBook version its own tree pins, checksum-verified), CI's `book` job builds
+  it on every pull request, and `release.yml` redeploys it after a release.
+- `OwnedDataChunk::new(&[LogicalType])`, `capacity()` and `reset()`: build a
+  chunk to feed `Appender::append_chunk` without `duckdb_create_data_chunk`.
+  `new` refuses an empty type list (a debug assertion in `DuckDB`) and reports
+  `DuckDB`'s refusal of an `ANY` or `INVALID` type.
+- Typed scalar closures can return `Option<R>`: `None` is SQL `NULL`
+  (`impl<R: ScalarOut> ScalarOut for Option<R>`).
+- `ScalarFunctionBuilder::try_map1`, `try_map2`, `try_map3`, `try_map1_str`
+  and `try_map2_str`, whose closures return `Result<R, E: Display>`; an `Err`
+  fails the query with its message. `ScalarFunctionBuilder::map3`.
+- `datetime::try_f64_to_hugeint`, `try_f64_to_uhugeint` and
+  `try_f64_to_decimal`, which return `None` where `DuckDB`'s conversion fails
+  and the existing functions return `0` / a width-0 `Decimal`. The bounds
+  mirror `DuckDB`'s own and are tested against it.
+- `entry_point::EMPTY_INIT_ERROR_PLACEHOLDER`, reported when a registration
+  closure fails with an empty message (the `LOAD` error used to end at its
+  colon).
+- `scaffold::DEFAULT_EXCLUDED_PLATFORMS` and
+  `scaffold::DISTRIBUTION_DUCKDB_VERSION`. The scaffold generates
+  `.github/workflows/MainDistributionPipeline.yml`, which runs
+  `extension-ci-tools`' `_extension_distribution.yml` — the workflow the
+  community build uses — with `exclude_archs` generated from the same setting
+  as `description.yml`'s `excluded_platforms`; its `extension-ci.yml` gains a
+  build on the minimum Rust version.
+- `examples/scaffold_to_dir.rs` takes the extension name, output directory,
+  description and unstable target from the command line.
+- Book pages: Config Options, Catalog & Client Context, Vector Operations,
+  Panic-Safe Callbacks, Upgrading from 0.16 to 0.18 (every breaking change of 0.18.0
+  with its migration), custom types on the Type System page, and a Cargo
+  features table on the Installation page.
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1) and an issue-template
+  `config.yml` routing vulnerability reports to private advisories.
+
 ### Changed
 
+- **Scaffold:** `generate_scaffold` requires a semantic version for `version`
+  (it is written into `Cargo.toml`; `2025120401`, `1.0` or `v1.0.0` produced a
+  project Cargo could not read). `ScaffoldConfig::default()` excludes
+  `wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw`. The generated project
+  declares `rust-version` and `resolver = "3"` (a fresh resolve picked
+  `zopfli` 0.8.4, which needs Rust 1.88, so the project did not build on the
+  1.86.0 DuckDB's WebAssembly build uses), has `crate-type = ["cdylib",
+  "rlib"]`, ignores `configure/` and the other build directories, falls back
+  to the `Cargo.toml` version in its `Makefile` before the first commit
+  (`git describe`'s error text used to be stamped into the 32-byte version
+  field, and `DuckDB` refused the file), quotes the licence in
+  `description.yml`, keeps multi-line descriptions valid Markdown for clippy,
+  pins `extension_config.cmake` to the configured ref, NULL-propagates its
+  example macro, and pins current action releases.
+- **`description.yml` validation:** `repo.ref` that is not a commit hash is a
+  warning (the community build checks out exactly that ref). Quoted values are
+  no longer trimmed: PyYAML keeps the spaces, so `name: " my_ext"` is refused
+  as the community build would. `validate_rust_extension` requires an exact
+  `rust` token in `requires_toolchains`, as `extension-ci-tools` does; `"python3;
+  rust"` installed no Rust toolchain.
+- `DuckDbSecretInfo`'s `Debug` prints `secret_string`'s length, not its text.
+- Cast registration failures and table-function registration failures carry a
+  hint that fits them, not the aggregate name-clash hint; a failed
+  `SqlMacro::register` names the macro.
+- `mutants` is a dev-dependency only (`#[cfg_attr(test, mutants::skip)]`), so
+  extensions no longer build it.
+- The published crate no longer contains `scripts/`, `CODE_OF_CONDUCT.md`,
+  `CONTRIBUTING.md` or `GOVERNANCE.md`.
 - Table function registration through the entry point's `Connection` lists the
   catalog's table function and table macro names **once per extension load**
   instead of once per function. Registering N table functions used to pay N
@@ -18,6 +95,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scalar registration already did. The per-call
   `TableFunctionBuilder::register` still lists the catalog itself; both paths
   still refuse a name already taken.
+
+### Fixed
+
+- **Documentation that contradicted `DuckDB`, each checked against its
+  source:** re-registering a cast for a pair succeeds and does nothing — the
+  first registration wins (`std::map::insert`), not the last; `CastMode::Try`
+  is also how `DuckDB` casts single values internally (a table function's
+  argument, for one), where the callback's `false` is what raises the error,
+  so the docs now say to null each failed row **and** return `false`;
+  `list_duckdb_secrets` can return credentials (redaction is per field: an
+  `http` secret's `extra_http_headers` comes back in full, and on DuckDB 1.4.4
+  and 1.5.0 so does its `bearer_token`);
+  `vector::reference_value` with a mismatched value type casts, can abort or
+  overflow, rather than "reinterpreting". Each has a regression test against a
+  real `DuckDB` where one can be written.
+- `FileHandle::read_to_end` reserved the file's reported size up front with an
+  infallible `reserve`, so a file (or an `httpfs` server) reporting an
+  impossible size aborted the process. The reservation is capped and fallible.
+- `LogicalType::try_enum_type` names a duplicate member instead of reporting
+  that `duckdb_create_enum_type` returned null.
+- `decimal_to_f64` returns `None` for width 0, as `LogicalType::try_decimal`
+  and `validate_decimal` already refused it.
+- The typed table-function trampolines lost the message of a `Box<str>` panic.
+- The entry-point macros made the documented closure `|con| unsafe {
+  register(con) }` warn as a nested `unsafe` block, failing a `-D warnings`
+  build of the extension (the scaffold's CI runs one).
+- `f64_to_hugeint`, `f64_to_uhugeint` and `f64_to_decimal` document that a
+  failed conversion returns `0` / a width-0 `Decimal`.
+
+### Documentation
+
+- The README is a landing page (63 KB to 11 KB): a Quick Start with the safe
+  closure API, verified end to end on DuckDB 1.5.6, supported versions, the
+  features table, and links. Its module reference, pitfall tables,
+  compliance, architecture, testing and changelog digest moved to the book,
+  `docs/architecture.md` (now the single home of ADR-1 to ADR-6) or were
+  replaced by links.
+- Corrected throughout: the supported range is DuckDB 1.4.4 and later 1.x,
+  not "1.4.x"; only callbacks made with a `*_callback!` macro or a closure
+  builder are panic-guarded, not "every callback"; `SECURITY.md`'s statements
+  on the unsafe convention and on panics across FFI; the CI matrices as they
+  are; a bare `.so` is refused by `LOAD` (checked on 1.5.6); the scaffold's
+  setup sequence (commit before `make configure`; `extension-ci-tools` on the
+  `v1.5.6` branch).
+- The book's examples use the panic-guarded callback macros.
+
+### CI and release
+
+- `release.yml` runs the whole of `ci.yml` as its gate (`workflow_call`)
+  instead of a hand-copied subset that lacked semver checks, Miri, the
+  sanitizers and the engine matrices; refuses a lightweight tag and a tag not
+  on `main`; publishes with crates.io Trusted Publishing when it is configured
+  (falling back to `CARGO_REGISTRY_TOKEN`) and with `--no-verify`, so no
+  dependency build script runs with the credential; restores no cache in the
+  packaging and publishing jobs; checks crates.io serves the attested `.crate`
+  byte for byte; and creates the GitHub release only after crates.io has the
+  crate.
+- `ci.yml`: a `ci-ok` job summarises every blocking job, to be the one
+  required check (`scripts/check-ci-aggregate.py` keeps its `needs` complete);
+  the weekly run fuzzes 10 minutes per target from a persisted corpus;
+  `test-older-engines` adds 1.5.5 and `extension-load` pins 1.5.6;
+  `osv-scan` covers `book/doctest/Cargo.lock`.
+- `scripts/check-msrv-vs-duckdb-ci.py` had stopped checking anything: its
+  pattern never matched the `@1.86.0` pin of `extension-ci-tools`' WebAssembly
+  job, and once upstream `main` pinned through a YAML anchor it found no pin at
+  all, which CI treats as a skipped warning. It now reads all three pin forms
+  and checks both `main` and the `v1.5.6` branch the community build uses.
+- `docs.yml` grants Pages write permission to the deploy job only.
+- `deny.toml`: a yanked crate fails; unused licence allowances fail (two
+  removed).
+- Dependabot covers `fuzz/` and `book/doctest/`, and groups action updates.
+
+### Dependencies
+
+- `libduckdb-sys` and `duckdb` 1.10506.0 (DuckDB 1.5.6) in every lockfile,
+  resolved MSRV-aware (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`),
+  which also put `wasip2` back on a release Rust 1.86 builds. Tools:
+  osv-scanner 2.7.0, cargo-deny 0.20.2, cargo-semver-checks 0.51.0,
+  `dtolnay/rust-toolchain` (2026-10-08),
+  `actions/upload-artifact` 7.0.2, `actions/download-artifact` 8.0.2.
 
 ## [0.18.0] - 2026-10-02
 

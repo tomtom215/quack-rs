@@ -8,9 +8,13 @@
 - [Safety Model](#safety-model)
 - [The loadable-extension Feature](#the-loadable-extension-feature)
 - [DuckDB Aggregate Lifecycle](#duckdb-aggregate-lifecycle)
-- [ADR-001: Thin Wrapper Mandate](#adr-001-thin-wrapper-mandate)
-- [ADR-002: Bounded Version Range](#adr-002-bounded-version-range)
-- [ADR-003: No Panics Across FFI](#adr-003-no-panics-across-ffi)
+- [Architecture Decision Records](#architecture-decision-records)
+  - [ADR-1: Thin wrapper mandate](#adr-1-thin-wrapper-mandate)
+  - [ADR-2: Bounded version range](#adr-2-bounded-version-range)
+  - [ADR-3: No panics across FFI](#adr-3-no-panics-across-ffi)
+  - [ADR-4: `libduckdb-sys` only at run time, no `duckdb` crate](#adr-4-libduckdb-sys-only-at-run-time-no-duckdb-crate)
+  - [ADR-5: Function sets instead of aggregate varargs](#adr-5-function-sets-instead-of-aggregate-varargs)
+  - [ADR-6: Custom C entry point instead of `duckdb-loadable-macros`](#adr-6-custom-c-entry-point-instead-of-duckdb-loadable-macros)
 
 ---
 
@@ -24,7 +28,7 @@ quack_rs
 ├── callback         scalar_callback!, table_scan_callback!, … — panic-safe callback wrapper macros
 ├── aggregate
 │   ├── state        FfiState<T> — tagged state slot: T inline (≤ 256 bytes, ≤ usize-aligned) or boxed
-│   ├── callbacks    Type aliases for the 6 DuckDB aggregate callback signatures
+│   ├── callbacks    Type aliases for the six aggregate callbacks (StateSizeFn, StateInitFn, UpdateFn, CombineFn, FinalizeFn, DestroyFn)
 │   ├── info         AggregateFunctionInfo — callback info wrapper
 │   └── builder/
 │       ├── single   AggregateFunctionBuilder (single-signature)
@@ -104,7 +108,7 @@ quack_rs
 | `abi` | `AbiCheck`, `AbiPolicy` — check the compiled-in C Extension API layout against the loading DuckDB | Yes |
 | `connection` | `Connection` facade + `Registrar` trait — version-agnostic registration | Yes |
 | `callback` | Macros that wrap a callback body in `catch_unwind` and report a panic through the callback's `set_error` | Yes |
-| `aggregate::state` | `Box<T>` lifecycle behind a raw pointer | Yes |
+| `aggregate::state` | `FfiState<T>` — a tagged state slot holding `T` inline (at most 256 bytes and `usize`-aligned) or boxed; size, init and destroy callbacks | Yes |
 | `aggregate::callbacks` | Signature documentation only (type aliases) | No |
 | `aggregate::info` | `AggregateFunctionInfo` — callback info wrapper | Yes |
 | `aggregate::builder::single` | `AggregateFunctionBuilder` — single-signature registration | Yes |
@@ -171,6 +175,63 @@ quack_rs
 
 ## Design Principles
 
+### Layer overview
+
+```mermaid
+flowchart TB
+    Author(["**Extension Author**<br/>use quack_rs::prelude::*"]):::author
+
+    subgraph REG ["Registration layer"]
+        direction LR
+        EP["**entry_point**<br/>entry_point! · init_extension"]
+        AGG["**aggregate**<br/>AggregateFunctionBuilder<br/>AggregateFunctionSetBuilder · FfiState&lt;T&gt;"]
+        SCL["**scalar**<br/>ScalarFunctionBuilder · map1/map2<br/>ScalarFunctionSetBuilder"]
+        TBL["**table**<br/>TableFunctionBuilder · TypedTableFunctionBuilder<br/>BindInfo · FfiBindData · FfiInitData"]
+        RSC["**replacement_scan**<br/>ReplacementScanBuilder"]
+        SM["**sql_macro**<br/>SqlMacro · MacroBody"]
+        CST["**cast**<br/>CastFunctionBuilder"]
+        CPY["**copy_function**¹<br/>CopyFunctionBuilder"]
+    end
+
+    subgraph DATA ["Data layer"]
+        direction LR
+        VEC["**vector**<br/>VectorReader · VectorWriter<br/>ValidityBitmap · DuckStringView"]
+        CMP["**vector::complex**<br/>StructVector · ListVector · MapVector · ArrayVector"]
+        TYP["**types**<br/>TypeId · LogicalType"]
+        INT["**interval**<br/>DuckInterval · interval_to_micros"]
+        CFG["**config_option**¹<br/>ConfigOptionBuilder"]
+        CAT["**catalog**¹<br/>CatalogEntry · Catalog"]
+        CTX["**client_context**¹<br/>ClientContext"]
+        TDS["**table_description**<br/>TableDescription"]
+        APP["**appender**<br/>Appender"]
+    end
+
+    SYS["**libduckdb-sys** >=1.4.4, &lt;2<br/>DuckDB C Extension API<br/>headers only · no linked library"]:::ffi
+
+    RT[("**DuckDB**<br/>Runtime")]:::duckdb
+
+    subgraph DEV ["Dev-time utilities"]
+        direction LR
+        ERR["**error**<br/>ExtensionError · ExtResult&lt;T&gt;"]
+        TST["**testing**<br/>AggregateTestHarness&lt;S&gt;<br/>pure Rust · no FFI"]
+        VAL["**validate**<br/>extension_name · semver<br/>spdx · platform<br/>description_yml"]
+        SCF["**scaffold**<br/>generate_scaffold<br/>ScaffoldConfig"]
+    end
+
+    Author --> REG
+    REG    --> DATA
+    DATA   --> SYS
+    SYS    --> RT
+    Author -.->|"dev-time"| DEV
+
+    classDef author fill:#1e3a5f,stroke:#5a9fd4,color:#ddf0ff
+    classDef ffi fill:#3d2406,stroke:#c87941,color:#f5dbb4
+    classDef duckdb fill:#1c3b1c,stroke:#4a9e4a,color:#c8ecc8
+```
+
+¹ Requires the `duckdb-1-5` feature. The diagram shows the main modules only;
+the tree above lists all of them.
+
 ### 1. Thin wrapper
 
 Every abstraction earns its place by reducing boilerplate **or** improving safety.
@@ -181,9 +242,15 @@ principles.
 ### 2. Zero panics across FFI
 
 A panic escaping a C FFI boundary aborts the process (Rust ≥ 1.81; undefined
-behaviour before that). Every callback kind therefore runs under `catch_unwind` and
-reports a panic through the callback's error channel, which needs
-`panic = "unwind"`. Library code panics only where a `# Panics` section documents
+behaviour before that). The entry-point macros, the `*_callback!` macros in
+`callback`, the closure-based builders (`map1`/`map2`/…, `TypedTableFunctionBuilder`)
+and `FfiState<T>`'s callbacks therefore run user code under `catch_unwind` and
+report a panic through the callback's error channel, which needs
+`panic = "unwind"`. A raw `unsafe extern "C" fn` that an extension passes to a
+builder itself is installed as written, with no guard: define it with the matching
+`*_callback!` macro, or wrap its body in `callback::catch_ffi_panic`.
+
+Library code panics only where a `# Panics` section documents
 it (`VectorWriter::write_varchar` on a string over 4 GiB, for one); everything else
 uses `Result`/`Option` and the `?` operator, and errors reach DuckDB through the
 callback's `set_error`, or `access.set_error` at load.
@@ -204,6 +271,14 @@ Aggregate state structs (`T: AggregateState`) have zero FFI dependencies. The
 lifecycle in pure Rust, letting you test complex business logic without a live
 DuckDB instance. Only the FFI glue code (callbacks, registration) requires DuckDB.
 
+### 5. Check community-extension rules before submission
+
+The `validate` module checks extension names, function names, versions, SPDX
+licenses, platforms, release profiles and whole `description.yml` files. These
+are ordinary functions: they run when your code calls them (in a test, a build
+script or a CI step), not automatically at compile time. The scaffold calls them
+on its `ScaffoldConfig` before it generates anything.
+
 ---
 
 ## Dependency Model
@@ -212,11 +287,13 @@ DuckDB instance. Only the FFI glue code (callbacks, registration) requires DuckD
 Extension crate
     ├── quack_rs (this crate)
     │       ├── libduckdb-sys = ">=1.4.4, <2" { loadable-extension }
-    │       ├── mutants = "0.0.4" (a no-op `#[mutants::skip]` attribute)
     │       └── duckdb = ">=1.4.4, <2" (optional: only with `bundled-test` / `bundled-test-prebuilt`)
     └── libduckdb-sys = ">=1.4.4, <2" { loadable-extension }
             └── (DuckDB headers only — no linked library)
 ```
+
+`mutants` (cargo-mutants' attribute crate) is a dev-dependency only: the source
+writes `#[cfg_attr(test, mutants::skip)]`, so a dependant never builds it.
 
 Three cargo features gate DuckDB 1.5 C API surface. Each is defined in the
 crate's `Cargo.toml`, carries no extra dependencies, and only controls `#[cfg]`
@@ -253,10 +330,20 @@ feature, and the first DuckDB call then panics with "DuckDB API not initialized"
 
 ## Safety Model
 
+Extension authors still write `unsafe` code: registering on a raw
+`duckdb_connection` is `unsafe`, and so is a hand-written `unsafe extern "C"`
+callback. The closure-based builders and the helpers (`FfiState`, `VectorReader`,
+`VectorWriter`) keep that surface small. The crate's own `unsafe` code is
+documented as described below and has been audited; see
+[`AUDIT.md`](../AUDIT.md) for what each audit checked and found.
+
 Within this crate:
 
+- Every `unsafe fn` states what the caller must guarantee under `# Safety`; a
+  trait's `unsafe` methods state it once, on the trait.
 - The `#![deny(unsafe_op_in_unsafe_fn)]` lint is enabled globally: unsafe operations
-  inside `unsafe fn` still require explicit `unsafe {}` blocks with their own comment.
+  inside `unsafe fn` still require explicit `unsafe {}` blocks with their own comment,
+  which names the clause of the function's contract it relies on.
 - Every `unsafe` block in library code carries a `// SAFETY:` comment stating the
   invariant it relies on and why it holds there. `clippy::undocumented_unsafe_blocks`
   (`Cargo.toml` `[lints.clippy]`, an error under CI's `-D warnings`) enforces it;
@@ -349,52 +436,99 @@ See `testing/harness.rs` for a test that demonstrates this bug and its fix.
 
 ---
 
-## ADR-001: Thin Wrapper Mandate
+## Architecture Decision Records
+
+This section is the one place the ADRs are recorded; other documents refer to
+them by these numbers.
+
+### ADR-1: Thin wrapper mandate
 
 **Context**: It is tempting to add convenience layers, ergonomic macros, or
 high-level abstractions on top of the DuckDB C API.
 
-**Decision**: This crate exposes only what is necessary to make the unsafe FFI
-patterns safe and correct. It does not attempt to hide the DuckDB C API entirely.
-Consumers are expected to understand DuckDB's aggregate and vector model.
+**Decision**: `quack-rs` wraps the DuckDB C API but does not redesign it. Each
+abstraction must make an unsafe FFI pattern safe or correct, or remove
+boilerplate. It does not hide the C API entirely: consumers are expected to
+understand DuckDB's aggregate and vector model, and an extension can call
+`libduckdb-sys` directly next to `quack-rs`.
 
 **Consequences**: The crate stays small, auditable, and easy to update when the
 DuckDB C API changes. Consumers who want a higher-level API can build it on top.
 
----
-
-## ADR-002: Bounded Version Range
+### ADR-2: Bounded version range
 
 **Context**: `libduckdb-sys` versions track DuckDB releases (DuckDB 1.5.x is
-published as `libduckdb-sys` 1.105xx). Between DuckDB major releases, the C API
-can change in ways that silently break extensions:
-- New function signatures
-- Changed constant values
-- Renamed symbols
+published as `libduckdb-sys` 1.105xx; on the 1.4 line the crate version is the
+DuckDB version). A DuckDB release can change the C API in ways that break an
+extension without a compile error: new function signatures, changed constant
+values, renamed symbols, or a shifted unstable region.
 
-**Decision**: Use `libduckdb-sys = ">=1.4.4, <2"`. The range covers DuckDB 1.4.4+
-and 1.5.x, whose C API (`v1.2.0`) is stable and verified by E2E tests against both
-releases. The `<2` upper bound prevents silent adoption of a future major release
-that may introduce breaking C API changes.
+**Decision**: Use `libduckdb-sys = ">=1.4.4, <2"`. Every DuckDB release from
+1.4.4 to 1.5.5 declares C extension API version `v1.2.0`; 1.5.6 declares
+`v1.5.6` and still loads `v1.2.0` extensions. The stable part of the API (357
+functions) is unchanged across all of them. The unstable region differs between
+releases and is checked at load by the ABI guard (`abi.rs`). The `<2` upper
+bound prevents silent adoption of a future major release.
 
-**Consequences**: Extensions must explicitly choose when to upgrade DuckDB.
+CI checks the range in two ways (`.github/workflows/ci.yml`):
+
+- `test-older-engines` runs the test suite against DuckDB 1.4.4 and 1.4.5
+  (default features), 1.5.0 (`duckdb-1-5`), 1.5.3 (`duckdb-1-5-3`) and 1.5.4
+  (`duckdb-1-5-4`); the other test jobs use the release `Cargo.lock` pins.
+- `extension-load` loads the `hello-ext` example, stamped `C_STRUCT` + `v1.2.0`,
+  into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest release.
+
+**Consequences**: Extensions must explicitly choose when to upgrade DuckDB, and
+`quack-rs` must be updated when DuckDB changes the C API version it can load.
 The `duckdb-behavioral` experience motivating this library showed that silent
 API changes cost days of debugging.
 
----
-
-## ADR-003: No Panics Across FFI
+### ADR-3: No panics across FFI
 
 **Context**: a panic cannot unwind out of an `extern "C"` function. Before Rust
 1.81 that was undefined behaviour; since 1.81 the runtime aborts the process.
 DuckDB calls extension callbacks from C++, so either way an escaping panic takes
 down the user's session.
 
-**Decision**: Every callback and entry point uses `Result`/`Option`. Errors are
-reported via `access.set_error`. As defence in depth, the entry point, the
-closure-based builders' trampolines and the `callback` macros also run user code
-under `catch_unwind`, which is why the release profile must use
-`panic = "unwind"` (under `abort`, nothing can be caught).
+**Decision**: The entry point and the callbacks `quack-rs` generates use
+`Result`/`Option`, and report errors through DuckDB's `set_error` functions
+(`access.set_error` at load). As defence in depth, the entry-point macros, the
+closure-based builders' trampolines, `FfiState<T>`'s callbacks and the
+`callback` macros also run user code under `catch_unwind`, which is why the
+release profile must use `panic = "unwind"` (under `abort`, nothing can be
+caught). A raw `unsafe extern "C" fn` passed to a builder is not wrapped; see
+[Design principle 2](#2-zero-panics-across-ffi).
 
-**Consequences**: All callbacks are slightly more verbose, but the invariant is
-enforced by the type system rather than convention.
+**Consequences**: Library code avoids `unwrap()` and documents every panic it can
+raise under `# Panics`. `validate_release_profile` rejects `panic = "abort"`, and
+the scaffold generates `panic = "unwind"`.
+
+### ADR-4: `libduckdb-sys` only at run time, no `duckdb` crate
+
+The `duckdb` crate provides a high-level Rust API but also includes a bundled
+DuckDB (via the `bundled` feature). A loadable extension must not bundle DuckDB:
+it calls into the DuckDB that loads it. `libduckdb-sys` with the
+`loadable-extension` feature provides exactly this: function pointers filled in
+from the API struct DuckDB passes at load time. (`quack-rs` uses the `duckdb`
+crate only behind its `bundled-test` / `bundled-test-prebuilt` features, for
+`InMemoryDb` in tests.)
+
+### ADR-5: Function sets instead of aggregate varargs
+
+The C API has no `duckdb_aggregate_function_set_varargs`. For variadic aggregate
+signatures (e.g., `retention(c1, c2, ..., c32)`), an extension registers N
+overloads in a `duckdb_aggregate_function_set`. `AggregateFunctionSetBuilder`
+does this.
+
+Scalar functions support varargs directly via `ScalarFunctionBuilder::varargs()`
+and `ScalarOverloadBuilder::varargs()`, with no feature flag.
+
+### ADR-6: Custom C entry point instead of `duckdb-loadable-macros`
+
+`duckdb-loadable-macros` relies on `extract_raw_connection`, which depends on the
+internal `Rc<RefCell<InnerConnection>>` layout of the `duckdb` crate. This is
+fragile and caused SEGFAULTs when the layout changed. `quack-rs` instead uses a
+hand-written C entry point that calls `duckdb_rs_extension_api_init`,
+`get_database` and `duckdb_connect` directly;
+`quack_rs::entry_point::init_extension` and the `entry_point!` macros
+encapsulate it.

@@ -92,7 +92,8 @@ pub struct Date {
 /// A wall-clock time, as `DuckDB` decomposes a `TIME`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Time {
-    /// Hour of day, 0–23.
+    /// Hour of day, 0–23; 24 only in `24:00:00`, which `DuckDB` allows as a
+    /// `TIME`.
     pub hour: i8,
     /// Minute of hour, 0–59.
     pub min: i8,
@@ -103,6 +104,9 @@ pub struct Time {
 }
 
 /// A `TIME WITH TIME ZONE`, decomposed into wall-clock time plus UTC offset.
+///
+/// The derived ordering is structural (wall-clock time first, then offset),
+/// not `DuckDB`'s SQL ordering, which compares the UTC instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimeTz {
     /// The wall-clock time.
@@ -449,7 +453,13 @@ pub unsafe fn hugeint_to_f64(value: i128) -> f64 {
     unsafe { duckdb_hugeint_to_double(raw) }
 }
 
-/// Converts an `f64` to `HUGEINT` the way `DuckDB` does.
+/// Converts an `f64` to `HUGEINT` the way `DuckDB` does, truncating toward
+/// zero.
+///
+/// A value `DuckDB` cannot convert — NaN, an infinity, or a value outside
+/// `(-2^127, 2^127)` — comes back as `0`, indistinguishable from a real zero
+/// (SQL's `CAST` raises an error instead). Use
+/// [`try_f64_to_hugeint`] to tell the two apart.
 ///
 /// # Safety
 ///
@@ -459,6 +469,28 @@ pub unsafe fn f64_to_hugeint(value: f64) -> i128 {
     // SAFETY: forwarded from this function's own contract.
     let raw = unsafe { duckdb_double_to_hugeint(value) };
     (i128::from(raw.upper) << 64) | i128::from(raw.lower)
+}
+
+/// Converts an `f64` to `HUGEINT` like [`f64_to_hugeint`], or `None` when
+/// `DuckDB` cannot convert it: NaN, an infinity, or a value outside
+/// `(-2^127, 2^127)`.
+///
+/// The bounds are the ones `DuckDB`'s `ConvertFloatingToBigint` applies
+/// (`hugeint.cpp`), checked here before the call.
+///
+/// # Safety
+///
+/// See [`date_from_days`].
+#[must_use]
+pub unsafe fn try_f64_to_hugeint(value: f64) -> Option<i128> {
+    // 2^127 is exactly representable; DuckDB compares against it (its
+    // `2^127 - 1` literal rounds to the same double).
+    const LIMIT: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
+    if !value.is_finite() || value <= -LIMIT || value >= LIMIT {
+        return None;
+    }
+    // SAFETY: forwarded from this function's own contract.
+    Some(unsafe { f64_to_hugeint(value) })
 }
 
 /// Converts a `UHUGEINT` to `f64` the way `DuckDB` does.
@@ -478,7 +510,12 @@ pub unsafe fn uhugeint_to_f64(value: u128) -> f64 {
     unsafe { duckdb_uhugeint_to_double(raw) }
 }
 
-/// Converts an `f64` to `UHUGEINT` the way `DuckDB` does.
+/// Converts an `f64` to `UHUGEINT` the way `DuckDB` does, truncating toward
+/// zero.
+///
+/// A value `DuckDB` cannot convert — NaN, an infinity, a negative value, or
+/// one at or above `2^128` — comes back as `0`, indistinguishable from a real
+/// zero. Use [`try_f64_to_uhugeint`] to tell the two apart.
 ///
 /// # Safety
 ///
@@ -490,7 +527,32 @@ pub unsafe fn f64_to_uhugeint(value: f64) -> u128 {
     (u128::from(raw.upper) << 64) | u128::from(raw.lower)
 }
 
+/// Converts an `f64` to `UHUGEINT` like [`f64_to_uhugeint`], or `None` when
+/// `DuckDB` cannot convert it: NaN, an infinity, a negative value, or one at
+/// or above `2^128`.
+///
+/// The bounds are the ones `DuckDB`'s `ConvertFloatingToUhugeint` applies
+/// (`uhugeint.cpp`), checked here before the call. `-0.0` converts to `0`.
+///
+/// # Safety
+///
+/// See [`date_from_days`].
+#[must_use]
+pub unsafe fn try_f64_to_uhugeint(value: f64) -> Option<u128> {
+    const LIMIT: f64 = 340_282_366_920_938_463_463_374_607_431_768_211_456.0;
+    // A NaN is in no range, so `contains` refuses it as well as infinities.
+    if !(0.0..LIMIT).contains(&value) {
+        return None;
+    }
+    // SAFETY: forwarded from this function's own contract.
+    Some(unsafe { f64_to_uhugeint(value) })
+}
+
 /// A `DECIMAL` value: an unscaled `i128` plus its declared width and scale.
+///
+/// The derived ordering is structural (width, then scale, then the unscaled
+/// value), not numeric: `1.00` as `DECIMAL(5,2)` sorts above `2` as
+/// `DECIMAL(3,0)`. Compare values of one width and scale, or convert first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Decimal {
     /// Total number of significant digits.
@@ -502,6 +564,11 @@ pub struct Decimal {
 }
 
 /// Converts an `f64` into a `DECIMAL` of the given width and scale.
+///
+/// When `DuckDB` cannot convert — the value does not fit `DECIMAL(width,
+/// scale)`, it is NaN or infinite, `width` exceeds 38, or `scale` exceeds
+/// `width` — the result is `Decimal { width: 0, scale: 0, value: 0 }`, not an
+/// error. Use [`try_f64_to_decimal`] to get `None` instead.
 ///
 /// # Safety
 ///
@@ -515,6 +582,29 @@ pub unsafe fn f64_to_decimal(value: f64, width: u8, scale: u8) -> Decimal {
         scale: raw.scale,
         value: (i128::from(raw.value.upper) << 64) | i128::from(raw.value.lower),
     }
+}
+
+/// Converts an `f64` into a `DECIMAL(width, scale)` like [`f64_to_decimal`],
+/// or `None` when it cannot.
+///
+/// It cannot when the value does not fit, it is NaN or infinite, `width` is 0
+/// or exceeds 38, or `scale` exceeds `width`.
+///
+/// `DuckDB` signals a failed conversion by returning width 0; a successful
+/// one carries the requested width, so the two cannot be confused once a
+/// width of 0 is refused up front.
+///
+/// # Safety
+///
+/// See [`date_from_days`].
+#[must_use]
+pub unsafe fn try_f64_to_decimal(value: f64, width: u8, scale: u8) -> Option<Decimal> {
+    if !checks::decimal_is_valid(width, scale) {
+        return None;
+    }
+    // SAFETY: forwarded from this function's own contract.
+    let decimal = unsafe { f64_to_decimal(value, width, scale) };
+    (decimal.width == width).then_some(decimal)
 }
 
 /// Converts a `DECIMAL` to `f64` the way `DuckDB` does.

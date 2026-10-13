@@ -43,15 +43,47 @@ pub(super) fn yaml_quoted(text: &str) -> String {
 
 /// `text` as `//!` doc-comment lines: every line of a multi-line description
 /// gets its own prefix, so none of it escapes the comment into Rust source.
+///
+/// The lines are also kept from being read as Markdown blocks. Rustdoc renders
+/// `//!` text as Markdown, and the generated project runs
+/// `cargo clippy -- -D warnings` and, with its `rlib` crate type, doctests: a
+/// line such as `- one` followed by `and more` trips
+/// `clippy::doc_lazy_continuation`, and a fence or an indented line would turn
+/// the rest of the description into a doctest that does not compile. So each
+/// line loses its indentation and a leading block marker is backslash-escaped
+/// (see [`escape_block_marker`]); `description.yml` keeps the exact text.
 pub(super) fn doc_comment_lines(text: &str) -> String {
     text.split('\n')
         .map(|line| {
+            let line = line.trim_start();
             if line.is_empty() {
                 "//!".to_string()
             } else {
-                format!("//! {line}")
+                format!("//! {}", escape_block_marker(line.trim_end()))
             }
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `line` (already free of leading whitespace) with a backslash before the
+/// character that would start a `CommonMark` block construct: a heading (`#`),
+/// block quote (`>`), list item (`-`, `*`, `+`, or digits then `.` / `)`),
+/// thematic break or setext underline (`-`, `*`, `_`, `=`), code fence
+/// (`` ` ``, `~`), HTML block (`<`), table row (`|`) or link reference
+/// definition (`[`). A backslash before ASCII punctuation is a `CommonMark`
+/// escape, so the rendered text is unchanged.
+fn escape_block_marker(line: &str) -> String {
+    let first = line.chars().next();
+    if matches!(
+        first,
+        Some('#' | '>' | '-' | '*' | '+' | '_' | '=' | '`' | '~' | '<' | '|' | '[')
+    ) {
+        return format!("\\{line}");
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 0 && matches!(line.as_bytes().get(digits), Some(b'.' | b')')) {
+        return format!("{}\\{}", &line[..digits], &line[digits..]);
+    }
+    line.to_string()
 }

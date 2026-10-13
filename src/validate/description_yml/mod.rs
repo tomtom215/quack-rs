@@ -29,7 +29,7 @@
 //!
 //! repo:
 //!   github: janedoe/duckdb-my-ext
-//!   ref: main
+//!   ref: 4f1c2e9a7b3d5c8e1f0a2b4c6d8e0f1a3b5c7d9e
 //! ```
 //!
 //! # Required vs Optional Fields
@@ -46,7 +46,7 @@
 //! | `extension.excluded_platforms` | No | Must pass [`validate_excluded_platforms_str`]; a YAML list is accepted with a warning |
 //! | `extension.maintainers` | Yes | At least one maintainer |
 //! | `repo.github` | Yes | Non-empty `owner/repo` format |
-//! | `repo.ref` | Yes | Non-empty git ref (branch, tag, or commit) |
+//! | `repo.ref` | Yes | Non-empty git ref; anything but a commit hash is a warning |
 //!
 //! # Reference
 //!
@@ -72,7 +72,7 @@
 //!
 //! repo:
 //!   github: janedoe/duckdb-my-ext
-//!   ref: main
+//!   ref: 4f1c2e9a7b3d5c8e1f0a2b4c6d8e0f1a3b5c7d9e
 //! "#;
 //!
 //! assert!(validate_description_yml_str(yml).is_ok());

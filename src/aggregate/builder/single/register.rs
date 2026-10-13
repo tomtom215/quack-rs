@@ -25,7 +25,7 @@ impl AggregateFunctionBuilder {
     /// Returns `ExtensionError` if:
     /// - The return type was not set.
     /// - Any required callback was not set.
-    /// - A parameter, varargs or return type was given as a bare composite
+    /// - A parameter or return type was given as a bare composite
     ///   [`TypeId`][crate::types::TypeId] (`DECIMAL`, `ENUM`, `LIST`, `STRUCT`, `MAP`, `ARRAY`,
     ///   `UNION`), which carries parameters a `TypeId` cannot express. Build
     ///   it as a [`LogicalType`] and use the `*_logical` method; the error

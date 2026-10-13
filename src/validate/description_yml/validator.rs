@@ -100,12 +100,26 @@ pub fn validate_rust_extension(desc: &DescriptionYml) -> Result<(), ExtensionErr
         )));
     }
 
+    // extension-ci-tools tests `contains(format(';{0};', extra_toolchains),
+    // ';rust;')` (`_extension_distribution.yml`), an exact token match: in
+    // "python3; rust" the token is " rust", and no Rust toolchain is installed.
     let toolchains: Vec<&str> = desc.requires_toolchains.split(';').collect();
-    if !toolchains.iter().any(|t| t.trim() == "rust") {
-        return Err(ExtensionError::new(format!(
-            "description.yml: extension.requires_toolchains must include 'rust' for a Rust extension, got '{}'",
-            desc.requires_toolchains
-        )));
+    if !toolchains.contains(&"rust") {
+        let padded = toolchains.iter().any(|t| t.trim() == "rust");
+        return Err(ExtensionError::new(if padded {
+            format!(
+                "description.yml: extension.requires_toolchains is '{}': the community build \
+                 matches ';'-separated tokens exactly, so a space next to 'rust' means no Rust \
+                 toolchain is installed — write the list without spaces, e.g. 'rust;python3'",
+                desc.requires_toolchains
+            )
+        } else {
+            format!(
+                "description.yml: extension.requires_toolchains must include 'rust' for a Rust \
+                 extension, got '{}'",
+                desc.requires_toolchains
+            )
+        }));
     }
 
     Ok(())
