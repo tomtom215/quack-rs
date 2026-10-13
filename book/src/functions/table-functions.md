@@ -352,15 +352,15 @@ query omits `step := …`, the returned `Value` wraps a null handle (`is_null()`
 
 ### Registering a name twice
 
-The C API has no table function *sets*: a second registration under a name that
+The C API has no table function *sets*, so a second registration under a name that
 already exists — your own earlier one, another extension's, or a built-in such as
-`range` — is dropped by DuckDB while `duckdb_register_table_function` still
-reports success, and the old function keeps answering. `register` therefore checks
+`range` — never adds an overload and the old function keeps answering. What the call
+reports differs by DuckDB release: v1.5.x drops the new function and still reports
+success, while v1.4.x fails the call without a reason. `register` therefore checks
 `duckdb_functions()` first and returns an error if the name already belongs to a
-table function or table macro (compared case-insensitively). Table
-functions registered through the C API live in the in-memory system catalog and
-are never persisted, so reloading an extension into a database file never trips
-this check.
+table function or table macro (compared case-insensitively). Table functions
+registered through the C API live in the in-memory system catalog and are never
+persisted, so reloading an extension into a database file never trips this check.
 
 ### Local init (per-thread state)
 

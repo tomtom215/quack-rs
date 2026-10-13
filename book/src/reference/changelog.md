@@ -10,6 +10,18 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Table function registration through the entry point's `Connection` lists the
+  catalog's table function and table macro names **once per extension load**
+  instead of once per function. Registering N table functions used to pay N
+  full scans of `duckdb_functions()` — tens of milliseconds each, so over a
+  second per `LOAD` for an extension with a hundred of them — and now pays one,
+  the way
+  scalar registration already did. The per-call
+  `TableFunctionBuilder::register` still lists the catalog itself; both paths
+  still refuse a name already taken.
+
 ## [0.18.0] — 2026-10-02
 
 This release comes out of a second production-readiness audit (`AUDIT.md`

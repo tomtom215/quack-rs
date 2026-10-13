@@ -257,6 +257,22 @@ pub struct Connection {
     /// instead), so what can go unseen is a scalar function registered by
     /// other code in between, whose collision the check would then miss.
     scalars: core::cell::RefCell<Option<crate::scalar::builder::collision::ExistingScalars>>,
+    /// The catalog's table function and table macro names, listed on the first
+    /// table function registration and kept up to date with this connection's
+    /// own, so the collision check costs one catalog scan per extension load
+    /// rather than one per function (see
+    /// [`TableFunctionBuilder::register`]).
+    ///
+    /// It is a one-time copy, so a table function registered on the raw handle
+    /// afterwards — another extension's `LOAD`, or a direct call to
+    /// [`TableFunctionBuilder::register`] — is not seen by it. A later
+    /// `register_table` under that name then passes the check and `DuckDB`
+    /// deals with the duplicate itself — dropping it with a success report on
+    /// v1.5.x, failing the call with no reason on v1.4.x — which is the failure
+    /// the check exists to prevent. The scalar snapshot above has the same gap.
+    ///
+    /// [`TableFunctionBuilder::register`]: crate::table::TableFunctionBuilder::register
+    tables: core::cell::RefCell<Option<crate::table::collision::ExistingTableFunctions>>,
 }
 
 impl Connection {
@@ -278,6 +294,7 @@ impl Connection {
             con,
             db,
             scalars: core::cell::RefCell::new(None),
+            tables: core::cell::RefCell::new(None),
         }
     }
 
@@ -464,7 +481,7 @@ impl Registrar for Connection {
 
     unsafe fn register_table(&self, builder: TableFunctionBuilder) -> Result<(), ExtensionError> {
         // SAFETY: self.con is valid per Connection invariant.
-        unsafe { builder.register(self.con) }
+        unsafe { builder.register_with(self.con, Some(&self.tables)) }
     }
 
     unsafe fn register_sql_macro(&self, sql_macro: SqlMacro) -> Result<(), ExtensionError> {

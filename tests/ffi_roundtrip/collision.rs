@@ -36,6 +36,22 @@ fn overload(sig: Sig) -> ScalarOverloadBuilder {
     b.returns(TypeId::BigInt).function(zero)
 }
 
+/// A minimal table function named `name`, for the name-collision tests.
+fn table(name: &str) -> quack_rs::table::TableFunctionBuilder {
+    quack_rs::table::TableFunctionBuilder::new(name)
+        .with_state::<(), _>(|bind| {
+            bind.add_result_column("x", TypeId::BigInt);
+            Ok(())
+        })
+        .scan(|(), chunk| {
+            // SAFETY: ending the scan.
+            unsafe { chunk.set_size(0) };
+            Ok(())
+        })
+        .build()
+        .expect("build")
+}
+
 /// Registers `sigs` as one set named `name` through the raw C API, with no
 /// check of any kind, as another extension could.
 unsafe fn register_raw_set(con: ffi::duckdb_connection, name: &str, sigs: &[Sig]) {
@@ -303,6 +319,61 @@ fn a_connection_remembers_what_it_registered() {
                 .function(zero),
         )
         .expect_err("built-in, from the snapshot");
+    }
+}
+
+/// The table-function counterpart of the test above: the entry point's
+/// `Connection` refuses a name it registered itself, a built-in's name, and
+/// accepts a fresh one. (The catalog query already sees a connection's own
+/// registrations, so this also passes on the per-call path; that the check
+/// reuses the snapshot rather than listing the catalog again is pinned by
+/// `table::collision`'s unit test.)
+#[test]
+fn a_connection_refuses_a_taken_table_function_name() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's handles outlive `con`.
+    let con = unsafe { Connection::from_raw(fx.con(), fx.db()) };
+    // SAFETY: the connection is valid for these calls.
+    unsafe {
+        con.register_table(table("remembered_table"))
+            .expect("first");
+        con.register_table(table("remembered_table"))
+            .expect_err("second, from the snapshot");
+        con.register_table(table("range"))
+            .expect_err("built-in, from the snapshot");
+        con.register_table(table("another_table"))
+            .expect("a name neither the catalog nor this connection holds");
+    }
+}
+
+/// The snapshot is a one-time copy, so a table function registered on the raw
+/// connection after it was listed is invisible to it — the gap the
+/// `Connection.tables` field documents, which the scalar snapshot shares. The
+/// check therefore passes and the duplicate reaches `DuckDB`, whose half of the
+/// story is version-dependent: v1.5.x keeps the existing entry and reports
+/// success, v1.4.x fails the call because the catalog throws on the conflicting
+/// name. The test pins the gap, not `DuckDB`'s answer to it.
+#[test]
+fn a_registration_made_on_the_raw_connection_is_invisible_to_the_snapshot() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's handles outlive `con`.
+    let con = unsafe { Connection::from_raw(fx.con(), fx.db()) };
+    // SAFETY: the connection is valid for these calls. The middle call
+    // bypasses the snapshot, as another extension's `LOAD` would.
+    unsafe {
+        con.register_table(table("loads_snapshot")).expect("first");
+        table("registered_behind_its_back")
+            .register(con.as_raw_connection())
+            .expect("raw");
+        // The check does not see the name, so `DuckDB` is the one that gets to
+        // refuse the duplicate — a message-less failure on v1.4.x; v1.5.x
+        // reports success. Either way it must not be the check answering.
+        if let Err(e) = con.register_table(table("registered_behind_its_back")) {
+            assert!(
+                e.as_str().contains("duckdb_register_table_function failed"),
+                "the check refused a name the snapshot cannot hold: {e}"
+            );
+        }
     }
 }
 
