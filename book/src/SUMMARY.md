@@ -8,6 +8,7 @@
 
 - [Quick Start](getting-started/quick-start.md)
 - [Installation](getting-started/installation.md)
+  - [Upgrading from 0.16 to 0.18](getting-started/upgrading-0-18.md)
 - [Your First Extension](getting-started/first-extension.md)
 - [Project Scaffold](getting-started/scaffold.md)
 
@@ -21,6 +22,7 @@
 
 # Writing Functions
 
+- [Panic-Safe Callbacks](functions/panic-safe-callbacks.md)
 - [Scalar Functions](functions/scalar.md)
 - [Aggregate Functions](functions/aggregate.md)
   - [Aggregate State](functions/aggregate-state.md)
@@ -46,10 +48,13 @@
 
 # DuckDB 1.5+ APIs
 
+- [Config Options](duckdb-1-5/config-options.md)
+- [Catalog & Client Context](duckdb-1-5/catalog.md)
 - [Structured Errors](duckdb-1-5/error-data.md)
 - [Bound Expressions](duckdb-1-5/expression.md)
 - [Virtual File System](duckdb-1-5/file-system.md)
 - [Selection Vectors](duckdb-1-5/selection-vector.md)
+  - [Vector Operations](duckdb-1-5/vector-ops.md)
 - [Instance Cache](duckdb-1-5/instance-cache.md)
 - [Arrow Interop](duckdb-1-5/arrow.md)
 

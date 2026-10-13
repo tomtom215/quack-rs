@@ -167,7 +167,8 @@ pub type FinalizeFn = unsafe extern "C" fn(
 /// have been merged, and on states that are never finalized. Must free all
 /// heap allocations made in `StateInitFn`.
 ///
-/// `DuckDB` 1.4.4 to 1.5.5 does not call it for every state it created: not
+/// `DuckDB` 1.4.4 to 1.5.5 (not re-measured on 1.5.6) does not call it for
+/// every state it created: not
 /// for a grouped aggregate's states a stopped result scan never reached
 /// (`docs/upstream-duckdb-reports.md`, item 20), and not for the states a
 /// window frame with `EXCLUDE` initialises for each row (item 35). What those
@@ -175,7 +176,8 @@ pub type FinalizeFn = unsafe extern "C" fn(
 ///
 /// # Not every state it receives was initialised
 ///
-/// When a [`StateInitFn`] call fails, `DuckDB` 1.4.4 to 1.5.5 still destroys
+/// When a [`StateInitFn`] call fails, `DuckDB` 1.4.4 to 1.5.5 (not re-measured
+/// on 1.5.6) still destroys
 /// every state row it had created, including rows whose `state_init` never ran
 /// — for this aggregate and for any other in the same query
 /// (`RowOperations::InitializeStates` is not exception-safe). In one run

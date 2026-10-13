@@ -160,12 +160,19 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
 
 ## Builder API
 
+The raw builder takes `unsafe extern "C" fn` callbacks. The examples below write
+them with `table_bind_callback!`, `table_init_callback!` (also used for
+`local_init`) and `table_scan_callback!`. Each macro generates the function and
+reports a panic in its body as a bind, init or scan error; a plain
+`unsafe extern "C" fn` would abort the process instead. See
+[Panic-Safe Callbacks](panic-safe-callbacks.md).
+
 ```rust
 # use libduckdb_sys::{duckdb_bind_info, duckdb_connection, duckdb_data_chunk,
 #     duckdb_function_info, duckdb_init_info};
-# unsafe extern "C" fn my_bind_callback(_: duckdb_bind_info) {}
-# unsafe extern "C" fn my_init_callback(_: duckdb_init_info) {}
-# unsafe extern "C" fn my_scan_callback(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# quack_rs::table_bind_callback!(my_bind_callback, |_info| {});
+# quack_rs::table_init_callback!(my_init_callback, |_info| {});
+# quack_rs::table_scan_callback!(my_scan_callback, |_info, _output| {});
 # unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 use quack_rs::table::{TableFunctionBuilder, BindInfo, FfiBindData, FfiInitData};
 use quack_rs::types::TypeId;
@@ -199,11 +206,11 @@ struct MyBindData {
     limit: i64,
 }
 
-unsafe extern "C" fn my_bind(info: duckdb_bind_info) {
+quack_rs::table_bind_callback!(my_bind, |info| {
     // `get_parameter_value` returns an RAII `Value`; a NULL argument reads as the default.
     let n = unsafe { BindInfo::new(info).get_parameter_value(0) }.as_i64_or(0);
     unsafe { FfiBindData::<MyBindData>::set(info, MyBindData { limit: n }) };
-}
+});
 ```
 
 `FfiBindData::set` stores the value and registers a destructor so DuckDB frees
@@ -221,9 +228,9 @@ struct MyScanState {
     pos: i64,
 }
 
-unsafe extern "C" fn my_init(info: duckdb_init_info) {
+quack_rs::table_init_callback!(my_init, |info| {
     unsafe { FfiInitData::<MyScanState>::set(info, MyScanState { pos: 0 }) };
-}
+});
 ```
 
 ## Complete example: `generate_series_ext`
@@ -240,7 +247,7 @@ integers `0 .. n-1`. See `examples/hello-ext/src/lib.rs` for the full source.
 # struct GsBindData { total: i64 }
 # struct GsScanState { pos: i64 }
 // Bind: extract `n`, register one output column
-unsafe extern "C" fn gs_bind(info: duckdb_bind_info) {
+quack_rs::table_bind_callback!(gs_bind, |info| {
     let bind_info = unsafe { BindInfo::new(info) };
     // Value is RAII — automatically destroyed when dropped.
     // A NULL argument reads as the default rather than aborting.
@@ -248,15 +255,15 @@ unsafe extern "C" fn gs_bind(info: duckdb_bind_info) {
 
     bind_info.add_result_column("value", TypeId::BigInt);
     unsafe { FfiBindData::<GsBindData>::set(info, GsBindData { total: n }) };
-}
+});
 
 // Init: zero-initialise the scan cursor
-unsafe extern "C" fn gs_init(info: duckdb_init_info) {
+quack_rs::table_init_callback!(gs_init, |info| {
     unsafe { FfiInitData::<GsScanState>::set(info, GsScanState { pos: 0 }) };
-}
+});
 
 // Scan: emit a batch of rows using DataChunk wrapper
-unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chunk) {
+quack_rs::table_scan_callback!(gs_scan, |info, output| {
     let chunk = unsafe { DataChunk::from_raw(output) };
     // Never unwrap in a callback: a missing state ends the scan instead.
     let bind = unsafe { FfiBindData::<GsBindData>::get_from_function(info) };
@@ -275,7 +282,7 @@ unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chu
     }
     unsafe { chunk.set_size(batch) };
     state.pos += batch as i64;
-}
+});
 # std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
 # let (mut db, mut con) = (std::ptr::null_mut(), std::ptr::null_mut());
 # unsafe {
@@ -305,9 +312,9 @@ unsafe extern "C" fn gs_scan(info: duckdb_function_info, output: duckdb_data_chu
 #     duckdb_function_info, duckdb_init_info};
 # use quack_rs::table::TableFunctionBuilder;
 # use quack_rs::types::TypeId;
-# unsafe extern "C" fn gs_bind(_: duckdb_bind_info) {}
-# unsafe extern "C" fn gs_init(_: duckdb_init_info) {}
-# unsafe extern "C" fn gs_scan(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# quack_rs::table_bind_callback!(gs_bind, |_info| {});
+# quack_rs::table_init_callback!(gs_init, |_info| {});
+# quack_rs::table_scan_callback!(gs_scan, |_info, _output| {});
 # unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 TableFunctionBuilder::new("generate_series_ext")
     .param(TypeId::BigInt)
@@ -330,9 +337,9 @@ Named parameters let callers pass optional arguments by name (e.g., `step := 10`
 #     duckdb_function_info, duckdb_init_info};
 # use quack_rs::table::TableFunctionBuilder;
 # use quack_rs::types::TypeId;
-# unsafe extern "C" fn gs_v2_bind(_: duckdb_bind_info) {}
-# unsafe extern "C" fn gs_v2_init(_: duckdb_init_info) {}
-# unsafe extern "C" fn gs_v2_scan(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# quack_rs::table_bind_callback!(gs_v2_bind, |_info| {});
+# quack_rs::table_init_callback!(gs_v2_init, |_info| {});
+# quack_rs::table_scan_callback!(gs_v2_scan, |_info, _output| {});
 # unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 TableFunctionBuilder::new("gen_series_v2")
     .param(TypeId::BigInt)                    // positional: n
@@ -373,10 +380,10 @@ It does **not** make the scan parallel by itself — that is
 #     duckdb_function_info, duckdb_init_info};
 # use quack_rs::table::TableFunctionBuilder;
 # use quack_rs::types::TypeId;
-# unsafe extern "C" fn gs_v2_bind(_: duckdb_bind_info) {}
-# unsafe extern "C" fn gs_v2_init(_: duckdb_init_info) {}
-# unsafe extern "C" fn gs_v2_local_init(_: duckdb_init_info) {}
-# unsafe extern "C" fn gs_v2_scan(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# quack_rs::table_bind_callback!(gs_v2_bind, |_info| {});
+# quack_rs::table_init_callback!(gs_v2_init, |_info| {});
+# quack_rs::table_init_callback!(gs_v2_local_init, |_info| {});
+# quack_rs::table_scan_callback!(gs_v2_scan, |_info, _output| {});
 # unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 TableFunctionBuilder::new("gen_series_v2")
     .param(TypeId::BigInt)
@@ -405,11 +412,11 @@ atomics and read it with `FfiInitData::get`:
 # use libduckdb_sys::duckdb_init_info;
 # use quack_rs::table::{FfiInitData, InitInfo};
 # struct MyState { pos: i64 }
-unsafe extern "C" fn gs_v2_init(info: duckdb_init_info) {
+quack_rs::table_init_callback!(gs_v2_init, |info| {
     let init_info = unsafe { InitInfo::new(info) };
     init_info.set_max_threads(1);
     unsafe { FfiInitData::<MyState>::set(info, MyState { pos: 0 }) };
-}
+});
 ```
 
 ### Projection pushdown
@@ -447,9 +454,9 @@ For parameterised types that `TypeId` cannot express (e.g. `LIST(BIGINT)`,
 #     duckdb_function_info, duckdb_init_info};
 # use quack_rs::table::TableFunctionBuilder;
 # use quack_rs::types::TypeId;
-# unsafe extern "C" fn bind_fn(_: duckdb_bind_info) {}
-# unsafe extern "C" fn init_fn(_: duckdb_init_info) {}
-# unsafe extern "C" fn scan_fn(_: duckdb_function_info, _: duckdb_data_chunk) {}
+# quack_rs::table_bind_callback!(bind_fn, |_info| {});
+# quack_rs::table_init_callback!(init_fn, |_info| {});
+# quack_rs::table_scan_callback!(scan_fn, |_info, _output| {});
 # unsafe fn demo(con: duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 use quack_rs::types::LogicalType;
 

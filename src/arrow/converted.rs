@@ -55,7 +55,7 @@ impl ArrowConvertedSchema {
 }
 
 impl Drop for ArrowConvertedSchema {
-    #[mutants::skip] // frees a DuckDB handle; nothing observable without a runtime
+    #[cfg_attr(test, mutants::skip)] // frees a DuckDB handle; nothing observable without a runtime
     fn drop(&mut self) {
         if self.raw.is_null() {
             return;

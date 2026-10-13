@@ -18,9 +18,13 @@ Exit codes:
     1  a pinned toolchain is older than quack-rs's MSRV
     2  the workflow could not be fetched or parsed (network, layout change)
 
+By default it checks two refs: `main`, and the branch the community build
+uses for the newest DuckDB release (DISTRIBUTION_REF, kept equal to
+`scaffold::DISTRIBUTION_DUCKDB_VERSION`).
+
 Usage:
     python3 scripts/check-msrv-vs-duckdb-ci.py
-    python3 scripts/check-msrv-vs-duckdb-ci.py --ref v1.3.2
+    python3 scripts/check-msrv-vs-duckdb-ci.py --ref v1.3.2 [--ref main]
 """
 
 from __future__ import annotations
@@ -39,11 +43,33 @@ WORKFLOW_URL = (
     "{ref}/.github/workflows/_extension_distribution.yml"
 )
 
-# `- uses: dtolnay/rust-toolchain@<sha> # <ref>` — the trailing comment is the
-# convention DuckDB uses to record which ref the SHA pins.
+# The branch the community build uses for the newest DuckDB release.
+DISTRIBUTION_REF = "v1.5.6"
+
+# Three forms occur upstream, and the pattern must accept all of them: an
+# exact ref (`dtolnay/rust-toolchain@1.86.0`, how the WebAssembly job pins the
+# toolchain that constrains the MSRV), a SHA with the ref in a trailing comment
+# (`@<sha> # 1.97.1`), and either one behind a YAML anchor
+# (`uses: &rust-toolchain-action dtolnay/...`). The first version of this
+# script matched only the SHA form without an anchor, so once upstream used an
+# anchor it found nothing, and it never saw the `@1.86.0` pin at all.
 TOOLCHAIN_PIN = re.compile(
-    r"uses:\s*dtolnay/rust-toolchain@[0-9a-f]{40}\s*#\s*(?P<ref>\S+)"
+    r"uses:\s*(?:&[\w-]+\s+)?dtolnay/rust-toolchain@"
+    r"(?:[0-9a-f]{40}\s*#\s*(?P<commented>\S+)|(?P<ref>[\w.-]+))"
 )
+
+SELF_TEST = {
+    "        uses: dtolnay/rust-toolchain@1.86.0": "1.86.0",
+    "        uses: dtolnay/rust-toolchain@stable": "stable",
+    "        uses: &rust-toolchain-action dtolnay/rust-toolchain@"
+    "46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1": "1.97.1",
+    "      - uses: dtolnay/rust-toolchain@"
+    "e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08": "master",
+}
+
+
+def pins_in(workflow: str) -> list[str]:
+    return [m.group("commented") or m.group("ref") for m in TOOLCHAIN_PIN.finditer(workflow)]
 SEMVER = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
 
 
@@ -70,29 +96,39 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--ref",
-        default="main",
-        help="extension-ci-tools ref to check (default: main)",
+        action="append",
+        help=f"extension-ci-tools ref to check; repeatable (default: main and {DISTRIBUTION_REF})",
     )
     args = parser.parse_args()
+    refs = args.ref or ["main", DISTRIBUTION_REF]
+
+    for line, want in SELF_TEST.items():
+        got = pins_in(line)
+        if got != [want]:
+            print(f"self-test failed: {line.strip()!r} gave {got}, expected [{want!r}]")
+            return 1
 
     ours = msrv()
     print(f"quack-rs MSRV: {render(ours)}")
 
-    url = WORKFLOW_URL.format(ref=args.ref)
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            workflow = response.read().decode("utf-8")
-    except Exception as error:  # noqa: BLE001 - any failure is "could not check"
-        print(f"::warning::could not fetch {url}: {error}")
-        return 2
-
-    pins = TOOLCHAIN_PIN.findall(workflow)
-    if not pins:
-        print(
-            "::warning::found no dtolnay/rust-toolchain pins in "
-            f"{url} — the workflow layout may have changed"
-        )
-        return 2
+    pins: list[str] = []
+    for ref in refs:
+        url = WORKFLOW_URL.format(ref=ref)
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                workflow = response.read().decode("utf-8")
+        except Exception as error:  # noqa: BLE001 - any failure is "could not check"
+            print(f"::warning::could not fetch {url}: {error}")
+            return 2
+        found = pins_in(workflow)
+        if not found:
+            print(
+                "::warning::found no dtolnay/rust-toolchain pins in "
+                f"{url} — the workflow layout may have changed"
+            )
+            return 2
+        print(f"{ref}: {', '.join(sorted(set(found)))}")
+        pins.extend(found)
 
     problems = []
     for ref in sorted(set(pins)):

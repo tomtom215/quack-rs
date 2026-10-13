@@ -15,11 +15,40 @@ libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
 > **Why `>=1.4.4, <2`?**
-> Every DuckDB 1.4.x and 1.5.x release loads extensions built for C API version `v1.2.0`
-> (1.5.6 declares `v1.5.6` and accepts every earlier one), so `quack-rs` supports both
-> with a single bounded range. The `<2` upper bound prevents silent adoption of a future
+> DuckDB 1.4.4 and every later 1.x release load extensions built for C API version
+> `v1.2.0` (1.5.6 declares `v1.5.6` and accepts every earlier one), so `quack-rs` supports
+> them all with a single bounded range. Releases before 1.4.4 are not supported. The `<2` upper bound prevents silent adoption of a future
 > major release whose C API may change in breaking ways — making any such upgrade an explicit,
 > auditable decision. See [Extension Anatomy](../concepts/anatomy.md#version-support).
+
+Upgrading an extension from quack-rs 0.16? 0.18 has breaking changes; see
+[Upgrading from 0.16 to 0.18](upgrading-0-18.md) for what to change.
+
+---
+
+## Cargo features
+
+The default build uses only the C API's stable prefix and works with every DuckDB
+release in the `>=1.4.4, <2` range. Each feature below unlocks more API and raises the
+`libduckdb-sys` version Cargo must resolve. The floors are the ones the comments in
+quack-rs's `Cargo.toml` state.
+
+| Feature | Requires | Enables |
+|---------|----------|---------|
+| `duckdb-1-5` | `libduckdb-sys >= 1.10500.0` (DuckDB 1.5.0+) | Scalar bind/init callbacks, [config options](../duckdb-1-5/config-options.md), [copy functions](../functions/copy-functions.md), [catalog and client context](../duckdb-1-5/catalog.md), structured errors, bound expressions, the virtual file system, selection vectors and [vector operations](../duckdb-1-5/vector-ops.md), the instance cache, and more |
+| `duckdb-1-5-3` | `libduckdb-sys >= 1.10503.0` (DuckDB 1.5.3) | `TypeId::Variant` and `TypeId::Geometry`. Implies `duckdb-1-5` |
+| `duckdb-1-5-4` | `libduckdb-sys >= 1.10504.0`; a DuckDB 1.5.0+ engine at run time | The [Arrow interop](../duckdb-1-5/arrow.md) bridge. Implies `duckdb-1-5-3` |
+| `bundled-test` | No floor beyond the crate's own range | `testing::InMemoryDb` for `cargo test`, by compiling DuckDB from C++ source (the `duckdb` crate's `bundled` feature) |
+| `bundled-test-prebuilt` | `libduckdb-sys >= 1.10503` to find the header directory by itself; older versions need `DUCKDB_INCLUDE_DIR` | The same as `bundled-test`, but links a prebuilt libduckdb (set `DUCKDB_DOWNLOAD_LIB=1` or `DUCKDB_LIB_DIR`) |
+
+The DuckDB version features are cumulative: `duckdb-1-5-4` turns on the other two. There
+is no `duckdb-1-5-5` or `duckdb-1-5-6` feature, because neither release adds C API
+functions. Enabling a version feature against an older `libduckdb-sys` is a compile error,
+by design.
+
+Use the test features only under `[dev-dependencies]`; see
+[Development dependencies](#development-dependencies) below. If both are enabled, the
+source build (`bundled-test`) wins.
 
 ---
 
@@ -42,6 +71,10 @@ opt-level = 3               # recommended
 codegen-units = 1           # recommended — better optimisation, slower build
 strip = true                # recommended — reduces binary size
 ```
+
+Only `cdylib` is required. Keep `rlib` in the list if your integration tests in `tests/`,
+your examples or your doctests call the crate's own functions; without it they cannot
+link it. If a generated project lists only `cdylib`, add `rlib` when you need it.
 
 ### Why `panic = "unwind"`, not `"abort"`?
 

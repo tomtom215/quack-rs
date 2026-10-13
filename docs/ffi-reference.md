@@ -16,6 +16,7 @@ each pitfall in detail; this page is the quick-reference.
 - [INTERVAL Layout](#interval-layout)
 - [Type Constants](#type-constants)
 - [Common Mistakes Quick Reference](#common-mistakes-quick-reference)
+- [DuckDB 1.5.0 C API Additions](#duckdb-150-c-api-additions-duckdb-1-5)
 
 ---
 
@@ -52,8 +53,10 @@ duckdb_disconnect(&mut con)
 ```
 
 **Critical**: The version string passed to `duckdb_rs_extension_api_init` is the
-*C API version* (`"v1.2.0"` for DuckDB 1.4.x / 1.5.x), not the DuckDB release version
-(`"v1.4.4"`). See [Pitfall P2](../LESSONS.md).
+*C API version* (`"v1.2.0"`), not the DuckDB release version (`"v1.4.4"`). DuckDB
+1.4.4 to 1.5.5 declare C API `v1.2.0`; 1.5.6 declares `v1.5.6` and still loads
+`v1.2.0` extensions. `quack_rs::DUCKDB_API_VERSION` holds `"v1.2.0"`. See
+[Pitfall P2](../LESSONS.md#p2-extension-metadata-version-is-c-api-version-not-duckdb-version).
 
 ---
 
@@ -137,7 +140,7 @@ unsafe {
         .update(my_update)
         .combine(my_combine)
         .finalize(my_finalize)
-        .destructor(my_destroy)    // required if state allocates heap memory
+        .destructor(my_destroy)    // drops each state; without it the builder registers a no-op (L13)
         .register(con)?
 }
 ```
@@ -351,18 +354,11 @@ dealing with these constants directly.
 
 ## Common Mistakes Quick Reference
 
-| # | Symptom | Root Cause | Fix |
-|---|---------|-----------|-----|
-| L1 | Wrong results with parallel queries | `combine` doesn't copy config fields | Copy ALL fields in `combine` |
-| L2 | Double-free / crash on destroy | `destroy` called twice, `inner` not nulled | Null `inner` after `Box::from_raw` |
-| L4 | Segfault writing NULL | `get_validity` before `ensure_validity_writable` | Call `ensure_validity_writable` first |
-| L5 | Wrong boolean values | Cast `*const u8` to `*const bool` | Use `*data.add(i) != 0` |
-| L6 | Function silently not registered | Missing `set_name` on individual function in set | Use `AggregateFunctionSetBuilder` / `ScalarFunctionSetBuilder` |
-| L7 | Memory leak | `duckdb_create_logical_type` without `destroy` | Use `LogicalType` RAII wrapper |
-| P1 | Extension fails to load | `[lib] name` ≠ description.yml `name` | Match them exactly |
-| P2 | Extension fails API init | Using DuckDB release version in `api_init` | Use C API version (`"v1.2.0"`) |
-
-See [LESSONS.md](../LESSONS.md) for every pitfall with full analysis.
+This page does not keep its own copy of the pitfall list. Every known pitfall
+(L1–L19 and P1–P12), with symptom, root cause and fix, is in
+[`LESSONS.md`](../LESSONS.md); the book's
+[Pitfall Catalog](https://quack-rs.com/reference/pitfalls.html) has the same
+entries with compiled examples and a summary table.
 
 ---
 

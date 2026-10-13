@@ -42,47 +42,30 @@ strip = true
 
 ```rust
 // src/lib.rs
+use libduckdb_sys::duckdb_connection;
 use quack_rs::entry_point;
 use quack_rs::error::ExtensionError;
 use quack_rs::scalar::ScalarFunctionBuilder;
-use quack_rs::types::TypeId;
-use quack_rs::vector::{VectorReader, VectorWriter};
-use libduckdb_sys::{duckdb_connection, duckdb_function_info, duckdb_data_chunk, duckdb_vector};
-
-/// Scalar function: double_it(BIGINT) → BIGINT
-unsafe extern "C" fn double_it(
-    _info: duckdb_function_info,
-    input: duckdb_data_chunk,
-    output: duckdb_vector,
-) {
-    // SAFETY: input is a valid data chunk provided by DuckDB.
-    let reader = unsafe { VectorReader::new(input, 0) };
-    let mut writer = unsafe { VectorWriter::new(output) };
-    let row_count = reader.row_count();
-
-    for row in 0..row_count {
-        if unsafe { !reader.is_valid(row) } {
-            unsafe { writer.set_null(row) };
-            continue;
-        }
-        let value = unsafe { reader.read_i64(row) };
-        unsafe { writer.write_i64(row, value * 2) };
-    }
-}
 
 fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
-    unsafe {
-        ScalarFunctionBuilder::new("double_it")
-            .param(TypeId::BigInt)
-            .returns(TypeId::BigInt)
-            .function(double_it)
-            .register(con)?;
-    }
+    // Parameter and return types come from the closure signature, and a NULL
+    // argument gives a NULL result without calling the closure.
+    let double_it = ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?;
+
+    // SAFETY: `con` is the live connection DuckDB passed to the entry point.
+    unsafe { double_it.register(con) }?;
     Ok(())
 }
 
+// The symbol must be `<extension name>_init_c_api`.
 entry_point!(my_extension_init_c_api, |con| register(con));
 ```
+
+The closure is guarded: a panic in it becomes a SQL error, not a crashed DuckDB
+process. When a function needs more than a closure gives it — several
+overloads, bind-time state, nested types — write the callback yourself, as
+[Scalar Functions](../functions/scalar.md) shows, and guard it with
+[a panic-safe callback macro](../functions/panic-safe-callbacks.md).
 
 ---
 

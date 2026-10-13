@@ -14,13 +14,16 @@
 //! [`extension-template-rs`](https://github.com/duckdb/extension-template-rs))
 //! allows pure-Rust extensions that need only:
 //!
-//! - `Cargo.toml` (cdylib, pinned `duckdb` + `libduckdb-sys` deps)
+//! - `Cargo.toml` (cdylib, `quack-rs` + `libduckdb-sys` deps)
 //! - `Makefile` (delegates to `cargo build` + metadata scripts from `extension-ci-tools`)
 //! - `src/lib.rs` (entry point + function registration)
 //! - `extension-ci-tools/` (git submodule for CI/CD)
 //! - `description.yml` (extension metadata for community submission)
 //!
-//! This module generates all of these from a [`ScaffoldConfig`].
+//! This module generates all of these from a [`ScaffoldConfig`], plus a
+//! `SQLLogicTest`, two GitHub Actions workflows (fast native checks, and the
+//! extension-ci-tools distribution build for every community platform) and
+//! the supporting dotfiles.
 //!
 //! # Example
 //!
@@ -34,7 +37,7 @@
 //!     license: "MIT".to_string(),
 //!     maintainer: "Jane Doe".to_string(),
 //!     github_repo: "janedoe/duckdb-my-analytics".to_string(),
-//!     excluded_platforms: vec![],
+//!     // `excluded_platforms` defaults to DEFAULT_EXCLUDED_PLATFORMS.
 //!     ..ScaffoldConfig::default()
 //! };
 //!
@@ -47,6 +50,7 @@
 
 mod escape;
 mod templates;
+mod templates_ci;
 
 #[cfg(test)]
 mod tests;
@@ -54,9 +58,11 @@ mod tests;
 mod tests_escaping;
 #[cfg(test)]
 mod tests_generated;
+#[cfg(test)]
+mod tests_workflows;
 
 use crate::error::ExtensionError;
-use crate::validate::{validate_extension_name, validate_spdx_license};
+use crate::validate::{validate_extension_name, validate_semver, validate_spdx_license};
 
 /// Configuration for generating a new extension project.
 #[derive(Debug, Clone)]
@@ -71,7 +77,10 @@ pub struct ScaffoldConfig {
     /// or end with whitespace, or contain control characters other than
     /// newline and tab (or Unicode bidirectional controls).
     pub description: String,
-    /// Initial version (semver, e.g., `"0.1.0"`).
+    /// Initial version: semver without a leading `v` (e.g. `"0.1.0"`),
+    /// because it is the `[package] version` of the generated `Cargo.toml`
+    /// (and `cargo` refuses anything else) as well as the version in
+    /// `description.yml`. Must pass [`validate_semver`].
     pub version: String,
     /// SPDX license identifier (must pass [`validate_spdx_license`]).
     pub license: String,
@@ -81,7 +90,12 @@ pub struct ScaffoldConfig {
     /// GitHub repository path (e.g., `"myorg/duckdb-my-ext"`): `owner/repo`,
     /// in the characters GitHub allows.
     pub github_repo: String,
-    /// Platforms to exclude from CI builds (e.g., `["wasm_mvp", "wasm_eh"]`).
+    /// Platforms the community build skips: written as `excluded_platforms`
+    /// in `description.yml` and as `exclude_archs` in the generated
+    /// distribution workflow, so the two always agree.
+    ///
+    /// Defaults to [`DEFAULT_EXCLUDED_PLATFORMS`]; an empty list builds for
+    /// every platform.
     pub excluded_platforms: Vec<String>,
     /// Value written as `TARGET_DUCKDB_VERSION` in the generated `Makefile`.
     ///
@@ -137,6 +151,44 @@ pub struct ScaffoldConfig {
 /// look correct while producing an unreproducible build.
 pub const REF_PLACEHOLDER: &str = "REPLACE_WITH_COMMIT_HASH";
 
+/// The default [`ScaffoldConfig::excluded_platforms`]: the three `DuckDB`-Wasm
+/// targets and `windows_amd64_mingw`.
+///
+/// The community build compiles those with toolchains a Rust extension rarely
+/// needs and often does not build with — emscripten, where the cdylib becomes
+/// a staticlib through `src/wasm_lib.rs`, and the `MinGW` (`windows-gnu`)
+/// target — and most `build: cargo` extensions in `duckdb/community-extensions`
+/// exclude them. Excluding them by default keeps a new extension's first
+/// community build green. To opt a platform in, drop it from
+/// `excluded_platforms` (or from both `description.yml` and the workflow's
+/// `exclude_archs` in a generated project) and let the distribution workflow
+/// prove it builds.
+pub const DEFAULT_EXCLUDED_PLATFORMS: &[&str] =
+    &["wasm_mvp", "wasm_eh", "wasm_threads", "windows_amd64_mingw"];
+
+/// The `DuckDB` release whose `extension-ci-tools` branch a stable-ABI
+/// (`C_STRUCT`) scaffold builds with.
+///
+/// The generated distribution workflow passes it as `duckdb_version` /
+/// `ci_tools_version`, `.gitmodules` tracks it, and the `Makefile`'s setup
+/// hint names it.
+///
+/// An unstable-ABI scaffold uses its
+/// [`target_duckdb_version`][ScaffoldConfig::target_duckdb_version] instead,
+/// since that binary loads into no other release. `extension-ci-tools` has a
+/// branch per `DuckDB` release (`v1.4.4`, `v1.5.5`, `v1.5.6`, ...).
+pub const DISTRIBUTION_DUCKDB_VERSION: &str = "v1.5.6";
+
+/// The `extension-ci-tools` branch (= `DuckDB` release) the generated project
+/// builds with: see [`DISTRIBUTION_DUCKDB_VERSION`].
+fn extension_ci_tools_ref(config: &ScaffoldConfig) -> &str {
+    if config.use_unstable_c_api {
+        &config.target_duckdb_version
+    } else {
+        DISTRIBUTION_DUCKDB_VERSION
+    }
+}
+
 impl Default for ScaffoldConfig {
     fn default() -> Self {
         Self {
@@ -146,7 +198,10 @@ impl Default for ScaffoldConfig {
             license: String::from("MIT"),
             maintainer: String::new(),
             github_repo: String::new(),
-            excluded_platforms: Vec::new(),
+            excluded_platforms: DEFAULT_EXCLUDED_PLATFORMS
+                .iter()
+                .map(|p| (*p).to_string())
+                .collect(),
             target_duckdb_version: String::from(crate::DUCKDB_API_VERSION),
             use_unstable_c_api: false,
             git_ref: String::from(REF_PLACEHOLDER),
@@ -338,13 +393,21 @@ fn libduckdb_sys_requirement(target: &str) -> Result<String, ExtensionError> {
 ///
 /// # Errors
 ///
-/// Returns [`ExtensionError`] if the extension name, license, version,
+/// Returns [`ExtensionError`] if the extension name, license, version (which
+/// must be semver, as it is also the Cargo package version),
 /// description, maintainer, GitHub repository, git ref, excluded platforms or
 /// target `DuckDB` version is invalid — including a hyphenated name, which
 /// `DuckDB` could never load (see [`validate_extension_name`]).
 pub fn generate_scaffold(config: &ScaffoldConfig) -> Result<Vec<GeneratedFile>, ExtensionError> {
     validate_extension_name(&config.name)?;
-    crate::validate::validate_extension_version(&config.version)?;
+    // Semver, not the looser `validate_extension_version` that `description.yml`
+    // alone would allow: the version is also `[package] version` in Cargo.toml.
+    validate_semver(&config.version).map_err(|e| {
+        ExtensionError::new(format!(
+            "version {:?} is not usable as the Cargo package version: {e}",
+            config.version
+        ))
+    })?;
     validate_spdx_license(&config.license)?;
     validate_free_text("description", &config.description, true)?;
     validate_free_text("maintainer", &config.maintainer, false)?;
@@ -391,11 +454,15 @@ pub fn generate_scaffold(config: &ScaffoldConfig) -> Result<Vec<GeneratedFile>, 
         },
         GeneratedFile {
             path: ".github/workflows/extension-ci.yml".to_string(),
-            content: templates::generate_extension_ci(config),
+            content: templates_ci::generate_extension_ci(config),
+        },
+        GeneratedFile {
+            path: ".github/workflows/MainDistributionPipeline.yml".to_string(),
+            content: templates_ci::generate_distribution_workflow(config),
         },
         GeneratedFile {
             path: ".gitmodules".to_string(),
-            content: templates::generate_gitmodules(),
+            content: templates::generate_gitmodules(config),
         },
         GeneratedFile {
             path: ".gitignore".to_string(),

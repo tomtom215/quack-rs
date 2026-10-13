@@ -38,7 +38,9 @@ All functions use `entry_point_v2!` with `Connection`/`Registrar` for type-safe
 registration.
 
 All **29 numbered SQL checks** (31 statements, listed under "Load in DuckDB CLI" below)
-return their expected results on **DuckDB 1.4.4, 1.5.0 and 1.5.5**.
+must return their expected results. CI's `extension-load` job runs every one of them with
+`scripts/check-hello-ext.py` on **DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest release**
+(1.5.6 at the time of writing).
 
 ```sql
 -- Aggregate: count words across rows
@@ -96,7 +98,7 @@ SELECT * FROM 'hello:DuckDB';             -- → 'Hello, DuckDB!'
 ## Prerequisites
 
 - Rust 1.86.0 or later (`rustup update stable`)
-- DuckDB 1.4.x or 1.5.x CLI for live testing ([download][duckdb-releases])
+- DuckDB CLI 1.4.4 or a later 1.x release for live testing ([download][duckdb-releases])
 
 ## Build
 
@@ -172,7 +174,7 @@ duckdb -unsigned
 ```sql
 LOAD 'hello_ext.duckdb_extension';
 
--- 29 numbered checks (31 statements), verified against DuckDB 1.4.4, 1.5.0 and 1.5.5:
+-- 29 numbered checks (31 statements); CI runs them on DuckDB 1.4.4, 1.5.0, 1.5.5 and latest:
 
 -- T01: word_count aggregate
 SELECT word_count(sentence) AS wc FROM (

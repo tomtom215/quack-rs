@@ -5,6 +5,9 @@
 
 Thank you for contributing! Please read this document before opening a PR.
 
+Everyone taking part is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Table of Contents
 
 - [Development Prerequisites](#development-prerequisites)
@@ -24,18 +27,23 @@ Thank you for contributing! Please read this document before opening a PR.
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Rust | ≥ 1.86.0 (MSRV) | Compiler |
-| `rustfmt` | stable | Formatting |
-| `clippy` | stable | Linting |
-| `cargo-deny` | latest | License/advisory checks |
-| DuckDB CLI | 1.5.6 (or 1.4.4 / 1.5.0 / 1.5.5) | Live extension testing (required) |
+| Rust | stable (`rust-toolchain.toml`) | Compiler |
+| Rust 1.86.0 toolchain | `rustup toolchain install 1.86.0` | MSRV check (gate 6) |
+| `rustfmt`, `clippy` | stable | Formatting and linting (gates 3, 4) |
+| Python 3 | any current | `scripts/*.py`, including the live extension check (gates 5b, 7) |
+| DuckDB CLI | 1.4.4 or later; CI also uses the latest (currently 1.5.6) | Live extension testing (gate 7, required) |
+| libduckdb shared library | the release `Cargo.lock` pins (currently 1.5.5) | End-to-end tests and book doctests (gate 2c) |
+| `cargo-deny` | 0.20.2 (the version CI installs) | License and advisory checks (gate 8) |
+| `cargo-mutants` | 27.1.0 (the version CI installs) | Mutation testing (gate 9) |
+| `mdbook` | the version in `book/mdbook-version` | Building the book (only for book changes) |
 
-Install the Rust toolchain via [rustup](https://rustup.rs/).
+Install the Rust toolchain via [rustup](https://rustup.rs/). `cargo-msrv` is not
+needed: the MSRV is checked by compiling with the pinned 1.86.0 toolchain.
 
 Install DuckDB via `curl` (no system package manager needed). CI's
-`extension-load` job exercises **v1.4.4, v1.5.0, v1.5.5 and `latest`** — the
-floor, the 1.5 floor, the newest pinned release, and an early-warning signal
-(`latest` is currently v1.5.6). Develop against the current release, v1.5.6:
+`extension-load` job exercises **v1.4.4, v1.5.0, v1.5.5, v1.5.6 and `latest`** —
+the floor, the 1.5 floor, the two newest releases, and an early-warning signal
+for a release not yet pinned (`latest` is currently v1.5.6). Develop against the current release, v1.5.6:
 
 ```bash
 curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip \
@@ -60,6 +68,29 @@ cargo build --release
 # Build the hello-ext example extension
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
 ```
+
+### The book
+
+The book at [quack-rs.com](https://quack-rs.com/) is versioned. `/` is the
+latest release, `/vX.Y/` is each supported release line built from its newest
+tag, and `/dev/` is `main`. A version menu sits in the menu bar of every page,
+and pages outside the latest release carry a banner saying which version they
+describe. `scripts/build-versioned-site.py` builds the site and documents the
+layout. CI's `book` job runs it on every pull request, and `docs.yml` deploys
+it.
+
+So a change to `book/src/` is visible at `/dev/` once merged and at `/` once
+released. Preview the whole site locally (needs the release tags,
+`git fetch --tags`):
+
+```bash
+cargo doc --no-deps --features duckdb-1-5-4
+python3 scripts/build-versioned-site.py --out target/site --dev-api target/doc
+python3 -m http.server -d target/site 8000   # http://localhost:8000/dev/
+```
+
+For a quick look at the current book alone, `mdbook build` (the version in
+`book/mdbook-version`) writes it to `book/book/`.
 
 ---
 
@@ -103,62 +134,91 @@ NUL; `try_new(name)` returns the error instead).
 
 ## Quality Gates
 
-**All of the following must pass before merging any pull request:**
+This is the canonical list of quality gates; the README and the book link here.
+**All of the following must pass before merging any pull request.** Each one
+mirrors a job in `.github/workflows/ci.yml` (job names in brackets).
 
 ```bash
-# 1. Tests — zero failures, zero ignored
-cargo test
+# 1. Tests — zero failures [test]. `--all-targets` covers the unit tests,
+#    tests/integration_test.rs, examples and benches, but NOT doctests (2b).
+cargo test --all-targets
 
-# 2. Integration tests
-cargo test --test integration_test
+# 2. Feature-gated code — the `duckdb-1-5*` modules compile only with a feature
+#    [test-duckdb-1-5]
+cargo test --all-targets --features duckdb-1-5-4
 
 # 2b. Doctests — `--all-targets` does NOT include them, so they need their own
-#     run. For an SDK the rustdoc examples are part of the product.
+#     run. For an SDK the rustdoc examples are part of the product. [test]
 cargo test --doc --features duckdb-1-5-4
 
-# 3. Linting — zero warnings (warnings are treated as errors)
-cargo clippy --all-targets -- -D warnings
+# 2c. End-to-end tests and the book's code blocks, against a real libduckdb
+#     [test-bundled-prebuilt]. Download the libduckdb release that matches
+#     Cargo.lock (`scripts/duckdb-version-from-lock.sh` prints its tag) from
+#     https://github.com/duckdb/duckdb/releases and unzip it into $DUCKDB_LIB_DIR.
+export DUCKDB_LIB_DIR=/path/to/libduckdb LD_LIBRARY_PATH=/path/to/libduckdb
+cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
+cargo test --doc --manifest-path book/doctest/Cargo.toml   # every Rust block in book/src and README.md
 
-# 4. Formatting
+# 3. Linting — zero warnings (warnings are treated as errors) [clippy, test-duckdb-1-5]
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings
+
+# 4. Formatting [fmt]
 cargo fmt -- --check
 
-# 5. Documentation — zero broken links or missing docs
+# 5. Documentation — zero broken links or missing docs, with and without
+#    the feature-gated modules [doc]
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features duckdb-1-5-4
 
 # 5b. The book's changelog page is GENERATED from CHANGELOG.md. Edit
-#     CHANGELOG.md, then regenerate; CI fails if they diverge.
+#     CHANGELOG.md, then regenerate. CI runs the `--check` form and fails if
+#     the two differ. [doc]
 scripts/sync-book-changelog.py
+scripts/sync-book-changelog.py --check
 
-# 6. MSRV — must compile on Rust 1.86.0 (matches CI; excludes benches which use criterion >=1.86)
-#    `+1.86.0` is required, not stylistic: `rust-toolchain.toml` pins
-#    `channel = "stable"` and a toolchain file overrides rustup's default, so a
-#    bare `cargo check` silently runs stable and checks nothing.
+# 6. MSRV — must compile on Rust 1.86.0 [msrv]. Benches are excluded (criterion
+#    needs a newer compiler). `+1.86.0` is required, not stylistic:
+#    `rust-toolchain.toml` pins `channel = "stable"` and a toolchain file
+#    overrides rustup's default, so a bare `cargo check` silently runs stable
+#    and checks nothing.
 cargo +1.86.0 check
 
-# 7. Live extension test — build hello-ext, package it, load in DuckDB (CI: 1.4.4, 1.5.0, 1.5.5, latest)
+# 7. Live extension test — build hello-ext, append the metadata footer, then
+#    run every documented SQL check (examples/hello-ext/sql_checks.txt, 31
+#    statements) in the DuckDB CLI. [extension-load: DuckDB 1.4.4, 1.5.0,
+#    1.5.5, 1.5.6 and the latest release]
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
 cargo run --bin append_metadata -- \
     examples/hello-ext/target/release/libhello_ext.so \
     /tmp/hello_ext.duckdb_extension \
     --abi-type C_STRUCT --extension-version v0.1.0 \
     --duckdb-version v1.2.0 --platform linux_amd64
-/tmp/duckdb -unsigned -c "
-LOAD '/tmp/hello_ext.duckdb_extension';
-SELECT word_count('hello world foo');   -- 3
-SELECT first_word('hello world');       -- hello
-SELECT list(value ORDER BY value) FROM generate_series_ext(5);  -- [0,1,2,3,4]
-SELECT CAST('42' AS INTEGER);           -- 42
-SELECT TRY_CAST('bad' AS INTEGER);      -- NULL
-"
+python3 scripts/check-hello-ext.py --duckdb /tmp/duckdb \
+    --extension /tmp/hello_ext.duckdb_extension
+# → 31/31 checks pass with the extension loaded
+
+# 7b. The example extension's own tests and lints [example-check]
+cargo test --manifest-path examples/hello-ext/Cargo.toml
+cargo clippy --manifest-path examples/hello-ext/Cargo.toml --all-targets -- -D warnings
+
+# 8. Supply chain — license policy and advisories [security]
+cargo deny check
 ```
 
 ```bash
-# 8. Mutation testing — zero surviving mutants in changed files
+# 9. Mutation testing — zero surviving mutants in changed files
+#    (`.github/workflows/mutants.yml`, a separate workflow)
 cargo mutants --file <changed-files>
 ```
 
-These same checks run in CI (`.github/workflows/ci.yml`) on every push and pull request.
-Coverage and mutation testing run in separate workflows.
+CI sets `RUSTFLAGS="-D warnings"` for every job, so a compiler warning anywhere
+fails the build. CI runs these checks on every push and pull request, together with jobs that
+have no single local command: the other test operating systems, older DuckDB
+engines (`test-older-engines`), WASM, Miri, sanitizers, semver checks, the
+scaffold and ABI-guard end-to-end tests, the book build and its link check,
+and several consistency scripts under `scripts/`. Coverage and mutation testing
+run in separate workflows.
 
 ---
 
@@ -204,11 +264,14 @@ Selected modules include `proptest`-based tests for mathematical properties:
 
 The `hello-ext` example compiles as a `cdylib` and contains `#[cfg(test)]` unit
 tests for all pure-Rust logic (`count_words`, `first_word`, `parse_varchar_to_int`,
-aggregate state transitions). **Full end-to-end testing against a live DuckDB (1.4.4, 1.5.0
-and 1.5.5, as CI does) is required** — not left to consumers. This means building the `.so`,
-appending the extension metadata footer with `append_metadata`, and running the 29
-numbered SQL checks via the DuckDB CLI. See the [Quality Gates](#quality-gates) section for
-the exact commands and `examples/hello-ext/README.md` for the full test listing.
+aggregate state transitions). **Full end-to-end testing against a live DuckDB is
+required** — not left to consumers. This means building the `.so`, appending the extension
+metadata footer with `append_metadata`, and running every SQL check in
+`examples/hello-ext/sql_checks.txt` (29 numbered checks, 31 statements) with
+`scripts/check-hello-ext.py`. The script also fails if the statements in
+`examples/hello-ext/README.md` drift from that file. CI's `extension-load` job runs it
+against DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6 and the latest release. Gate 7 under
+[Quality Gates](#quality-gates) gives the exact commands.
 
 ### Mutation testing
 
@@ -397,15 +460,21 @@ quack-rs/
 │   │   ├── escape.rs                  # Quoting configured free text for YAML and Rust doc comments
 │   │   ├── mod.rs                     # Project scaffolding for `DuckDB` Rust extensions
 │   │   ├── templates.rs               # Template generators for scaffold file content
+│   │   ├── templates_ci.rs            # The generated project's CI and distribution workflows
 │   │   ├── tests.rs                   # Unit tests
 │   │   ├── tests_escaping.rs          # Free text reaches the generated files intact
-│   │   └── tests_generated.rs         # Unit tests
+│   │   ├── tests_generated.rs         # Unit tests
+│   │   └── tests_workflows.rs         # The generated workflows match the community build
 │   ├── scalar/
 │   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks
 │   │   ├── mod.rs                     # Builder for registering `DuckDB` scalar functions
 │   │   ├── state.rs                   # Typed bind data and per-thread local state for scalar functions (`DuckDB` 1.5.0+)
 │   │   ├── typed.rs                   # Scalar functions written as ordinary Rust closures
 │   │   ├── typed_builder.rs           # The builder the closure-based scalar constructors return, and the one `extern "C"` trampoline they all share
+│   │   ├── typed/
+│   │   │   ├── fallible.rs            # Closure-based scalar constructors whose closure can fail (`try_map*`)
+│   │   │   ├── ternary.rs             # Three-argument closure-based scalar constructors (`map3`, `try_map3`)
+│   │   │   └── tests.rs               # Unit tests
 │   │   └── builder/
 │   │       ├── collision.rs           # Refusing a scalar signature that would replace an existing one or make calls ambiguous
 │   │       ├── mod.rs                 # Builder for registering `DuckDB` scalar functions
@@ -492,6 +561,7 @@ quack-rs/
 ├── tests/
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
+│   ├── entry_point_lint.rs            # The entry-point macros accept an `unsafe` registration closure warning-free
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
@@ -516,6 +586,7 @@ quack-rs/
 │       ├── mock_parity.rs             # `MockRegistrar` refuses a bad type with the live registration's message
 │       ├── nested_reserve.rs          # which nested buffers a `LIST` reserve moves (the writer contracts)
 │       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
+│       ├── owned_chunk.rs             # `OwnedDataChunk::new`, `capacity` and `reset` against a live `DuckDB`
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
@@ -524,6 +595,7 @@ quack-rs/
 │       ├── table_description.rs       # `TableDescription` accessors on an index `DuckDB` cannot hold
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── typed_scalar_opt.rs        # Typed scalar closures returning `Option`, the `try_*` constructors and `map3`
 │       ├── value_getters.rs           # Each typed `Value` getter at its own type; out-of-range TIMETZ / TIME_NS are not cast
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
@@ -540,7 +612,7 @@ quack-rs/
 ├── .github/workflows/
 │   ├── ci.yml                     # CI: every quality gate (one job each; see workflows/README.md)
 │   ├── release.yml                # Release pipeline: CI gate, package, publish
-│   ├── docs.yml                   # mdBook build & deploy to GitHub Pages
+│   ├── docs.yml                   # Versioned book build & deploy to GitHub Pages (scripts/build-versioned-site.py)
 │   ├── coverage.yml               # Test coverage (cargo-llvm-cov → Codecov)
 │   ├── mutants.yml                # Mutation testing (cargo-mutants)
 │   ├── benchmarks.yml             # Criterion benchmark execution
@@ -572,7 +644,7 @@ quack-rs/
 
 ## Releasing
 
-This crate supports `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.x and 1.5.x).
+This crate supports `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.4 and later 1.x releases).
 The bounded range is intentional: every one of these releases loads C API `v1.2.0` extensions,
 and the `<2` upper bound prevents silent adoption of a future major band.
 Before broadening the range to a new major band:

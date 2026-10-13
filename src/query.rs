@@ -22,9 +22,11 @@
 //! | [`PreparedStatement`] | `duckdb_prepared_statement` | `duckdb_destroy_prepare` |
 //! | [`OwnedConnection`] | `duckdb_connection` | `duckdb_disconnect` |
 //!
-//! Everything here is in the **stable** prefix of the C extension API, so it
-//! works on every `DuckDB` from v1.2.0 onwards and needs no feature flag. See
-//! [`crate::abi`].
+//! The types above, and running, preparing, binding and fetching, are in the
+//! **stable** prefix of the C extension API: they work on every `DuckDB` from
+//! v1.2.0 onwards and need no feature flag. Streaming execution
+//! (`execute_streaming`, `is_streaming`) needs `duckdb-1-5`, and a result's
+//! Arrow options need `duckdb-1-5-4`. See [`crate::abi`].
 //!
 //! # When you can run a query
 //!

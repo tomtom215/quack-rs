@@ -157,7 +157,7 @@ impl BindInfo {
     /// # }
     /// ```
     #[cfg(feature = "duckdb-1-5")]
-    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
+    #[cfg_attr(test, mutants::skip)] // FFI accessor — needs a live DuckDB bind callback
     #[must_use]
     pub fn result_column_count(&self) -> usize {
         // SAFETY: `self.info` is valid per the constructor's contract.
@@ -177,7 +177,7 @@ impl BindInfo {
     ///
     /// Requires `duckdb-1-5`.
     #[cfg(feature = "duckdb-1-5")]
-    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
+    #[cfg_attr(test, mutants::skip)] // FFI accessor — needs a live DuckDB bind callback
     #[must_use]
     pub fn result_column_name(&self, index: usize) -> Option<String> {
         if index >= self.result_column_count() {
@@ -214,7 +214,7 @@ impl BindInfo {
     ///
     /// Must be called during the bind callback, while `self.info` is live.
     #[cfg(feature = "duckdb-1-5")]
-    #[mutants::skip] // FFI accessor — needs a live DuckDB bind callback
+    #[cfg_attr(test, mutants::skip)] // FFI accessor — needs a live DuckDB bind callback
     #[must_use]
     pub unsafe fn result_column_type(&self, index: usize) -> Option<LogicalType> {
         if index >= self.result_column_count() {
@@ -296,7 +296,7 @@ impl BindInfo {
     ///
     /// An interior null byte in `message` is replaced by `?`.
     /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         self.error_reported.store(true, Ordering::Relaxed);
         let c_msg = error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
@@ -307,7 +307,7 @@ impl BindInfo {
     }
 
     /// Returns the number of positional parameters passed to this function call.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     pub fn parameter_count(&self) -> usize {
         // SAFETY: self.info is valid.
@@ -460,7 +460,7 @@ impl InitInfo {
     /// Returns the number of projected (requested) columns.
     ///
     /// Only valid when projection pushdown is enabled for the table function.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     pub fn projected_column_count(&self) -> usize {
         // SAFETY: self.info is valid.
@@ -477,7 +477,7 @@ impl InitInfo {
     /// `duckdb_init_get_column_index` answers an out-of-range position with
     /// `0` — indistinguishable from "the first declared column" — so the range
     /// check happens here.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     pub fn projected_column_index(&self, projection_idx: usize) -> Option<usize> {
         if projection_idx >= self.projected_column_count() {
@@ -499,7 +499,7 @@ impl InitInfo {
     /// data and the one bind data, so after raising this, the scan must not
     /// use [`FfiInitData::get_mut`][crate::table::FfiInitData::get_mut]; keep
     /// shared mutable state behind a `Mutex` or atomics instead.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_max_threads(&self, n: u64) {
         // SAFETY: self.info is valid.
         unsafe { libduckdb_sys::duckdb_init_set_max_threads(self.info, n as idx_t) };
@@ -509,7 +509,7 @@ impl InitInfo {
     ///
     /// An interior null byte in `message` is replaced by `?`.
     /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid.
@@ -561,7 +561,7 @@ impl FunctionInfo {
     ///
     /// An interior null byte in `message` is replaced by `?`.
     /// An empty message is replaced by [`EMPTY_ERROR_PLACEHOLDER`].
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid.

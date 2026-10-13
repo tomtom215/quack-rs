@@ -61,6 +61,12 @@ NOINDEX = {"404.html", "print.html"}
 # description is cut with an ellipsis). The rest are derived. Each must fit
 # MAX_LEN; main() refuses one that does not.
 DESCRIPTION_OVERRIDES = {
+    'duckdb-1-5/catalog.md': (
+        'Use a ClientContext from a quack-rs extension callback to read DuckDB settings, look up tables, views and types in the catalog, and reach the file system.'
+    ),
+    'duckdb-1-5/vector-ops.md': (
+        'Allocate DuckDB vectors and copy, slice or fill them with quack-rs: OwnedVector, copy_selected, slice, reference_value and reference_vector.'
+    ),
     'introduction.md': (
         'quack-rs is a Rust SDK for DuckDB loadable extensions, no C or C++ needed: scalar, aggregate, table, cast, copy and replacement-scan functions, SQL macros.'
     ),

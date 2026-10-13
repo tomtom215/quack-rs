@@ -46,7 +46,10 @@ fn cargo_toml_has_correct_name() {
 fn cargo_toml_has_cdylib() {
     let files = generate_scaffold(&valid_config()).unwrap();
     let cargo = files.iter().find(|f| f.path == "Cargo.toml").unwrap();
-    assert!(cargo.content.contains("crate-type = [\"cdylib\"]"));
+    // `rlib` too, so tests/, examples and doctests can link the crate.
+    assert!(cargo
+        .content
+        .contains("crate-type = [\"cdylib\", \"rlib\"]"));
 }
 
 #[test]
@@ -108,7 +111,7 @@ fn description_yml_has_fields() {
     let files = generate_scaffold(&valid_config()).unwrap();
     let desc = files.iter().find(|f| f.path == "description.yml").unwrap();
     assert!(desc.content.contains("name: \"my_analytics\""));
-    assert!(desc.content.contains("license: MIT"));
+    assert!(desc.content.contains("license: \"MIT\""));
     assert!(desc.content.contains("janedoe/duckdb-my-analytics"));
 }
 
@@ -138,19 +141,31 @@ fn invalid_license_rejected() {
 #[test]
 fn invalid_version_rejected() {
     let mut config = valid_config();
-    // Whitespace and path separators are rejected; an unusual-but-harmless
-    // version like "not-a-version" or "2025120401" is not, because DuckDB's
-    // community-extension docs specify no version format and real published
-    // extensions use date-based build ids.
-    config.version = "1.0.0 beta".to_string();
-    assert!(generate_scaffold(&config).is_err());
-    config.version = "../etc/passwd".to_string();
-    assert!(generate_scaffold(&config).is_err());
-    config.version = "2025120401".to_string();
-    assert!(
-        generate_scaffold(&config).is_ok(),
-        "a date-based build id is used by 42 published extensions"
-    );
+    // The version is also `[package] version` in the generated Cargo.toml,
+    // so it must be semver: `cargo metadata` refuses a date-based build id
+    // such as "2025120401" even though `description.yml` alone (and
+    // `validate_extension_version`) would accept it. This used to be
+    // accepted, producing a project cargo could not read.
+    for bad in [
+        "1.0.0 beta",
+        "../etc/passwd",
+        "2025120401",
+        "690bfc5",
+        "1.0",
+        "v1.0.0",
+        "0.1.5.5",
+    ] {
+        config.version = bad.to_string();
+        let err = generate_scaffold(&config).expect_err(bad);
+        assert!(
+            err.as_str().contains("Cargo package version"),
+            "{bad}: {err}"
+        );
+    }
+    for good in ["0.1.0", "1.2.3-rc.1", "1.2.3+build.5"] {
+        config.version = good.to_string();
+        assert!(generate_scaffold(&config).is_ok(), "{good}");
+    }
 }
 
 #[test]
@@ -192,8 +207,14 @@ fn gitmodules_references_ci_tools() {
 
 #[test]
 fn unstable_version_accepted() {
-    let mut config = valid_config();
-    config.version = "690bfc5".to_string();
+    // A commit-hash version (`690bfc5`) is no longer accepted: it is not a
+    // valid Cargo package version (see `invalid_version_rejected`). An
+    // unstable-ABI scaffold still takes an ordinary semver version.
+    let config = ScaffoldConfig {
+        use_unstable_c_api: true,
+        target_duckdb_version: "v1.5.5".to_string(),
+        ..valid_config()
+    };
     assert!(generate_scaffold(&config).is_ok());
 }
 
@@ -654,7 +675,7 @@ fn the_generated_workflow_pins_rust_toolchain_to_master_with_an_explicit_toolcha
         .position(|l| l.contains("uses: dtolnay/rust-toolchain@"))
         .expect("a rust-toolchain step");
     assert!(
-        lines[at].contains("dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0"),
+        lines[at].contains("dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f"),
         "{}",
         lines[at]
     );

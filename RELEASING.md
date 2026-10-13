@@ -12,9 +12,20 @@ Before you can cut a release, ensure the following are in place:
 | Requirement | Where to configure |
 |-------------|-------------------|
 | Push access to `main` and ability to push tags | GitHub repository settings |
-| `CARGO_REGISTRY_TOKEN` secret | Settings → Secrets and variables → Actions |
+| crates.io **Trusted Publishing** for `quack-rs`: repository `tomtom215/quack-rs`, workflow `release.yml`, environment `crates-io` | crates.io → the crate's Settings → Trusted Publishing |
+| `CARGO_REGISTRY_TOKEN` secret, **only until Trusted Publishing is configured**; then delete it | Settings → Secrets and variables → Actions |
 | `crates-io` environment with yourself as required reviewer | Settings → Environments → crates-io |
-| GPG key configured for signed tags (recommended) | `git config --global user.signingkey <KEY_ID>` |
+| A tag ruleset restricting who may create `v*` tags | Settings → Rules → Rulesets |
+| Branch protection on `main` requiring the single check **CI passed** | Settings → Rules (or Branches) |
+| GPG key configured for signed tags | `git config --global user.signingkey <KEY_ID>` |
+
+The `publish` job prefers Trusted Publishing: it exchanges the job's OIDC token
+for a crates.io token that is revoked when the job ends, so no long-lived
+credential exists. Until the crates.io side is configured the exchange fails,
+the job warns, and it falls back to `CARGO_REGISTRY_TOKEN`; with neither it
+fails. `release.yml` runs from the tagged tree, so the tag ruleset is what stops
+a tag on an edited workflow; the workflow itself refuses a lightweight tag and a
+tag on a commit that is not on `main`.
 
 ---
 
@@ -140,6 +151,12 @@ If this is a **minor or major** release, update the supported versions table in
 `SECURITY.md` to list the new version as supported and mark old versions
 as end-of-life if appropriate.
 
+The versioned book (quack-rs.com) publishes a copy for every release line from
+`MIN_RELEASE` in `scripts/build-versioned-site.py` upwards. When a line goes
+end-of-life here, raise `MIN_RELEASE` to the oldest line still supported, in the
+same commit, so the site stops serving documentation for releases nobody
+should start with.
+
 ### Step 3 — Bump the version in `Cargo.toml`
 
 ```toml
@@ -201,30 +218,52 @@ git tag -a "v0.3.0" -m "Release v0.3.0"
 git push origin "v0.3.0"
 ```
 
+A lightweight tag (`git tag v0.3.0`) is refused by the `validate` job, as is a
+tag on a commit that is not on `main`.
+
 ### Step 6 — Monitor the release workflow
 
 Navigate to **Actions → Release** in the GitHub UI. The workflow runs these jobs
 in order:
 
 ```
-validate          Verify tag format, Cargo.toml consistency, CHANGELOG entry
+validate          Tag is annotated and on main; tag format, Cargo.toml version, dated CHANGELOG entry
     │
-    ├── ci        Full test matrix (Linux/macOS/Windows, clippy, fmt, doc, MSRV)
-    └── security  cargo-deny (license policy + advisory database)
-            │
-            ├── package          Build .crate, generate SHA256SUMS, attest SLSA provenance
-            └── publish-dry-run  cargo publish --dry-run
-                    │
-              github-release     Create GitHub release with notes, .crate, SHA256SUMS
-                    │
-                publish          ← awaits manual approval in the crates-io environment
+ci                All of ci.yml (workflow_call): every gate a pull request runs,
+    │             including semver, Miri, the sanitizers, cargo-deny, OSV, the
+    │             publish dry-run and extension-load on every pinned DuckDB
+package           Build .crate, generate SHA256SUMS, attest SLSA provenance
+    │
+publish           ← awaits manual approval in the crates-io environment;
+    │               cargo publish, then checks crates.io serves the attested .crate
+github-release    Create GitHub release with notes, .crate, SHA256SUMS
+    │
+docs              Dispatch docs.yml on main: the book for this release at / and /vX.Y/
 ```
 
 Each job writes a structured summary visible in the Actions UI.
 
-### Step 7 — Review and approve the GitHub release
+### Step 7 — Approve the crates.io deployment
 
-When `github-release` completes, inspect the release at:
+The `publish` job is gated behind the `crates-io` environment, which requires a
+manual approval from an authorised reviewer. Before approving, read the
+`package` job's summary (the `.crate` contents and size).
+
+1. In the Actions run for the release workflow, click **Review deployments**
+2. Select the `crates-io` environment
+3. Click **Approve and deploy**
+
+The job publishes with a Trusted Publishing token (or, until that is set up,
+the `CARGO_REGISTRY_TOKEN` secret), using `cargo publish --locked --no-verify`:
+ci.yml's publish dry-run already built the packaged sources, and skipping the
+second build keeps dependency build scripts away from the token. It then
+downloads the crate from crates.io and fails if its SHA-256 differs from the
+attested artifact's (`cargo package` is reproducible, so they must match).
+
+### Step 8 — Review the GitHub release
+
+`github-release` runs only once crates.io has the crate. When it completes,
+inspect the release at:
 
 ```
 https://github.com/tomtom215/quack-rs/releases/tag/v0.3.0
@@ -239,20 +278,9 @@ Verify:
 - [ ] Book changelog (`book/src/reference/changelog.md`) is in sync with `CHANGELOG.md`
 - [ ] `SECURITY.md` supported versions table is up to date (for minor/major releases)
 
-### Step 8 — Approve the crates.io deployment
-
-The `publish` job is gated behind the `crates-io` environment, which requires a
-manual approval from an authorised reviewer.
-
-1. In the Actions run for the release workflow, click **Review deployments**
-2. Select the `crates-io` environment
-3. Click **Approve and deploy**
-
-The job then runs `cargo publish` using the `CARGO_REGISTRY_TOKEN` secret.
-
 ### Step 9 — Post-release verification
 
-A release is not done until all three of these hold. Nothing else notices when
+A release is not done until all four of these hold. Nothing else notices when
 one does not: `0.17.0` was merged to `main` as a release commit, yet on
 2026-09-23 crates.io still reported `0.16.0` as the newest version, so
 `cargo add quack-rs` kept resolving to the previous release.
@@ -272,11 +300,21 @@ curl -fsSL -A "quack-rs release check" https://crates.io/api/v1/crates/quack-rs 
 curl -fsSL "https://docs.rs/crate/quack-rs/$V/status.json"
 # must print {"doc_status":true,"version":"$V"}; a 404 means no build (yet --
 # allow 5-10 minutes after publishing, then investigate)
+
+# 4. The book serves this release at the root and at /vX.Y/
+curl -fsSL https://quack-rs.com/versions.json
+# "latest" must be "v${V%.*}" and a version entry must read "$V". release.yml's
+# `docs` job dispatches docs.yml on main after publishing; if it did not run,
+# run `gh workflow run docs.yml --ref main`.
 ```
 
 If any of them fails, the release is incomplete: finish it (push the tag,
-approve the `crates-io` deployment, check the docs.rs build log) before doing
-anything else.
+approve the `crates-io` deployment, check the docs.rs build log, dispatch
+docs.yml) before doing anything else.
+
+The book at the root follows the latest release, not `main`: a correction to the
+book reaches `/dev/` when it is merged and the root with the next release. To
+publish a correction that cannot wait, cut a patch release.
 
 The remaining checks:
 

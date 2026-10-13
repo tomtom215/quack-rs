@@ -434,11 +434,11 @@ impl FileHandle<'_> {
         // Start from the remaining length when the handle can report it, so the
         // common case is a single allocation, but never rely on it: a stream may
         // report no size at all.
-        let hint = match (self.size(), self.tell()) {
-            (Ok(size), Ok(position)) => usize::try_from(size.saturating_sub(position)).unwrap_or(0),
+        let remaining = match (self.size(), self.tell()) {
+            (Ok(size), Ok(position)) => size.saturating_sub(position),
             _ => 0,
         };
-        buf.reserve(hint.max(CHUNK));
+        reserve_for_read(buf, remaining);
 
         let start = buf.len();
         loop {
@@ -612,9 +612,46 @@ impl core::fmt::Debug for FileHandle<'_> {
     }
 }
 
+/// The most [`FileHandle::read_to_end`] reserves up front from the size the
+/// file reports; past it the buffer grows as data actually arrives.
+const MAX_READ_RESERVE: usize = 256 * 1024 * 1024;
+
+/// Reserves room for a read the file says is `remaining` bytes long.
+///
+/// The size is a hint, not a promise: a remote file system reports whatever
+/// the server's `Content-Length` says, and an infallible `reserve` of an
+/// impossible size aborts the whole process. So the hint is capped at
+/// [`MAX_READ_RESERVE`] and a failed reservation falls back to one chunk.
+fn reserve_for_read(buf: &mut Vec<u8>, remaining: u64) {
+    let hint = usize::try_from(remaining).unwrap_or(usize::MAX);
+    let wanted = hint.clamp(CHUNK, MAX_READ_RESERVE.max(CHUNK));
+    if buf.try_reserve(wanted).is_err() {
+        // Nothing reserved; the read loop grows the buffer one chunk at a time.
+        let _ = buf.try_reserve(CHUNK);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file reporting an impossible size must not abort the process: the
+    /// up-front reservation is capped, and a refused one is not fatal.
+    #[test]
+    fn reserve_for_read_caps_and_survives_an_impossible_size() {
+        let mut buf = Vec::new();
+        reserve_for_read(&mut buf, u64::MAX);
+        assert!(buf.capacity() >= CHUNK);
+        assert!(buf.capacity() <= MAX_READ_RESERVE * 2, "{}", buf.capacity());
+
+        let mut small = Vec::new();
+        reserve_for_read(&mut small, 10);
+        assert!(small.capacity() >= CHUNK, "at least one chunk");
+
+        let mut mid = Vec::new();
+        reserve_for_read(&mut mid, 1024 * 1024);
+        assert!(mid.capacity() >= 1024 * 1024, "the hint is used when sane");
+    }
 
     #[test]
     fn file_flag_distinct_raw_values() {

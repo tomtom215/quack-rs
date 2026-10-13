@@ -222,15 +222,16 @@ impl TypeId {
     /// Converts a raw `DUCKDB_TYPE` constant into a [`TypeId`], or `None` if the
     /// value is not one this build knows about.
     ///
-    /// Recognizes every variant available in the active feature set, including
-    /// the `duckdb-1-5` type-enum values (`TIME_NS`, `ANY`, `BIGNUM`/`VARINT`,
-    /// `SQLNULL`, `INTEGER_LITERAL`, `STRING_LITERAL`) and the `duckdb-1-5-3`
-    /// values (`GEOMETRY`, `VARIANT`) when those features are enabled.
+    /// Recognizes every variant available in the active feature set: all the
+    /// type-enum values of the `DuckDB` 1.4.4 floor (`TIME_NS`, `ANY`,
+    /// `BIGNUM`/`VARINT`, `SQLNULL`, `INTEGER_LITERAL` and `STRING_LITERAL`
+    /// among them, ungated), plus `GEOMETRY` and `VARIANT` when the
+    /// `duckdb-1-5-3` feature is enabled.
     ///
     /// **Prefer this over [`from_duckdb_type`][Self::from_duckdb_type] inside
     /// `DuckDB` callbacks.** An extension routinely sees type values it was not
-    /// built for — a column of a type added in a newer `DuckDB`, or a 1.5.x type
-    /// reaching an extension compiled without `duckdb-1-5`. Returning `None`
+    /// built for — a column of a type added in a newer `DuckDB`, or a `GEOMETRY`
+    /// or `VARIANT` column reaching an extension compiled without `duckdb-1-5-3`. Returning `None`
     /// lets the callback raise a `DuckDB` error, which a panic cannot: quack-rs
     /// turns a caught panic into an error message, but only when the extension
     /// ships `panic = "unwind"` — under `panic = "abort"` the process dies.
@@ -360,8 +361,8 @@ impl TypeId {
     /// # Panics
     ///
     /// Panics if `raw` does not correspond to any `TypeId` variant available in
-    /// the current feature configuration — for example, a 1.5.x type value when
-    /// the `duckdb-1-5` feature is disabled, or a future/unknown type value.
+    /// the current feature configuration — for example, `GEOMETRY` or `VARIANT`
+    /// when the `duckdb-1-5-3` feature is disabled, or a future/unknown type value.
     ///
     /// Inside a `DuckDB` callback use
     /// [`try_from_duckdb_type`][Self::try_from_duckdb_type] instead: returning

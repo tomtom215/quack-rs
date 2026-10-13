@@ -37,23 +37,48 @@ implements neither direction.
 
 ## Builder API
 
-```rust,no_run
-use quack_rs::copy_function::CopyFunctionBuilder;
+Write each `COPY … TO` callback with its guarded macro: `copy_bind_callback!`,
+`copy_global_init_callback!`, `copy_sink_callback!` and
+`copy_finalize_callback!`. Each one generates the `unsafe extern "C" fn` the
+builder expects and reports a panic in its body as an error on the `COPY`
+statement, instead of aborting the process. See
+[Panic-Safe Callbacks](panic-safe-callbacks.md).
 
-# fn demo(
-#     my_bind_fn: quack_rs::copy_function::CopyBindFn,
-#     my_global_init_fn: quack_rs::copy_function::CopyGlobalInitFn,
-#     my_sink_fn: quack_rs::copy_function::CopySinkFn,
-#     my_finalize_fn: quack_rs::copy_function::CopyFinalizeFn,
-# ) -> Result<(), quack_rs::error::ExtensionError> {
+```rust,no_run
+use quack_rs::copy_function::{CopyBindInfo, CopyFunctionBuilder, CopySinkInfo};
+use quack_rs::data_chunk::DataChunk;
+
+quack_rs::copy_bind_callback!(my_bind, |info| {
+    let bind = unsafe { CopyBindInfo::new(info) };
+    if bind.column_count() == 0 {
+        bind.set_error("my_format needs at least one column");
+    }
+});
+
+quack_rs::copy_global_init_callback!(my_global_init, |info| {
+    let _ = info; // open the output file here
+});
+
+quack_rs::copy_sink_callback!(my_sink, |info, chunk| {
+    let _sink = unsafe { CopySinkInfo::new(info) };
+    let chunk = unsafe { DataChunk::from_raw(chunk) };
+    let _rows = chunk.size(); // write the rows here
+});
+
+quack_rs::copy_finalize_callback!(my_finalize, |info| {
+    let _ = info; // flush and close the file here
+});
+
+# fn demo() -> Result<(), quack_rs::error::ExtensionError> {
 let builder = CopyFunctionBuilder::try_new("my_format")?
-    .bind(my_bind_fn)
-    .global_init(my_global_init_fn)
-    .sink(my_sink_fn)
-    .finalize(my_finalize_fn);
+    .bind(my_bind)
+    .global_init(my_global_init)
+    .sink(my_sink)
+    .finalize(my_finalize);
 
 // Register on a connection, for example in the entry point:
 // unsafe { builder.register(con)?; }
+# let _ = builder;
 # Ok(())
 # }
 ```
@@ -70,11 +95,10 @@ use quack_rs::copy_function::CopyFunctionBuilder;
 use quack_rs::table::TableFunctionBuilder;
 use quack_rs::types::TypeId;
 
-# fn demo(
-#     bind: quack_rs::table::BindFn,
-#     init: quack_rs::table::InitFn,
-#     scan: quack_rs::table::ScanFn,
-# ) -> Result<(), quack_rs::error::ExtensionError> {
+# quack_rs::table_bind_callback!(bind, |_info| {});
+# quack_rs::table_init_callback!(init, |_info| {});
+# quack_rs::table_scan_callback!(scan, |_info, _output| {});
+# fn demo() -> Result<(), quack_rs::error::ExtensionError> {
 // SAFETY: the callbacks match their declared signatures.
 let reader = unsafe {
     TableFunctionBuilder::new("my_format")   // name it after the format
@@ -182,12 +206,16 @@ The data pointers are untyped, so the compiler cannot check this for you:
 
 ## Callback signatures
 
-| Phase | Signature |
-|-------|-----------|
-| Bind | `unsafe extern "C" fn(info: duckdb_copy_function_bind_info)` |
-| Global init | `unsafe extern "C" fn(info: duckdb_copy_function_global_init_info)` |
-| Sink | `unsafe extern "C" fn(info: duckdb_copy_function_sink_info, chunk: duckdb_data_chunk)` |
-| Finalize | `unsafe extern "C" fn(info: duckdb_copy_function_finalize_info)` |
+| Phase | Signature | Guarded macro |
+|-------|-----------|---------------|
+| Bind | `unsafe extern "C" fn(info: duckdb_copy_function_bind_info)` | `copy_bind_callback!(name, \|info\| { … })` |
+| Global init | `unsafe extern "C" fn(info: duckdb_copy_function_global_init_info)` | `copy_global_init_callback!(name, \|info\| { … })` |
+| Sink | `unsafe extern "C" fn(info: duckdb_copy_function_sink_info, chunk: duckdb_data_chunk)` | `copy_sink_callback!(name, \|info, chunk\| { … })` |
+| Finalize | `unsafe extern "C" fn(info: duckdb_copy_function_finalize_info)` | `copy_finalize_callback!(name, \|info\| { … })` |
+
+A raw `unsafe extern "C" fn` with one of these signatures also compiles, but a
+panic in it aborts the process. The reader of a `COPY … FROM` is a table
+function, so its callbacks use the `table_*_callback!` macros.
 
 ## Callback info wrappers
 

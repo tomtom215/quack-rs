@@ -541,13 +541,14 @@ Directives:
 | `query T` | Query returning one TEXT column |
 | `----` | Expected output follows |
 
-### Installing DuckDB (1.4.x or 1.5.x)
+### Installing DuckDB (1.4.4 or later)
 
 E2E testing needs the DuckDB CLI. Download it with `curl`; no system package
-manager is needed. Every 1.4.x and 1.5.x release loads an extension stamped with
+manager is needed. quack-rs supports DuckDB 1.4.4 and later 1.x releases, and every one
+of them loads an extension stamped with
 C API version `v1.2.0` (1.4.4 through 1.5.5 declare that version; 1.5.6 declares
 `v1.5.6` and accepts every earlier one). The quack-rs CI `extension-load` job
-loads its example extension into 1.4.4, 1.5.0, 1.5.5 and the latest release
+loads its example extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6 and the latest release
 (currently 1.5.6). Develop against the current release, 1.5.6:
 
 ```bash
@@ -560,7 +561,7 @@ curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-
 # → v1.5.6
 ```
 
-To match a pinned CI engine instead, substitute `v1.4.4`, `v1.5.0` or `v1.5.5`
+To match a pinned CI engine instead, substitute `v1.4.4`, `v1.5.0`, `v1.5.5` or `v1.5.6`
 in the URL.
 
 For macOS, replace `linux-amd64` with `osx-universal`. For Windows, use

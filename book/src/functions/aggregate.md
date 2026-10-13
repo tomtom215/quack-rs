@@ -8,27 +8,12 @@ also has a `combine` step that merges partial results from parallel workers.
 
 ## Known DuckDB limitation
 
-> **Out-of-bounds state reads.** Two query shapes make
-> DuckDB call every C-API aggregate's `update` with a state array holding **one**
-> state while passing `count > 1` rows, so the callback reads `states[1..count]`
-> past the end of the array (undefined behaviour, in any C-API aggregate, whether
-> built with quack-rs or by hand):
->
-> - **Window aggregates whose frame is the whole partition**, e.g. `agg(x) OVER ()`
->   — `WindowConstantAggregator` (`src/function/window/window_constant_aggregator.cpp`,
->   ~lines 106 and 296–299 in DuckDB 1.5.5).
-> - **Ordered aggregates**, e.g. `agg(x ORDER BY y)` —
->   `src/function/aggregate/sorted_aggregate_function.cpp`, ~lines 630–633.
->
-> Both paths pass a `CONSTANT_VECTOR` of states because the function has no
-> `simple_update` (which the C API cannot set), and `CAPIAggregateUpdate`
-> (`src/main/capi/aggregate_function-c.cpp`, ~lines 92–110) passes the vector's
-> data pointer to the extension without flattening it. This is a defect in
-> DuckDB's C API, not in quack-rs, and it cannot be detected from inside the
-> callback: reading `states[1]` to check is itself the out-of-bounds read. Until
-> DuckDB fixes it, do not use C-API aggregates in those two query shapes.
->
-> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
+> **Do not use a C API aggregate as `agg(x) OVER ()` or `agg(x ORDER BY y)`.**
+> In those two query shapes DuckDB reads past the end of the state array, which
+> usually crashes the process. This is a DuckDB defect that an extension cannot
+> detect or prevent; see
+> [Pitfall L11](../reference/pitfalls.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y)
+> and [Known Limitations](../reference/known-limitations.md#aggregates-crash-under-over--and-order-by-duckdb-defect-pitfall-l11).
 
 ---
 
@@ -81,9 +66,9 @@ needs.
 # use quack_rs::prelude::*;
 # #[derive(Default)] struct MyState { count: i64 }
 # impl AggregateState for MyState {}
-# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
-# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
-# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# quack_rs::aggregate_update_callback!(update, |_info, _input, _states| {});
+# quack_rs::aggregate_combine_callback!(combine, |_info, _source, _target, _count| {});
+# quack_rs::aggregate_finalize_callback!(finalize, |_info, _source, _result, _count, _offset| {});
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::TypeId;
 
@@ -122,6 +107,17 @@ With `FfiState<T>` you do not write `state_size`, `init` or `destroy` yourself:
 `ffi_state::<T>()` installs `FfiState::<T>::size_callback`, `init_callback` and
 `destroy_callback`. The wrappers below show the signature DuckDB calls each one
 with, and what it does. `update`, `combine` and `finalize` are yours to write.
+
+The examples write `update`, `combine`, `finalize` and the destructor with the
+`aggregate_*_callback!` macros. Each macro generates the `unsafe extern "C" fn`
+and catches any panic in its body. A panic in `update`, `combine` or `finalize`
+fails the query with the panic message; a panic in the destructor is swallowed,
+because DuckDB gives it no way to report an error. See
+[Panic-Safe Callbacks](panic-safe-callbacks.md).
+
+`state_size` and `state_init` are written out by hand below only to show their
+signatures. You normally let `ffi_state::<T>()` install `FfiState`'s versions,
+which already catch a panic in your `Default` impl.
 
 ### `state_size`
 
@@ -178,11 +174,7 @@ panic in `default()` is caught and reported to DuckDB as a query error.
 #     fn result(&self) -> i64 { self.accumulator }
 # }
 # impl AggregateState for MyState {}
-unsafe extern "C" fn update(
-    _info: duckdb_function_info,
-    input: duckdb_data_chunk,
-    states: *mut duckdb_aggregate_state,
-) {
+quack_rs::aggregate_update_callback!(update, |_info, input, states| {
     let reader = unsafe { VectorReader::new(input, 0) };
     let row_count = reader.row_count();
 
@@ -195,7 +187,7 @@ unsafe extern "C" fn update(
             st.accumulate(value);
         }
     }
-}
+});
 ```
 
 `states[row]` is the state of that row's group; rows in the same group share one
@@ -214,12 +206,7 @@ state. `update` receives NULL rows too, so skip rows where `is_valid` is false (
 #     fn result(&self) -> i64 { self.accumulator }
 # }
 # impl AggregateState for MyState {}
-unsafe extern "C" fn combine(
-    _info: duckdb_function_info,
-    source: *mut duckdb_aggregate_state,
-    target: *mut duckdb_aggregate_state,
-    count: idx_t,
-) {
+quack_rs::aggregate_combine_callback!(combine, |_info, source, target, count| {
     for i in 0..count as usize {
         let src = unsafe { FfiState::<MyState>::with_state(*source.add(i)) };
         let tgt = unsafe { FfiState::<MyState>::with_state_mut(*target.add(i)) };
@@ -229,7 +216,7 @@ unsafe extern "C" fn combine(
             t.accumulator  += s.accumulator;    // data
         }
     }
-}
+});
 ```
 
 > **Pitfall L1 — critical**: Target states are fresh states, set up by `state_init`
@@ -250,13 +237,7 @@ unsafe extern "C" fn combine(
 #     fn result(&self) -> i64 { self.accumulator }
 # }
 # impl AggregateState for MyState {}
-unsafe extern "C" fn finalize(
-    _info: duckdb_function_info,
-    source: *mut duckdb_aggregate_state,
-    result: duckdb_vector,
-    count: idx_t,
-    offset: idx_t,
-) {
+quack_rs::aggregate_finalize_callback!(finalize, |_info, source, result, count, offset| {
     let mut writer = unsafe { VectorWriter::new(result) };
     for i in 0..count as usize {
         let state_ptr = unsafe { *source.add(i) };
@@ -265,7 +246,7 @@ unsafe extern "C" fn finalize(
             None     => unsafe { writer.set_null(offset as usize + i) },
         }
     }
-}
+});
 ```
 
 `offset` is non-zero when DuckDB writes the results into part of a larger vector.
@@ -279,9 +260,9 @@ Always add it to the output index.
 # use quack_rs::prelude::*;
 # #[derive(Default)] struct MyState { config_field: i64, accumulator: i64 }
 # impl AggregateState for MyState {}
-unsafe extern "C" fn state_destroy(states: *mut duckdb_aggregate_state, count: idx_t) {
+quack_rs::aggregate_destroy_callback!(state_destroy, |states, count| {
     unsafe { FfiState::<MyState>::destroy_callback(states, count) };
-}
+});
 ```
 
 `destroy_callback` drops the `T` in each state whose tag matches (freeing its box,
@@ -302,9 +283,9 @@ For functions that accept or return parameterized types like `LIST(BIGINT)`,
 # use quack_rs::prelude::*;
 # #[derive(Default)] struct MyState { count: i64 }
 # impl AggregateState for MyState {}
-# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
-# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
-# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# quack_rs::aggregate_update_callback!(update, |_info, _input, _states| {});
+# quack_rs::aggregate_combine_callback!(combine, |_info, _source, _target, _count| {});
+# quack_rs::aggregate_finalize_callback!(finalize, |_info, _source, _result, _count, _offset| {});
 use quack_rs::aggregate::AggregateFunctionBuilder;
 use quack_rs::types::{LogicalType, TypeId};
 
@@ -359,9 +340,9 @@ to free the data when the function is dropped:
 # use quack_rs::prelude::*;
 # #[derive(Default)] struct MyState { count: i64 }
 # impl AggregateState for MyState {}
-# unsafe extern "C" fn update(_: duckdb_function_info, _: duckdb_data_chunk, _: *mut duckdb_aggregate_state) {}
-# unsafe extern "C" fn combine(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: *mut duckdb_aggregate_state, _: idx_t) {}
-# unsafe extern "C" fn finalize(_: duckdb_function_info, _: *mut duckdb_aggregate_state, _: duckdb_vector, _: idx_t, _: idx_t) {}
+# quack_rs::aggregate_update_callback!(update, |_info, _input, _states| {});
+# quack_rs::aggregate_combine_callback!(combine, |_info, _source, _target, _count| {});
+# quack_rs::aggregate_finalize_callback!(finalize, |_info, _source, _result, _count, _offset| {});
 # unsafe extern "C" fn my_destroy(p: *mut std::os::raw::c_void) {
 #     drop(unsafe { Box::from_raw(p.cast::<u64>()) });
 # }
@@ -404,15 +385,11 @@ to every aggregate callback except the destructor. It exposes:
 # use quack_rs::prelude::*;
 use quack_rs::aggregate::AggregateFunctionInfo;
 
-unsafe extern "C" fn update(
-    info: duckdb_function_info,
-    input: duckdb_data_chunk,
-    states: *mut duckdb_aggregate_state,
-) {
+quack_rs::aggregate_update_callback!(update, |info, _input, _states| {
     let info = unsafe { AggregateFunctionInfo::new(info) };
-    let extra = unsafe { info.get_extra_info() };
+    let _extra = unsafe { info.get_extra_info() };
     // ... use extra info, or report errors via info.set_error("...") ...
-}
+});
 ```
 
 ---

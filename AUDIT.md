@@ -578,34 +578,65 @@ if nobody wrote down that they were checked.
 
 Ordered by what a production extension is most likely to want.
 
-### 5.1 API surface still unwrapped (99 of 546 entries)
+### 5.1 API surface still unwrapped (101 of 546 entries)
 
-> Re-measured 2026-09-20 against the v1.5.4 `duckdb_ext_api_v1` struct (546
-> function pointers; byte-identical in v1.5.5). 99 are unreferenced in `src/`,
-> of which 45 are in the header's deprecated block. The group counts below sum
-> to fewer than 99 because the Misc row is approximate.
+> Re-measured 2026-10-13 (section 11) against the v1.5.6 `duckdb_ext_api_v1`
+> struct: 546 function pointers, the same names in the same order in
+> `extension_api.hpp` and `duckdb_extension.h`. The scan strips comments and
+> `#[cfg(test)]` code from `src/` and matches each name as a word; 445 are
+> referenced by library code and 101 are not. (`duckdb_open` and
+> `duckdb_close` appear only in tests.) This replaces the earlier "99", which
+> no method reproduces: at the commit that wrote it a plain `git grep` gives 98
+> and the strict scan about 105, and the code has changed since. The three
+> groups below sum to 101.
+
+**Deprecated in `duckdb.h` — correctly skipped (45).** Each sits behind
+`DUCKDB_API_ALLOW_DEPRECATED` with a deprecation notice: the 24 per-value
+result accessors (`duckdb_value_int32`, `duckdb_value_varchar`, …), 7 old
+result and chunk functions (`duckdb_column_data`, `duckdb_nullmask_data`,
+`duckdb_row_count`, `duckdb_result_chunk_count`, `duckdb_result_get_chunk`,
+`duckdb_stream_fetch_chunk`, `duckdb_pending_prepared_streaming`) and 14 old
+Arrow functions (`duckdb_query_arrow*`, `duckdb_arrow_*`,
+`duckdb_destroy_arrow*`, `duckdb_execute_prepared_arrow`,
+`duckdb_prepared_arrow_schema`, `duckdb_result_arrow_array`). The eight
+non-deprecated Arrow entries are wrapped (section 3).
+
+quack-rs does call three deprecated functions, for want of a replacement in
+the v1 table: `duckdb_appender_error` (the fallback without `duckdb-1-5`; with
+it, `duckdb_appender_error_data`), `duckdb_result_is_streaming` and
+`duckdb_execute_prepared_streaming` (no non-deprecated way to get a streaming
+result exists in the v1 C API). None of the three is in `main`'s V2 table.
+
+**Skipped on purpose or superseded (13).**
+
+| Entries | Why |
+|---|---|
+| `duckdb_string_is_inlined`, `duckdb_string_t_length`, `duckdb_string_t_data` | quack-rs decodes the 16-byte layout itself, saving three FFI calls per string; the layout is hard-coded in Rust rather than delegated, noted so the choice is visible. |
+| `duckdb_append_varchar`, `duckdb_bind_varchar`, `duckdb_create_varchar`, `duckdb_vector_assign_string_element` | NUL-terminated forms; quack-rs uses the `_length` / `_len` variants, which take a Rust `&str` as it is. |
+| `duckdb_appender_begin_row` | A no-op in `appender-c.cpp` (returns `DuckDBSuccess`). |
+| `duckdb_validity_set_row_validity` | Replaced by `set_row_valid` / `set_row_invalid`. |
+| `duckdb_open`, `duckdb_open_ext`, `duckdb_close` | An extension is handed its database; the instance cache is wrapped (`InstanceCache`). |
+| `duckdb_malloc` | quack-rs only frees memory `DuckDB` allocated. |
+
+**Not yet wrapped (43), by likely value to an extension author.**
 
 | Group | Count | Assessment |
 |---|---|---|
-| Deprecated per-value result accessors (`duckdb_value_int32`, `duckdb_row_count`, `duckdb_column_data`, …) | 24 | **Correctly skipped.** `duckdb.h` marks the whole group deprecated and says to use `duckdb_fetch_chunk`, which is what `QueryResult` does. |
-| Deprecated Arrow result API (`duckdb_query_arrow`, `duckdb_arrow_scan`, `duckdb_destroy_arrow`, …) | 14 | **Correctly skipped.** All fourteen sit inside `#ifndef DUCKDB_API_NO_DEPRECATED`. The eight non-deprecated Arrow entries are wrapped — see section 3. |
-| Task scheduler (`duckdb_execute_tasks`, `duckdb_create_task_state`, …) | 9 | Niche: for embedding DuckDB's scheduler, rarely what an extension wants. |
-| Pending-result execution (`duckdb_pending_prepared`, `duckdb_pending_execute_task`, …) | 8 | Now partly redundant: `execute_streaming` + `InterruptHandle` cover the common "long query, cancellable, incremental" need. Worth revisiting for cooperative progress reporting. |
-| Log storage (`duckdb_register_log_storage`, …) | 6 | New in 1.5 and genuinely useful — an extension can register a log sink. Good next addition. |
-| Profiling (`duckdb_get_profiling_info`, …) | 5 | Useful for extensions that expose their own EXPLAIN-like output. |
-| Extracted statements (`duckdb_extract_statements`, …) | 4 | Low value: `duckdb_query` already runs multi-statement scripts. |
-| Prepared-statement result metadata (`duckdb_prepared_statement_column_*`, `duckdb_param_type`, …) | 6 | Lets an extension learn a query's shape without running it. |
-| ~~`duckdb_scalar_function_set_bind_data_copy`~~ | ~~1~~ | **Closed 2026-09-20** — `ScalarBindInfo::set_bind_data_copy`. This was not merely a gap: `CScalarFunctionBindData::Copy()` in DuckDB's `src/main/capi/scalar_function-c.cpp` leaves the copy's `bind_data` **null** when no copy callback is registered, so every extension using `ScalarBindInfo::set_bind_data` could see null bind data on a copied expression — a silent wrong answer, not a crash. |
-| Misc (`duckdb_get_table_names`, `duckdb_appender_create_query`, `duckdb_create_bit`/`get_bit`, `duckdb_get_bignum`, `duckdb_create_data_chunk`, …) | ~13 | Individually small. |
+| `duckdb_unsafe_vector_assign_string_element_len` (1.5.6 band) | 1 | The `_len` call quack-rs uses re-validates UTF-8 on every VARCHAR write; this one skips it, and a `&str` is valid UTF-8 already. A probable speed-up on string output, unmeasured; needs a 1.5.6-band gate. |
+| Log storage (`duckdb_create_log_storage`, `duckdb_register_log_storage`, …; 1.5.6 band) | 6 | Lets an extension register a log sink. |
+| Statement metadata (`duckdb_param_type`, `duckdb_param_logical_type`, `duckdb_prepared_statement_column_*`, `duckdb_prepared_statement_type`, `duckdb_result_statement_type`) | 8 | Learn a query's shape without running it. |
+| `duckdb_geometry_type_get_crs` (1.5.6 band) | 1 | Spatial extensions need the CRS. |
+| BIGNUM and BIT values (`duckdb_create_bignum`, `duckdb_get_bignum`, `duckdb_get_bit`) | 3 | The remaining `Value` gaps (`duckdb_create_bit` is used, inside `config_option.rs`). |
+| Profiling (`duckdb_get_profiling_info`, `duckdb_profiling_info_*`) | 5 | For extensions with their own EXPLAIN-like output. |
+| `duckdb_get_table_names`, `duckdb_appender_create_query` (1.5.6 band) | 2 | Individually small. |
+| Pending execution (`duckdb_pending_prepared`, `duckdb_pending_execute_task`, …) | 7 | `execute_streaming` plus `InterruptHandle` cover the common need; this would add cooperative progress reporting. |
+| Extracted statements, remaining (`duckdb_extract_statements_error`, `duckdb_prepare_extracted_statement`) | 2 | The other two are used (`SqlMacro`). |
+| Task scheduler (`duckdb_create_task_state`, `duckdb_execute_tasks`, …) | 8 | For embedding `DuckDB`'s scheduler; rarely what an extension wants. |
 
+`duckdb_create_data_chunk` and `duckdb_data_chunk_reset` were in this list;
+section 11 wraps them as `OwnedDataChunk::new` and `reset`.
 `COPY … FROM` and the table-function bind result-column accessors were rows in
-this table; both are closed in section 3.
-
-`duckdb_string_is_inlined` / `duckdb_string_t_length` / `duckdb_string_t_data`
-are deliberately unused: quack-rs decodes the 16-byte layout itself, which avoids
-three FFI calls per string. That is a defensible trade, but it does mean the
-layout is hard-coded in Rust rather than delegated — noted so the choice is
-visible.
+an earlier version of this table; both are closed in section 3.
 
 ### 5.2 wasm32 is compile-checked only
 
@@ -1867,3 +1898,209 @@ Local runs are x86-64 Linux against the prebuilt DuckDB 1.5.5 unless stated.
   mutation gate; both ABI guards; the book and README code blocks; the
   scaffold end-to-end job; MSRV and the dependency floor; `semver-checks`;
   and the publish dry run.
+
+## 11. Sixth review, October 2026 (after 0.18.0)
+
+### 11.1 Method
+
+Seven audits ran in parallel against `30d202d` (0.18.0 as published, plus the
+release-notes fix): the safe API's soundness in three parts (vectors, values
+and types; the function builders and callbacks; query, appender, Arrow, file
+system, secrets, scaffold and validators), every documentation claim, a new
+user's walk through the README and book to a loaded community-style extension
+on DuckDB 1.5.6, C API coverage against v1.5.6's table, and CI and supply chain
+against the bar set by a sibling project (a2a-rust). Each finding below was
+checked against the code, and against DuckDB's source where DuckDB was
+involved, before it was acted on; a fix has a regression test shown failing
+without it where one can be written. Labels as in 10.1: VALIDATED (reproduced
+and pinned by a test), PROVEN (derived from DuckDB's source, cited), CONTRACT
+(a documentation obligation).
+
+### 11.2 Defects found and fixed
+
+**Medium**
+
+- *`list_duckdb_secrets` could return credentials, and `Debug` printed them*
+  (VALIDATED). The docs promised a credential-free `secret_string`, but DuckDB
+  redacts per field, only the keys a secret type declares sensitive: an `http`
+  secret's `extra_http_headers` (an `Authorization` header) comes back in full.
+  The docs now say so and `DuckDbSecretInfo`'s `Debug` omits the string;
+  `tests/ffi_roundtrip.rs` pins both the hazard and the fix.
+- *Cast re-registration is first-wins, documented as last-wins* (VALIDATED,
+  PROVEN: `MapCastInfo::AddEntry` uses `std::map::insert`,
+  `cast_function_set.cpp:163`). The old test registered the same callback twice
+  and could not tell the two apart; it now registers a different one second.
+- *`CastMode::Try` documented as `TRY_CAST` only* (VALIDATED, PROVEN:
+  `duckdb_cast_function_get_cast_mode` reports Try whenever an error-message
+  slot is passed, and `Value::CastAs` always passes one, then throws on
+  `false`). A callback written to the old docs turned a bad table-function
+  argument into a silent `NULL`. The docs now say to null each failed row and
+  return `false`; `tests/ffi_roundtrip/table_cast.rs` pins the value-cast path.
+- *`vector::reference_value`'s Safety section described the wrong failure*
+  (CONTRACT, VALIDATED by the auditor against 1.5.5): a mismatched value type
+  is cast, which can abort or leave a `LIST` vector without its child buffer,
+  not "reinterpreted".
+- *Scaffold: following the book produced a file DuckDB refused* (VALIDATED on
+  1.5.6). `make configure` before the first commit stamped `git describe`'s
+  error text into the 32-byte version field. The generated `Makefile` now falls
+  back to the `Cargo.toml` version, the docs commit first, and `configure/` is
+  ignored.
+- *Scaffold: a fresh project did not build on Rust 1.86.0* (VALIDATED): a fresh
+  resolve took `zopfli` 0.8.4 (Rust 1.88). The project declares `rust-version`
+  and `resolver = "3"`; its CI builds on 1.86.0.
+- *Scaffold: the generated CI covered 3 of the community build's 9 platforms.*
+  It now also runs `extension-ci-tools`' distribution workflow, with
+  `exclude_archs` and `excluded_platforms` generated from one setting.
+
+**Low**
+
+- `FileHandle::read_to_end` aborted on a file reporting an impossible size
+  (VALIDATED by the auditor with a 100 GiB sparse file); the up-front
+  reservation is capped and fallible.
+- `f64_to_hugeint` / `f64_to_uhugeint` / `f64_to_decimal` return `0` or a
+  width-0 `Decimal` on failure, indistinguishable from a result (VALIDATED).
+  Documented, and checked `try_` variants added whose bounds are asserted
+  against DuckDB's own answers at each boundary.
+- `decimal_to_f64` accepted width 0. Fixed.
+- `LogicalType::try_enum_type` reported a duplicate member as a bare null
+  return (VALIDATED; the test fails without the fix). DuckDB compares members
+  exactly (`'a'` and `'A'` are distinct, checked on 1.5.6), and so does the
+  check.
+- The typed table trampolines dropped a `Box<str>` panic's message.
+- An empty registration error left `LOAD`'s message ending at its colon.
+- The entry-point macros made the documented `|con| unsafe { register(con) }`
+  warn as nested `unsafe` (VALIDATED: `tests/entry_point_lint.rs` fails without
+  the fix), which a `-D warnings` build — the scaffold's CI — rejects.
+- Scaffold: a non-semver `version` produced an unreadable `Cargo.toml`; a
+  licence with a line break produced invalid YAML; a multi-line description
+  failed clippy; `extension_config.cmake` pinned `main`. All VALIDATED, fixed,
+  tested.
+- `description.yml` validation: a padded `rust` token in `requires_toolchains`
+  passed although `extension-ci-tools` matches tokens exactly (PROVEN:
+  `_extension_distribution.yml`), and quoted values were trimmed where PyYAML
+  keeps the spaces. `repo.ref` that is not a commit hash is now a warning.
+
+**Release pipeline**
+
+- `release.yml` checked neither that the tag was annotated nor that it was on
+  `main`; its CI was a hand-copied subset of `ci.yml` without semver checks,
+  Miri, the sanitizers or the engine matrices; caches were restored in the jobs
+  holding the attestation token and the publish secret; and `cargo publish`
+  re-ran every dependency build script with a long-lived token in the
+  environment. Now: tag checks, `ci.yml` itself via `workflow_call`, no caches
+  there, Trusted Publishing with a fallback, `--no-verify`, and a byte-for-byte
+  check that crates.io serves the attested `.crate`. That check relies on
+  `cargo package` being reproducible: a local `cargo package` of `v0.18.0`
+  hashes to `dc2e3894…f6d9`, as crates.io's copy does.
+- Calling `ci.yml` from `release.yml` would have collided their concurrency
+  groups (`Release-<tag>` and `release-<tag>`; GitHub compares group names
+  case-insensitively); `ci.yml`'s group now starts with a literal `ci-`.
+
+### 11.3 Not changed, deliberately
+
+- **`Value` is not `Send`.** It would let a bind callback keep a constant
+  argument in `ScalarBindData`, and `Value` owns its `duckdb::Value`
+  exclusively, but its `ExtraValueInfo` is a `shared_ptr` whose sharing
+  across copies was not audited. Left for a pass that reads it.
+- **Blocking nightly jobs float.** Miri, the sanitizers and fuzzing use the
+  current nightly; pinning one would need a freshness job to keep it moving.
+- **DuckDB downloads in CI are not checksum-verified** (osv-scanner's is).
+  Their blast radius is a read-only token with no secrets.
+- **`Value::is_null` keeps its name**; its docs now point at `is_sql_null`. A
+  rename would break every caller for a naming problem.
+- **No `STABILITY.md`, DCO, ADR directory or claims ledger**, which a2a-rust
+  has: `RELEASING.md` already states the versioning and MSRV policy, and the
+  others serve a foundation donation quack-rs is not making.
+
+### 11.4 Open items
+
+In the order an extension author is likely to want them:
+
+1. Statement metadata (`duckdb_param_type`, `duckdb_prepared_statement_column_*`)
+   and `duckdb_unsafe_vector_assign_string_element_len` (5.1).
+2. Targeting C API `v1.5.6` with `C_STRUCT`: `append_metadata` refuses a
+   `C_STRUCT` version above `v1.2.0`, so the 1.5.6-band functions in 5.1 (log
+   storage, `duckdb_get_table_names`, `duckdb_geometry_type_get_crs`) are out of
+   reach of a `C_STRUCT` extension. DuckDB `main` also appends
+   `duckdb_create_timestamp_tz_ns` / `duckdb_get_timestamp_tz_ns` inside the
+   same 1.5.6 band (548 slots), and adds `DUCKDB_TYPE_TIMESTAMP_TZ_NS = 42`.
+3. `InMemoryDb` offers no `Connection` / `Registrar`, so SQL-level tests of an
+   extension's own functions open a raw connection (`book/src/testing.md`).
+4. No command-line scaffold (`examples/scaffold_to_dir.rs` is the entry point).
+5. COPY functions have no typed bind or global-state helper, unlike table and
+   scalar functions.
+6. CI's `wasm` job runs the unit tests with emsdk 6.0.10 on stable Rust, but
+   `extension-ci-tools` (v1.5.6) builds community WebAssembly extensions with
+   emsdk 3.1.71 and Rust 1.86.0. A job on that exact pair would test what an
+   extension author ships; whether the current test setup works on it is
+   unverified.
+7. `release.yml` runs from the tagged tree, so the tag checks it now makes do
+   not stop a tag on an edited workflow; a repository ruleset restricting `v*`
+   tag creation does (`RELEASING.md`, Prerequisites). Trusted Publishing also
+   needs its one-time crates.io setup. Both are repository settings this
+   change cannot make.
+
+### 11.5 Versions
+
+DuckDB 1.5.6 (2026-09) is the newest release; every lockfile now pins
+`libduckdb-sys` / `duckdb` 1.10506.0. Rust 1.97.0 stable, MSRV 1.86.0.
+mdBook 0.4.40 builds every book (0.5.4 rejects the existing `book.toml`; the
+site builder picks the version each tree pins in `book/mdbook-version`).
+
+### 11.6 How this pass was verified
+
+All on Linux x86-64, Rust 1.97.0 stable, at the working tree committed with
+this section, unless stated.
+
+- **Tests against a real DuckDB:** with the lockfile on `libduckdb-sys`
+  1.10506.0 and the prebuilt libduckdb 1.5.6,
+  `cargo test --features bundled-test-prebuilt,duckdb-1-5-4 --all-targets`:
+  1,456 passed, 0 failed, 0 ignored, across 13 test binaries; the crate
+  doctests 214 passed (3 ignored, deliberately: an anti-pattern, an arrow-rs
+  bridge, a `WRONG` example); the book and README doctests (`book/doctest`)
+  252 passed (4 ignored). Earlier in the pass the same suite passed against
+  1.5.5. `cargo test --all-targets` (no DuckDB) passed.
+- **Lints and docs:** `cargo fmt --check`; `cargo clippy --all-targets
+  -D warnings` with no features, with `duckdb-1-5-4`, and with
+  `bundled-test-prebuilt,duckdb-1-5-4`; `cargo doc --no-deps` with
+  `-D warnings`, with and without `duckdb-1-5-4`. All clean.
+- **MSRV:** `cargo +1.86.0 check`, with and without `duckdb-1-5-4`: clean,
+  on the lockfile resolved with `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`.
+- **Live extension:** hello-ext built, stamped with `append_metadata` and loaded
+  into the DuckDB 1.5.6 CLI: `scripts/check-hello-ext.py` 31/31.
+- **Regression tests shown failing without their fix** (by reverting the fix in
+  the tree and re-running): the duplicate-ENUM message, the entry-point
+  `unused_unsafe` test. The cast re-registration test registers a different
+  callback second, which the old test could not distinguish. The
+  `try_f64_to_*` tests assert, at each boundary, that DuckDB itself returns 0
+  for every refused input.
+- **Public API:** `cargo semver-checks` 0.51.0 against crates.io's 0.18.0 with
+  `--only-explicit-features --features duckdb-1-5-4`: 202 checks, 202 pass. (The
+  default feature heuristic enables `bundled-test`, which compiles DuckDB from
+  source; CI runs that form.)
+- **Supply chain:** `cargo deny` 0.20.2 (with `yanked = "deny"` and
+  `unused-allowed-license = "deny"`, default and all features): pass.
+  osv-scanner 2.7.0 (binary hash equal to the release's `SHA256SUMS`) on all
+  four lockfiles: no issues. `cargo publish --dry-run`: 222 files, builds.
+  `cargo package` reproducibility: as in 11.2.
+- **Book and site:** `scripts/build-versioned-site.py` builds `/`, `/v0.18/`,
+  `/v0.16/` and `/dev/` and its post-build checks pass; the version menu and
+  banners were driven in headless Chromium (light, navy, 390 px wide), switching
+  versions keeps the page and falls back to the version's index when the page
+  is absent; all 116 docs.rs links in `/dev/` resolve to `/dev/api/` files.
+  `mdbook build`, `seo-postbuild.py` (51 pages), `generate-sitemap.py --check`,
+  `check-book-links.py` (243 relative, 52 docs.rs links) and
+  `sync-book-changelog.py --check` pass.
+- **Upstream drift checks:** `check-abi-table.py`, `check-platform-table.py`,
+  `check-spdx-list.py`, `check-autoload-entries.py` (v1.5.0 to v1.5.6) pass.
+  `check-msrv-vs-duckdb-ci.py` exited 2 ("could not check") — its pattern never
+  matched the `@1.86.0` WebAssembly pin, and upstream `main` now pins through
+  a YAML anchor — so CI had been treating it as a skipped warning. Fixed; it
+  checks `main` (1.97.1) and `v1.5.6` (1.86.0, `stable`) and passes.
+- **Workflows:** `check-workflow-expressions.py` (6 files) and the new
+  `check-ci-aggregate.py` (34 blocking jobs) pass; the latter's standard-library
+  parser agrees with PyYAML on all 37 jobs. Every action SHA introduced was read
+  from `git ls-remote` of its repository. GitHub Actions itself was not run:
+  this pass cannot trigger it, so the restructured `release.yml`, the
+  `workflow_call` of `ci.yml` and the `docs.yml` deploy are verified by parse
+  and review only, until they first run.

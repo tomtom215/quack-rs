@@ -77,6 +77,44 @@ appender's active columns. It makes fewer FFI calls than appending row by row
 and suits data that is already in vectors; it is refused while a row appended
 by hand is still open.
 
+The chunks can come from a query
+([`QueryResult::next_chunk`](https://docs.rs/quack-rs/latest/quack_rs/query/struct.QueryResult.html#method.next_chunk)),
+from Arrow, or from
+[`OwnedDataChunk::new`](https://docs.rs/quack-rs/latest/quack_rs/query/struct.OwnedDataChunk.html#method.new),
+which creates an empty chunk with the column types you give it:
+
+```rust,no_run
+use quack_rs::appender::Appender;
+use quack_rs::error::ExtensionError;
+use quack_rs::query::OwnedDataChunk;
+use quack_rs::types::{LogicalType, TypeId};
+# use libduckdb_sys::duckdb_connection;
+
+# unsafe fn load(con: duckdb_connection) -> Result<(), ExtensionError> {
+let chunk = OwnedDataChunk::new(&[
+    LogicalType::new(TypeId::BigInt),
+    LogicalType::new(TypeId::Varchar),
+])?;
+let rows = [(1_i64, "one"), (2, "two")];
+// SAFETY: column 0 is BIGINT, column 1 is VARCHAR, and two rows fit within
+// `chunk.capacity()`.
+unsafe {
+    let mut ids = chunk.writer(0);
+    let mut names = chunk.writer(1);
+    for (row, (id, name)) in rows.iter().enumerate() {
+        ids.write_i64(row, *id);
+        names.write_varchar(row, name);
+    }
+    chunk.set_size(rows.len());
+}
+// SAFETY: `con` is a valid, open connection and `events` has these columns.
+let appender = unsafe { Appender::new(con, None, c"events") }?;
+appender.append_chunk(&chunk)?;
+appender.close()?;
+# Ok(())
+# }
+```
+
 ```rust,no_run
 use quack_rs::appender::{AppendError, Appender};
 use quack_rs::data_chunk::DataChunk;

@@ -138,7 +138,7 @@ fn unlisted_license_is_a_warning() {
                \x20\x20\x20\x20- Jane\n\
                repo:\n\
                \x20\x20github: j/r\n\
-               \x20\x20ref: main\n";
+               \x20\x20ref: 4f1c2e9\n";
     let desc = parse_description_yml(yml).unwrap();
     assert_eq!(desc.license, "FAKE-LICENSE");
     assert_eq!(desc.warnings.len(), 1, "{:?}", desc.warnings);
@@ -780,4 +780,78 @@ fn empty_list_entries_are_skipped() {
     let desc = parse_description_yml(&yml).unwrap();
     assert_eq!(desc.maintainers, vec!["Jane Doe"]);
     assert_eq!(desc.excluded_platforms, "osx_amd64");
+}
+
+/// `repo.ref` is what the community build checks out: anything but a commit
+/// hash is accepted, with a warning naming it.
+#[test]
+fn a_ref_that_is_not_a_commit_hash_is_a_warning() {
+    let yml = |git_ref: &str| {
+        format!(
+            "extension:\n  name: my_ext\n  description: d\n  language: Rust\n  build: cargo\n  \
+             license: MIT\n  requires_toolchains: rust\n  maintainers:\n    - Jane\n\
+             repo:\n  github: j/r\n  ref: {git_ref}\n"
+        )
+    };
+    for not_a_hash in ["main", "v0.1.0", "4f1c2e", "4f1c2e9g"] {
+        let desc = parse_description_yml(&yml(not_a_hash)).unwrap();
+        assert_eq!(desc.warnings.len(), 1, "{not_a_hash}: {:?}", desc.warnings);
+        assert!(
+            desc.warnings[0].contains("not a commit hash") && desc.warnings[0].contains(not_a_hash),
+            "{:?}",
+            desc.warnings
+        );
+    }
+    for hash in [
+        "4f1c2e9",
+        "4F1C2E9A7B3D5C8E1F0A2B4C6D8E0F1A3B5C7D9E",
+        &"a".repeat(64),
+    ] {
+        let desc = parse_description_yml(&yml(hash)).unwrap();
+        assert!(desc.warnings.is_empty(), "{hash}: {:?}", desc.warnings);
+    }
+    let too_long = "a".repeat(65);
+    let desc = parse_description_yml(&yml(&too_long)).unwrap();
+    assert_eq!(desc.warnings.len(), 1, "{:?}", desc.warnings);
+}
+
+/// extension-ci-tools matches `;rust;` as an exact token, so `python3; rust`
+/// installs no Rust toolchain; the check used to trim and accept it.
+#[test]
+fn a_padded_rust_toolchain_token_is_refused() {
+    let yml = |toolchains: &str| {
+        format!(
+            "extension:\n  name: my_ext\n  description: d\n  language: Rust\n  build: cargo\n  \
+             license: MIT\n  requires_toolchains: \"{toolchains}\"\n  maintainers:\n    - Jane\n\
+             repo:\n  github: j/r\n  ref: 4f1c2e9\n"
+        )
+    };
+    let err = validate_rust_extension(&parse_description_yml(&yml("python3; rust")).unwrap())
+        .expect_err("a space before rust");
+    assert!(
+        err.to_string()
+            .contains("matches ';'-separated tokens exactly"),
+        "{err}"
+    );
+    assert!(
+        validate_rust_extension(&parse_description_yml(&yml("rust ;python3")).unwrap()).is_err()
+    );
+    assert!(validate_rust_extension(&parse_description_yml(&yml("python3;rust")).unwrap()).is_ok());
+    let err = validate_rust_extension(&parse_description_yml(&yml("python3")).unwrap())
+        .expect_err("no rust");
+    assert!(err.to_string().contains("must include 'rust'"), "{err}");
+}
+
+/// `PyYAML` keeps the spaces inside a quoted scalar, so the community build sees
+/// `" my_ext"`; the parser used to trim it to a valid name.
+#[test]
+fn a_quoted_value_keeps_its_spaces() {
+    let yml = "extension:\n  name: \" my_ext\"\n  description: d\n  language: Rust\n  \
+               build: cargo\n  license: MIT\n  maintainers:\n    - Jane\n\
+               repo:\n  github: j/r\n  ref: 4f1c2e9\n";
+    match parse_description_yml(yml) {
+        Ok(desc) => assert_eq!(desc.name, " my_ext"),
+        Err(e) => assert!(e.to_string().contains("extension name must start"), "{e}"),
+    }
+    assert!(crate::validate::description_yml::validate_description_yml_str(yml).is_err());
 }

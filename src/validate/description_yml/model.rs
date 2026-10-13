@@ -53,7 +53,8 @@ pub struct DescriptionYml {
     // repo section
     /// GitHub repository in `owner/repo` format.
     pub github: String,
-    /// Git ref (branch name, tag, or full commit SHA).
+    /// The git ref the community build checks out: a commit hash. A branch or
+    /// tag is accepted with a warning in [`DescriptionYml::warnings`].
     pub git_ref: String,
     /// `repo.ref_next` — a revision compatible with `DuckDB`'s `main` branch,
     /// empty when absent.

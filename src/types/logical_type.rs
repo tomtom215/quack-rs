@@ -680,7 +680,7 @@ impl LogicalType {
 }
 
 impl Drop for LogicalType {
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     fn drop(&mut self) {
         // SAFETY: `self.inner` was created by `duckdb_create_logical_type` and has not
         // been transferred elsewhere. It is safe to destroy exactly once here.

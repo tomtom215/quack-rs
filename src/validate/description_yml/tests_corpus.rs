@@ -129,5 +129,11 @@ fn folded_description_flow_maintainers_and_toolchain_list() {
         desc.warnings
     );
     assert!(has_warning(&desc, "'GPL-3.0'"), "{:?}", desc.warnings);
-    assert_eq!(desc.warnings.len(), 2, "{:?}", desc.warnings);
+    // It pins a tag, not a commit.
+    assert!(
+        has_warning(&desc, "repo.ref 'v0.1.0' is not a commit hash"),
+        "{:?}",
+        desc.warnings
+    );
+    assert_eq!(desc.warnings.len(), 3, "{:?}", desc.warnings);
 }

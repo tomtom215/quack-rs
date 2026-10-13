@@ -19,12 +19,9 @@ use quack_rs::types::TypeId;
 use quack_rs::vector::{VectorReader, VectorWriter};
 use libduckdb_sys::{duckdb_function_info, duckdb_vector, idx_t};
 
-unsafe extern "C" fn varchar_to_int(
-    info: duckdb_function_info,
-    count: idx_t,
-    input: duckdb_vector,
-    output: duckdb_vector,
-) -> bool {
+// `cast_callback!` generates `unsafe extern "C" fn varchar_to_int(...) -> bool`
+// and turns a panic in the body into a cast error instead of a process abort.
+quack_rs::cast_callback!(varchar_to_int, |info, count, input, output| {
     let cast_info = unsafe { CastFunctionInfo::new(info) };
     let reader = unsafe { VectorReader::from_vector(input, count as usize) };
     let mut writer = unsafe { VectorWriter::new(output) };
@@ -51,7 +48,7 @@ unsafe extern "C" fn varchar_to_int(
         }
     }
     true
-}
+});
 
 fn register(con: libduckdb_sys::duckdb_connection)
     -> Result<(), quack_rs::error::ExtensionError>
@@ -73,7 +70,7 @@ expressions where the types do not match:
 # use quack_rs::cast::CastFunctionBuilder;
 # use quack_rs::types::TypeId;
 # use libduckdb_sys::{duckdb_function_info, duckdb_vector, idx_t};
-# unsafe extern "C" fn my_cast(_: duckdb_function_info, _: idx_t, _: duckdb_vector, _: duckdb_vector) -> bool { true }
+# quack_rs::cast_callback!(my_cast, |_info, _count, _input, _output| { true });
 # fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 unsafe {
     CastFunctionBuilder::new(TypeId::Varchar, TypeId::Integer)
@@ -94,7 +91,7 @@ parameterising the cast behaviour (e.g., a rounding mode):
 # use quack_rs::types::TypeId;
 # use libduckdb_sys::{duckdb_function_info, duckdb_vector, idx_t};
 # use std::os::raw::c_void;
-# unsafe extern "C" fn my_cast(_: duckdb_function_info, _: idx_t, _: duckdb_vector, _: duckdb_vector) -> bool { true }
+# quack_rs::cast_callback!(my_cast, |_info, _count, _input, _output| { true });
 # unsafe extern "C" fn my_destroy(_: *mut c_void) {}
 # fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 let mode = Box::into_raw(Box::new("round".to_string())).cast::<c_void>();
@@ -166,7 +163,7 @@ the `new_logical` constructor instead of `new`:
 # use quack_rs::cast::CastFunctionBuilder;
 # use quack_rs::types::{LogicalType, TypeId};
 # use libduckdb_sys::{duckdb_function_info, duckdb_vector, idx_t};
-# unsafe extern "C" fn my_cast(_: duckdb_function_info, _: idx_t, _: duckdb_vector, _: duckdb_vector) -> bool { true }
+# quack_rs::cast_callback!(my_cast, |_info, _count, _input, _output| { true });
 # fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
 unsafe {
     CastFunctionBuilder::new_logical(

@@ -66,12 +66,14 @@ use libduckdb_sys::{
 
 use crate::error::ExtensionError;
 
-/// Type names a miss on which makes `DuckDB` 1.5.5 autoload an extension:
-/// `EXTENSION_TYPES` in `src/include/duckdb/main/extension_entries.hpp`.
+/// Type names that make `DuckDB` 1.5.5 autoload an extension when a lookup
+/// does not find them in the catalog (`EXTENSION_TYPES` in
+/// `src/include/duckdb/main/extension_entries.hpp`).
 const AUTOLOADING_TYPE_NAMES: &[&str] = &["json", "inet"];
 
-/// Collation names a miss on which makes `DuckDB` 1.5.5 autoload `icu`:
-/// `EXTENSION_COLLATIONS` in `src/include/duckdb/main/extension_entries.hpp`.
+/// Collation names that make `DuckDB` 1.5.5 autoload the `icu` extension when
+/// a lookup does not find them in the catalog (`EXTENSION_COLLATIONS` in
+/// `src/include/duckdb/main/extension_entries.hpp`).
 const AUTOLOADING_COLLATION_NAMES: &[&str] = &[
     "af", "am", "ar", "ar_sa", "as", "az", "be", "bg", "bn", "bo", "br", "bs", "ca", "ceb", "chr",
     "cs", "cy", "da", "de", "de_at", "dsb", "dz", "ee", "el", "en", "en_us", "eo", "es", "et",

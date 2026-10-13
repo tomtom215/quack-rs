@@ -35,7 +35,7 @@ impl Value {
     // both give `""`, and producing a non-null VARCHAR needs a live engine,
     // which the `--cargo-arg=--lib` mutation run does not have. The end-to-end
     // suite covers the non-empty case.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn as_str_or_default(&self) -> String {
         self.as_str().unwrap_or_default()
     }

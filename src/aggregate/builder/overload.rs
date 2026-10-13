@@ -188,7 +188,7 @@ impl AggregateOverloadBuilder {
     ///
     /// Use this for parameterized types that [`TypeId`] cannot express, such as
     /// `LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`.
-    #[mutants::skip] // position arithmetic tested via E2E
+    #[cfg_attr(test, mutants::skip)] // position arithmetic tested via E2E
     pub fn param_logical(mut self, logical_type: LogicalType) -> Self {
         let position = self.params.len() + self.logical_params.len();
         self.logical_params.push((position, logical_type));
@@ -218,7 +218,7 @@ impl AggregateOverloadBuilder {
     // stores. Covered end-to-end instead, by the DECIMAL(18,2) overload in
     // `one_aggregate_set_serves_overloads_with_different_return_types`. Same
     // reasoning as `ScalarOverloadBuilder::returns_logical`.
-    #[mutants::skip] // tested via E2E
+    #[cfg_attr(test, mutants::skip)] // tested via E2E
     pub fn returns_logical(mut self, logical_type: LogicalType) -> Self {
         self.return_logical = Some(logical_type);
         self

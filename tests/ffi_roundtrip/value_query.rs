@@ -544,3 +544,18 @@ fn arrow_options_from_an_owned_connection_convert_a_chunk() {
     drop(con);
     assert_eq!(first_varchar(&owned_connection(&fx), "SELECT 'x'"), "x");
 }
+
+/// A duplicate ENUM member is refused with a message naming it (`DuckDB`'s C
+/// API returns only null); members differing in case are distinct, as in SQL.
+#[test]
+fn enum_type_names_a_duplicate_member_and_keeps_case_distinct() {
+    let _fx = Fixture::open();
+    let err = LogicalType::try_enum_type(&["a", "b", "a"]).expect_err("duplicate");
+    assert!(
+        err.to_string().contains("duplicate ENUM member \"a\""),
+        "{err}"
+    );
+    let cased = LogicalType::try_enum_type(&["a", "A"]).expect("case-distinct members");
+    // SAFETY: the type is live.
+    assert_eq!(unsafe { cased.get_type_id() }, TypeId::Enum);
+}

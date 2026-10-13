@@ -9,9 +9,9 @@ This directory contains all GitHub Actions workflows for the quack-rs project.
 
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
-| **CI** | `ci.yml` | Push to `main`/`claude/**`, PRs to `main` | All quality gates: check, test, clippy, fmt, doc, MSRV, bench-compile, example, scaffold, symbol, publish dry-run, security |
-| **Release** | `release.yml` | Semver tags (`vX.Y.Z`) | Full release pipeline: validate, CI gate, package with SLSA attestation, GitHub release, crates.io publish |
-| **Documentation** | `docs.yml` | Push to `main`, manual | Build mdBook and deploy to GitHub Pages |
+| **CI** | `ci.yml` | Push to `main`/`claude/**`, PRs to `main`, weekly schedule, manual, called by `release.yml` | Every quality gate (table below), summarised by the `ci-ok` job |
+| **Release** | `release.yml` | Semver tags (`vX.Y.Z`, and `vX.Y.Z-pre` prereleases) | Full release pipeline: validate the tag, run all of `ci.yml`, package with SLSA attestation, publish to crates.io (approval required), check crates.io serves the attested `.crate`, GitHub release, versioned-book deploy |
+| **Documentation** | `docs.yml` | Push to `main`, manual, dispatched by `release.yml` after a release | Build the versioned book (latest release at `/`, each release line at `/vX.Y/`, `main` at `/dev/`) and deploy to GitHub Pages |
 | **Coverage** | `coverage.yml` | Push to `main`, PRs to `main` | Generate LCOV coverage report and upload to Codecov |
 | **Mutation Testing** | `mutants.yml` | Manual dispatch, PRs to `main` | Verify tests detect code changes via cargo-mutants |
 | **Benchmarks** | `benchmarks.yml` | Push to `main` (bench/src changes), manual | Run criterion benchmarks and archive reports |
@@ -60,6 +60,15 @@ replaced had drifted to fewer than half the jobs.
 | `asan` | AddressSanitizer | blocking |
 | `semver` | Public API (semver-checks) | blocking |
 | `fuzz` | Fuzz (smoke) | blocking |
+| `ci-ok` | CI passed | blocking (aggregate) |
+
+**Branch protection should require exactly one check: `CI passed`** (the
+`ci-ok` job). It `needs:` every blocking job and runs with `if: always()`, so
+it fails when any of them fails or is cancelled.
+`scripts/check-ci-aggregate.py` (run by the `doc` job) fails when a blocking
+job is missing from its `needs`, so a new job cannot drop out of the required
+set unnoticed. `release.yml` runs this whole workflow as its CI gate
+(`workflow_call`), so a release passes the same checks.
 
 Regenerate after adding or renaming a job:
 

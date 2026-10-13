@@ -103,10 +103,12 @@ inside the host DuckDB process and uses that process's DuckDB instance, memory a
 
 `libduckdb-sys = ">=1.4.4, <2"` — the bounded range is intentional.
 
-Every DuckDB 1.4.x and 1.5.x release loads extensions built for **C API version `v1.2.0`**
+quack-rs supports DuckDB 1.4.4 and later 1.x releases. Every one of them loads extensions
+built for **C API version `v1.2.0`**
 (the version string passed to `duckdb_rs_extension_api_init`, `quack_rs::DUCKDB_API_VERSION`).
-DuckDB 1.5.6 declares C API version `v1.5.6` and still accepts `v1.2.0` extensions. CI loads
-the example extension into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest release.
+DuckDB 1.5.6 declares C API version `v1.5.6` and still accepts `v1.2.0` extensions. CI runs
+the test suite against DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5 and 1.5.6, and loads the example
+extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6 and the latest release.
 Using a range rather than an exact pin means:
 
 - Extension authors can choose which `libduckdb-sys` release to build against (for example
@@ -132,8 +134,9 @@ Which DuckDB releases accept an extension binary depends on the ABI type stamped
 metadata footer:
 
 - A `C_STRUCT` binary targeting C API `v1.2.0` (the default, stable API only) loads into
-  every DuckDB release whose C API version is at least `v1.2.0` — all of 1.4.x and 1.5.x —
-  on the platform it was built for
+  every DuckDB release whose C API version is at least `v1.2.0` on the platform it was
+  built for. That includes every release quack-rs supports (1.4.4 and later); quack-rs does
+  not test releases before 1.4.4
 - A `C_STRUCT_UNSTABLE` binary loads only into the exact DuckDB release it names. Stamp
   builds that use the `duckdb-1-5*` features this way, so DuckDB itself refuses a mismatched
   release; quack-rs's runtime layout check is the backstop when the stamp is missing

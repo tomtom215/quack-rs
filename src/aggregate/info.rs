@@ -66,7 +66,7 @@ impl AggregateFunctionInfo {
     /// destroy every aggregate state it created, so whatever those states own
     /// (an [`FfiState`][crate::aggregate::FfiState] box, for one) leaks. See
     /// Known Limitations in the book.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.

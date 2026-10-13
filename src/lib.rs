@@ -22,22 +22,23 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! // In your extension's src/lib.rs, write the entry point manually:
-//! use quack_rs::entry_point::init_extension;
+//! // In your extension's src/lib.rs:
+//! use quack_rs::entry_point;
+//! use quack_rs::error::ExtensionError;
 //!
-//! #[no_mangle]
-//! pub unsafe extern "C" fn my_extension_init_c_api(
-//!     info: libduckdb_sys::duckdb_extension_info,
-//!     access: *const libduckdb_sys::duckdb_extension_access,
-//! ) -> bool {
-//!     unsafe {
-//!         init_extension(info, access, quack_rs::DUCKDB_API_VERSION, |con| {
-//!             // register_my_function(con)?;
-//!             Ok(())
-//!         })
-//!     }
+//! fn register(_con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {
+//!     // register_my_function(con)?;
+//!     Ok(())
 //! }
+//!
+//! // Generates the `#[no_mangle] extern "C"` entry point. Pass the full symbol
+//! // name DuckDB looks up: `{extension_name}_init_c_api`.
+//! entry_point!(my_extension_init_c_api, |con| register(con));
 //! ```
+//!
+//! To write the entry point by hand instead, call
+//! [`init_extension`][entry_point::init_extension] directly; the
+//! [`entry_point`](mod@entry_point) module documentation shows how.
 //!
 //! ## Architecture
 //!
@@ -60,6 +61,7 @@
 //! | [`vector`] | Safe helpers for reading/writing `DuckDB` data vectors |
 //! | [`vector::complex`] | STRUCT / LIST / MAP / ARRAY vector access (child vectors, offsets) |
 //! | [`vector::struct_reader`] | Batched [`StructReader`][vector::StructReader] for STRUCT input vectors |
+//! | `vector::ops` | Whole-vector operations driven by a selection vector (`duckdb-1-5` feature) |
 //! | [`vector::struct_writer`] | Batched [`StructWriter`][vector::StructWriter] for STRUCT output vectors |
 //! | [`types`] | `DuckDB` type system wrappers (`TypeId`, `LogicalType`) |
 //! | [`datetime`] | `DATE`/`TIME`/`TIMESTAMP` calendar conversions, `HUGEINT`/`DECIMAL` helpers |
@@ -73,7 +75,7 @@
 //! | [`validate`] | Community extension compliance validators |
 //! | [`validate::description_yml`] | Parse and validate `description.yml` metadata |
 //! | [`scaffold`] | Project generator for new extensions (no C++ glue needed) |
-//! | [`testing`] | Test harness for aggregate state logic |
+//! | [`testing`] | Test utilities: `AggregateTestHarness`, mock vectors (`MockVectorReader`, `MockVectorWriter`), `MockRegistrar`, and `InMemoryDb` (`bundled-test` feature) |
 //! | [`query`] | Running SQL from an extension (`QueryResult`, `PreparedStatement`, `OwnedConnection`) |
 //! | [`prelude`] | Convenience re-exports of the most commonly used items |
 //! | [`appender`] | Bulk row appender (`Appender`) |
@@ -91,7 +93,9 @@
 //!
 //! ## Safety
 //!
-//! All `unsafe` code within this SDK is sound and documented. Extension authors
+//! All `unsafe` code within this SDK is intended to be sound, and each block is
+//! documented. It has been audited; [`AUDIT.md`](https://github.com/tomtom215/quack-rs/blob/main/AUDIT.md)
+//! records the passes and the defects they found. Extension authors
 //! must write `unsafe extern "C"` callback functions (required by `DuckDB`'s C API),
 //! but the SDK's helpers minimize the surface area of unsafe code within those
 //! callbacks.
@@ -116,11 +120,17 @@
 //!
 //! 1. **Thin wrapper**: every abstraction must pay for itself in reduced boilerplate
 //!    or improved safety. When in doubt, prefer simplicity.
-//! 2. **No panics across FFI**: every callback kind runs under `catch_unwind`, so a panic
-//!    becomes a SQL error; library code panics only where a `# Panics` section says so.
-//! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2` to support `DuckDB` 1.4.x
-//!    and 1.5.x while preventing silent adoption of breaking changes in future major
-//!    releases.
+//! 2. **No panics across FFI**: the entry point macros, the `*_callback!` macros in
+//!    [`callback`], the closure-based builders and [`FfiState`][aggregate::state::FfiState]'s
+//!    callbacks run user code under `catch_unwind`, so a panic becomes a SQL error. A raw
+//!    `unsafe extern "C" fn` that you pass to a builder yourself is installed as written,
+//!    with no guard; define it with the matching `*_callback!` macro or wrap its body in
+//!    [`catch_ffi_panic`][callback::catch_ffi_panic]. Library code panics only where a
+//!    `# Panics` section says so.
+//! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2`, so the crate supports
+//!    `DuckDB` 1.4.4 and later 1.x releases and does not silently adopt a future major
+//!    release. CI tests against 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5 and 1.5.6, and loads an
+//!    extension into the latest `DuckDB` release (1.5.6 at the time of writing).
 //! 4. **Testable business logic**: state structs have zero FFI dependencies.
 //!
 //! ## Pitfalls
@@ -128,7 +138,8 @@
 //! See [`LESSONS.md`](https://github.com/tomtom215/quack-rs/blob/main/LESSONS.md)
 //! for every known `DuckDB` Rust FFI pitfall, with symptoms, root causes, and fixes.
 //!
-//! ## Pitfall L1: COMBINE must propagate config fields
+//! One of them, Pitfall L1 (COMBINE must propagate config fields), produces
+//! silently wrong results rather than an error:
 //!
 //! `DuckDB`'s segment tree creates fresh target states with `state_init` —
 //! `T::default()` for an [`FfiState<T>`][aggregate::state::FfiState] — and then

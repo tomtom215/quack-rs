@@ -188,7 +188,7 @@ impl<T: Send + Sync + 'static> ScalarBindData<T> {
     // The whole body is two FFI calls; with no live engine there is no way to
     // observe whether they happened, so the `--lib` mutation run cannot kill
     // `with ()`. Covered end to end by the typed scalar-bind tests.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set(info: &ScalarBindInfo, data: T)
     where
         T: Clone,
@@ -274,7 +274,7 @@ impl<T: Send + 'static> ScalarLocalState<T> {
     /// the state back from an init callback, so quack-rs cannot free it.
     // As `ScalarBindData::set`: one FFI call, no observable effect without a
     // live engine.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set(info: &ScalarInitInfo, state: T) {
         let raw = Box::into_raw(Box::new(state)).cast::<c_void>();
         // SAFETY: `raw` is a fresh `Box<T>` and `drop_boxed::<T>` is the

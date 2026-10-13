@@ -110,7 +110,7 @@ impl ScalarOverloadBuilder {
     ///
     /// Use this for parameterized types that [`TypeId`] cannot express, such as
     /// `LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`.
-    #[mutants::skip] // position arithmetic tested via E2E
+    #[cfg_attr(test, mutants::skip)] // position arithmetic tested via E2E
     pub fn param_logical(mut self, logical_type: LogicalType) -> Self {
         let position = self.params.len() + self.logical_params.len();
         self.logical_params.push((position, logical_type));
@@ -133,7 +133,7 @@ impl ScalarOverloadBuilder {
     ///
     /// If both `returns` and `returns_logical` are called, the logical type takes
     /// precedence.
-    #[mutants::skip] // tested via E2E
+    #[cfg_attr(test, mutants::skip)] // tested via E2E
     pub fn returns_logical(mut self, logical_type: LogicalType) -> Self {
         self.return_logical = Some(logical_type);
         self
@@ -150,7 +150,7 @@ impl ScalarOverloadBuilder {
     ///
     /// Mirrors [`ScalarFunctionBuilder::varargs`][super::ScalarFunctionBuilder::varargs],
     /// including the error from `register` for a composite `type_id`.
-    #[mutants::skip] // tested via E2E
+    #[cfg_attr(test, mutants::skip)] // tested via E2E
     pub fn varargs(mut self, type_id: TypeId) -> Self {
         self.varargs = Some(super::signature::Varargs::Id(type_id));
         self
@@ -160,7 +160,7 @@ impl ScalarOverloadBuilder {
     ///
     /// Mirrors
     /// [`ScalarFunctionBuilder::varargs_logical`][super::ScalarFunctionBuilder::varargs_logical].
-    #[mutants::skip] // tested via E2E
+    #[cfg_attr(test, mutants::skip)] // tested via E2E
     pub fn varargs_logical(mut self, logical_type: LogicalType) -> Self {
         self.varargs = Some(super::signature::Varargs::Logical(logical_type));
         self
@@ -182,10 +182,11 @@ impl ScalarOverloadBuilder {
     ///
     /// Guard it against panics with
     /// [`scalar_bind_callback!`](crate::scalar_bind_callback), **not**
-    /// `table_bind_callback!`: the two share a C signature, so the compiler
-    /// accepts either, but the table macro reports a panic through the table
-    /// function's `duckdb_bind_set_error`, which writes past the smaller scalar
-    /// bind info and corrupts the stack.
+    /// `table_bind_callback!`. The compiler refuses the table macro here — its
+    /// function takes a table function's bind info, not a
+    /// [`RawScalarBindInfo`](crate::scalar::RawScalarBindInfo) — because a
+    /// table callback reports a panic through `duckdb_bind_set_error`, which
+    /// would write past the smaller scalar bind info and corrupt the stack.
     #[cfg(feature = "duckdb-1-5")]
     pub fn bind(mut self, f: ScalarBindFn) -> Self {
         self.bind = Some(f);
@@ -198,10 +199,11 @@ impl ScalarOverloadBuilder {
     ///
     /// Guard it against panics with
     /// [`scalar_init_callback!`](crate::scalar_init_callback), **not**
-    /// `table_init_callback!`: the two share a C signature, so the compiler
-    /// accepts either, but the table macro reports a panic through the table
-    /// function's `duckdb_init_set_error`, which writes past the smaller scalar
-    /// init info and corrupts the stack.
+    /// `table_init_callback!`. The compiler refuses the table macro here — its
+    /// function takes a table function's init info, not a
+    /// [`RawScalarInitInfo`](crate::scalar::RawScalarInitInfo) — because a
+    /// table callback reports a panic through `duckdb_init_set_error`, which
+    /// would write past the smaller scalar init info and corrupt the stack.
     #[cfg(feature = "duckdb-1-5")]
     pub fn init(mut self, f: ScalarInitFn) -> Self {
         self.init = Some(f);

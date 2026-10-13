@@ -1,7 +1,20 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Tom F.
 #
-# Documentation deployment — builds mdBook and deploys to GitHub Pages.
+# Documentation deployment — builds the versioned mdBook site and deploys it
+# to GitHub Pages (quack-rs.com).
+#
+# The site holds one book per release line plus main (see
+# scripts/build-versioned-site.py for the layout): / is the latest release,
+# /vX.Y/ each release line, /dev/ the main branch with its rustdoc under
+# /dev/api/. Every deploy rebuilds all of it from the git tags, so the output
+# depends only on the tags and main, and there is no gh-pages branch to drift.
+#
+# A push to main redeploys /dev/. A release redeploys / and adds /vX.Y/:
+# release.yml's last job dispatches this workflow on main once the crate is
+# on crates.io (a tag-triggered run would be refused by the github-pages
+# environment's branch policy, and the release commit's own main push ran
+# before its tag existed).
 
 name: Deploy Documentation
 
@@ -10,76 +23,58 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Only the deploy job needs to write Pages; the build job runs repository
+# code (cargo doc, the site builder) and gets a read-only token.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
-env:
-  MDBOOK_VERSION: "0.4.40"
-
 jobs:
   build:
-    name: Build mdBook
+    name: Build versioned site
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Every release tag: each release line's book is built from its tag.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master 2026-09-03
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
           toolchain: stable
 
-      - name: Cache Cargo registry and mdBook binary
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
-
-      - name: Install mdBook
+      # main's API reference for /dev/api/, with the docs.rs feature set
+      # (Cargo.toml [package.metadata.docs.rs]). Released versions link to
+      # docs.rs instead.
+      - name: Build API documentation (main)
+        run: cargo doc --no-deps --features duckdb-1-5-4
         env:
-          # Do not build third-party tools with warnings-as-errors.
-          RUSTFLAGS: ""
-        run: |
-          if ! command -v mdbook &>/dev/null; then
-            echo "Installing mdBook ${{ env.MDBOOK_VERSION }}..."
-            cargo install mdbook --locked --version "${{ env.MDBOOK_VERSION }}"
-          else
-            echo "mdBook $(mdbook --version) already cached."
-          fi
+          RUSTDOCFLAGS: "-D warnings"
 
-      - name: Generate sitemap.xml
-        run: python3 scripts/generate-sitemap.py
-
-      - name: Build documentation
-        run: mdbook build
-
-      # Per-page canonical URL, meta description and og: tags, which mdBook's
-      # templates cannot produce (see the script's header).
-      - name: Add per-page SEO tags
-        run: python3 scripts/seo-postbuild.py book/book
+      # Downloads each mdBook version the books pin (book/mdbook-version;
+      # 0.4.40 for tags that predate the file), checked against the sha256
+      # in the script, then builds, post-processes and checks the site.
+      - name: Build versioned site
+        run: python3 scripts/build-versioned-site.py --out site --dev-api target/doc
 
       - name: Write build summary
         run: |
-          PAGE_COUNT=$(find book/book -name '*.html' | wc -l)
           {
-            echo "## Documentation built successfully"
+            echo "## Documentation built"
             echo ""
-            echo "| Item | Value |"
-            echo "|------|-------|"
-            echo "| mdBook version | \`${{ env.MDBOOK_VERSION }}\` |"
-            echo "| HTML pages generated | \`${PAGE_COUNT}\` |"
-            echo "| Output directory | \`book/book/\` |"
+            echo '```json'
+            cat site/versions.json
+            echo '```'
+            echo ""
+            echo "HTML pages: $(find site -name '*.html' | wc -l)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Setup GitHub Pages
@@ -88,10 +83,14 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: book/book
+          path: site
 
   deploy:
     name: Deploy to GitHub Pages
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

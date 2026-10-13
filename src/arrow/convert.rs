@@ -39,7 +39,7 @@ use crate::types::LogicalType;
 /// - [`DuckDbErrorType::OutOfRange`] if there are more columns than `idx_t` can
 ///   hold.
 /// - Whatever `DuckDB` reports for a type it cannot render as Arrow.
-#[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
+#[cfg_attr(test, mutants::skip)] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub fn to_arrow_schema(
     options: &ArrowOptions<'_>,
     columns: &[(&str, &LogicalType)],
@@ -127,7 +127,7 @@ pub fn to_arrow_schema(
 /// - [`DuckDbErrorType::InvalidInput`] naming the column and value, for a
 ///   value `DuckDB` would export wrongly (see above).
 /// - Whatever `DuckDB` reports for a type it cannot render as Arrow.
-#[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
+#[cfg_attr(test, mutants::skip)] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub fn data_chunk_to_arrow(
     options: &ArrowOptions<'_>,
     chunk: &DataChunk,
@@ -175,7 +175,7 @@ pub fn data_chunk_to_arrow(
 /// # Safety
 ///
 /// `connection` must be a live `duckdb_connection`.
-#[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
+#[cfg_attr(test, mutants::skip)] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub unsafe fn schema_from_arrow(
     connection: duckdb_connection,
     schema: &mut ArrowSchema,
@@ -316,7 +316,7 @@ pub unsafe fn schema_from_arrow(
 ///   `docs/upstream-duckdb-reports.md`, item 29). The value read is
 ///   discarded: those rows are NULL. A buffer padded to a multiple of 64
 ///   bytes satisfies this unless the values fill it exactly.
-#[mutants::skip] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
+#[cfg_attr(test, mutants::skip)] // FFI conversion — covered by tests/ffi_roundtrip.rs, which `--lib` does not run
 pub unsafe fn data_chunk_from_arrow(
     connection: duckdb_connection,
     mut array: ArrowArray,
@@ -378,7 +378,7 @@ pub unsafe fn data_chunk_from_arrow(
              `Allocator::AllocateData(0)`, whose `D_ASSERT(size > 0)` aborts a debug build of \
              DuckDB. A release build allocates nothing and carries on, so this is refused here \
              rather than left to depend on how the engine was compiled. Skip empty batches, or \
-             build the empty chunk directly with `duckdb_create_data_chunk`.",
+             build the empty chunk directly with `OwnedDataChunk::new`.",
         ));
     }
 

@@ -11,7 +11,9 @@
 //! representations:
 //!
 //! - **Inline** (length ≤ 12): `[ len: u32 | data: [u8; 12] ]`
-//! - **Pointer** (length > 12): `[ len: u32 | prefix: [u8; 4] | ptr: *const u8 | unused: u32 ]`
+//! - **Pointer** (length > 12): `[ len: u32 | prefix: [u8; 4] | ptr: *const u8 ]`, the
+//!   pointer at offset 8 (on a 32-bit target it takes 4 bytes and 4 bytes of
+//!   padding follow)
 //!
 //! This is not documented in the Rust bindings. The layout was determined by
 //! reading `DuckDB`'s C source and confirmed by the duckdb-behavioral implementation.

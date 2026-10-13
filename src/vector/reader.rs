@@ -100,7 +100,7 @@ impl VectorReader {
     }
 
     /// Returns the number of rows in this vector.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     #[inline]
     pub const fn row_count(&self) -> usize {

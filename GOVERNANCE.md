@@ -53,8 +53,10 @@ If consensus cannot be reached:
 
 ## Code of Conduct
 
-All participants are expected to behave respectfully and professionally.
-Violations may be reported to the maintainers at tomf@tomtomtech.net.
+All participants are expected to follow the
+[Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). Violations may be
+reported to the maintainer at tomf@tomtomtech.net; the Code of Conduct describes
+how reports are handled.
 
 ## Release Process
 
@@ -64,7 +66,14 @@ Violations may be reported to the maintainers at tomf@tomtomtech.net.
 3. **Release Steps:**
    - A maintainer opens a release PR updating version numbers and the changelog.
    - The PR must pass CI and receive at least one maintainer approval.
-   - After merging, the maintainer tags the commit and publishes to crates.io.
+   - After the PR is merged and CI on `main` passes, the maintainer pushes a
+     tag (`vX.Y.Z`, GPG-signed where possible; RELEASING.md Step 5) for the
+     merged commit. The tag push starts the
+     release workflow (`.github/workflows/release.yml`), which validates the
+     tag, re-runs CI, packages the crate and creates the GitHub release.
+   - The workflow's `publish` job runs `cargo publish` only after an
+     authorised reviewer approves the `crates-io` deployment environment.
+     The runbook has no manual `cargo publish` step.
 4. **Hotfixes** — Security and critical bug fixes may bypass the normal review
    period at a maintainer's discretion.
 

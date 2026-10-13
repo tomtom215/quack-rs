@@ -637,10 +637,18 @@ impl LogicalType {
     ///
     /// # Errors
     ///
-    /// Returns an error if a member name contains a null byte, or if
-    /// `duckdb_create_enum_type` returns null (it does for duplicate members).
+    /// Returns an error if a member name contains a null byte, if two members
+    /// are equal (compared exactly, as `DuckDB` does: `'a'` and `'A'` are
+    /// distinct members), or if `duckdb_create_enum_type` returns null.
     pub fn try_enum_type(members: &[&str]) -> Result<Self, LogicalTypeError> {
         const API: &str = "duckdb_create_enum_type";
+        let mut seen = std::collections::HashSet::with_capacity(members.len());
+        if let Some(dup) = members.iter().find(|&&m| !seen.insert(m)) {
+            return Err(LogicalTypeError::with_detail(
+                API,
+                format!("duplicate ENUM member {dup:?}"),
+            ));
+        }
         let c_names: Vec<CString> = members
             .iter()
             .map(|&n| {

@@ -58,7 +58,7 @@ impl CopyBindInfo {
     }
 
     /// Returns the number of columns in the output.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[must_use]
     pub fn column_count(&self) -> u64 {
         // SAFETY: self.info is valid per constructor contract.
@@ -173,7 +173,7 @@ impl CopyBindInfo {
     ///
     /// An interior null byte in `message` is replaced by `?`, and an empty
     /// message by [`EMPTY_ERROR_PLACEHOLDER`].
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
@@ -201,7 +201,7 @@ impl CopyBindInfo {
     }
 
     /// Returns the underlying raw handle.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[inline]
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_copy_function_bind_info {
@@ -323,7 +323,7 @@ impl CopyGlobalInitInfo {
     ///
     /// An interior null byte in `message` is replaced by `?`, and an empty
     /// message by [`EMPTY_ERROR_PLACEHOLDER`].
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
@@ -348,7 +348,7 @@ impl CopyGlobalInitInfo {
     }
 
     /// Returns the underlying raw handle.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[inline]
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_copy_function_global_init_info {
@@ -415,7 +415,7 @@ impl CopySinkInfo {
     ///
     /// An interior null byte in `message` is replaced by `?`, and an empty
     /// message by [`EMPTY_ERROR_PLACEHOLDER`].
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
@@ -440,7 +440,7 @@ impl CopySinkInfo {
     }
 
     /// Returns the underlying raw handle.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[inline]
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_copy_function_sink_info {
@@ -507,7 +507,7 @@ impl CopyFinalizeInfo {
     ///
     /// An interior null byte in `message` is replaced by `?`, and an empty
     /// message by [`EMPTY_ERROR_PLACEHOLDER`].
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);
         // SAFETY: self.info is valid per constructor contract.
@@ -532,7 +532,7 @@ impl CopyFinalizeInfo {
     }
 
     /// Returns the underlying raw handle.
-    #[mutants::skip]
+    #[cfg_attr(test, mutants::skip)]
     #[inline]
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_copy_function_finalize_info {

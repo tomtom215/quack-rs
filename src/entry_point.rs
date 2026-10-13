@@ -141,6 +141,11 @@ macro_rules! entry_point {
         ///
         /// Called by DuckDB. `info` and `access` are provided by the DuckDB runtime.
         #[no_mangle]
+        // `$register` is expanded inside the `unsafe` block below, so the
+        // `unsafe { … }` a registration closure rightly writes around its own
+        // unsafe calls would otherwise warn as nested (`unused_unsafe`), and
+        // fail a `-D warnings` build of the extension.
+        #[allow(unused_unsafe)]
         pub unsafe extern "C" fn $fn_name(
             info: ::libduckdb_sys::duckdb_extension_info,
             access: *const ::libduckdb_sys::duckdb_extension_access,
@@ -202,6 +207,11 @@ macro_rules! entry_point_v2 {
         ///
         /// Called by DuckDB. `info` and `access` are provided by the DuckDB runtime.
         #[no_mangle]
+        // `$register` is expanded inside the `unsafe` block below, so the
+        // `unsafe { … }` a registration closure rightly writes around its own
+        // unsafe calls would otherwise warn as nested (`unused_unsafe`), and
+        // fail a `-D warnings` build of the extension.
+        #[allow(unused_unsafe)]
         pub unsafe extern "C" fn $fn_name(
             info: ::libduckdb_sys::duckdb_extension_info,
             access: *const ::libduckdb_sys::duckdb_extension_access,
@@ -828,6 +838,11 @@ fn policy_verdict(policy: AbiPolicy, check: &crate::abi::AbiCheck) -> AbiVerdict
     }
 }
 
+/// What a load reports when the registration closure (or quack-rs's own
+/// setup) returned an [`ExtensionError`] with an empty message.
+pub const EMPTY_INIT_ERROR_PLACEHOLDER: &str =
+    "the extension's initialization failed with an empty error message";
+
 /// Reports an `ExtensionError` back to `DuckDB` via `access.set_error`.
 ///
 /// # Safety
@@ -845,8 +860,15 @@ unsafe fn report_error(
     // SAFETY: access is non-null per the check above and valid per caller's contract.
     if let Some(set_error) = unsafe { (*access).set_error } {
         // Replace, not truncate at, an interior NUL: the same rule as every
-        // other error path (`ExtensionError::to_c_string` included).
-        let c_msg = crate::callback::message_to_c_string(error.as_str());
+        // other error path (`ExtensionError::to_c_string` included). An empty
+        // message would leave DuckDB's "An error was thrown during
+        // initialization of the extension '…': " with nothing after it.
+        let text = if error.as_str().is_empty() {
+            EMPTY_INIT_ERROR_PLACEHOLDER
+        } else {
+            error.as_str()
+        };
+        let c_msg = crate::callback::message_to_c_string(text);
         // SAFETY: c_msg is a valid CString; info is valid.
         unsafe { set_error(info, c_msg.as_ptr()) };
     }
@@ -1081,6 +1103,41 @@ mod tests {
         }
         let reported = REPORTED.lock().ok().and_then(|mut s| s.take());
         assert_eq!(reported.as_deref(), Some("bad config?: key `x` missing"));
+    }
+
+    static REPORTED_EMPTY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    unsafe extern "C" fn capture_empty(_: duckdb_extension_info, msg: *const c_char) {
+        // SAFETY: `report_error` passes a live NUL-terminated string.
+        let text = unsafe { std::ffi::CStr::from_ptr(msg) }
+            .to_string_lossy()
+            .into_owned();
+        if let Ok(mut slot) = REPORTED_EMPTY.lock() {
+            *slot = Some(text);
+        }
+    }
+
+    /// An empty error message is replaced, so the failed LOAD says something.
+    #[test]
+    fn an_init_error_with_an_empty_message_reports_a_placeholder() {
+        let access = duckdb_extension_access {
+            set_error: Some(capture_empty),
+            get_database: Some(null_database),
+            get_api: Some(no_api),
+        };
+        // SAFETY: `access` is a valid struct; `info` is never dereferenced.
+        unsafe {
+            super::report_error(
+                core::ptr::null_mut(),
+                &raw const access,
+                &crate::error::ExtensionError::new(""),
+            );
+        }
+        let reported = REPORTED_EMPTY.lock().ok().and_then(|mut s| s.take());
+        assert_eq!(
+            reported.as_deref(),
+            Some(super::EMPTY_INIT_ERROR_PLACEHOLDER)
+        );
     }
 
     static REPORTED_NO_API: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);

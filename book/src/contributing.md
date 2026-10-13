@@ -1,68 +1,27 @@
 # Contributing
 
-This page describes how to build, test and contribute to quack-rs: the toolchain,
-the quality gates every pull request must pass, the test strategy, code standards,
-the repository layout and the release policy. Bug reports, documentation fixes, newly
+This page describes how to contribute to quack-rs: the test strategy, code standards,
+the repository layout and the release policy. The toolchain and the quality gates are
+listed in `CONTRIBUTING.md`, linked below. Bug reports, documentation fixes, newly
 discovered pitfalls and code are all welcome.
 
 ---
 
-## Development prerequisites
+## Prerequisites and quality gates
 
-| Tool | Version | Purpose |
-|------|---------|---------|
-| Rust | ≥ 1.86.0 (MSRV) | Compiler |
-| `rustfmt` | stable | Formatting |
-| `clippy` | stable | Linting |
-| `cargo-msrv` | latest | MSRV verification |
+The toolchain list and the quality gates every pull request must pass are kept in
+one place, [`CONTRIBUTING.md`](https://github.com/tomtom215/quack-rs/blob/main/CONTRIBUTING.md),
+under [Development Prerequisites](https://github.com/tomtom215/quack-rs/blob/main/CONTRIBUTING.md#development-prerequisites)
+and [Quality Gates](https://github.com/tomtom215/quack-rs/blob/main/CONTRIBUTING.md#quality-gates).
+Each gate there names the CI job in `.github/workflows/ci.yml` that runs it. This page
+does not repeat the commands, so they cannot drift apart.
 
-Install the Rust toolchain via [rustup.rs](https://rustup.rs/).
-
----
-
-## Building
+To build the crate and the example extension:
 
 ```bash
-# Build the library
 cargo build
-
-# Build in release mode (enables LTO + strip)
-cargo build --release
-
-# Build the hello-ext example extension
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
 ```
-
----
-
-## Quality gates
-
-**All of the following must pass before merging any pull request:**
-
-```bash
-# Tests — zero failures, zero ignored
-cargo test
-
-# Integration tests
-cargo test --test integration_test
-
-# Doctests — `--all-targets` does not include them
-cargo test --doc --features duckdb-1-5-4
-
-# Linting — zero warnings (warnings are errors)
-cargo clippy --all-targets -- -D warnings
-
-# Formatting
-cargo fmt -- --check
-
-# Documentation — zero broken links or missing docs
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-
-# MSRV — must compile on Rust 1.86.0 (excludes benches; matches CI)
-cargo +1.86.0 check
-```
-
-These same checks run in CI on every push and pull request.
 
 ---
 
@@ -98,8 +57,9 @@ Selected modules include `proptest`-based tests:
 
 `examples/hello-ext/` contains `#[cfg(test)]` unit tests for its pure-Rust logic.
 CI also tests it end to end: it builds the `cdylib`, appends the metadata footer
-with `append_metadata`, and loads it into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest
-release. See `CONTRIBUTING.md` for the exact commands.
+with `append_metadata`, loads it into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest
+release, and runs every SQL check in `examples/hello-ext/sql_checks.txt` with
+`scripts/check-hello-ext.py`. Gate 7 in `CONTRIBUTING.md` gives the exact commands.
 
 ---
 
@@ -126,7 +86,10 @@ unsafe { drop(Box::from_raw(ffi.inner)) };
 ### No panics across FFI
 
 A panic must never escape a function DuckDB calls (callbacks and entry
-points): every callback kind runs under `catch_unwind`. Beyond that, library code
+points). The entry point macros, the `*_callback!` macros, the closure-based
+builders and `FfiState`'s callbacks run user code under `catch_unwind`; a raw
+`unsafe extern "C" fn` passed to a builder is installed as written, with no guard.
+Beyond that, library code
 uses `Option`/`Result` and `?`, and panics only where its `# Panics` section says
 so — `VectorWriter::write_varchar` on a string over 4 GiB, or a builder's
 `new(name)` on an interior NUL, which has `try_new(name)` beside it.
@@ -255,15 +218,21 @@ quack-rs/
 │   │   ├── escape.rs                  # Quoting configured free text for YAML and Rust doc comments
 │   │   ├── mod.rs                     # Project scaffolding for `DuckDB` Rust extensions
 │   │   ├── templates.rs               # Template generators for scaffold file content
+│   │   ├── templates_ci.rs            # The generated project's CI and distribution workflows
 │   │   ├── tests.rs                   # Unit tests
 │   │   ├── tests_escaping.rs          # Free text reaches the generated files intact
-│   │   └── tests_generated.rs         # Unit tests
+│   │   ├── tests_generated.rs         # Unit tests
+│   │   └── tests_workflows.rs         # The generated workflows match the community build
 │   ├── scalar/
 │   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks
 │   │   ├── mod.rs                     # Builder for registering `DuckDB` scalar functions
 │   │   ├── state.rs                   # Typed bind data and per-thread local state for scalar functions (`DuckDB` 1.5.0+)
 │   │   ├── typed.rs                   # Scalar functions written as ordinary Rust closures
 │   │   ├── typed_builder.rs           # The builder the closure-based scalar constructors return, and the one `extern "C"` trampoline they all share
+│   │   ├── typed/
+│   │   │   ├── fallible.rs            # Closure-based scalar constructors whose closure can fail (`try_map*`)
+│   │   │   ├── ternary.rs             # Three-argument closure-based scalar constructors (`map3`, `try_map3`)
+│   │   │   └── tests.rs               # Unit tests
 │   │   └── builder/
 │   │       ├── collision.rs           # Refusing a scalar signature that would replace an existing one or make calls ambiguous
 │   │       ├── mod.rs                 # Builder for registering `DuckDB` scalar functions
@@ -350,6 +319,7 @@ quack-rs/
 ├── tests/
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
+│   ├── entry_point_lint.rs            # The entry-point macros accept an `unsafe` registration closure warning-free
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
@@ -374,6 +344,7 @@ quack-rs/
 │       ├── mock_parity.rs             # `MockRegistrar` refuses a bad type with the live registration's message
 │       ├── nested_reserve.rs          # which nested buffers a `LIST` reserve moves (the writer contracts)
 │       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
+│       ├── owned_chunk.rs             # `OwnedDataChunk::new`, `capacity` and `reset` against a live `DuckDB`
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
@@ -382,6 +353,7 @@ quack-rs/
 │       ├── table_description.rs       # `TableDescription` accessors on an index `DuckDB` cannot hold
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── typed_scalar_opt.rs        # Typed scalar closures returning `Option`, the `try_*` constructors and `map3`
 │       ├── value_getters.rs           # Each typed `Value` getter at its own type; out-of-range TIMETZ / TIME_NS are not cast
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
@@ -394,9 +366,12 @@ quack-rs/
 │   └── hello-ext/                 # Reference extension: aggregates, scalars, table functions, casts
 ├── book/                          # mdBook documentation source
 │   ├── src/                       # Markdown pages (this site)
-│   └── theme/custom.css
+│   ├── theme/custom.css
+│   ├── versioning/                # The version menu and banner every page gets
+│   └── mdbook-version             # The mdBook version this book builds with
+├── scripts/build-versioned-site.py  # Builds the site: one book per release line, plus main
 ├── .github/workflows/ci.yml       # CI pipeline
-├── .github/workflows/docs.yml     # GitHub Pages deployment
+├── .github/workflows/docs.yml     # GitHub Pages deployment (the versioned site)
 ├── CONTRIBUTING.md
 ├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L19, P1–P12)
 ├── CHANGELOG.md
@@ -407,8 +382,8 @@ quack-rs/
 
 ## Releasing
 
-quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering DuckDB 1.4.x
-and 1.5.x, every one of which loads C API `v1.2.0` extensions. The `<2` upper bound
+quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering DuckDB 1.4.4
+and later 1.x releases, every one of which loads C API `v1.2.0` extensions. The `<2` upper bound
 prevents silent adoption of a future major release that may change the C API.
 Before broadening the range to a new major band:
 
@@ -420,7 +395,7 @@ Before broadening the range to a new major band:
 
 Versions follow [Semantic Versioning](https://semver.org/) as Cargo applies it.
 While the crate is pre-1.0, a breaking change to the public API bumps the
-**minor** version (`0.17.x` → `0.18.0`) and is marked **Breaking:** in
+**minor** version (for example `0.18.x` → `0.19.0`) and is marked **Breaking:** in
 `CHANGELOG.md`; see the semantic versioning policy in
 [`RELEASING.md`](https://github.com/tomtom215/quack-rs/blob/main/RELEASING.md).
 

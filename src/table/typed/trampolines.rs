@@ -78,17 +78,16 @@ unsafe extern "C" fn destroy_extra<S: Send + 'static>(ptr: *mut c_void) {
 /// `&str`, so there is no reason to discard the one piece of information that
 /// tells the user *which* assertion or `unwrap` failed.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload.downcast_ref::<&'static str>().map_or_else(
-        || {
-            payload.downcast_ref::<String>().map_or_else(
-                || {
-                    String::from(
-                        "quack-rs: typed table function closure panicked (unknown payload)",
-                    )
-                },
-                |s| format!("quack-rs: typed table function closure panicked: {s}"),
-            )
-        },
+    // The same three payload types `callback::panic_message` recognises:
+    // `panic!` with a literal, `panic!` with a format string, and
+    // `panic_any(Box<str>)`.
+    let text = payload
+        .downcast_ref::<&'static str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .or_else(|| payload.downcast_ref::<Box<str>>().map(AsRef::as_ref));
+    text.map_or_else(
+        || String::from("quack-rs: typed table function closure panicked (unknown payload)"),
         |s| format!("quack-rs: typed table function closure panicked: {s}"),
     )
 }
@@ -324,6 +323,11 @@ mod tests {
         assert_eq!(
             contain_payload(payload),
             "quack-rs: typed table function closure panicked: bang"
+        );
+        let payload: Box<dyn std::any::Any + Send> = Box::new(Box::<str>::from("the real reason"));
+        assert_eq!(
+            contain_payload(payload),
+            "quack-rs: typed table function closure panicked: the real reason"
         );
     }
 

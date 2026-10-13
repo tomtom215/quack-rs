@@ -51,8 +51,10 @@ for file in &files {
 ```
 
 In a new repository, add the build tooling submodule once with
-`git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools`
-(`git submodule update --init` does nothing until then — Pitfall P4).
+`git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools`
+(`git submodule update --init` does nothing until then — Pitfall P4), and commit
+before the first `make configure`; the full sequence is under
+[CI workflow](#ci-workflow).
 
 This generates:
 
@@ -66,6 +68,7 @@ my_extension/
 ├── description.yml
 ├── test/sql/my_extension.test
 ├── .github/workflows/extension-ci.yml
+├── .github/workflows/MainDistributionPipeline.yml
 ├── .gitmodules
 ├── .gitignore
 └── .cargo/config.toml
@@ -75,39 +78,90 @@ my_extension/
 
 ## `description.yml`
 
-The file the scaffold generates, with the fields a community submission uses:
+This is the file `generate_scaffold` writes for the configuration above, with
+`git_ref` set to a commit hash. Every text field is quoted because the community
+build reads the file with PyYAML (YAML 1.1), where an unquoted `yes` is a
+boolean and a version such as `1.0` is a number. An `excluded_platforms` line
+appears only when `excluded_platforms` is not empty, and `extended_description`
+repeats `description` until you replace it.
 
 ```yaml
 extension:
-  name: my_extension
-  description: One-line description of what your extension does
-  version: 0.1.0
+  name: "my_extension"
+  description: "One-line description of what your extension does"
+  version: "0.1.0"
   language: Rust
   build: cargo
   license: MIT
   requires_toolchains: rust;python3
-  # excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads"   # optional
   maintainers:
-    - Your Name
+    - "Your Name"
 
 repo:
-  github: yourorg/duckdb-my-extension
-  # Must be a commit hash, not a branch: the community repository builds
-  # exactly this revision and signs the result, so a moving reference would
-  # make the build unreproducible. DuckDB's docs: "Provide the hash of the
-  # latest commit on the branch targeting stable as `ref`".
-  ref: 0a11ddc058beb2d480ccbfa83e16a68400c5d076
+  github: "yourorg/duckdb-my-extension"
+  # Must be a commit hash, not a branch.
+  ref: "0a11ddc058beb2d480ccbfa83e16a68400c5d076"
   # ref_next: <hash>   # optional: a revision compatible with DuckDB main,
   #                    # used while a new DuckDB release is being prepared.
 
 docs:
   hello_world: |
     SELECT my_extension_hello('world');
-  extended_description: |
-    A longer description, rendered on the community-extensions site.
+  extended_description: "One-line description of what your extension does"
 ```
 
-Use `quack_rs::validate` to pre-validate fields before submission:
+`my_extension_hello` is the SQL macro the generated `src/lib.rs` registers, so the
+`hello_world` example works as generated.
+
+### `repo.ref`
+
+DuckDB's
+[community extension documentation](https://duckdb.org/community_extensions/development)
+asks for a commit: "Provide the hash of the latest commit on the branch targeting
+stable as `ref`". The community repository builds exactly that revision and signs
+the result, so a branch name, which moves, would make the build unreproducible.
+Use a full commit hash. (A few published descriptors pin a tag instead; none pins
+a branch.)
+
+quack-rs does not check that the value is a hash. `ScaffoldConfig::git_ref`
+accepts letters, digits, `-`, `_`, `.` and `/`, and defaults to the placeholder
+`REPLACE_WITH_COMMIT_HASH`, which `git` cannot resolve, so an unedited file cannot
+be built by accident. `validate_description_yml_str` only requires `repo.ref` to be
+non-empty.
+
+### Validating the whole file
+
+`validate_description_yml_str` checks a complete `description.yml`, and
+`parse_description_yml` returns its fields for inspection. Non-fatal findings,
+such as a license that SPDX does not list, are collected in `warnings` instead of
+failing. `validate_rust_extension` additionally checks the fields a Rust
+extension needs (`language: Rust`, `build: cargo`, `rust` in
+`requires_toolchains`):
+
+```rust,no_run
+use quack_rs::error::ExtensionError;
+use quack_rs::validate::description_yml::{
+    parse_description_yml, validate_description_yml_str, validate_rust_extension,
+};
+
+fn check_description() -> Result<(), ExtensionError> {
+    let text = std::fs::read_to_string("description.yml")?;
+    validate_description_yml_str(&text)?;
+
+    let desc = parse_description_yml(&text)?;
+    println!("{} {}", desc.name, desc.version.as_deref().unwrap_or("(no version)"));
+    for warning in &desc.warnings {
+        println!("warning: {warning}");
+    }
+    validate_rust_extension(&desc)
+}
+# check_description().unwrap();
+```
+
+The rule for each field is in the
+[`description_yml` module documentation](https://docs.rs/quack-rs/latest/quack_rs/validate/description_yml/index.html).
+
+The individual validators check one field at a time:
 
 ```rust
 use quack_rs::validate::{
@@ -145,6 +199,21 @@ myorg_analytics   ✓
 analytics         ✗  (likely taken or too generic)
 ```
 
+Function names are SQL identifiers, checked by `validate_function_name`:
+letters, digits and underscores, not starting with a digit. Mixed case is
+allowed (DuckDB itself ships `formatReadableSize`), and reserved keywords are
+rejected:
+
+```rust
+use quack_rs::validate::validate_function_name;
+
+assert!(validate_function_name("word_count").is_ok());
+assert!(validate_function_name("WordCount").is_ok());
+assert!(validate_function_name("word-count").is_err()); // needs quoting in SQL
+assert!(validate_function_name("1word").is_err());      // parsed as a number
+assert!(validate_function_name("order").is_err());      // reserved keyword
+```
+
 > **Pitfall P1** — The `[lib] name` in `Cargo.toml` MUST exactly match the
 > extension name. If your crate name is `duckdb-my-ext` (producing
 > `libduckdb_my_ext.so`) but `description.yml` says `name: my_ext`, the
@@ -161,8 +230,8 @@ analytics         ✗  (likely taken or too generic)
 | `x.y.z` (x > 0) | `1.0.0` | Stable — full semver guarantees |
 
 `validate_extension_version` is deliberately permissive: it accepts these three
-formats and anything else made of `[A-Za-z0-9._+-]`, such as the date-based build ids
-some published extensions use. `classify_extension_version` accepts only the three
+formats and any other string of up to 64 characters made of `[A-Za-z0-9._+-]`,
+such as the date-based build ids some published extensions use. `classify_extension_version` accepts only the three
 formats above and returns the stability tier:
 
 ```rust
@@ -269,7 +338,8 @@ strip = true
 This matches the scaffold's `Cargo.toml` (which also declares a `staticlib` example
 target for WebAssembly builds).
 
-> **ADR-4** (in `LESSONS.md`) — Do NOT use the `duckdb` crate's `bundled` feature. A
+> **[ADR-4](https://github.com/tomtom215/quack-rs/blob/main/docs/architecture.md#adr-4-libduckdb-sys-only-at-run-time-no-duckdb-crate)**
+> — Do NOT use the `duckdb` crate's `bundled` feature. A
 > loadable extension must call into the DuckDB that loads it, not bundle
 > its own copy. `libduckdb-sys` with `loadable-extension` provides function
 > pointers that are filled in at load time from the API struct DuckDB passes in.
@@ -304,25 +374,61 @@ as an abort — and quack-rs catches them before the boundary anyway.
 
 ## CI workflow
 
-The scaffold generates `.github/workflows/extension-ci.yml`, which:
+The scaffold generates two workflows.
 
-1. Runs on pushes and pull requests to `main`
-2. Runs `cargo fmt --check` and `cargo clippy` on Linux, and `cargo test` on Linux,
+`.github/workflows/extension-ci.yml`, the fast check on every push and pull
+request to `main`:
+
+1. Runs `cargo fmt --check` and `cargo clippy` on Linux, and `cargo test` on Linux,
    macOS and Windows
+2. Builds on the minimum Rust version (1.86.0, which DuckDB's own WebAssembly
+   builds use)
 3. Runs `make configure` and `make release`, which use `extension-ci-tools` to build
    the `.duckdb_extension` file
 4. Runs the SQLLogicTests in `test/sql` with `make test`
+
+`.github/workflows/MainDistributionPipeline.yml` calls `extension-ci-tools`'
+`_extension_distribution.yml` — the workflow the community build itself runs —
+for every platform the community build targets, minus `excluded_platforms`. Its
+`exclude_archs` and `description.yml`'s `excluded_platforms` are generated from
+the same setting, so they cannot disagree. The scaffold excludes the
+WebAssembly (`wasm_mvp`, `wasm_eh`, `wasm_threads`) and `windows_amd64_mingw`
+targets by default; set `excluded_platforms` to opt them back in once your
+extension builds there.
 
 After scaffolding:
 
 ```bash
 cd my_extension
 git init
-git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
-git submodule update --init --recursive
+# The extension-ci-tools branch the community build uses for your DuckDB release.
+git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+# Commit before `make configure`.
+git add -A && git commit -m "Initial commit"
 make configure
 make release
 ```
+
+**Commit before `make configure`.** `make configure` writes the extension version
+from `git describe` into `configure/extension_version.txt`. In a repository with
+no commit, that command fails and its error text ("error: malformed object name
+'HEAD'") is written to the file instead. The text overflows the 32-byte version
+field of the metadata footer, and DuckDB then refuses the stamped file with an
+error such as "Unknown ABI type for extension". If this has already happened,
+commit, delete `configure/` (or run `make clean_all`), and run `make configure`
+again.
+
+**Pin `extension-ci-tools` to the community build's version.** The community
+repository builds with the `extension-ci-tools` branch for the current DuckDB
+release: for DuckDB v1.5.6 its build workflow uses
+`_extension_distribution.yml@v1.5-variegata`, and the `v1.5.6` branch points to
+the same commit. Check out the matching branch so your local build uses the same
+scripts. The branch names are listed by
+`git ls-remote https://github.com/duckdb/extension-ci-tools`.
+
+**Ignore `configure/`.** It holds the Python virtualenv, `platform.txt` and
+`extension_version.txt` that `make configure` generates for this machine; do not
+commit it.
 
 > **Pitfall P4** — The `extension-ci-tools` submodule must be initialized.
 > `make configure` fails if the submodule is missing.
@@ -349,7 +455,7 @@ LOAD my_extension;
 
 An extension that uses only the stable C API (the default quack-rs features) is
 stamped `C_STRUCT` with C API version `v1.2.0`, and one binary loads into every
-DuckDB 1.4.x and 1.5.x release for its platform. The `libduckdb-sys = ">=1.4.4, <2"`
+DuckDB release from 1.4.4 through 1.5.6 for its platform. The `libduckdb-sys = ">=1.4.4, <2"`
 range above is correct for such an extension.
 
 An extension that enables the `duckdb-1-5*` features should be stamped

@@ -144,7 +144,9 @@ pub(super) const fn time_tz_encodable(micros: i64, offset_seconds: i32) -> bool 
 /// `Hugeint::POWERS_OF_TEN` (39) by `scale` with no bounds check. This is the
 /// same rule `duckdb_double_to_decimal` enforces in the other direction.
 pub(super) const fn decimal_is_valid(width: u8, scale: u8) -> bool {
-    width <= DECIMAL_MAX_WIDTH && scale <= width
+    // DECIMAL(0, 0) is not a type: `LogicalType::try_decimal` and
+    // `validate_decimal` refuse width 0 too.
+    width >= 1 && width <= DECIMAL_MAX_WIDTH && scale <= width
 }
 
 #[cfg(test)]
@@ -328,5 +330,7 @@ mod tests {
         assert!(!decimal_is_valid(39, 0));
         assert!(!decimal_is_valid(10, 11));
         assert!(!decimal_is_valid(38, 40));
+        assert!(!decimal_is_valid(0, 0));
+        assert!(decimal_is_valid(1, 0));
     }
 }

@@ -629,7 +629,8 @@ pub const CAST_FAILED_WITHOUT_MESSAGE: &std::ffi::CStr =
 ///
 /// A panic is reported through `duckdb_cast_function_set_error` and the
 /// generated function returns `false`. In a regular `CAST` that fails the
-/// query with the panic message. In a `TRY_CAST`, `DuckDB` ignores the return
+/// query with the panic message, and in `DuckDB`'s internal value casts it
+/// makes `DuckDB` throw. In a `TRY_CAST`, `DuckDB` ignores the return
 /// value (see [`CastFn`][crate::cast::CastFn]), so the generated function also
 /// sets **every** row of the chunk to `NULL` through
 /// `duckdb_cast_function_set_row_error`: whatever the body wrote before it

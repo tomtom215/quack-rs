@@ -150,7 +150,7 @@ fn generated_lib_rs_carries_a_real_unit_test() {
     assert!(lib.contains("hello_macro()"), "{lib}");
     assert!(
         lib.contains(
-            r#"CREATE OR REPLACE MACRO "my_analytics_hello"("name") AS (concat('Hello from my_analytics! ', name))"#
+            r#"CREATE OR REPLACE MACRO "my_analytics_hello"("name") AS ('Hello from my_analytics! ' || name)"#
         ),
         "{lib}"
     );
@@ -189,7 +189,7 @@ fn makefile_explains_a_missing_extension_ci_tools_checkout() {
     assert!(check < include, "{makefile}");
     assert!(
         makefile.contains(
-            "git submodule add https://github.com/duckdb/extension-ci-tools.git extension-ci-tools"
+            "git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools"
         ),
         "{makefile}"
     );

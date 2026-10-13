@@ -233,7 +233,7 @@ impl TableFunctionBuilder {
     ///
     /// Use this for parameterized types that [`TypeId`] cannot express, such as
     /// `LIST(BIGINT)`, `MAP(VARCHAR, INTEGER)`, or `STRUCT(...)`.
-    #[mutants::skip] // position arithmetic tested via E2E (requires DuckDB runtime)
+    #[cfg_attr(test, mutants::skip)] // position arithmetic tested via E2E (requires DuckDB runtime)
     pub fn param_logical(mut self, logical_type: LogicalType) -> Self {
         let position = self.params.len() + self.logical_params.len();
         self.logical_params.push((position, logical_type));
@@ -437,10 +437,13 @@ impl TableFunctionBuilder {
         if result == DuckDBSuccess {
             Ok(())
         } else {
+            // The name was checked against the catalog above, so the
+            // name-clash hint the aggregate builders give does not apply.
             Err(ExtensionError::new(format!(
-                "duckdb_register_table_function failed for '{name}': {hint}",
+                "duckdb_register_table_function failed for '{name}': the C API reports no \
+                 reason; the name is free, so a parameter or result type is invalid or a \
+                 required callback (bind, init, scan) was never set",
                 name = handle.name(),
-                hint = crate::error::REGISTRATION_FAILURE_HINT
             )))
         }
     }
@@ -742,14 +745,14 @@ impl TableFunctionHandle {
     ///
     /// `None` for a type this build of quack-rs has no [`TypeId`] for.
     #[must_use]
-    #[mutants::skip] // covered by tests/ffi_roundtrip.rs, which `--lib` does not run
+    #[cfg_attr(test, mutants::skip)] // covered by tests/ffi_roundtrip.rs, which `--lib` does not run
     pub fn param_types(&self) -> &[Option<TypeId>] {
         &self.param_types
     }
 }
 
 impl Drop for TableFunctionHandle {
-    #[mutants::skip] // frees a DuckDB handle; nothing observable without a runtime
+    #[cfg_attr(test, mutants::skip)] // frees a DuckDB handle; nothing observable without a runtime
     fn drop(&mut self) {
         // SAFETY: `self.func` was created by `duckdb_create_table_function` and
         // is destroyed exactly once. DuckDB copies the function on register and
@@ -759,7 +762,7 @@ impl Drop for TableFunctionHandle {
 }
 
 impl core::fmt::Debug for TableFunctionHandle {
-    #[mutants::skip] // Debug rendering is not a behavioural contract
+    #[cfg_attr(test, mutants::skip)] // Debug rendering is not a behavioural contract
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TableFunctionHandle")
             .field("func", &self.func)

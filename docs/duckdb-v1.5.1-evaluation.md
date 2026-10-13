@@ -1,20 +1,29 @@
 # DuckDB v1.5.1 Compatibility Evaluation for quack-rs
 
-> **⚠️ Historical / superseded (as of 2026-05).** This is a point-in-time
-> evaluation written for DuckDB v1.5.1 and quack-rs 0.7.0; it is retained as a
-> decision record. Since then the project has moved to **DuckDB 1.5.3**
-> (`libduckdb-sys` 1.10503.1) and wrapped a large part of the 1.5.x C API
-> (see the [CHANGELOG](../CHANGELOG.md)). Two specifics in this document are now
-> out of date: `DUCKDB_TYPE_VARIANT` **does** now exist in the C type enum (added
-> in DuckDB 1.5.3, value 41), and the `TypeId` gaps it calls out (`Any`,
-> `SqlNull`, `Varint`) have since been filled. The C extension function-pointer
-> API version remains `v1.2.0`. For the current state, see the
-> [Known Limitations](../book/src/reference/known-limitations.md) reference.
+> **Historical evaluation — not current guidance.** This is a point-in-time
+> evaluation of DuckDB v1.5.1 against quack-rs 0.7.0 (2026-03), kept as a decision
+> record. Its statements about versions, missing types and next steps describe
+> that time only. Since then, `DUCKDB_TYPE_VARIANT` has been added to the C type
+> enum (DuckDB 1.5.3, value 41), and the `TypeId` gaps it lists (`Any`,
+> `SqlNull`, `Varint`) have been filled.
+>
+> For the current state, see:
+>
+> - Supported DuckDB releases, the `libduckdb-sys` range and the MSRV: the
+>   [README](../README.md#supported-versions) and `Cargo.toml`.
+> - The `libduckdb-sys` release the tests build against: `Cargo.lock` (CI
+>   derives the DuckDB release from it with `scripts/duckdb-version-from-lock.sh`).
+> - The DuckDB releases CI tests and loads into: the `test-older-engines` and
+>   `extension-load` jobs in `.github/workflows/ci.yml`.
+> - The C extension API version: `quack_rs::DUCKDB_API_VERSION` (`src/lib.rs`)
+>   and the [ABI Compatibility](../book/src/concepts/abi.md) chapter.
+> - Open limitations: the [Known Limitations](../book/src/reference/known-limitations.md)
+>   reference.
 
 **Date:** 2026-03-27
 **DuckDB Release:** v1.5.1 (2026-03-23, commit 7dbb2e6, codename "variegata")
 **quack-rs Version:** 0.7.0 (2026-03-22)
-**Current libduckdb-sys:** 1.10500.0 (DuckDB 1.5.0)
+**libduckdb-sys at the time:** 1.10500.0 (DuckDB 1.5.0)
 
 ## Executive Summary
 
