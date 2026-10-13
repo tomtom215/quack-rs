@@ -99,7 +99,8 @@ existing public item; the behaviour changes are listed under Changed.
   argument, for one), where the callback's `false` is what raises the error,
   so the docs now say to null each failed row **and** return `false`;
   `list_duckdb_secrets` can return credentials (redaction is per field: an
-  `http` secret's `extra_http_headers` comes back in full);
+  `http` secret's `extra_http_headers` comes back in full, and on DuckDB 1.4.4
+  and 1.5.0 so does its `bearer_token`);
   `vector::reference_value` with a mismatched value type casts, can abort or
   overflow, rather than "reinterpreting". Each has a regression test against a
   real `DuckDB` where one can be written.

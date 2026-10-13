@@ -27,9 +27,11 @@
 //! ```
 //!
 //! That is not a guarantee that `secret_string` holds no credential: the
-//! built-in `http` type redacts `bearer_token` and `http_proxy_password` but
-//! renders `extra_http_headers` — an `Authorization` header included — in full,
-//! and a secret type that declares no sensitive keys is rendered whole. Treat
+//! built-in `http` type renders `extra_http_headers` — an `Authorization`
+//! header included — in full, a secret type that declares no sensitive keys is
+//! rendered whole, and what counts as sensitive changes between releases: an
+//! `http` secret's `bearer_token` is redacted by `DuckDB` 1.5.3 and later but
+//! shown in full by 1.4.4 and 1.5.0 (checked in CI; 1.5.1 and 1.5.2 untested). Treat
 //! `secret_string` as sensitive, and do not rely on it as a credential source
 //! either: an extension that needs a credential must obtain it some other way —
 //! an environment variable, a config option, a file, its own key store.
@@ -167,7 +169,8 @@ impl fmt::Debug for DuckDbSecretInfo {
 /// Redaction is per field, so `secret_string` can still hold a credential: an
 /// `http` secret's `extra_http_headers` (an `Authorization` header, say) is
 /// rendered in full, as is every field of a secret type that declares none
-/// sensitive. Do not log `secret_string`; [`DuckDbSecretInfo`]'s `Debug` omits
+/// sensitive, and on `DuckDB` 1.4.4 and 1.5.0 even an `http` secret's
+/// `bearer_token`. Do not log `secret_string`; [`DuckDbSecretInfo`]'s `Debug` omits
 /// it for that reason.
 ///
 /// # Errors

@@ -2704,11 +2704,9 @@ fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
         .iter()
         .find(|s| s.name == "probe_hdr")
         .expect("the header secret");
-    assert!(
-        !hdr.secret_string.contains("tok-hidden"),
-        "{}",
-        hdr.secret_string
-    );
+    // DuckDB 1.5.3 and later redact `bearer_token`; 1.4.4 and 1.5.0 render it
+    // in full too (CI's older-engine jobs), so only the header is asserted on
+    // every engine.
     assert!(
         hdr.secret_string.contains("topsecret-123"),
         "DuckDB renders extra_http_headers in full (the documented hazard): {}",
@@ -2716,6 +2714,7 @@ fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
     );
     let debug = format!("{hdr:?}");
     assert!(!debug.contains("topsecret-123"), "Debug leaked it: {debug}");
+    assert!(!debug.contains("tok-hidden"), "Debug leaked it: {debug}");
     assert!(
         debug.contains("probe_hdr") && debug.contains("bytes, not shown"),
         "{debug}"

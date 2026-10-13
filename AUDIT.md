@@ -1924,8 +1924,10 @@ and pinned by a test), PROVEN (derived from DuckDB's source, cited), CONTRACT
   (VALIDATED). The docs promised a credential-free `secret_string`, but DuckDB
   redacts per field, only the keys a secret type declares sensitive: an `http`
   secret's `extra_http_headers` (an `Authorization` header) comes back in full.
-  The docs now say so and `DuckDbSecretInfo`'s `Debug` omits the string;
-  `tests/ffi_roundtrip.rs` pins both the hazard and the fix.
+  CI's older-engine jobs then showed it is worse on older releases: DuckDB
+  1.4.4 and 1.5.0 render an `http` secret's `bearer_token` in full too (1.5.3
+  and later redact it). The docs now say so and `DuckDbSecretInfo`'s `Debug`
+  omits the string; `tests/ffi_roundtrip.rs` pins both the hazard and the fix.
 - *Cast re-registration is first-wins, documented as last-wins* (VALIDATED,
   PROVEN: `MapCastInfo::AddEntry` uses `std::map::insert`,
   `cast_function_set.cpp:163`). The old test registered the same callback twice

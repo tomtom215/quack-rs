@@ -207,6 +207,7 @@ fn workflow_pins_current_action_releases() {
 /// Both workflows are YAML a GitHub runner accepts, with the structure the
 /// jobs depend on (checked with `PyYAML` when it is installed).
 #[test]
+#[cfg_attr(miri, ignore = "spawns python3; Miri cannot run a subprocess")]
 fn workflows_parse_as_yaml() {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
