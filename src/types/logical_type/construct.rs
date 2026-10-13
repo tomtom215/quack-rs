@@ -707,6 +707,17 @@ mod tests {
             .map_err(|e| e.to_string())
     }
 
+    /// The duplicate check runs before `DuckDB` is called, so it needs no
+    /// database; it must name the repeated member, not the first one.
+    #[test]
+    fn a_duplicate_enum_member_is_named_without_calling_duckdb() {
+        let err = LogicalType::try_enum_type(&["a", "b", "b"]).expect_err("duplicate");
+        assert!(
+            err.to_string().contains("duplicate ENUM member \"b\""),
+            "{err}"
+        );
+    }
+
     #[test]
     fn duplicate_names_are_refused_ignoring_ascii_case() {
         assert_eq!(names(&["a", "b"], None), Ok(2));

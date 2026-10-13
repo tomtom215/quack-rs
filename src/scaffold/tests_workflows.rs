@@ -324,3 +324,21 @@ fn extension_config_cmake_pins_the_configured_ref() {
     );
     assert!(!cmake.contains("GIT_TAG main"), "{cmake}");
 }
+
+/// Only a run of digits followed by `.` or `)` is an ordered-list marker: a
+/// line starting with `.` or `)` itself, or digits followed by anything else,
+/// is plain text and stays unescaped.
+#[test]
+fn only_digits_then_a_list_delimiter_are_escaped() {
+    let config = ScaffoldConfig {
+        description:
+            "Summary\n.dot first\n) paren first\n2026 was a year\n3.5 times faster\n7) seventh"
+                .to_string(),
+        ..valid_config()
+    };
+    let files = generate_scaffold(&config).unwrap();
+    let lib = file(&files, "src/lib.rs");
+    let expected = "//! Summary\n//! .dot first\n//! ) paren first\n//! 2026 was a year\n\
+                    //! 3\\.5 times faster\n//! 7\\) seventh\n";
+    assert!(lib.starts_with(expected), "{lib}");
+}

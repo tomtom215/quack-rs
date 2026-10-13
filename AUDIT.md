@@ -2074,6 +2074,13 @@ this section, unless stated.
   callback second, which the old test could not distinguish. The
   `try_f64_to_*` tests assert, at each boundary, that DuckDB itself returns 0
   for every refused input.
+- **Mutation testing:** `cargo mutants` 27.1.0 (`.cargo/mutants.toml`, so
+  `duckdb-1-5-4` and no live DuckDB) on the lines this pass changed
+  (`--in-diff`): 53 mutants, 46 caught, 4 unviable, 3 missed — two in the
+  scaffold's ordered-list escaping (a line starting with `.` or `)`, or digits
+  not followed by one, was untested) and one in the ENUM duplicate check (the
+  live test's duplicate was also the first member). Tests for all three were
+  added; re-run on those two files: 10 mutants, 9 caught, 1 unviable, 0 missed.
 - **Public API:** `cargo semver-checks` 0.51.0 against crates.io's 0.18.0 with
   `--only-explicit-features --features duckdb-1-5-4`: 202 checks, 202 pass. (The
   default feature heuristic enables `bundled-test`, which compiles DuckDB from
