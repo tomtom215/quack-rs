@@ -2057,7 +2057,8 @@ this section, unless stated.
 - **Tests against a real DuckDB:** with the lockfile on `libduckdb-sys`
   1.10506.0 and the prebuilt libduckdb 1.5.6,
   `cargo test --features bundled-test-prebuilt,duckdb-1-5-4 --all-targets`:
-  1,456 passed, 0 failed, 0 ignored, across 13 test binaries; the crate
+  1,467 passed, 0 failed, 0 ignored, across 13 test binaries (after the merge
+  of #134 below; 1,456 before it); the crate
   doctests 214 passed (3 ignored, deliberately: an anti-pattern, an arrow-rs
   bridge, a `WRONG` example); the book and README doctests (`book/doctest`)
   252 passed (4 ignored). Earlier in the pass the same suite passed against
@@ -2122,3 +2123,20 @@ this section, unless stated.
   (`ci-ok`) among them; the run before showed `ci-ok` failing when Miri did, as
   intended. `release.yml` and the `docs.yml` deploy cannot run from a branch:
   they are verified by parse and review only, until the first release.
+- **Merge of #134 (table function name snapshot):** `main` was merged in with
+  a merge commit. Its snapshot cannot see a table function registered on the
+  raw connection after the catalog was listed, so on DuckDB v1.4.x such a
+  duplicate fails `duckdb_register_table_function`, and this branch's failure
+  message claimed "the name is free" — reproduced against libduckdb 1.4.4,
+  with every test passing. The message now names that cause, and
+  `a_duplicate_the_snapshot_missed_is_named_in_the_v1_4_failure` pins it: shown
+  failing on 1.4.4 with the old message, passing with the new. DuckDB's
+  `duckdb_register_table_function` (`table_function-c.cpp`, v1.4.4 and v1.5.6)
+  fails after quack-rs's own checks only on an `INVALID` parameter type or a
+  catalog exception, so the message no longer names result types or unset
+  callbacks. On the merged tree: 1,467 passed against 1.5.6 (above); with CI's
+  1.4.4 recipe (`cargo update -p duckdb --precise 1.4.4`, then `libduckdb-sys`,
+  feature `bundled-test-prebuilt`, libduckdb 1.4.4) 1,216 passed, 0 failed,
+  `ffi_roundtrip` 183/183; `cargo mutants --in-diff` over the merge's `src/`
+  changes, live features: 4 mutants, 4 caught. Run 655 above predates the merge;
+  CI on the merge head is reported on the pull request.

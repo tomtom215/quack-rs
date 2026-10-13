@@ -98,6 +98,7 @@
 
 pub mod bind_data;
 pub mod builder;
+pub(crate) mod collision;
 pub(crate) mod cstr;
 pub mod info;
 pub mod init_data;

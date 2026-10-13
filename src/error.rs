@@ -38,9 +38,11 @@ use std::fmt;
 ///
 /// A scalar over an existing scalar signature does not fail in `DuckDB` — it
 /// silently replaces it — so the scalar builders check for that themselves
-/// before registering. A table or copy function under an existing name does not
-/// fail either (`DuckDB` drops it and reports success); those builders also
-/// check first. Neither case reaches this hint.
+/// before registering. A copy function under an existing name does not fail
+/// either (`DuckDB` drops it and reports success); those builders also check
+/// first. Table functions do not use this hint: their failure carries its own
+/// message, which covers a duplicate name failing the call on v1.4.x (see
+/// `TableFunctionBuilder::register_with`).
 pub(crate) const REGISTRATION_FAILURE_HINT: &str =
     "the C API reports no reason. The usual cause is a name DuckDB will not merge: an \
      aggregate cannot reuse any existing function or macro name (including its own earlier \

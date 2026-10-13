@@ -380,17 +380,33 @@ impl TableFunctionBuilder {
     /// # A name can be registered once
     ///
     /// `duckdb_register_table_function` adds the function to the system
-    /// catalog with `ALTER_ON_CONFLICT`, and for a table function that means
-    /// "keep the existing entry": the new function is dropped and the call
-    /// still returns success (`DuckSchemaEntry::AddEntryInternal`,
-    /// `src/catalog/catalog_entry/duck_schema_entry.cpp`). The C API has no
-    /// table function *sets*, so there is no way to add an overload to a name
-    /// that exists — a second `register` under the same name, a name another
-    /// extension registered, or a built-in's name (`range`, `read_csv`) would
-    /// silently leave the old function answering. `register` therefore
-    /// checks `duckdb_functions()` first and refuses a name that is already a
+    /// catalog, which keys table functions by name, and the C API has no table
+    /// function *sets*, so there is no way to add an overload to a name that
+    /// exists: the existing entry keeps answering. What the call reports about
+    /// the duplicate differs by release — v1.5.x asks for `ALTER_ON_CONFLICT`,
+    /// which keeps the existing entry, drops the new function and returns
+    /// success; v1.4.x leaves the default `ERROR_ON_CONFLICT`, so the catalog
+    /// throws and the call fails with no reason to report
+    /// (`DuckSchemaEntry::AddEntryInternal`,
+    /// `src/catalog/catalog_entry/duck_schema_entry.cpp`). A second `register`
+    /// under the same name, a name another extension registered, or a built-in's
+    /// name (`range`, `read_csv`) therefore does not take effect either way:
+    /// the old function keeps answering. So `register` checks
+    /// `duckdb_functions()` first and refuses a name that is already a
     /// table function or table macro in the system catalog (compared
     /// case-insensitively, as `DuckDB` resolves names).
+    ///
+    /// Registering through the entry point's
+    /// [`Connection`](crate::connection::Connection) checks against a snapshot
+    /// of the catalog listed on the first registration and kept up to date with
+    /// that connection's own registrations, so an extension with many table
+    /// functions lists the catalog once per `LOAD` rather than once per
+    /// function. Being a one-time copy, the snapshot does not see a table
+    /// function registered on the raw connection after it was listed — by
+    /// another extension's `LOAD`, or by a direct call to this method — so a
+    /// later `register_table` under that name passes the check and is left to
+    /// `DuckDB`, which drops it with a success report on v1.5.x and fails the
+    /// call with no reason on v1.4.x. The scalar check has the same gap.
     ///
     /// Table functions registered through the C API live only in the
     /// in-memory system catalog and are never written to a database file, so
@@ -421,12 +437,38 @@ impl TableFunctionBuilder {
     ///   afterwards.
     /// - `DuckDB` reports a registration failure.
     ///
+    /// # Cost
+    ///
+    /// Each call lists the catalog once — one scan of `duckdb_functions()`,
+    /// tens of milliseconds on `DuckDB` 1.5.x, hardware-dependent.
+    /// Registering through the entry point's
+    /// [`Connection`](crate::connection::Connection) instead (its
+    /// [`Registrar`](crate::connection::Registrar) methods) lists the catalog
+    /// once per extension load, so an extension with many table functions
+    /// pays for one scan rather than one per function.
+    ///
     /// # Safety
     ///
     /// `con` must be a valid, open `duckdb_connection`.
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         // SAFETY: forwarded from this method's own contract.
-        unsafe { refuse_taken_table_function_name(con, self.name()) }?;
+        unsafe { self.register_with(con, None) }
+    }
+
+    /// [`register`][Self::register], checking the name against `snapshot`
+    /// (listed on first use) instead of listing the catalog for this call.
+    ///
+    /// # Safety
+    ///
+    /// As [`register`][Self::register].
+    pub(crate) unsafe fn register_with(
+        self,
+        con: duckdb_connection,
+        snapshot: Option<&core::cell::RefCell<Option<super::collision::ExistingTableFunctions>>>,
+    ) -> Result<(), ExtensionError> {
+        let name = self.name().to_owned();
+        // SAFETY: forwarded from this method's own contract.
+        unsafe { super::collision::refuse_taken_table_function_name(con, snapshot, &name) }?;
         // SAFETY: forwarded from this method's own contract.
         let handle = unsafe { self.build_handle() }?;
 
@@ -435,15 +477,24 @@ impl TableFunctionBuilder {
         let result = unsafe { duckdb_register_table_function(con, handle.as_raw()) };
 
         if result == DuckDBSuccess {
+            super::collision::record_registered(snapshot, &name);
             Ok(())
         } else {
-            // The name was checked against the catalog above, so the
-            // name-clash hint the aggregate builders give does not apply.
+            // The name and callbacks were checked above, which leaves two causes
+            // in `duckdb_register_table_function` (`table_function-c.cpp`): a
+            // parameter type containing `INVALID`, or the catalog throwing. The
+            // catalog throws on a duplicate name on v1.4.x only, and the check
+            // above cannot rule a duplicate out: a snapshot does not see a table
+            // function registered on the raw connection after it was listed. So
+            // the aggregate name-clash hint does not apply, and the message must
+            // not claim the name is free.
             Err(ExtensionError::new(format!(
                 "duckdb_register_table_function failed for '{name}': the C API reports no \
-                 reason; the name is free, so a parameter or result type is invalid or a \
-                 required callback (bind, init, scan) was never set",
-                name = handle.name(),
+                 reason. The name was not taken when the catalog was last listed, so the \
+                 likely cause is an invalid parameter or named-parameter type or, on DuckDB \
+                 v1.4.x, a table function of the same name registered on the raw connection \
+                 since then (a direct TableFunctionBuilder::register, another extension's \
+                 LOAD or an autoload)"
             )))
         }
     }
@@ -657,57 +708,6 @@ impl TableFunctionBuilder {
             name: self.name,
             param_types: param_types_for_copy_from,
         })
-    }
-}
-
-/// Refuses `name` if the system catalog already holds a table function or
-/// table macro with that name (case-insensitively).
-///
-/// See "A name can be registered once" on [`TableFunctionBuilder::register`].
-///
-/// # Safety
-///
-/// `con` must be a valid, open `duckdb_connection`.
-unsafe fn refuse_taken_table_function_name(
-    con: duckdb_connection,
-    name: &str,
-) -> Result<(), ExtensionError> {
-    let context = |detail: String| {
-        ExtensionError::new(format!(
-            "table function '{name}': cannot check whether the name is taken: {detail}"
-        ))
-    };
-    // Every function is qualified with `system.main`, so a user macro of the
-    // same name cannot change what the check computes.
-    let sql = "SELECT count(*) FROM system.main.duckdb_functions() \
-               WHERE database_name = 'system' AND schema_name = 'main' \
-               AND function_type IN ('table', 'table_macro') \
-               AND system.main.lower(function_name) = system.main.lower($1)";
-    // SAFETY: `con` is valid per this function's contract.
-    let statement =
-        unsafe { crate::query::prepare(con, sql) }.map_err(|e| context(e.to_string()))?;
-    statement
-        .bind_str(1, name)
-        .map_err(|e| context(e.to_string()))?;
-    let mut result = statement.execute().map_err(|e| context(e.to_string()))?;
-    let chunk = result
-        .next_chunk()
-        .map_err(|e| context(e.to_string()))?
-        .ok_or_else(|| context("the check returned no rows".into()))?;
-    if chunk.size() != 1 || chunk.column_count() != 1 {
-        return Err(context("the check returned an unexpected shape".into()));
-    }
-    // SAFETY: one row, one BIGINT column; `count(*)` is never NULL.
-    let taken = unsafe { chunk.reader(0).read_i64(0) };
-    if taken == 0 {
-        Ok(())
-    } else {
-        Err(ExtensionError::new(format!(
-            "table function '{name}' already exists (a built-in, another extension's, or an \
-             earlier registration). DuckDB's C API cannot add overloads to an existing table \
-             function: it would drop this registration and still report success, leaving the \
-             existing function to answer. Choose a different name."
-        )))
     }
 }
 
