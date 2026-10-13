@@ -75,7 +75,8 @@ mod unit {
 
     #[test]
     fn try_f64_to_hugeint_refuses_without_calling_duckdb() {
-        let two_127 = 2f64.powi(127);
+        // Exact literals, not `2f64.powi(127)`: Miri perturbs `powi`'s result.
+        let two_127 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0_f64;
         // SAFETY: every input is refused before the `DuckDB` call.
         unsafe {
             for refused in [
@@ -94,7 +95,8 @@ mod unit {
 
     #[test]
     fn try_f64_to_uhugeint_refuses_without_calling_duckdb() {
-        let two_128 = 2f64.powi(128);
+        // Exact literals, not `2f64.powi(128)`: Miri perturbs `powi`'s result.
+        let two_128 = 340_282_366_920_938_463_463_374_607_431_768_211_456.0_f64;
         // SAFETY: every input is refused before the `DuckDB` call.
         unsafe {
             for refused in [
@@ -502,7 +504,8 @@ mod live_tests {
     #[test]
     fn try_f64_to_hugeint_refuses_exactly_what_duckdb_zeroes() {
         let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        let two_127 = 2f64.powi(127);
+        // Exact literals, not `2f64.powi(127)`: Miri perturbs `powi`'s result.
+        let two_127 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0_f64;
         let below = f64::from_bits(two_127.to_bits() - 1); // largest double < 2^127
                                                            // SAFETY: InMemoryDb::open() initialised the dispatch table.
         unsafe {
@@ -534,7 +537,8 @@ mod live_tests {
     #[test]
     fn try_f64_to_uhugeint_refuses_exactly_what_duckdb_zeroes() {
         let _db = InMemoryDb::open().expect("open in-memory DuckDB");
-        let two_128 = 2f64.powi(128);
+        // Exact literals, not `2f64.powi(128)`: Miri perturbs `powi`'s result.
+        let two_128 = 340_282_366_920_938_463_463_374_607_431_768_211_456.0_f64;
         let below = f64::from_bits(two_128.to_bits() - 1);
         // SAFETY: InMemoryDb::open() initialised the dispatch table.
         unsafe {
