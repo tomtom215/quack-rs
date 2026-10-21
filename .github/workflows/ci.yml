@@ -178,15 +178,14 @@ jobs:
         # be hard-coded with a comment asking the next person to keep it in
         # sync with libduckdb-sys; a lockfile bump silently left CI linking a
         # libduckdb one release older than the bindings it was generating.
-        # The release zip ships libduckdb.so and duckdb.hpp; the C++ shim is
-        # compiled against the latter.
+        # scripts/fetch-duckdb.sh picks the release's asset (1.x and 2.x name
+        # them differently); the test shim is generated from the
+        # duckdb_extension.h both ship (build.rs).
         run: |
           set -euo pipefail
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
           echo "libduckdb-sys in Cargo.lock corresponds to DuckDB ${DUCKDB_TAG}"
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip" -o "${{ runner.temp }}/libduckdb.zip"
-          mkdir -p "${{ runner.temp }}/libduckdb"
-          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "${{ runner.temp }}/libduckdb"
       - name: Test against pre-built libduckdb
         env:
           # DUCKDB_LIB_DIR resolves headers + link search; LD_LIBRARY_PATH lets the
@@ -281,15 +280,53 @@ jobs:
           cargo update -p libduckdb-sys --precise "$CRATE"
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
           test "$DUCKDB_TAG" = "$ENGINE" || { echo "::error::pinned to ${DUCKDB_TAG}, not ${ENGINE}"; exit 1; }
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip" -o "${{ runner.temp }}/libduckdb.zip"
-          mkdir -p "${{ runner.temp }}/libduckdb"
-          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "${{ runner.temp }}/libduckdb"
       - name: Test
         env:
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
           FEATURES: ${{ matrix.features }}
         run: cargo test --all-targets --features "$FEATURES"
+
+  test-duckdb-2-0:
+    # The whole live suite against DuckDB v2.0.0. libduckdb-sys has no
+    # crates.io release for DuckDB 2.0 yet (duckdb-rs `main` is 1.20000.0,
+    # unpublished), so the bindings come from duckdb-rs at a pinned commit
+    # whose bundled headers are byte-identical to the v2.0.0 tag's
+    # (duckdb_extension.h, duckdb.h, duckdb_v2.h, duckdb_extension_v2.h).
+    # Once 1.20000.0 is published, move this to `test-older-engines`-style
+    # `cargo update --precise` and drop the patch.
+    name: Test against DuckDB v2.0.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DUCKDB_RS_REV: e1b0940dfddd575c43fe4e2f070d47ee53d419cd
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Patch in the DuckDB 2.0 bindings and download libduckdb v2.0.0
+        run: |
+          set -euo pipefail
+          cat >> Cargo.toml <<EOF
+
+          [patch.crates-io]
+          libduckdb-sys = { git = "https://github.com/duckdb/duckdb-rs", rev = "${DUCKDB_RS_REV}" }
+          duckdb = { git = "https://github.com/duckdb/duckdb-rs", rev = "${DUCKDB_RS_REV}" }
+          EOF
+          cargo update -p libduckdb-sys -p duckdb
+          DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
+          test "$DUCKDB_TAG" = "v2.0.0" || { echo "::error::bindings are ${DUCKDB_TAG}, not v2.0.0"; exit 1; }
+          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "${{ runner.temp }}/libduckdb"
+      - name: Test
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
 
   test-duckdb-1-5:
     name: Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features
@@ -403,9 +440,7 @@ jobs:
           set -euo pipefail
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
           echo "libduckdb-sys in Cargo.lock corresponds to DuckDB ${DUCKDB_TAG}"
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip" -o "${{ runner.temp }}/libduckdb.zip"
-          mkdir -p "${{ runner.temp }}/libduckdb"
-          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "${{ runner.temp }}/libduckdb"
       - name: Clippy beta (including the end-to-end tests)
         env:
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
@@ -788,10 +823,13 @@ jobs:
       # into every one of these — which is exactly the property worth proving,
       # and the one that would break silently.
       #
+      # v2.0.0 accepts C API v1 extensions up to v1.5.6, so a v1.2.0 stamp
+      # still loads there (its loader: `IsSupportedCAPIVersion`).
+      #
       # `latest` stays in the matrix as the early-warning signal for a DuckDB
       # that has not been pinned here yet.
       matrix:
-        duckdb: ["v1.4.4", "v1.5.0", "v1.5.5", "v1.5.6", "latest"]
+        duckdb: ["v1.4.4", "v1.5.0", "v1.5.5", "v1.5.6", "v2.0.0", "latest"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -807,14 +845,9 @@ jobs:
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
-          if [ "${{ matrix.duckdb }}" = "latest" ]; then
-            url=https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip
-          else
-            url=https://github.com/duckdb/duckdb/releases/download/${{ matrix.duckdb }}/duckdb_cli-linux-amd64.zip
-          fi
-          curl -fsSL "$url" -o duckdb.zip
-          unzip -o duckdb.zip
-          chmod +x duckdb
+          # Asset names differ between 1.x and 2.x; the script picks the right
+          # one and resolves `latest` to a tag.
+          scripts/fetch-duckdb.sh "${{ matrix.duckdb }}" cli .
           # Record which DuckDB this job is actually testing against. Without
           # it, a failure three steps later is indistinguishable from a wrong
           # answer -- and these jobs pull `releases/latest`, so the version
@@ -888,9 +921,7 @@ jobs:
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
-          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
-          unzip -o duckdb.zip
-          chmod +x duckdb
+          scripts/fetch-duckdb.sh latest cli .
           # Record which DuckDB this job is actually testing against. Without
           # it, a failure three steps later is indistinguishable from a wrong
           # answer -- and these jobs pull `releases/latest`, so the version
@@ -1023,6 +1054,52 @@ jobs:
           fi
           grep -qx 'SUCCESS' /tmp/scaffold_make.log || {
             echo "::error::the generated project's SQLLogicTest did not report SUCCESS"; exit 1; }
+      - name: A C API v1.5.6 scaffold using duckdb-1-5, built and tested by extension-ci-tools
+        # The stamping quack-rs recommends for the duckdb-1-5 features since
+        # DuckDB 2.0 (which refuses C_STRUCT_UNSTABLE V1 binaries). The extension
+        # calls past the stable prefix at load, so quack-rs's ABI guard runs
+        # against whatever DuckDB extension-ci-tools tests with (the newest on
+        # PyPI), and the footer must say C_STRUCT / v1.5.6.
+        env:
+          DUCKDB_PLATFORM: ""
+          GIT_AUTHOR_NAME: ci
+          GIT_AUTHOR_EMAIL: ci@example.invalid
+          GIT_COMMITTER_NAME: ci
+          GIT_COMMITTER_EMAIL: ci@example.invalid
+        run: |
+          set -euo pipefail
+          cargo run --release --example scaffold_to_dir -- my_capi /tmp/scaffolded_capi --c-api v1.5.6
+          python3 - "$GITHUB_WORKSPACE" <<'PY'
+          import pathlib, re, sys
+          d = pathlib.Path("/tmp/scaffolded_capi")
+          p = d / "Cargo.toml"
+          s, n = re.subn(r'quack-rs = \{ version = "[^"]+" \}',
+                         'quack-rs = { path = "%s", features = ["duckdb-1-5"] }' % sys.argv[1], p.read_text())
+          assert n == 1, n
+          p.write_text(s)
+          p = d / "src/lib.rs"
+          old = "fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {\n"
+          s = p.read_text()
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, old + "    let _ = unsafe { quack_rs::client_context::ClientContext::from_connection(con) }?.connection_id();\n"))
+          PY
+          cd /tmp/scaffolded_capi
+          ref=$(git config -f .gitmodules submodule.extension-ci-tools.branch)
+          git init -q
+          git submodule add -q -b "$ref" https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+          git add -A
+          git commit -qm scaffold
+          make configure release test 2>&1 | tee /tmp/scaffold_capi_make.log
+          grep -qx 'SUCCESS' /tmp/scaffold_capi_make.log || {
+            echo "::error::the C API v1.5.6 project's SQLLogicTest did not report SUCCESS"; exit 1; }
+          ext=$(find build -name 'my_capi.duckdb_extension' | head -n 1)
+          python3 - "$ext" <<'PY'
+          import sys
+          footer = open(sys.argv[1], "rb").read()[-512:]
+          fields = [footer[i * 32:(i + 1) * 32].rstrip(b"\0").decode() for i in range(8)]
+          print(fields)
+          assert fields[3] == "C_STRUCT" and fields[5] == "v1.5.6", fields
+          PY
 
   abi-guard:
     # What this job proves is narrow: a build whose QUACK_RS_TARGET_DUCKDB_VERSION
@@ -1043,9 +1120,7 @@ jobs:
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
-          curl -fsSL https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-linux-amd64.zip -o duckdb.zip
-          unzip -o duckdb.zip
-          chmod +x duckdb
+          scripts/fetch-duckdb.sh latest cli .
           # Record which DuckDB this job is actually testing against. Without
           # it, a failure three steps later is indistinguishable from a wrong
           # answer -- and these jobs pull `releases/latest`, so the version
@@ -1232,8 +1307,7 @@ jobs:
           probe() {  # <duckdb-version> <expected: refuse|load>
             local v=$1 expect=$2 dir=/tmp/duckdb-$1
             mkdir -p "$dir"
-            curl -fsSL "https://github.com/duckdb/duckdb/releases/download/$v/duckdb_cli-linux-amd64.zip" -o "$dir/cli.zip"
-            unzip -o -q "$dir/cli.zip" -d "$dir"
+            scripts/fetch-duckdb.sh "$v" cli "$dir" > /dev/null
             echo "--- $("$dir/duckdb" --version), expecting $expect ---"
             # stdin, not `-c`: `-c` stops at a failed LOAD, so the SELECT
             # would never run; the marker row proves it did.
@@ -1258,6 +1332,50 @@ jobs:
           probe v1.5.0 refuse
           probe v1.4.4 refuse
           probe "$matching" load
+      - name: Stamped C_STRUCT + C API v1.5.6, loaded by DuckDB v1.5.6 and v2.0.0
+        # The stamping quack-rs documents for a duckdb-1-5 build since DuckDB
+        # 2.0, which loads a C_STRUCT_UNSTABLE binary only through the C API v2
+        # entry point. DuckDB before v1.5.6 must refuse it itself (its C API
+        # is v1.2.0); v1.5.6 and v2.0.0 must load it, v2.0.0 because its
+        # 548-slot layout only appends to the 546-slot one these bindings
+        # have (src/abi.rs, PREFIX_LAYOUTS). Valid while Cargo.lock is on the
+        # v1.5.2 - v1.5.6 bindings, which the first check asserts.
+        run: |
+          set -euo pipefail
+          case "$(scripts/duckdb-version-from-lock.sh)" in
+            v1.5.[2-6]) ;;
+            *) echo "::error::Cargo.lock is not on v1.5.2 - v1.5.6 bindings; update this step"; exit 1 ;;
+          esac
+          ./target/release/append_metadata \
+            /tmp/abi_layout/target/release/libabi_layout.so \
+            /tmp/abi_layout/abi_layout_156.duckdb_extension \
+            --abi-type C_STRUCT --extension-version v0.1.0 \
+            --duckdb-version v1.5.6 --platform linux_amd64
+          # DuckDB derives the init symbol from the file name.
+          mkdir -p /tmp/abi_156
+          cp /tmp/abi_layout/abi_layout_156.duckdb_extension /tmp/abi_156/abi_layout.duckdb_extension
+          probe() {  # <duckdb-version> <expected: refuse|load>
+            local v=$1 expect=$2 dir=/tmp/duckdb156-$1
+            mkdir -p "$dir"
+            scripts/fetch-duckdb.sh "$v" cli "$dir" > /dev/null
+            echo "--- $("$dir/duckdb" --version), expecting $expect ---"
+            printf "%s\n" "LOAD '/tmp/abi_156/abi_layout.duckdb_extension';" \
+              "SELECT abi_layout_ok(1);" "SELECT 'after-load';" \
+              | "$dir/duckdb" -unsigned -csv -noheader > "$dir/out.log" 2>&1 || true
+            cat "$dir/out.log"
+            grep -qx 'after-load' "$dir/out.log" || {
+              echo "::error::DuckDB $v: the statements after the LOAD did not run"; exit 1; }
+            if [ "$expect" = refuse ]; then
+              grep -q "built for DuckDB C API version 'v1.5.6'" "$dir/out.log" || {
+                echo "::error::DuckDB $v: expected DuckDB to refuse C API v1.5.6"; exit 1; }
+            else
+              grep -qx '2' "$dir/out.log" || {
+                echo "::error::DuckDB $v: the extension should have loaded and answered 2"; exit 1; }
+            fi
+          }
+          probe v1.5.5 refuse
+          probe v1.5.6 load
+          probe v2.0.0 load
 
   publish-dry-run:
     name: Publish dry-run
@@ -1442,10 +1560,7 @@ jobs:
           set -euo pipefail
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
           echo "libduckdb-sys in Cargo.lock corresponds to DuckDB ${DUCKDB_TAG}"
-          curl -fsSL -o libduckdb.zip \
-            "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip"
-          mkdir -p "$RUNNER_TEMP/libduckdb"
-          unzip -o -q libduckdb.zip -d "$RUNNER_TEMP/libduckdb"
+          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "$RUNNER_TEMP/libduckdb"
           echo "DUCKDB_LIB_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
           echo "DUCKDB_INCLUDE_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
@@ -1498,10 +1613,7 @@ jobs:
           set -euo pipefail
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
           echo "libduckdb-sys in Cargo.lock corresponds to DuckDB ${DUCKDB_TAG}"
-          curl -fsSL -o libduckdb.zip \
-            "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip"
-          mkdir -p "$RUNNER_TEMP/libduckdb"
-          unzip -o -q libduckdb.zip -d "$RUNNER_TEMP/libduckdb"
+          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "$RUNNER_TEMP/libduckdb"
           echo "DUCKDB_LIB_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
           echo "DUCKDB_INCLUDE_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
@@ -1651,9 +1763,7 @@ jobs:
         run: |
           set -euo pipefail
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh fuzz/Cargo.lock)
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_TAG}/libduckdb-linux-amd64.zip" -o "${{ runner.temp }}/libduckdb.zip"
-          mkdir -p "${{ runner.temp }}/libduckdb"
-          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "${{ runner.temp }}/libduckdb"
       - name: Run the live targets briefly
         env:
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
@@ -1692,6 +1802,7 @@ jobs:
       - test-bundled
       - test-bundled-prebuilt
       - test-older-engines
+      - test-duckdb-2-0
       - test-duckdb-1-5
       - wasm
       - clippy
