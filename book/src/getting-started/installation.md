@@ -15,11 +15,15 @@ libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
 > **Why `>=1.4.4, <2`?**
-> DuckDB 1.4.4 and every later 1.x release load extensions built for C API version
-> `v1.2.0` (1.5.6 declares `v1.5.6` and accepts every earlier one), so `quack-rs` supports
-> them all with a single bounded range. Releases before 1.4.4 are not supported. The `<2` upper bound prevents silent adoption of a future
-> major release whose C API may change in breaking ways — making any such upgrade an explicit,
-> auditable decision. See [Extension Anatomy](../concepts/anatomy.md#version-support).
+> DuckDB 1.4.4 through 2.0.0 load extensions built for C API version `v1.2.0` (1.5.6 and
+> 2.0.0 declare `v1.5.6` and accept every earlier one), so `quack-rs` supports them all with
+> a single bounded range. Releases before 1.4.4 are not supported. The range covers the
+> published bindings, 1.4.4 through 1.5.6. The `<2` upper bound does not exclude the DuckDB
+> 2.0 bindings: `libduckdb-sys` numbers DuckDB `vMAJOR.MINOR.PATCH` as
+> `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0`, which the range
+> admits. That release is unpublished as of 2026-10-21 and needs Rust 1.88; a Rust 1.86
+> build with MSRV-aware resolution (resolver 3) stays on `1.10506.x`.
+> See [Extension Anatomy](../concepts/anatomy.md#version-support).
 
 Upgrading an extension from quack-rs 0.16? 0.18 has breaking changes; see
 [Upgrading from 0.16 to 0.18](upgrading-0-18.md) for what to change.
@@ -39,7 +43,7 @@ quack-rs's `Cargo.toml` state.
 | `duckdb-1-5-3` | `libduckdb-sys >= 1.10503.0` (DuckDB 1.5.3) | `TypeId::Variant` and `TypeId::Geometry`. Implies `duckdb-1-5` |
 | `duckdb-1-5-4` | `libduckdb-sys >= 1.10504.0`; a DuckDB 1.5.0+ engine at run time | The [Arrow interop](../duckdb-1-5/arrow.md) bridge. Implies `duckdb-1-5-3` |
 | `bundled-test` | No floor beyond the crate's own range | `testing::InMemoryDb` for `cargo test`, by compiling DuckDB from C++ source (the `duckdb` crate's `bundled` feature) |
-| `bundled-test-prebuilt` | `libduckdb-sys >= 1.10503` to find the header directory by itself; older versions need `DUCKDB_INCLUDE_DIR` | The same as `bundled-test`, but links a prebuilt libduckdb (set `DUCKDB_DOWNLOAD_LIB=1` or `DUCKDB_LIB_DIR`) |
+| `bundled-test-prebuilt` | `libduckdb-sys >= 1.10503` to find the header directory by itself; older versions need `DUCKDB_INCLUDE_DIR`. The headers must include `duckdb_extension.h` or `duckdb.hpp` | The same as `bundled-test`, but links a prebuilt libduckdb (set `DUCKDB_DOWNLOAD_LIB=1` or `DUCKDB_LIB_DIR`; a 1.x `libduckdb-<platform>.zip` or a 2.0 `duckdb-shared-libs-<platform>.tar.gz`, extracted) |
 
 The DuckDB version features are cumulative: `duckdb-1-5-4` turns on the other two. There
 is no `duckdb-1-5-5` or `duckdb-1-5-6` feature, because neither release adds C API

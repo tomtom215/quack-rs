@@ -31,8 +31,8 @@ Everyone taking part is expected to follow the
 | Rust 1.86.0 toolchain | `rustup toolchain install 1.86.0` | MSRV check (gate 6) |
 | `rustfmt`, `clippy` | stable | Formatting and linting (gates 3, 4) |
 | Python 3 | any current | `scripts/*.py`, including the live extension check (gates 5b, 7) |
-| DuckDB CLI | 1.4.4 or later; CI also uses the latest (currently 1.5.6) | Live extension testing (gate 7, required) |
-| libduckdb shared library | the release `Cargo.lock` pins (currently 1.5.5) | End-to-end tests and book doctests (gate 2c) |
+| DuckDB CLI | 1.4.4 or later; CI also uses 2.0.0 and the latest (currently 2.0.0) | Live extension testing (gate 7, required) |
+| libduckdb shared library | the release `Cargo.lock` pins (currently 1.5.6) | End-to-end tests and book doctests (gate 2c) |
 | `cargo-deny` | 0.20.2 (the version CI installs) | License and advisory checks (gate 8) |
 | `cargo-mutants` | 27.1.0 (the version CI installs) | Mutation testing (gate 9) |
 | `mdbook` | the version in `book/mdbook-version` | Building the book (only for book changes) |
@@ -40,19 +40,24 @@ Everyone taking part is expected to follow the
 Install the Rust toolchain via [rustup](https://rustup.rs/). `cargo-msrv` is not
 needed: the MSRV is checked by compiling with the pinned 1.86.0 toolchain.
 
-Install DuckDB via `curl` (no system package manager needed). CI's
-`extension-load` job exercises **v1.4.4, v1.5.0, v1.5.5, v1.5.6 and `latest`** —
-the floor, the 1.5 floor, the two newest releases, and an early-warning signal
-for a release not yet pinned (`latest` is currently v1.5.6). Develop against the current release, v1.5.6:
+Install DuckDB with `scripts/fetch-duckdb.sh` (no system package manager
+needed; the script fetches the linux-amd64 build). CI's `extension-load` job exercises **v1.4.4, v1.5.0, v1.5.5, v1.5.6,
+v2.0.0 and `latest`** — the floor, the 1.5 floor, the newest 1.5 releases, the
+current release, and an early-warning signal for a release not yet pinned
+(`latest` is currently v2.0.0). The current release is v2.0.0, but `Cargo.lock`
+stays on the v1.5.6 bindings, because no `libduckdb-sys` for DuckDB 2.0 is
+published yet; CI's `test-duckdb-2-0` job runs the suite against v2.0.0. Fetch
+the CLI of the release you develop against:
 
 ```bash
-curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip \
-    -o /tmp/duckdb.zip \
-    && unzip -o /tmp/duckdb.zip -d /tmp/ \
-    && chmod +x /tmp/duckdb \
-    && /tmp/duckdb --version
-# → v1.5.6
+scripts/fetch-duckdb.sh v1.5.6 cli /tmp    # or v2.0.0, or latest
+/tmp/duckdb --version
 ```
+
+DuckDB renamed its release assets in v2.0.0 (`duckdb_cli-<platform>.zip` and
+`libduckdb-<platform>.zip` up to 1.5.6; `duckdb-cli-<platform>.tar.gz` and
+`duckdb-shared-libs-<platform>.tar.gz` from 2.0.0), and the script picks the
+right one.
 
 ---
 
@@ -153,8 +158,9 @@ cargo test --doc --features duckdb-1-5-4
 
 # 2c. End-to-end tests and the book's code blocks, against a real libduckdb
 #     [test-bundled-prebuilt]. Download the libduckdb release that matches
-#     Cargo.lock (`scripts/duckdb-version-from-lock.sh` prints its tag) from
-#     https://github.com/duckdb/duckdb/releases and unzip it into $DUCKDB_LIB_DIR.
+#     Cargo.lock (`scripts/duckdb-version-from-lock.sh` prints its tag) into
+#     $DUCKDB_LIB_DIR; on linux-amd64:
+#       scripts/fetch-duckdb.sh "$(scripts/duckdb-version-from-lock.sh)" lib "$DUCKDB_LIB_DIR"
 export DUCKDB_LIB_DIR=/path/to/libduckdb LD_LIBRARY_PATH=/path/to/libduckdb
 cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
 cargo test --doc --manifest-path book/doctest/Cargo.toml   # every Rust block in book/src and README.md
@@ -187,7 +193,7 @@ cargo +1.86.0 check
 # 7. Live extension test — build hello-ext, append the metadata footer, then
 #    run every documented SQL check (examples/hello-ext/sql_checks.txt, 31
 #    statements) in the DuckDB CLI. [extension-load: DuckDB 1.4.4, 1.5.0,
-#    1.5.5, 1.5.6 and the latest release]
+#    1.5.5, 1.5.6, 2.0.0 and the latest release]
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
 cargo run --bin append_metadata -- \
     examples/hello-ext/target/release/libhello_ext.so \
@@ -270,7 +276,7 @@ metadata footer with `append_metadata`, and running every SQL check in
 `examples/hello-ext/sql_checks.txt` (29 numbered checks, 31 statements) with
 `scripts/check-hello-ext.py`. The script also fails if the statements in
 `examples/hello-ext/README.md` drift from that file. CI's `extension-load` job runs it
-against DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6 and the latest release. Gate 7 under
+against DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release. Gate 7 under
 [Quality Gates](#quality-gates) gives the exact commands.
 
 ### Mutation testing
@@ -645,9 +651,14 @@ quack-rs/
 
 ## Releasing
 
-This crate supports `libduckdb-sys = ">=1.4.4, <2"` (DuckDB 1.4.4 and later 1.x releases).
-The bounded range is intentional: every one of these releases loads C API `v1.2.0` extensions,
-and the `<2` upper bound prevents silent adoption of a future major band.
+This crate supports `libduckdb-sys = ">=1.4.4, <2"` (the bindings of DuckDB 1.4.4 and
+later 1.x releases). Every DuckDB from 1.4.4 through 2.0.0 loads C API `v1.2.0` extensions.
+The `<2` upper bound does not exclude the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB
+`vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is
+1.20000.0, which the range admits. That release is unpublished as of 2026-10-21 and declares
+`rust-version` 1.88, so a Rust 1.86 toolchain cannot build it; MSRV-aware resolution
+(resolver 3, or `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) keeps a 1.86 build on
+1.10506.x. The bound would stop a future `libduckdb-sys` 2.x.
 Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes.

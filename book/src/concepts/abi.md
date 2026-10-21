@@ -15,11 +15,11 @@ the wrong slot.
 
 | Region | Slots | Guarantee |
 |--------|-------|-----------|
-| Stable | `0 .. 357` | Frozen since DuckDB v1.2.0 — same slots, same order, same signatures in every release through v1.5.6 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
-| Unstable | `357 ..` | DuckDB **inserts** new entries in the middle, shifting every later slot |
+| Stable | `0 .. 357` | Frozen since DuckDB v1.2.0 — same slots, same order, same signatures in every release through v2.0.0 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
+| Unstable | `357 ..` | Before v1.5.6, DuckDB twice **inserted** new entries in the middle, shifting every later slot; v2.0.0 only appended |
 
 The stable prefix is what makes "build once, load anywhere" possible. The
-unstable tail is not append-only:
+unstable tail has not always been append-only:
 
 | DuckDB | Total slots | What moved |
 |--------|-------------|------------|
@@ -28,14 +28,18 @@ unstable tail is not append-only:
 | v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` → `duckdb_create_bignum`; appended |
 | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
 | v1.5.2 – v1.5.6 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
+| v2.0.0 | 548 | `duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns` appended |
 
 DuckDB v1.5.6 declares all 546 slots stable for extensions that target C API
 v1.5.6 (earlier releases declared only the first 357 stable). The layout itself
-is unchanged from v1.5.2, and quack-rs targets C API v1.2.0, so the guard below
-still applies.
+is unchanged from v1.5.2. DuckDB v2.0.0 still declares C API v1.5.6 for this
+struct, and its other 546 declarations are textually identical to v1.5.6's, so a
+build against the v1.5.2 – v1.5.6 bindings dispatches correctly on v2.0.0.
+`scripts/check-abi-table.py` derives this table from each release's
+`duckdb_extension.h`.
 
-Every family since v1.2 changed the unstable tail, and twice (v1.5.0 and v1.5.2) an
-insertion in the middle shifted every later slot.
+Every family from v1.2 to v1.5 changed the unstable tail, and twice (v1.5.0 and
+v1.5.2) an insertion in the middle shifted every later slot.
 
 ## Which half are you using?
 
@@ -67,11 +71,11 @@ DuckDB validates the ABI metadata in your extension's footer:
 
 | ABI type | Version field (`-dv`) means | Accepted by |
 |----------|-------------|-------------|
-| `C_STRUCT` | the **C API** version (`v1.2.0`) | any DuckDB whose C API version is at least that — then handed the *whole* struct, unstable region included |
-| `C_STRUCT_UNSTABLE` | an exact **DuckDB release** (`v1.5.5`) | that release only |
+| `C_STRUCT` | the **C API** version (`v1.2.0` or `v1.5.6`) | any DuckDB whose C API version is at least that — then handed the *whole* struct, unstable region included. v1.2.0 – v1.5.5 declare C API `v1.2.0`; v1.5.6 and v2.0.0 declare `v1.5.6` |
+| `C_STRUCT_UNSTABLE` | an exact **DuckDB release** (`v1.5.5`) | that 1.x release only; DuckDB 2.0 sends every such binary to the C API v2 entry point `<name>_init_c_api_v2`, which quack-rs does not generate, so it does not load there |
 
-So a `C_STRUCT` binary that touches the unstable region loads happily into the
-wrong DuckDB and then mis-dispatches. DuckDB's own `extension-template-c` says:
+So a `C_STRUCT` `v1.2.0` binary that touches the unstable region loads happily
+into the wrong DuckDB and then mis-dispatches. DuckDB's own `extension-template-c` says:
 
 > WARNING: When set to 1, the `duckdb_extension.h` from the
 > `TARGET_DUCKDB_VERSION` must be used, using any other version of the header is
@@ -90,28 +94,37 @@ Aborted (core dumped)
 
 Two layers.
 
-**Build metadata.** If you enable `duckdb-1-5`, stamp the binary
-`C_STRUCT_UNSTABLE` with the DuckDB release you built against, so DuckDB refuses
-the wrong engine at install time. With `extension-ci-tools`, set in the `Makefile`:
+**Build metadata.** If you enable `duckdb-1-5`, build against the v1.5.2 – v1.5.6
+bindings (`libduckdb-sys` `~1.10506.0`) and stamp the binary `C_STRUCT` with C API
+`v1.5.6` (`quack_rs::DUCKDB_API_VERSION_1_5_6`): `append_metadata --abi-type C_STRUCT
+--duckdb-version v1.5.6`. DuckDB v1.5.5 and earlier then refuse it at `LOAD` ("The
+file was built for DuckDB C API version 'v1.5.6'..."), and v1.5.6 and v2.0.0 load
+it. With `extension-ci-tools`, set in the `Makefile`:
 
 ```makefile
-USE_UNSTABLE_C_API=1
-TARGET_DUCKDB_VERSION=v1.5.5
+TARGET_DUCKDB_VERSION=v1.5.6
+# and leave USE_UNSTABLE_C_API unset (or 0)
 ```
 
-`generate_scaffold` writes this pairing from a `ScaffoldConfig`, and rejects a
-`target_duckdb_version` that does not match `use_unstable_c_api`:
+`generate_scaffold` writes this from a `ScaffoldConfig`, pins `libduckdb-sys` to
+`~1.10506.0`, and rejects a `target_duckdb_version` that does not match
+`use_unstable_c_api`:
 
 ```rust
 use quack_rs::scaffold::ScaffoldConfig;
 
 let config = ScaffoldConfig {
     name: "my_ext".to_string(),
-    use_unstable_c_api: true,
-    target_duckdb_version: "v1.5.5".to_string(),
+    target_duckdb_version: quack_rs::DUCKDB_API_VERSION_1_5_6.to_string(),
     ..ScaffoldConfig::default()
 };
 ```
+
+Stamping `C_STRUCT_UNSTABLE` with the exact DuckDB release
+(`USE_UNSTABLE_C_API=1`, `use_unstable_c_api: true`) still pins a binary to one
+1.x release, but DuckDB 2.0 cannot load such a binary, and `extension-ci-tools`
+`v2.0-cyanoptera` still stamps `C_STRUCT_UNSTABLE` when `USE_UNSTABLE_C_API=1`.
+`append_metadata` and the scaffold refuse `C_STRUCT_UNSTABLE` with a 2.x release.
 
 **Runtime guard.** When a `duckdb-1-5*` feature is enabled, [`abi::check`] compares
 the compiled-in slot count against the layout the running engine uses, resolved from
@@ -140,8 +153,11 @@ use quack_rs::abi::AbiPolicy;
 // Default: Strict.
 quack_rs::entry_point!(my_ext_init_c_api, register);
 
-// Explicit — appropriate when the binary is stamped C_STRUCT_UNSTABLE, because
-// DuckDB already refuses to load it into the wrong release.
+// Explicit — appropriate when the binary's metadata already makes DuckDB refuse
+// the wrong release: C_STRUCT_UNSTABLE on 1.x. For C_STRUCT v1.5.6 (built
+// against the v1.5.6 bindings) DuckDB refuses every release before v1.5.6,
+// and Trust then rests on DuckDB's statement that C API v1.5.6 is stable;
+// the default Strict guard checks the engine's layout instead.
 quack_rs::entry_point!(my_ext_init_c_api, AbiPolicy::Trust, register);
 ```
 
@@ -152,10 +168,12 @@ DuckDB C extension API layout mismatch: this extension was built against a
 duckdb_ext_api_v1 with 545 slots, but DuckDB v1.5.5 provides 546. The extension
 uses the unstable region of the C API (quack-rs feature `duckdb-1-5`), whose slot
 indices differ between these releases, so loading it would dispatch to the wrong
-functions. Rebuild the extension against DuckDB v1.5.5. Stamp every build that
-uses the unstable region with `--abi-type C_STRUCT_UNSTABLE --duckdb-version <the
-DuckDB release it was built against>` (or `USE_UNSTABLE_C_API=1` with
-extension-ci-tools) so DuckDB refuses a mismatched binary at install time.
+functions. Rebuild the extension against DuckDB v1.5.5. Stamp a build that uses
+the unstable region with `--abi-type C_STRUCT --duckdb-version v1.5.6` (with
+extension-ci-tools: `TARGET_DUCKDB_VERSION=v1.5.6` and no `USE_UNSTABLE_C_API`)
+so DuckDB itself refuses it before v1.5.6, from which that layout is stable. Not
+`C_STRUCT_UNSTABLE`: DuckDB 2.0 loads such a binary only through the C API v2
+entry point, which quack-rs does not generate.
 ```
 
 For an engine older than v1.5.0 the advice changes: such an engine cannot run a
@@ -165,9 +183,11 @@ features or to upgrade DuckDB.
 ## Unknown DuckDB versions
 
 `Strict` also refuses a DuckDB release quack-rs has no verified layout for — a
-newer release, or a `-dev` build. That is deliberate: DuckDB changed the unstable
-region in every minor release from 1.3.0 on, and in the 1.5.2 patch release, so
-"unknown" is not evidence of "compatible".
+newer release (such as v2.0.1 or v2.1.0), or a `-dev` build. That is deliberate:
+DuckDB changed the unstable region in every minor release from 1.3.0 to 2.0.0, and
+in the 1.5.2 patch release, so "unknown" is not evidence of "compatible". A build
+against the v1.5.2 – v1.5.6 bindings is accepted on v2.0.0, whose layout only
+appends to it; a build against 1.5.0/1.5.1 (545 slots) is still refused there.
 The refusal lists the fixes, best first:
 
 1. rebuild against the release you are targeting and set
@@ -176,7 +196,7 @@ The refusal lists the fixes, best first:
 2. upgrade quack-rs to a version whose layout table lists that release;
 3. if the extension does not need the unstable region, build it without the
    `duckdb-1-5` features: the stable prefix is laid out identically in every
-   DuckDB since v1.2.0.
+   DuckDB from v1.2.0 through v2.0.0.
 
 It never suggests `AllowUnknownEngine` or `Trust`, for the reason above.
 

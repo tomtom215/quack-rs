@@ -57,8 +57,8 @@ Selected modules include `proptest`-based tests:
 
 `examples/hello-ext/` contains `#[cfg(test)]` unit tests for its pure-Rust logic.
 CI also tests it end to end: it builds the `cdylib`, appends the metadata footer
-with `append_metadata`, loads it into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest
-release, and runs every SQL check in `examples/hello-ext/sql_checks.txt` with
+with `append_metadata`, loads it into DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and
+the latest release, and runs every SQL check in `examples/hello-ext/sql_checks.txt` with
 `scripts/check-hello-ext.py`. Gate 7 in `CONTRIBUTING.md` gives the exact commands.
 
 ---
@@ -383,10 +383,13 @@ quack-rs/
 
 ## Releasing
 
-quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering DuckDB 1.4.4
-and later 1.x releases, every one of which loads C API `v1.2.0` extensions. The `<2` upper bound
-prevents silent adoption of a future major release that may change the C API.
-Before broadening the range to a new major band:
+quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering the bindings of
+DuckDB 1.4.4 and later 1.x releases. Every DuckDB from 1.4.4 through 2.0.0 loads C API
+`v1.2.0` extensions. The `<2` upper bound does not exclude the DuckDB 2.0 bindings:
+`libduckdb-sys` numbers DuckDB `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`,
+so DuckDB 2.0.0 is `1.20000.0`, which the range admits. That release is unpublished as of
+2026-10-21 and declares `rust-version` 1.88; MSRV-aware resolution keeps a Rust 1.86 build
+on `1.10506.x`. Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes
 2. Check the new C API version string (used in `duckdb_rs_extension_api_init`)

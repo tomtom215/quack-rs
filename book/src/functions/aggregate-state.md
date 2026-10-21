@@ -9,9 +9,11 @@ raw-pointer code for it.
 > uses `FfiState<T>`, reads out of bounds under `agg(x) OVER ()` (whole-partition
 > window frames) and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
 > [Aggregate Functions](aggregate.md#known-duckdb-limitation) for the details and
-> DuckDB source lines. Do not use C-API aggregates in those two query shapes.
+> DuckDB source lines. On DuckDB 1.4.x and 1.5.x, do not use C-API aggregates
+> in those two query shapes.
 >
-> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
+> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109)
+> and fixed in DuckDB 2.0.0.
 
 ---
 
@@ -61,10 +63,11 @@ DuckDB-allocated slot (state_size bytes, a multiple of sizeof(usize)):
                      └──→  Box<T>  (on the Rust heap)
 ```
 
-Storing `T` inline matters because DuckDB 1.4.4 to 1.5.5 does not destroy
+Storing `T` inline matters because DuckDB 1.4.4 to 2.0.0 does not destroy
 every state. When a grouped aggregate's result scan stops early (a `LIMIT`
 above it, an error, an interrupt), the states it never reached are never
-destroyed; so is one state per row of a window frame with `EXCLUDE`. An inline
+destroyed; so, before 2.0.0, is one state per row of a window frame with
+`EXCLUDE`. An inline
 `T`'s bytes belong to DuckDB, which frees them with the hash table; only what
 `T` itself owns on the heap, or a boxed `T`'s box, leaks. See
 [Known Limitations](../reference/known-limitations.md#grouped-aggregate-states-the-scan-never-reaches-are-never-destroyed-duckdb-defect).

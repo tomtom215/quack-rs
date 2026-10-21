@@ -103,12 +103,12 @@ inside the host DuckDB process and uses that process's DuckDB instance, memory a
 
 `libduckdb-sys = ">=1.4.4, <2"` — the bounded range is intentional.
 
-quack-rs supports DuckDB 1.4.4 and later 1.x releases. Every one of them loads extensions
+quack-rs supports DuckDB 1.4.4 through 2.0.0. Every one of them loads extensions
 built for **C API version `v1.2.0`**
 (the version string passed to `duckdb_rs_extension_api_init`, `quack_rs::DUCKDB_API_VERSION`).
-DuckDB 1.5.6 declares C API version `v1.5.6` and still accepts `v1.2.0` extensions. CI runs
-the test suite against DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5 and 1.5.6, and loads the example
-extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6 and the latest release.
+DuckDB 1.5.6 and 2.0.0 declare C API version `v1.5.6` and still accept `v1.2.0` extensions. CI runs
+the test suite against DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0, and loads the example
+extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release.
 Using a range rather than an exact pin means:
 
 - Extension authors can choose which `libduckdb-sys` release to build against (for example
@@ -116,15 +116,20 @@ Using a range rather than an exact pin means:
   numbers `1.10505.x`) and still resolve against `quack-rs`
 - `quack-rs` itself doesn't force a DuckDB downgrade on users
 
-The `<2` upper bound is equally intentional: it prevents silent adoption of a future major
-release that may introduce breaking C API changes. Upgrading beyond the `1.x` band requires
-an explicit `quack-rs` release that audits the new C API surface.
+The `<2` upper bound limits the range to `libduckdb-sys` 1.x, but it does **not** exclude
+the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB `vMAJOR.MINOR.PATCH` as
+`1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0`, which the range
+admits. As of 2026-10-21 that release is unpublished; it declares `rust-version` 1.88, so a
+Rust 1.86 toolchain cannot build it, and MSRV-aware resolution (resolver 3, or
+`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) keeps a 1.86 build on `1.10506.x`.
 
 > **For your own extension's `Cargo.toml`:** an extension that uses only the stable C API
 > (the default quack-rs features) can keep the same `">=1.4.4, <2"` range; this is what
 > `scaffold::generate_scaffold` writes. An extension that enables the `duckdb-1-5*` features must pin
-> `libduckdb-sys` to the bindings of the one DuckDB release it is stamped for (the scaffold
-> writes `~1.10505.0` for `v1.5.5`). See [ABI Compatibility](abi.md).
+> `libduckdb-sys` to the bindings it is stamped for: `~1.10506.0` (the v1.5.2 – v1.5.6 layout)
+> for C API `v1.5.6`, which is what the scaffold writes for `target_duckdb_version = "v1.5.6"`;
+> or, for a `C_STRUCT_UNSTABLE` build pinned to one 1.x release, that release's bindings
+> (`~1.10505.0` for `v1.5.5`). See [ABI Compatibility](abi.md).
 
 ---
 
@@ -137,9 +142,13 @@ metadata footer:
   every DuckDB release whose C API version is at least `v1.2.0` on the platform it was
   built for. That includes every release quack-rs supports (1.4.4 and later); quack-rs does
   not test releases before 1.4.4
-- A `C_STRUCT_UNSTABLE` binary loads only into the exact DuckDB release it names. Stamp
-  builds that use the `duckdb-1-5*` features this way, so DuckDB itself refuses a mismatched
-  release; quack-rs's runtime layout check is the backstop when the stamp is missing
+- A `C_STRUCT` binary targeting C API `v1.5.6` (`quack_rs::DUCKDB_API_VERSION_1_5_6`) loads
+  into DuckDB 1.5.6 and 2.0.0; 1.5.5 and earlier refuse it at `LOAD`. Stamp builds that use
+  the `duckdb-1-5*` features this way, built against the 1.5.6 bindings; quack-rs's runtime
+  layout check is the backstop when the stamp is missing
+- A `C_STRUCT_UNSTABLE` binary loads only into the exact DuckDB 1.x release it names. DuckDB
+  2.0 cannot load one: it routes every `C_STRUCT_UNSTABLE` binary to the C API v2 entry
+  point `<name>_init_c_api_v2`, which quack-rs does not generate
 - DuckDB checks the footer's platform and version fields at load time and refuses a mismatch
 - Core and community extensions are signed; a binary you build locally is not
 - To load an unsigned extension during development, start DuckDB with `allow_unsigned_extensions`

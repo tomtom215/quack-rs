@@ -45,7 +45,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 32 | Arrow sparse union with nonzero `null_count` has its type ids read as a validity bitmap | C program, below | refused |
 | 33 | Arrow import of a `geoarrow.wkb` column of more than 2048 rows writes past a vector | C program, below | refused past 2048 rows |
 | 34 | Arrow export declares plain binary for BIGNUM/GEOMETRY but writes binary views under `arrow_output_version = '1.4'` | C program, below | such an export refused |
-| 35 | Window frames with `EXCLUDE` never destroy the aggregate states of their second segment-tree part | C program, below | documented; small states stored inline |
+| 35 | Window frames with `EXCLUDE` never destroy the aggregate states of their second segment-tree part | C program, below | fixed in DuckDB 2.0.0 (`right_part->Destroy`); documented; small states stored inline |
 | 36 | `duckdb_prepare` frees the statement it already stored in `*out` when an allocation fails while it builds the parameter-name map | C program (fault injection), below | documented; nothing an extension can do |
 | 37 | A `COPY … FROM` reader that calls `duckdb_bind_add_result_column` widens the `INSERT`'s chunks past the table; an assertion build invalidates the database | C program, below | refused for typed readers; documented for raw ones |
 

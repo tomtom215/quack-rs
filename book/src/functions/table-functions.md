@@ -492,7 +492,7 @@ TableFunctionBuilder::new("read_data")
 |--------|-------------|
 | `add_result_column(name, TypeId)` | Declares an output column (a type DuckDB would silently drop, like `ANY`, is a bind error instead) |
 | `add_result_column_with_type(name, &LogicalType)` | Output column with complex type (same check, including nested `ANY`/`INVALID`) |
-| `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer. DuckDB 1.5.5 treats `is_exact = false` as an estimate **and** an upper bound, `true` as an estimate only — the reverse of `duckdb.h` |
+| `set_cardinality(rows, is_exact)` | Cardinality hint for the optimizer. DuckDB 1.x (through 1.5.6) treats `is_exact = false` as an estimate **and** an upper bound, `true` as an estimate only — the reverse of `duckdb.h`; DuckDB 2.0.0 follows `duckdb.h` (`true` records the bound). Pass a `rows` the scan never exceeds and either flag is safe on both |
 | `set_error(message)` | Report a bind-time error (an empty message is replaced by a placeholder) |
 | `parameter_count()` | Number of positional parameters |
 | `get_parameter_value(index)` | Positional parameter as an RAII `Value` |

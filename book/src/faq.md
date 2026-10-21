@@ -24,18 +24,24 @@ documents all 31 known pitfalls, and its API prevents most of them. See the
 
 ### What DuckDB version does quack-rs target?
 
-quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` and supports DuckDB 1.4.4 and
-later 1.x releases. Releases before 1.4.4 are not supported. CI runs the test
-suite against DuckDB v1.4.4, v1.4.5, v1.5.0, v1.5.3, v1.5.4, v1.5.5 and v1.5.6,
-and loads a built extension into v1.4.4, v1.5.0, v1.5.5, v1.5.6 and the latest
-release.
+quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` and supports DuckDB 1.4.4
+through 2.0.0. Releases before 1.4.4 are not supported. CI runs the test
+suite against DuckDB v1.4.4, v1.4.5, v1.5.0, v1.5.3, v1.5.4, v1.5.5, v1.5.6 and
+v2.0.0 (the last with the unpublished DuckDB 2.0 bindings), and loads a built
+extension into v1.4.4, v1.5.0, v1.5.5, v1.5.6, v2.0.0 and the latest release.
+DuckDB supports 2.0 (a long-term support release) until at least October 2027,
+1.5 until March 2027 and 1.4 until late November 2026.
 
 The C API version passed to the dispatch-table initializer is `"v1.2.0"`,
 available as `quack_rs::DUCKDB_API_VERSION`. Every supported DuckDB release
-(1.4.4 and later) loads extensions built for it (1.5.6 declares C API `v1.5.6`, but still
-accepts `v1.2.0`). The C API version is a separate identifier from the DuckDB
-release and from the `libduckdb-sys` crate version (e.g. `1.10505.0` for
-DuckDB 1.5.5).
+(1.4.4 and later) loads extensions built for it (1.5.6 and 2.0.0 declare C API
+`v1.5.6`, but still accept `v1.2.0`). An extension that uses the `duckdb-1-5*`
+features is stamped C API `v1.5.6` instead
+(`quack_rs::DUCKDB_API_VERSION_1_5_6`) and loads into DuckDB 1.5.6 and 2.0.0.
+The C API version is a separate identifier from the DuckDB release and from the
+`libduckdb-sys` crate version, which encodes DuckDB `vMAJOR.MINOR.PATCH` as
+`1.(10000·MAJOR + 100·MINOR + PATCH).N` (e.g. `1.10505.0` for DuckDB 1.5.5,
+`1.20000.0` for 2.0.0).
 
 ### What is the minimum supported Rust version (MSRV)?
 
@@ -268,11 +274,16 @@ base name, lowercases it and calls `<base name>_init_c_api`, so
 
 The `extension-ci-tools` submodule is missing. In a new project, such as one
 fresh from the scaffold, add it once (`git submodule update --init` does nothing
-until it has been added):
+until it has been added). The scaffold's `Makefile` error names the branch; for a
+`C_STRUCT` build it is `v2.0-cyanoptera`, the branch for DuckDB 2.0
+(`extension-ci-tools` has no `v2.0.0` branch):
 
 ```bash
-git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+git submodule add -b v2.0-cyanoptera https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
 ```
+
+A `C_STRUCT_UNSTABLE` build pinned to a 1.x release uses that release's branch
+instead, such as `-b v1.5.5`.
 
 In a clone of a repository that already has the submodule:
 

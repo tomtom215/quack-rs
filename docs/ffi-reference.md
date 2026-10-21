@@ -54,7 +54,7 @@ duckdb_disconnect(&mut con)
 
 **Critical**: The version string passed to `duckdb_rs_extension_api_init` is the
 *C API version* (`"v1.2.0"`), not the DuckDB release version (`"v1.4.4"`). DuckDB
-1.4.4 to 1.5.5 declare C API `v1.2.0`; 1.5.6 declares `v1.5.6` and still loads
+1.4.4 to 1.5.5 declare C API `v1.2.0`; 1.5.6 and 2.0.0 declare `v1.5.6` and still load
 `v1.2.0` extensions. `quack_rs::DUCKDB_API_VERSION` holds `"v1.2.0"`. See
 [Pitfall P2](../LESSONS.md#p2-extension-metadata-version-is-c-api-version-not-duckdb-version).
 
