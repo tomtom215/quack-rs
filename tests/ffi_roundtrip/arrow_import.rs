@@ -492,13 +492,25 @@ fn released_while_column_is_referenced(column: usize) -> bool {
     freed
 }
 
-/// `DuckDB` gives the array's `release` to column 0 alone: every column's
-/// state holds a copy of the record, but `release` is nulled after the
-/// first. A vector referencing column 0 keeps the producer's buffers; one
-/// referencing column 1 does not.
+/// Before v2.0.0 `DuckDB` gives the array's `release` to column 0 alone:
+/// every column's state holds its own copy of the record, but `release` is
+/// nulled after the first (`duckdb_data_chunk_from_arrow`,
+/// `src/main/capi/arrow-c.cpp` 110-120 at v1.5.6). A vector referencing
+/// column 0 keeps the producer's buffers; one referencing column 1 does not.
+/// From v2.0.0 every column's state shares one `ArrowArrayWrapper`
+/// (`src/main/capi/v1/arrow-c.cpp` 141-152), so a vector referencing any
+/// column keeps them. Either way the release runs exactly once.
 #[cfg(feature = "duckdb-1-5")]
 #[test]
 fn only_the_first_column_holds_the_claim_on_the_arrow_array() {
+    let shared = {
+        let _fx = Fixture::open();
+        // SAFETY: the fixture initialised the dispatch table.
+        unsafe { quack_rs::abi::engine_version() }
+            .as_deref()
+            .and_then(quack_rs::abi::parse_version)
+            .is_some_and(|v| v >= (2, 0, 0))
+    };
     assert!(!released_while_column_is_referenced(0));
-    assert!(released_while_column_is_referenced(1));
+    assert_eq!(released_while_column_is_referenced(1), !shared);
 }

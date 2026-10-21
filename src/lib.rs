@@ -127,10 +127,11 @@
 //!    with no guard; define it with the matching `*_callback!` macro or wrap its body in
 //!    [`catch_ffi_panic`][callback::catch_ffi_panic]. Library code panics only where a
 //!    `# Panics` section says so.
-//! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2`, so the crate supports
-//!    `DuckDB` 1.4.4 and later 1.x releases and does not silently adopt a future major
-//!    release. CI tests against 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5 and 1.5.6, and loads an
-//!    extension into the latest `DuckDB` release (1.5.6 at the time of writing).
+//! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2`, and the crate supports
+//!    `DuckDB` 1.4.4 through 2.0.0. The bound does not exclude the `DuckDB` 2.0 bindings:
+//!    `libduckdb-sys` numbers `DuckDB` 2.0.0 `1.20000.0` (unpublished as of 2026-10-21).
+//!    CI tests against 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0, and loads an
+//!    extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest `DuckDB` release.
 //! 4. **Testable business logic**: state structs have zero FFI dependencies.
 //!
 //! ## Pitfalls
@@ -236,3 +237,17 @@ pub mod table_description;
 ///
 /// See `LESSONS.md` → Pitfall P2 for full details.
 pub const DUCKDB_API_VERSION: &str = "v1.2.0";
+
+/// The C extension API version to stamp an extension that uses the
+/// `duckdb-1-5` features with: `--abi-type C_STRUCT --duckdb-version v1.5.6`.
+///
+/// `DuckDB` v1.5.6 declared every slot of `duckdb_ext_api_v1` stable for an
+/// extension targeting C API v1.5.6, and v2.0.0 still declares v1.5.6 as its
+/// V1 C API version, only appending to that layout. So a binary stamped with
+/// this version is refused by `DuckDB` v1.2.0 – v1.5.5 (whose C API is
+/// [`DUCKDB_API_VERSION`]) and loads into v1.5.6 and v2.0.0.
+///
+/// It replaces `C_STRUCT_UNSTABLE` for that purpose: `DuckDB` 2.0 loads a
+/// `C_STRUCT_UNSTABLE` binary only through the C API v2 entry point
+/// (`<name>_init_c_api_v2`), which quack-rs does not generate.
+pub const DUCKDB_API_VERSION_1_5_6: &str = "v1.5.6";

@@ -40,7 +40,7 @@ const MAX_FUNCTION_NAME_LEN: usize = 256;
 ///
 /// Taken from `SELECT keyword_name FROM duckdb_keywords() WHERE
 /// keyword_category = 'reserved'`, which returns this identical list on
-/// `DuckDB` 1.4.4, 1.5.0 and 1.5.5. An end-to-end test compares it against the
+/// `DuckDB` 1.4.4, 1.5.0, 1.5.5, 1.5.6 and 2.0.0. An end-to-end test compares it against the
 /// linked engine, so a `DuckDB` release that changes the set fails CI.
 pub const DUCKDB_RESERVED_KEYWORDS: [&str; 75] = [
     "all",
@@ -140,6 +140,18 @@ pub const DUCKDB_RESERVED_KEYWORDS: [&str; 75] = [
 /// sweep calls the name as a scalar; a table function of the same name is
 /// refused too. An end-to-end test repeats the sweep against the linked
 /// engine.
+///
+/// # On `DuckDB` 2.0
+///
+/// 2.0.0 lists 508 keyword rows (16 new keywords, all callable, and the same 75
+/// reserved) and its parser takes more of these names than 1.x does: `anti`,
+/// `by`, `columns`, `if`, `operator`, `overlay`, `semi` and `try_cast` are
+/// callable there, and none is callable on 1.x but not on 2.0. The list is not
+/// narrowed for 2.0: an extension built with quack-rs can be loaded into
+/// either engine, and a name only one of them can call is a broken
+/// function on the other, so the list is the union of what each supported
+/// engine refuses (here, the 1.x set). The end-to-end sweep checks on 2.0
+/// that exactly those eight are refused although 2.0 would take them.
 pub const DUCKDB_UNCALLABLE_KEYWORDS: [&str; 53] = [
     "anti",
     "between",
@@ -204,6 +216,10 @@ pub const DUCKDB_UNCALLABLE_KEYWORDS: [&str; 53] = [
 /// `row` and the rest of this list. Measured the same way as
 /// [`DUCKDB_UNCALLABLE_KEYWORDS`] — `CREATE MACRO m(kw) AS kw + 1` then
 /// `SELECT m(41)` — and the same 79 on `DuckDB` 1.4.4, 1.5.0 and 1.5.5.
+/// `DuckDB` 2.0.0 can refer to 49 of them (`row`, `values`, `integer`, …)
+/// and to every keyword it added; they stay refused for the reason given
+/// under [`DUCKDB_UNCALLABLE_KEYWORDS`] — the list is the union over the
+/// supported engines, and the end-to-end sweep pins the 49 on 2.0.
 pub const DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS: [&str; 79] = [
     "anti",
     "asof",

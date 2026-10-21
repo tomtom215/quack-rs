@@ -125,5 +125,89 @@ fn the_keyword_validators_agree_with_the_linked_duckdb_for_every_keyword() {
             ));
         }
     }
-    assert!(disagreements.is_empty(), "{disagreements:#?}");
+    if fx.engine_major() < 2 {
+        assert!(disagreements.is_empty(), "{disagreements:#?}");
+        return;
+    }
+    // DuckDB 2.0.0's parser accepts more keywords as function and parameter
+    // names than 1.x does, and none fewer. The validators keep refusing the
+    // names 1.x cannot take, because an extension built with quack-rs may load
+    // into either engine. So on 2.0 the only disagreements allowed are
+    // exactly those names: refused, though this engine would take them.
+    // Anything else — a name the validator lets through that this engine
+    // refuses, or a change in the set — still fails.
+    disagreements.sort();
+    disagreements.dedup();
+    let expected: Vec<String> = REFUSED_FOR_1X_FUNCTION_NAMES
+        .iter()
+        .map(|kw| format!("function name {kw}: callable = true"))
+        .chain(
+            REFUSED_FOR_1X_PARAMETER_NAMES
+                .iter()
+                .map(|kw| format!("parameter name {kw}: referenceable = true")),
+        )
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(disagreements, expected);
 }
+
+/// Keywords `DuckDB` 2.0.0 accepts as a function name but 1.x does not
+/// (`DUCKDB_UNCALLABLE_KEYWORDS` measured on 1.4.4 through 1.5.6).
+const REFUSED_FOR_1X_FUNCTION_NAMES: [&str; 8] = [
+    "anti", "by", "columns", "if", "operator", "overlay", "semi", "try_cast",
+];
+
+/// Keywords `DuckDB` 2.0.0 accepts as a referenceable macro parameter but
+/// 1.x does not (`DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS`).
+const REFUSED_FOR_1X_PARAMETER_NAMES: [&str; 49] = [
+    "between",
+    "bigint",
+    "bit",
+    "boolean",
+    "char",
+    "character",
+    "coalesce",
+    "dec",
+    "decimal",
+    "exists",
+    "extract",
+    "float",
+    "grouping",
+    "grouping_id",
+    "inout",
+    "int",
+    "integer",
+    "interval",
+    "national",
+    "nchar",
+    "none",
+    "nullif",
+    "numeric",
+    "out",
+    "overlay",
+    "position",
+    "precision",
+    "real",
+    "row",
+    "setof",
+    "smallint",
+    "substring",
+    "time",
+    "timestamp",
+    "treat",
+    "trim",
+    "values",
+    "varchar",
+    "xmlattributes",
+    "xmlconcat",
+    "xmlelement",
+    "xmlexists",
+    "xmlforest",
+    "xmlnamespaces",
+    "xmlparse",
+    "xmlpi",
+    "xmlroot",
+    "xmlserialize",
+    "xmltable",
+];

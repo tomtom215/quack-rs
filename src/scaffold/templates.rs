@@ -25,10 +25,12 @@ fn quack_rs_dependency_version() -> String {
 }
 
 pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
-    // A C_STRUCT build only uses the frozen stable prefix of the C API, so any
-    // 1.x bindings work. A C_STRUCT_UNSTABLE build is only correct against the
-    // exact release it declares, so its bindings are pinned to that release.
-    let libduckdb_sys = if config.use_unstable_c_api {
+    // A C_STRUCT v1.2.0 build only uses the frozen stable prefix of the C API,
+    // so any bindings work. A build that may use the `duckdb-1-5*` features is
+    // only correct against the layout it is stamped for, so its bindings are
+    // pinned: to the exact release for C_STRUCT_UNSTABLE, to the v1.5.6 ones
+    // (the layout DuckDB v1.5.6 and v2.0.0 share) for C_STRUCT v1.5.6.
+    let libduckdb_sys = if super::pins_bindings(config) {
         super::libduckdb_sys_requirement(&config.target_duckdb_version)
             .unwrap_or_else(|_| String::from(">=1.4.4, <2"))
     } else {
@@ -42,6 +44,13 @@ pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
              # mismatch.\n",
             target = config.target_duckdb_version
         )
+    } else if super::pins_bindings(config) {
+        String::from(
+            "# Pinned to the DuckDB v1.5.6 bindings: the binary is stamped C API v1.5.6\n\
+             # (TARGET_DUCKDB_VERSION in the Makefile), whose layout DuckDB v1.5.6 and v2.0.0\n\
+             # share. Newer bindings would add slots DuckDB v1.5.6 does not have. `make\n\
+             # release` refuses a mismatch.\n",
+        )
     } else {
         String::new()
     };
@@ -50,9 +59,9 @@ pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
 name = "{name}"
 version = "{version}"
 edition = "2021"
-# The oldest Rust this project builds with: quack-rs's own MSRV, which is also
-# the toolchain extension-ci-tools uses for its wasm builds. Raise it only
-# together with the `msrv` job in .github/workflows/extension-ci.yml.
+# The oldest Rust this project builds with: quack-rs's own MSRV. (extension-ci-tools
+# builds with a newer one: 1.97.1 for DuckDB v2.0.) Raise it only together with
+# the `msrv` job in .github/workflows/extension-ci.yml.
 rust-version = "{msrv}"
 # Rust-version-aware dependency resolution: `cargo update` and a fresh
 # `generate-lockfile` pick the newest versions that still support
@@ -105,14 +114,23 @@ pub(super) fn generate_makefile(config: &ScaffoldConfig) -> String {
     let unstable = u8::from(config.use_unstable_c_api);
     let abi_note = if config.use_unstable_c_api {
         "# USE_UNSTABLE_C_API=1: the binary is stamped C_STRUCT_UNSTABLE and DuckDB will\n\
-         # only load it into exactly TARGET_DUCKDB_VERSION. Required if you enable\n\
-         # quack-rs's `duckdb-1-5` / `-3` / `-4` features, because those wrap C API\n\
-         # functions whose slot indices move between DuckDB releases."
+         # only load it into exactly TARGET_DUCKDB_VERSION, a DuckDB 1.x release. (DuckDB\n\
+         # 2.0 loads C_STRUCT_UNSTABLE only through the C API v2 entry point, which\n\
+         # quack-rs does not generate: for 2.0 use USE_UNSTABLE_C_API=0 with\n\
+         # TARGET_DUCKDB_VERSION=v1.5.6.)"
+    } else if super::pins_bindings(config) {
+        "# USE_UNSTABLE_C_API=0 with TARGET_DUCKDB_VERSION=v1.5.6: the binary is stamped\n\
+         # C_STRUCT for C API v1.5.6, which DuckDB v1.5.6 and v2.0.0 load and older\n\
+         # releases refuse. This is the stamping for quack-rs's `duckdb-1-5` / `-3` / `-4`\n\
+         # features: DuckDB declared that whole layout stable from v1.5.6. TARGET_DUCKDB_VERSION\n\
+         # is the *C API* version here, not a DuckDB release. See LESSONS.md P2."
     } else {
         "# USE_UNSTABLE_C_API=0: the binary is stamped C_STRUCT and loads into any DuckDB\n\
-         # whose C extension API version is >= TARGET_DUCKDB_VERSION. Only valid while you\n\
-         # stay off quack-rs's `duckdb-1-5` / `-3` / `-4` features; TARGET_DUCKDB_VERSION\n\
-         # is then the *C API* version (v1.2.0), not a DuckDB release. See LESSONS.md P2."
+         # whose C extension API version is >= TARGET_DUCKDB_VERSION (every release from\n\
+         # v1.2.0, 2.0 included). Only valid while you stay off quack-rs's `duckdb-1-5` /\n\
+         # `-3` / `-4` features (for those, TARGET_DUCKDB_VERSION=v1.5.6);\n\
+         # TARGET_DUCKDB_VERSION is the *C API* version (v1.2.0), not a DuckDB release.\n\
+         # See LESSONS.md P2."
     };
     // Unstable builds only: tell quack-rs's ABI check which release the bindings
     // were built against (so it accepts a release its layout table predates,
@@ -129,6 +147,15 @@ pub(super) fn generate_makefile(config: &ScaffoldConfig) -> String {
              DUCKDB_TEST_VERSION=$(patsubst v%,%,$(TARGET_DUCKDB_VERSION))\n\
              \n\
              # Lets quack-rs's ABI check accept a DuckDB release newer than its layout table.\n\
+             export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)\n",
+            "check_duckdb_pin ",
+            CHECK_DUCKDB_PIN_TARGET,
+        )
+    } else if super::pins_bindings(config) {
+        // Tested against whatever DuckDB extension-ci-tools installs (the
+        // newest release), which is the point: the binary is meant for v2.0.
+        (
+            "\n# The bindings are DuckDB v1.5.6's (see Cargo.toml): tells quack-rs's ABI check so.\n\
              export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)\n",
             "check_duckdb_pin ",
             CHECK_DUCKDB_PIN_TARGET,
@@ -197,7 +224,7 @@ clean_all: clean_configure clean
         declare_block = declare_block,
         check_prereq = check_prereq,
         check_target = check_target,
-        phony_check = if config.use_unstable_c_api {
+        phony_check = if super::pins_bindings(config) {
             " check_duckdb_pin"
         } else {
             ""
@@ -377,6 +404,14 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
     let _ = writeln!(
         yml,
         "  #                    # used while a new DuckDB release is being prepared."
+    );
+    let _ = writeln!(
+        yml,
+        "  # variegata: <hash>  # optional: a revision to build for DuckDB v1.5.6 while"
+    );
+    let _ = writeln!(
+        yml,
+        "  #                    # `ref` is built for the newest release (v2.0.0)."
     );
 
     // 332 of the 346 published descriptors (community-extensions `5ae7df8`)

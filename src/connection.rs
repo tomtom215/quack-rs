@@ -33,10 +33,10 @@
 //!
 //! # `DuckDB` version compatibility
 //!
-//! [`Connection`] and [`Registrar`] provide a stable API across `DuckDB` 1.4.x
-//! and 1.5.x. The underlying C API version string (`"v1.2.0"`) loads in every
-//! one of them: E2E tests confirm it for `DuckDB` 1.4.4 and 1.5.0, and 1.5.6,
-//! which declares `v1.5.6`, accepts any earlier C API version (its
+//! [`Connection`] and [`Registrar`] provide a stable API across `DuckDB` 1.4.x,
+//! 1.5.x and 2.0.0. The underlying C API version string (`"v1.2.0"`) loads in every
+//! one of them: E2E tests confirm it for `DuckDB` 1.4.4, 1.5.0 and 2.0.0, and 1.5.6
+//! and 2.0.0, which declare `v1.5.6`, accept any earlier C API version (their
 //! `VersioningUtils::IsSupportedCAPIVersion`).
 //!
 //! When a future `DuckDB` release changes the C API version or adds new

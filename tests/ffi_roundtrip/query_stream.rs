@@ -8,10 +8,16 @@
 //! `duckdb_fetch_chunk` returns null both at the end of the rows and when a
 //! `Fetch` fails; on failure it records the error on the result
 //! (`QueryResult::SetError`). `next_chunk` used to return `None` in both
-//! cases, so a query failing part-way through a stream — or a stream
-//! invalidated by another statement on the connection — read as a complete,
-//! shorter result (audit F-V4: 1,871,872 of 3,000,000 rows, then a clean
-//! `None`).
+//! cases, so a query failing part-way through a stream — or, up to `DuckDB`
+//! 1.5.x, a stream invalidated by another statement on the connection — read
+//! as a complete, shorter result (audit F-V4: 1,871,872 of 3,000,000 rows,
+//! then a clean `None`).
+//!
+//! `DuckDB` 2.0.0 changed what a second statement does to an open stream: it
+//! is refused with a "Resource In Use" error and the stream carries on
+//! (`ClientContext::InitialCleanup`, `client_context.cpp`), and dropping an
+//! unfinished stream aborts its query at once (`QueryResult::Close`,
+//! `query_result.cpp`). Both behaviours are pinned per engine below.
 
 use quack_rs::query::OwnedConnection;
 
@@ -48,7 +54,10 @@ fn a_query_failing_mid_stream_is_an_error_not_an_end() {
     assert!(result.next_chunk().is_err());
 }
 
-/// Running another statement on the connection invalidates the stream.
+/// Up to `DuckDB` 1.5.x, running another statement on the connection
+/// invalidates the stream, and the stream must say so rather than end
+/// cleanly. 2.0.0 refuses the other statement instead and leaves the stream
+/// whole.
 #[test]
 fn another_statement_on_the_connection_ends_a_stream_with_an_error() {
     let fx = Fixture::open();
@@ -60,11 +69,85 @@ fn another_statement_on_the_connection_ends_a_stream_with_an_error() {
     let mut result = statement.execute_streaming().expect("execute");
     let first = result.next_chunk().expect("fetch").expect("a first chunk");
     assert!(first.size() > 0);
+    if fx.engine_major() >= 2 {
+        let err = con
+            .query("SELECT 1")
+            .err()
+            .expect("DuckDB 2.0 refuses a statement while a stream is open");
+        assert!(
+            err.to_string().contains("Resource In Use") && err.to_string().contains("open result"),
+            "{err}"
+        );
+        let mut rows = first.size();
+        while let Some(chunk) = result.next_chunk().expect("the stream is intact") {
+            rows += chunk.size();
+        }
+        assert_eq!(rows, 300_000);
+        con.query("SELECT 1")
+            .expect("a drained stream no longer holds the connection");
+        return;
+    }
     con.query("SELECT 1").expect("another statement");
     let err = result
         .next_chunk()
         .expect_err("the stream was invalidated, not finished");
     assert!(err.to_string().contains("closed"), "{err}");
+}
+
+/// An appender writes through its connection's client context, so its flush
+/// is "another statement" too. On 1.x it ends the open stream the same way;
+/// on 2.0.0 the flush is refused while the stream is open — and, because a
+/// failed flush discards the appender's buffer there, the rows are lost.
+#[test]
+fn an_appender_flush_while_a_stream_is_open_on_its_connection() {
+    use quack_rs::appender::Appender;
+
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    con.execute("CREATE TABLE qs_app (x INTEGER)")
+        .expect("create");
+    // SAFETY: `con` is open and the table exists.
+    let appender =
+        unsafe { Appender::new(con.as_raw(), None, c"qs_app") }.expect("create appender");
+    appender.row(|row| row.append_i32(7)).expect("buffered");
+    let statement = con
+        .prepare("SELECT i FROM range(300000) t(i)")
+        .expect("prepare");
+    let mut result = statement.execute_streaming().expect("execute");
+    assert!(result.next_chunk().expect("fetch").is_some());
+    let flushed = appender.flush();
+    if fx.engine_major() >= 2 {
+        let err = flushed.expect_err("DuckDB 2.0 refuses the flush");
+        assert!(err.to_string().contains("open result"), "{err}");
+        #[cfg(feature = "duckdb-1-5")]
+        assert_eq!(
+            err.error_type(),
+            quack_rs::error_data::DuckDbErrorType::ResourceInUse,
+            "{err}"
+        );
+        while result.next_chunk().expect("the stream is intact").is_some() {}
+        appender.close().expect("nothing left to write");
+        drop(appender);
+        assert_eq!(
+            fx.scalar("SELECT count(*) FROM qs_app", |r, i| unsafe {
+                r.read_i64(i)
+            }),
+            Some(0),
+            "the refused flush discarded the buffered row"
+        );
+        return;
+    }
+    flushed.expect("DuckDB 1.x writes the row");
+    let err = result.next_chunk().expect_err("the flush ended the stream");
+    assert!(err.to_string().contains("closed"), "{err}");
+    drop(appender);
+    assert_eq!(
+        fx.scalar("SELECT count(*) FROM qs_app", |r, i| unsafe {
+            r.read_i64(i)
+        }),
+        Some(1)
+    );
 }
 
 /// A clean end stays `Ok(None)` on every later call: `DuckDB` would record an
@@ -116,12 +199,13 @@ impl Drop for Cursor {
     }
 }
 
-/// `DuckDB` keeps an abandoned stream's operator states on the connection
-/// until the next statement there, not until the `QueryResult` or the
-/// `PreparedStatement` is dropped. The documented behaviour (Known
-/// Limitations, "An abandoned stream keeps its table-function state") is
-/// pinned here: if `DuckDB` starts freeing them on drop, this fails and the
-/// page needs updating.
+/// Up to 1.5.x `DuckDB` keeps an abandoned stream's operator states on the
+/// connection until the next statement there, not until the `QueryResult` or
+/// the `PreparedStatement` is dropped. 2.0.0 aborts the query when the
+/// unfinished result is destroyed (`QueryResult::Close`), so the states go
+/// with it. The documented behaviour (Known Limitations, "An abandoned stream
+/// keeps its table-function state") is pinned here per engine: if either
+/// changes, this fails and the page needs updating.
 #[test]
 fn an_abandoned_stream_keeps_its_table_state_until_the_next_statement() {
     use quack_rs::table::TableFunctionBuilder;
@@ -165,6 +249,15 @@ fn an_abandoned_stream_keeps_its_table_state_until_the_next_statement() {
     assert!(result.next_chunk().expect("fetch").is_some());
     drop(result);
     drop(statement);
+    if fx.engine_major() >= 2 {
+        assert_eq!(
+            CURSORS.load(Ordering::SeqCst),
+            0,
+            "DuckDB 2.0 frees an abandoned stream's state when the result is dropped"
+        );
+        con.execute("SELECT 1").expect("next statement");
+        return;
+    }
     assert!(
         CURSORS.load(Ordering::SeqCst) > 0,
         "DuckDB now frees an abandoned stream's state when the result is dropped"

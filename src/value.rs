@@ -133,8 +133,8 @@ impl Value {
     /// (`duckdb_get_varchar` would throw on it, aborting the process), the
     /// text is not valid UTF-8, or the value holds something `DuckDB` cannot
     /// render — see [`UNRENDERABLE`]. `DuckDB` builds such values from
-    /// ordinary SQL (`make_timestamp(-9223372036854775808)`, or `sum` over a
-    /// `DECIMAL(38, s)` column), and rendering one throws through the C API,
+    /// ordinary SQL (`make_timestamp(-9223372036854775808)`, or, before 2.0,
+    /// `sum` over a `DECIMAL(38, s)` column), and rendering one throws through the C API,
     /// which aborted the process.
     pub fn as_str(&self) -> Result<String, ExtensionError> {
         if self.raw.is_null() {
@@ -173,6 +173,12 @@ impl Value {
     /// | `Value::bigint(-42)` | `-42` |
     /// | `Value::date(0)` | `'1970-01-01'::DATE` |
     /// | `Value::timestamp(0)` | `'1970-01-01 00:00:00'::TIMESTAMP` |
+    ///
+    /// The exact text is `DuckDB`'s `Value::ToSQLString`, which changes
+    /// between releases. From 2.0.0 a typed `NULL` and a nested value carry
+    /// their type as well: a `UNION` whose member is `NULL` renders as
+    /// `union_value(a := NULL::INTEGER)::UNION(a INTEGER)`, where 1.x
+    /// rendered `union_value(a := NULL)`.
     ///
     /// Use [`as_str`][Self::as_str] for a VARCHAR's contents. This is for
     /// diagnostics and error messages, where it works for any value type.

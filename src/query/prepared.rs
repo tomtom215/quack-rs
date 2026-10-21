@@ -74,8 +74,23 @@ impl PreparedStatement {
     ///
     /// `DuckDB` may still materialise (see
     /// [`QueryResult::is_streaming`]), and a streaming result must be consumed
-    /// before another statement runs on the same connection: running one
-    /// invalidates the stream, and the next `next_chunk` returns an error.
+    /// — or dropped — before another statement runs on the same connection.
+    /// What happens otherwise depends on the engine:
+    ///
+    /// - up to `DuckDB` 1.5.x, the other statement runs and invalidates the
+    ///   stream; the next `next_chunk` returns an error;
+    /// - from 2.0.0, the other statement is refused with a "Resource In Use"
+    ///   error (`DUCKDB_ERROR_RESOURCE_IN_USE`) and the stream carries on.
+    ///   That covers everything that runs a statement on the connection:
+    ///   `query`, `execute`, `prepare`, and an
+    ///   [`Appender`][crate::appender::Appender]'s flush, whose rows are then
+    ///   lost (see the appender docs).
+    ///
+    /// Dropping an unfinished stream is safe on both. From 2.0.0 it aborts
+    /// the query at once (`QueryResult::Close`) — in autocommit mode,
+    /// rolling back anything the statement wrote, as with
+    /// `INSERT … RETURNING` — and frees its operator states; up to 1.5.x those
+    /// live on until the next statement on the connection.
     ///
     /// Requires `duckdb-1-5`: `duckdb_execute_prepared_streaming` sits in the
     /// unstable region of the C API struct.

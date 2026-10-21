@@ -167,15 +167,22 @@ quack_rs::aggregate_finalize_callback!(window_finalize, |_info, source, result, 
 });
 
 /// A window frame with `EXCLUDE` is evaluated by `DuckDB`'s segment tree in
-/// two parts, and the second part's states are initialised for every chunk
-/// but never destroyed (`WindowSegmentTreeLocalState::Evaluate`,
-/// `window_segment_tree.cpp`; upstream item 35). A small `T` lives in
-/// `DuckDB`'s state bytes, so the result is right and only what `T` owns on
-/// the heap leaks; this counts the `T`s never dropped. Without `EXCLUDE`
-/// every state is dropped.
+/// two parts. Before v2.0.0 the second part's states are initialised for
+/// every chunk but never destroyed (`WindowSegmentTreeLocalState::Evaluate`,
+/// `src/function/window/window_segment_tree.cpp` 409-429 at v1.5.6; upstream
+/// item 35). A small `T` lives in `DuckDB`'s state bytes, so the result is
+/// right and only what `T` owns on the heap leaks; this counts the `T`s never
+/// dropped. v2.0.0 destroys them after the combine (`right_part->Destroy`,
+/// the same file 506-510), so there none is left. Without `EXCLUDE` every
+/// state is dropped on every release.
 #[test]
 fn a_window_frame_with_exclude_leaves_states_undestroyed() {
     let fx = Fixture::open();
+    // SAFETY: the fixture initialised the dispatch table.
+    let destroys_excluded = unsafe { quack_rs::abi::engine_version() }
+        .as_deref()
+        .and_then(quack_rs::abi::parse_version)
+        .is_some_and(|v| v >= (2, 0, 0));
     // SAFETY: `con` is open; the callbacks match the builder's signatures.
     unsafe {
         AggregateFunctionBuilder::try_new("window_sum")
@@ -210,5 +217,9 @@ fn a_window_frame_with_exclude_leaves_states_undestroyed() {
         live
     };
     assert_eq!(leaked(""), 0);
-    assert!(leaked("EXCLUDE CURRENT ROW") > 0);
+    if destroys_excluded {
+        assert_eq!(leaked("EXCLUDE CURRENT ROW"), 0);
+    } else {
+        assert!(leaked("EXCLUDE CURRENT ROW") > 0);
+    }
 }

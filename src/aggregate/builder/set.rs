@@ -29,8 +29,9 @@ use crate::validate::validate_function_name;
 ///
 /// # Known `DuckDB` limitation
 ///
-/// Every overload is a C-API aggregate, so each reads out of bounds under
-/// `agg(x) OVER ()` and `agg(x ORDER BY y)` — a `DuckDB` C API defect. See
+/// Every overload is a C-API aggregate, so on `DuckDB` before 2.0.0 each
+/// reads out of bounds under `agg(x) OVER ()` and `agg(x ORDER BY y)` — a
+/// `DuckDB` C API defect, fixed in 2.0.0. See
 /// [`AggregateFunctionBuilder`][crate::aggregate::AggregateFunctionBuilder#known-duckdb-limitation].
 ///
 /// # ADR-5: Function sets for variadic signatures

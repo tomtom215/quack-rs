@@ -28,7 +28,9 @@
 //!
 //! That is not a guarantee that `secret_string` holds no credential: the
 //! built-in `http` type renders `extra_http_headers` — an `Authorization`
-//! header included — in full, a secret type that declares no sensitive keys is
+//! header included — in full up to `DuckDB` 1.5.x (2.0.0 redacts it, as
+//! `default_secrets.cpp` now lists it among the type's redacted keys), a
+//! secret type that declares no sensitive keys is
 //! rendered whole, and what counts as sensitive changes between releases: an
 //! `http` secret's `bearer_token` is redacted by `DuckDB` 1.5.3 and later but
 //! shown in full by 1.4.4 and 1.5.0 (checked in CI; 1.5.1 and 1.5.2 untested). Treat
@@ -132,7 +134,8 @@ pub struct DuckDbSecretInfo {
     pub scope: Vec<String>,
     /// `DuckDB`'s own rendering of the secret, with the fields its type
     /// declares sensitive redacted. **It can still contain credentials** (an
-    /// `http` secret's `extra_http_headers`, for one), so do not log it.
+    /// `http` secret's `extra_http_headers` up to `DuckDB` 1.5.x, for one), so
+    /// do not log it.
     pub secret_string: String,
 }
 
@@ -168,7 +171,7 @@ impl fmt::Debug for DuckDbSecretInfo {
 ///
 /// Redaction is per field, so `secret_string` can still hold a credential: an
 /// `http` secret's `extra_http_headers` (an `Authorization` header, say) is
-/// rendered in full, as is every field of a secret type that declares none
+/// rendered in full up to `DuckDB` 1.5.x (2.0.0 redacts it), as is every field of a secret type that declares none
 /// sensitive, and on `DuckDB` 1.4.4 and 1.5.0 even an `http` secret's
 /// `bearer_token`. Do not log `secret_string`; [`DuckDbSecretInfo`]'s `Debug` omits
 /// it for that reason.

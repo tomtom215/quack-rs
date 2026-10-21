@@ -111,8 +111,9 @@ impl core::hash::Hasher for Fnv1a {
 ///
 /// # Known `DuckDB` limitation
 ///
-/// **Two query shapes make every C-API aggregate read out of bounds.** In
-/// them `DuckDB` calls `update` with a state array holding **one** state while
+/// **Before `DuckDB` 2.0.0, two query shapes make every C-API aggregate read
+/// out of bounds.** In them `DuckDB` calls `update` with a state array holding
+/// **one** state while
 /// passing `count > 1` rows, so the callback reads `states[1..count]` past the
 /// end of the array — undefined behaviour in *any* C-API aggregate, whether
 /// built with quack-rs or by hand:
@@ -131,8 +132,15 @@ impl core::hash::Hasher for Fnv1a {
 /// defect in `DuckDB`'s C API, not in quack-rs, and it cannot be detected
 /// from inside the callback — reading `states[1]` to check is itself the
 /// out-of-bounds read. Reported upstream as
-/// [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Until it is fixed, do not use C-API aggregates in
-/// those two query shapes.
+/// [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
+/// On `DuckDB` 1.4.x and 1.5.x, do not use C-API aggregates in those two
+/// query shapes.
+///
+/// **Fixed in `DuckDB` 2.0.0:** `CAPIAggregateUpdate` flattens a non-flat
+/// state vector into one state pointer per row before calling `update`
+/// (`src/main/capi/v1/aggregate_function-c.cpp`, lines 104–108 at v2.0.0).
+/// Both shapes then give the right answer, and a plain C aggregate runs them
+/// clean under Valgrind; on 1.5.6 the same program segfaults.
 ///
 /// # Memory layout
 ///
@@ -161,11 +169,14 @@ impl core::hash::Hasher for Fnv1a {
 /// dropped. A `T` stored inline costs nothing more: its bytes belong to
 /// `DuckDB`'s hash table, which `DuckDB` frees. What leaks is whatever `T`
 /// itself owns on the heap (a `Vec`, a `String`, a `HashMap`), and, for a
-/// boxed `T`, the box. The same holds for a window frame with an `EXCLUDE`
-/// clause, whose segment tree initialises one extra state per row and never
-/// destroys it (item 35; 5000 `T`s undropped over a 5000-row window). Until
-/// `DuckDB` fixes these, prefer a state that owns no heap memory and is small
-/// enough to be stored inline.
+/// boxed `T`, the box. `DuckDB` 2.0.0 still behaves this way (pinned by
+/// `tests/aggregate_leaks.rs`). Before 2.0.0 the same holds for a window
+/// frame with an `EXCLUDE` clause, whose segment tree initialises one extra
+/// state per row and never destroys it (item 35; 5000 `T`s undropped over a
+/// 5000-row window); 2.0.0 destroys those states
+/// (`WindowSegmentTreeLocalState::Evaluate`, `window_segment_tree.cpp`
+/// 506–510). Until `DuckDB` fixes the stopped scan, prefer a state that owns
+/// no heap memory and is small enough to be stored inline.
 ///
 /// # States `DuckDB` never initialised
 ///

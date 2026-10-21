@@ -52,9 +52,11 @@
 //!   `arrow_array->release = nullptr` *before* the conversion loop body, so
 //!   ownership moves on the error path too. [`data_chunk_from_arrow`] takes the
 //!   [`ArrowArray`] **by value** for exactly that reason. The one case where
-//!   `DuckDB` does *not* claim it is a zero-column schema, where the loop never
-//!   runs — which is handled by the same code, because the by-value array is
-//!   dropped on the way out and its `Drop` releases only if `release` survived.
+//!   `DuckDB` before 2.0.0 does *not* claim it is a zero-column schema, where
+//!   the loop never runs — which is handled by the same code, because the
+//!   by-value array is dropped on the way out and its `Drop` releases only if
+//!   `release` survived. `DuckDB` 2.0.0 claims it before the loop in that case
+//!   too.
 //!
 //! # What this module refuses that `DuckDB` would not
 //!

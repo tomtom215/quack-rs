@@ -49,20 +49,25 @@
 /// and skips the invalid ones; reading an invalid row's value reads whatever
 /// happens to be in the data buffer.
 ///
-/// For an aggregate the setting is read in exactly one place:
-/// `BoundAggregateExpression::PropagatesNullValues`, which the correlated
-/// subquery decorrelator (`flatten_dependent_join.cpp`) consults to choose an
-/// `INNER` or `LEFT` join. No query tried against `DuckDB` 1.5.5 — correlated
-/// scalar subqueries with and without arithmetic or `coalesce` over the
-/// aggregate, `LATERAL`, and a correlated subquery in `WHERE` — gave a
-/// different answer under the two settings.
+/// For an aggregate the setting is read only by the correlated subquery
+/// decorrelator (`flatten_dependent_join.cpp`). Before `DuckDB` 2.0.0 it
+/// reads it in one place, `BoundAggregateExpression::PropagatesNullValues`,
+/// to choose an `INNER` or `LEFT` join, and no query tried against 1.5.5 —
+/// correlated scalar subqueries with and without arithmetic or `coalesce`
+/// over the aggregate, `LATERAL`, and a correlated subquery in `WHERE` — gave
+/// a different answer under the two settings.
 ///
-/// What *does* differ from an uncorrelated query, under both settings, is an
-/// outer row with no matching inner rows: the correlated subquery yields NULL
-/// without ever finalizing an empty state. `DuckDB` special-cases only its own
-/// `count` and `count(*)` to return 0 there, so a count-like aggregate that
-/// returns 0 for empty input returns NULL for such a row. Wrap the subquery in
-/// `coalesce(..., 0)` if that matters.
+/// The difference that shows is an outer row with no matching inner rows.
+/// Under `DefaultNullHandling` (and, before 2.0.0, under both settings) the
+/// correlated subquery yields NULL there without ever finalizing an empty
+/// state; `DuckDB` special-cases only its own `count` and `count(*)` to
+/// return 0, so a count-like aggregate that returns 0 for empty input returns
+/// NULL for such a row. From 2.0.0 the decorrelator finalizes an empty state
+/// of every `SpecialNullHandling` aggregate and uses it for those rows
+/// (`FlattenDependentJoins::PushDownAggregate`), so such an aggregate answers
+/// as it would for an empty uncorrelated input. On older releases, or under
+/// `DefaultNullHandling`, wrap the subquery in `coalesce(..., 0)` if that
+/// matters.
 ///
 /// # Example
 ///

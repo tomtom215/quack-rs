@@ -266,22 +266,26 @@ impl BindInfo {
     /// # What `is_exact` actually does
     ///
     /// `duckdb.h` describes `is_exact` as "whether or not the cardinality is
-    /// exact", but `DuckDB` 1.5.5 implements it the other way round
+    /// exact". `DuckDB` 2.0.0 implements that; every 1.x release up to and
+    /// including 1.5.6 implements it the other way round
     /// (`src/main/capi/table_function-c.cpp`, `duckdb_bind_set_cardinality`):
     ///
-    /// | `is_exact` | `NodeStatistics` recorded |
-    /// |---|---|
-    /// | `true`  | `NodeStatistics(rows)` — an **estimate only**, no upper bound |
-    /// | `false` | `NodeStatistics(rows, rows)` — the estimate **and** `max_cardinality = rows` |
+    /// | `is_exact` | `NodeStatistics` recorded, 1.x | `NodeStatistics` recorded, 2.0.0 |
+    /// |---|---|---|
+    /// | `true`  | `NodeStatistics(rows)` — an **estimate only** | `NodeStatistics(rows, rows)` — the estimate **and** `max_cardinality = rows` |
+    /// | `false` | `NodeStatistics(rows, rows)` — the estimate **and** `max_cardinality = rows` | `NodeStatistics(rows)` — an **estimate only** |
     ///
     /// The estimate drives plan costing either way (`EXPLAIN` shows `~rows`
     /// for both). The upper bound additionally feeds the optimizer's
     /// statistics propagation for joins and set operations
     /// (`src/optimizer/statistics/operator/propagate_join.cpp`), which treats
-    /// it as a limit, so pass `false` only when `rows` really is a bound the
-    /// scan never exceeds, and `true` for a guess.
-    /// quack-rs passes the flag through unchanged, so code stays correct if
-    /// `DuckDB` later swaps the branches to match its header.
+    /// it as a limit. quack-rs passes the flag through unchanged, so the same
+    /// call records a bound on one engine and a plain estimate on the other.
+    /// For an extension that may load into either, the only safe call is one
+    /// whose `rows` the scan never exceeds — then a recorded bound is true
+    /// whichever flag records it. A guess the scan may exceed is safe with
+    /// `true` on 1.x and with `false` on 2.0.0 only: choose the flag by the
+    /// engine's version ([`crate::abi::engine_version`]) or set no hint.
     pub fn set_cardinality(&self, rows: u64, is_exact: bool) -> &Self {
         // SAFETY: self.info is valid.
         unsafe {

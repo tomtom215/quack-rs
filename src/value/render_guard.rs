@@ -15,20 +15,24 @@
 //! table function's parameter, for one — so the check has to be made on the
 //! value, at rendering time.
 //!
-//! `DECIMAL` is the same: `sum` over a `DECIMAL(38, s)` column checks for
-//! `HUGEINT` overflow but not for the declared width, so plain SQL builds a
-//! `DECIMAL(38, 0)` holding `i128::MIN`, whose rendering throws "Negation of
-//! HUGEINT is out of range" through the C API, and a `DECIMAL(38, 38)` holding
-//! 1.2, whose first character `DuckDB` never writes
-//! (`DecimalToString::FormatDecimal` skips the integer digits when
+//! `DECIMAL` is the same: through 1.5, `sum` over a `DECIMAL(38, s)` column
+//! checks for `HUGEINT` overflow but not for the declared width, so plain SQL
+//! builds a `DECIMAL(38, 0)` holding `i128::MIN`, whose rendering throws
+//! "Negation of HUGEINT is out of range" through the C API, and a
+//! `DECIMAL(38, 38)` holding 1.2, whose first character `DuckDB` never
+//! writes (`DecimalToString::FormatDecimal` skips the integer digits when
 //! `width == scale`): the text starts with a stray byte, and rendering throws
 //! when that byte is not valid UTF-8. A `DECIMAL` renders only if its payload
 //! fits its width (`docs/upstream-duckdb-reports.md`, items 13 and 22).
+//! `DuckDB` 2.0.0's `sum` refuses a result wider than `DECIMAL(38)`
+//! ("Overflow in SUM of DECIMAL", `sum.cpp` `DecimalSumOperation`), but the
+//! check stays for 1.x and for any other path that builds one.
 //!
 //! The check is an allow-list: a type renders unchecked only if every payload
 //! of it renders ([`renders_at_any_payload`]). `VARIANT` (whose content the C
-//! API cannot see), `GEOMETRY` (whose WKB `DuckDB` accepts malformed and then
-//! fails to print) and any type this crate does not know are refused.
+//! API cannot see), `GEOMETRY` (whose WKB `DuckDB` 1.5 accepts malformed and then
+//! fails to print; 2.0.0 validates it on input, but the C API still cannot
+//! read the WKB to confirm) and any type this crate does not know are refused.
 //!
 //! The C API can read a `LIST`'s elements, a `STRUCT`'s fields and a `MAP`'s
 //! entries, so those are checked element by element. It exposes no way to

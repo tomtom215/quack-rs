@@ -4,11 +4,19 @@
 //! Build script for quack-rs.
 //!
 //! When the `bundled-test` (or `bundled-test-prebuilt`) feature is active this
-//! compiles a tiny C++ shim (`src/testing/bundled_api_init.cpp`) that exposes
-//! `DuckDB`'s internal `CreateAPIv1()` function as a C-linkage symbol.  The Rust
-//! side calls this at test startup to populate the `loadable-extension` dispatch
-//! table from the linked `DuckDB` symbols, enabling `InMemoryDb` to work in
-//! `cargo test`.
+//! compiles a tiny shim that fills a `duckdb_ext_api_v1` struct from the linked
+//! `DuckDB` symbols, which is what `DuckDB`'s internal `CreateAPIv1()` does. The
+//! Rust side calls it at test startup to populate the `loadable-extension`
+//! dispatch table, enabling `InMemoryDb` to work in `cargo test`.
+//!
+//! The shim is C generated from `duckdb_extension.h` whenever the headers
+//! include it (every `DuckDB` 1.5 and 2.0 release archive, and the bundled
+//! source tree): one `slots[i] = (void *)duckdb_x;` per field, in the
+//! header's order, against `duckdb.h` alone. `DuckDB` 2.0's release archives
+//! ship no `duckdb.hpp`, so this is the only way to build there; and it needs no
+//! C++ standard at all (2.0's C++ headers need C++17). Where only `duckdb.hpp`
+//! is available (the `DuckDB` 1.4 release zips), the C++ shim
+//! `src/testing/bundled_api_init.cpp` calls `CreateAPIv1()` itself.
 //!
 //! Two modes are supported:
 //!
@@ -50,18 +58,35 @@ fn main() {
     // libduckdb-sys links the compiled-from-source library itself.
     let prebuilt = prebuilt_feature && !source_build;
 
-    if prebuilt {
-        emit_prebuilt_link_lib();
-    }
-
     let duckdb_include = resolve_duckdb_include(!prebuilt);
 
-    cc::Build::new()
-        .cpp(true)
-        .file("src/testing/bundled_api_init.cpp")
+    let mut build = cc::Build::new();
+    let extension_header = duckdb_include.join("duckdb_extension.h");
+    if extension_header.exists() {
+        let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
+        let shim = out_dir.join("quack_rs_api_v1_fill.c");
+        let header = std::fs::read_to_string(&extension_header)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", extension_header.display()));
+        let fields = ext_api_v1_fields(&header).unwrap_or_else(|e| {
+            panic!("quack-rs: {}: {e}", extension_header.display());
+        });
+        std::fs::write(&shim, generated_c_shim(&fields, &duckdb_include))
+            .unwrap_or_else(|e| panic!("writing {}: {e}", shim.display()));
+        build.file(&shim);
+        println!("cargo:rerun-if-changed={}", extension_header.display());
+    } else {
+        build
+            .cpp(true)
+            .file("src/testing/bundled_api_init.cpp")
+            // The DuckDB 1.4 headers need C++11; C++17 is a superset, and what
+            // DuckDB 2.0's C++ headers require, should a tree without
+            // `duckdb_extension.h` but with 2.0's `duckdb.hpp` ever turn up.
+            .flag_if_supported("-std=c++17")
+            .flag_if_supported("/std:c++17");
+        println!("cargo:rerun-if-changed=src/testing/bundled_api_init.cpp");
+    }
+    build
         .include(&duckdb_include)
-        // DuckDB headers use C++11 features; keep it minimal.
-        .flag_if_supported("-std=c++11")
         // Suppress warnings from DuckDB headers that we don't own.
         .flag_if_supported("-w")
         // On Windows/MSVC the DuckDB headers declare all public symbols with
@@ -72,7 +97,100 @@ fn main() {
         .define("DUCKDB_STATIC_BUILD", None)
         .compile("quack_rs_bundled_init");
 
-    println!("cargo:rerun-if-changed=src/testing/bundled_api_init.cpp");
+    // After `compile`, which emits the shim's own `rustc-link-lib`, so the
+    // library the shim calls into is named after it. Emitted before, the test
+    // binary failed to link on Rust 1.86.0 (MSRV) with "undefined reference to
+    // `duckdb_open`" from the shim, while 1.97 linked it.
+    if prebuilt {
+        emit_prebuilt_link_lib();
+    }
+}
+
+/// The function-pointer field names of `duckdb_ext_api_v1`, in declaration
+/// order, with every conditional band included.
+///
+/// Every band is what `libduckdb-sys` compiles in (it defines
+/// `DUCKDB_EXTENSION_API_VERSION_UNSTABLE` and targets the newest C API) and
+/// what `CreateAPIv1()` fills, so the generated shim matches both. The only
+/// conditionals the struct has ever contained are `#if`/`#ifdef` bands with no
+/// alternative; an `#else` or `#elif` would mean a field list this parser
+/// cannot evaluate, so it is refused rather than guessed at.
+fn ext_api_v1_fields(header: &str) -> Result<Vec<String>, String> {
+    let start = header
+        .find("typedef struct {")
+        .ok_or("no `typedef struct {` (is this duckdb_extension.h?)")?;
+    let end = header[start..]
+        .find("} duckdb_ext_api_v1;")
+        .ok_or("no `} duckdb_ext_api_v1;`")?
+        + start;
+    let body = &header[start..end];
+    let mut fields = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#else") || trimmed.starts_with("#elif") {
+            return Err(format!(
+                "duckdb_ext_api_v1 contains `{}`, which the test shim generator does not handle",
+                trimmed.trim_end()
+            ));
+        }
+    }
+    let mut rest = body;
+    while let Some(at) = rest.find("(*") {
+        rest = &rest[at + 2..];
+        let name: String = rest
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.starts_with("duckdb_") {
+            return Err(format!("unexpected function-pointer field name {name:?}"));
+        }
+        fields.push(name);
+    }
+    if fields.is_empty() {
+        return Err("duckdb_ext_api_v1 has no function-pointer fields".into());
+    }
+    Ok(fields)
+}
+
+/// C source that fills a caller's `duckdb_ext_api_v1`-sized buffer field by
+/// field, as `CreateAPIv1()` does, using only `duckdb.h`'s declarations.
+///
+/// `duckdb_extension.h` itself is not included: from v1.5.6 it `#define`s every
+/// `duckdb_x` to `duckdb_ext_api.duckdb_x`, which would rewrite these
+/// assignments.
+fn generated_c_shim(fields: &[String], include: &Path) -> String {
+    use std::fmt::Write as _;
+    // A C string literal: Rust's escaping is C's for printable ASCII.
+    let origin = include.display().to_string();
+    let origin = if origin
+        .chars()
+        .all(|c| c.is_ascii() && !c.is_ascii_control())
+    {
+        format!("{:?}", format!("DuckDB C headers in {origin}"))
+    } else {
+        "\"DuckDB C headers (non-ASCII path)\"".to_string()
+    };
+    let mut c = String::new();
+    c.push_str(
+        "/* Generated by quack-rs's build.rs from duckdb_extension.h. Do not edit. */\n\
+         #include \"duckdb.h\"\n#include <stddef.h>\n\n",
+    );
+    let _ = writeln!(
+        c,
+        "size_t quack_rs_api_v1_size(void) {{ return {} * sizeof(void *); }}\n",
+        fields.len()
+    );
+    let _ = writeln!(
+        c,
+        "const char *quack_rs_header_duckdb_version(void) {{ return {origin}; }}\n"
+    );
+    c.push_str("void quack_rs_fill_api_v1(void *out) {\n    void **slots = (void **)out;\n");
+    for (i, field) in fields.iter().enumerate() {
+        let _ = writeln!(c, "    slots[{i}] = (void *){field};");
+    }
+    c.push_str("}\n");
+    c
 }
 
 /// In `bundled-test-prebuilt` mode, `libduckdb-sys` resolves the library
@@ -88,7 +206,14 @@ fn emit_prebuilt_link_lib() {
     println!("cargo:rustc-link-lib=dylib=duckdb");
 }
 
-/// Resolves the include directory containing `duckdb.hpp`.  Tries (in order):
+/// Whether `dir` holds headers the test shim can be built from:
+/// `duckdb_extension.h` (the generated C shim) or `duckdb.hpp` (the C++ one).
+fn has_shim_headers(dir: &Path) -> bool {
+    dir.join("duckdb_extension.h").exists() || dir.join("duckdb.hpp").exists()
+}
+
+/// Resolves the include directory holding `duckdb_extension.h` or
+/// `duckdb.hpp` (see [`has_shim_headers`]).  Tries (in order):
 ///
 /// 1. `DEP_DUCKDB_INCLUDE` — emitted by `libduckdb-sys >= 1.10503`.  Works in
 ///    both bundled and `build_linked` (download / `DUCKDB_LIB_DIR`) paths.
@@ -96,13 +221,13 @@ fn emit_prebuilt_link_lib() {
 ///    - **source build (`bundled`)**: scan the Cargo build directory for the
 ///      extracted source tree (the historical path used by quack-rs <= 0.12).
 ///    - **prebuilt**: `DUCKDB_INCLUDE_DIR`, then `DUCKDB_LIB_DIR` if it has
-///      `duckdb.hpp` alongside the library.  `DUCKDB_DOWNLOAD_LIB` is not
+///      the headers alongside the library.  `DUCKDB_DOWNLOAD_LIB` is not
 ///      probeable on pre-1.10503 (the download dir isn't exposed), so users
 ///      on that mode must upgrade `libduckdb-sys` or set the dirs explicitly.
 fn resolve_duckdb_include(bundled: bool) -> PathBuf {
     if let Some(dir) = env::var_os("DEP_DUCKDB_INCLUDE") {
         let p = PathBuf::from(dir);
-        if p.join("duckdb.hpp").exists() {
+        if has_shim_headers(&p) {
             return p;
         }
     }
@@ -120,14 +245,14 @@ fn resolve_prebuilt_include_from_env() -> PathBuf {
     let mut inspected: Vec<(&str, PathBuf)> = Vec::new();
     if let Some(inc) = env::var_os("DUCKDB_INCLUDE_DIR") {
         let p = PathBuf::from(inc);
-        if p.join("duckdb.hpp").exists() {
+        if has_shim_headers(&p) {
             return p;
         }
         inspected.push(("DUCKDB_INCLUDE_DIR", p));
     }
     if let Some(lib) = env::var_os("DUCKDB_LIB_DIR") {
         let p = PathBuf::from(lib);
-        if p.join("duckdb.hpp").exists() {
+        if has_shim_headers(&p) {
             return p;
         }
         inspected.push(("DUCKDB_LIB_DIR", p));
@@ -137,16 +262,22 @@ fn resolve_prebuilt_include_from_env() -> PathBuf {
     } else {
         inspected
             .iter()
-            .map(|(name, p)| format!("  {name}={} (no duckdb.hpp here)", p.display()))
+            .map(|(name, p)| {
+                format!(
+                    "  {name}={} (neither duckdb_extension.h nor duckdb.hpp here)",
+                    p.display()
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
     panic!(
-        "quack-rs: bundled-test without bundled could not locate duckdb.hpp.\n\
+        "quack-rs: bundled-test without bundled could not locate the DuckDB headers\n\
+         (duckdb_extension.h or duckdb.hpp).\n\
          Inspected:\n{inspected_report}\n\
          Either upgrade libduckdb-sys to >= 1.10503 (which publishes the include\n\
          directory via DEP_DUCKDB_INCLUDE), or point DUCKDB_INCLUDE_DIR /\n\
-         DUCKDB_LIB_DIR at a directory containing duckdb.hpp."
+         DUCKDB_LIB_DIR at the extracted DuckDB release archive."
     );
 }
 

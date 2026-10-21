@@ -78,9 +78,11 @@ impl Appender {
     /// appender has active columns (append the rest and call it again), or if
     /// the appender is closed or poisoned. Also when the automatic flush
     /// `DuckDB` runs every 204,800 rows fails — a constraint violation in any
-    /// buffered row. The row has then ended and the appender stays usable, but
-    /// the rows that failed stay buffered: the next flush reports the same
-    /// error until `clear` (`duckdb-1-5`) discards them.
+    /// buffered row. The row has then ended and the appender stays usable.
+    /// Up to `DuckDB` 1.5.x the rows that failed stay buffered: the next flush
+    /// reports the same error until `clear` (`duckdb-1-5`) discards them. From
+    /// 2.0.0 a failed flush discards every buffered row itself, so the next
+    /// flush writes only the rows appended after it.
     pub fn end_row(&self) -> Result<(), AppendError> {
         self.usable()?;
         // SAFETY: self.handle is valid.
@@ -92,7 +94,7 @@ impl Appender {
         // (`Flush`, reached through `FlushChunk` once 204,800 rows are
         // buffered: `DEFAULT_FLUSH_COUNT`, `appender.hpp`) can fail. The C API
         // sets no memory threshold, so no other flush runs from here in
-        // 1.4.4 through 1.5.5. Such a failure leaves
+        // 1.4.4 through 2.0.0. Such a failure leaves
         // no half-written row, so it must not look like one.
         if result.is_ok() || self.column.get() == self.column_count() {
             self.column.set(0);

@@ -111,8 +111,15 @@ pub const DUCKDB_PLATFORM_GROUPS: &[&str] = &["linux", "osx", "wasm", "windows"]
 /// going to be built. [`validate_excluded_platforms`] accepts them anyway,
 /// since a redundant exclusion is not an error, but
 /// [`is_opt_in_platform`] lets a caller warn about it.
-pub const DUCKDB_OPT_IN_PLATFORMS: &[&str] =
-    &["linux_amd64_musl", "linux_arm64_musl", "windows_arm64"];
+///
+/// `osx_amd64` became opt-in in `extension-ci-tools` for `DuckDB` 2.0 ("Disable
+/// `osx_amd64` unless explicitly opted in"); `DuckDB` 2.1 drops the platform.
+pub const DUCKDB_OPT_IN_PLATFORMS: &[&str] = &[
+    "linux_amd64_musl",
+    "linux_arm64_musl",
+    "osx_amd64",
+    "windows_arm64",
+];
 
 /// Returns `true` if `platform` is only built when an extension opts into it.
 ///

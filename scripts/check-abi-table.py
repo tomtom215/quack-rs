@@ -40,6 +40,13 @@ Usage:
     python3 scripts/check-abi-table.py              # verify
     python3 scripts/check-abi-table.py --print      # print the Rust table
     python3 scripts/check-abi-table.py --tags v1.5.6 v1.6.0
+
+It also derives `PREFIX_LAYOUTS`: every pair of layouts where the smaller one's
+full declaration list is, declaration for declaration, the start of the larger
+one's. An extension compiled against the smaller layout reads only that prefix,
+so it dispatches correctly on an engine with the larger one (v1.5.6's 546 slots
+inside v2.0.0's 548). Exact declarations only: v1.4.0's `varint` -> `bignum`
+rename breaks the prefix, so no pair spans it.
 """
 
 from __future__ import annotations
@@ -242,10 +249,40 @@ def parse_rust_table() -> tuple[list[tuple[int, int, int, int, int]], int]:
     return entries, int(stable_match.group(1))  # type: ignore[return-value]
 
 
+def parse_rust_prefixes() -> list[tuple[int, int]]:
+    """Read PREFIX_LAYOUTS out of `src/abi.rs`."""
+    text = ABI_RS.read_text()
+    body_match = re.search(r"PREFIX_LAYOUTS: &\[\(usize, usize\)\] = &\[(.*?)\];", text, re.S)
+    if not body_match:
+        sys.exit("could not find PREFIX_LAYOUTS in src/abi.rs")
+    return [
+        (int(a), int(b))
+        for a, b in re.findall(r"\(\s*(\d+),\s*(\d+)\s*\)", body_match.group(1))
+    ]
+
+
+def derive_prefixes(layouts: dict[int, list[str]]) -> list[tuple[int, int]]:
+    """Every (smaller, larger) slot-count pair whose smaller layout is an exact
+    declaration-for-declaration prefix of the larger."""
+    return [
+        (small, large)
+        for small in sorted(layouts)
+        for large in sorted(layouts)
+        if small < large and layouts[large][:small] == layouts[small]
+    ]
+
+
 def render(entries: list[tuple[int, int, int, int, int]]) -> str:
     lines = ["const KNOWN_LAYOUTS: &[LayoutEntry] = &["]
     for major, minor, lo, hi, slots in entries:
         lines.append(f"    ({major}, {minor}, {lo}, {hi}, {slots}),")
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def render_prefixes(pairs: list[tuple[int, int]]) -> str:
+    lines = ["const PREFIX_LAYOUTS: &[(usize, usize)] = &["]
+    lines.extend(f"    ({small}, {large})," for small, large in pairs)
     lines.append("];")
     return "\n".join(lines)
 
@@ -270,6 +307,7 @@ def main() -> int:
     stable_counts: set[int] = set()
     stable_prefixes: dict[str, list[str]] = {}
     layout_by_slots: dict[int, str] = {}
+    declarations_by_slots: dict[int, list[str]] = {}
     problems: list[str] = []
     unfetchable: list[str] = []
 
@@ -304,6 +342,7 @@ def main() -> int:
         stable_prefixes[tag] = [d.replace("varint", "bignum") for d in declarations[: len(stable)]]
 
         previous = layout_by_slots.setdefault(len(full), digest)
+        declarations_by_slots.setdefault(len(full), declarations)
         if previous != digest:
             problems.append(
                 f"{tag}: slot count {len(full)} is shared by two different layouts "
@@ -318,13 +357,17 @@ def main() -> int:
         return 2
 
     derived = collapse(rows)
+    derived_prefixes = derive_prefixes(declarations_by_slots)
 
     if args.print:
         print()
         print(render(derived))
+        print()
+        print(render_prefixes(derived_prefixes))
         return 0
 
     table, stable_const = parse_rust_table()
+    prefixes = parse_rust_prefixes()
 
     # What STABLE_API_SLOT_COUNT promises: its slots are declared stable in
     # every release, with the same declarations in the same order. The
@@ -345,7 +388,7 @@ def main() -> int:
                     f"{tag}: the first {stable_const} declarations differ from {reference_tag}'s"
                 )
 
-    if table != derived:
+    if table != derived or prefixes != derived_prefixes:
         if unfetchable:
             # The derivation is missing releases, so it cannot be compared: a
             # gap makes the derived ranges narrower than reality, and "fixing"
@@ -360,6 +403,14 @@ def main() -> int:
             print(f"  derived from what downloaded: {derived}")
             print("  Not treating this as drift. Re-run when upstream is reachable.")
             return 2
+    if prefixes != derived_prefixes:
+        problems.append(
+            "PREFIX_LAYOUTS in src/abi.rs is out of date.\n"
+            f"  in src/abi.rs: {prefixes}\n"
+            f"  derived:       {derived_prefixes}\n"
+            f"Replace it with:\n\n{render_prefixes(derived_prefixes)}"
+        )
+    if table != derived:
         problems.append(
             "KNOWN_LAYOUTS in src/abi.rs is out of date.\n"
             f"  in src/abi.rs: {table}\n"

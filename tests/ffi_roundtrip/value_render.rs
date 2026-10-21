@@ -87,6 +87,15 @@ fn render(fx: &Fixture, arg: &str) -> Seen {
     seen.remove(0)
 }
 
+/// `sql` fails, with an error containing `want`.
+fn assert_query_fails(fx: &Fixture, sql: &str, want: &str) {
+    // SAFETY: the fixture's connection is open.
+    let err = unsafe { quack_rs::query::query(fx.con(), sql) }
+        .err()
+        .unwrap_or_else(|| panic!("{sql}: expected an error"));
+    assert!(err.to_string().contains(want), "{sql}: {err}");
+}
+
 /// Every renderer refuses `arg`, and `Debug` still returns.
 fn assert_refused(fx: &Fixture, arg: &str) {
     let (text, display, debug) = render(fx, arg);
@@ -113,12 +122,15 @@ fn a_variant_is_not_rendered() {
     assert_refused(&fx, "[42::VARIANT]");
 }
 
-/// `sum` over a `DECIMAL(38, s)` column checks for `HUGEINT` overflow, not
-/// for the width, so plain SQL builds `DECIMAL`s wider than their type.
+/// Through 1.5, `sum` over a `DECIMAL(38, s)` column checks for `HUGEINT`
+/// overflow, not for the width, so plain SQL builds `DECIMAL`s wider than
+/// their type. 2.0.0's `sum` checks the width (`DecimalSumOperation`,
+/// "Overflow in SUM of DECIMAL"), so there the same SQL fails instead.
 #[test]
 fn a_decimal_wider_than_its_type_is_not_rendered() {
     let fx = Fixture::open();
     register_probe(&fx);
+    let v2 = fx.engine_major() >= 2;
     for (name, values) in [
         (
             "dec_min",
@@ -130,9 +142,12 @@ fn a_decimal_wider_than_its_type_is_not_rendered() {
             "'0.6'::DECIMAL(38,38)), ('0.6'::DECIMAL(38,38)",
         ),
     ] {
-        fx.query(&format!(
-            "SET VARIABLE {name} = (SELECT sum(x) FROM (VALUES ({values})) t(x))"
-        ));
+        let set = format!("SET VARIABLE {name} = (SELECT sum(x) FROM (VALUES ({values})) t(x))");
+        if v2 {
+            assert_query_fails(&fx, &set, "Overflow in SUM of DECIMAL");
+            continue;
+        }
+        fx.query(&set);
         assert_refused(&fx, &format!("getvariable('{name}')"));
         assert_refused(&fx, &format!("[getvariable('{name}')]"));
     }
@@ -164,16 +179,28 @@ fn opaque_containers_are_refused_only_when_their_type_needs_a_check() {
 
 /// `ST_GeomFromWKB` (built in from 1.5.0) accepts a `MULTIPOINT` whose part is
 /// a `LINESTRING`, and `Geometry::ToString` throws on it ("Expected POINT in
-/// MULTIPOINT"). A well-formed one is refused too: the C API cannot read the
-/// WKB to tell them apart.
+/// MULTIPOINT"). 2.0.0 validates the WKB on input (`AnalyzeWKB` in
+/// `geometry.cpp`), so there the malformed value is never built. A
+/// well-formed one is refused on every engine: the C API cannot read the WKB
+/// to tell them apart.
 #[cfg(feature = "duckdb-1-5")]
 #[test]
 fn a_geometry_is_not_rendered() {
     let fx = Fixture::open();
     register_probe(&fx);
     let malformed = "ST_GeomFromWKB('\\x01\\x04\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01\\x02\\x00\\x00\\x00\\x00\\x00\\x00\\x00'::BLOB)";
-    assert_refused(&fx, malformed);
-    assert_refused(&fx, &format!("[{malformed}]"));
+    if fx.engine_major() >= 2 {
+        for arg in [malformed.to_owned(), format!("[{malformed}]")] {
+            assert_query_fails(
+                &fx,
+                &format!("SELECT n FROM render_probe({arg})"),
+                "Unexpected geometry type 2 in a collection of type 4",
+            );
+        }
+    } else {
+        assert_refused(&fx, malformed);
+        assert_refused(&fx, &format!("[{malformed}]"));
+    }
     assert_refused(&fx, "'POINT(1 2)'::GEOMETRY");
 }
 
@@ -181,7 +208,8 @@ fn a_geometry_is_not_rendered() {
 /// member alone: the tag is lost, and a member that is NULL renders as the
 /// text `NULL` although the value itself is not SQL NULL. `Debug` keeps both
 /// where it shows contents at all (`duckdb-1-5`, which `display_string`
-/// needs).
+/// needs). From 2.0.0 `Debug`'s SQL literal also carries the types
+/// (`Value::ToSQLString` casts a typed `NULL` and every nested literal).
 #[test]
 fn a_union_renders_as_its_member_alone() {
     let fx = Fixture::open();
@@ -198,7 +226,11 @@ fn a_union_renders_as_its_member_alone() {
     debug_shows(&debug, "union_value(a := 5)");
     let (text, _, debug) = render(&fx, "union_value(a := NULL::INTEGER)");
     assert_eq!(text.as_deref(), Ok("NULL"));
-    debug_shows(&debug, "union_value(a := NULL)");
+    if fx.engine_major() >= 2 {
+        debug_shows(&debug, "union_value(a := NULL::INTEGER)::UNION(a INTEGER)");
+    } else {
+        debug_shows(&debug, "union_value(a := NULL)");
+    }
     let (text, _, _) = render(&fx, "NULL::UNION(a INTEGER, b VARCHAR)");
     assert_eq!(text, Err("Value is SQL NULL".to_owned()));
 }

@@ -20,8 +20,8 @@
 //!
 //! | Region | Slots | Guarantee |
 //! |--------|-------|-----------|
-//! | Stable | <code>0 .. [STABLE_API_SLOT_COUNT]</code> | Frozen since `DuckDB` v1.2.0: ABI-identical in every release from v1.2.0 through v1.5.6 (two slots were renamed `varint` → `bignum` in v1.4.0; the struct layout is unchanged). |
-//! | Unstable | <code>[STABLE_API_SLOT_COUNT] ..</code> | `DuckDB` **inserts new entries in the middle**, shifting every later slot. |
+//! | Stable | <code>0 .. [STABLE_API_SLOT_COUNT]</code> | Frozen since `DuckDB` v1.2.0: ABI-identical in every release from v1.2.0 through v2.0.0 (two slots were renamed `varint` → `bignum` in v1.4.0; the struct layout is unchanged). |
+//! | Unstable | <code>[STABLE_API_SLOT_COUNT] ..</code> | Before v1.5.6, `DuckDB` twice **inserted new entries in the middle**, shifting every later slot. |
 //!
 //! The unstable region is where `duckdb-1-5` lives: scalar bind/init, copy
 //! functions, catalog access, `ErrorData`, `FileSystem`, `Expression`,
@@ -35,7 +35,8 @@
 //! v1.5.0 and v1.5.1, and v1.5.2 to v1.5.5); the rest of the table comes from
 //! the original survey. `scripts/check-abi-table.py` re-derives the whole table
 //! from every release's `duckdb_extension.h`, fingerprinting each layout by its
-//! full declarations, and found v1.5.6 identical to v1.5.2 – v1.5.5.
+//! full declarations, and found v1.5.6 identical to v1.5.2 – v1.5.5, and
+//! v2.0.0's layout to be v1.5.6's with two slots appended.
 //!
 //! | `DuckDB` | Total slots | What changed |
 //! |----------|-------------|--------------|
@@ -44,13 +45,16 @@
 //! | v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` → `duckdb_create_bignum`, appended |
 //! | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
 //! | v1.5.2 – v1.5.6 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
+//! | v2.0.0 | 548 | `duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns` appended |
 //!
 //! `DuckDB` v1.5.6 **stabilised** the whole struct: its header declares all 546
 //! slots stable for an extension that targets C API v1.5.6, where earlier
 //! releases declared only the first 357 stable. The layout is unchanged, and
 //! so is what this module checks: quack-rs targets C API v1.2.0, and every
 //! release before v1.5.6 still hands out the 546-slot struct with nothing past
-//! slot 357 guaranteed.
+//! slot 357 guaranteed. v2.0.0 keeps the V1 C API at version v1.5.6 and only
+//! appends to it, so a build against the v1.5.2 – v1.5.6 layout runs on
+//! v2.0.0 unchanged; [`check`] accepts it there (`PREFIX_LAYOUTS`).
 //!
 //! # Why `DuckDB` does not catch this for you
 //!
@@ -59,8 +63,11 @@
 //! - `C_STRUCT` + a C API version (`v1.2.0`) — accepted by *any* `DuckDB` whose
 //!   C API version is greater than or equal to it, then handed the **whole**
 //!   struct including the unstable region. No engine-version check at all.
+//!   `DuckDB` v1.2.0 – v1.5.5 declare C API v1.2.0; v1.5.6 and v2.0.0 declare
+//!   v1.5.6.
 //! - `C_STRUCT_UNSTABLE` + a `DuckDB` release version — accepted only by that
-//!   exact `DuckDB` release.
+//!   exact `DuckDB` 1.x release. `DuckDB` 2.0 sends every such binary to the
+//!   C API v2 entry point instead (see below).
 //!
 //! An extension that touches the unstable region but is stamped `C_STRUCT`
 //! therefore loads happily into a `DuckDB` with a different layout and then
@@ -97,17 +104,22 @@
 //!
 //! # Shipping an extension that uses the unstable API
 //!
-//! Use `USE_UNSTABLE_C_API=1` with `extension-ci-tools` (or
-//! `--abi-type C_STRUCT_UNSTABLE --duckdb-version vX.Y.Z` with
-//! [`append_metadata`][crate::validate]), so `DuckDB` itself refuses to load the
-//! binary into the wrong release. The runtime guard in this module is the
+//! Build against `DuckDB` v1.5.2 or newer bindings and stamp the binary
+//! `--abi-type C_STRUCT --duckdb-version v1.5.6` with
+//! [`append_metadata`][crate::validate] (with `extension-ci-tools`:
+//! `TARGET_DUCKDB_VERSION=v1.5.6` and no `USE_UNSTABLE_C_API`). `DuckDB`
+//! v1.5.0 – v1.5.5 then refuse it at `LOAD` (their C API is v1.2.0), and
+//! v1.5.6 and v2.0.0 load it: v1.5.6 declared that whole layout stable, and
+//! v2.0.0 only appended to it. The runtime guard in this module is the
 //! belt-and-braces for builds where that metadata is missing or wrong — which
 //! includes every `LOAD '/path/to/ext.duckdb_extension'` during development.
 //!
-//! This holds for every released `DuckDB` (through v1.5.6). Unreleased `DuckDB`
-//! (`main`, `v2.0-cyanoptera`) sends every `C_STRUCT_UNSTABLE` binary to a new
-//! `<name>_init_c_api_v2` entry point that quack-rs does not generate, so such a
-//! binary will not load there; see `AUDIT.md` §5.4.
+//! Do **not** stamp such a build `C_STRUCT_UNSTABLE` any more.
+//! `DuckDB` 2.0 sends every `C_STRUCT_UNSTABLE` binary to a
+//! `<name>_init_c_api_v2` entry point (the C API v2 in `duckdb_extension_v2.h`),
+//! which quack-rs does not generate, so it fails to `LOAD` there with "did not
+//! contain function `<name>_init_c_api_v2`". On `DuckDB` 1.x it still pins the
+//! binary to one release.
 
 use core::ffi::c_void;
 use core::mem::size_of;
@@ -148,17 +160,42 @@ const KNOWN_LAYOUTS: &[LayoutEntry] = &[
     (1, 4, 0, 5, 459),
     (1, 5, 0, 1, 545),
     (1, 5, 2, 6, 546),
+    (2, 0, 0, 0, 548),
 ];
+
+/// Pairs of layouts, by slot count, where the first is an exact prefix of the
+/// second: the same declarations, in the same order, then more slots appended.
+///
+/// An extension compiled against the smaller layout reads only that prefix of
+/// the struct `DuckDB` hands it, so it dispatches correctly on an engine using
+/// the larger one. The converse does not hold: a build against the larger
+/// layout would read past the end of the smaller struct.
+///
+/// Derived by `scripts/check-abi-table.py`, which compares full declarations
+/// (not just names) and fails if this table drifts. `(546, 548)` is the one
+/// that matters to the `duckdb-1-5` features: `DuckDB` v2.0.0 appended
+/// `duckdb_create_timestamp_tz_ns` and `duckdb_get_timestamp_tz_ns` to the
+/// v1.5.2 – v1.5.6 layout and changed nothing else.
+const PREFIX_LAYOUTS: &[(usize, usize)] = &[(408, 428), (546, 548)];
+
+/// Returns `true` if a build against `compiled` slots dispatches correctly on
+/// an engine using `engine` slots: the layouts are the same, or `compiled` is a
+/// verified prefix of `engine`.
+fn layout_runs_on(compiled: usize, engine: usize) -> bool {
+    compiled == engine || PREFIX_LAYOUTS.contains(&(compiled, engine))
+}
 
 /// The result of an ABI layout check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbiCheck {
-    /// The running `DuckDB` uses the same `duckdb_ext_api_v1` layout this
-    /// extension was compiled against. All calls dispatch correctly.
+    /// The running `DuckDB` uses the `duckdb_ext_api_v1` layout this extension
+    /// was compiled against, or one that only appends to it. All calls
+    /// dispatch correctly.
     Compatible {
         /// The `duckdb_library_version()` string reported by the engine.
         engine_version: String,
-        /// The slot count shared by both sides.
+        /// The slot count this extension was compiled against, all of which
+        /// the engine lays out identically.
         slots: usize,
     },
     /// The extension only reaches into the stable prefix, so the layout of the
@@ -244,10 +281,12 @@ impl AbiCheck {
                      provides {engine_slots}. The extension uses the unstable region of the C \
                      API (quack-rs feature `duckdb-1-5`), whose slot indices differ between \
                      these releases, so loading it would dispatch to the wrong functions. \
-                     {rebuild} Stamp every build that uses the unstable region with `--abi-type \
-                     C_STRUCT_UNSTABLE --duckdb-version <the DuckDB release it was built against>` (or \
-                     `USE_UNSTABLE_C_API=1` with extension-ci-tools) so DuckDB refuses a \
-                     mismatched binary at install time."
+                     {rebuild} Stamp a build that uses the unstable region with `--abi-type \
+                     C_STRUCT --duckdb-version v1.5.6` (with extension-ci-tools: \
+                     `TARGET_DUCKDB_VERSION=v1.5.6` and no `USE_UNSTABLE_C_API`) so DuckDB \
+                     itself refuses it before v1.5.6, from which that layout is stable. Not \
+                     `C_STRUCT_UNSTABLE`: DuckDB 2.0 loads such a binary only through the C API \
+                     v2 entry point, which quack-rs does not generate."
                 ))
             }
             Self::UnknownEngineVersion {
@@ -493,10 +532,12 @@ fn decide(compiled_slots: usize, declared: Option<&str>, engine: Option<&str>) -
     }
 
     match expected_slot_count(engine_version) {
-        Some(engine_slots) if engine_slots == compiled_slots => AbiCheck::Compatible {
-            engine_version: engine_version.to_owned(),
-            slots: compiled_slots,
-        },
+        Some(engine_slots) if layout_runs_on(compiled_slots, engine_slots) => {
+            AbiCheck::Compatible {
+                engine_version: engine_version.to_owned(),
+                slots: compiled_slots,
+            }
+        }
         Some(engine_slots) => AbiCheck::LayoutMismatch {
             engine_version: engine_version.to_owned(),
             engine_slots,
@@ -684,6 +725,7 @@ mod tests {
             ("v1.5.2", 546),
             ("v1.5.5", 546),
             ("v1.5.6", 546),
+            ("v2.0.0", 548),
         ] {
             assert_eq!(expected_slot_count(version), Some(slots), "for {version}");
         }
@@ -724,7 +766,8 @@ mod tests {
         assert_eq!(expected_slot_count("v1.4.6"), None);
         assert_eq!(expected_slot_count("v1.5.7"), None);
         assert_eq!(expected_slot_count("v1.6.0"), None);
-        assert_eq!(expected_slot_count("v2.0.0"), None);
+        assert_eq!(expected_slot_count("v2.0.1"), None);
+        assert_eq!(expected_slot_count("v2.1.0"), None);
     }
 
     #[test]
@@ -775,7 +818,11 @@ mod tests {
         assert!(msg.contains("546"));
         assert!(msg.contains("545"));
         assert!(msg.contains("v1.5.0"));
-        assert!(msg.contains("C_STRUCT_UNSTABLE"));
+        // The remedy must be the stamping DuckDB 2.0 still loads: `C_STRUCT`
+        // pinned to C API v1.5.6. `C_STRUCT_UNSTABLE` is named only as the
+        // thing not to do.
+        assert!(msg.contains("--abi-type C_STRUCT --duckdb-version v1.5.6"));
+        assert!(msg.contains("Not `C_STRUCT_UNSTABLE`"));
     }
 
     #[test]
@@ -853,6 +900,56 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// `DuckDB` v2.0.0 appended two slots to the v1.5.2 – v1.5.6 layout, so a
+    /// build against those bindings runs on it; a 1.5.0 build (545 slots, which
+    /// v1.5.2 inserted into) does not, and neither does a 2.0 build on 1.5.6,
+    /// which would read past the end of the engine's struct.
+    #[test]
+    fn duckdb_2_0_0_appends_to_the_1_5_2_layout() {
+        assert!(matches!(
+            decide(546, None, Some("v2.0.0")),
+            AbiCheck::Compatible { slots: 546, .. }
+        ));
+        assert!(matches!(
+            decide(548, None, Some("v2.0.0")),
+            AbiCheck::Compatible { slots: 548, .. }
+        ));
+        assert!(matches!(
+            decide(545, None, Some("v2.0.0")),
+            AbiCheck::LayoutMismatch {
+                engine_slots: 548,
+                compiled_slots: 545,
+                ..
+            }
+        ));
+        assert!(matches!(
+            decide(548, None, Some("v1.5.6")),
+            AbiCheck::LayoutMismatch {
+                engine_slots: 546,
+                compiled_slots: 548,
+                ..
+            }
+        ));
+        // Not extrapolated to an unverified patch release.
+        assert!(matches!(
+            decide(546, None, Some("v2.0.1")),
+            AbiCheck::UnknownEngineVersion { .. }
+        ));
+    }
+
+    #[test]
+    fn prefix_pairs_name_known_layouts_smaller_first() {
+        for &(small, large) in PREFIX_LAYOUTS {
+            assert!(small < large, "({small}, {large}) is not smaller-first");
+            for slots in [small, large] {
+                assert!(
+                    KNOWN_LAYOUTS.iter().any(|&(.., s)| s == slots),
+                    "{slots} is not a KNOWN_LAYOUTS slot count"
+                );
+            }
+        }
     }
 
     #[test]

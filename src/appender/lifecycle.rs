@@ -19,9 +19,13 @@ impl Appender {
     /// # Errors
     ///
     /// Returns an [`AppendError`] if the flush fails — a constraint violation,
-    /// typically. On failure every buffered row is invalidated; with
-    /// `duckdb-1-5` they can be discarded with `clear`. Also an error when the
-    /// appender is closed or poisoned, or a row is in progress.
+    /// typically. On failure every buffered row is invalidated: up to `DuckDB`
+    /// 1.5.x they stay buffered and, with `duckdb-1-5`, can be discarded with
+    /// `clear`; from 2.0.0 `DuckDB` discards them itself. Also an error when
+    /// the appender is closed or poisoned, or a row is in progress. On 2.0.0
+    /// the flush also fails, losing the buffered rows, while a streaming
+    /// result is open on the appender's connection (see the
+    /// [module docs][crate::appender]).
     pub fn flush(&self) -> Result<(), AppendError> {
         self.usable()?;
         // SAFETY: self.handle is valid.
@@ -35,8 +39,10 @@ impl Appender {
     /// # Errors
     ///
     /// Returns an [`AppendError`] if the final flush fails (the appender then
-    /// stays open, so the buffered rows can be discarded with `clear` under
-    /// `duckdb-1-5`), and — instead of `DuckDB`'s silent success — when a row
+    /// stays open; up to `DuckDB` 1.5.x the buffered rows can be discarded
+    /// with `clear` under `duckdb-1-5`, and from 2.0.0 `DuckDB` has already
+    /// discarded them, so closing again succeeds and writes nothing), and —
+    /// instead of `DuckDB`'s silent success — when a row
     /// is unfinished or the appender is poisoned: `DuckDB`'s `Close` writes
     /// nothing in that state, so the error says how many buffered rows were
     /// not written. An unfinished row appended by hand can still be completed

@@ -116,14 +116,22 @@ fn cargo_toml_declares_the_msrv_and_resolves_for_it() {
 fn distribution_workflow_matches_the_community_build() {
     let files = generate_scaffold(&valid_config()).unwrap();
     let wf = file(&files, DISTRIBUTION);
-    let r = DISTRIBUTION_DUCKDB_VERSION;
+    // community-extensions' build.yml (2026-10-21): `_extension_distribution.yml@
+    // v2.0-cyanoptera` with `duckdb_version: v2.0.0`; extension-ci-tools has no
+    // `v2.0.0` branch, so the two are different strings now.
+    let r = DISTRIBUTION_CI_TOOLS_REF;
+    assert_eq!(r, "v2.0-cyanoptera");
+    assert_eq!(DISTRIBUTION_DUCKDB_VERSION, "v2.0.0");
     assert!(
         wf.contains(&format!(
             "uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@{r}\n"
         )),
         "{wf}"
     );
-    assert!(wf.contains(&format!("duckdb_version: {r}\n")), "{wf}");
+    assert!(
+        wf.contains(&format!("duckdb_version: {DISTRIBUTION_DUCKDB_VERSION}\n")),
+        "{wf}"
+    );
     assert!(wf.contains(&format!("ci_tools_version: {r}\n")), "{wf}");
     assert!(wf.contains("extension_name: my_analytics\n"), "{wf}");
     assert!(wf.contains("extra_toolchains: rust;python3\n"), "{wf}");

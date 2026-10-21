@@ -44,10 +44,15 @@ Arguments:
 Options (each value can also be given as --option=VALUE):
   --abi-type <TYPE>            C_STRUCT | CPP | C_STRUCT_UNSTABLE  [default: C_STRUCT]
   --extension-version <VER>    Your extension's version (e.g. v0.1.0)  [default: v0.1.0]
-  --duckdb-version <VER>       C_STRUCT: the C extension API version, at most {api}
-                               (NOT a DuckDB release -- see LESSONS.md P2).
+  --duckdb-version <VER>       C_STRUCT: the C extension API version (NOT a DuckDB
+                               release -- see LESSONS.md P2): {api} for the stable API,
+                               which every DuckDB since v1.2.0 loads, or {api156} for a
+                               build using quack-rs's duckdb-1-5 features, which DuckDB
+                               v1.5.6 and v2.0.0 load and older releases refuse.
                                CPP / C_STRUCT_UNSTABLE: the exact DuckDB release the
                                binary is for (e.g. v1.5.5, or a dev build's commit hash).
+                               DuckDB 2.0 loads C_STRUCT_UNSTABLE only through the C API
+                               v2 entry point, which quack-rs does not generate.
                                [default: {api}]
   --platform <PLATFORM>        DuckDB platform the binary was built for, e.g. linux_amd64,
                                linux_arm64, osx_arm64, windows_amd64, wasm_eh. DuckDB
@@ -64,6 +69,7 @@ Options (each value can also be given as --option=VALUE):
   --dump                       Print metadata fields after writing
   -h, --help                   Print this help message",
         api = quack_rs::DUCKDB_API_VERSION,
+        api156 = quack_rs::DUCKDB_API_VERSION_1_5_6,
     )
 }
 
@@ -255,11 +261,15 @@ fn parse_release(version: &str) -> Option<(u64, u64, u64)> {
 ///
 /// For `C_STRUCT`, `DuckDB` parses it as a semver C API version and refuses the
 /// file unless the major matches and minor/patch are at most its own
-/// (`VersioningUtils::IsSupportedCAPIVersion`); quack-rs extensions request
-/// [`quack_rs::DUCKDB_API_VERSION`], so anything above that is an error — in
-/// practice, a `DuckDB` release number written where the C API version belongs
-/// (LESSONS.md P2). For `CPP` / `C_STRUCT_UNSTABLE` it is compared with the
-/// engine's version string: a release tag, or a commit hash for dev builds.
+/// (`VersioningUtils::IsSupportedCAPIVersion`). The V1 C API versions `DuckDB`
+/// has declared are [`quack_rs::DUCKDB_API_VERSION`] (v1.2.0 – v1.5.5) and
+/// [`quack_rs::DUCKDB_API_VERSION_1_5_6`] (v1.5.6, v2.0.0), so anything but one
+/// of those or an older C API is an error — in practice, a `DuckDB` release
+/// number written where the C API version belongs (LESSONS.md P2). v1.5.6 is
+/// refused by `DuckDB` before v1.5.6, which gets a warning. For `CPP` / `C_STRUCT_UNSTABLE` it is compared with
+/// the engine's version string: a release tag, or a commit hash for dev builds.
+/// `C_STRUCT_UNSTABLE` naming a 2.x or later release is an error: those
+/// releases load it only through the C API v2 entry point.
 fn check_duckdb_version(
     abi_type: &str,
     version: &str,
@@ -267,22 +277,50 @@ fn check_duckdb_version(
 ) -> Result<(), String> {
     let api = quack_rs::DUCKDB_API_VERSION;
     let api_parsed = parse_release(api).ok_or("DUCKDB_API_VERSION is malformed")?;
+    let newest = quack_rs::DUCKDB_API_VERSION_1_5_6;
+    let newest_parsed = parse_release(newest).ok_or("DUCKDB_API_VERSION_1_5_6 is malformed")?;
     if abi_type == "C_STRUCT" {
         let Some(parsed) = parse_release(version) else {
             return Err(format!(
                 "--duckdb-version for C_STRUCT must be a C API version like {api}, got {version:?}"
             ));
         };
-        if parsed.0 != api_parsed.0 || parsed > api_parsed {
+        // The only V1 C API versions DuckDB has declared are v1.2.0 (v1.2.0 -
+        // v1.5.5) and v1.5.6 (v1.5.6, v2.0.0). Anything strictly between them is
+        // a DuckDB release pasted where the C API version belongs: v1.5.5 is
+        // refused by DuckDB v1.5.5 itself.
+        if parsed.0 != api_parsed.0 || (parsed > api_parsed && parsed != newest_parsed) {
+            let pin = if parsed.0 == 1 {
+                format!(", or --abi-type C_STRUCT_UNSTABLE to pin the binary to DuckDB {version}")
+            } else {
+                String::new()
+            };
             return Err(format!(
                 "--duckdb-version {version} is not a C API version this crate targets: for \
-                 C_STRUCT the field is the C extension API version (at most {api}), not a DuckDB \
-                 release, and DuckDB refuses to load a file claiming a C API newer than its own \
-                 (LESSONS.md P2). Use --duckdb-version {api}, or --abi-type C_STRUCT_UNSTABLE to \
-                 pin the binary to DuckDB {version}."
+                 C_STRUCT the field is the C extension API version ({api} or {newest}), not a \
+                 DuckDB release; DuckDB has declared only C API {api} and {newest}, and refuses \
+                 a file claiming a C API newer than its own (LESSONS.md P2). Use --duckdb-version {api} (stable API) or {newest} \
+                 (duckdb-1-5 features){pin}."
+            ));
+        }
+        if parsed > api_parsed {
+            warnings.push(format!(
+                "--duckdb-version {version}: DuckDB v1.2.0 - v1.5.5 declare C API {api} and will \
+                 refuse this file; DuckDB v1.5.6 and v2.0.0 load it. That is the point for a \
+                 build using the duckdb-1-5 features; one that uses only the stable API can use \
+                 {api} and load everywhere"
             ));
         }
         return Ok(());
+    }
+    if abi_type == "C_STRUCT_UNSTABLE" && parse_release(version).is_some_and(|v| v.0 >= 2) {
+        return Err(format!(
+            "--abi-type C_STRUCT_UNSTABLE --duckdb-version {version}: DuckDB 2.0 and later \
+             load a C_STRUCT_UNSTABLE binary only through the C API v2 entry point \
+             (<name>_init_c_api_v2), which quack-rs does not generate, so LOAD would fail. \
+             Use --abi-type C_STRUCT --duckdb-version {newest}, which DuckDB v1.5.6 and v2.0.0 \
+             load."
+        ));
     }
     let is_hash = (7..=40).contains(&version.len())
         && version

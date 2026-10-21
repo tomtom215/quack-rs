@@ -102,27 +102,41 @@ pub struct ScaffoldConfig {
     /// `extension-ci-tools` passes this to `append_extension_metadata.py -dv`,
     /// and its meaning depends on [`use_unstable_c_api`][Self::use_unstable_c_api]:
     ///
-    /// - `false` → the **C extension API** version, i.e.
-    ///   [`DUCKDB_API_VERSION`][crate::DUCKDB_API_VERSION] (`"v1.2.0"`). The
-    ///   extension is stamped `C_STRUCT` and loads into any `DuckDB` whose C API
-    ///   version is at least this.
-    /// - `true` → an exact **`DuckDB` release**, e.g. `"v1.5.5"`. The extension
-    ///   is stamped `C_STRUCT_UNSTABLE` and `DuckDB` refuses to load it into any
-    ///   other release. The generated `Cargo.toml` then pins `libduckdb-sys`
-    ///   to that release's bindings (`~1.10505.0` for v1.5.5), the `Makefile`
-    ///   tests against it (`DUCKDB_TEST_VERSION`) and refuses to build when the
-    ///   resolved bindings and `TARGET_DUCKDB_VERSION` disagree.
+    /// - `false` → the **C extension API** version. The extension is stamped
+    ///   `C_STRUCT` and loads into any `DuckDB` whose C API version is at least
+    ///   this. One of:
+    ///   - [`DUCKDB_API_VERSION`][crate::DUCKDB_API_VERSION] (`"v1.2.0"`), for
+    ///     an extension that stays off quack-rs's `duckdb-1-5*` features. It
+    ///     loads into every `DuckDB` from v1.2.0, 2.0.0 included.
+    ///   - [`DUCKDB_API_VERSION_1_5_6`][crate::DUCKDB_API_VERSION_1_5_6]
+    ///     (`"v1.5.6"`), for one that uses them. `DuckDB` v1.5.6 and v2.0.0
+    ///     load it and older releases refuse it. The generated `Cargo.toml`
+    ///     pins `libduckdb-sys` to the v1.5.6 bindings (`~1.10506.0`), whose
+    ///     layout both releases share, and the `Makefile` refuses to build when
+    ///     the resolved bindings are for another release.
+    /// - `true` → an exact **`DuckDB` 1.x release**, e.g. `"v1.5.5"`. The
+    ///   extension is stamped `C_STRUCT_UNSTABLE` and `DuckDB` refuses to load
+    ///   it into any other release. The generated `Cargo.toml` then pins
+    ///   `libduckdb-sys` to that release's bindings (`~1.10505.0` for v1.5.5),
+    ///   the `Makefile` tests against it (`DUCKDB_TEST_VERSION`) and refuses to
+    ///   build when the resolved bindings and `TARGET_DUCKDB_VERSION` disagree.
+    ///   A 2.x release is refused: `DuckDB` 2.0 loads a `C_STRUCT_UNSTABLE`
+    ///   binary only through the C API v2 entry point, which quack-rs does not
+    ///   generate.
     ///
     /// Defaults to [`DUCKDB_API_VERSION`][crate::DUCKDB_API_VERSION].
     pub target_duckdb_version: String,
-    /// Whether the generated `Makefile` sets `USE_UNSTABLE_C_API=1`.
+    /// Whether the generated `Makefile` sets `USE_UNSTABLE_C_API=1`, pinning
+    /// the binary to one `DuckDB` 1.x release.
     ///
-    /// Set this when the extension enables quack-rs's `duckdb-1-5`,
-    /// `duckdb-1-5-3` or `duckdb-1-5-4` features. Those wrap C API functions
-    /// that live past the
-    /// stable prefix of `duckdb_ext_api_v1`, where `DuckDB` inserts new entries
-    /// between releases — so the binary must be pinned to one release. See
-    /// [`crate::abi`].
+    /// An extension that enables quack-rs's `duckdb-1-5`, `duckdb-1-5-3` or
+    /// `duckdb-1-5-4` features calls C API functions past the stable prefix of
+    /// `duckdb_ext_api_v1`, so `DuckDB` must not load it into a release with a
+    /// different layout (see [`crate::abi`]). The way to ensure that which
+    /// also works on `DuckDB` 2.0 is to leave this `false` and set
+    /// [`target_duckdb_version`][Self::target_duckdb_version] to
+    /// [`DUCKDB_API_VERSION_1_5_6`][crate::DUCKDB_API_VERSION_1_5_6]. Set this
+    /// only to target one release older than v1.5.6.
     ///
     /// Defaults to `false`.
     pub use_unstable_c_api: bool,
@@ -166,27 +180,54 @@ pub const REF_PLACEHOLDER: &str = "REPLACE_WITH_COMMIT_HASH";
 pub const DEFAULT_EXCLUDED_PLATFORMS: &[&str] =
     &["wasm_mvp", "wasm_eh", "wasm_threads", "windows_amd64_mingw"];
 
-/// The `DuckDB` release whose `extension-ci-tools` branch a stable-ABI
-/// (`C_STRUCT`) scaffold builds with.
+/// The `DuckDB` release a stable-ABI (`C_STRUCT`) scaffold's distribution
+/// workflow builds and tests against: its `duckdb_version`.
 ///
-/// The generated distribution workflow passes it as `duckdb_version` /
-/// `ci_tools_version`, `.gitmodules` tracks it, and the `Makefile`'s setup
-/// hint names it.
+/// This is what `duckdb/community-extensions` builds an extension's `ref`
+/// against (`DUCKDB_LATEST_STABLE` in its `build.yml`).
 ///
 /// An unstable-ABI scaffold uses its
 /// [`target_duckdb_version`][ScaffoldConfig::target_duckdb_version] instead,
-/// since that binary loads into no other release. `extension-ci-tools` has a
-/// branch per `DuckDB` release (`v1.4.4`, `v1.5.5`, `v1.5.6`, ...).
-pub const DISTRIBUTION_DUCKDB_VERSION: &str = "v1.5.6";
+/// since that binary loads into no other release.
+pub const DISTRIBUTION_DUCKDB_VERSION: &str = "v2.0.0";
 
-/// The `extension-ci-tools` branch (= `DuckDB` release) the generated project
-/// builds with: see [`DISTRIBUTION_DUCKDB_VERSION`].
+/// The `extension-ci-tools` branch a stable-ABI (`C_STRUCT`) scaffold builds
+/// with, for [`DISTRIBUTION_DUCKDB_VERSION`].
+///
+/// The generated distribution workflow calls `_extension_distribution.yml` at
+/// it and passes it as `ci_tools_version`, `.gitmodules` tracks it, and the
+/// `Makefile`'s setup hint names it. `extension-ci-tools` names its 1.x
+/// branches after `DuckDB` releases (`v1.5.5`, `v1.5.6`, ...) but has no
+/// `v2.0.0` branch: `duckdb/community-extensions` builds `DuckDB` v2.0.0 with
+/// this one.
+pub const DISTRIBUTION_CI_TOOLS_REF: &str = "v2.0-cyanoptera";
+
+/// The `extension-ci-tools` branch the generated project builds with: see
+/// [`DISTRIBUTION_CI_TOOLS_REF`].
 fn extension_ci_tools_ref(config: &ScaffoldConfig) -> &str {
+    if config.use_unstable_c_api {
+        &config.target_duckdb_version
+    } else {
+        DISTRIBUTION_CI_TOOLS_REF
+    }
+}
+
+/// The `DuckDB` release the generated distribution workflow builds against:
+/// see [`DISTRIBUTION_DUCKDB_VERSION`].
+fn distribution_duckdb_version(config: &ScaffoldConfig) -> &str {
     if config.use_unstable_c_api {
         &config.target_duckdb_version
     } else {
         DISTRIBUTION_DUCKDB_VERSION
     }
+}
+
+/// Whether the generated project pins `libduckdb-sys` to the bindings of
+/// [`target_duckdb_version`][ScaffoldConfig::target_duckdb_version]: every
+/// build that may use quack-rs's `duckdb-1-5*` features, i.e. one stamped
+/// `C_STRUCT_UNSTABLE`, or `C_STRUCT` with C API v1.5.6.
+fn pins_bindings(config: &ScaffoldConfig) -> bool {
+    config.use_unstable_c_api || config.target_duckdb_version == crate::DUCKDB_API_VERSION_1_5_6
 }
 
 impl Default for ScaffoldConfig {
@@ -245,13 +286,25 @@ fn validate_target_duckdb_version(config: &ScaffoldConfig) -> Result<(), Extensi
         )));
     }
 
-    if !config.use_unstable_c_api && version != crate::DUCKDB_API_VERSION {
+    let stable_api = crate::DUCKDB_API_VERSION;
+    let api_1_5_6 = crate::DUCKDB_API_VERSION_1_5_6;
+    if !config.use_unstable_c_api && version != stable_api && version != api_1_5_6 {
         return Err(ExtensionError::new(format!(
             "with use_unstable_c_api = false the extension is stamped C_STRUCT, so \
-             target_duckdb_version is the C extension API version and must be {:?}; got \
-             {version:?}. Set use_unstable_c_api = true to pin the binary to DuckDB \
-             {version} instead.",
-            crate::DUCKDB_API_VERSION
+             target_duckdb_version is the C extension API version and must be {stable_api:?} \
+             (stable API only) or {api_1_5_6:?} (quack-rs's duckdb-1-5 features; loads into \
+             DuckDB v1.5.6 and v2.0.0); got {version:?}. Set use_unstable_c_api = true to pin \
+             the binary to DuckDB {version} instead."
+        )));
+    }
+
+    if config.use_unstable_c_api && parts[0].parse::<u64>().is_ok_and(|major| major >= 2) {
+        return Err(ExtensionError::new(format!(
+            "with use_unstable_c_api = true the extension is stamped C_STRUCT_UNSTABLE, and \
+             DuckDB {version} loads such a binary only through the C API v2 entry point \
+             (<name>_init_c_api_v2), which quack-rs does not generate. Set \
+             use_unstable_c_api = false and target_duckdb_version = {api_1_5_6:?}: DuckDB \
+             v1.5.6 and v2.0.0 load that, duckdb-1-5 features included."
         )));
     }
 
@@ -265,7 +318,7 @@ fn validate_target_duckdb_version(config: &ScaffoldConfig) -> Result<(), Extensi
         )));
     }
 
-    if config.use_unstable_c_api {
+    if pins_bindings(config) {
         libduckdb_sys_requirement(version)?;
     }
 
@@ -354,11 +407,15 @@ fn validate_git_ref(git_ref: &str) -> Result<(), ExtensionError> {
 }
 
 /// The `libduckdb-sys` version requirement that compiles against exactly the
-/// `DuckDB` release `target` (`vX.Y.Z`), for a `C_STRUCT_UNSTABLE` build.
+/// `DuckDB` release `target` (`vX.Y.Z`), for a build that [pins its
+/// bindings](pins_bindings). Only 1.x targets reach it: a 2.x one is refused
+/// before (`C_STRUCT_UNSTABLE` cannot load into 2.x, and C API v1.5.6 maps to
+/// the v1.5.6 bindings).
 ///
 /// `libduckdb-sys` numbers its releases after the `DuckDB` release whose
 /// headers it ships. From `DuckDB` 1.5.0 the scheme is
-/// `1.(10000 + 100·minor + patch).N` — 1.10505.0 is `DuckDB` v1.5.5 — where `N`
+/// `1.(10000·major + 100·minor + patch).N` — 1.10505.0 is `DuckDB` v1.5.5,
+/// 1.20000.0 is v2.0.0 — where `N`
 /// is the bindings crate's own patch release, so `~1.10505.0` admits binding
 /// fixes but never another `DuckDB` release. On the 1.4 line the crate version
 /// *is* the `DuckDB` version, so the pin is exact. This is the inverse of the

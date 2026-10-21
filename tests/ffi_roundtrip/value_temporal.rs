@@ -679,13 +679,32 @@ fn every_sql_built_out_of_range_timestamp_is_refused_by_the_renderers() {
         seen.remove(0)
     };
 
+    // The last `TIMESTAMP`, cast down: 1.x rounds it to a `TIMESTAMP_S` /
+    // `TIMESTAMP_MS` payload past the renderable range (`CastTimestampUsToSec`,
+    // unchecked). 2.0.0 checks that the rounded value still converts back
+    // (`TryCastTimestampBase` in `cast_operators.cpp`), so `TRY_CAST` yields
+    // SQL `NULL` there and the value never exists.
     let too_far = "'294247-01-10 04:00:54.775806'";
+    let v2 = fx.engine_major() >= 2;
+    for arg in [
+        format!("TRY_CAST({too_far} AS TIMESTAMP_S)"),
+        format!("TRY_CAST({too_far} AS TIMESTAMP_MS)"),
+    ] {
+        let (as_str, display, debug, _) = run(&arg);
+        let want = if v2 {
+            "Value is SQL NULL"
+        } else {
+            quack_rs::value::UNRENDERABLE
+        };
+        assert_eq!(as_str.as_ref().map_err(String::as_str), Err(want), "{arg}");
+        // Refused on 1.x; on 2.0 a plain NULL, which `display_string` renders.
+        assert_ne!(display, Some(!v2), "{arg}");
+        assert!(debug.starts_with("Value"), "{arg}: {debug}");
+    }
     for arg in [
         format!("make_timestamp({MIN})"),
         "to_timestamp(-9223372036854.775808)".to_owned(),
         format!("make_timestamp_ns({MIN})"),
-        format!("TRY_CAST({too_far} AS TIMESTAMP_S)"),
-        format!("TRY_CAST({too_far} AS TIMESTAMP_MS)"),
         format!("[make_timestamp({MIN})]"),
         "{'a': 1, 'b': to_timestamp(-9223372036854.775808)}".to_owned(),
         format!("MAP([1], [make_timestamp({MIN})])"),

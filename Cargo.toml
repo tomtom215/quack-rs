@@ -84,7 +84,9 @@ bundled-test = ["_duckdb-testing", "duckdb/bundled"]
 ##   - `DUCKDB_DOWNLOAD_LIB=1` — `libduckdb-sys` downloads the upstream DuckDB
 ##     release zip (~40 MB, cached under `target/`). Recommended.
 ##   - `DUCKDB_LIB_DIR=/path/to/libduckdb` — link a libduckdb tree you already
-##     have (also set `DUCKDB_INCLUDE_DIR` if `duckdb.hpp` isn't beside the lib).
+##     have: an extracted 1.x `libduckdb-<platform>.zip` or 2.0
+##     `duckdb-shared-libs-<platform>.tar.gz` (also set `DUCKDB_INCLUDE_DIR` if
+##     neither `duckdb_extension.h` nor `duckdb.hpp` is beside the lib).
 ##
 ## Requires `libduckdb-sys >= 1.10503` (which publishes the header directory via
 ## `DEP_DUCKDB_INCLUDE`); older versions need `DUCKDB_INCLUDE_DIR` set explicitly.
@@ -173,9 +175,13 @@ duckdb-1-5-4 = ["duckdb-1-5-3"]
 # Nor a `duckdb-1-5-6` feature: DuckDB 1.5.6 (2026-09) bumps the C API version
 # to v1.5.6 and declares every slot stable, but its 546 declarations are the
 # v1.5.5 ones (scripts/check-abi-table.py hashes them identically), so again
-# there is nothing new to gate. Upstream `main` additionally adds
-# `duckdb_create_timestamp_tz_ns` / `duckdb_get_timestamp_tz_ns`; the release
-# that ships those will warrant a feature gate.
+# there is nothing new to gate. DuckDB 2.0.0 (2026-10-21) appends
+# `duckdb_create_timestamp_tz_ns` / `duckdb_get_timestamp_tz_ns` (548 slots) and
+# still declares C API v1.5.6; those two would warrant a feature gate, but no
+# `libduckdb-sys` with the 2.0 bindings is published yet (duckdb-rs `main` is
+# 1.20000.0, rust-version 1.88). Note that the `<2` bound below admits
+# 1.20000.0: `libduckdb-sys` numbers DuckDB vX.Y.Z as 1.(10000*X + 100*Y + Z).N,
+# so it does not keep out the DuckDB 2.0 bindings.
 
 [dependencies]
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
