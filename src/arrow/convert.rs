@@ -217,8 +217,11 @@ pub unsafe fn schema_from_arrow(
 /// and then sets `arrow_array->release = nullptr` — *before* the conversion
 /// loop body, so the transfer happens on the error path too. Taking it by value
 /// makes that visible in the signature, and the by-value binding is dropped on
-/// the way out, which releases the array in the one case where `DuckDB` does not
-/// claim it (a zero-column converted schema, where the loop never runs).
+/// the way out, which releases the array in the one case where `DuckDB` before
+/// 2.0.0 does not claim it (a zero-column converted schema, where the loop
+/// never runs). `DuckDB` 2.0.0 claims it before the loop, so it releases that
+/// array itself; the binding's `Drop` then finds `release` null and does
+/// nothing.
 ///
 /// The resulting chunk keeps the Arrow buffers alive, so the data is shared, not
 /// copied — with two exceptions, which are copied so that the chunk is flat
@@ -230,12 +233,16 @@ pub unsafe fn schema_from_arrow(
 /// into fresh flat vectors before this function returns. Run-end-encoded
 /// children are expanded by `DuckDB` itself.
 ///
-/// The claim is held by the chunk's **first** column: `DuckDB` copies the
-/// record into every column's state but nulls `release` after the first, so
+/// Before `DuckDB` 2.0.0 the claim is held by the chunk's **first** column:
+/// `DuckDB` copies the record into every column's state but nulls `release`
+/// after the first (`src/main/capi/arrow-c.cpp`, lines 110–120 at v1.5.6), so
 /// the producer's buffers are released when column 0's vector is. A vector
 /// made to reference another column
 /// ([`reference_vector`][crate::vector::ops::reference_vector]) does not keep
-/// them alive; its contract already requires the chunk to outlive it.
+/// them alive there. From 2.0.0 every column shares one owner
+/// (`src/main/capi/v1/arrow-c.cpp`, lines 141–152), so a vector referencing
+/// any column keeps them. Either way `reference_vector`'s contract already
+/// requires the chunk to outlive the referencing vector.
 ///
 /// # Errors
 ///

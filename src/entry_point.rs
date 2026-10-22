@@ -298,8 +298,11 @@ where
 /// [`init_extension`] with an explicit [`AbiPolicy`].
 ///
 /// Use this to opt out of the C API layout check — for example when the
-/// extension binary is stamped `C_STRUCT_UNSTABLE`, so `DuckDB` already refuses
-/// to load it into any release other than the one it was built for.
+/// extension's metadata already makes `DuckDB` refuse a mismatched release:
+/// `C_STRUCT` with C API v1.5.6 ([`DUCKDB_API_VERSION_1_5_6`][crate::DUCKDB_API_VERSION_1_5_6]),
+/// built against the v1.5.6 bindings, which `DuckDB` before v1.5.6 refuses, or
+/// `C_STRUCT_UNSTABLE` on `DuckDB` 1.x, which pins the binary to one release
+/// (`DuckDB` 2.0 cannot load a `C_STRUCT_UNSTABLE` binary built by quack-rs).
 ///
 /// # Safety
 ///

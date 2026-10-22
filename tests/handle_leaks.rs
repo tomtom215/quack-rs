@@ -79,6 +79,21 @@ const QUERY_BOUND: isize = (ROUNDS as isize) * 32;
 /// The scenarios that run a query each round.
 const QUERY_SCENARIOS: &[&str] = &["OwnedDataChunk", "Expression"];
 
+/// How long `DuckDB` 2.0's worker threads wait, idle, before their first
+/// allocator flush (`INITIAL_FLUSH_WAIT`, 0.5 s), plus a margin.
+///
+/// That first flush reads a setting through `GlobalUserSettings::GetSettings`
+/// (`TaskScheduler::ExecuteForever`, `src/parallel/task_scheduler.cpp`
+/// 156-180 at v2.0.0), which fills a `thread_local` copy of the settings map
+/// (`src/main/user_settings.cpp` 140-160): about 8 KiB per worker thread,
+/// once, freed when the thread exits. v1.5.6 passed a cached member instead
+/// (`task_scheduler.cpp` 284-287). Whichever scenario is running when the
+/// flush fires would see that one-off step as growth (134,056 bytes in one
+/// measured run, 16 copies of 8,344 bytes, against a bound of 64,000; it
+/// does not recur over 100,000 further queries), so the test waits for it
+/// before measuring anything.
+const WORKER_FIRST_IDLE_FLUSH: std::time::Duration = std::time::Duration::from_millis(1_200);
+
 /// The heap growth, in bytes, over `ROUNDS` calls of `round`, after a warm-up
 /// that lets caches fill.
 fn growth(mut round: impl FnMut()) -> isize {
@@ -155,6 +170,9 @@ quack_rs::scalar_callback!(pass_through, |_info, input, output| {
 fn every_handle_frees_what_duckdb_allocated_for_it() {
     let db = Db::open();
     db.execute("CREATE TABLE t (a INTEGER, b VARCHAR)");
+    // Let every worker thread fill its one-off settings cache before the
+    // first measurement (see `WORKER_FIRST_IDLE_FLUSH`).
+    std::thread::sleep(WORKER_FIRST_IDLE_FLUSH);
     let mut results: Vec<(&str, isize)> = Vec::new();
 
     results.push((

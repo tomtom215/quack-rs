@@ -656,6 +656,10 @@ this; it is a real piece of work.
 
 ### 5.3 `AbiPolicy::Strict` refuses unknown engine versions — by design, with a cost
 
+(2026-10-21: the cost came due. quack-rs 0.18.0 built with `duckdb-1-5`
+refuses to load into DuckDB v2.0.0, whose layout only appends to v1.5.6's;
+section 12.)
+
 An extension built against a 546-slot layout refuses to load into any DuckDB
 whose version is not in `KNOWN_LAYOUTS`. That is right when the layout actually
 differs. But it also means an extension shipped today refuses a future patch
@@ -682,6 +686,7 @@ the unit-test process there (VALIDATED).
 ### 5.4 Forward risk: DuckDB `main` re-versions the C extension API
 
 This is the largest single item on the horizon, and it is not yet released.
+(2026-10-21: released as DuckDB v2.0.0, as described here; see section 12.)
 
 DuckDB `main`, and the `v2.0-cyanoptera` branch whose `duckdb_extension.h` is
 byte-identical to it (both fetched 2026-09-24), rework
@@ -2020,7 +2025,7 @@ In the order an extension author is likely to want them:
 
 1. Statement metadata (`duckdb_param_type`, `duckdb_prepared_statement_column_*`)
    and `duckdb_unsafe_vector_assign_string_element_len` (5.1).
-2. Targeting C API `v1.5.6` with `C_STRUCT`: `append_metadata` refuses a
+2. (2026-10-21: done in section 12.) Targeting C API `v1.5.6` with `C_STRUCT`: `append_metadata` refuses a
    `C_STRUCT` version above `v1.2.0`, so the 1.5.6-band functions in 5.1 (log
    storage, `duckdb_get_table_names`, `duckdb_geometry_type_get_crs`) are out of
    reach of a `C_STRUCT` extension. DuckDB `main` also appends
@@ -2044,6 +2049,7 @@ In the order an extension author is likely to want them:
 
 ### 11.5 Versions
 
+(2026-10-21: DuckDB v2.0.0 is now the newest release; section 12.5.)
 DuckDB 1.5.6 (2026-09) is the newest release; every lockfile now pins
 `libduckdb-sys` / `duckdb` 1.10506.0. Rust 1.97.0 stable, MSRV 1.86.0.
 mdBook 0.4.40 builds every book (0.5.4 rejects the existing `book.toml`; the
@@ -2140,3 +2146,248 @@ this section, unless stated.
   `ffi_roundtrip` 183/183; `cargo mutants --in-diff` over the merge's `src/`
   changes, live features: 4 mutants, 4 caught. Run 655 above predates the merge;
   CI on the merge head is reported on the pull request.
+
+---
+
+## 12. DuckDB 2.0.0 review, October 2026
+
+DuckDB v2.0.0 ("Cyanoptera", tag `d54cbbe3df`) shipped on 2026-10-21. This
+section records what it changed for quack-rs and what was done about it.
+Labels as in 11.1: VALIDATED (reproduced against the real binaries, or pinned
+by a test), PROVEN (from DuckDB's source at both tags, cited).
+
+### 12.1 Method
+
+DuckDB's source at `v1.5.6` and `v2.0.0`, diffed: `duckdb_extension.h`,
+`duckdb.h`, every C API implementation (`src/main/capi/`, `src/main/capi/v1/`
+in 2.0), the extension loader. The 2.0.0 release binaries (CLI and
+shared-libs archive, both hashes matching the release page) and the 1.5.5 and
+1.5.6 CLIs, for every load claim. The live suite against libduckdb 2.0.0 with
+the 2.0 bindings (duckdb-rs `main` at `e1b0940d`, `libduckdb-sys` 1.20000.0,
+unpublished; its bundled headers are byte-identical to the tag's). Every one
+of the 25 live tests that failed on 2.0 was root-caused against both source
+trees, each by an agent that then had its patch re-run here.
+
+### 12.2 What 2.0 changed for a C API v1 extension
+
+- **The layout only appends** (PROVEN, `scripts/check-abi-table.py`):
+  548 slots, the v1.5.2 – v1.5.6 declarations unchanged plus
+  `duckdb_create_timestamp_tz_ns` and `duckdb_get_timestamp_tz_ns`. The
+  stable prefix is still 357 slots.
+- **The V1 C API version stays v1.5.6**, so `C_STRUCT` + `v1.2.0` loads
+  (VALIDATED: hello-ext, 31/31 checks, on the 2.0.0 CLI).
+- **`C_STRUCT_UNSTABLE` now selects the C API v2 entry point**
+  (`UsesCAPIV2`, `extension_load.cpp`): a quack-rs binary stamped that way is
+  refused with 'did not contain function "<name>_init_c_api_v2"' (VALIDATED).
+  The way to ship the `duckdb-1-5*` features to 2.0 is `C_STRUCT` + C API
+  `v1.5.6`: refused by v1.5.5, loaded by v1.5.6 and v2.0.0 (VALIDATED, with an
+  extension calling `duckdb_connection_get_client_context`).
+- **quack-rs 0.18.0 refused that binary on 2.0.0 itself**: `AbiPolicy::Strict`
+  saw an unknown engine (VALIDATED). `PREFIX_LAYOUTS` now records the
+  verified append, and the guard accepts a 546-slot build on 2.0.0 while still
+  refusing a 545-slot one there and a 548-slot one on 1.5.6.
+- **Release assets were renamed** (`duckdb-cli-<platform>.tar.gz`,
+  `duckdb-shared-libs-<platform>.tar.gz`; the old names 404 for 2.0.0), and
+  the shared-libs archive has no `duckdb.hpp`. Three CI jobs fetching
+  `releases/latest/download/duckdb_cli-linux-amd64.zip` were failing on `main`
+  from the release on (VALIDATED by HTTP status).
+- **No duckdb-rs release for 2.0 yet.** `libduckdb-sys` 1.20000.0 (= 2.0.0)
+  is unpublished, declares `rust-version` 1.88, and falls inside quack-rs's
+  `>=1.4.4, <2`. quack-rs compiles clippy-clean against it.
+
+### 12.3 Defects found and fixed
+
+**High**
+
+- *Every casting `Value` getter returned `None` on 2.0* (VALIDATED, PROVEN).
+  1.5.6's `CAPIGetValue` casts the value in place with the non-`const`
+  `DefaultTryCastAs` (`duckdb_value-c.cpp:51-57`), and quack-rs read success
+  from the type changing; 2.0's casts into a temporary
+  (`v1/duckdb_value-c.cpp:50-57`), so nothing changed. Bind parameters, named
+  parameters and `COPY` options read as absent. Getters now cast through
+  `duckdb_create_list_value`: `Value::LIST` casts each child with
+  `DefaultCastAs`, and the C function catches a failure, in 1.4.4, 1.5.0,
+  1.5.6 and 2.0.0 alike (all read at each tag). Two agents found this
+  independently. Values equal to DuckDB's failure sentinel are now tested to
+  read back.
+- *A `duckdb-1-5` extension could not load into 2.0 at all*: the stamping
+  quack-rs recommended is refused by DuckDB, and the one that works was
+  refused by `append_metadata` and by the ABI guard. All three changed
+  (12.2).
+
+**Medium**
+
+- *CI was red from the release on* (12.2); every download now goes through
+  `scripts/fetch-duckdb.sh`.
+- *`bundled-test-prebuilt` could not build against a 2.0 archive*: the shim
+  needed `duckdb.hpp`, and C++11. It is now C generated from
+  `duckdb_extension.h`, byte-for-byte equal to `CreateAPIv1()` on v1.5.6 and
+  v2.0.0 (VALIDATED by `memcmp`, and by a planted wrong slot making it fail);
+  the C++ shim remains for the 1.4 zips, as C++17.
+- *The scaffold targeted v1.5.6* while the community build moved to 2.0.0
+  with extension-ci-tools `v2.0-cyanoptera` (no `v2.0.0` branch exists).
+
+**Low**
+
+- `bundled-test-prebuilt` did not link on Rust 1.86.0 (pre-existing: `HEAD`
+  fails the same way; CI's MSRV job only runs `cargo check`).
+- `osx_amd64` became opt-in upstream (`check-platform-table.py` failed).
+
+### 12.4 Behaviour 2.0 changed, now documented per version
+
+Each was a live test that failed on 2.0; each test now holds each engine to
+its own behaviour (`Fixture::engine_major`), none was relaxed to accept
+either. PROVEN from source unless stated.
+
+- An open stream makes the connection refuse other statements with
+  `RESOURCE_IN_USE` (`client_context.cpp:256-274`) instead of ending the
+  stream; an appender flush there fails and, since a failed flush resets the
+  collection (`appender.cpp:416-423`), loses its rows (VALIDATED by a new
+  test). Dropping an unfinished stream aborts it. Documented as a footgun;
+  not preventable from the C API.
+- `duckdb_bind_set_cardinality` records the upper bound for `is_exact =
+  true`, the reverse of 1.x (`v1/table_function-c.cpp` vs
+  `table_function-c.cpp`, read here).
+- A scalar bind callback sees arguments after the cast to the parameter
+  types (`function_binder.cpp:1563-1579`).
+- C API aggregates: the `OVER ()` crash (upstream #26109) is fixed
+  (`v1/aggregate_function-c.cpp:104-108`, and VALIDATED live by the agent),
+  window `EXCLUDE` no longer leaks states, an ungrouped aggregate destroys
+  its states after a failed finalize (planner change; grouped still leaks),
+  and `SpecialNullHandling` aggregates in correlated subqueries now produce
+  their empty-input result for unmatched rows.
+- Arrow import: every column shares ownership of the array.
+- Secrets: `extra_http_headers` is redacted.
+- `COPY` option names arrive lowercased (PEG parser); `overlay` and `if`
+  became callable, and 2.0 accepts 8 more keywords as function names and 49
+  as parameter names. The validators keep refusing the 1.x set, so an
+  extension stays loadable on both; the live test pins the exact difference.
+- New `duckdb_error_type` values 43 and 44, now `DuckDbErrorType` variants.
+- Temporal and decimal fixtures: `TRY_CAST` to `TIMESTAMP_S`/`_MS` checks
+  the rounded value, `sum` over `DECIMAL` checks width, WKB is validated on
+  input, and `Value::ToSQLString` types a `NULL` and nested values.
+- `handle_leaks`: 2.0's worker threads build a `thread_local` settings copy
+  on their first idle flush, 0.5 s in (`task_scheduler.cpp:156-180`,
+  `user_settings.cpp:140-160`), a one-off 134 KB step the test now waits out.
+  It still catches a leak: with `OwnedDataChunk::drop` a no-op it fails on
+  2.0.0 (740,144 bytes over 2,000 rounds; VALIDATED, then restored).
+
+### 12.5 Open items
+
+1. `libduckdb-sys` 1.20000.0 is unpublished. When it is: move
+   `test-duckdb-2-0` to `cargo update --precise`, and decide whether the
+   lockfile follows (it needs Rust 1.88; MSRV is 1.86). (2026-10-22: done in
+   12.7; the lockfile stays on the 1.5.6 bindings.)
+2. A `duckdb-2-0` feature for the two new slots and
+   `DUCKDB_TYPE_TIMESTAMP_TZ_NS` (42). Until then `TypeId::try_from_duckdb_type`
+   returns `None` for 42 and the documented-panicking `LogicalType::get_type_id`
+   panics on a `TIMESTAMPTZ_NS` column, which 2.0's SQL can produce.
+3. `AbiPolicy::Strict` still refuses a 2.0.x patch release it has not seen.
+   DuckDB's header states that everything unstable in V1 was stabilised into
+   C API v1.5.6, which, taken as a contract, would let the guard accept any
+   release-version engine at or above 1.5.6 for a 546-slot build. Not done:
+   it trades a verified table for an upstream promise.
+4. C API v2 (`duckdb_extension_v2.h`) has no stable surface yet; a V2 entry
+   point in quack-rs waits for one.
+5. Upstream, observed on 2.0.0: `TRY_CAST(make_timestamp(-9223372036854775808)
+   AS TIMESTAMP_S)` raises an INTERNAL error ("the function is not marked as
+   fallible"), which can invalidate a database; not yet reported.
+6. extension-template-rs (`main`, 2026-10-02) still builds with
+   `USE_UNSTABLE_C_API=1` at v1.5.6, which DuckDB 2.0 refuses for a V1
+   extension.
+
+### 12.6 How this pass was verified
+
+Linux x86-64, Rust 1.97.0 stable unless stated, on the tree committed with
+this section. Each engine run below used a fresh copy of the tree and its own
+build directory (a shared one had let Cargo reuse a test binary built from a
+different tree during the investigation).
+
+- **Live suite, every engine CI covers** (`cargo test --all-targets`, prebuilt
+  libduckdb of that release, fetched with `scripts/fetch-duckdb.sh`):
+
+  | DuckDB | Bindings | Features | Passed | Failed | `ffi_roundtrip` |
+  |---|---|---|---|---|---|
+  | 2.0.0 | 1.20000.0 (duckdb-rs `e1b0940d`) | `duckdb-1-5-4` | 1,475 | 0 | 296 |
+  | 1.5.6 | 1.10506.0 (`Cargo.lock`) | `duckdb-1-5-4` | 1,475 | 0 | 296 |
+  | 1.5.5 | 1.10505.0 | `duckdb-1-5-4` | 1,475 | 0 | 296 |
+  | 1.5.4 | 1.10504.0 | `duckdb-1-5-4` | 1,475 | 0 | 296 |
+  | 1.5.3 | 1.10503.0 | `duckdb-1-5-3` | 1,385 | 0 | 253 |
+  | 1.5.0 | 1.10500.0 | `duckdb-1-5` | 1,381 | 0 | 253 |
+  | 1.4.5 | 1.4.5 | (none) | 1,223 | 0 | 183 |
+  | 1.4.4 | 1.4.4 | (none) | 1,223 | 0 | 183 |
+
+  All with `bundled-test-prebuilt`; 1.4.x through the C++ shim, the rest
+  through the generated one. Before the fixes the 2.0.0 run had 25 failures
+  (`ffi_roundtrip` 271 passed, 24 failed; `handle_leaks` failed).
+- **DuckDB 2.0.0 loads** (release CLI, hashes checked against the release
+  page): hello-ext stamped `C_STRUCT`/`v1.2.0`, 31/31 documented checks (also
+  on 1.5.6 and 1.5.5); a `duckdb-1-5` extension stamped `C_STRUCT`/`v1.5.6`,
+  refused by 1.5.5 and loaded by 1.5.6 and 2.0.0, and refused on 2.0.0 by the
+  0.18.0 guard; `C_STRUCT_UNSTABLE`/`v2.0.0`, refused by DuckDB.
+- **Scaffold end to end**: a default and a `--c-api v1.5.6` project (the
+  latter enabling `duckdb-1-5` and calling past the stable prefix), each
+  through `make configure release test` with extension-ci-tools
+  `v2.0-cyanoptera`: SQLLogicTest `SUCCESS` on PyPI `duckdb` 2.0.0; footers
+  `C_STRUCT`/`v1.2.0` and `C_STRUCT`/`v1.5.6`.
+- **New CI steps** run locally from the parsed `ci.yml`, as written
+  (`abi-guard-layout` both steps, `scaffold-e2e`'s C API step), and the
+  `test-duckdb-2-0` patch recipe (resolves to `libduckdb-sys` 1.20000.0,
+  decoded as `v2.0.0`). `fetch-duckdb.sh` for `latest`, v2.0.0, v1.5.6 and
+  v1.4.4, CLI and library.
+- **Test shim**: generated fill `memcmp`-equal to `CreateAPIv1()` on v1.5.6
+  (546 slots) and v2.0.0 (548), no null slot; a planted wrong slot fails the
+  comparison. The C++ fallback built and passed on 1.4.4.
+- **Counter-tests**: each new test shown failing without its fix
+  (`PREFIX_LAYOUTS` drift and the prefix rule in `abi`, both new
+  `append_metadata` tests, `handle_leaks` with a no-op `OwnedDataChunk::drop`).
+- **Gates**: `cargo fmt --check`; `clippy --all-targets -D warnings` with no
+  features, `duckdb-1-5-4`, and `bundled-test-prebuilt,duckdb-1-5-4`;
+  `cargo doc -D warnings` with and without `duckdb-1-5-4`; crate doctests 211
+  passed; hello-ext clippy and tests; `cargo +1.86.0 check` with and without
+  `duckdb-1-5-4`, and the `testing` tests linked and passing on 1.86.0;
+  `check-abi-table.py`, `check-platform-table.py`, `check-autoload-entries.py`,
+  `check-msrv-vs-duckdb-ci.py`, `check-workflow-expressions.py`,
+  `check-ci-aggregate.py` (35 blocking jobs), `check-spdx-list.py`,
+  `sync-book-changelog.py --check`: all exit 0. Book: mdBook 0.4.40 build,
+  `check-book-links.py` (244 relative, 52 docs.rs), book doctests 252 passed.
+- **Not run here**: CI on GitHub's runners (macOS, Windows, Miri, the
+  sanitizers, wasm, mutation testing); `cargo semver-checks` (the change only
+  adds public items: two enum variants on a `#[non_exhaustive]` enum, two
+  constants).
+
+### 12.7 Release follow-up, 2026-10-22
+
+CI on the release pull request found three things the local runs could not.
+
+- *Rust 1.99.0*, CI's stable, adds `clippy::assert_is_empty`; one test this
+  pass added tripped it. Fixed; clippy 1.99.0 is clean in all three feature
+  sets (VALIDATED).
+- *New advisories* in transitive dependencies, red on `main` as well: `zip`
+  6.0.0 (RUSTSEC-2026-0367 / -0368 / -0369, a build-dependency of
+  `libduckdb-sys` 1.10506.0, used only to extract the DuckDB release archive
+  under `DUCKDB_DOWNLOAD_LIB`) and the `rustls` family. `libduckdb-sys`
+  1.10506.1 (same DuckDB 1.5.6 bindings) moves to `zip` 9 but declares
+  `rust-version` 1.88. The lockfiles moved to it, and the MSRV job resolves
+  for Rust 1.86.0 itself instead of reading them (it then picks 1.10506.0 and
+  checks clean, VALIDATED). Suppressing the advisories or raising the MSRV
+  were the alternatives; neither was needed. `cargo deny check` 0.20.2:
+  advisories, bans, licenses and sources ok, with and without all features;
+  the previous lockfile reproduces the CI failure.
+- *`libduckdb-sys` / `duckdb` 1.20000.0 were published* (2026-10-22 12:56
+  UTC). Its bundled C API headers hash identically to the v2.0.0 tag's
+  (`duckdb_extension.h`, `duckdb.h`, `duckdb_v2.h`, `duckdb_extension_v2.h`),
+  though it was built from duckdb-rs `1b8f7cc`, not the `e1b0940d` tested
+  above. `test-duckdb-2-0` now pins it with `cargo update --precise`; with it,
+  the live suite against libduckdb 2.0.0 passed 1,475, 0 failed (VALIDATED).
+  With the new lockfile, the suite against 1.5.6 passed 1,475, 0 failed.
+- *`cargo semver-checks` could no longer build the 0.18.0 baseline*: with the
+  default feature heuristic it enables `bundled-test`, and the baseline's fresh
+  resolution now picks `libduckdb-sys` 1.20000.0, whose C++17 headers 0.18.0's
+  C++11 shim cannot compile (CI log). So 0.18.0 with `bundled-test` is broken
+  for anyone who resolves fresh on Rust 1.88+. The job now passes
+  `--only-explicit-features --features duckdb-1-5-4,_duckdb-testing`, which
+  gates the same public items and builds no shim: exit 0 locally with
+  cargo-semver-checks 0.51.0, and with `--release-type patch` (every lint
+  forced) 229 checks pass, 0 fail, so 0.19.0 breaks nothing in 0.18.0's API
+  (VALIDATED).

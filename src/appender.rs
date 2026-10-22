@@ -80,6 +80,18 @@
 //! work; `DuckDB` itself would accept appends and write them at the next
 //! flush.
 //!
+//! ## A streaming result open on the same connection
+//!
+//! A flush runs an `INSERT` on the appender's connection, so it is "another
+//! statement" to a streaming
+//! [`QueryResult`][crate::query::QueryResult] still open there. Up to
+//! `DuckDB` 1.5.x the flush succeeds and the stream ends with an error. From
+//! 2.0.0 the flush — including the automatic one every 204,800 rows and the
+//! one in `close` — is refused with a "Resource In Use" error, and because a
+//! failed flush discards the buffer on 2.0.0, **every buffered row is lost**.
+//! Finish or drop the stream first, or append through a connection of its
+//! own.
+//!
 //! ## Schema changes while rows are buffered
 //!
 //! Buffered rows are written by column *position* when they are flushed. If

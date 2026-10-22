@@ -321,8 +321,9 @@ it must not unwind. Wrap anything that can panic in
 
 ## L11: C API aggregates crash under `agg(x) OVER ()` and `agg(x ORDER BY y)`
 
-**Status**: A DuckDB defect, reported upstream as
-[duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Cannot be prevented or detected from an extension;
+**Status**: A DuckDB defect in 1.4.x and 1.5.x, reported upstream as
+[duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109) and fixed in
+DuckDB 2.0.0 (see **Fix**). On older releases it cannot be prevented or detected from an extension;
 documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` and
 `FfiState`.
 
@@ -345,10 +346,18 @@ callback, called from `CAPIAggregateUpdate`.
 **Fix**: none on the extension side — the callback receives a raw
 `duckdb_aggregate_state *` and cannot tell a constant vector from a flat one,
 and reading `states[1]` to find out is itself the out-of-bounds read. Until
-DuckDB fixes it, document for your users that the aggregate must not be used
+you require DuckDB 2.0.0, document for your users that the aggregate must not be used
 in those two query shapes. Frames that are not whole-partition (`ROWS BETWEEN 5
 PRECEDING AND CURRENT ROW`, segment-tree windows) and `DISTINCT` windows were
 checked and work.
+
+DuckDB 2.0.0 fixes it in `CAPIAggregateUpdate`
+(`src/main/capi/v1/aggregate_function-c.cpp`, lines 104-108): a state vector
+that is not flat is flattened into one state pointer per row before `update`
+is called. Checked live: a plain C aggregate (no quack-rs) answers both shapes
+correctly on 2.0.0 and runs clean under Valgrind; the same program segfaults on
+1.5.6, whose `CAPIAggregateUpdate` (`src/main/capi/aggregate_function-c.cpp`,
+lines 92-111) still passes the state vector's data pointer as it is.
 
 ---
 
@@ -379,10 +388,15 @@ correlated subquery tried answered differently under the two.
 whatever the null handling. Use `SpecialNullHandling` to declare that the
 aggregate returns non-NULL for NULL input; it does not change which rows arrive.
 
-A related trap under either setting: in a correlated subquery,
+A related trap: in a correlated subquery,
 `(SELECT my_count(x) FROM t2 WHERE t2.k = t1.k)` is NULL, not `my_count` of an
-empty input, for an outer row with no match. DuckDB rewrites that NULL to 0 only
-for its own `count`. Wrap the subquery in `coalesce(..., 0)` if it matters.
+empty input, for an outer row with no match. Before DuckDB 2.0.0 that holds
+under either setting, and DuckDB rewrites the NULL to 0 only for its own
+`count`. From 2.0.0 the decorrelator (`FlattenDependentJoins::PushDownAggregate`,
+`flatten_dependent_join.cpp` lines 912-950) finalizes an empty state of every
+`SpecialNullHandling` aggregate and uses it for such rows, so only a
+`DefaultNullHandling` aggregate still answers NULL there. Wrap the subquery in
+`coalesce(..., 0)` if it matters.
 Pinned by `a_count_like_aggregate_in_a_correlated_subquery_is_null_for_an_unmatched_row`.
 
 ---
@@ -597,16 +611,20 @@ and 1.5.5 with a file stamped `-dv v1.5.5`).
 **Root cause**: The `-dv` flag to `append_extension_metadata.py` must be the C API version
 (e.g., `"v1.2.0"`), NOT the DuckDB release version (e.g., `"v1.4.4"` / `"v1.5.0"` / `"v1.5.1"`).
 DuckDB v1.4.x and v1.5.0 – v1.5.5 all declare C API version v1.2.0 (confirmed by E2E tests); v1.5.6
-declares v1.5.6 and still loads v1.2.0 extensions.
+and v2.0.0 declare v1.5.6 and still load v1.2.0 extensions. A `C_STRUCT` binary stamped v1.5.6 is
+refused by v1.5.5 ("The file was built for DuckDB C API version 'v1.5.6'...") and loads in v1.5.6
+and v2.0.0; that is the stamp for an extension using quack-rs's `duckdb-1-5` features
+(`quack_rs::DUCKDB_API_VERSION_1_5_6`, see P10).
 
 **Fix**: Use `quack_rs::DUCKDB_API_VERSION` constant for the init call, and use the same
 version string with `append_extension_metadata.py -dv v1.2.0`.
 
 **Caveat — this only holds for the `C_STRUCT` ABI type.** `-dv` means the *C API* version for
 `C_STRUCT`, but the *exact DuckDB release* for `C_STRUCT_UNSTABLE` and `CPP`. If you set
-`USE_UNSTABLE_C_API=1` (which you must when using quack-rs's `duckdb-1-5` features — see P10),
-`TARGET_DUCKDB_VERSION` must be a real release like `v1.5.5`, and `v1.2.0` would pin the binary
-to DuckDB v1.2.0. `ScaffoldConfig` validates this pairing.
+`USE_UNSTABLE_C_API=1`, `TARGET_DUCKDB_VERSION` must be a real release like `v1.5.5`, and
+`v1.2.0` would pin the binary to DuckDB v1.2.0. `ScaffoldConfig` validates this pairing. Until
+DuckDB 2.0 this was how quack-rs advised stamping a `duckdb-1-5` build; DuckDB 2.0 cannot load a
+`C_STRUCT_UNSTABLE` binary (see P10), so it now applies only to pinning one 1.x release.
 
 ---
 
@@ -650,10 +668,13 @@ If it is not checked out, the Makefile cannot find the build scripts.
 **Fix**: In a **new** project (for example one fresh from the scaffold) the
 submodule has never been added: the scaffold writes `.gitmodules`, but a file
 cannot create the gitlink git needs, so `git submodule update --init` finds
-nothing to do and exits 0 without cloning anything. Add it once:
+nothing to do and exits 0 without cloning anything. Add it once, on the branch
+the generated `Makefile` names (`v2.0-cyanoptera` for DuckDB 2.0 — extension-ci-tools
+has no `v2.0.0` branch — or a 1.x release's own branch, such as `v1.5.5`, for a
+`C_STRUCT_UNSTABLE` build):
 
 ```bash
-git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+git submodule add -b v2.0-cyanoptera https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
 ```
 
 In a **clone** of a repository that already has the submodule:
@@ -786,12 +807,17 @@ the release command, `cargo test --all-targets --all-features`, on all three pla
 
 **The fix**: DuckDB's own C++ codebase contains an internal inline function `CreateAPIv1()`
 (in `duckdb/main/capi/extension_api.hpp`) that constructs the complete `duckdb_ext_api_v1`
-struct, setting every one of its function-pointer fields (546 with the 1.5.2–1.5.6 headers) to
+struct, setting every one of its function-pointer fields (546 with the 1.5.2–1.5.6 headers, 548 with 2.0.0) to
 the matching bundled DuckDB C symbol.  This is exactly the same struct that DuckDB would send to an extension's
 `init_c_api` callback.
 
-quack-rs now compiles a tiny C++ shim (`src/testing/bundled_api_init.cpp`) that wraps
-`CreateAPIv1()` as a C-linkage symbol `quack_rs_create_api_v1()`.  In `InMemoryDb::open()`,
+quack-rs compiled a tiny C++ shim (`src/testing/bundled_api_init.cpp`) that wraps
+`CreateAPIv1()` as a C-linkage symbol `quack_rs_create_api_v1()`. (Since the DuckDB 2.0
+update, `build.rs` instead generates a C shim from `duckdb_extension.h` that fills the struct
+field by field, as `CreateAPIv1()` does — byte-for-byte equal to it on 1.5.6 and 2.0.0 — and
+needs only C headers, so a 2.0 `duckdb-shared-libs` archive, which ships no `duckdb.hpp`,
+works. The C++ shim, now C++17, remains for header directories without `duckdb_extension.h`,
+such as the 1.4 zips.)  In `InMemoryDb::open()`,
 a `std::sync::Once` guard calls this shim and feeds the result to
 `libduckdb_sys::duckdb_rs_extension_api_init`, which populates all the atomics in one pass.
 After that, the `duckdb` crate can open connections and run queries normally.
@@ -817,7 +843,7 @@ used by extension authors and by `libduckdb-sys` bindgen) and `extension_api.hpp
 used by DuckDB's C++ extension-loader).  Both are maintained in the same DuckDB repository
 release and always have identical field counts and field *order* — verified by
 `scripts/check-abi-table.py`, which re-derives both from every release tag (459 entries for
-DuckDB 1.4.x, 545 for 1.5.0–1.5.1, 546 for 1.5.2–1.5.6).
+DuckDB 1.4.x, 545 for 1.5.0–1.5.1, 546 for 1.5.2–1.5.6, 548 for 2.0.0).
 
 **This is a genuine DuckDB ecosystem discovery**: the combination of `loadable-extension`
 dispatch and bundled DuckDB is not documented anywhere in the `duckdb-rs` or `libduckdb-sys`
@@ -842,8 +868,8 @@ it at compiled-in offsets. The struct has two regions:
 
 | Region | Slots | Guarantee |
 |--------|-------|-----------|
-| Stable | 0–356 | Frozen since v1.2.0 — same slots, order and signatures in every release through v1.5.6 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
-| Unstable | 357+ | DuckDB **inserts** entries in the middle, shifting every later slot |
+| Stable | 0–356 | Frozen since v1.2.0 — same slots, order and signatures in every release through v2.0.0 (two slots, 114 and 138, were renamed `varint` → `bignum` in v1.4.0 with an identical struct layout) |
+| Unstable | 357+ | Before v1.5.6, DuckDB twice **inserted** entries in the middle, shifting every later slot; v2.0.0 only appended |
 
 | DuckDB | Total slots | What moved |
 |--------|-------------|------------|
@@ -852,6 +878,12 @@ it at compiled-in offsets. The struct has two regions:
 | v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` renamed to `duckdb_create_bignum`; appended |
 | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
 | v1.5.2 – v1.5.6 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
+| v2.0.0 | 548 | `duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns` appended |
+
+DuckDB v1.5.6 declares all 546 slots stable for an extension that targets C API v1.5.6.
+v2.0.0 still declares C API v1.5.6 for this struct, and its first 546 declarations are
+textually identical to v1.5.6's, so a build against the v1.5.2 – v1.5.6 bindings dispatches
+correctly on v2.0.0 (`PREFIX_LAYOUTS` in `src/abi.rs`, derived by `scripts/check-abi-table.py`).
 
 Everything behind quack-rs's `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4` features — 130 C API
 functions (of the tail's 189 slots) covering scalar bind/init, copy functions, the Arrow
@@ -865,10 +897,14 @@ extension footer:
 - `C_STRUCT` + a C API version (`v1.2.0`) — accepted by **any** DuckDB whose C API
   version is at least that, then handed the *whole* struct, unstable region
   included. There is no engine-version check.
+  DuckDB v1.2.0 – v1.5.5 declare C API v1.2.0; v1.5.6 and v2.0.0 declare v1.5.6.
 - `C_STRUCT_UNSTABLE` + a DuckDB release version — accepted only by that exact
-  release.
+  1.x release. DuckDB 2.0 routes every `C_STRUCT_UNSTABLE` binary to the C API v2
+  entry point `<name>_init_c_api_v2` (`duckdb_extension_v2.h`), which quack-rs does
+  not generate, so such a binary fails there with: did not contain function
+  "<name>_init_c_api_v2".
 
-So a `C_STRUCT` binary that touches the unstable region loads happily into a
+So a `C_STRUCT` `v1.2.0` binary that touches the unstable region loads happily into a
 DuckDB with a different layout and calls the wrong function pointers. Built
 against v1.5.0 and loaded into v1.5.2+, for example,
 `duckdb_scalar_function_set_bind_data(info, data, destroy)` actually invokes
@@ -890,18 +926,28 @@ Aborted (core dumped)
 
 **Fix**:
 
-1. If you use `duckdb-1-5` / `duckdb-1-5-3`, build with `USE_UNSTABLE_C_API=1` and
-   a real `TARGET_DUCKDB_VERSION` (or `append_metadata --abi-type C_STRUCT_UNSTABLE
-   --duckdb-version vX.Y.Z`). DuckDB then refuses to load the binary into any other
-   release, at install time, with a clear message.
+1. If you use `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4`, build against the
+   v1.5.2 – v1.5.6 bindings (`libduckdb-sys` `~1.10506.0`) and stamp the binary
+   `C_STRUCT` with C API v1.5.6 (`TARGET_DUCKDB_VERSION=v1.5.6` with
+   `USE_UNSTABLE_C_API` unset, or `append_metadata --abi-type C_STRUCT
+   --duckdb-version v1.5.6`). DuckDB before v1.5.6 then refuses it at `LOAD`, and
+   v1.5.6 and v2.0.0 load it. Until DuckDB 2.0 this step said to stamp
+   `C_STRUCT_UNSTABLE` with the exact release (`USE_UNSTABLE_C_API=1`); that still
+   pins a binary to one 1.x release, but DuckDB 2.0 cannot load it, and
+   extension-ci-tools `v2.0-cyanoptera` still stamps `C_STRUCT_UNSTABLE` when
+   `USE_UNSTABLE_C_API=1`.
 2. Leave `AbiPolicy::Strict` on. `quack_rs::abi::check()` compares the compiled-in
    slot count against the layout the running engine uses — resolved from
    `duckdb_library_version()`, which lives at stable slot 7 and is therefore always
    dispatched correctly — and the entry point turns a mismatch into a `LOAD` error
-   naming both layouts and the remedy. Use `AbiPolicy::Trust` only when the binary
-   is stamped `C_STRUCT_UNSTABLE`, where DuckDB already enforces the pinning.
+   naming both layouts and the remedy. Use `AbiPolicy::Trust` only when the binary's
+   metadata already makes DuckDB refuse the wrong release. quack-rs 0.18.0 refused
+   a `duckdb-1-5` build on DuckDB 2.0.0 ("layout cannot be verified"); since the
+   DuckDB 2.0 update the guard accepts a 546-slot build on v2.0.0, still refuses a
+   545-slot (1.5.0/1.5.1) build there, and treats v2.0.1 and v2.1.0 as unknown.
 3. If you stay off those features, nothing changes: the stable prefix is frozen, so
-   `C_STRUCT` + `v1.2.0` remains portable across every DuckDB from v1.2.0 onwards.
+   `C_STRUCT` + `v1.2.0` remains portable across every DuckDB from v1.2.0 through
+   v2.0.0.
 
 `scripts/check-abi-table.py` re-derives the layout table from every upstream
 release header and runs in CI, so the table cannot silently go stale.
@@ -1023,8 +1069,13 @@ Use `quack_rs::scaffold::generate_scaffold` to auto-generate all of these files 
 [`ScaffoldConfig`](https://docs.rs/quack-rs/latest/quack_rs/scaffold/struct.ScaffoldConfig.html).
 
 > **Note**: The C Extension API has a stable and unstable part. The official template enables
-> the unstable API via `USE_UNSTABLE_C_API=1` in the Makefile. See
-> [extension-template-rs](https://github.com/duckdb/extension-template-rs) for details.
+> the unstable API via `USE_UNSTABLE_C_API=1` in the Makefile, and as of 2026-10-21 its `main`
+> is still on DuckDB v1.5.6 (there is no 2.0 Rust template upstream yet). extension-ci-tools
+> `v2.0-cyanoptera` stamps such a build `C_STRUCT_UNSTABLE`, which DuckDB 2.0 cannot load
+> without a `<name>_init_c_api_v2` entry point; for a quack-rs extension using the
+> `duckdb-1-5` features, use `TARGET_DUCKDB_VERSION=v1.5.6` without `USE_UNSTABLE_C_API`
+> instead (P10). See [extension-template-rs](https://github.com/duckdb/extension-template-rs)
+> for details.
 
 ### description.yml
 
@@ -1113,10 +1164,13 @@ the ABI type stamped in their metadata footer:
 
 - A `C_STRUCT` extension declares a C extension API version (quack-rs stamps
   `v1.2.0`) and loads into every DuckDB release that provides that API — every
-  release from 1.4.4 through 1.5.6, for quack-rs's stable-API surface. One
-  binary serves them all.
+  release from 1.4.4 through 2.0.0, for quack-rs's stable-API surface. One
+  binary serves them all. An extension using the `duckdb-1-5` features is stamped
+  C API `v1.5.6` and loads into 1.5.6 and 2.0.0.
 - A `C_STRUCT_UNSTABLE` or `CPP` extension declares an exact DuckDB release and
-  loads only into that release, so it is rebuilt for each one.
+  loads only into that release, so it is rebuilt for each one. DuckDB 2.0 loads a
+  `C_STRUCT_UNSTABLE` binary only through the C API v2 entry point, which quack-rs
+  does not generate.
 - DuckDB verifies the footer before loading and refuses a mismatched binary
 - All official extensions are cryptographically signed by the DuckDB team
 - Unsigned extensions require `allow_unsigned_extensions` to load (development only)
@@ -1129,6 +1183,9 @@ The community extension CI uses specific compiler versions and system libraries.
 - Rust toolchain must be available in CI (add `rustup` setup to your CI workflow)
 - Cross-compilation for `linux_arm64` from `linux_amd64` requires the appropriate target
 - WASM targets (`wasm_mvp`, `wasm_eh`, `wasm_threads`) may not work with all Rust crates
+- For DuckDB 2.0, extension-ci-tools builds every platform, WASM included, with Rust
+  1.97.1 (before: stable, and 1.86.0 for WASM) and emsdk 6.0.9 (before: 3.1.71);
+  `osx_amd64` is opt-in there, and DuckDB 2.1 drops the platform
 - Use `excluded_platforms` to skip targets that cannot be built
 
 ---

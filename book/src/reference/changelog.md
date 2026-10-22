@@ -10,6 +10,8 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-10-22
+
 This section comes out of a sixth review (`AUDIT.md` section 11): seven
 parallel audits (soundness in three parts, documentation, developer
 experience, C API coverage, and CI and supply chain against the a2a-rust
@@ -17,7 +19,34 @@ bar), then fixes. It adds public API, so by `RELEASING.md`'s policy the next
 release is a minor one. Nothing here removes or changes the signature of an
 existing public item; the behaviour changes are listed under Changed.
 
+It also carries the DuckDB 2.0.0 (2026-10-21) review (`AUDIT.md` section 12):
+what 2.0 changed in the C extension API, its loader, its release assets and
+its behaviour, each checked against DuckDB's source at both tags and against
+the real 2.0.0 binaries, and the fixes. The entries below that mention 2.0
+come from it.
+
 ### Added
+
+- **DuckDB 2.0.0 support.** A default-feature extension (stamped `C_STRUCT`,
+  C API `v1.2.0`) already loaded into 2.0.0. An extension using the
+  `duckdb-1-5*` features now does too: build it against the v1.5.6 bindings
+  and stamp it `--abi-type C_STRUCT --duckdb-version v1.5.6`. DuckDB v1.5.6 and
+  v2.0.0 load that binary and older releases refuse it. New constant
+  `DUCKDB_API_VERSION_1_5_6`.
+- `abi`: DuckDB v2.0.0's 548-slot `duckdb_ext_api_v1` in the layout table,
+  and a table of layouts that only append to an older one (`(546, 548)`,
+  `(408, 428)`), derived by `scripts/check-abi-table.py` from full
+  declarations. A build against the v1.5.2 – v1.5.6 bindings is accepted on
+  v2.0.0; quack-rs 0.18.0 refused to load there.
+- `DuckDbErrorType::DataCorruption` (43) and `ResourceInUse` (44), which
+  `duckdb.h` v2.0.0 adds.
+- `scaffold::DISTRIBUTION_CI_TOOLS_REF` (`v2.0-cyanoptera`), and
+  `ScaffoldConfig::target_duckdb_version = "v1.5.6"` with
+  `use_unstable_c_api = false` for the `duckdb-1-5*` features: pins
+  `libduckdb-sys ~1.10506.0` and checks the pin at `make release`.
+  `examples/scaffold_to_dir.rs` gains `--c-api`.
+- `scripts/fetch-duckdb.sh`: downloads a DuckDB release's CLI or library under
+  either asset naming scheme and resolves `latest` to a tag.
 
 - **Versioned documentation.** quack-rs.com now serves the latest release at
   `/`, every supported release line at `/vX.Y/` (from 0.16 on), and `main` at
@@ -61,6 +90,27 @@ existing public item; the behaviour changes are listed under Changed.
 
 ### Changed
 
+- `append_metadata`: `--abi-type C_STRUCT` accepts C API `v1.5.6` (with a
+  warning that DuckDB before 1.5.6 refuses it) and still refuses the versions
+  between `v1.2.0` and `v1.5.6` (pitfall P2). `--abi-type C_STRUCT_UNSTABLE`
+  with a 2.x release is refused: DuckDB 2.0 loads such a binary only through
+  the C API v2 entry point (`<name>_init_c_api_v2`), which quack-rs does not
+  generate.
+- The scaffold builds with extension-ci-tools `v2.0-cyanoptera` and DuckDB
+  v2.0.0, as `duckdb/community-extensions` now does
+  (`DISTRIBUTION_DUCKDB_VERSION` is `v2.0.0`). `use_unstable_c_api = true`
+  refuses a 2.x target and names the C API v1.5.6 alternative.
+- The `bundled-test` shim is generated C, filled field by field from
+  `duckdb_extension.h`, instead of C++ calling `CreateAPIv1()`. DuckDB 2.0's
+  release archives ship no `duckdb.hpp`; the generated shim is byte-for-byte
+  equal to `CreateAPIv1()` on v1.5.6 and v2.0.0. Headers without
+  `duckdb_extension.h` (the 1.4 zips) still use the C++ shim, now built as
+  C++17.
+- `validate::platform`: `osx_amd64` is opt-in, as in extension-ci-tools for
+  DuckDB 2.0 (DuckDB 2.1 drops the platform).
+- On DuckDB 2.0.0, an appender error caused by an open stream reports
+  `ResourceInUse` rather than `Invalid`.
+
 - **Scaffold:** `generate_scaffold` requires a semantic version for `version`
   (it is written into `Cargo.toml`; `2025120401`, `1.0` or `v1.0.0` produced a
   project Cargo could not read). `ScaffoldConfig::default()` excludes
@@ -101,6 +151,24 @@ existing public item; the behaviour changes are listed under Changed.
 
 ### Fixed
 
+- **Every casting `Value` getter returned `None` on DuckDB 2.0.0** (`as_i64`
+  on an `INTEGER`, a bind or named parameter, a `COPY` option, ...). quack-rs
+  detected a successful cast by the value's type changing, and 2.0's
+  `CAPIGetValue` casts into a temporary instead of in place. Getters now cast
+  through `duckdb_create_list_value` (`Value::LIST` casts each child and
+  `duckdb_create_list_value` catches a failure, from 1.4.4 through 2.0.0), so
+  success no longer depends on the engine, and a cast that throws is caught
+  rather than aborting. Values equal to DuckDB's failure sentinel (`i64::MIN`,
+  `false`, `NaN`) are tested to read back.
+- **quack-rs 0.18.0's `bundled-test` no longer builds once Cargo resolves
+  `libduckdb-sys` 1.20000.0** (DuckDB 2.0, published 2026-10-22, inside
+  `>=1.4.4, <2`): its test shim compiles DuckDB's C++ headers as C++11, and
+  DuckDB 2.0's need C++17. A fresh resolve on Rust 1.88 or newer gets there.
+  0.19.0's shim builds against both.
+- `bundled-test-prebuilt` failed to link on the MSRV (Rust 1.86.0):
+  `-lduckdb` was emitted before the shim that needs it. Pre-existing; CI's MSRV
+  job only runs `cargo check`.
+
 - **Documentation that contradicted `DuckDB`, each checked against its
   source:** re-registering a cast for a pair succeeds and does nothing — the
   first registration wins (`std::map::insert`), not the last; `CastMode::Try`
@@ -129,6 +197,23 @@ existing public item; the behaviour changes are listed under Changed.
 
 ### Documentation
 
+- Every claim about the newest DuckDB, the supported range, slot counts,
+  release asset names, `<2` (it admits `libduckdb-sys` 1.20000.0, DuckDB 2.0),
+  and the `C_STRUCT_UNSTABLE` advice, across the README, the book,
+  `LESSONS.md` and the API docs, updated for 2.0.0.
+- Behaviour that differs on DuckDB 2.0.0, now documented per version:
+  another statement on a connection with an open stream is refused with
+  `ResourceInUse` instead of ending the stream, and an appender flush there
+  loses its rows; dropping an unfinished stream aborts it; a failed appender
+  flush drops the buffered rows; `BindInfo::set_cardinality`'s `is_exact`
+  records the upper bound for `true` (1.x: for `false`); a scalar bind callback
+  sees arguments already cast to the parameter types; C API aggregates no
+  longer crash under `OVER ()` (upstream #26109, fixed in 2.0.0), and window
+  `EXCLUDE` no longer leaks states; `SpecialNullHandling` aggregates in
+  correlated subqueries; Arrow import keeps the array alive while any column
+  is referenced; `http` secrets redact `extra_http_headers`; `COPY` option
+  names arrive lowercased; `overlay` and `if` became callable names.
+
 - The README is a landing page (63 KB to 11 KB): a Quick Start with the safe
   closure API, verified end to end on DuckDB 1.5.6, supported versions, the
   features table, and links. Its module reference, pitfall tables,
@@ -145,6 +230,22 @@ existing public item; the behaviour changes are listed under Changed.
 - The book's examples use the panic-guarded callback macros.
 
 ### CI and release
+
+- DuckDB 2.0.0 renamed its release assets (`duckdb-cli-<platform>.tar.gz`,
+  `duckdb-shared-libs-<platform>.tar.gz`), so the three jobs that downloaded
+  `releases/latest/download/duckdb_cli-linux-amd64.zip` had failed since
+  2.0.0 became the latest release. Every download goes through
+  `scripts/fetch-duckdb.sh`.
+- New `test-duckdb-2-0` job: the whole live suite against libduckdb 2.0.0,
+  with the 2.0 bindings (`libduckdb-sys` / `duckdb` 1.20000.0, published
+  2026-10-22). `extension-load` adds a v2.0.0
+  leg; `abi-guard-layout` checks the C API v1.5.6 stamping (refused by
+  v1.5.5, loaded by v1.5.6 and v2.0.0); `scaffold-e2e` builds and tests a
+  C API v1.5.6 project that uses `duckdb-1-5` through extension-ci-tools.
+- `semver` compares with `--only-explicit-features --features
+  duckdb-1-5-4,_duckdb-testing`. The default heuristic also enabled
+  `bundled-test`, and the published 0.18.0 baseline no longer builds that way
+  since `libduckdb-sys` 1.20000.0 exists (see Fixed). Same public API compared.
 
 - `release.yml` runs the whole of `ci.yml` as its gate (`workflow_call`)
   instead of a hand-copied subset that lacked semver checks, Miri, the
@@ -172,9 +273,16 @@ existing public item; the behaviour changes are listed under Changed.
 
 ### Dependencies
 
-- `libduckdb-sys` and `duckdb` 1.10506.0 (DuckDB 1.5.6) in every lockfile,
-  resolved MSRV-aware (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`),
-  which also put `wasip2` back on a release Rust 1.86 builds. Tools:
+- `libduckdb-sys` and `duckdb` 1.10506.1 (still DuckDB 1.5.6) in every
+  lockfile, which moves their build-dependency off `zip` 6 (RUSTSEC-2026-0367,
+  -0368, -0369; fixed in `zip` 9), and `rustls` 0.23.46, `rustls-webpki`
+  0.103.16 and `webpki-roots` 1.0.10 (RUSTSEC-2026-0346 to -0349, -0381,
+  -0382). These are the repository's lockfiles; a dependant's own resolution
+  picks its versions. 1.10506.1 declares `rust-version` 1.88, so the lockfiles
+  are no longer resolved for the MSRV: the MSRV job now resolves its own
+  dependencies for Rust 1.86.0 (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`,
+  which picks 1.10506.0) before `cargo check`. The MSRV itself is unchanged.
+  Tools:
   osv-scanner 2.7.0, cargo-deny 0.20.2, cargo-semver-checks 0.51.0,
   `dtolnay/rust-toolchain` (2026-10-08),
   `actions/upload-artifact` 7.0.2, `actions/download-artifact` 8.0.2.
@@ -4003,7 +4111,8 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/tomtom215/quack-rs/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tomtom215/quack-rs/compare/v0.16.0...v0.18.0
 [0.16.0]: https://github.com/tomtom215/quack-rs/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/tomtom215/quack-rs/compare/v0.14.0...v0.15.0

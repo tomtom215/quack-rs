@@ -206,17 +206,19 @@ Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 ```toml
 # Zero-config but slow: compile libduckdb from C++ source (~5–10 min cold).
 [dev-dependencies]
-quack-rs = { version = "0.18", features = ["bundled-test"] }
+quack-rs = { version = "0.19", features = ["bundled-test"] }
 ```
 
 ```toml
 # Fast: link against a pre-built libduckdb. Set DUCKDB_DOWNLOAD_LIB=1 at build
 # time and libduckdb-sys downloads the upstream release zip (~40 MB, cached
 # under target/); or set DUCKDB_LIB_DIR=/path/to/libduckdb if you already have
-# one extracted. Header discovery needs libduckdb-sys >= 1.10503; with an older
+# one extracted: a 1.x libduckdb-<platform>.zip or a 2.0
+# duckdb-shared-libs-<platform>.tar.gz. The directory needs duckdb_extension.h
+# or duckdb.hpp. Header discovery needs libduckdb-sys >= 1.10503; with an older
 # one, also set DUCKDB_INCLUDE_DIR.
 [dev-dependencies]
-quack-rs = { version = "0.18", features = ["bundled-test-prebuilt"] }
+quack-rs = { version = "0.19", features = ["bundled-test-prebuilt"] }
 ```
 
 Both keep `duckdb` out of a plain `cargo test` and out of your published
@@ -544,15 +546,22 @@ Directives:
 ### Installing DuckDB (1.4.4 or later)
 
 E2E testing needs the DuckDB CLI. Download it with `curl`; no system package
-manager is needed. quack-rs supports DuckDB 1.4.4 and later 1.x releases, and every one
+manager is needed. quack-rs supports DuckDB 1.4.4 through 2.0.0, and every one
 of them loads an extension stamped with
-C API version `v1.2.0` (1.4.4 through 1.5.5 declare that version; 1.5.6 declares
-`v1.5.6` and accepts every earlier one). The quack-rs CI `extension-load` job
-loads its example extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6 and the latest release
-(currently 1.5.6). Develop against the current release, 1.5.6:
+C API version `v1.2.0` (1.4.4 through 1.5.5 declare that version; 1.5.6 and 2.0.0
+declare `v1.5.6` and accept every earlier one). The quack-rs CI `extension-load` job
+loads its example extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest
+release (currently 2.0.0).
+
+DuckDB renamed its release assets in 2.0.0, so the download depends on the release:
 
 ```bash
-# DuckDB 1.5.6 (current release)
+# DuckDB 2.0.0 and later: a .tar.gz named duckdb-cli-<platform>
+curl -fsSL https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz \
+    | tar -xz -C /tmp \
+    && /tmp/duckdb --version
+
+# DuckDB 1.x (1.4.4 to 1.5.6): a .zip named duckdb_cli-<platform>
 curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip \
     -o /tmp/duckdb.zip \
     && unzip -o /tmp/duckdb.zip -d /tmp/ \
@@ -562,10 +571,13 @@ curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-
 ```
 
 To match a pinned CI engine instead, substitute `v1.4.4`, `v1.5.0`, `v1.5.5` or `v1.5.6`
-in the URL.
+in the 1.x URL. `releases/latest/download/duckdb_cli-linux-amd64.zip` has returned
+404 since 2.0.0 became the latest release. In a quack-rs checkout,
+`scripts/fetch-duckdb.sh <vX.Y.Z|latest> cli <dir>` picks the right name for the
+linux-amd64 build.
 
-For macOS, replace `linux-amd64` with `osx-universal`. For Windows, use
-`windows-amd64` and unzip to a directory on `%PATH%`.
+For the 1.x archives on macOS, replace `linux-amd64` with `osx-universal`; for
+Windows, use `windows-amd64` and unzip to a directory on `%PATH%`.
 
 ### Running E2E tests
 
@@ -663,12 +675,12 @@ quack-rs's own test suite uses proptest for interval conversion and
 
 ```toml
 [dependencies]
-quack-rs = "0.18"
+quack-rs = "0.19"
 
 [dev-dependencies]
 proptest = "1"
 # Only for InMemoryDb; enables the feature for test builds alone.
-quack-rs = { version = "0.18", features = ["bundled-test"] }
+quack-rs = { version = "0.19", features = ["bundled-test"] }
 ```
 
 The `testing` module is compiled unconditionally (not `#[cfg(test)]`), so crates

@@ -185,6 +185,22 @@ fn failed_casts_are_none_and_sentinel_values_still_read() {
     );
     assert_eq!(Value::bigint(-1).as_u64(), None);
     assert_eq!(Value::varchar("2024-01-02").as_date(), Some(19_724));
+
+    // A cast whose legitimate result *is* DuckDB's failure sentinel
+    // (`NullValue<T>`): success must come from the cast, not the number.
+    // 2.0.0's getters leave nothing else to tell the two apart.
+    assert_eq!(
+        Value::varchar("-9223372036854775808").as_i64(),
+        Some(i64::MIN)
+    );
+    assert_eq!(
+        Value::hugeint(i128::from(i64::MIN)).as_i64(),
+        Some(i64::MIN)
+    );
+    assert_eq!(Value::bigint(-128).as_i8(), Some(i8::MIN));
+    assert_eq!(Value::varchar("false").as_bool(), Some(false));
+    assert_eq!(Value::integer(0).as_bool(), Some(false));
+    assert!(Value::varchar("nan").as_f64().is_some_and(f64::is_nan));
 }
 
 /// `CAPIGetValue` cast the caller's value *in place*:
@@ -358,19 +374,25 @@ fn bind_decimal_validates_width_scale_and_range() {
     );
 }
 
-// ── Finding 8: error types 40–42 ────────────────────────────────────────────
+// ── Finding 8: error types 40–44 ────────────────────────────────────────────
 
 #[cfg(feature = "duckdb-1-5")]
 #[test]
 fn error_data_reports_sequence_and_autoload_types() {
     use quack_rs::error_data::{DuckDbErrorType, ErrorData};
 
-    let _fx = Fixture::open();
-    for (raw, expected) in [
+    let fx = Fixture::open();
+    let mut known = vec![
         (40, DuckDbErrorType::Autoload),
         (41, DuckDbErrorType::Sequence),
         (42, DuckDbErrorType::InvalidConfiguration),
-    ] {
+    ];
+    if fx.engine_major() >= 2 {
+        // `duckdb.h` v2.0.0 adds these two.
+        known.push((43, DuckDbErrorType::DataCorruption));
+        known.push((44, DuckDbErrorType::ResourceInUse));
+    }
+    for (raw, expected) in known {
         // SAFETY: creates an owned error-data handle that `ErrorData` frees.
         let err = unsafe {
             ErrorData::from_raw(libduckdb_sys::duckdb_create_error_data(

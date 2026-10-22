@@ -314,6 +314,13 @@ fn append_default_fills_null_without_a_default_and_fails_for_a_non_constant_one(
 /// poisoned the appender and blamed "a row failed after 1 of its values",
 /// and every later append was refused. Now the row counts as ended, the
 /// constraint error is reported as it is, and appending carries on.
+///
+/// What happens to the rows that failed differs by engine. Up to 1.5.x they
+/// stay buffered (`BaseAppender::Flush` resets the collection only after a
+/// successful `FlushInternal`), so `close` reports the same violation. 2.0.0
+/// discards the whole buffer when a flush throws (`appender.cpp`: `catch (...)
+/// { collection->Reset(); throw; }`), so `close` succeeds and writes only the
+/// row appended afterwards.
 #[test]
 fn a_failing_automatic_flush_does_not_poison_the_appender() {
     let fx = Fixture::open();
@@ -338,6 +345,20 @@ fn a_failing_automatic_flush_does_not_poison_the_appender() {
     appender
         .row(|row| row.append_i32(2))
         .expect("the appender is not poisoned");
+    if fx.engine_major() >= 2 {
+        appender
+            .close()
+            .expect("the failed flush discarded the NULL row with the rest");
+        drop(appender);
+        assert_eq!(count(&fx, "ap_autoflush"), 1);
+        assert_eq!(
+            fx.scalar("SELECT max(x)::BIGINT FROM ap_autoflush", |r, i| unsafe {
+                r.read_i64(i)
+            }),
+            Some(2)
+        );
+        return;
+    }
     let err = appender
         .close()
         .expect_err("the NULL row is still buffered");

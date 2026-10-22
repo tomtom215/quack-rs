@@ -115,8 +115,8 @@ jobs:
 
   msrv:
     # The oldest Rust the project promises to build with: `rust-version` in
-    # Cargo.toml. extension-ci-tools builds the wasm targets with this same
-    # release. Keep the two in step.
+    # Cargo.toml. (extension-ci-tools builds with a newer release: 1.97.1 for
+    # DuckDB v2.0.)
     name: Minimum supported Rust (@@MSRV@@)
     runs-on: ubuntu-latest
     steps:
@@ -161,7 +161,7 @@ jobs:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@@@CI_TOOLS_REF@@
     with:
-      duckdb_version: @@CI_TOOLS_REF@@
+      duckdb_version: @@DUCKDB_VERSION@@
       ci_tools_version: @@CI_TOOLS_REF@@
       extension_name: @@NAME@@
       extra_toolchains: rust;python3
@@ -177,6 +177,10 @@ fn fill(template: &str, config: &ScaffoldConfig) -> String {
         .replace("@@SETUP_PYTHON@@", SETUP_PYTHON)
         .replace("@@MSRV@@", env!("CARGO_PKG_RUST_VERSION"))
         .replace("@@CI_TOOLS_REF@@", super::extension_ci_tools_ref(config))
+        .replace(
+            "@@DUCKDB_VERSION@@",
+            super::distribution_duckdb_version(config),
+        )
         .replace("@@EXCLUDE_ARCHS@@", &config.excluded_platforms.join(";"))
 }
 

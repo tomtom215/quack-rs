@@ -258,11 +258,14 @@ callback's `set_error`, or `access.set_error` at load.
 ### 3. Bounded version range
 
 `libduckdb-sys = ">=1.4.4, <2"` — the range is intentional. Every release from
-1.4.4 to 1.5.5 declares C API `v1.2.0` (v1.5.6 declares `v1.5.6` and still loads
-`v1.2.0` extensions), and the `v1.2.0` stable part (357 functions) is unchanged
-across them; the unstable region differs between releases (459 / 545 /
-546 functions) and is checked at load by `abi.rs`. The upper bound prevents silent
-adoption of a new major-band whose C API may introduce breaking changes.
+1.4.4 to 1.5.5 declares C API `v1.2.0` (v1.5.6 and v2.0.0 declare `v1.5.6` and
+still load `v1.2.0` extensions), and the `v1.2.0` stable part (357 functions) is
+unchanged across them through v2.0.0; the unstable region differs between releases
+(459 / 545 / 546 / 548 functions) and is checked at load by `abi.rs`. The upper bound
+does not exclude the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB
+`vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is
+`1.20000.0` (published 2026-10-22; `rust-version` 1.88), which the range
+admits.
 
 ### 4. Testable business logic
 
@@ -464,19 +467,25 @@ extension without a compile error: new function signatures, changed constant
 values, renamed symbols, or a shifted unstable region.
 
 **Decision**: Use `libduckdb-sys = ">=1.4.4, <2"`. Every DuckDB release from
-1.4.4 to 1.5.5 declares C extension API version `v1.2.0`; 1.5.6 declares
-`v1.5.6` and still loads `v1.2.0` extensions. The stable part of the API (357
+1.4.4 to 1.5.5 declares C extension API version `v1.2.0`; 1.5.6 and 2.0.0 declare
+`v1.5.6` and still load `v1.2.0` extensions. The stable part of the API (357
 functions) is unchanged across all of them. The unstable region differs between
 releases and is checked at load by the ABI guard (`abi.rs`). The `<2` upper
-bound prevents silent adoption of a future major release.
+bound stops a future `libduckdb-sys` 2.x, but not the DuckDB 2.0 bindings:
+`libduckdb-sys` numbers DuckDB 2.0.0 `1.20000.0` (the crate version is
+`1.(10000·major + 100·minor + patch).N`), which the range admits. That release was
+published on 2026-10-22 and declares `rust-version` 1.88, so a Rust 1.86
+build stays on `1.10506.x` under MSRV-aware resolution.
 
 CI checks the range in two ways (`.github/workflows/ci.yml`):
 
 - `test-older-engines` runs the test suite against DuckDB 1.4.4 and 1.4.5
   (default features), 1.5.0 (`duckdb-1-5`), 1.5.3 (`duckdb-1-5-3`) and 1.5.4
-  (`duckdb-1-5-4`); the other test jobs use the release `Cargo.lock` pins.
+  (`duckdb-1-5-4`); `test-duckdb-2-0` runs it against DuckDB 2.0.0 with the
+  DuckDB 2.0 bindings (1.20000.0); the other test jobs use the release
+  `Cargo.lock` pins.
 - `extension-load` loads the `hello-ext` example, stamped `C_STRUCT` + `v1.2.0`,
-  into DuckDB 1.4.4, 1.5.0, 1.5.5 and the latest release.
+  into DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release.
 
 **Consequences**: Extensions must explicitly choose when to upgrade DuckDB, and
 `quack-rs` must be updated when DuckDB changes the C API version it can load.

@@ -78,8 +78,14 @@ line:
 
 ```bash
 cargo run --example scaffold_to_dir -- my_extension            # writes ./my_extension
-cargo run --example scaffold_to_dir -- my_extension ../my_extension --unstable v1.5.6
+# An extension using the duckdb-1-5* features: C_STRUCT, C API v1.5.6
+cargo run --example scaffold_to_dir -- my_extension ../my_extension --c-api v1.5.6
 ```
+
+`--c-api v1.5.6` sets `target_duckdb_version` to `v1.5.6`: the binary loads into
+DuckDB 1.5.6 and 2.0.0. `--unstable <release>` (`use_unstable_c_api`) pins the
+binary to one DuckDB 1.x release instead, such as `--unstable v1.5.5`; DuckDB 2.0
+cannot load such a binary, and the scaffold refuses a 2.x release there.
 
 ---
 
@@ -95,8 +101,8 @@ cargo run --example scaffold_to_dir -- my_extension ../my_extension --unstable v
 | `github_repo` | `String` | `"owner/repo"`, in the characters GitHub allows |
 | `excluded_platforms` | `Vec<String>` | Platforms the community build skips, written to `description.yml` and the distribution workflow alike. Defaults to `DEFAULT_EXCLUDED_PLATFORMS` (Wasm and MinGW) |
 | `git_ref` | `String` | `repo.ref` — **a commit hash** (or tag), not a branch. Defaults to `REF_PLACEHOLDER` so it cannot be submitted unset |
-| `target_duckdb_version` | `String` | Written as `TARGET_DUCKDB_VERSION` in the Makefile. Defaults to `DUCKDB_API_VERSION` (`v1.2.0`); with `use_unstable_c_api`, an exact DuckDB release such as `v1.5.5` |
-| `use_unstable_c_api` | `bool` | Set when the extension enables `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4`. Defaults to `false` |
+| `target_duckdb_version` | `String` | Written as `TARGET_DUCKDB_VERSION` in the Makefile. Without `use_unstable_c_api`, the C API version: `DUCKDB_API_VERSION` (`v1.2.0`, the default) or `DUCKDB_API_VERSION_1_5_6` (`v1.5.6`) for an extension that enables `duckdb-1-5` / `duckdb-1-5-3` / `duckdb-1-5-4`; `v1.5.6` pins `libduckdb-sys` to `~1.10506.0` and loads into DuckDB 1.5.6 and 2.0.0. With `use_unstable_c_api`, an exact DuckDB 1.x release such as `v1.5.5` |
+| `use_unstable_c_api` | `bool` | Stamps `C_STRUCT_UNSTABLE`, pinning the binary to the one DuckDB 1.x release in `target_duckdb_version`. DuckDB 2.0 cannot load such a binary, and 2.x releases are refused. Defaults to `false` |
 
 ---
 
@@ -119,7 +125,7 @@ an error if the name breaks one. Uniqueness is yours to check.
 ```bash
 cd my_extension
 git init
-git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+git submodule add -b v2.0-cyanoptera https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
 git add -A
 git commit -m "Scaffold my_extension"
 make configure
@@ -130,11 +136,13 @@ make test
 `git submodule add` is not optional in a new project: the scaffold writes
 `.gitmodules`, but `git submodule update --init` does nothing until the
 submodule has been added once (Pitfall P4). The generated `Makefile` stops with
-this command if the checkout is missing. `-b v1.5.6` checks out the
+this command if the checkout is missing. `-b v2.0-cyanoptera` checks out the
 extension-ci-tools branch the generated `MainDistributionPipeline.yml` builds
-with (`DISTRIBUTION_DUCKDB_VERSION`, or your `target_duckdb_version` for an
-unstable-ABI build); the community build uses the branch for the DuckDB release
-it targets, so keep the submodule, `.gitmodules` and the workflow on the same one.
+with (`DISTRIBUTION_CI_TOOLS_REF`, the branch for `DISTRIBUTION_DUCKDB_VERSION`
+`v2.0.0`; extension-ci-tools has no `v2.0.0` branch), or your
+`target_duckdb_version` for an unstable-ABI build (`-b v1.5.5`, for example); the
+community build uses the branch for the DuckDB release it targets, so keep the
+submodule, `.gitmodules` and the workflow on the same one.
 
 **Commit before `make configure`.** `make configure` writes the extension
 version into `configure/extension_version.txt` from git — the tag on `HEAD`,
@@ -147,8 +155,8 @@ by using the Cargo package version (`v0.1.0`) while there is no commit, and
 before committing, run `make clean_all configure` after the first commit so the
 version comes from git.
 
-The project declares `rust-version` (quack-rs's MSRV, also the Rust release
-extension-ci-tools uses for its Wasm builds) and uses `resolver = "3"`, so
+The project declares `rust-version` (quack-rs's MSRV, 1.86.0; extension-ci-tools
+builds with Rust 1.97.1 for DuckDB 2.0, Wasm included) and uses `resolver = "3"`, so
 `cargo` resolves dependencies that build on that release; the generated CI's
 `msrv` job checks it.
 
@@ -164,8 +172,10 @@ places, and push to GitHub — CI runs automatically.
 The community build compiles every extension for nine platforms with
 extension-ci-tools' `_extension_distribution.yml`: `linux_amd64`, `linux_arm64`,
 `osx_amd64`, `osx_arm64`, `windows_amd64`, `windows_amd64_mingw`, `wasm_mvp`,
-`wasm_eh` and `wasm_threads`. The generated `MainDistributionPipeline.yml` calls
-the same workflow, so a platform that fails there fails in your own CI first.
+`wasm_eh` and `wasm_threads`. For DuckDB 2.0, `osx_amd64` is opt-in in
+extension-ci-tools (built only if an extension asks for it), and DuckDB 2.1 drops
+the platform. The generated `MainDistributionPipeline.yml` calls the same
+workflow, so a platform that fails there fails in your own CI first.
 
 `excluded_platforms` is written both as `excluded_platforms` in
 `description.yml` and as `exclude_archs` in that workflow, so the two always

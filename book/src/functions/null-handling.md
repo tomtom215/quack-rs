@@ -225,7 +225,9 @@ one place only — the correlated-subquery decorrelator, to pick an `INNER` or
 `LEFT` join — and no query we tried (correlated scalar subqueries, with and
 without arithmetic or `coalesce` around the aggregate, `LATERAL`, a correlated
 subquery in `WHERE`) answered differently under the two settings on DuckDB 1.5.5.
-Set it anyway when it is true; it is what DuckDB expects.
+DuckDB 2.0.0 also reads it to finalize an empty state for an unmatched row of a
+correlated subquery (next section). Set it when it is true; it is what DuckDB
+expects.
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
@@ -257,7 +259,8 @@ unsafe {
 
 ### Empty groups in a correlated subquery
 
-One difference from an uncorrelated query holds under both settings. In
+Before DuckDB 2.0.0, one difference from an uncorrelated query holds under both
+settings; from 2.0.0 it holds under `DefaultNullHandling` only. In
 `SELECT (SELECT my_count(x) FROM t2 WHERE t2.k = t1.k) FROM t1`, an outer row
 with no matching `t2` rows gets NULL: the decorrelated plan joins the aggregate's
 groups back to the outer rows, and an outer row with no group never has an empty
@@ -265,7 +268,10 @@ state finalized. DuckDB rewrites that NULL to 0 for its own `count` and
 `count(*)` only. A count-like aggregate of yours that returns 0 for empty input
 therefore returns NULL here; write `coalesce((SELECT ...), 0)` if the query needs
 0. (`SELECT my_count(x) FROM t2 WHERE false`, uncorrelated, does finalize an
-empty state and returns 0.)
+empty state and returns 0.) DuckDB 2.0.0 finalizes an empty state of every
+`SpecialNullHandling` aggregate for those rows
+(`FlattenDependentJoins::PushDownAggregate`), so such an aggregate returns 0
+there as well.
 
 ---
 

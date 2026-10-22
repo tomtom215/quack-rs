@@ -43,8 +43,9 @@ WORKFLOW_URL = (
     "{ref}/.github/workflows/_extension_distribution.yml"
 )
 
-# The branch the community build uses for the newest DuckDB release.
-DISTRIBUTION_REF = "v1.5.6"
+# The branch the community build uses for the newest DuckDB release (v2.0.0:
+# duckdb/community-extensions build.yml; extension-ci-tools has no v2.0.0 branch).
+DISTRIBUTION_REF = "v2.0-cyanoptera"
 
 # Three forms occur upstream, and the pattern must accept all of them: an
 # exact ref (`dtolnay/rust-toolchain@1.86.0`, how the WebAssembly job pins the

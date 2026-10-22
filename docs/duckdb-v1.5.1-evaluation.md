@@ -7,6 +7,12 @@
 > enum (DuckDB 1.5.3, value 41), and the `TypeId` gaps it lists (`Any`,
 > `SqlNull`, `Varint`) have been filled.
 >
+> *Note added 2026-10-21 (DuckDB 2.0.0):* the `<2` bound in `libduckdb-sys`
+> does not keep out the DuckDB 2.0 bindings, as the risk table below assumes:
+> `libduckdb-sys` numbers DuckDB 2.0.0 `1.20000.0`, which the range admits. The
+> C API version the extension's `v1.2.0` stamp targets is still accepted by
+> DuckDB 2.0.0.
+>
 > For the current state, see:
 >
 > - Supported DuckDB releases, the `libduckdb-sys` range and the MSRV: the

@@ -35,8 +35,8 @@ will add wrappers in the corresponding release.
 
 ## Aggregates crash under `OVER ()` and `ORDER BY` (DuckDB defect, Pitfall L11)
 
-Every aggregate registered through the C API — quack-rs's or anyone else's —
-reads out of bounds when DuckDB runs it as a whole-partition window
+On DuckDB 1.4.x and 1.5.x, every aggregate registered through the C API —
+quack-rs's or anyone else's — reads out of bounds when DuckDB runs it as a whole-partition window
 (`agg(x) OVER ()`, `agg(x) OVER (PARTITION BY p)`) or as an ordered aggregate
 (`agg(x ORDER BY y)`). The usual result is a segmentation fault that takes the
 host process down. The book's own example aggregate does it:
@@ -50,8 +50,9 @@ SELECT max(w) FROM (SELECT word_count(s) OVER () AS w
 The cause is in DuckDB (`CAPIAggregateUpdate` hands the callback a constant
 state vector), there is no way for an extension to detect or prevent it, and it
 is reported upstream as
-[duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Until it
-is fixed, tell your users not to use your aggregates in those two shapes.
+[duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). DuckDB
+2.0.0 fixes it (`CAPIAggregateUpdate` flattens the state vector first); on
+older releases, tell your users not to use your aggregates in those two shapes.
 Frames that are not whole-partition (`ROWS BETWEEN 5 PRECEDING AND CURRENT ROW`)
 and `DISTINCT` windows work. See
 [Pitfall L11](pitfalls.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
@@ -59,10 +60,13 @@ and `DISTINCT` windows work. See
 ## Aggregate states leak when `finalize` reports an error (DuckDB behaviour)
 
 When an aggregate's `finalize` callback reports an error
-(`AggregateFunctionInfo::set_error`), DuckDB 1.5.5 does not call the destructor
-for every state the query created: an ungrouped query initialised 2 states and
-destroyed 1, a grouped one 4 and 2. When `finalize` succeeds, every state is
-destroyed. The extension cannot tell which states were abandoned, so whatever
+(`AggregateFunctionInfo::set_error`), DuckDB does not call the destructor
+for every state a grouped query created (4 initialised and 2 destroyed on
+1.5.5; still fewer destroyed than initialised on 2.0.0). Before 2.0.0 an
+ungrouped query is affected too (2 initialised, 1 destroyed), because a C API
+aggregate is planned as a hash aggregate there; 2.0.0 runs it as an ungrouped
+aggregate, which destroys every state after the failure. When `finalize`
+succeeds, every state is destroyed. The extension cannot tell which states were abandoned, so whatever
 they own is leaked: with `FfiState<T>`, whatever `T` owns on the heap, and the
 box of a `T` too large to store inline (see the next section). The query still
 fails with your message. If that leak matters (a long-lived process whose
@@ -74,7 +78,7 @@ pinned by
 
 ## Grouped-aggregate states the scan never reaches are never destroyed (DuckDB defect)
 
-DuckDB 1.4.4 to 1.5.5 destroys a grouped aggregate's states as its result
+DuckDB 1.4.4 to 2.0.0 destroys a grouped aggregate's states as its result
 scan passes them. When the scan stops early, the states it has not reached are
 never destroyed — not after the query, not when the connection or the database
 closes. That happens under a `LIMIT` above the aggregate, an error raised
@@ -96,25 +100,34 @@ Pinned by `states_a_grouped_scan_never_reaches_leak_no_rust_heap` in
 ## Window frames with `EXCLUDE` never destroy one state per row (DuckDB defect)
 
 A C API aggregate in a window whose frame has `EXCLUDE CURRENT ROW`, `GROUP`
-or `TIES` is evaluated by DuckDB's segment tree in two parts, and the second
-part initialises one state per row that is never destroyed: over a 5000-row
-window, 5000 states on every release from 1.4.4 to 1.5.5 (none without
-`EXCLUDE`). The answer is right; as above, a small `FfiState<T>` leaks only
+or `TIES` is evaluated by DuckDB's segment tree in two parts, and before
+2.0.0 the second part initialises one state per row that is never destroyed:
+over a 5000-row window, 5000 states on every release from 1.4.4 to 1.5.6
+(none without `EXCLUDE`). DuckDB 2.0.0 destroys them after combining
+(`right_part->Destroy` in `WindowSegmentTreeLocalState::Evaluate`). The answer is right; as above, a small `FfiState<T>` leaks only
 what `T` owns on the heap. See `docs/upstream-duckdb-reports.md`, item 35;
 pinned by `a_window_frame_with_exclude_leaves_states_undestroyed` in
 `tests/ffi_roundtrip/agg_states.rs`.
 
-## An abandoned stream keeps its table-function state (DuckDB behaviour)
+## An abandoned stream keeps its table-function state (DuckDB 1.x behaviour)
 
-Dropping a streaming `QueryResult` part-way through, and then its
-`PreparedStatement`, does not free the query's operator states: DuckDB keeps
-the active query on the connection until the next statement runs there (or
-the connection closes). A table function's state — for a typed table
+On DuckDB 1.x, dropping a streaming `QueryResult` part-way through, and then
+its `PreparedStatement`, does not free the query's operator states: DuckDB
+keeps the active query on the connection until the next statement runs there
+(or the connection closes). A table function's state — for a typed table
 function, the `with_state` value and its per-scan clone — therefore lives
 until then. Nothing leaks, but a state that holds a file, a lock or a large
 buffer holds it for that long; run any statement (`SELECT 1`) on the
-connection to release it. Pinned by
-`an_abandoned_stream_keeps_its_table_state_until_the_next_statement` in
+connection to release it.
+
+DuckDB 2.0.0 aborts the query as soon as the unfinished result is destroyed
+(`QueryResult::Close`), so the states go with it. The flip side is that 2.0
+refuses any other statement on the connection — a query, a `prepare`, an
+appender's flush — with a "Resource In Use" error while a stream is still
+open there, where 1.x ran it and ended the stream. Finish or drop a stream
+before using its connection for anything else. Both engines' behaviour is
+pinned by `an_abandoned_stream_keeps_its_table_state_until_the_next_statement`
+and `another_statement_on_the_connection_ends_a_stream_with_an_error` in
 `tests/ffi_roundtrip/query_stream.rs`.
 
 ## Running out of memory inside a callback aborts the process
@@ -231,7 +244,7 @@ is gated with it so that one feature covers both values. Keeping them out of
 
 ```toml
 [dependencies]
-quack-rs = { version = "0.18", features = ["duckdb-1-5-3"] }
+quack-rs = { version = "0.19", features = ["duckdb-1-5-3"] }
 ```
 
 Neither type yet has dedicated `VectorReader`/`VectorWriter` helpers; access

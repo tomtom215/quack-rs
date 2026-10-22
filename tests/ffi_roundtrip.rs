@@ -121,6 +121,22 @@ impl Fixture {
         }
         Some(read(&reader, 0))
     }
+
+    /// The linked engine's major version, from `duckdb_library_version()`:
+    /// `1` for the 1.x releases, `2` for 2.0.0. For tests that pin behaviour
+    /// a major release changed, so each engine is held to its own.
+    #[allow(clippy::unused_self)] // the fixture proves the C API is initialised
+    fn engine_major(&self) -> u64 {
+        // SAFETY: `Fixture::open` initialised the dispatch table.
+        let version = unsafe { quack_rs::abi::engine_version() }.expect("duckdb_library_version");
+        // Only the major part, so a development build (`v2.1.0-dev12`) works too.
+        version
+            .trim_start_matches('v')
+            .split('.')
+            .next()
+            .and_then(|major| major.parse().ok())
+            .unwrap_or_else(|| panic!("unparseable DuckDB version {version:?}"))
+    }
 }
 
 impl Drop for Fixture {
@@ -2692,8 +2708,10 @@ fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
         .expect("the http secret");
     assert!(http.scope.is_empty(), "unexpected scope: {:?}", http.scope);
 
-    // Redaction is per field: an http secret's extra headers come back in
-    // full, so `secret_string` is not credential-free and `Debug` omits it.
+    // Redaction is per field: up to 1.5.x an http secret's extra headers come
+    // back in full, so `secret_string` is not credential-free and `Debug`
+    // omits it. 2.0.0 adds `extra_http_headers` to the type's redacted keys
+    // (`default_secrets.cpp`); `Debug` must omit the string either way.
     fx.query(
         "CREATE SECRET probe_hdr (TYPE http, BEARER_TOKEN 'tok-hidden', \
          EXTRA_HTTP_HEADERS MAP{'Authorization': 'Bearer topsecret-123'})",
@@ -2707,11 +2725,20 @@ fn duckdb_secret_metadata_is_readable_and_the_credential_is_not() {
     // DuckDB 1.5.3 and later redact `bearer_token`; 1.4.4 and 1.5.0 render it
     // in full too (CI's older-engine jobs), so only the header is asserted on
     // every engine.
-    assert!(
-        hdr.secret_string.contains("topsecret-123"),
-        "DuckDB renders extra_http_headers in full (the documented hazard): {}",
-        hdr.secret_string
-    );
+    if fx.engine_major() >= 2 {
+        assert!(
+            !hdr.secret_string.contains("topsecret-123")
+                && hdr.secret_string.contains("extra_http_headers=redacted"),
+            "DuckDB 2.0 redacts extra_http_headers: {}",
+            hdr.secret_string
+        );
+    } else {
+        assert!(
+            hdr.secret_string.contains("topsecret-123"),
+            "DuckDB 1.x renders extra_http_headers in full (the documented hazard): {}",
+            hdr.secret_string
+        );
+    }
     let debug = format!("{hdr:?}");
     assert!(!debug.contains("topsecret-123"), "Debug leaked it: {debug}");
     assert!(!debug.contains("tok-hidden"), "Debug leaked it: {debug}");
@@ -2818,13 +2845,27 @@ fn the_name_validator_accepts_every_name_duckdb_does() {
                 assert_eq!(kind.as_deref(), Some("pragma"), "{name:?}");
                 continue;
             }
-            // One shipped name is refused on purpose too: `position` is only
-            // reachable through the `position(a IN b)` syntax, so a function an
-            // extension registers under it could never be called.
+            // Shipped names refused on purpose: `position` is only reachable
+            // through the `position(a IN b)` syntax on 1.x, so a function an
+            // extension registers under it could never be called there.
+            // DuckDB 2.0.0 also ships a scalar `overlay` and a macro `if`,
+            // which its parser lets `overlay(a, b, c)` and `if(c, a, b)`
+            // call. 1.x parses `overlay(` only as the
+            // `OVERLAY(a PLACING b FROM c)` syntax and `if(` as a `CASE`, so
+            // a function of either name is never reached there, and the names
+            // stay refused for an extension that loads into either.
             if quack_rs::validate::DUCKDB_UNCALLABLE_KEYWORDS
                 .contains(&name.to_ascii_lowercase().as_str())
             {
-                assert_eq!(name, "position", "a shipped name the validator refuses");
+                let refused_on_purpose: &[&str] = if fx.engine_major() >= 2 {
+                    &["if", "overlay", "position"]
+                } else {
+                    &["position"]
+                };
+                assert!(
+                    refused_on_purpose.contains(&name.as_str()),
+                    "a shipped name the validator refuses: {name:?}"
+                );
                 assert!(validate_function_name(&name).is_err(), "{name:?}");
                 continue;
             }
@@ -5850,15 +5891,27 @@ mod copy_from {
         }
         .expect_err("an option the reader never declared must not be accepted");
         // Two things worth pinning down, because neither is obvious:
-        //   * the option name comes back exactly as the user typed it, even
-        //     though the lookup against the declared named parameters is
-        //     case-insensitive (SKIP_ROWS matches `skip_rows` above);
+        //   * up to 1.5.x the option name comes back exactly as the user
+        //     typed it, even though the lookup against the declared named
+        //     parameters is case-insensitive (SKIP_ROWS matches `skip_rows`
+        //     above); 2.0.0's parser lower-cases every COPY option name
+        //     (`transform_generic_copy_option.cpp`), so it comes back as
+        //     `nonsense`;
         //   * the format named in the message is the *table function's* name,
         //     not the copy function's. `CCopyFromBind` reports `info.tf.name`,
         //     and `duckdb_copy_function_set_copy_from_function` only borrows the
         //     copy function's name when the table function has none.
-        assert!(err.as_str().contains("NONSENSE"), "{err}");
-        assert!(err.as_str().contains("lines_reader"), "{err}");
+        let option = if fx.engine_major() >= 2 {
+            "'nonsense'"
+        } else {
+            "'NONSENSE'"
+        };
+        assert!(
+            err.as_str().contains(&format!(
+                "{option} is not a supported option for copy function 'lines_reader'"
+            )),
+            "{err}"
+        );
     }
 
     #[test]

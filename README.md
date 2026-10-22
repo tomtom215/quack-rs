@@ -44,7 +44,7 @@ so that you can write a loadable extension entirely in Rust.
 
 ## Status
 
-`quack-rs` is pre-1.0 (0.18.0). Judge it against your own requirements; the
+`quack-rs` is pre-1.0 (0.19.0). Judge it against your own requirements; the
 record so far:
 
 - **The API still changes.** A minor release before 1.0 can break it; each lists
@@ -63,22 +63,33 @@ record so far:
 - **What CI checks.** Every pull request runs the full test suite against a real
   DuckDB (1.5.6) on Linux, macOS and Windows; the suite again against DuckDB
   1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4 and 1.5.5; the unit tests on wasm32;
+  the suite against DuckDB 2.0.0 with the DuckDB 2.0 bindings;
   AddressSanitizer; and a load test of a built extension into DuckDB 1.4.4,
-  1.5.0, 1.5.5, 1.5.6 and the latest release.
+  1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release.
 
 If you ship an extension built on it, test it end to end against every DuckDB
 release you support.
 
 ## Supported versions
 
-- **DuckDB:** 1.4.4 through 1.5.6 (`libduckdb-sys = ">=1.4.4, <2"`).
+- **DuckDB:** 1.4.4 through 2.0.0. The `libduckdb-sys = ">=1.4.4, <2"` range
+  covers the bindings for all of them, 1.4.4 through 1.20000.0 (DuckDB 2.0,
+  published 2026-10-22). 1.20000.0 needs Rust 1.88; on 1.88 or newer
+  `cargo update` selects it, and an older toolchain with MSRV-aware resolution
+  stays on 1.10506.x (DuckDB 1.5.6).
 - **Rust (MSRV):** 1.86.0.
 
+DuckDB 2.0.0 (2026-10-21) is a long-term support release, supported until at
+least October 2027; DuckDB supports 1.4 until late November 2026 and 1.5 until
+March 2027.
+
 With the default features, one extension binary loads into every DuckDB release
-from 1.4.4 through 1.5.6, because it is stamped with C API version `v1.2.0`.
-DuckDB 1.4.4 to 1.5.5 declare that version; 1.5.6 declares `v1.5.6` and still
-loads `v1.2.0` extensions. The `duckdb-1-5*` features use DuckDB's unstable C
-API, whose layout differs between releases; see
+from 1.4.4 through 2.0.0, because it is stamped with C API version `v1.2.0`.
+DuckDB 1.4.4 to 1.5.5 declare that version; 1.5.6 and 2.0.0 declare `v1.5.6`
+and still load `v1.2.0` extensions. The `duckdb-1-5*` features use the part of
+DuckDB's C API whose layout differed between releases before 1.5.6: build such
+an extension against the 1.5.6 bindings and stamp it `C_STRUCT` with C API
+`v1.5.6`, and it loads into DuckDB 1.5.6 and 2.0.0. See
 [ABI Compatibility](https://quack-rs.com/concepts/abi.html) before you enable one.
 
 ## Quick Start
@@ -92,7 +103,7 @@ name = "my_extension"       # must match the extension name (Pitfall P1)
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-quack-rs = "0.18"
+quack-rs = "0.19"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]
@@ -150,7 +161,8 @@ duckdb -unsigned -c "LOAD './my_extension.duckdb_extension'; SELECT double_it(21
 ```
 
 On macOS the library is `libmy_extension.dylib` (platform `osx_arm64` or
-`osx_amd64`); on Windows it is `my_extension.dll` (`windows_amd64`).
+`osx_amd64`; `osx_amd64` is opt-in in extension-ci-tools for DuckDB 2.0, and
+DuckDB 2.1 drops it); on Windows it is `my_extension.dll` (`windows_amd64`).
 
 To start a community extension from scratch, the
 [project scaffold](https://quack-rs.com/getting-started/scaffold.html) generates
@@ -168,7 +180,7 @@ All features are off by default. The default build uses only the stable C API.
 | `duckdb-1-5-3` | `libduckdb-sys >= 1.10503.0` (DuckDB 1.5.3); implies `duckdb-1-5` | `TypeId::Variant` and `TypeId::Geometry` |
 | `duckdb-1-5-4` | `libduckdb-sys >= 1.10504.0`; implies `duckdb-1-5-3`; a DuckDB 1.5.0+ engine at run time | The `arrow` module (Arrow C Data Interface bridge, no `arrow` crate dependency) |
 | `bundled-test` | A C++ toolchain (compiles DuckDB from source, about 5–10 minutes cold) | `testing::InMemoryDb`, a real in-memory DuckDB for SQL-level tests in `cargo test` |
-| `bundled-test-prebuilt` | A pre-built libduckdb: `DUCKDB_DOWNLOAD_LIB=1` or `DUCKDB_LIB_DIR`; header discovery needs `libduckdb-sys >= 1.10503` (older: set `DUCKDB_INCLUDE_DIR`) | The same `InMemoryDb`, linked against the pre-built library |
+| `bundled-test-prebuilt` | A pre-built libduckdb: `DUCKDB_DOWNLOAD_LIB=1` or `DUCKDB_LIB_DIR` (an extracted 1.x `libduckdb-<platform>.zip` or 2.0 `duckdb-shared-libs-<platform>.tar.gz`); header discovery needs `libduckdb-sys >= 1.10503` (older: set `DUCKDB_INCLUDE_DIR`) | The same `InMemoryDb`, linked against the pre-built library |
 
 Enable the two test features as dev-dependency features only. The
 `duckdb-1-5-4` floor comes from the bindings: `libduckdb-sys` shipped the Arrow
@@ -180,7 +192,7 @@ struct layouts first in 1.10504.0, although the DuckDB functions exist from
 - **The book**, [quack-rs.com](https://quack-rs.com/): guides from the
   first extension to community submission. The site root is the latest
   release; `https://quack-rs.com/vX.Y/` is each release line (for example
-  [/v0.18/](https://quack-rs.com/v0.18/)), and [/dev/](https://quack-rs.com/dev/)
+  [/v0.19/](https://quack-rs.com/v0.19/)), and [/dev/](https://quack-rs.com/dev/)
   is the `main` branch.
 - **API reference**: [docs.rs/quack-rs](https://docs.rs/quack-rs). The crate
   root lists every module.
@@ -194,7 +206,7 @@ struct layouts first in 1.10504.0, although the DuckDB functions exist from
 - [`docs/architecture.md`](./docs/architecture.md): module layout, design
   principles and the architecture decision records.
 - [`CHANGELOG.md`](./CHANGELOG.md): every release, with breaking changes and
-  migration notes. The latest is 0.18.0 (2026-10-02).
+  migration notes. The latest is 0.19.0 (2026-10-22).
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md): development setup, quality gates and
   the test strategy.
 - [`SECURITY.md`](./SECURITY.md): supported versions and how to report a

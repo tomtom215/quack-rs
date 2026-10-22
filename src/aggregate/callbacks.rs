@@ -21,7 +21,7 @@
 //! | [`UpdateFn`] | Per batch of input rows | Accumulates data from a chunk into the states |
 //! | [`CombineFn`] | Parallel merge, window segment trees | Merges source states into target states |
 //! | [`FinalizeFn`] | Per batch of result rows, with a `count` and an `offset` | Writes results from `count` states to the output vector starting at `offset` |
-//! | [`DestroyFn`] | After finalize, on the source states once `combine` has merged them, and, after a failed `state_init`, on states that were never initialised; not on some states a stopped scan or an `EXCLUDE` window frame leaves behind (see [`DestroyFn`]) | Frees per-state memory |
+//! | [`DestroyFn`] | After finalize, on the source states once `combine` has merged them, and, after a failed `state_init`, on states that were never initialised; not on some states a stopped scan (or, before `DuckDB` 2.0.0, an `EXCLUDE` window frame) leaves behind (see [`DestroyFn`]) | Frees per-state memory |
 //!
 //! Sources (`DuckDB` 1.5.5): `CAPIAggregateStateSize`, `CAPIAggregateFinalize`
 //! and `CAPIAggregateDestructor` in `src/main/capi/aggregate_function-c.cpp`;
@@ -167,12 +167,12 @@ pub type FinalizeFn = unsafe extern "C" fn(
 /// have been merged, and on states that are never finalized. Must free all
 /// heap allocations made in `StateInitFn`.
 ///
-/// `DuckDB` 1.4.4 to 1.5.5 (not re-measured on 1.5.6) does not call it for
-/// every state it created: not
-/// for a grouped aggregate's states a stopped result scan never reached
-/// (`docs/upstream-duckdb-reports.md`, item 20), and not for the states a
-/// window frame with `EXCLUDE` initialises for each row (item 35). What those
-/// states own on the heap leaks.
+/// `DuckDB` does not call it for every state it created: not for a grouped
+/// aggregate's states a stopped result scan never reached
+/// (`docs/upstream-duckdb-reports.md`, item 20; 1.4.4 to 2.0.0), and, before
+/// 2.0.0, not for the states a window frame with `EXCLUDE` initialises for
+/// each row (item 35; fixed in 2.0.0). What those states own on the heap
+/// leaks.
 ///
 /// # Not every state it receives was initialised
 ///
@@ -186,7 +186,10 @@ pub type FinalizeFn = unsafe extern "C" fn(
 /// pointer stored by `state_init` must therefore recognise a slot `state_init`
 /// did not write; [`FfiState`][crate::aggregate::FfiState] does so with a tag.
 /// The same failure also leaves most initialised states undestroyed, so what
-/// they own leaks; see `docs/upstream-duckdb-reports.md`.
+/// they own leaks; see `docs/upstream-duckdb-reports.md`. A failed `finalize`
+/// leaves states undestroyed too: in a grouped query on every release up to
+/// 2.0.0, and in an ungrouped one before 2.0.0 (see
+/// [`AggregateFunctionInfo::set_error`][crate::aggregate::AggregateFunctionInfo::set_error]).
 pub type DestroyFn = unsafe extern "C" fn(states: *mut duckdb_aggregate_state, count: idx_t);
 
 /// The destructor registered for an aggregate whose builder was given none.

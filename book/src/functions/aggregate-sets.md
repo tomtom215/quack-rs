@@ -9,9 +9,11 @@ such as `retention(c1, c2, ..., c32)` and overloads with different return types.
 > set — read out of bounds under `agg(x) OVER ()` (whole-partition window frames)
 > and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
 > [Aggregate Functions](aggregate.md#known-duckdb-limitation) for the details and
-> DuckDB source lines. Do not use C-API aggregates in those two query shapes.
+> DuckDB source lines. On DuckDB 1.4.x and 1.5.x, do not use C-API aggregates
+> in those two query shapes.
 >
-> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
+> Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109)
+> and fixed in DuckDB 2.0.0.
 
 > **Note**: For scalar function overloads, see [`ScalarFunctionSetBuilder`](scalar.md#overloading-with-function-sets).
 

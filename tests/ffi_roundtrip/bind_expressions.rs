@@ -95,10 +95,17 @@ fn a_bind_callback_sees_each_arguments_type_and_foldability() {
     });
     assert_eq!(got, Some(42));
     let seen = SEEN.lock().expect("lock").clone();
-    // The argument as written, before the cast to the BIGINT parameter.
+    // Up to 1.5.x the bind callback sees the argument as written, before the
+    // cast to the BIGINT parameter; 2.0.0 binds the callback after that cast
+    // (`FunctionBinder::ResolveFunction`), so it sees a BIGINT.
+    let as_seen = if fx.engine_major() >= 2 {
+        TypeId::BigInt
+    } else {
+        TypeId::Integer
+    };
     assert_eq!(
         seen.first().copied(),
-        Some((false, Some(TypeId::Integer), true, Some(42))),
+        Some((false, Some(as_seen), true, Some(42))),
         "a constant expression folds: {seen:?}"
     );
 }

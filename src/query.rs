@@ -404,8 +404,9 @@ pub struct OwnedConnection {
 // `an_owned_connection_is_used_and_dropped_on_another_thread` does both.
 // `Sync` is not implemented. DuckDB itself serialises concurrent calls on one
 // connection with the ClientContext's lock, but a query on one thread would
-// then end a result another thread is streaming, and this type's API was not
-// designed for that; share one behind a `Mutex`.
+// then end a result another thread is streaming (1.x) or be refused while it
+// is open (2.0), and this type's API was not designed for that; share one
+// behind a `Mutex`.
 unsafe impl Send for OwnedConnection {}
 
 #[cfg(test)]

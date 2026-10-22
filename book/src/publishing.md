@@ -51,7 +51,8 @@ for file in &files {
 ```
 
 In a new repository, add the build tooling submodule once with
-`git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools`
+`git submodule add -b v2.0-cyanoptera https://github.com/duckdb/extension-ci-tools.git extension-ci-tools`
+(the branch for DuckDB 2.0; the scaffold's `Makefile` names the branch it expects)
 (`git submodule update --init` does nothing until then — Pitfall P4), and commit
 before the first `make configure`; the full sequence is under
 [CI workflow](#ci-workflow).
@@ -261,7 +262,7 @@ Community extensions are built for:
 | `linux_amd64_musl` | Linux x86_64 (musl) | yes |
 | `linux_arm64` | Linux AArch64 (glibc) | |
 | `linux_arm64_musl` | Linux AArch64 (musl) | yes |
-| `osx_amd64` | macOS x86_64 | |
+| `osx_amd64` | macOS x86_64 | yes, in `extension-ci-tools` for DuckDB 2.0; DuckDB 2.1 drops the platform |
 | `osx_arm64` | macOS Apple Silicon | |
 | `windows_amd64` | Windows x86_64 | |
 | `windows_amd64_mingw` | Windows x86_64 (MinGW) | |
@@ -324,7 +325,7 @@ name = "my_extension"       # Must match description.yml `name`
 crate-type = ["cdylib"]
 
 [dependencies]
-quack-rs = "0.18"
+quack-rs = "0.19"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]
@@ -401,8 +402,9 @@ After scaffolding:
 ```bash
 cd my_extension
 git init
-# The extension-ci-tools branch the community build uses for your DuckDB release.
-git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+# The extension-ci-tools branch the community build uses for your DuckDB release:
+# v2.0-cyanoptera for DuckDB 2.0 (there is no v2.0.0 branch).
+git submodule add -b v2.0-cyanoptera https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
 # Commit before `make configure`.
 git add -A && git commit -m "Initial commit"
 make configure
@@ -420,10 +422,14 @@ again.
 
 **Pin `extension-ci-tools` to the community build's version.** The community
 repository builds with the `extension-ci-tools` branch for the current DuckDB
-release: for DuckDB v1.5.6 its build workflow uses
-`_extension_distribution.yml@v1.5-variegata`, and the `v1.5.6` branch points to
-the same commit. Check out the matching branch so your local build uses the same
-scripts. The branch names are listed by
+release: for DuckDB v2.0.0 its build workflow uses
+`_extension_distribution.yml@v2.0-cyanoptera`, and `extension-ci-tools` has no
+`v2.0.0` branch. (For DuckDB v1.5.6 it used `v1.5-variegata`, and the `v1.5.6`
+branch points to the same commit.) Check out the matching branch so your local
+build uses the same scripts. For DuckDB 2.0, `extension-ci-tools` builds with
+Rust 1.97.1 on every platform, WebAssembly included (it used stable Rust and
+1.86.0 for WebAssembly before), and emsdk 6.0.9 (was 3.1.71); quack-rs's MSRV
+stays 1.86.0. The branch names are listed by
 `git ls-remote https://github.com/duckdb/extension-ci-tools`.
 
 **Ignore `configure/`.** It holds the Python virtualenv, `platform.txt` and
@@ -455,21 +461,25 @@ LOAD my_extension;
 
 An extension that uses only the stable C API (the default quack-rs features) is
 stamped `C_STRUCT` with C API version `v1.2.0`, and one binary loads into every
-DuckDB release from 1.4.4 through 1.5.6 for its platform. The `libduckdb-sys = ">=1.4.4, <2"`
+DuckDB release from 1.4.4 through 2.0.0 for its platform. The `libduckdb-sys = ">=1.4.4, <2"`
 range above is correct for such an extension.
 
-An extension that enables the `duckdb-1-5*` features should be stamped
-`C_STRUCT_UNSTABLE` with the exact DuckDB release it was built against, so that DuckDB
-loads it only into that release. (Stamped `C_STRUCT` instead, it loads anywhere and
-quack-rs's runtime layout check refuses a mismatched release at `LOAD`.) Pin `libduckdb-sys` to that release's bindings
-(`~1.10505.0` for DuckDB 1.5.5) and rebuild for each new DuckDB release. See
+An extension that enables the `duckdb-1-5*` features should be built against the
+v1.5.2 – v1.5.6 bindings (pin `libduckdb-sys` to `~1.10506.0`) and stamped `C_STRUCT`
+with C API version `v1.5.6` (`quack_rs::DUCKDB_API_VERSION_1_5_6`; with
+`extension-ci-tools`, `TARGET_DUCKDB_VERSION=v1.5.6` and `USE_UNSTABLE_C_API` unset).
+It then loads into DuckDB 1.5.6 and 2.0.0, and older releases refuse it at `LOAD`.
+Do not stamp it `C_STRUCT_UNSTABLE`: that pins it to one 1.x release, and DuckDB 2.0
+cannot load such a binary, because it routes it to the C API v2 entry point
+`<name>_init_c_api_v2`, which quack-rs does not generate. See
 [ABI Compatibility](concepts/abi.md).
 
 The community build pipeline rebuilds extensions for each DuckDB release.
 
 > **Pitfall P2** — For `C_STRUCT`, the `-dv` flag to `append_extension_metadata.py`
-> must be the **C API version** (`v1.2.0`), not the DuckDB release version (`v1.4.4`).
-> Use `quack_rs::DUCKDB_API_VERSION` to avoid hardcoding this.
+> must be the **C API version** (`v1.2.0`, or `v1.5.6` for a `duckdb-1-5*` build), not the
+> DuckDB release version (`v1.4.4`). Use `quack_rs::DUCKDB_API_VERSION` (or
+> `quack_rs::DUCKDB_API_VERSION_1_5_6`) to avoid hardcoding this.
 
 ---
 

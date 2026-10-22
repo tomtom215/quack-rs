@@ -28,11 +28,19 @@ const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 /// `VectorCastHelpers::TemplatedCastLoop<…, OP>` (`time_casts.cpp`, the only
 /// file that uses it). Unlike every `TryCastLoop`, that loop has no error
 /// channel: `OP` either succeeds or throws a C++ exception — which aborts the
-/// process once it reaches Rust. The C API getters (`CAPIGetValue` →
+/// process once it reaches Rust. The 1.x C API getters (`CAPIGetValue` →
 /// `Value::DefaultTryCastAs`) run these loops unguarded, so the getter for
 /// such a pair must check the source payload first. Each variant is the exact
 /// condition under which the named `DuckDB` 1.4/1.5 routine returns rather
 /// than throws; `v` is the source's raw `int64` payload.
+///
+/// `DuckDB` 2.0.0 no longer binds any temporal cast through
+/// `TemplatedCastLoop` (only `numeric_casts.cpp` and `uuid_casts.cpp` still
+/// use it), and `Value::cast_copy` now runs every getter cast inside
+/// `duckdb_create_list_value`, which catches a throw. On 2.0 the guards are
+/// therefore a conservative pre-check, kept because they also stop the
+/// signed-multiply overflows (UB, which nothing catches) that 1.x hits on
+/// the same inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CastGuard {
     /// `v` is finite. `TryCast<timestamp_t, dtime_t | dtime_tz_t>` returns

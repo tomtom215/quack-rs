@@ -313,12 +313,50 @@ fn a_duckdb_release_as_the_c_struct_version_is_rejected() {
     let err = parse_err("in out --abi-type C_STRUCT --duckdb-version v1.5.5");
     assert!(err.contains("P2"), "{err}");
     assert!(err.contains("C_STRUCT_UNSTABLE"), "{err}");
-    for bad in ["1.2.0", "v1.2", "v2.0.0", "v1.3.0", "latest"] {
+    for bad in [
+        "1.2.0", "v1.2", "v2.0.0", "v1.3.0", "v1.5.0", "v1.5.7", "v1.6.0", "latest",
+    ] {
         parse_err(&format!("in out --duckdb-version {bad}"));
     }
     for good in ["v1.2.0", "v1.1.0", "v1.0.0"] {
-        parse_ok(&format!("in out --duckdb-version {good}"));
+        let args = parse_ok(&format!("in out --duckdb-version {good}"));
+        assert!(args.warnings.is_empty(), "{good}: {:?}", args.warnings);
     }
+}
+
+/// C API v1.5.6 is the stamping for a `duckdb-1-5` build: `DuckDB` v1.5.6 and
+/// v2.0.0 declare it (and v2.0.0 refuses that build stamped
+/// `C_STRUCT_UNSTABLE`), while v1.2.0 - v1.5.5 refuse it, hence the warning.
+#[test]
+fn c_api_v1_5_6_is_accepted_for_c_struct_with_a_warning() {
+    let args = parse_ok("in out --abi-type C_STRUCT --duckdb-version v1.5.6");
+    assert_eq!(args.duckdb_version, quack_rs::DUCKDB_API_VERSION_1_5_6);
+    assert_eq!(args.warnings.len(), 1, "{:?}", args.warnings);
+    assert!(args.warnings[0].contains("v1.5.5"), "{:?}", args.warnings);
+}
+
+/// A `DuckDB` 2.x release with `C_STRUCT_UNSTABLE` produces a file `DuckDB` 2.0
+/// refuses ("did not contain function <name>_`init_c_api_v2`"), so the tool
+/// refuses to write it and names the stamping that works.
+#[test]
+fn c_struct_unstable_for_duckdb_2_is_rejected() {
+    for v in ["v2.0.0", "v2.1.3", "v3.0.0"] {
+        let err = parse_err(&format!(
+            "in out --abi-type C_STRUCT_UNSTABLE --duckdb-version {v}"
+        ));
+        assert!(err.contains("_init_c_api_v2"), "{err}");
+        assert!(
+            err.contains("--abi-type C_STRUCT --duckdb-version v1.5.6"),
+            "{err}"
+        );
+    }
+    // A 2.x C_STRUCT version is a release pasted in; the advice must not
+    // suggest pinning it with C_STRUCT_UNSTABLE, which is refused above.
+    let err = parse_err("in out --abi-type C_STRUCT --duckdb-version v2.0.0");
+    assert!(!err.contains("C_STRUCT_UNSTABLE"), "{err}");
+    // 1.x pins and dev-build hashes are unaffected.
+    parse_ok("in out --abi-type C_STRUCT_UNSTABLE --duckdb-version v1.5.6");
+    parse_ok("in out --abi-type C_STRUCT_UNSTABLE --duckdb-version d54cbbe3df");
 }
 
 #[test]

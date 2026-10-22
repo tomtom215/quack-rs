@@ -173,11 +173,13 @@ pub const DUCKDB_API_VERSION: &str = "v1.2.0";
 ```
 
 > **Pitfall P2**: This is the **C API version**, not the DuckDB release version.
-> DuckDB 1.4.x and 1.5.0–1.5.5 declare C API version `v1.2.0`; 1.5.6 declares `v1.5.6` and
-> still loads extensions that target `v1.2.0` (DuckDB accepts any C API version up to its own).
-> A binary stamped with a DuckDB release version instead (`-dv v1.5.5`) is refused at `LOAD`
-> by every DuckDB whose C API version is lower; quack-rs's `append_metadata` rejects such a
-> value for `C_STRUCT` up front.
+> DuckDB 1.4.x and 1.5.0–1.5.5 declare C API version `v1.2.0`; 1.5.6 and 2.0.0 declare
+> `v1.5.6` and still load extensions that target `v1.2.0` (DuckDB accepts any C API version
+> up to its own). A binary stamped with a DuckDB release version instead (`-dv v1.5.5`) is
+> refused at `LOAD` by every DuckDB whose C API version is lower; quack-rs's `append_metadata`
+> rejects such a value for `C_STRUCT` up front. For `C_STRUCT` it accepts `v1.2.0` or lower,
+> or exactly `v1.5.6` (`quack_rs::DUCKDB_API_VERSION_1_5_6`, the stamp for a `duckdb-1-5*`
+> build, with a warning that DuckDB before 1.5.6 refuses it).
 > See [Pitfall P2](../reference/pitfalls.md#p2-metadata-version-is-c-api-version-not-duckdb-version).
 
 ---

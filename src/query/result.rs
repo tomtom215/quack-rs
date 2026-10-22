@@ -81,8 +81,11 @@ impl QueryResult {
     /// `duckdb_fetch_chunk` returns null both at the end of the rows and when
     /// fetching fails, recording the failure on the result. On a **streaming**
     /// result that happens when execution fails part-way (a runtime error in
-    /// the query, an interrupt) or when another statement has run on the same
-    /// connection, which invalidates the stream. This returns that error — with
+    /// the query, an interrupt) or, up to `DuckDB` 1.5.x, when another
+    /// statement has run on the same connection, which invalidates the stream
+    /// (2.0.0 refuses that statement instead; see
+    /// `PreparedStatement::execute_streaming`).
+    /// This returns that error — with
     /// `DuckDB`'s message — instead of reporting a clean end after a partial
     /// result. Once it has returned `Ok(None)` or an error it keeps returning
     /// the same thing without calling `DuckDB` again.

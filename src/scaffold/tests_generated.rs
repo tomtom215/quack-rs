@@ -129,11 +129,72 @@ fn unstable_makefile_tests_against_and_verifies_the_target_release() {
 #[test]
 fn unstable_scaffold_rejects_a_release_libduckdb_sys_cannot_encode() {
     // libduckdb-sys encodes DuckDB 1.Y.Z as crate version 1.(10000 + 100·Y + Z);
-    // there is no published scheme for another major, nor for a minor or
-    // patch of 100 or more, so no pin can be derived.
-    for target in ["v2.0.0", "v1.100.0", "v1.5.100", "v0.10.3"] {
+    // there is no scheme for a minor or patch of 100 or more, nor for 0.x, so
+    // no pin can be derived.
+    for target in ["v1.100.0", "v1.5.100", "v0.10.3"] {
         let err = generate_scaffold(&unstable_config(target)).unwrap_err();
         assert!(err.as_str().contains("libduckdb-sys"), "{target}: {err}");
+    }
+}
+
+/// `DuckDB` 2.0 sends every `C_STRUCT_UNSTABLE` binary to the C API v2 entry
+/// point (`<name>_init_c_api_v2`), which a quack-rs extension does not export:
+/// verified against the v2.0.0 CLI ("did not contain function
+/// \"`hello_ext_init_c_api_v2`\""). The scaffold refuses and names the stamping
+/// that loads there.
+#[test]
+fn unstable_scaffold_refuses_duckdb_2_and_names_c_api_v1_5_6() {
+    for target in ["v2.0.0", "v2.1.0", "v3.0.0"] {
+        let err = generate_scaffold(&unstable_config(target)).unwrap_err();
+        assert!(err.as_str().contains("_init_c_api_v2"), "{target}: {err}");
+        assert!(err.as_str().contains("\"v1.5.6\""), "{target}: {err}");
+    }
+}
+
+/// `C_STRUCT` with C API v1.5.6: the stamping for an extension using the
+/// `duckdb-1-5*` features that `DuckDB` v1.5.6 and v2.0.0 both load. Its
+/// bindings are pinned to v1.5.6's (546 slots, a prefix of v2.0.0's 548), the
+/// build refuses other bindings, and it is built with the distribution's
+/// (2.0) extension-ci-tools, not a 1.x release branch.
+#[test]
+fn c_api_v1_5_6_scaffold_pins_the_v1_5_6_bindings() {
+    let config = ScaffoldConfig {
+        use_unstable_c_api: false,
+        target_duckdb_version: crate::DUCKDB_API_VERSION_1_5_6.to_string(),
+        ..valid_config()
+    };
+    let files = generate_scaffold(&config).unwrap();
+    let makefile = file(&files, "Makefile");
+    assert!(makefile.contains("USE_UNSTABLE_C_API=0"), "{makefile}");
+    assert!(
+        makefile.contains("TARGET_DUCKDB_VERSION=v1.5.6"),
+        "{makefile}"
+    );
+    assert!(
+        makefile.contains("export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)"),
+        "{makefile}"
+    );
+    assert!(
+        makefile.contains("release: check_duckdb_pin build_extension_library_release"),
+        "{makefile}"
+    );
+    // Tested against the newest DuckDB, not pinned to 1.5.6.
+    assert!(!makefile.contains("DUCKDB_TEST_VERSION"), "{makefile}");
+    let cargo = file(&files, "Cargo.toml");
+    assert!(cargo.contains("version = \"~1.10506.0\""), "{cargo}");
+    assert!(file(&files, ".gitmodules").contains("\tbranch = v2.0-cyanoptera\n"));
+}
+
+/// Any other `C_STRUCT` target is a `DuckDB` release pasted in (LESSONS.md P2).
+#[test]
+fn stable_abi_accepts_only_the_declared_c_api_versions() {
+    for bad in ["v1.5.5", "v1.5.7", "v2.0.0", "v1.3.0"] {
+        let config = ScaffoldConfig {
+            target_duckdb_version: bad.to_string(),
+            ..valid_config()
+        };
+        let err = generate_scaffold(&config).unwrap_err();
+        assert!(err.as_str().contains("\"v1.5.6\""), "{bad}: {err}");
     }
 }
 
@@ -189,7 +250,7 @@ fn makefile_explains_a_missing_extension_ci_tools_checkout() {
     assert!(check < include, "{makefile}");
     assert!(
         makefile.contains(
-            "git submodule add -b v1.5.6 https://github.com/duckdb/extension-ci-tools.git extension-ci-tools"
+            "git submodule add -b v2.0-cyanoptera https://github.com/duckdb/extension-ci-tools.git extension-ci-tools"
         ),
         "{makefile}"
     );

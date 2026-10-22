@@ -155,20 +155,30 @@ fn aggregate_update_receives_null_rows_under_either_null_handling() {
     }
 }
 
-/// What the aggregate null-handling setting does *not* fix: in a correlated
-/// subquery, an outer row with no matching inner rows gets NULL — the
+/// In a correlated subquery, an outer row with no matching inner rows gets
+/// NULL from a count-like aggregate under `DefaultNullHandling` — the
 /// decorrelated plan never finalizes an empty state for it — and `DuckDB`
-/// rewrites that NULL to 0 only for its own `count` / `count(*)`
-/// (`flatten_dependent_join.cpp`). A count-like aggregate therefore answers
-/// NULL there under both settings.
+/// rewrites that NULL only for its own `count` / `count(*)`.
 ///
-/// `SpecialNullHandling` is read for an aggregate only by that decorrelator
+/// Before v2.0.0 that holds under both settings: `SpecialNullHandling` is
+/// read for an aggregate only by the decorrelator
 /// (`BoundAggregateExpression::PropagatesNullValues`), to choose an INNER or
-/// LEFT join; none of these shapes answers differently under the two
-/// settings. This pins both facts for the `NullHandling` documentation.
+/// LEFT join, and only `count` / `count(*)` get the `CASE WHEN ... IS NULL
+/// THEN 0` rewrite (`src/planner/subquery/flatten_dependent_join.cpp`
+/// 577-588 at v1.5.6). From v2.0.0, `PushDownAggregate` finalizes an empty
+/// state of every `SpecialNullHandling` aggregate over a `LogicalEmptyResult`
+/// and substitutes it for the unmatched rows (the same file 912-950), so
+/// `valid_special` answers 0 there, as uncorrelated, and arithmetic or
+/// `coalesce` over it inside the subquery sees that 0. This pins both
+/// behaviours for the `NullHandling` documentation.
 #[test]
 fn a_count_like_aggregate_in_a_correlated_subquery_is_null_for_an_unmatched_row() {
     let fx = Fixture::open();
+    // SAFETY: the fixture initialised the dispatch table.
+    let finalizes_empty_special = unsafe { quack_rs::abi::engine_version() }
+        .as_deref()
+        .and_then(quack_rs::abi::parse_version)
+        .is_some_and(|v| v >= (2, 0, 0));
     register_row_counter(
         &fx,
         "valid_default",
@@ -209,12 +219,21 @@ fn a_count_like_aggregate_in_a_correlated_subquery_is_null_for_an_unmatched_row(
             Some(0),
             "{name}"
         );
-        // Correlated: the unmatched key 3 is NULL, not 0.
+        // v2.0.0 and later finalize an empty state for the unmatched key of a
+        // `SpecialNullHandling` aggregate; otherwise key 3 is NULL, not 0.
+        let empty_finalized = finalizes_empty_special && name == "valid_special";
+        let unmatched = |finalized: i64, null: Option<i64>| {
+            if empty_finalized {
+                Some(finalized)
+            } else {
+                null
+            }
+        };
         assert_eq!(
             per_key(&format!(
                 "(SELECT {name}(x) FROM inner_t WHERE inner_t.k = $.k)"
             )),
-            vec![Some(1), Some(0), None],
+            vec![Some(1), Some(0), unmatched(0, None)],
             "{name}"
         );
         // Arithmetic over the aggregate inside the subquery changes nothing.
@@ -222,15 +241,16 @@ fn a_count_like_aggregate_in_a_correlated_subquery_is_null_for_an_unmatched_row(
             per_key(&format!(
                 "(SELECT {name}(x) + 100 FROM inner_t WHERE inner_t.k = $.k)"
             )),
-            vec![Some(101), Some(100), None],
+            vec![Some(101), Some(100), unmatched(100, None)],
             "{name}"
         );
-        // `coalesce` inside the subquery sees the NULL, not a finalized 0.
+        // `coalesce` inside the subquery sees what the aggregate yields for
+        // key 3: NULL, or the finalized 0.
         assert_eq!(
             per_key(&format!(
                 "(SELECT coalesce({name}(x), -7) FROM inner_t WHERE inner_t.k = $.k)"
             )),
-            vec![Some(1), Some(0), Some(-7)],
+            vec![Some(1), Some(0), unmatched(0, Some(-7))],
             "{name}"
         );
         // The documented mitigation.
@@ -894,16 +914,35 @@ mod raw_state {
     );
 }
 
-/// `DuckDB` 1.5.5 does not call the destructor for every aggregate state of a
-/// query whose `finalize` reports an error: ungrouped, 2 states are
-/// initialised and 1 destroyed; grouped, 4 and 2. When `finalize` succeeds
-/// every state is destroyed. An extension cannot tell which states were
-/// abandoned, so anything a state owns leaks (an `FfiState<T>` box, for
-/// one). Pins the behaviour documented under Known Limitations: if `DuckDB`
-/// starts destroying them, the first assertion fails.
+/// `DuckDB` does not call the destructor for every aggregate state of a
+/// grouped query whose `finalize` reports an error (1.5.5: 4 states
+/// initialised and 2 destroyed; a plain C reproducer on 1.5.6: 3 and 1, on
+/// 2.0.0: 2 and 0): the hash aggregate's result scan stops at the error and
+/// the states it has not passed are never destroyed. Before v2.0.0 an *ungrouped* query leaks the
+/// same way (2 initialised, 1 destroyed), because a C API aggregate has no
+/// `simple_update` and the planner therefore runs it through
+/// `PhysicalHashAggregate` (`src/execution/physical_plan/plan_aggregate.cpp`
+/// 251-286 at v1.5.6). v2.0.0 always plans an ungrouped aggregate as
+/// `PhysicalUngroupedAggregate` (the same file 278-283), whose
+/// `~UngroupedAggregateState` destroys its state when the failed query's plan
+/// is torn down (`physical_ungrouped_aggregate.cpp` 84-98), so there every
+/// state is destroyed. When `finalize` succeeds every state is destroyed on
+/// every release. An extension cannot tell which states were abandoned, so
+/// anything a state owns leaks (an `FfiState<T>` box, for one). Pins the
+/// behaviour documented under Known Limitations: if `DuckDB` starts
+/// destroying them, an assertion fails.
 #[test]
 fn aggregate_states_are_not_all_destroyed_when_finalize_fails() {
     use std::sync::atomic::Ordering;
+
+    let ungrouped_destroyed = {
+        let _fx = Fixture::open();
+        // SAFETY: the fixture initialised the dispatch table.
+        unsafe { quack_rs::abi::engine_version() }
+            .as_deref()
+            .and_then(quack_rs::abi::parse_version)
+            .is_some_and(|v| v >= (2, 0, 0))
+    };
 
     let counts = |finalize: quack_rs::aggregate::FinalizeFn, sql: &str| {
         raw_state::INITS.store(0, Ordering::SeqCst);
@@ -932,16 +971,29 @@ fn aggregate_states_are_not_all_destroyed_when_finalize_fails() {
             raw_state::DESTROYED.load(Ordering::SeqCst),
         )
     };
-    for sql in [
-        "SELECT counted_agg(i::BIGINT) FROM range(3) t(i)",
-        "SELECT i % 2, counted_agg(i::BIGINT) FROM range(3) t(i) GROUP BY 1",
+    for (sql, all_destroyed) in [
+        (
+            "SELECT counted_agg(i::BIGINT) FROM range(3) t(i)",
+            ungrouped_destroyed,
+        ),
+        (
+            "SELECT i % 2, counted_agg(i::BIGINT) FROM range(3) t(i) GROUP BY 1",
+            false,
+        ),
     ] {
         let (inits, destroyed) = counts(raw_state::finalize_fails, sql);
-        assert!(
-            inits > destroyed,
-            "{sql}: DuckDB now destroys every state after a failed finalize \
-             ({inits} initialised, {destroyed} destroyed); update Known Limitations"
-        );
+        if all_destroyed {
+            assert_eq!(
+                inits, destroyed,
+                "{sql}: DuckDB 2.0 destroys every ungrouped state after a failed finalize"
+            );
+        } else {
+            assert!(
+                inits > destroyed,
+                "{sql}: DuckDB now destroys every state after a failed finalize \
+                 ({inits} initialised, {destroyed} destroyed); update Known Limitations"
+            );
+        }
         let (inits, destroyed) = counts(raw_state::finalize_ones, sql);
         assert_eq!(
             inits, destroyed,

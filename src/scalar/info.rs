@@ -239,10 +239,17 @@ impl ScalarBindInfo {
     /// the returned [`Expression`] is destroyed automatically on drop and exposes
     /// safe accessors for the argument's return type and constant folding.
     ///
-    /// The expression is the argument as the query wrote it, before `DuckDB`
-    /// casts it to the declared parameter type: for a `BIGINT` parameter,
-    /// `f(40 + 2)` reports an `INTEGER` return type, and folds to an `INTEGER`
-    /// value.
+    /// Which expression that is depends on the engine. Up to `DuckDB` 1.5.x
+    /// it is the argument as the query wrote it, before `DuckDB` casts it to
+    /// the declared parameter type (the bind callback runs before
+    /// `CastToFunctionArguments` in `FunctionBinder::BindScalarFunction`):
+    /// for a `BIGINT` parameter, `f(40 + 2)` reports an `INTEGER` return type,
+    /// and folds to an `INTEGER` value. From 2.0.0 the callback runs after the
+    /// cast (`FunctionBinder::ResolveFunction`), so the same argument reports
+    /// `BIGINT` and folds to a `BIGINT`. Code that must behave the same on
+    /// both should read values with a casting getter such as
+    /// [`Value::as_i64`][crate::value::Value::as_i64] rather than branch on
+    /// the argument's type.
     ///
     /// # Asking for an argument can fail the query
     ///

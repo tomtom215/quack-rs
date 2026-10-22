@@ -206,7 +206,11 @@ impl CopyFunctionBuilder {
     /// # Name the reader after the format
     ///
     /// A bad `COPY … FROM` option is reported as
-    /// `'X' is not a supported option for copy function 'NAME'`, where `NAME`
+    /// `'X' is not a supported option for copy function 'NAME'`. `X` is the
+    /// option as the query spelled it up to `DuckDB` 1.5.x, and lower-cased
+    /// from 2.0.0, whose parser lower-cases every `COPY` option name
+    /// (`transform_generic_copy_option.cpp`); the match against the declared
+    /// named parameters is case-insensitive on both. `NAME`
     /// is the **table function's** name, not the copy function's:
     /// `CCopyFromBind` reads `info.tf.name`, and
     /// `duckdb_copy_function_set_copy_from_function` only substitutes the copy

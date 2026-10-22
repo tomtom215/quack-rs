@@ -22,8 +22,9 @@ mod register;
 ///
 /// # Known `DuckDB` limitation
 ///
-/// **Two query shapes make every C-API aggregate read out of bounds.** In
-/// them `DuckDB` calls `update` with a state array holding **one** state while
+/// **Before `DuckDB` 2.0.0, two query shapes make every C-API aggregate read
+/// out of bounds.** In them `DuckDB` calls `update` with a state array holding
+/// **one** state while
 /// passing `count > 1` rows, so the callback reads `states[1..count]` past the
 /// end of the array — undefined behaviour in *any* C-API aggregate, whether
 /// built with quack-rs or by hand:
@@ -42,8 +43,15 @@ mod register;
 /// defect in `DuckDB`'s C API, not in quack-rs, and it cannot be detected
 /// from inside the callback — reading `states[1]` to check is itself the
 /// out-of-bounds read. Reported upstream as
-/// [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109). Until it is fixed, do not use C-API aggregates in
-/// those two query shapes.
+/// [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109).
+/// On `DuckDB` 1.4.x and 1.5.x, do not use C-API aggregates in those two
+/// query shapes.
+///
+/// **Fixed in `DuckDB` 2.0.0:** `CAPIAggregateUpdate` flattens a non-flat
+/// state vector into one state pointer per row before calling `update`
+/// (`src/main/capi/v1/aggregate_function-c.cpp`, lines 104–108 at v2.0.0).
+/// Both shapes then give the right answer, and a plain C aggregate runs them
+/// clean under Valgrind; on 1.5.6 the same program segfaults.
 ///
 /// # Pitfall L6
 ///

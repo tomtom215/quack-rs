@@ -223,6 +223,8 @@ fn error_type_from_name(name: &str) -> DuckDbErrorType {
         "Extension Autoloading" => T::Autoload,
         "Sequence" => T::Sequence,
         "Invalid Configuration" => T::InvalidConfiguration,
+        "Data Corruption" => T::DataCorruption,
+        "Resource In Use" => T::ResourceInUse,
         _ => T::Invalid,
     }
 }
@@ -450,6 +452,8 @@ mod tests {
             (40, "Extension Autoloading"),
             (41, "Sequence"),
             (42, "Invalid Configuration"),
+            (43, "Data Corruption"),
+            (44, "Resource In Use"),
         ] {
             let mapped = error_type_from_name(name);
             assert_eq!(u64::from(mapped.to_raw()), code, "{name}");

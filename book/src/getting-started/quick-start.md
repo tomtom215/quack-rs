@@ -18,7 +18,7 @@ In your extension's `Cargo.toml`:
 
 ```toml
 [dependencies]
-quack-rs = "0.18"
+quack-rs = "0.19"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [lib]
@@ -93,7 +93,8 @@ duckdb -unsigned -c "LOAD './my_extension.duckdb_extension'; SELECT double_it(21
 ```
 
 > **macOS**: the library is `libmy_extension.dylib` and the platform
-> `osx_arm64` (or `osx_amd64`). **Windows**: `my_extension.dll` and
+> `osx_arm64` (or `osx_amd64`, opt-in in extension-ci-tools for DuckDB 2.0 and dropped in
+> DuckDB 2.1). **Windows**: `my_extension.dll` and
 > `windows_amd64`.
 
 ---
