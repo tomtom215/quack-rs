@@ -655,7 +655,7 @@ This crate supports `libduckdb-sys = ">=1.4.4, <2"` (the bindings of DuckDB 1.4.
 later 1.x releases). Every DuckDB from 1.4.4 through 2.0.0 loads C API `v1.2.0` extensions.
 The `<2` upper bound does not exclude the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB
 `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is
-1.20000.0, which the range admits. That release is unpublished as of 2026-10-21 and declares
+1.20000.0, which the range admits. That release was published on 2026-10-22 and declares
 `rust-version` 1.88, so a Rust 1.86 toolchain cannot build it; MSRV-aware resolution
 (resolver 3, or `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) keeps a 1.86 build on
 1.10506.x. The bound would stop a future `libduckdb-sys` 2.x.

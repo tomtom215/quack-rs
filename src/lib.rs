@@ -129,7 +129,7 @@
 //!    `# Panics` section says so.
 //! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2`, and the crate supports
 //!    `DuckDB` 1.4.4 through 2.0.0. The bound does not exclude the `DuckDB` 2.0 bindings:
-//!    `libduckdb-sys` numbers `DuckDB` 2.0.0 `1.20000.0` (unpublished as of 2026-10-21).
+//!    `libduckdb-sys` numbers `DuckDB` 2.0.0 `1.20000.0` (published 2026-10-22).
 //!    CI tests against 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0, and loads an
 //!    extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest `DuckDB` release.
 //! 4. **Testable business logic**: state structs have zero FFI dependencies.

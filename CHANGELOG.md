@@ -229,8 +229,8 @@ come from it.
   2.0.0 became the latest release. Every download goes through
   `scripts/fetch-duckdb.sh`.
 - New `test-duckdb-2-0` job: the whole live suite against libduckdb 2.0.0,
-  with the 2.0 bindings from duckdb-rs at a pinned commit until
-  `libduckdb-sys` 1.20000.0 is published. `extension-load` adds a v2.0.0
+  with the 2.0 bindings (`libduckdb-sys` / `duckdb` 1.20000.0, published
+  2026-10-22). `extension-load` adds a v2.0.0
   leg; `abi-guard-layout` checks the C API v1.5.6 stamping (refused by
   v1.5.5, loaded by v1.5.6 and v2.0.0); `scaffold-e2e` builds and tests a
   C API v1.5.6 project that uses `duckdb-1-5` through extension-ci-tools.
@@ -261,9 +261,16 @@ come from it.
 
 ### Dependencies
 
-- `libduckdb-sys` and `duckdb` 1.10506.0 (DuckDB 1.5.6) in every lockfile,
-  resolved MSRV-aware (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`),
-  which also put `wasip2` back on a release Rust 1.86 builds. Tools:
+- `libduckdb-sys` and `duckdb` 1.10506.1 (still DuckDB 1.5.6) in every
+  lockfile, which moves their build-dependency off `zip` 6 (RUSTSEC-2026-0367,
+  -0368, -0369; fixed in `zip` 9), and `rustls` 0.23.46, `rustls-webpki`
+  0.103.16 and `webpki-roots` 1.0.10 (RUSTSEC-2026-0346 to -0349, -0381,
+  -0382). These are the repository's lockfiles; a dependant's own resolution
+  picks its versions. 1.10506.1 declares `rust-version` 1.88, so the lockfiles
+  are no longer resolved for the MSRV: the MSRV job now resolves its own
+  dependencies for Rust 1.86.0 (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`,
+  which picks 1.10506.0) before `cargo check`. The MSRV itself is unchanged.
+  Tools:
   osv-scanner 2.7.0, cargo-deny 0.20.2, cargo-semver-checks 0.51.0,
   `dtolnay/rust-toolchain` (2026-10-08),
   `actions/upload-artifact` 7.0.2, `actions/download-artifact` 8.0.2.

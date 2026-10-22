@@ -27,7 +27,7 @@ documents all 31 known pitfalls, and its API prevents most of them. See the
 quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` and supports DuckDB 1.4.4
 through 2.0.0. Releases before 1.4.4 are not supported. CI runs the test
 suite against DuckDB v1.4.4, v1.4.5, v1.5.0, v1.5.3, v1.5.4, v1.5.5, v1.5.6 and
-v2.0.0 (the last with the unpublished DuckDB 2.0 bindings), and loads a built
+v2.0.0 (the last with the DuckDB 2.0 bindings, `libduckdb-sys` 1.20000.0), and loads a built
 extension into v1.4.4, v1.5.0, v1.5.5, v1.5.6, v2.0.0 and the latest release.
 DuckDB supports 2.0 (a long-term support release) until at least October 2027,
 1.5 until March 2027 and 1.4 until late November 2026.

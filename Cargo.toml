@@ -177,9 +177,9 @@ duckdb-1-5-4 = ["duckdb-1-5-3"]
 # v1.5.5 ones (scripts/check-abi-table.py hashes them identically), so again
 # there is nothing new to gate. DuckDB 2.0.0 (2026-10-21) appends
 # `duckdb_create_timestamp_tz_ns` / `duckdb_get_timestamp_tz_ns` (548 slots) and
-# still declares C API v1.5.6; those two would warrant a feature gate, but no
-# `libduckdb-sys` with the 2.0 bindings is published yet (duckdb-rs `main` is
-# 1.20000.0, rust-version 1.88). Note that the `<2` bound below admits
+# still declares C API v1.5.6; those two would warrant a feature gate on the
+# 2.0 bindings (`libduckdb-sys` 1.20000.0, published 2026-10-22, rust-version
+# 1.88), which this release does not add. Note that the `<2` bound below admits
 # 1.20000.0: `libduckdb-sys` numbers DuckDB vX.Y.Z as 1.(10000*X + 100*Y + Z).N,
 # so it does not keep out the DuckDB 2.0 bindings.
 

@@ -2276,7 +2276,8 @@ either. PROVEN from source unless stated.
 
 1. `libduckdb-sys` 1.20000.0 is unpublished. When it is: move
    `test-duckdb-2-0` to `cargo update --precise`, and decide whether the
-   lockfile follows (it needs Rust 1.88; MSRV is 1.86).
+   lockfile follows (it needs Rust 1.88; MSRV is 1.86). (2026-10-22: done in
+   12.7; the lockfile stays on the 1.5.6 bindings.)
 2. A `duckdb-2-0` feature for the two new slots and
    `DUCKDB_TYPE_TIMESTAMP_TZ_NS` (42). Until then `TypeId::try_from_duckdb_type`
    returns `None` for 42 and the documented-panicking `LogicalType::get_type_id`
@@ -2354,3 +2355,29 @@ different tree during the investigation).
   sanitizers, wasm, mutation testing); `cargo semver-checks` (the change only
   adds public items: two enum variants on a `#[non_exhaustive]` enum, two
   constants).
+
+### 12.7 Release follow-up, 2026-10-22
+
+CI on the release pull request found three things the local runs could not.
+
+- *Rust 1.99.0*, CI's stable, adds `clippy::assert_is_empty`; one test this
+  pass added tripped it. Fixed; clippy 1.99.0 is clean in all three feature
+  sets (VALIDATED).
+- *New advisories* in transitive dependencies, red on `main` as well: `zip`
+  6.0.0 (RUSTSEC-2026-0367 / -0368 / -0369, a build-dependency of
+  `libduckdb-sys` 1.10506.0, used only to extract the DuckDB release archive
+  under `DUCKDB_DOWNLOAD_LIB`) and the `rustls` family. `libduckdb-sys`
+  1.10506.1 (same DuckDB 1.5.6 bindings) moves to `zip` 9 but declares
+  `rust-version` 1.88. The lockfiles moved to it, and the MSRV job resolves
+  for Rust 1.86.0 itself instead of reading them (it then picks 1.10506.0 and
+  checks clean, VALIDATED). Suppressing the advisories or raising the MSRV
+  were the alternatives; neither was needed. `cargo deny check` 0.20.2:
+  advisories, bans, licenses and sources ok, with and without all features;
+  the previous lockfile reproduces the CI failure.
+- *`libduckdb-sys` / `duckdb` 1.20000.0 were published* (2026-10-22 12:56
+  UTC). Its bundled C API headers hash identically to the v2.0.0 tag's
+  (`duckdb_extension.h`, `duckdb.h`, `duckdb_v2.h`, `duckdb_extension_v2.h`),
+  though it was built from duckdb-rs `1b8f7cc`, not the `e1b0940d` tested
+  above. `test-duckdb-2-0` now pins it with `cargo update --precise`; with it,
+  the live suite against libduckdb 2.0.0 passed 1,475, 0 failed (VALIDATED).
+  With the new lockfile, the suite against 1.5.6 passed 1,475, 0 failed.

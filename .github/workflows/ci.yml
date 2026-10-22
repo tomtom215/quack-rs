@@ -289,18 +289,14 @@ jobs:
         run: cargo test --all-targets --features "$FEATURES"
 
   test-duckdb-2-0:
-    # The whole live suite against DuckDB v2.0.0. libduckdb-sys has no
-    # crates.io release for DuckDB 2.0 yet (duckdb-rs `main` is 1.20000.0,
-    # unpublished), so the bindings come from duckdb-rs at a pinned commit
-    # whose bundled headers are byte-identical to the v2.0.0 tag's
-    # (duckdb_extension.h, duckdb.h, duckdb_v2.h, duckdb_extension_v2.h).
-    # Once 1.20000.0 is published, move this to `test-older-engines`-style
-    # `cargo update --precise` and drop the patch.
+    # The whole live suite against DuckDB v2.0.0, with the DuckDB 2.0 bindings
+    # (`libduckdb-sys` / `duckdb` 1.20000.0, published 2026-10-22; their
+    # bundled C API headers are byte-identical to the v2.0.0 tag's). Separate
+    # from `test-older-engines` only because Cargo.lock stays on the 1.5.6
+    # bindings: 1.20000.0 needs Rust 1.88.
     name: Test against DuckDB v2.0.0
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      DUCKDB_RS_REV: e1b0940dfddd575c43fe4e2f070d47ee53d419cd
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -309,16 +305,11 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Patch in the DuckDB 2.0 bindings and download libduckdb v2.0.0
+      - name: Pin the DuckDB 2.0 bindings and download libduckdb v2.0.0
         run: |
           set -euo pipefail
-          cat >> Cargo.toml <<EOF
-
-          [patch.crates-io]
-          libduckdb-sys = { git = "https://github.com/duckdb/duckdb-rs", rev = "${DUCKDB_RS_REV}" }
-          duckdb = { git = "https://github.com/duckdb/duckdb-rs", rev = "${DUCKDB_RS_REV}" }
-          EOF
-          cargo update -p libduckdb-sys -p duckdb
+          # `duckdb` pins `libduckdb-sys` exactly, so this moves both.
+          cargo update -p duckdb --precise 1.20000.0
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
           test "$DUCKDB_TAG" = "v2.0.0" || { echo "::error::bindings are ${DUCKDB_TAG}, not v2.0.0"; exit 1; }
           scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "${{ runner.temp }}/libduckdb"
@@ -524,6 +515,18 @@ jobs:
       # "stable"`, and a rustup toolchain file overrides the default this action
       # sets. A bare `cargo check` here runs stable and tests nothing -- the
       # MSRV gate was inert. This matches `cargo +1.86.0 check` in CONTRIBUTING.
+      #
+      # Against what a 1.86.0 user's Cargo resolves, not the committed
+      # Cargo.lock: that carries the newest compatible releases, and
+      # `libduckdb-sys` 1.10506.1 (which moved off `zip` 6, RUSTSEC-2026-0367 /
+      # -0368 / -0369) declares `rust-version` 1.88. The rust-version-aware
+      # fallback picks the newest release each dependency has for 1.86.0
+      # (libduckdb-sys 1.10506.0 today), which is what the MSRV promises a
+      # dependant.
+      - name: Resolve dependencies for 1.86.0
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+        run: cargo +1.86.0 update
       - run: cargo +1.86.0 check
 
   dependency-floor:

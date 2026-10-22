@@ -387,8 +387,8 @@ quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering the b
 DuckDB 1.4.4 and later 1.x releases. Every DuckDB from 1.4.4 through 2.0.0 loads C API
 `v1.2.0` extensions. The `<2` upper bound does not exclude the DuckDB 2.0 bindings:
 `libduckdb-sys` numbers DuckDB `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`,
-so DuckDB 2.0.0 is `1.20000.0`, which the range admits. That release is unpublished as of
-2026-10-21 and declares `rust-version` 1.88; MSRV-aware resolution keeps a Rust 1.86 build
+so DuckDB 2.0.0 is `1.20000.0`, which the range admits. That release was published on
+2026-10-22 and declares `rust-version` 1.88; MSRV-aware resolution keeps a Rust 1.86 build
 on `1.10506.x`. Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes

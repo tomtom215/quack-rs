@@ -119,7 +119,7 @@ Using a range rather than an exact pin means:
 The `<2` upper bound limits the range to `libduckdb-sys` 1.x, but it does **not** exclude
 the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB `vMAJOR.MINOR.PATCH` as
 `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0`, which the range
-admits. As of 2026-10-21 that release is unpublished; it declares `rust-version` 1.88, so a
+admits. That release was published on 2026-10-22; it declares `rust-version` 1.88, so a
 Rust 1.86 toolchain cannot build it, and MSRV-aware resolution (resolver 3, or
 `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) keeps a 1.86 build on `1.10506.x`.
 

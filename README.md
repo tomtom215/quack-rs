@@ -63,7 +63,7 @@ record so far:
 - **What CI checks.** Every pull request runs the full test suite against a real
   DuckDB (1.5.6) on Linux, macOS and Windows; the suite again against DuckDB
   1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4 and 1.5.5; the unit tests on wasm32;
-  the suite against DuckDB 2.0.0 with the unpublished DuckDB 2.0 bindings;
+  the suite against DuckDB 2.0.0 with the DuckDB 2.0 bindings;
   AddressSanitizer; and a load test of a built extension into DuckDB 1.4.4,
   1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release.
 
@@ -73,9 +73,10 @@ release you support.
 ## Supported versions
 
 - **DuckDB:** 1.4.4 through 2.0.0. The `libduckdb-sys = ">=1.4.4, <2"` range
-  covers the published bindings, 1.4.4 through 1.5.6; it would also admit
-  `libduckdb-sys` 1.20000.0 (DuckDB 2.0), which is not yet published as of
-  2026-10-21 and needs Rust 1.88.
+  covers the bindings for all of them, 1.4.4 through 1.20000.0 (DuckDB 2.0,
+  published 2026-10-22). 1.20000.0 needs Rust 1.88; on 1.88 or newer
+  `cargo update` selects it, and an older toolchain with MSRV-aware resolution
+  stays on 1.10506.x (DuckDB 1.5.6).
 - **Rust (MSRV):** 1.86.0.
 
 DuckDB 2.0.0 (2026-10-21) is a long-term support release, supported until at
