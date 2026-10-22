@@ -206,7 +206,7 @@ Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 ```toml
 # Zero-config but slow: compile libduckdb from C++ source (~5–10 min cold).
 [dev-dependencies]
-quack-rs = { version = "0.18", features = ["bundled-test"] }
+quack-rs = { version = "0.19", features = ["bundled-test"] }
 ```
 
 ```toml
@@ -218,7 +218,7 @@ quack-rs = { version = "0.18", features = ["bundled-test"] }
 # or duckdb.hpp. Header discovery needs libduckdb-sys >= 1.10503; with an older
 # one, also set DUCKDB_INCLUDE_DIR.
 [dev-dependencies]
-quack-rs = { version = "0.18", features = ["bundled-test-prebuilt"] }
+quack-rs = { version = "0.19", features = ["bundled-test-prebuilt"] }
 ```
 
 Both keep `duckdb` out of a plain `cargo test` and out of your published
@@ -675,12 +675,12 @@ quack-rs's own test suite uses proptest for interval conversion and
 
 ```toml
 [dependencies]
-quack-rs = "0.18"
+quack-rs = "0.19"
 
 [dev-dependencies]
 proptest = "1"
 # Only for InMemoryDb; enables the feature for test builds alone.
-quack-rs = { version = "0.18", features = ["bundled-test"] }
+quack-rs = { version = "0.19", features = ["bundled-test"] }
 ```
 
 The `testing` module is compiled unconditionally (not `#[cfg(test)]`), so crates

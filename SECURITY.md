@@ -7,8 +7,9 @@
 
 | Version | Supported          |
 |---------|--------------------|
+| 0.19.x  | Yes                |
 | 0.18.x  | Yes                |
-| 0.16.x  | Yes                |
+| 0.16.x  | No (end-of-life)   |
 | 0.15.x  | No (end-of-life)   |
 | 0.14.x  | No (end-of-life)   |
 | 0.13.x  | No (end-of-life)   |

@@ -66,7 +66,7 @@ DOCS_RS_LATEST = "https://docs.rs/quack-rs/latest/"
 
 # The oldest release line published. 0.16 is the oldest line SECURITY.md
 # still lists as supported; raise this when a line reaches end of life.
-MIN_RELEASE = (0, 16, 0)
+MIN_RELEASE = (0, 18, 0)
 
 # Every tag up to and including v0.18.0 was built by docs.yml with this
 # version and has no book/mdbook-version file (mdBook 0.5 rejects their

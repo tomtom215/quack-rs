@@ -44,7 +44,7 @@ so that you can write a loadable extension entirely in Rust.
 
 ## Status
 
-`quack-rs` is pre-1.0 (0.18.0). Judge it against your own requirements; the
+`quack-rs` is pre-1.0 (0.19.0). Judge it against your own requirements; the
 record so far:
 
 - **The API still changes.** A minor release before 1.0 can break it; each lists
@@ -102,7 +102,7 @@ name = "my_extension"       # must match the extension name (Pitfall P1)
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-quack-rs = "0.18"
+quack-rs = "0.19"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 
 [profile.release]
@@ -191,7 +191,7 @@ struct layouts first in 1.10504.0, although the DuckDB functions exist from
 - **The book**, [quack-rs.com](https://quack-rs.com/): guides from the
   first extension to community submission. The site root is the latest
   release; `https://quack-rs.com/vX.Y/` is each release line (for example
-  [/v0.18/](https://quack-rs.com/v0.18/)), and [/dev/](https://quack-rs.com/dev/)
+  [/v0.19/](https://quack-rs.com/v0.19/)), and [/dev/](https://quack-rs.com/dev/)
   is the `main` branch.
 - **API reference**: [docs.rs/quack-rs](https://docs.rs/quack-rs). The crate
   root lists every module.
@@ -205,7 +205,7 @@ struct layouts first in 1.10504.0, although the DuckDB functions exist from
 - [`docs/architecture.md`](./docs/architecture.md): module layout, design
   principles and the architecture decision records.
 - [`CHANGELOG.md`](./CHANGELOG.md): every release, with breaking changes and
-  migration notes. The latest is 0.18.0 (2026-10-02).
+  migration notes. The latest is 0.19.0 (2026-10-22).
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md): development setup, quality gates and
   the test strategy.
 - [`SECURITY.md`](./SECURITY.md): supported versions and how to report a

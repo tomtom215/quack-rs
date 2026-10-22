@@ -10,7 +10,7 @@ Add the following to your extension's `Cargo.toml`:
 
 ```toml
 [dependencies]
-quack-rs = "0.18"
+quack-rs = "0.19"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 ```
 
@@ -139,9 +139,9 @@ features as a dev-dependency:
 ```toml
 [dev-dependencies]
 # Compiles DuckDB from C++ source: no setup, slow cold build.
-quack-rs = { version = "0.18", features = ["bundled-test"] }
+quack-rs = { version = "0.19", features = ["bundled-test"] }
 # ...or link a prebuilt libduckdb instead (set DUCKDB_DOWNLOAD_LIB=1 or DUCKDB_LIB_DIR):
-# quack-rs = { version = "0.18", features = ["bundled-test-prebuilt"] }
+# quack-rs = { version = "0.19", features = ["bundled-test-prebuilt"] }
 ```
 
 Either one initialises the `loadable-extension` dispatch table from the linked DuckDB, so

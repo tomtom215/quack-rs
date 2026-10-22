@@ -244,7 +244,7 @@ is gated with it so that one feature covers both values. Keeping them out of
 
 ```toml
 [dependencies]
-quack-rs = { version = "0.18", features = ["duckdb-1-5-3"] }
+quack-rs = { version = "0.19", features = ["duckdb-1-5-3"] }
 ```
 
 Neither type yet has dedicated `VectorReader`/`VectorWriter` helpers; access
