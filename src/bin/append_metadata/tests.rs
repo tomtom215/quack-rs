@@ -319,9 +319,8 @@ fn a_duckdb_release_as_the_c_struct_version_is_rejected() {
         parse_err(&format!("in out --duckdb-version {bad}"));
     }
     for good in ["v1.2.0", "v1.1.0", "v1.0.0"] {
-        assert!(parse_ok(&format!("in out --duckdb-version {good}"))
-            .warnings
-            .is_empty());
+        let args = parse_ok(&format!("in out --duckdb-version {good}"));
+        assert!(args.warnings.is_empty(), "{good}: {:?}", args.warnings);
     }
 }
 
