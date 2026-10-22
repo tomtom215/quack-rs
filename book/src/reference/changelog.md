@@ -160,6 +160,11 @@ come from it.
   success no longer depends on the engine, and a cast that throws is caught
   rather than aborting. Values equal to DuckDB's failure sentinel (`i64::MIN`,
   `false`, `NaN`) are tested to read back.
+- **quack-rs 0.18.0's `bundled-test` no longer builds once Cargo resolves
+  `libduckdb-sys` 1.20000.0** (DuckDB 2.0, published 2026-10-22, inside
+  `>=1.4.4, <2`): its test shim compiles DuckDB's C++ headers as C++11, and
+  DuckDB 2.0's need C++17. A fresh resolve on Rust 1.88 or newer gets there.
+  0.19.0's shim builds against both.
 - `bundled-test-prebuilt` failed to link on the MSRV (Rust 1.86.0):
   `-lduckdb` was emitted before the shim that needs it. Pre-existing; CI's MSRV
   job only runs `cargo check`.
@@ -237,6 +242,10 @@ come from it.
   leg; `abi-guard-layout` checks the C API v1.5.6 stamping (refused by
   v1.5.5, loaded by v1.5.6 and v2.0.0); `scaffold-e2e` builds and tests a
   C API v1.5.6 project that uses `duckdb-1-5` through extension-ci-tools.
+- `semver` compares with `--only-explicit-features --features
+  duckdb-1-5-4,_duckdb-testing`. The default heuristic also enabled
+  `bundled-test`, and the published 0.18.0 baseline no longer builds that way
+  since `libduckdb-sys` 1.20000.0 exists (see Fixed). Same public API compared.
 
 - `release.yml` runs the whole of `ci.yml` as its gate (`workflow_call`)
   instead of a hand-copied subset that lacked semver checks, Miri, the

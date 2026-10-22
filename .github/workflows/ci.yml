@@ -1663,9 +1663,18 @@ jobs:
         # runs 0 checks; that is correct for a breaking release, and the next
         # step lists what broke. For any other bump, "0 checks" means nothing
         # was verified, so it fails here rather than passing silently.
+        #
+        # `--only-explicit-features` with `_duckdb-testing`, not the default
+        # heuristic, which also enables `bundled-test` and so compiles each
+        # side's C++ test shim against DuckDB's source. The baseline is built
+        # with a fresh resolution, which since 2026-10-22 picks `libduckdb-sys`
+        # 1.20000.0 (DuckDB 2.0, C++17 headers), and 0.18.0's shim is C++11, so
+        # it no longer builds. `_duckdb-testing` gates every public item of the
+        # `testing` module, so the API compared is the same; no shim is built.
         run: |
           set -euo pipefail
-          cargo semver-checks check-release --features duckdb-1-5-4 2>&1 | tee /tmp/semver.log
+          cargo semver-checks check-release --only-explicit-features \
+            --features duckdb-1-5-4,_duckdb-testing 2>&1 | tee /tmp/semver.log
           if grep -q "(major change)" /tmp/semver.log; then
             echo "::notice::the version bump is breaking, so the published-baseline comparison enforces nothing; review the origin/main comparison for the changelog"
           elif grep -qE "Checked \[[^]]*\] 0 checks" /tmp/semver.log; then
@@ -1681,8 +1690,10 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
+          # Same feature set as the step above, for the same reason.
           cargo semver-checks check-release --baseline-rev origin/main --release-type patch \
-            --features duckdb-1-5-4 2>&1 | tee /tmp/semver-main.log
+            --only-explicit-features --features duckdb-1-5-4,_duckdb-testing 2>&1 \
+            | tee /tmp/semver-main.log
           {
             echo "### Public API changes since origin/main"
             echo '```'

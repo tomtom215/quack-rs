@@ -2381,3 +2381,13 @@ CI on the release pull request found three things the local runs could not.
   above. `test-duckdb-2-0` now pins it with `cargo update --precise`; with it,
   the live suite against libduckdb 2.0.0 passed 1,475, 0 failed (VALIDATED).
   With the new lockfile, the suite against 1.5.6 passed 1,475, 0 failed.
+- *`cargo semver-checks` could no longer build the 0.18.0 baseline*: with the
+  default feature heuristic it enables `bundled-test`, and the baseline's fresh
+  resolution now picks `libduckdb-sys` 1.20000.0, whose C++17 headers 0.18.0's
+  C++11 shim cannot compile (CI log). So 0.18.0 with `bundled-test` is broken
+  for anyone who resolves fresh on Rust 1.88+. The job now passes
+  `--only-explicit-features --features duckdb-1-5-4,_duckdb-testing`, which
+  gates the same public items and builds no shim: exit 0 locally with
+  cargo-semver-checks 0.51.0, and with `--release-type patch` (every lint
+  forced) 229 checks pass, 0 fail, so 0.19.0 breaks nothing in 0.18.0's API
+  (VALIDATED).
