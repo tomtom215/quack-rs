@@ -251,14 +251,7 @@ impl Value {
             "timestamp_tz_ns",
             "TIMESTAMPTZ_NS 1677-09-22 00:00:00 to 2262-04-11 23:47:16.854775806, or ±infinity (±i64::MAX)",
         )?;
-        let rendered = Self::timestamp_ns(nanos)?.as_str()?;
-        // A finite instant renders without an offset; say it is UTC, which is
-        // what the value means. The infinities render as words and take none.
-        let text = if nanos == i64::MAX || nanos == -i64::MAX {
-            rendered
-        } else {
-            format!("{rendered}+00")
-        };
+        let text = utc_text(Self::timestamp_ns(nanos)?.as_str()?, nanos);
         Self::varchar(&text)
             .cast_copy(TypeId::TimestampTzNs)
             .ok_or_else(|| {
@@ -297,10 +290,43 @@ impl Value {
     }
 }
 
+/// The text [`Value::timestamp_tz_ns`] casts to `TIMESTAMPTZ_NS`: `rendered`
+/// (the `TIMESTAMP_NS` for `nanos`) with the UTC offset a finite instant needs.
+/// A finite instant renders without an offset; say it is UTC, which is what the
+/// value means. The infinities render as words and take none.
+fn utc_text(rendered: String, nanos: i64) -> String {
+    if nanos == i64::MAX || nanos == -i64::MAX {
+        rendered
+    } else {
+        format!("{rendered}+00")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{check, Value, TIMESTAMP_RANGE};
+    use super::{check, utc_text, Value, TIMESTAMP_RANGE};
     use crate::types::TypeId;
+
+    /// Only a finite instant takes the `+00` offset, and each infinity is left
+    /// as the word `DuckDB` rendered, which an offset would make unparseable.
+    #[test]
+    fn utc_text_adds_the_offset_to_finite_instants_only() {
+        let text = |rendered: &str, nanos| utc_text(rendered.to_owned(), nanos);
+        assert_eq!(
+            text("2026-08-18 12:00:00.123456789", 1_787_054_400_123_456_789),
+            "2026-08-18 12:00:00.123456789+00"
+        );
+        assert_eq!(text("1970-01-01 00:00:00", 0), "1970-01-01 00:00:00+00");
+        assert_eq!(
+            text("1969-12-31 23:59:59.999999999", -1),
+            "1969-12-31 23:59:59.999999999+00"
+        );
+        assert_eq!(text("infinity", i64::MAX), "infinity");
+        assert_eq!(text("-infinity", -i64::MAX), "-infinity");
+        // The neighbours of each infinity are finite instants.
+        assert_eq!(text("x", i64::MAX - 1), "x+00");
+        assert_eq!(text("x", -i64::MAX + 1), "x+00");
+    }
 
     /// An out-of-range `TIME_TZ` encoding is refused before `DuckDB` is
     /// called, so this needs no live runtime. Passed on, it would be stored

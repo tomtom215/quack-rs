@@ -237,9 +237,7 @@ impl LogicalType {
             // right after this, so the dispatch table is initialised whenever
             // this runs.
             let engine = unsafe { crate::abi::engine_version() };
-            if let Some(engine) = engine
-                .filter(|v| crate::abi::parse_version(v).is_some_and(|version| version < (2, 0, 0)))
-            {
+            if let Some(engine) = engine.filter(|v| predates_timestamp_tz_ns(v)) {
                 return Err(LogicalTypeError::with_detail(
                     "duckdb_create_logical_type",
                     format!(
@@ -737,11 +735,35 @@ fn check_array_size(size: u64) -> Result<(), LogicalTypeError> {
     Ok(())
 }
 
+/// Whether `engine`, a `duckdb_library_version()` string, names a release older
+/// than 2.0.0, which has no `TIMESTAMPTZ_NS`. A development build (`v2.0.0-dev1`)
+/// or anything else `parse_version` cannot read is not known to predate it.
+fn predates_timestamp_tz_ns(engine: &str) -> bool {
+    crate::abi::parse_version(engine).is_some_and(|version| version < (2, 0, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        check_array_size, check_decimal, checked_names, LogicalType, TypeId, MAX_UNION_MEMBERS,
+        check_array_size, check_decimal, checked_names, predates_timestamp_tz_ns, LogicalType,
+        TypeId, MAX_UNION_MEMBERS,
     };
+
+    /// 2.0.0 is the first release with the type: the comparison is exactly
+    /// "less than", on each of major, minor and patch.
+    #[test]
+    fn only_a_release_before_2_0_0_predates_timestamp_tz_ns() {
+        for older in ["v1.4.4", "v1.5.0", "v1.5.6", "v1.99.99", "1.5.6", "v0.9.9"] {
+            assert!(predates_timestamp_tz_ns(older), "{older}");
+        }
+        for newer in ["v2.0.0", "v2.0.1", "v2.1.0", "v3.0.0", "2.0.0"] {
+            assert!(!predates_timestamp_tz_ns(newer), "{newer}");
+        }
+        // Unreadable versions are let through: the version is not known.
+        for unknown in ["", "v2.0.0-dev88614", "v1.5.6-dev1", "garbage", "v1.5"] {
+            assert!(!predates_timestamp_tz_ns(unknown), "{unknown:?}");
+        }
+    }
 
     fn names(list: &[&str], max: Option<usize>) -> Result<usize, String> {
         checked_names("STRUCT field", "api", list.iter().copied(), max)

@@ -2776,7 +2776,7 @@ the `test_all_types()` sweep did not allow for `geometry`, whose `TypeId` exists
 with `duckdb-1-5-3`; and a `duckdb_functions()` parameter rendering differs on 1.4.4
 (`parameter_types` is NULL for a varargs-only function).
 
-CI found five more after the push, four in tests and one in `src/`:
+CI found six more after the push: four in tests, one in `src/` and one gap in the tests of new `src/` code:
 
 - A test that calls the raw `duckdb_scalar_function_bind_get_argument` was gated with a
   helper that asserts the *guarded* wrapper's refusal on engines before v1.5.5, and the
@@ -2824,6 +2824,17 @@ CI found five more after the push, four in tests and one in `src/`:
   so the callback's note held the whole temporary path. It uses `Path::file_name` now.
   No Windows machine was available: the change is checked on Linux, and its result on
   Windows is CI's.
+- The incremental mutation job (`cargo mutants --lib`, 545 mutants in the files this
+  pass changed) left 7 mutants alive, all in code added here and all in logic that only
+  a live-engine test reached, which that job does not run: the `||`, two `==` and the
+  unary `-` that choose whether `Value::timestamp_tz_ns` appends `+00`, and the `<` of
+  the 2.0.0 comparison in `try_new`'s new guard. Both are now small pure functions
+  (`utc_text`, `predates_timestamp_tz_ns`) with unit tests on the boundaries, and
+  `cargo-mutants` 27.1.0, the CI pin, run locally on them with CI's flags tests 15
+  mutants: 14 caught, 1 unviable, 0 missed. This is the PR template's own
+  mutation item, left unticked until CI ran it. The unit-test totals are 994 and 1,116
+  after it (992 and 1,114 in the rows below, which predate it), and the live 1.5.6
+  total is 1,588.
 
 The lesson for this repository is that "all tests pass" must be said per engine, per
 feature set, per toolchain and per build of the engine: the no-feature run, the 1.4.4
