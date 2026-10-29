@@ -2761,6 +2761,7 @@ DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0 release binarie
 | DuckDB 1.5.6 built from source with assertions (`bundled-test`), the two commands of CI's `test-bundled` job: `--all-targets --features bundled-test --no-fail-fast`, then `--all-targets --all-features --no-fail-fast` | 1,318 and 1,586 passed, 0 failed; run after the push, before the guard in `try_new` the first command aborted after 1,053 tests |
 | `cargo +1.99.0 clippy --all-targets -D warnings`: default, `duckdb-1-5`, `duckdb-1-5-3`, `duckdb-1-5-4`, the live-test configuration, `examples/hello-ext`; `cargo +1.99.0 check` of `benches/engine` | clean |
 | live DuckDB 2.0.0 again, on the tree with the guard | 1,586 passed, 0 failed |
+| DuckDB 2.0.0 built from the `libduckdb-sys` 1.20000.1 source with assertions, CI's `test-bundled-duckdb-2-0` command (`--features bundled-test,duckdb-1-5-4 --lib --test ffi_roundtrip`) | 1,062 and 394 passed, 0 failed; 5 failed before the test changes above |
 | `Cargo.lock` at the end | identical to `HEAD` |
 
 The final gate found four defects **in the new tests themselves**, each only because of
@@ -2775,7 +2776,7 @@ the `test_all_types()` sweep did not allow for `geometry`, whose `TypeId` exists
 with `duckdb-1-5-3`; and a `duckdb_functions()` parameter rendering differs on 1.4.4
 (`parameter_types` is NULL for a varargs-only function).
 
-CI found three more after the push, two in tests and one in `src/`:
+CI found four more after the push, three in tests and one in `src/`:
 
 - A test that calls the raw `duckdb_scalar_function_bind_get_argument` was gated with a
   helper that asserts the *guarded* wrapper's refusal on engines before v1.5.5, and the
@@ -2796,6 +2797,27 @@ CI found three more after the push, two in tests and one in `src/`:
   `try_new` now refuses the type, before sending the id, when `abi::engine_version()` is
   a release older than 2.0.0; a development version string, which `parse_version`
   refuses to read, is let through. With the guard the source build passes (rows above).
+- `test-bundled-duckdb-2-0`, a job this pass added and had never run, failed five tests
+  on its first run: DuckDB 2.0 built from the `libduckdb-sys` 1.20000.1 source, with
+  assertions. One was mine: the sweep in `timestamp_tz_ns` casts `TIMESTAMP_NS` to
+  `TIMESTAMPTZ_NS`, which the ICU extension supplies, and the source build has no ICU
+  until the first reference to the `TimeZone` setting makes it download and load the
+  extension (`duckdb_extensions()` lists `core_functions` alone before, `core_functions`
+  and `icu` after; the cast fails before and works after); the sweep did not set the
+  time zone and its siblings did. The other four assert an exact number of binds or
+  copies (two existing tests, `identical_calls_share_bind_data_unless_the_function_is_volatile`
+  and `a_failed_fold_reports_the_message_and_type_not_json`; two new ones in
+  `scalar_bind_data_copy`) and saw 5 binds for 2, 3 reports for 1 and 2 copies for 0.
+  The bundled source verifies the plan under `#ifdef DEBUG` (`Planner::Optimize` calls
+  `LogicalOperator::Verify` before and after optimising, which copies every planned
+  expression), the release 2.0.0 library gives the exact counts, and the same tests
+  pass on the source build once the counts are relaxed to the invariants the tests are
+  about (at least one bind per call; every report carries the same type and message;
+  every bind sees the three arguments in order). That the debug-only verification is
+  the cause is read from the source and consistent with the release result, not
+  isolated by building the same source without assertions. The relaxation touches two
+  tests that existed before this pass; what they check about quack-rs is unchanged, and
+  the end-of-run `drops == binds + copies` is still exact.
 
 The lesson for this repository is that "all tests pass" must be said per engine, per
 feature set, per toolchain and per build of the engine: the no-feature run, the 1.4.4

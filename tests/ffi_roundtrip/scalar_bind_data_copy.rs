@@ -101,8 +101,9 @@ fn a_copied_function_gets_the_bind_data_the_copy_callback_made() {
     }
     .expect("register times_three");
 
-    // A plain projection binds once and copies nothing.
-    let before = counts();
+    // A plain projection answers with the factor `bind` stored. (A release
+    // DuckDB copies nothing here; one built with assertions copies every
+    // planned expression to verify it, so the number of copies is not asserted.)
     assert_eq!(
         fx.scalar(
             "SELECT sum(times_three(i))::BIGINT FROM range(5) t(i)",
@@ -110,7 +111,6 @@ fn a_copied_function_gets_the_bind_data_the_copy_callback_made() {
         ),
         Some(30)
     );
-    assert_eq!(counts().1, before.1, "no copy for a plain projection");
 
     // Filters over the function's result are pushed down, which copies the
     // bound expression. Every copy must carry the factor over: 3 * i for
@@ -205,13 +205,17 @@ fn get_argument_hands_out_each_argument_as_an_owned_expression() {
     );
     let seen = ARGUMENT_TYPES.lock().expect("lock").clone();
     // The first argument is a column of BIGINT (range's type) on every
-    // engine; the other two are as written, or cast to the declared type.
-    assert_eq!(
-        seen,
-        [
-            Some(TypeId::BigInt),
-            Some(TypeId::Varchar),
-            Some(TypeId::Double)
-        ]
+    // engine; the other two are as written, or cast to the declared type. Each
+    // bind sees the three in order; a DuckDB built with assertions plans the
+    // call more than once (`Planner::Optimize` verifies the plan under
+    // `#ifdef DEBUG`), so the triple can repeat.
+    let expected = [
+        Some(TypeId::BigInt),
+        Some(TypeId::Varchar),
+        Some(TypeId::Double),
+    ];
+    assert!(
+        !seen.is_empty() && seen.chunks(3).all(|bind| bind == expected),
+        "{seen:?}"
     );
 }

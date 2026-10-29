@@ -1020,7 +1020,15 @@ mod fold_errors {
             SEEN.lock().unwrap_or_else(PoisonError::into_inner).clear();
             let _ = super::error_of(&fx, sql);
             let seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            assert_eq!(seen, vec![(ty, message.to_owned())], "{sql}");
+            // Every run of the fold reports the same type and message. A DuckDB
+            // built with assertions plans the call more than once
+            // (`Planner::Optimize` verifies the plan under `#ifdef DEBUG`), so
+            // there can be several runs; a release build has exactly one.
+            let expected = (ty, message.to_owned());
+            assert!(
+                !seen.is_empty() && seen.iter().all(|got| *got == expected),
+                "{sql}: {seen:?}"
+            );
         }
     }
 }

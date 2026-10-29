@@ -1300,14 +1300,17 @@ fn identical_calls_share_bind_data_unless_the_function_is_volatile() {
         (a, b, bind_counter::BINDS.load(Ordering::SeqCst) - before)
     };
 
+    // At least one bind per call. A DuckDB built with assertions plans the
+    // expressions more than once (`Planner::Optimize` verifies the plan under
+    // `#ifdef DEBUG`), so the count is exact only on a release build.
     let (a, b, binds) = run("SELECT bind_ctr(i), bind_ctr(i) FROM bind_rows");
-    assert_eq!(binds, 2, "each call is bound on its own");
+    assert!(binds >= 2, "each call is bound on its own: {binds} binds");
     assert_eq!(
         a, b,
         "yet the two calls are merged: one bind data answers for both"
     );
 
     let (a, b, binds) = run("SELECT bind_ctr_volatile(i), bind_ctr_volatile(i) FROM bind_rows");
-    assert_eq!(binds, 2);
+    assert!(binds >= 2, "{binds} binds");
     assert_ne!(a, b, "volatile calls keep their own bind data");
 }

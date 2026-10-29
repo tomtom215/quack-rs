@@ -95,6 +95,12 @@ fn a_scalar_function_over_the_type_round_trips_nanoseconds_and_nulls() {
         assert!(result.is_err(), "a DuckDB without the type refuses it");
         return;
     }
+    // The last query casts TIMESTAMP_NS to TIMESTAMPTZ_NS, a cast the ICU
+    // extension supplies. A source-built DuckDB (`bundled-test`) has no ICU
+    // compiled in; the first reference to the TimeZone setting is what makes it
+    // download and load the extension, as in the tests above. The release
+    // library has ICU built in.
+    fx.query("SET TimeZone = 'UTC'");
     register_echo(
         fx.con(),
         "echo_ts_tz_ns",
