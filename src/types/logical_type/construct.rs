@@ -184,7 +184,9 @@ impl LogicalType {
     /// and the first query that uses it crashes `DuckDB` or invalidates the
     /// database), when the `DuckDB` C API returns a null
     /// pointer, or when the running `DuckDB` does not support the type
-    /// (`TIME_NS` before 1.5.0, whose C API returns an `INVALID` type for it).
+    /// (`TIME_NS` before 1.5.0, whose C API returns an `INVALID` type for it;
+    /// `TIMESTAMPTZ_NS` before 2.0.0, refused without sending the id: a
+    /// `DuckDB` built with assertions aborts on a type id it does not know).
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
         Self::precheck(type_id)?;
         // SAFETY: any DUCKDB_TYPE value is accepted; DuckDB returns an owned
@@ -208,9 +210,9 @@ impl LogicalType {
         Ok(created)
     }
 
-    /// The checks [`try_new`][Self::try_new] makes before its first `DuckDB`
-    /// call: a composite id, the two literal types and (with `duckdb-1-5-3`)
-    /// `VARIANT` are refused.
+    /// The checks [`try_new`][Self::try_new] makes before it creates a type: a
+    /// composite id, the two literal types, (with `duckdb-1-5-3`) `VARIANT`
+    /// and `TIMESTAMPTZ_NS` on an engine older than 2.0.0 are refused.
     fn precheck(type_id: TypeId) -> Result<(), LogicalTypeError> {
         if type_id.is_composite() {
             return Err(LogicalTypeError::with_detail(
@@ -229,6 +231,25 @@ impl LogicalType {
                      VARCHAR"
                 ),
             ));
+        }
+        if type_id == TypeId::TimestampTzNs {
+            // SAFETY: `try_new` creates the type with `duckdb_create_logical_type`
+            // right after this, so the dispatch table is initialised whenever
+            // this runs.
+            let engine = unsafe { crate::abi::engine_version() };
+            if let Some(engine) = engine
+                .filter(|v| crate::abi::parse_version(v).is_some_and(|version| version < (2, 0, 0)))
+            {
+                return Err(LogicalTypeError::with_detail(
+                    "duckdb_create_logical_type",
+                    format!(
+                        "{type_id} (type id 42) was added in DuckDB 2.0.0 and this is DuckDB \
+                         {engine}. The id is not sent: a DuckDB built with assertions aborts \
+                         the process on a type id it does not know, and one built without \
+                         them answers with an INVALID type"
+                    ),
+                ));
+            }
         }
         #[cfg(feature = "duckdb-1-5-3")]
         if type_id == TypeId::Variant {

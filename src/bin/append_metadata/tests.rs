@@ -604,12 +604,15 @@ fn the_entry_point_names_are_read_from_the_string_table() {
     );
     // The C API v2 entry point is not the one a C API v1 stamp needs, and a
     // longer name that merely ends the same way is its own name.
-    assert!(entry::entry_point_names(&symbols(&["my_ext_init_c_api_v2"])).is_empty());
+    assert_eq!(
+        entry::entry_point_names(&symbols(&["my_ext_init_c_api_v2"])),
+        Vec::<String>::new()
+    );
     assert_eq!(
         entry::entry_point_names(&symbols(&["a_init_c_api", "b_init_c_api", "a_init_c_api"])),
         ["a", "b"]
     );
-    assert!(entry::entry_point_names(b"").is_empty());
+    assert_eq!(entry::entry_point_names(b""), Vec::<String>::new());
     assert!(
         entry::entry_point_names(b"_init_c_api\0").is_empty(),
         "no name"

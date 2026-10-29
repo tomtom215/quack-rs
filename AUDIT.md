@@ -2758,11 +2758,13 @@ DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0 release binarie
 | `examples/hello-ext`: clippy, its tests, release build stamped `C_STRUCT` `v1.2.0`, `check-hello-ext.py` | clean; 31/31 checks on 1.5.6 and on 2.0.0 |
 | the book's and README's Rust blocks (`book/doctest`) | 252 passed, 0 failed, 5 ignored |
 | `sync-book-changelog --check`, `check-ci-aggregate` (35 blocking jobs), `check-workflow-expressions` (82 expressions), `check-api-coverage` (546 slots: 447 wrapped, 99 listed; against the 2.0.0 header 548 slots: 447 wrapped, 101 listed), `check-abi-table`, `check-platform-table`, `check-spdx-list`, `check-autoload-entries`, `check-msrv-vs-duckdb-ci` | all exit 0 (exit 2 would mean upstream was unreachable and the check skipped) |
+| DuckDB 1.5.6 built from source with assertions (`bundled-test`), the two commands of CI's `test-bundled` job: `--all-targets --features bundled-test --no-fail-fast`, then `--all-targets --all-features --no-fail-fast` | 1,318 and 1,586 passed, 0 failed; run after the push, before the guard in `try_new` the first command aborted after 1,053 tests |
+| `cargo +1.99.0 clippy --all-targets -D warnings`: default, `duckdb-1-5`, `duckdb-1-5-3`, `duckdb-1-5-4`, the live-test configuration, `examples/hello-ext`; `cargo +1.99.0 check` of `benches/engine` | clean |
+| live DuckDB 2.0.0 again, on the tree with the guard | 1,586 passed, 0 failed |
 | `Cargo.lock` at the end | identical to `HEAD` |
 
-The final gate found four defects **in the new tests themselves**, and CI found a fifth after the push; none is in `src/` or
-in an existing test, and each only because of a configuration the first run did not
-use. All five are fixed and the suites above are the reruns: the update/combine leak
+The final gate found four defects **in the new tests themselves**, each only because of
+a configuration the first run did not use: the update/combine leak
 test and the finalize leak test shared two process-wide counters and raced when the
 whole binary ran in parallel (it passed alone, which is how it had been run before);
 `inline_paths` fed an all-NULL column to a function with default NULL handling and
@@ -2771,15 +2773,34 @@ constant NULL or masks the rows; the mechanism was not isolated), so the probe n
 uses `SpecialNullHandling` and sees every row on both engines;
 the `test_all_types()` sweep did not allow for `geometry`, whose `TypeId` exists only
 with `duckdb-1-5-3`; and a `duckdb_functions()` parameter rendering differs on 1.4.4
-(`parameter_types` is NULL for a varargs-only function). The fifth: a test that calls the
-raw `duckdb_scalar_function_bind_get_argument` was gated with a helper that asserts the
-*guarded* wrapper's refusal on engines before v1.5.5, and the raw call makes no such
-refusal, so it failed on v1.5.0 and v1.5.3 ("the query succeeded"); it is now gated on
-the engine version alone. The local gate had run no engine between 1.4.4 and 1.5.6
-with a `duckdb-1-5` feature, which is exactly where that test differs. The lesson for
-this repository is that "all tests pass" must be said per engine and per feature set:
-the no-feature run, the 1.4.4 run and CI's older-engine matrix each caught something
-the default 1.5.6 run did not.
+(`parameter_types` is NULL for a varargs-only function).
+
+CI found three more after the push, two in tests and one in `src/`:
+
+- A test that calls the raw `duckdb_scalar_function_bind_get_argument` was gated with a
+  helper that asserts the *guarded* wrapper's refusal on engines before v1.5.5, and the
+  raw call makes no such refusal, so it failed on v1.5.0 and v1.5.3 ("the query
+  succeeded"); it is now gated on the engine version alone. The local gate had run no
+  engine between 1.4.4 and 1.5.6 with a `duckdb-1-5` feature, which is where that test
+  differs.
+- Rust 1.99.0's clippy (CI's `stable` on 2026-10-29; the local toolchain was 1.97.0)
+  flags `assert!(x.is_empty())` as `assert_is_empty`, in two assertions of the new
+  `append_metadata` tests, and failed every job that runs clippy. Both are now
+  `assert_eq!` against an empty `Vec`; every clippy configuration CI runs is clean on
+  1.99.0.
+- The defect in `src/`: before 2.0, `LogicalType::try_new(TypeId::TimestampTzNs)` sent
+  type id 42 to `duckdb_create_logical_type`. A release engine answers `INVALID` and the
+  call returned the documented error, but a DuckDB built with assertions (the
+  `bundled-test` source build, which no local run had used) reaches `D_ASSERT(0)` in
+  `LogicalTypeIdFromC` and aborts the process, and an abort hides every test after it.
+  `try_new` now refuses the type, before sending the id, when `abi::engine_version()` is
+  a release older than 2.0.0; a development version string, which `parse_version`
+  refuses to read, is let through. With the guard the source build passes (rows above).
+
+The lesson for this repository is that "all tests pass" must be said per engine, per
+feature set, per toolchain and per build of the engine: the no-feature run, the 1.4.4
+run, CI's older-engine matrix, the source build with assertions and CI's newer clippy
+each caught something the default 1.5.6 run on the local toolchain did not.
 
 Mutation proofs I ran: `is_valid` with the shift changed, `set_null` clearing the
 neighbouring bit and the list cache not dropped on reserve each fail
@@ -2799,7 +2820,8 @@ unique package id. Anyone running several worktrees of this repository against o
 
 Not run: AddressSanitizer and LeakSanitizer (CI's `asan` and `leak-check` jobs
 run `--test ffi_roundtrip` and will now run the 86 added tests), valgrind on the
-changed `ListBuilder`, the `bundled-test` source build of DuckDB, `cargo-deny`,
-`cargo-mutants` on the changed files, a macOS, Windows or Wasm build, and any
-GitHub Actions workflow: the workflow changes were checked by the three scripts above
-and by reading, not by running them in Actions.
+changed `ListBuilder`, the `bundled-test` source build on macOS and Windows (the
+Linux 1.5.6 build was run after the push, above), `cargo-deny`, `cargo-mutants` on
+the changed files, a Wasm build, and the changed workflows in GitHub Actions before
+the push: they were checked by the three scripts above and by reading, and the
+first run in Actions is the one that found the failures listed above.

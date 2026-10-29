@@ -67,8 +67,11 @@ fn sql_render(fx: &Fixture, nanos: i64) -> String {
 fn the_type_id_is_reported_for_a_column_and_creatable_only_where_it_exists() {
     let fx = Fixture::open();
     if fx.engine_major() < 2 {
-        // No such type: creating it fails with an error, not an abort.
-        assert!(LogicalType::try_new(TypeId::TimestampTzNs).is_err());
+        // No such type: creating it fails with an error, not an abort. The id
+        // never reaches the engine, since a DuckDB built with assertions (the
+        // `bundled-test` build) aborts the process on a type id it does not know.
+        let err = LogicalType::try_new(TypeId::TimestampTzNs).expect_err("no such type");
+        assert!(err.to_string().contains("added in DuckDB 2.0.0"), "{err}");
         return;
     }
     let ty = LogicalType::try_new(TypeId::TimestampTzNs).expect("2.0 has the type");

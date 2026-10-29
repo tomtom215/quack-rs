@@ -35,7 +35,10 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for one type. `Value::timestamp_tz_ns` renders the `TIMESTAMP_NS` as text and
   casts the text; `as_timestamp_tz_ns` reads the payload through the
   `TIMESTAMP_NS` reinterpretation. Before DuckDB 2.0.0, creating the type
-  returns an error and the getter returns `None`, tested against 1.5.6.
+  returns an error and the getter returns `None`, tested against 1.5.6. The error
+  comes from `LogicalType::try_new` before the id is sent: a DuckDB built with
+  assertions (the `bundled-test` build) aborts the process on a type id it does
+  not know, and one built without them answers `INVALID`.
 - `ListVector::get_entry_checked` and `MapVector::get_entry_checked`: the entry of a
   row that is not NULL and lies inside the child, else `None` (see Fixed).
 - `DescriptionYml::opt_in_platforms`: `parse_description_yml` now reads
