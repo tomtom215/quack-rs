@@ -2776,7 +2776,7 @@ the `test_all_types()` sweep did not allow for `geometry`, whose `TypeId` exists
 with `duckdb-1-5-3`; and a `duckdb_functions()` parameter rendering differs on 1.4.4
 (`parameter_types` is NULL for a varargs-only function).
 
-CI found six more after the push: four in tests, one in `src/` and one gap in the tests of new `src/` code:
+CI found seven more after the push: five in tests, one in `src/` and one gap in the tests of new `src/` code:
 
 - A test that calls the raw `duckdb_scalar_function_bind_get_argument` was gated with a
   helper that asserts the *guarded* wrapper's refusal on engines before v1.5.5, and the
@@ -2835,6 +2835,23 @@ CI found six more after the push: four in tests, one in `src/` and one gap in th
   mutation item, left unticked until CI ran it. The unit-test totals are 994 and 1,116
   after it (992 and 1,114 in the rows below, which predate it), and the live 1.5.6
   total is 1,588.
+- On Windows the `bundled-test` job failed again, in a different test:
+  `writer_api::timestamp_tz_reads_and_writes_the_instant` (a new test, but any test that
+  needs a time zone would do) died with `Extension Autoloading Error ... 'icu': Could not
+  move file: Access is denied`. A source-built DuckDB has no ICU and installs it the
+  first time a query needs a time zone; the tests run on many threads, each with its
+  own database, and they all install into one extension directory, so on Windows two
+  installs collide on the final file move. This is a race that the suite already had
+  (earlier Windows runs passed it by luck) and that this pass made likelier by adding
+  tests that need a time zone. It could not be reproduced here: it is Windows-specific,
+  and only the install path was exercised on Linux. `Fixture::open` now runs
+  `INSTALL icu` once per process (`std::sync::Once`) before any other fixture goes on, and
+  ignores a failure, so the others find a finished install and only load it. Checked:
+  release libraries 1.5.6 and 2.0.0 (1,588 each), 1.4.4 (1,320) and 1.5.0 (1,493), where
+  the statement is a no-op, and the 1.5.6 source build from an empty home directory,
+  where the extension is installed during the run (`icu.duckdb_extension` appears under
+  `~/.duckdb/extensions`): both of CI's commands pass, 1,320 and 1,588. Whether it
+  removes the Windows failure is CI's answer.
 
 The lesson for this repository is that "all tests pass" must be said per engine, per
 feature set, per toolchain and per build of the engine: the no-feature run, the 1.4.4

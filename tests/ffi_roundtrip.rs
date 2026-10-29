@@ -57,6 +57,24 @@ use quack_rs::types::{LogicalType, NullHandling, TypeId};
 use quack_rs::vector::{VectorReader, VectorWriter};
 
 /// A live database plus a connection, torn down in the right order on drop.
+/// Installs the ICU extension once per process, before any other fixture goes on.
+///
+/// A source-built `DuckDB` (`bundled-test`) has no ICU and installs it the first
+/// time a query needs a time zone. The tests run on many threads, each with its
+/// own database, and the installs all write to one extension directory: on
+/// Windows they raced on the final file move ("Could not move file: Access is
+/// denied") and failed whichever test lost. Done here, with the others waiting
+/// in `call_once`, they find a finished install and only load it. A library that
+/// carries ICU treats `INSTALL icu` as a no-op; if the install fails (no
+/// network) nothing changes, and the first query that needs ICU fails as before.
+fn install_icu_once(con: duckdb_connection) {
+    static ICU: std::sync::Once = std::sync::Once::new();
+    ICU.call_once(|| {
+        // SAFETY: `con` is the open connection of the fixture being built.
+        drop(unsafe { query(con, "INSTALL icu") });
+    });
+}
+
 struct Fixture {
     db: libduckdb_sys::duckdb_database,
     con: duckdb_connection,
@@ -82,6 +100,7 @@ impl Fixture {
                 "duckdb_connect"
             );
         }
+        install_icu_once(con);
         Self {
             db,
             con,
