@@ -2737,7 +2737,7 @@ about 2.7; minima 17 and 27 ms).
 ### 13.8 How this pass was verified
 
 All of this on the final tree, one worktree, x86-64 Linux, rustc 1.97.0 stable,
-DuckDB 1.4.4, 1.5.6 and 2.0.0 release binaries. Counts are summed from the
+DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0 release binaries. Counts are summed from the
 `test result:` lines of the logs.
 
 | Step | Result |
@@ -2751,6 +2751,7 @@ DuckDB 1.4.4, 1.5.6 and 2.0.0 release binaries. Counts are summed from the
 | live DuckDB 2.0.0, 2.0 bindings (`libduckdb-sys` 1.20000.1), same features | 1,586 passed, 0 failed; `ffi_roundtrip` 394, three further runs 394 each |
 | live DuckDB 1.4.4, its own bindings pinned as in CI's `test-older-engines`, no version feature | 1,318 passed, 0 failed |
 | live 1.5.6 with no version feature, and with `duckdb-1-5-3` (`--test ffi_roundtrip --lib`) | 1,189 and 1,366 passed, 0 failed |
+| CI's `test-older-engines` matrix, each job reproduced locally (pinned bindings, the matching library, `--all-targets --no-fail-fast`): v1.4.5, v1.5.0 (`duckdb-1-5`), v1.5.3 (`duckdb-1-5-3`), v1.5.4 and v1.5.5 (`duckdb-1-5-4`) | 1,318 / 1,491 / 1,496 / 1,586 / 1,586 passed, 0 failed; run after the push, see below for the defect it found |
 | Miri (nightly, `-Zmiri-symbolic-alignment-check -Zmiri-strict-provenance`), `vector::` | 95 passed. These tests do not reach `libduckdb`; they cover the pointer arithmetic of the bit tests and the string paths |
 | `cargo +1.86.0 check`, with and without `duckdb-1-5-4`, resolved with `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback` | clean |
 | `cargo package --locked`; `benches/engine` not in the package | ok |
@@ -2759,9 +2760,9 @@ DuckDB 1.4.4, 1.5.6 and 2.0.0 release binaries. Counts are summed from the
 | `sync-book-changelog --check`, `check-ci-aggregate` (35 blocking jobs), `check-workflow-expressions` (82 expressions), `check-api-coverage` (546 slots: 447 wrapped, 99 listed; against the 2.0.0 header 548 slots: 447 wrapped, 101 listed), `check-abi-table`, `check-platform-table`, `check-spdx-list`, `check-autoload-entries`, `check-msrv-vs-duckdb-ci` | all exit 0 (exit 2 would mean upstream was unreachable and the check skipped) |
 | `Cargo.lock` at the end | identical to `HEAD` |
 
-The final gate found four defects **in the new tests themselves**, none in `src/` or
+The final gate found four defects **in the new tests themselves**, and CI found a fifth after the push; none is in `src/` or
 in an existing test, and each only because of a configuration the first run did not
-use. All four are fixed and the suites above are the reruns: the update/combine leak
+use. All five are fixed and the suites above are the reruns: the update/combine leak
 test and the finalize leak test shared two process-wide counters and raced when the
 whole binary ran in parallel (it passed alone, which is how it had been run before);
 `inline_paths` fed an all-NULL column to a function with default NULL handling and
@@ -2770,9 +2771,15 @@ constant NULL or masks the rows; the mechanism was not isolated), so the probe n
 uses `SpecialNullHandling` and sees every row on both engines;
 the `test_all_types()` sweep did not allow for `geometry`, whose `TypeId` exists only
 with `duckdb-1-5-3`; and a `duckdb_functions()` parameter rendering differs on 1.4.4
-(`parameter_types` is NULL for a varargs-only function). The lesson for this repository is
-that "all tests pass" must be said per engine and per feature set: the no-feature run
-and the 1.4.4 run each caught something the default 1.5.6 run did not.
+(`parameter_types` is NULL for a varargs-only function). The fifth: a test that calls the
+raw `duckdb_scalar_function_bind_get_argument` was gated with a helper that asserts the
+*guarded* wrapper's refusal on engines before v1.5.5, and the raw call makes no such
+refusal, so it failed on v1.5.0 and v1.5.3 ("the query succeeded"); it is now gated on
+the engine version alone. The local gate had run no engine between 1.4.4 and 1.5.6
+with a `duckdb-1-5` feature, which is exactly where that test differs. The lesson for
+this repository is that "all tests pass" must be said per engine and per feature set:
+the no-feature run, the 1.4.4 run and CI's older-engine matrix each caught something
+the default 1.5.6 run did not.
 
 Mutation proofs I ran: `is_valid` with the shift changed, `set_null` clearing the
 neighbouring bit and the list cache not dropped on reserve each fail

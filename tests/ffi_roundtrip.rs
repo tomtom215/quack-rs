@@ -229,6 +229,21 @@ fn engine_merges_scalar_overloads(fx: &Fixture) -> bool {
     quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 0))
 }
 
+/// Whether the linked `DuckDB` copies a scalar bind argument without
+/// aborting on a subquery: v1.5.5 and later. A test that calls the raw
+/// `duckdb_scalar_function_bind_get_argument` itself, so that
+/// [`inspects_arguments_or_refuses`] has no refusal to find, skips the earlier
+/// engines on this alone.
+#[cfg(feature = "duckdb-1-5")]
+fn engine_copies_arguments_safely(fx: &Fixture) -> bool {
+    let version = fx
+        .scalar("SELECT version()", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .expect("version() is never NULL");
+    quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 5))
+}
+
 /// Whether the linked `DuckDB` lets a scalar bind callback inspect its
 /// arguments: v1.5.5 and later. Before it, `ScalarBindInfo::argument` asks
 /// for nothing (`DuckDB` would abort on a subquery argument) and fails the
@@ -237,14 +252,14 @@ fn engine_merges_scalar_overloads(fx: &Fixture) -> bool {
 /// those engines instead.
 #[cfg(feature = "duckdb-1-5")]
 fn inspects_arguments_or_refuses(fx: &Fixture, probe: &str) -> bool {
+    if engine_copies_arguments_safely(fx) {
+        return true;
+    }
     let version = fx
         .scalar("SELECT version()", |r, i| unsafe {
             r.read_str(i).to_owned()
         })
         .expect("version() is never NULL");
-    if quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 5)) {
-        return true;
-    }
     // SAFETY: the fixture's connection is open.
     let message = unsafe { quack_rs::query::query(fx.con(), probe) }
         .map_or_else(|e| e.to_string(), |_| String::from("(the query succeeded)"));

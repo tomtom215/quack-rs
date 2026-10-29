@@ -190,7 +190,9 @@ fn get_argument_hands_out_each_argument_as_an_owned_expression() {
             .register(fx.con())
     }
     .expect("register raw_args");
-    if !super::inspects_arguments_or_refuses(&fx, "SELECT raw_args(1, 'x', 1.5::DOUBLE)") {
+    // The callback calls the raw handle, which has no guard to refuse on the
+    // engines that abort on a subquery argument: it only runs on the others.
+    if !super::engine_copies_arguments_safely(&fx) {
         return;
     }
     ARGUMENT_TYPES.lock().expect("lock").clear();
