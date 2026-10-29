@@ -311,6 +311,19 @@ impl Connection {
     /// Use this to call C API functions that require the database handle, such
     /// as replacement scan registration or (with `duckdb-1-5`) config option
     /// registration.
+    ///
+    /// # The handle dies when `LOAD` returns
+    ///
+    /// `DuckDB` hands the entry point a database handle that belongs to the
+    /// load: it is freed when `LOAD` finishes. Use it inside the registration
+    /// closure only, and **never store it** (in a `static`, in `extra_info`, in
+    /// a function's state). A connection opened from a stored handle later is a
+    /// use after free: valgrind reports it, and it fails or segfaults at random
+    /// depending on what reuses the memory. To run SQL after loading, open an
+    /// [`OwnedConnection`][crate::query::OwnedConnection] during registration
+    /// with [`open_connection`][Self::open_connection] and keep that (it holds
+    /// its own reference to the database instance), mindful of what keeping
+    /// one costs (see there).
     #[inline]
     pub const fn as_raw_database(&self) -> duckdb_database {
         self.db
@@ -376,6 +389,22 @@ impl Connection {
     /// extension loading finishes — a `duckdb_connection` holds its own
     /// reference to the database instance. Keep one when a callback or a
     /// background thread needs to run SQL.
+    ///
+    /// # What keeping a connection costs
+    ///
+    /// The retained connection keeps the **database instance** alive, so
+    /// closing the host's own connection does not shut the database down: a
+    /// file database is not checkpointed (its `.wal` stays) and its lock is
+    /// held until the process exits, which makes a second process fail with
+    /// "Could not set lock on file". If the connection is owned by state the
+    /// extension registers (a closure captured by a function, say), the
+    /// instance also references that function, and the cycle means it is never
+    /// freed. A process-wide `static` holding the connection is first-wins:
+    /// with several database instances in one process (a Python program that
+    /// calls `duckdb.connect()` repeatedly), every instance's functions would
+    /// run on the first instance's connection. Prefer opening a connection per
+    /// instance, held by that instance's own registered state, and decide
+    /// whether the extension really needs to run SQL from a callback at all.
     ///
     /// # Errors
     ///

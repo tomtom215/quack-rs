@@ -115,8 +115,8 @@ jobs:
 
   msrv:
     # The oldest Rust the project promises to build with: `rust-version` in
-    # Cargo.toml. (extension-ci-tools builds with a newer release: 1.97.1 for
-    # DuckDB v2.0.)
+    # Cargo.toml. (For DuckDB v2.0, extension-ci-tools pins a newer one, 1.97.1, on
+    # Windows and WebAssembly and uses the current stable on Linux and macOS.)
     name: Minimum supported Rust (@@MSRV@@)
     runs-on: ubuntu-latest
     steps:

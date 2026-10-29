@@ -178,7 +178,7 @@ Find the stale ones by grepping for the previous version, for example (replace
 `<PREV>` with the previous minor, dots escaped — `0\.17` when releasing 0.18.0):
 
 ```bash
-git grep -n '<PREV>' -- README.md book/src Cargo.toml CITATION.cff src/lib.rs
+git grep -n '<PREV>' -- README.md book/src Cargo.toml CITATION.cff src
 ```
 
 ### Step 4 — Commit the version bump
@@ -442,6 +442,8 @@ Every release produces and attaches:
 
 The attached `.crate` is the one the `package` job built and attested. The
 `publish` job packages again from the same tagged commit, so what crates.io
-serves should hash the same, but nothing in the workflow checks that: compare
-`sha256sum` of `https://static.crates.io/crates/quack-rs/quack-rs-X.Y.Z.crate`
-against `SHA256SUMS`, or check the attached file with `gh attestation verify`.
+serves should hash the same, and the `publish` job's "crates.io serves the
+attested .crate" step fails the release if it does not. To check by hand,
+compare `sha256sum` of
+`https://static.crates.io/crates/quack-rs/quack-rs-X.Y.Z.crate` against
+`SHA256SUMS`, or check the attached file with `gh attestation verify`.

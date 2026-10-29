@@ -48,7 +48,7 @@ expansion also evaluates the policy and closure arguments inside a panic guard:
 # use quack_rs::connection::Connection;
 # use quack_rs::error::ExtensionError;
 # unsafe fn register(_con: &Connection) -> Result<(), ExtensionError> { Ok(()) }
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_extension_init_c_api(
     info: duckdb_extension_info,
     access: *const duckdb_extension_access,
@@ -112,7 +112,7 @@ use libduckdb_sys::{duckdb_extension_info, duckdb_extension_access};
 # fn register_aggregate_functions(_: duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
 # fn register_sql_macros(_: duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_extension_init_c_api(
     info: duckdb_extension_info,
     access: *const duckdb_extension_access,

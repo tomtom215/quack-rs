@@ -10,6 +10,212 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`TIMESTAMPTZ_NS`, the type DuckDB 2.0.0 added** (`DUCKDB_TYPE_TIMESTAMP_TZ_NS`,
+  42). Until now `TypeId::try_from_duckdb_type(42)` returned `None`, the
+  documented-panicking `LogicalType::get_type_id` panicked on a `TIMESTAMPTZ_NS`
+  column, and an extension could not declare, read or return the type without
+  raw handles (`AUDIT.md` section 12.5, item 2). New, with no feature flag and
+  on every build:
+  - `TypeId::TimestampTzNs`, with the id as a literal so it exists against any
+    `libduckdb-sys`;
+  - `VectorReader::read_timestamp_tz_ns` and `VectorWriter::write_timestamp_tz_ns`;
+  - `Value::timestamp_tz_ns` and `Value::as_timestamp_tz_ns`. The getter casts
+    like its siblings and shares their guards: the cast table was derived from
+    `TimestampTzNsCastSwitch` in DuckDB 2.0.0's `time_casts.cpp`, and every
+    getter is checked against SQL at every temporal edge by the existing
+    `value_temporal` matrix, which now includes the type.
+
+  The two C functions 2.0.0 added for the type (`duckdb_create_timestamp_tz_ns`,
+  `duckdb_get_timestamp_tz_ns`) are deliberately **not** called. They are the
+  last two of the 548 slots; an extension built against the 1.5.2 – 1.5.6
+  bindings, which is the build that loads into both DuckDB 1.5.6 and 2.0.0, has
+  546, and calling them would raise the engine floor and the build's slot count
+  for one type. `Value::timestamp_tz_ns` renders the `TIMESTAMP_NS` as text and
+  casts the text; `as_timestamp_tz_ns` reads the payload through the
+  `TIMESTAMP_NS` reinterpretation. Before DuckDB 2.0.0, creating the type
+  returns an error and the getter returns `None`, tested against 1.5.6. The error
+  comes from `LogicalType::try_new` before the id is sent: a DuckDB built with
+  assertions (the `bundled-test` build) aborts the process on a type id it does
+  not know, and one built without them answers `INVALID`.
+- `ListVector::get_entry_checked` and `MapVector::get_entry_checked`: the entry of a
+  row that is not NULL and lies inside the child, else `None` (see Fixed).
+- `DescriptionYml::opt_in_platforms`: `parse_description_yml` now reads
+  `extension.opt_in_platforms` (see Changed for what it warns about).
+- `benches/engine/`: a benchmark extension (SDK functions beside hand-written
+  twins) and `compare.py`, which builds it against two quack-rs trees and times
+  both inside a real DuckDB, interleaved, after checking that they return the
+  same results. The existing criterion bench times a pure function and cannot see
+  a change to a vector, validity or list path.
+- `scripts/check-api-coverage.py` and `scripts/api-coverage-allowlist.txt`: every
+  slot of `duckdb_ext_api_v1` is either used under `src/` or listed with a class and
+  a reason (546 slots at v1.5.6: 447 used, 99 listed: 45 deprecated, 22 host-side,
+  11 superseded, 21 candidates to wrap). The `abi-table` CI job runs it, so a slot a
+  DuckDB release adds is noticed instead of left for someone to read the header.
+
+### Fixed
+
+- **A `VARIANT` in a function signature crashed DuckDB.** `TypeId::Variant`
+  (`duckdb-1-5-3`) built a logical type with no `STRUCT` layout; a scalar function
+  declared with it registered, and the first query reaching it was a
+  segmentation fault on DuckDB 2.0.0 (reproduced with the guard bypassed) or an
+  internal error that invalidated the database on 1.5.x. `LogicalType::try_new`,
+  and so every builder slot, now refuses it with an error that points to
+  `TypeId::Any`. `LogicalType::new(TypeId::Variant)` panics accordingly.
+- **An aggregate with no parameter counted no rows on DuckDB 2.0.** `update`
+  receives a chunk and no row count; 2.0 stopped setting the chunk's cardinality,
+  so `SELECT my_count() FROM t` over 100 rows answered 100 on 1.5.6 and 0 on 2.0.0
+  (measured), and a windowed call never reached `update`. Registering an
+  aggregate, or a set overload, with no parameter is now an error that names the
+  reason and the workaround (one parameter plus a `CREATE MACRO`). **Behaviour
+  change:** code that registered a zero-argument aggregate for DuckDB 1.x now
+  fails to register.
+- **`ListVector::get_entry` / `MapVector::get_entry` on a NULL row.** DuckDB writes
+  no entry for a NULL row, so its `offset` and `length` are stale bytes (lengths
+  around 7·10¹³ on 2.0.0), and the book's read loops and two test helpers walked
+  them: out-of-bounds reads, a segmentation fault in a minority of runs. New
+  `ListVector::get_entry_checked` and `MapVector::get_entry_checked` return `None`
+  for a NULL row or an entry outside the child; the book and the helpers use them,
+  and the `get_entry` docs and `SAFETY` note state the hazard.
+- `append_metadata` rewrote its output **in place**. A host that had the previous
+  build loaded had that file mapped, and crashed (`SIGSEGV`) on its next call into
+  the extension; a failed write also left a truncated library. It now writes a
+  sibling file and renames it over the output.
+- `Cargo.toml`: `cc = "1"` could not be resolved by
+  `cargo update -Z direct-minimal-versions`; the lower bound is now `1.0.69`.
+
+### Performance
+
+- **Nullable columns, string reads and list building cost less in the callback
+  and typed APIs.** `VectorReader::is_valid` and `VectorWriter::set_null` test and
+  clear the validity bit directly (the layout `duckdb.h` documents for
+  `duckdb_vector_get_validity`) instead of making one C call per row;
+  `DuckStringView::as_str` checks for ASCII before falling back to full UTF-8
+  validation; `ListBuilder` keeps its child writer between rows (dropped whenever
+  a reserve grows the child) and writes the parent entries through the entry array.
+  Measured with `benches/engine/compare.py`, DuckDB 1.5.6, one thread, release
+  build with fat LTO, a shared 4-vCPU virtual machine ("Intel(R) Xeon(R) Processor @ 2.10GHz"),
+  20 million rows, base and new interleaved, 18 timed runs per cell; median ns per
+  row, with the hand-written twin in brackets:
+
+  | | 0.19.0 | now |
+  |---|---|---|
+  | `map1` on a column with 10% NULLs | 7.45 (5.95) | 6.08 |
+  | `map2`, same column | 9.95 (6.20) | 6.75 |
+  | `map1` on a column with no NULLs (control) | 1.95 (1.80) | 2.00 |
+  | `map1_str` returning an `i64`, short strings | 33.15 (21.40) | 24.35 |
+  | the same, 46 to 50-byte strings | 47.30 (39.40) | 42.15 |
+  | `map1_str` returning a `String` (trim), short strings | 63.52 (41.70) | 59.02 |
+  | `ListBuilder`, `[x, x+1, x+2]` | 11.40 (5.45) | 7.45 |
+  | `ListBuilder`, a NULL fourth element | 57.70 (5.25) | 8.60 |
+
+  The same run on DuckDB 2.0.0 (12 runs per cell) gave 7.47 → 5.75, 9.43 → 6.50,
+  2.20 → 2.20, 30.90 → 22.85, 49.60 → 46.50, 65.67 → 57.85, 15.60 → 7.87 and
+  66.27 → 9.30. Non-NULL data is unchanged. A difference is claimed only where
+  the old build's fastest run was slower than the new median; that excludes the
+  46 to 50-byte string row on both engines and `trim` on 1.5.6, whose runs overlap.
+  The remaining gap in `trim` is the `String` that `map1_str` makes you return (one
+  allocation per row); no API change was made for it. `AUDIT.md` section 13 has the
+  spread of every cell.
+
+### Changed
+
+- `append_metadata` warns when the library does not export the entry point DuckDB
+  will look for (`<output file name>_init_c_api`): it names the symbol the library
+  does export and the file name to use, or says what to check when there is none.
+  A warning, not an error: stamping to a temporary name and renaming is ordinary.
+- CI: `test-duckdb-2-0` now pins the 2.0 bindings at 1.20000.1 (1.20000.0's
+  bundled engine reports itself as `v2.0.0-dev88614`, which the ABI check refuses)
+  and also runs the doctests, clippy and rustdoc on them; a new informational job
+  `test-bundled-duckdb-2-0` builds DuckDB 2.0 from source; the `msrv` job also
+  checks `--features duckdb-1-5-4`; `scripts/check-msrv-vs-duckdb-ci.py` checks
+  the 1.x extension-ci-tools branches that still pin Rust 1.86.0 (its default
+  refs, `main` and `v2.0-cyanoptera`, both pin 1.97.1 and could not fail);
+  `scripts/check-ci-aggregate.py` also requires `if: always()` on `ci-ok` and a
+  comparison of every result to `success`; Dependabot ignores `duckdb` and
+  `libduckdb-sys` minor bumps (the lockfile deliberately stays on the 1.5.6
+  bindings) and has a 7-day cooldown; `coverage.yml` and `benchmarks.yml` have
+  timeouts.
+
+- `parse_description_yml` warns about a platform **group** name (`wasm`, `windows`,
+  `linux`, `osx`) in `excluded_platforms` or `opt_in_platforms`, and says which
+  platforms to list instead. The community build tests `arch in excluded_arch_values`
+  on exact platform names (`scripts/modify_distribution_matrix.py`, read on
+  `v1.4-andium`, `v1.5-variegata`, `main` and `v2.0-cyanoptera`), so a group name
+  excluded nothing and the file was accepted without a word. It also warns about an
+  `opt_in_platforms` entry that is not an opt-in platform or not a platform at all,
+  which the build ignores. Published files do contain group names, so they still
+  parse.
+- The scaffold no longer generates `extension_config.cmake`, nor the `EXT_CONFIG`
+  line in the `Makefile`. No `extension-ci-tools` makefile reads either (checked on
+  `v1.4-andium`, `v1.5-variegata`, `v2.0-cyanoptera` and `main`), the official Rust
+  template has neither, and the file's `GIT_TAG` only went stale. The generated
+  `Cargo.toml` now carries `license`, taken from the same `ScaffoldConfig::license`
+  as `description.yml`. The generated `.cargo/config.toml` now also sets
+  `-C target-feature=-crt-static` for the two musl targets: a `cdylib` for
+  `x86_64-unknown-linux-musl` otherwise fails with "target does not support these
+  crate types" (reproduced; extension-ci-tools' Rust makefile passes nothing for
+  musl, and the platform is opt-in, so the failure only shows after opting in).
+
+### Documentation
+
+- `LESSONS.md` and the book's pitfalls page gain P13 (a `VARIANT` in a signature
+  crashes DuckDB), P14 (an aggregate with no parameter counts no rows on DuckDB 2.0)
+  and P15 (the entry of a NULL `LIST` or `MAP` row holds stale bytes): the three
+  engine behaviours this release guards against. The pitfall count is now 34
+  (L1–L19, P1–P15) wherever it is stated.
+- README: the Quick Start manifest now sets `rust-version` and `resolver = "3"`
+  (edition 2021's default resolver ignores `rust-version`, so Rust 1.86 or 1.87
+  selected the 2.0 bindings, which need 1.88, and failed); the example uses
+  `try_map1` with `checked_mul` (`x * 2` wrapped on overflow in a release build:
+  `double_it(9223372036854775807)` returned `-2`); installing `append_metadata`
+  needs Rust 1.88 (`cargo +1.86.0 install` fails, with or without the fallback
+  resolver); a comparison with the `duckdb` crate's macros and with the official
+  template's `duckdb-neo`; the Quick Start now comes before Status.
+- The FAQ, ADR-6, `LESSONS.md` and the introduction no longer say the
+  `duckdb-loadable-macros` crate segfaults through `extract_raw_connection` (its
+  1.20000.1 does not use it) or that no Rust template exists upstream
+  (`extension-template-rs` `main` now targets the unstable C API v2 through
+  `duckdb-neo`, and builds binaries that load only into one DuckDB release).
+- Hand-written entry-point samples use `#[unsafe(no_mangle)]`, which compiles on
+  Rust 1.86 and later in both editions; `#[no_mangle]` is an error on edition 2024.
+- `Connection::as_raw_database`: the handle dies when `LOAD` returns (a stored
+  copy is a use after free, seen under valgrind). The book's connection pattern no
+  longer reads as right for several database instances in one process, and what
+  keeping a connection costs (the database is never shut down or checkpointed) is
+  written down.
+- `known-limitations.md`: VARIANT in a signature, zero-argument aggregates, a
+  failing `state_init` in a window frame (plain-C reproduction), NULL list and map
+  rows, table functions take literals only, settings read by a function need
+  `.volatile()`, COPY file extensions, SQL macro limits, the C API v2
+  capabilities, `TUPLE`.
+- `CONTRIBUTING.md` no longer says no DuckDB 2.0 bindings are published, and gate 6
+  (MSRV) now says how to run it (the lockfile's `libduckdb-sys` needs 1.88);
+  `RELEASING.md` no longer says nothing checks the crates.io hash (the `publish`
+  job does) and greps `src`, not just `src/lib.rs`, for the old version; the
+  `hello-ext` README says its raw callbacks are unguarded and not a template.
+- FAQ: a table of the messages `LOAD` can fail with before it reaches the entry
+  point (unstamped library, wrong platform, wrong file name, unsigned, `.so`
+  path, unstable stamp), each captured from DuckDB 1.5.6 and 2.0.0.
+- `publishing.md`: the shared distribution workflow skips the SQL tests on
+  `linux_amd64`, the musl and MinGW builds, `linux_arm64`, Wasm and non-arm64
+  macOS (`base.Makefile` and `ci_phase.py` at `v2.0-cyanoptera`); the Rust
+  toolchain `extension-ci-tools` uses for DuckDB 2.0 is 1.97.1 on Windows and
+  Wasm only (Linux installs the current stable, macOS uses the runner's), not
+  "on every platform"; the documented sequence runs `cargo generate-lockfile`
+  before `git add -A`, because `Cargo.lock` is tracked on purpose and the
+  community build rebuilds the same `repo.ref` for every DuckDB release; group
+  names do not work in `excluded_platforms`.
+- The 1.86.0 "ceiling" in `installation.md` is scoped to the DuckDB 1.x
+  branches that pin it for WebAssembly.
+- `DataChunk::reader`, `ChunkWriter::writer` and the examples in the book, the
+  `scalar_callback!` documentation and `chunk_writer` no longer build a reader or
+  writer inside the row loop, which costs several C API calls per row.
+- The bug report template asks for the engine version that fails, the footer
+  stamp and the enabled features; the pull request template lists the doctest and
+  changelog-sync steps.
+
 ## [0.19.0] — 2026-10-22
 
 This section comes out of a sixth review (`AUDIT.md` section 11): seven

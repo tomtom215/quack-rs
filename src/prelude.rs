@@ -88,6 +88,7 @@
 //! | [`WarningCollector`] | `warning` module |
 //! | [`WarningSeverity`] | `warning` module |
 //! | [`DUCKDB_API_VERSION`] | crate root |
+//! | [`DUCKDB_API_VERSION_1_5_6`] | crate root |
 //! | [`Appender`] | `appender` module |
 //!
 //! ## `DuckDB` 1.5.0+ items (require the `duckdb-1-5` feature)
@@ -239,7 +240,7 @@ pub use crate::tls::{audit_tls_provider, TlsConfigProvider, TlsVersion};
 pub use crate::warning::{ExtensionWarning, WarningCollector, WarningSeverity};
 
 // API version constant
-pub use crate::DUCKDB_API_VERSION;
+pub use crate::{DUCKDB_API_VERSION, DUCKDB_API_VERSION_1_5_6};
 
 // `#[macro_export]` places the entry-point macros at the crate root only; a glob
 // import of this module does not reach them unless they are re-exported here.

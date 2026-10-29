@@ -58,6 +58,7 @@ TypeId::IntegerLiteral
 TypeId::StringLiteral
 TypeId::Geometry         // duckdb-1-5-3
 TypeId::Variant          // duckdb-1-5-3
+TypeId::TimestampTzNs    // DuckDB 2.0.0+; no feature, the id is a literal
 ```
 
 `TypeId` implements `Copy`, `Clone`, `Debug`, `PartialEq`, `Eq`, `Hash` and `Display`.

@@ -7,6 +7,14 @@ implementation or copy-paste starting point for your own extension. Features
 that need the `duckdb-1-5*` flags (copy functions, Arrow, config options, …)
 are not in it; their chapters in the book have examples.
 
+> **This example uses the raw callback style on purpose.** Its 28
+> `unsafe extern "C" fn`s are installed exactly as written and run with no
+> `catch_unwind`: a panic in one aborts the DuckDB process. It shows what the
+> C API calls look like, not how to write new code. For that, use the typed
+> builders (`ScalarFunctionBuilder::map1` / `try_map1`, which return a SQL error
+> for a panic) and the `*_callback!` macros, as the
+> [Quick Start](https://quack-rs.com/getting-started/quick-start.html) does.
+
 > **The aggregates here (`word_count`, `typed_sum`) must not be used as
 > `agg(x) OVER ()` or `agg(x ORDER BY y)`.** A DuckDB defect crashes every C API
 > aggregate in those two shapes — see
@@ -77,7 +85,7 @@ SELECT double_it(21);                      -- → 42
 SELECT * FROM seq_n(5);                    -- → 1..5
 
 -- Table function with named param + local init
-SELECT * FROM gen_series_v2(3, step := 10); -- → 0, 10, 20
+SELECT * FROM gen_series_v2(3, step := 10); -- → (value, step_used): (0, 10), (10, 10), (20, 10)
 
 -- Cast with implicit cost + extra_info (rounds half away from zero)
 SELECT 2.5::DOUBLE::BIGINT;                -- → 3 (built-in DuckDB gives 2)
@@ -97,7 +105,10 @@ SELECT * FROM 'hello:DuckDB';             -- → 'Hello, DuckDB!'
 
 ## Prerequisites
 
-- Rust 1.86.0 or later (`rustup update stable`)
+- Rust 1.88 or later (`rustup update stable`) to build with the committed
+  `Cargo.lock`, whose `libduckdb-sys` requires it. The extension itself builds on
+  the crate's 1.86.0 MSRV once `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback
+  cargo +1.86.0 update` has picked dependency versions that build there.
 - DuckDB CLI 1.4.4 through 2.0.0 for live testing ([download][duckdb-releases])
 
 ## Build

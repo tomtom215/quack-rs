@@ -121,6 +121,24 @@ pub(super) const fn cast_guard(source: TypeId, target: TypeId) -> Option<CastGua
         (TypeId::TimestampS, TypeId::TimestampNs) => Some(CastGuard::InfiniteOrScales(NS_PER_S)),
         #[cfg(feature = "duckdb-1-5")]
         (TypeId::TimestampNs, TypeId::TimeNs) => Some(CastGuard::FiniteAndNanoDayFits),
+        // `TIMESTAMPTZ_NS` (DuckDB 2.0.0). `DefaultCasts::TimestampTzNsCastSwitch`
+        // (`time_casts.cpp`) binds `TryCastErrorLoop` only for `TIMETZ`, and
+        // `TryCast::Operation(timestamp_tz_ns_t, dtime_tz_t)` refuses a
+        // non-finite input, so the guard is the `TIMESTAMP_NS -> TIME` one. Its
+        // other targets (`VARCHAR`, `TIMESTAMP_NS`, `TIMESTAMPTZ`, `_MS`, `_S`)
+        // are a reinterpretation or `TryCastTimestampBase`, a division or a
+        // `TryMultiplyOperator`, and cannot throw. Every other target is
+        // `TryVectorNullCast`.
+        (TypeId::TimestampTzNs, TypeId::TimeTz) => Some(CastGuard::Finite),
+        // The same conversions into `TIMESTAMPTZ_NS` as into `TIMESTAMP_NS`:
+        // `TimestampCastSwitch`, `TimestampTzCastSwitch`, `TimestampMsCastSwitch`
+        // and `TimestampSecCastSwitch` list the two targets under one `case`
+        // pair, with the same operator.
+        (TypeId::Timestamp | TypeId::TimestampTz, TypeId::TimestampTzNs) => {
+            Some(CastGuard::InfiniteOrScales(US_PER_MS))
+        }
+        (TypeId::TimestampMs, TypeId::TimestampTzNs) => Some(CastGuard::InfiniteOrScales(US_PER_S)),
+        (TypeId::TimestampS, TypeId::TimestampTzNs) => Some(CastGuard::InfiniteOrScales(NS_PER_S)),
         _ => None,
     }
 }
@@ -156,7 +174,8 @@ const TIME_TZ_MAX_OFFSET: u64 = 16 * 60 * 60 - 1;
 /// - `TIMESTAMP_S` / `_MS`: `±infinity`, or a value whose conversion to
 ///   microseconds (`FromEpochSeconds` / `FromEpochMs`, which throw on
 ///   overflow) is a valid `TIMESTAMP`.
-/// - `TIMESTAMP_NS`: `±infinity` or at least [`TIMESTAMP_NS_MIN_NANOS`].
+/// - `TIMESTAMP_NS`, `TIMESTAMPTZ_NS`: `±infinity` or at least
+///   [`TIMESTAMP_NS_MIN_NANOS`].
 ///
 /// Any other type returns `false`.
 pub const fn temporal_in_range(type_id: TypeId, v: i64) -> bool {
@@ -168,7 +187,10 @@ pub const fn temporal_in_range(type_id: TypeId, v: i64) -> bool {
         TypeId::Timestamp | TypeId::TimestampTz => infinite || v >= TIMESTAMP_MIN_MICROS,
         TypeId::TimestampS => infinite || scaled_timestamp_in_range(v, 1_000_000),
         TypeId::TimestampMs => infinite || scaled_timestamp_in_range(v, 1_000),
-        TypeId::TimestampNs => infinite || v >= TIMESTAMP_NS_MIN_NANOS,
+        // `TIMESTAMPTZ_NS` has the payload type and the `Timestamp::Convert` of
+        // `TIMESTAMP_NS`: a `timestamp_tz_ns_t` is a `timestamp_ns_t` that
+        // renders with a UTC offset.
+        TypeId::TimestampNs | TypeId::TimestampTzNs => infinite || v >= TIMESTAMP_NS_MIN_NANOS,
         _ => false,
     }
 }
@@ -264,6 +286,75 @@ mod tests {
         ] {
             assert_eq!(g(source, target), None, "{source:?} -> {target:?}");
         }
+    }
+
+    #[test]
+    fn timestamp_tz_ns_guards_mirror_timestamp_ns() {
+        use CastGuard::{Finite, InfiniteOrScales};
+        let g = cast_guard;
+        let tz_ns = TypeId::TimestampTzNs;
+        assert_eq!(g(tz_ns, TypeId::TimeTz), Some(Finite));
+        for target in [
+            TypeId::Varchar,
+            TypeId::Date,
+            TypeId::Time,
+            TypeId::Timestamp,
+            TypeId::TimestampTz,
+            TypeId::TimestampS,
+            TypeId::TimestampMs,
+            TypeId::TimestampNs,
+            tz_ns,
+        ] {
+            assert_eq!(g(tz_ns, target), None, "TIMESTAMPTZ_NS -> {target:?}");
+        }
+        assert_eq!(g(TypeId::Timestamp, tz_ns), Some(InfiniteOrScales(1_000)));
+        assert_eq!(g(TypeId::TimestampTz, tz_ns), Some(InfiniteOrScales(1_000)));
+        assert_eq!(
+            g(TypeId::TimestampMs, tz_ns),
+            Some(InfiniteOrScales(1_000_000))
+        );
+        assert_eq!(
+            g(TypeId::TimestampS, tz_ns),
+            Some(InfiniteOrScales(1_000_000_000))
+        );
+        // Each into-`TIMESTAMPTZ_NS` guard equals the into-`TIMESTAMP_NS` one.
+        for source in [
+            TypeId::Timestamp,
+            TypeId::TimestampTz,
+            TypeId::TimestampMs,
+            TypeId::TimestampS,
+            TypeId::Date,
+            TypeId::Varchar,
+        ] {
+            assert_eq!(
+                g(source, tz_ns),
+                g(source, TypeId::TimestampNs),
+                "{source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn timestamp_tz_ns_range_is_timestamp_ns_range() {
+        let tz_ns = TypeId::TimestampTzNs;
+        for v in [
+            TS_INFINITY,
+            TS_NEGATIVE_INFINITY,
+            TS_INFINITY - 1,
+            0,
+            -9_223_286_400_000_000_000,
+            -9_223_286_400_000_000_001,
+            TS_NEGATIVE_INFINITY + 1,
+            i64::MIN,
+        ] {
+            assert_eq!(
+                temporal_in_range(tz_ns, v),
+                temporal_in_range(TypeId::TimestampNs, v),
+                "{v}"
+            );
+        }
+        assert!(temporal_in_range(tz_ns, -9_223_286_400_000_000_000));
+        assert!(!temporal_in_range(tz_ns, -9_223_286_400_000_000_001));
     }
 
     #[cfg(feature = "duckdb-1-5")]

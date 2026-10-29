@@ -19,7 +19,7 @@ utilities for publishing community extensions.
 
 Building a DuckDB extension in Rust means solving a set of undocumented FFI
 problems that each developer otherwise discovers independently. quack-rs
-documents all 31 known pitfalls, and its API prevents most of them. See the
+documents all 34 known pitfalls, and its API prevents most of them. See the
 [Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?
@@ -270,6 +270,25 @@ base name, lowercases it and calls `<base name>_init_c_api`, so
 `my_extension.duckdb_extension` needs `my_extension_init_c_api`
 ([Pitfall P1](reference/pitfalls.md#p1-library-name-must-match-extension-name)).
 
+### `LOAD` fails before any of my code runs. What does the message mean?
+
+DuckDB checks the file before it calls your entry point. The messages below are
+DuckDB's own, identical on 1.5.6 and 2.0.0 (captured from both CLIs):
+
+| DuckDB says (abridged) | Cause | Fix |
+|---|---|---|
+| `The file is not a DuckDB extension. The metadata at the end of the file is invalid` | A plain `.so`/`.dylib`/`.dll` renamed to `.duckdb_extension`: no footer. | Run `append_metadata` on the library. |
+| `DuckDB extensions are files ending with '.duckdb_extension'` | `LOAD` was given the library itself. | `LOAD` the stamped `.duckdb_extension` file. |
+| `did not contain function "<name>_init_c_api"` … `undefined symbol` | The file's base name is not the name the library exports its entry point under ([Pitfall P1](reference/pitfalls.md#p1-library-name-must-match-extension-name)). `append_metadata` warns about this when it stamps. | Name the output `<name>.duckdb_extension`, with `<name>` the one the library exports `<name>_init_c_api` for. |
+| `The file was built for the platform 'osx_arm64', but we can only load extensions built for platform 'linux_amd64'` | Stamped with another `--platform`, or built on another OS. | Stamp with the platform of the machine that will load it (the default). |
+| `could not be loaded because its signature is either missing or invalid and unsigned extensions are disabled by configuration` | A locally built extension is unsigned. | Start the CLI with `-unsigned`, or set `allow_unsigned_extensions` when opening the database. |
+| `The file was built specifically for DuckDB version 'v1.5.6' and can only be loaded with that version of DuckDB` | Stamped `C_STRUCT_UNSTABLE`, which pins the exact release. DuckDB 2.0 loads that ABI type only through a C API v2 entry point, which quack-rs does not generate. | Stamp `C_STRUCT` with `v1.2.0` (or `v1.5.6` for the `duckdb-1-5*` features). |
+
+Two more come from quack-rs's own checks, after DuckDB has accepted the file:
+`layout mismatch … slots` (the extension was compiled against a C API layout the
+running engine does not have; see [ABI compatibility](concepts/abi.md)) and the
+`unknown engine` refusal for a release newer than the table in `abi.rs`.
+
 ### `make configure` fails with a missing file error.
 
 The `extension-ci-tools` submodule is missing. In a new project, such as one
@@ -324,10 +343,17 @@ populated by DuckDB at extension load time.
 
 ### Why not use `duckdb-loadable-macros`?
 
-`duckdb-loadable-macros` relies on `extract_raw_connection` which uses the
-internal `Rc<RefCell<InnerConnection>>` layout. This is fragile and causes
-SEGFAULTs when the layout changes between `duckdb` crate versions.
-`init_extension` uses the correct C API entry sequence directly.
+Use it when it fits. As of `duckdb` and `duckdb-loadable-macros` 1.20000.1 the
+macro opens a `Connection` from the raw database (`Connection::open_from_raw`)
+and reports errors through the API's `set_error`; an earlier release of the
+macro depended on `extract_raw_connection` and the `duckdb` crate's internal
+layout, which crashed when the layout changed, and that history is why
+`init_extension` calls the C API entry sequence directly. What differs now is
+coverage and compatibility: the `duckdb` crate's loadable-extension path wraps
+scalar (`vscalar`) and table (`vtab`) functions only, while quack-rs also wraps
+aggregate, cast, copy and replacement-scan functions and SQL macros, guards
+every callback it generates against panics, and stays on the stable C API v1,
+whose binaries load across DuckDB releases. See the README's comparison.
 
 ### Why must the release profile use `panic = "unwind"`?
 

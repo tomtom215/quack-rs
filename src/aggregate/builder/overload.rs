@@ -69,11 +69,19 @@ impl OverloadSpec {
         ]
         .into_iter()
         .find_map(|(name, absent)| absent.then_some(name));
-        missing.map_or(Ok(()), |callback| {
-            Err(ExtensionError::new(format!(
+        if let Some(callback) = missing {
+            return Err(ExtensionError::new(format!(
                 "overload {index} has no {callback} callback: call `{callback}`"
-            )))
-        })
+            )));
+        }
+        // Last, as for a single function.
+        if self.params.is_empty() && self.logical_params.is_empty() {
+            return Err(super::zero_parameter_error(
+                &format!("overload {index}"),
+                &format!("<function>_{index}"),
+            ));
+        }
+        Ok(())
     }
 }
 

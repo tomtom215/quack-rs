@@ -29,6 +29,10 @@ assignees: ""
 ## Environment
 
 - **quack-rs version**:
-- **libduckdb-sys version**:
+- **quack-rs Cargo features** (for example `duckdb-1-5-4`):
+- **libduckdb-sys version** (`cargo tree -i libduckdb-sys`):
+- **DuckDB version that fails** (`SELECT version();`, or the CLI's `--version`):
+- **Footer stamp** (the `--abi-type` and `--duckdb-version` you gave `append_metadata`, for
+  example `C_STRUCT` and `v1.2.0`):
 - **Rust version** (`rustc --version`):
-- **OS**:
+- **OS and platform** (for example `linux_amd64`):

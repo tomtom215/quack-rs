@@ -364,7 +364,7 @@ fn validate_free_text(field: &str, text: &str, multi_line: bool) -> Result<(), E
 }
 
 /// `owner/repo`, in the characters GitHub allows: the value is written into
-/// `description.yml` and into a URL in `extension_config.cmake`.
+/// `description.yml`.
 fn validate_github_repo(repo: &str) -> Result<(), ExtensionError> {
     let valid = repo.split_once('/').is_some_and(|(owner, name)| {
         !owner.is_empty()
@@ -488,10 +488,6 @@ pub fn generate_scaffold(config: &ScaffoldConfig) -> Result<Vec<GeneratedFile>, 
         GeneratedFile {
             path: "Makefile".to_string(),
             content: templates::generate_makefile(config),
-        },
-        GeneratedFile {
-            path: "extension_config.cmake".to_string(),
-            content: templates::generate_extension_config_cmake(config),
         },
         GeneratedFile {
             path: "src/lib.rs".to_string(),

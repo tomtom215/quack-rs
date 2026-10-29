@@ -4,7 +4,7 @@
 # Continuous integration — enforces all quality gates.
 #
 # Jobs: check, test, test-bundled, test-bundled-prebuilt, test-older-engines,
-#       test-duckdb-1-5,
+#       test-duckdb-2-0, test-bundled-duckdb-2-0, test-duckdb-1-5,
 #       wasm, clippy, clippy-beta, fmt, doc, msrv, dependency-floor,
 #       bench-compile, example-check, scaffold-compile, symbol-check,
 #       abi-table, platform-table, spdx-list, autoload-entries, book,
@@ -290,10 +290,19 @@ jobs:
 
   test-duckdb-2-0:
     # The whole live suite against DuckDB v2.0.0, with the DuckDB 2.0 bindings
-    # (`libduckdb-sys` / `duckdb` 1.20000.0, published 2026-10-22; their
-    # bundled C API headers are byte-identical to the v2.0.0 tag's). Separate
-    # from `test-older-engines` only because Cargo.lock stays on the 1.5.6
-    # bindings: 1.20000.0 needs Rust 1.88.
+    # (`libduckdb-sys` / `duckdb` 1.20000.1; their bundled C API headers are
+    # byte-identical to the v2.0.0 tag's). Separate from `test-older-engines`
+    # only because Cargo.lock stays on the 1.5.6 bindings: the 2.0 bindings need
+    # Rust 1.88.
+    #
+    # 1.20000.1, not 1.20000.0: the .0 release's bundled engine reports itself
+    # as "v2.0.0-dev88614" (`pragma_version.cpp`), which the ABI check refuses
+    # as unverifiable, so every `bundled-test` job on .0 failed. A fresh
+    # `cargo update` selects .1, so .1 is what a user gets.
+    #
+    # Besides the live suite this runs what the other jobs run on the 1.5.6
+    # bindings and nothing else covers on the 2.0 ones: clippy, rustdoc and the
+    # doctests. (`test-bundled-duckdb-2-0` covers the source-build path.)
     name: Test against DuckDB v2.0.0
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -309,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           # `duckdb` pins `libduckdb-sys` exactly, so this moves both.
-          cargo update -p duckdb --precise 1.20000.0
+          cargo update -p duckdb --precise 1.20000.1
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
           test "$DUCKDB_TAG" = "v2.0.0" || { echo "::error::bindings are ${DUCKDB_TAG}, not v2.0.0"; exit 1; }
           scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "${{ runner.temp }}/libduckdb"
@@ -318,6 +327,45 @@ jobs:
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
         run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
+      - name: Doctests
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+        run: cargo test --doc --features bundled-test-prebuilt,duckdb-1-5-4
+      - name: Clippy
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings
+      - name: Rustdoc
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features duckdb-1-5-4
+
+  # DuckDB 2.0 compiled from source (`bundled-test`), on the 2.0 bindings. The
+  # path a contributor takes with no libduckdb on hand, and the one the
+  # prebuilt job above does not touch. Informational (`continue-on-error`, and
+  # so outside `ci-ok`) until it has a run history: a C++ build of DuckDB is
+  # slow, and a failure here has so far been the bindings' own build, not
+  # quack-rs.
+  test-bundled-duckdb-2-0:
+    name: Test bundled-test on the DuckDB 2.0 bindings (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Pin the DuckDB 2.0 bindings
+        run: |
+          set -euo pipefail
+          cargo update -p duckdb --precise 1.20000.1
+          DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
+          test "$DUCKDB_TAG" = "v2.0.0" || { echo "::error::bindings are ${DUCKDB_TAG}, not v2.0.0"; exit 1; }
+      - name: Test
+        run: cargo test --features bundled-test,duckdb-1-5-4 --lib --test ffi_roundtrip
 
   test-duckdb-1-5:
     name: Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features
@@ -528,6 +576,9 @@ jobs:
           CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
         run: cargo +1.86.0 update
       - run: cargo +1.86.0 check
+      # The `duckdb-1-5*` code, the arrow module included, is behind a feature
+      # the default check does not compile.
+      - run: cargo +1.86.0 check --features duckdb-1-5-4
 
   dependency-floor:
     # Cargo.toml declares `duckdb` / `libduckdb-sys` `>=1.4.4, <2`, but every
@@ -573,6 +624,10 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo bench --no-run
+      # The engine-level benchmark extension (benches/engine) is a separate crate;
+      # keep it compiling, and its driver parsing.
+      - run: cargo check --manifest-path benches/engine/Cargo.toml
+      - run: python3 -m py_compile benches/engine/compare.py
 
   example-check:
     name: Example (hello-ext · ${{ matrix.os }})
@@ -653,7 +708,7 @@ jobs:
           echo "Found _hello_ext_init_c_api in $DYLIB"
 
   abi-table:
-    name: ABI layout table (vs upstream DuckDB headers)
+    name: ABI layout table (vs upstream DuckDB headers), and every C API slot wrapped or listed
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -670,6 +725,17 @@ jobs:
         # be read as drift. Only exit 1 means the checked-in data is wrong.
         run: |
           python3 scripts/check-abi-table.py || status=$?
+          if [ "${status:-0}" -eq 2 ]; then
+            echo "::warning::upstream unreachable; check skipped, not failed"
+            exit 0
+          fi
+          exit "${status:-0}"
+      # Every slot of the C extension API is either used under src/ or listed,
+      # with a reason, in scripts/api-coverage-allowlist.txt, so a slot a DuckDB
+      # release adds is noticed instead of left for someone to read the header.
+      - name: Classify the C API surface
+        run: |
+          python3 scripts/check-api-coverage.py || status=$?
           if [ "${status:-0}" -eq 2 ]; then
             echo "::warning::upstream unreachable; check skipped, not failed"
             exit 0

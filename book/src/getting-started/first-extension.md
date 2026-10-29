@@ -375,7 +375,7 @@ This one line expands to the equivalent of:
 # use libduckdb_sys::{duckdb_connection, duckdb_extension_access, duckdb_extension_info};
 # use quack_rs::error::ExtensionError;
 # unsafe fn register(_: duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn hello_ext_init_c_api(
     info: duckdb_extension_info,
     access: *const duckdb_extension_access,

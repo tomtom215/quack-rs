@@ -30,9 +30,8 @@
 //! ```
 
 use libduckdb_sys::{
-    duckdb_data_chunk, duckdb_data_chunk_get_size, duckdb_data_chunk_get_vector,
-    duckdb_validity_row_is_valid, duckdb_vector, duckdb_vector_get_data,
-    duckdb_vector_get_validity, idx_t,
+    duckdb_data_chunk, duckdb_data_chunk_get_size, duckdb_data_chunk_get_vector, duckdb_vector,
+    duckdb_vector_get_data, duckdb_vector_get_validity, idx_t,
 };
 
 /// A typed reader for a single column in a `DuckDB` data chunk.
@@ -117,8 +116,13 @@ impl VectorReader {
         if self.validity.is_null() {
             return true;
         }
-        // SAFETY: validity is non-null and idx is in bounds per caller's contract.
-        unsafe { duckdb_validity_row_is_valid(self.validity, idx as idx_t) }
+        // The bit is tested here, not through `duckdb_validity_row_is_valid`: an
+        // FFI call per row was about a third of a nullable `map1`'s cost, and
+        // `duckdb.h` documents this layout (bit `idx % 64` of word `idx / 64`,
+        // set when the row is valid) as the faster way to read it.
+        // SAFETY: validity is non-null and idx is in bounds per caller's contract,
+        // so word `idx / 64` lies inside the mask.
+        unsafe { (*self.validity.add(idx >> 6) >> (idx & 63)) & 1 != 0 }
     }
 
     /// Reads an `i8` (TINYINT) value at row `idx`.
@@ -356,6 +360,20 @@ impl VectorReader {
     #[inline]
     pub const unsafe fn read_timestamp_ns(&self, idx: usize) -> i64 {
         // SAFETY: TIMESTAMP_NS is stored as i64 nanoseconds.
+        unsafe { self.read_i64(idx) }
+    }
+
+    /// Reads a `TIMESTAMPTZ_NS` value at row `idx`, as nanoseconds since the
+    /// epoch (`DuckDB` 2.0.0+).
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be less than `self.row_count()`.
+    /// - The column must contain `TIMESTAMPTZ_NS` data.
+    #[inline]
+    pub const unsafe fn read_timestamp_tz_ns(&self, idx: usize) -> i64 {
+        // SAFETY: TIMESTAMPTZ_NS is stored as i64 nanoseconds
+        // (`timestamp_tz_ns_t` wraps a `timestamp_ns_t`).
         unsafe { self.read_i64(idx) }
     }
 
@@ -685,5 +703,44 @@ mod tests {
         // SAFETY: row 0 is in bounds (row_count = 5), validity is null (all valid)
         assert!(unsafe { reader.is_valid(0) });
         assert!(unsafe { reader.is_valid(4) });
+    }
+
+    /// `is_valid` tests a bit itself instead of calling
+    /// `duckdb_validity_row_is_valid`. Held to the expression `duckdb.h` gives for
+    /// `duckdb_vector_get_validity` (`mask[row / 64] & (1 << (row % 64))`) over three
+    /// words, with masks that set and clear every position, so a wrong shift, word
+    /// or polarity fails. The pointer arithmetic is also what Miri checks.
+    #[test]
+    fn is_valid_follows_the_documented_mask_layout() {
+        let masks: [[u64; 3]; 6] = [
+            [u64::MAX; 3],
+            [0; 3],
+            [
+                0xAAAA_AAAA_AAAA_AAAA,
+                0x5555_5555_5555_5555,
+                0xAAAA_AAAA_AAAA_AAAA,
+            ],
+            [1, 1 << 63, 1],
+            [u64::MAX ^ (1 << 63), 1 << 63, u64::MAX ^ 1],
+            [
+                0x0123_4567_89AB_CDEF,
+                0xFEDC_BA98_7654_3210,
+                0x8000_0000_0000_0001,
+            ],
+        ];
+        for words in masks {
+            let mut mask = words; // the reader aliases `mask`; the oracle reads `words`
+            let reader = VectorReader {
+                data: std::ptr::null(),
+                validity: mask.as_mut_ptr(),
+                row_count: 192,
+            };
+            for row in 0..192 {
+                let documented = words[row / 64] & (1 << (row % 64)) != 0;
+                // SAFETY: `row < 192` is inside the three words of `mask`.
+                let got = unsafe { reader.is_valid(row) };
+                assert_eq!(got, documented, "row {row}, mask {words:x?}");
+            }
+        }
     }
 }

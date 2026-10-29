@@ -150,6 +150,8 @@ impl LogicalType {
     ///
     /// - Panics if `type_id` is composite, naming the constructor to use
     ///   instead. Use [`try_new`][Self::try_new] to get a `Result`.
+    /// - Panics if `type_id` is `TypeId::Variant` (`duckdb-1-5-3`): see
+    ///   [`try_new`][Self::try_new].
     /// - Panics if `type_id` is [`TypeId::IntegerLiteral`] or
     ///   [`TypeId::StringLiteral`]: `DuckDB` accepts either in a function or
     ///   type registration, but the first query returning one fails with an
@@ -177,9 +179,14 @@ impl LogicalType {
     ///
     /// Returns an error instead of panicking when `type_id` is composite (see
     /// [`LogicalType::new`]), is [`TypeId::IntegerLiteral`] or
-    /// [`TypeId::StringLiteral`], when the `DuckDB` C API returns a null
+    /// [`TypeId::StringLiteral`], when `type_id` is `TypeId::Variant` (with
+    /// `duckdb-1-5-3`; a type made from the id alone has no `STRUCT` layout,
+    /// and the first query that uses it crashes `DuckDB` or invalidates the
+    /// database), when the `DuckDB` C API returns a null
     /// pointer, or when the running `DuckDB` does not support the type
-    /// (`TIME_NS` before 1.5.0, whose C API returns an `INVALID` type for it).
+    /// (`TIME_NS` before 1.5.0, whose C API returns an `INVALID` type for it;
+    /// `TIMESTAMPTZ_NS` before 2.0.0, refused without sending the id: a
+    /// `DuckDB` built with assertions aborts on a type id it does not know).
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
         Self::precheck(type_id)?;
         // SAFETY: any DUCKDB_TYPE value is accepted; DuckDB returns an owned
@@ -203,8 +210,9 @@ impl LogicalType {
         Ok(created)
     }
 
-    /// The checks [`try_new`][Self::try_new] makes before its first `DuckDB`
-    /// call: a composite id and the two literal types are refused.
+    /// The checks [`try_new`][Self::try_new] makes before it creates a type: a
+    /// composite id, the two literal types, (with `duckdb-1-5-3`) `VARIANT`
+    /// and `TIMESTAMPTZ_NS` on an engine older than 2.0.0 are refused.
     fn precheck(type_id: TypeId) -> Result<(), LogicalTypeError> {
         if type_id.is_composite() {
             return Err(LogicalTypeError::with_detail(
@@ -221,6 +229,38 @@ impl LogicalType {
                      that returns it fails with an internal error that invalidates the \
                      database, and a parameter of it can never be called. Use BIGINT or \
                      VARCHAR"
+                ),
+            ));
+        }
+        if type_id == TypeId::TimestampTzNs {
+            // SAFETY: `try_new` creates the type with `duckdb_create_logical_type`
+            // right after this, so the dispatch table is initialised whenever
+            // this runs.
+            let engine = unsafe { crate::abi::engine_version() };
+            if let Some(engine) = engine.filter(|v| predates_timestamp_tz_ns(v)) {
+                return Err(LogicalTypeError::with_detail(
+                    "duckdb_create_logical_type",
+                    format!(
+                        "{type_id} (type id 42) was added in DuckDB 2.0.0 and this is DuckDB \
+                         {engine}. The id is not sent: a DuckDB built with assertions aborts \
+                         the process on a type id it does not know, and one built without \
+                         them answers with an INVALID type"
+                    ),
+                ));
+            }
+        }
+        #[cfg(feature = "duckdb-1-5-3")]
+        if type_id == TypeId::Variant {
+            return Err(LogicalTypeError::with_detail(
+                "duckdb_create_logical_type",
+                format!(
+                    "{type_id} cannot be made from its id: DuckDB stores a VARIANT as a \
+                     STRUCT, and the type `duckdb_create_logical_type` returns for the id \
+                     alone has no such layout. A function that declares it registers, and \
+                     the first query that gives it a VARIANT argument or result crashes \
+                     DuckDB (a segmentation fault on 2.0.0) or fails with an internal \
+                     error that invalidates the database (1.5.x). Declare the parameter as \
+                     ANY, which accepts a VARIANT"
                 ),
             ));
         }
@@ -695,11 +735,35 @@ fn check_array_size(size: u64) -> Result<(), LogicalTypeError> {
     Ok(())
 }
 
+/// Whether `engine`, a `duckdb_library_version()` string, names a release older
+/// than 2.0.0, which has no `TIMESTAMPTZ_NS`. A development build (`v2.0.0-dev1`)
+/// or anything else `parse_version` cannot read is not known to predate it.
+fn predates_timestamp_tz_ns(engine: &str) -> bool {
+    crate::abi::parse_version(engine).is_some_and(|version| version < (2, 0, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        check_array_size, check_decimal, checked_names, LogicalType, TypeId, MAX_UNION_MEMBERS,
+        check_array_size, check_decimal, checked_names, predates_timestamp_tz_ns, LogicalType,
+        TypeId, MAX_UNION_MEMBERS,
     };
+
+    /// 2.0.0 is the first release with the type: the comparison is exactly
+    /// "less than", on each of major, minor and patch.
+    #[test]
+    fn only_a_release_before_2_0_0_predates_timestamp_tz_ns() {
+        for older in ["v1.4.4", "v1.5.0", "v1.5.6", "v1.99.99", "1.5.6", "v0.9.9"] {
+            assert!(predates_timestamp_tz_ns(older), "{older}");
+        }
+        for newer in ["v2.0.0", "v2.0.1", "v2.1.0", "v3.0.0", "2.0.0"] {
+            assert!(!predates_timestamp_tz_ns(newer), "{newer}");
+        }
+        // Unreadable versions are let through: the version is not known.
+        for unknown in ["", "v2.0.0-dev88614", "v1.5.6-dev1", "garbage", "v1.5"] {
+            assert!(!predates_timestamp_tz_ns(unknown), "{unknown:?}");
+        }
+    }
 
     fn names(list: &[&str], max: Option<usize>) -> Result<usize, String> {
         checked_names("STRUCT field", "api", list.iter().copied(), max)

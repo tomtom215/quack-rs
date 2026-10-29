@@ -33,6 +33,7 @@ fn valid_yml_parses_correctly() {
     assert_eq!(desc.license, "MIT");
     assert_eq!(desc.requires_toolchains, "rust;python3");
     assert_eq!(desc.excluded_platforms, "");
+    assert_eq!(desc.opt_in_platforms, "");
     assert_eq!(desc.maintainers, vec!["Jane Doe"]);
     assert_eq!(desc.github, "janedoe/duckdb-my-ext");
     assert_eq!(desc.git_ref, "main");
@@ -854,4 +855,95 @@ fn a_quoted_value_keeps_its_spaces() {
         Err(e) => assert!(e.to_string().contains("extension name must start"), "{e}"),
     }
     assert!(crate::validate::description_yml::validate_description_yml_str(yml).is_err());
+}
+
+/// The community build removes a platform only when its exact name is listed
+/// (`arch in excluded_arch_values` in `extension-ci-tools`), so a group name is
+/// accepted, as published files write it, but excludes nothing: the warning
+/// names the platforms that would.
+#[test]
+fn a_platform_group_name_is_accepted_with_a_warning_naming_its_members() {
+    // A commit hash, so the only warnings are about platforms.
+    let with = |field: &str, value: &str| {
+        valid_yml().replace("ref: main", "ref: 4f1c2e9").replace(
+            "  maintainers:\n",
+            &format!("  {field}: \"{value}\"\n  maintainers:\n"),
+        )
+    };
+    for (group, members) in [
+        ("wasm", "wasm_eh;wasm_mvp;wasm_threads"),
+        ("windows", "windows_amd64;windows_amd64_mingw;windows_arm64"),
+        (
+            "linux",
+            "linux_amd64;linux_amd64_musl;linux_arm64;linux_arm64_musl",
+        ),
+        ("osx", "osx_amd64;osx_arm64"),
+    ] {
+        let desc = parse_description_yml(&with("excluded_platforms", &format!("{group};wasm_mvp")))
+            .unwrap_or_else(|e| panic!("{group}: {e}"));
+        let group_warnings: Vec<_> = desc
+            .warnings
+            .iter()
+            .filter(|w| w.contains(&format!("'{group}' is a platform group")))
+            .collect();
+        assert_eq!(group_warnings.len(), 1, "{group}: {:?}", desc.warnings);
+        assert!(
+            group_warnings[0].contains(&format!("\"{members}\"")),
+            "{:?}",
+            group_warnings[0]
+        );
+    }
+    // Exact names draw no warning, and a group is no more meaningful in
+    // `opt_in_platforms`.
+    let desc = parse_description_yml(&with("excluded_platforms", "wasm_mvp;wasm_eh")).unwrap();
+    assert!(desc.warnings.is_empty(), "{:?}", desc.warnings);
+    let desc = parse_description_yml(&with("opt_in_platforms", "wasm")).unwrap();
+    assert_eq!(desc.warnings.len(), 1, "{:?}", desc.warnings);
+    assert!(desc.warnings[0].contains("opt_in_platforms: 'wasm' is a platform group"));
+}
+
+/// `opt_in_platforms` is read, and each name the build would ignore is named:
+/// the build consults the field only for platforms that are opt-in, and a
+/// misspelt one is a silent omission.
+#[test]
+fn opt_in_platforms_are_read_and_the_names_the_build_ignores_are_warned_about() {
+    let with = |value: &str| {
+        valid_yml().replace("ref: main", "ref: 4f1c2e9").replace(
+            "  maintainers:\n",
+            &format!("  opt_in_platforms: \"{value}\"\n  maintainers:\n"),
+        )
+    };
+    let desc = parse_description_yml(&with("osx_amd64;linux_arm64_musl")).unwrap();
+    assert_eq!(desc.opt_in_platforms, "osx_amd64;linux_arm64_musl");
+    assert!(desc.warnings.is_empty(), "{:?}", desc.warnings);
+
+    let desc = parse_description_yml(&with("linux_amd64")).unwrap();
+    assert_eq!(desc.warnings.len(), 1, "{:?}", desc.warnings);
+    assert!(
+        desc.warnings[0].contains("'linux_amd64' is not an opt-in platform"),
+        "{:?}",
+        desc.warnings
+    );
+
+    let desc = parse_description_yml(&with("osx_amd65;windows_arm64")).unwrap();
+    assert_eq!(desc.warnings.len(), 1, "{:?}", desc.warnings);
+    assert!(
+        desc.warnings[0].contains("'osx_amd65' is not a recognized DuckDB build target"),
+        "{:?}",
+        desc.warnings
+    );
+
+    // A trailing ';' is an empty token and means nothing.
+    let desc = parse_description_yml(&with("osx_amd64;")).unwrap();
+    assert!(desc.warnings.is_empty(), "{:?}", desc.warnings);
+
+    // The list form is joined, as for `excluded_platforms`.
+    let yml = valid_yml().replace("ref: main", "ref: 4f1c2e9").replace(
+        "  maintainers:\n",
+        "  opt_in_platforms:\n    - osx_amd64\n    - windows_arm64\n  maintainers:\n",
+    );
+    let desc = parse_description_yml(&yml).unwrap();
+    assert_eq!(desc.opt_in_platforms, "osx_amd64;windows_arm64");
+    assert_eq!(desc.warnings.len(), 1, "{:?}", desc.warnings);
+    assert!(desc.warnings[0].contains("opt_in_platforms is a YAML list"));
 }

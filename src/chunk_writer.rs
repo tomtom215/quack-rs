@@ -18,10 +18,14 @@
 //!
 //! unsafe extern "C" fn my_scan(info: duckdb_function_info, output: duckdb_data_chunk) {
 //!     let mut cw = unsafe { ChunkWriter::new(output) };
+//!     // One writer per column, fetched once: building a writer costs several
+//!     // C API calls, so doing it for every row is several times slower.
+//!     let mut names = unsafe { cw.writer(0) };
+//!     let mut values = unsafe { cw.writer(1) };
 //!     // Write some rows
 //!     if let Some(row) = cw.next_row() {
-//!         unsafe { cw.writer(0).write_varchar(row, "hello") };
-//!         unsafe { cw.writer(1).write_i64(row, 42) };
+//!         unsafe { names.write_varchar(row, "hello") };
+//!         unsafe { values.write_i64(row, 42) };
 //!     }
 //!     // set_size is called automatically when `cw` is dropped
 //! }
@@ -176,6 +180,10 @@ impl ChunkWriter {
     /// - `col_idx` must be less than the chunk's column count.
     /// - The returned writer borrows nothing and caches pointers into the
     ///   chunk's buffers: it must not be used after the scan callback returns.
+    ///
+    /// Fetch each column's writer once per callback and keep it: building one
+    /// costs several C API calls, which a per-row `cw.writer(i)` pays on every
+    /// row (about 5× the cost of the write itself).
     pub unsafe fn writer(&self, col_idx: usize) -> VectorWriter {
         // SAFETY: self.raw is valid per constructor. col_idx is in bounds per caller.
         let vec =

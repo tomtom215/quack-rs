@@ -13,9 +13,12 @@ use quack_rs::vector::VectorWriter;
 
 quack_rs::scalar_callback!(double_it, |info, input, output| {
     let chunk = unsafe { DataChunk::from_raw(input) };
+    // Build the reader and writer once per chunk: each costs several C API
+    // calls, which is several times the work of the loop body if done per row.
+    let reader = unsafe { chunk.reader(0) };
     let mut writer = unsafe { VectorWriter::from_vector(output) };
     for row in 0..chunk.size() {
-        let value = unsafe { chunk.reader(0).read_i64(row) };
+        let value = unsafe { reader.read_i64(row) };
         unsafe { writer.write_i64(row, value * 2) };
     }
 });
@@ -62,7 +65,8 @@ table scan also sets the output chunk's size to 0.
 The macros cover every callback you write yourself except the aggregate's
 `state_size` and `state_init`. You normally let `ffi_state::<T>()` install
 `FfiState`'s versions of those, which already catch a panic in your `Default`
-impl. A `COPY … FROM` reader is a table function, so it uses the `table_*`
+impl (except when the aggregate runs as a window function: see
+[Known Limitations](../reference/known-limitations.md#a-failing-state-initialiser-in-a-window-frame-crashes-the-host-duckdb-defect)). A `COPY … FROM` reader is a table function, so it uses the `table_*`
 macros.
 
 Each page shows its macros in use: [Scalar Functions](scalar.md),

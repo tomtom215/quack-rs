@@ -36,6 +36,7 @@
 #![allow(missing_docs)]
 
 mod cli;
+mod entry;
 mod footer;
 
 use std::fs;
@@ -92,10 +93,17 @@ fn run() -> Result<(), String> {
 
     let so_data = fs::read(&args.input)
         .map_err(|e| format!("failed to read {}: {e}", args.input.display()))?;
+    // A C API extension is found by `<name>_init_c_api`, `<name>` being the
+    // output's file name. A WebAssembly module's export names are not
+    // NUL-terminated strings, and a C++ extension has other entry points.
+    if args.abi_type != "CPP" && !args.wasm {
+        if let Some(note) = entry::entry_point_note(&so_data, &args.output) {
+            eprintln!("warning: {note}");
+        }
+    }
     let (output, metadata) = stamp(so_data, &args)?;
 
-    fs::write(&args.output, &output)
-        .map_err(|e| format!("failed to write {}: {e}", args.output.display()))?;
+    entry::write_atomically(&args.output, &output)?;
 
     println!(
         "Written {} bytes → {} ({} for {})",

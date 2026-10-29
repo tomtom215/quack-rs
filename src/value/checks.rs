@@ -48,6 +48,11 @@ pub(super) const fn is_scalar_cast_source(source: TypeId) -> bool {
         | TypeId::TimestampS
         | TypeId::TimestampMs
         | TypeId::TimestampNs
+        // `TimestampTzNsCastSwitch` (`time_casts.cpp`, DuckDB 2.0.0): every
+        // listed cast reports failure through `TryCast`, and the one that
+        // fails on a non-finite input is guarded in `cast_guard`. On an engine
+        // before 2.0.0 no value has this type.
+        | TypeId::TimestampTzNs
         | TypeId::Interval
         | TypeId::Uuid => true,
         #[cfg(feature = "duckdb-1-5")]
@@ -172,6 +177,7 @@ mod tests {
             TypeId::TimestampS,
             TypeId::TimestampMs,
             TypeId::TimestampNs,
+            TypeId::TimestampTzNs,
             TypeId::Interval,
             TypeId::Uuid,
         ] {

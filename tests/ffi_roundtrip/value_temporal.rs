@@ -42,6 +42,18 @@ const SOURCES: &[(&str, &str, TypeId)] = &[
     ("v_time_ns", "TIME_NS", TypeId::TimeNs),
 ];
 
+/// `TIMESTAMPTZ_NS`, a source only an engine from 2.0.0 has.
+const TZ_NS_SOURCE: (&str, &str, TypeId) = ("v_ts_tz_ns", "TIMESTAMPTZ_NS", TypeId::TimestampTzNs);
+
+/// Every source the linked engine has.
+fn sources(fx: &Fixture) -> Vec<(&'static str, &'static str, TypeId)> {
+    let mut all = SOURCES.to_vec();
+    if fx.engine_major() >= 2 {
+        all.push(TZ_NS_SOURCE);
+    }
+    all
+}
+
 /// The instants every `TIMESTAMP`-family source is tried at, as `TIMESTAMP`
 /// literals. Each is cast to the source type in SQL; the ones that type
 /// cannot hold are skipped (see [`literals`]).
@@ -87,15 +99,19 @@ fn literals(sql_type: &str) -> Vec<String> {
         ]
         .map(|t| format!("{t}::TIMETZ"))
         .to_vec(),
-        "TIMESTAMP_NS" => {
+        "TIMESTAMP_NS" | "TIMESTAMPTZ_NS" => {
             let mut out: Vec<String> = TIMESTAMP_EDGES
                 .iter()
-                .map(|t| format!("({t})::TIMESTAMP_NS"))
+                .map(|t| format!("({t})::{sql_type}"))
                 .collect();
-            // TIMESTAMP_NS's own extremes, which no TIMESTAMP literal reaches
+            // The type's own extremes, which no TIMESTAMP literal reaches
             // exactly.
-            out.push("make_timestamp_ns(-9223286400000000000)".to_owned());
-            out.push("make_timestamp_ns(9223372036854775806)".to_owned());
+            out.push(format!(
+                "make_timestamp_ns(-9223286400000000000)::{sql_type}"
+            ));
+            out.push(format!(
+                "make_timestamp_ns(9223372036854775806)::{sql_type}"
+            ));
             out
         }
         _ => TIMESTAMP_EDGES
@@ -190,6 +206,12 @@ fn every_getter(value: &Value) -> GetterResults {
                 .map(|x| text(&Value::timestamp_ns(x).expect("a getter result is in range"))),
         ),
         (
+            "TIMESTAMPTZ_NS",
+            value
+                .as_timestamp_tz_ns()
+                .map(|x| text(&Value::timestamp_tz_ns(x).expect("a getter result is in range"))),
+        ),
+        (
             "INTERVAL",
             value.as_interval().map(|x| text(&Value::interval(x))),
         ),
@@ -212,19 +234,20 @@ type GetterResults = Vec<(&'static str, Option<String>)>;
 static SEEN: Mutex<Vec<(String, GetterResults)>> = Mutex::new(Vec::new());
 
 fn register_probe(fx: &Fixture) {
+    let sources = sources(fx);
     let mut builder =
         TableFunctionBuilder::new("vq_temporal").named_param("label", TypeId::Varchar);
-    for &(param, _, type_id) in SOURCES {
+    for &(param, _, type_id) in &sources {
         builder = builder.named_param(param, type_id);
     }
     let table_fn = builder
-        .with_state::<bool, _>(|bind| {
+        .with_state::<bool, _>(move |bind| {
             bind.add_result_column("n", TypeId::BigInt);
             // SAFETY: every name read here was declared above.
             let label = unsafe { bind.get_named_parameter_value("label") }
                 .as_str()
                 .unwrap_or_default();
-            for &(param, _, _) in SOURCES {
+            for &(param, _, _) in &sources {
                 // SAFETY: as above.
                 let value = unsafe { bind.get_named_parameter_value(param) };
                 if value.is_null() {
@@ -280,7 +303,7 @@ fn every_getter_on_every_temporal_edge_matches_duckdb_and_never_aborts() {
     register_probe(&fx);
 
     let (mut calls, mut some) = (0_usize, 0_usize);
-    for &(param, sql_type, _) in SOURCES {
+    for &(param, sql_type, _) in &sources(&fx) {
         for literal in literals(sql_type) {
             // A literal the source type cannot hold is an error in SQL too;
             // that is DuckDB's range, not a getter's.
@@ -320,6 +343,21 @@ fn every_getter_on_every_temporal_edge_matches_duckdb_and_never_aborts() {
                     } else {
                         sql_cast(&con, &literal, target)
                     };
+                    // `TIMESTAMPTZ_NS` has the same problem as `TIMESTAMPTZ`
+                    // in the other direction: the ICU extension adds SQL
+                    // casts (`TIMESTAMP_NS -> TIMESTAMPTZ_NS`, `-> TIMESTAMP`)
+                    // that the built-in cast set the C API uses lacks, so SQL
+                    // succeeds where a getter correctly returns `None`. Every
+                    // value a getter does return must still be SQL's.
+                    if sql_type == "TIMESTAMPTZ_NS" || *target == "TIMESTAMPTZ_NS" {
+                        if got.is_some() {
+                            assert_eq!(
+                                got, &want,
+                                "{literal} read as {target}: getter vs CAST in SQL"
+                            );
+                        }
+                        continue;
+                    }
                     assert_eq!(
                         got, &want,
                         "{literal} read as {target}: getter vs CAST in SQL"

@@ -81,9 +81,10 @@
 //!
 //! quack_rs::scalar_callback!(my_func, |info, input, output| {
 //!     let chunk = unsafe { DataChunk::from_raw(input) };
+//!     let reader = unsafe { chunk.reader(0) }; // once per chunk, not per row
 //!     let mut writer = unsafe { VectorWriter::from_vector(output) };
 //!     for row in 0..chunk.size() {
-//!         let val = unsafe { chunk.reader(0).read_i64(row) };
+//!         let val = unsafe { reader.read_i64(row) };
 //!         unsafe { writer.write_i64(row, val * 2) };
 //!     }
 //! });
@@ -131,9 +132,10 @@ pub use payload::{drop_panic_payload, take_panic_message, MAX_NESTED_PAYLOAD_DRO
 /// ```rust,no_run
 /// quack_rs::scalar_callback!(double_it, |info, input, output| {
 ///     let chunk = unsafe { quack_rs::data_chunk::DataChunk::from_raw(input) };
+///     let reader = unsafe { chunk.reader(0) }; // once per chunk, not per row
 ///     let mut writer = unsafe { quack_rs::vector::VectorWriter::from_vector(output) };
 ///     for row in 0..chunk.size() {
-///         let val = unsafe { chunk.reader(0).read_i64(row) };
+///         let val = unsafe { reader.read_i64(row) };
 ///         unsafe { writer.write_i64(row, val * 2) };
 ///     }
 /// });

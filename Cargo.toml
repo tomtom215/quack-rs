@@ -16,6 +16,7 @@ autobenches = false
 exclude = [
     "docs/",
     "examples/",
+    "benches/engine/",
     "fuzz/",
     ".github/",
     "book/",
@@ -191,7 +192,10 @@ duckdb = { version = ">=1.4.4, <2", optional = true }
 # Used only when `bundled-test` / `bundled-test-prebuilt` is active: compiles the
 # thin C++ shim that calls DuckDB's internal CreateAPIv1() to initialise the
 # loadable-extension dispatch table from the linked DuckDB symbols.
-cc = "1"
+# 1.0.69 is what a minimal-versions resolution needs: `cargo update -Z
+# direct-minimal-versions` cannot resolve `cc = "1"`, because a transitive
+# dependency requires `^1.0.69`.
+cc = "1.0.69"
 
 [dev-dependencies]
 # Only for `#[cfg_attr(test, mutants::skip)]`, the form cargo-mutants

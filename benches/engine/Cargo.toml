@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+#
+# A loadable extension that exists to be timed: the same functions written with
+# quack-rs (`q_*`) and by hand against libduckdb-sys (`r_*`). `compare.py` builds
+# it against two quack-rs trees and runs both inside a real DuckDB; see README.md.
+# Not part of the published crate (`cargo package` skips nested packages).
+[package]
+name = "quack-rs-engine-bench"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.86.0"
+publish = false
+description = "Engine-level benchmark extension for quack-rs: SDK functions beside hand-written twins"
+
+[lib]
+name = "benchext"
+crate-type = ["cdylib"]
+
+[dependencies]
+quack_rs = { path = "../..", package = "quack-rs" }
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+
+[profile.release]
+panic = "unwind"
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

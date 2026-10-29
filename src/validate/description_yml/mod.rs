@@ -43,7 +43,8 @@
 //! | `extension.build` | Yes | Must be `"cargo"` for Rust extensions |
 //! | `extension.license` | Yes | Non-empty (`licence` accepted); a value [`validate_spdx_license`] rejects is a warning in [`DescriptionYml::warnings`] |
 //! | `extension.requires_toolchains` | No | Semi-colon list; [`validate_rust_extension`] additionally requires `"rust"` |
-//! | `extension.excluded_platforms` | No | Must pass [`validate_excluded_platforms_str`]; a YAML list is accepted with a warning |
+//! | `extension.excluded_platforms` | No | Must pass [`validate_excluded_platforms_str`]; a YAML list is accepted with a warning, and so is a group name such as `wasm`, which excludes nothing |
+//! | `extension.opt_in_platforms` | No | Platforms to build that are not built by default; the parser warns about any name the build would ignore |
 //! | `extension.maintainers` | Yes | At least one maintainer |
 //! | `repo.github` | Yes | Non-empty `owner/repo` format |
 //! | `repo.ref` | Yes | Non-empty git ref; anything but a commit hash is a warning |

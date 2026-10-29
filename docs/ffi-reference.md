@@ -25,7 +25,7 @@ each pitfall in detail; this page is the quick-reference.
 ```rust
 // The entry point function name must be: {extension_name}_init_c_api
 // (all lowercase, underscores, no "lib" prefix)
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_ext_init_c_api(
     info: duckdb_extension_info,
     access: *const duckdb_extension_access,
@@ -355,7 +355,7 @@ dealing with these constants directly.
 ## Common Mistakes Quick Reference
 
 This page does not keep its own copy of the pitfall list. Every known pitfall
-(L1–L19 and P1–P12), with symptom, root cause and fix, is in
+(L1–L19 and P1–P15), with symptom, root cause and fix, is in
 [`LESSONS.md`](../LESSONS.md); the book's
 [Pitfall Catalog](https://quack-rs.com/reference/pitfalls.html) has the same
 entries with compiled examples and a summary table.

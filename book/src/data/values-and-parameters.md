@@ -84,7 +84,8 @@ reads as `Some(42)` through `as_i64()`, a `DOUBLE` `1.5` as `Some(2)` through
 - the cast fails (`'abc'`, or a number out of range for the target), or
 - for the temporal getters, SQL would refuse the conversion: the time of an
   infinite timestamp (`as_time()` of `'infinity'::TIMESTAMP`), a `TIMESTAMP`
-  outside `TIMESTAMP_NS`'s 1677–2262 range read with `as_timestamp_ns()`, or
+  outside `TIMESTAMP_NS`'s 1677–2262 range read with `as_timestamp_ns()` (or
+  `TIMESTAMPTZ_NS`'s, with `as_timestamp_tz_ns()`), or
   a result outside the target type's range.
 
 No getter calls a `duckdb_get_*` function in the first three cases — those
@@ -170,7 +171,8 @@ other scalar constructors are infallible, with two exceptions that return
 
 - The temporal constructors that take a raw 64-bit payload — `time`,
   `time_tz`, `time_ns` (with `duckdb-1-5`), `timestamp`, `timestamp_tz`,
-  `timestamp_s`, `timestamp_ms` and `timestamp_ns`. DuckDB stores any payload
+  `timestamp_s`, `timestamp_ms`, `timestamp_ns` and `timestamp_tz_ns` (DuckDB
+  2.0.0+; an older engine returns an error). DuckDB stores any payload
   unchecked, and rendering or casting an out-of-range one aborts, crashes or
   prints garbage, so quack-rs accepts exactly the range DuckDB's SQL produces
   (`TIME` `00:00:00`–`24:00:00`, the `TIMESTAMP` span

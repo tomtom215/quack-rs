@@ -4,10 +4,13 @@
 // and encouraging more Rust development!
 
 use crate::error::ExtensionError;
-use crate::validate::platform::DUCKDB_RETIRED_PLATFORMS;
+use crate::validate::platform::{
+    is_opt_in_platform, DUCKDB_CI_PLATFORMS, DUCKDB_OPT_IN_PLATFORMS, DUCKDB_PLATFORM_GROUPS,
+    DUCKDB_RETIRED_PLATFORMS,
+};
 use crate::validate::{
     validate_excluded_platforms_str, validate_extension_name, validate_extension_version,
-    validate_spdx_license,
+    validate_platform, validate_spdx_license,
 };
 
 use super::model::DescriptionYml;
@@ -29,7 +32,12 @@ use super::yaml11;
 ///   error: the community build does not read the field, and published
 ///   extensions use `BSL 1.1`, `GPL-3.0` and free text
 /// - `extension.excluded_platforms` — if present, must pass
-///   [`validate_excluded_platforms_str`]; a YAML list is validated too, and warned about
+///   [`validate_excluded_platforms_str`]; a YAML list is validated too, and warned about.
+///   A platform *group* name (`wasm`, `windows`, …) passes, with a warning: the
+///   community build compares exact platform names, so a group excludes nothing
+/// - `extension.opt_in_platforms` — if present, a warning for each name the
+///   build would ignore: a group, an unknown name, or a platform that is built
+///   without opting in
 /// - `extension.maintainers` — at least one name
 /// - `repo.github` — non-empty and must contain `/`
 /// - `repo.ref` — non-empty
@@ -142,21 +150,7 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     // community-extensions documentation does not list it as required.
     let requires_toolchains = extension.semicolon_list("requires_toolchains", &mut warnings)?;
 
-    let excluded_platforms = extension.semicolon_list("excluded_platforms", &mut warnings)?;
-    validate_excluded_platforms_str(&excluded_platforms).map_err(|e| {
-        ExtensionError::new(format!(
-            "description.yml: extension.excluded_platforms: {e}"
-        ))
-    })?;
-    for retired in excluded_platforms
-        .split(';')
-        .filter(|p| DUCKDB_RETIRED_PLATFORMS.contains(p))
-    {
-        warnings.push(format!(
-            "extension.excluded_platforms: '{retired}' is no longer built by DuckDB, so \
-             excluding it has no effect"
-        ));
-    }
+    let (excluded_platforms, opt_in_platforms) = extension.platforms(&mut warnings)?;
 
     let maintainers = extension.maintainers(&mut warnings)?;
     if maintainers.is_empty() {
@@ -193,6 +187,7 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         license,
         requires_toolchains,
         excluded_platforms,
+        opt_in_platforms,
         maintainers,
         github,
         git_ref,
@@ -201,13 +196,72 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     })
 }
 
+/// The platforms `group` stands for, as the community CI builds them:
+/// `wasm` is `wasm_eh`, `wasm_mvp` and `wasm_threads`.
+fn platforms_in_group(group: &str) -> Vec<&'static str> {
+    DUCKDB_CI_PLATFORMS
+        .iter()
+        .copied()
+        .filter(|p| {
+            p.strip_prefix(group)
+                .is_some_and(|rest| rest.starts_with('_'))
+        })
+        .collect()
+}
+
+/// Warns about each platform group name in `list`, the value of `field`.
+///
+/// `DUCKDB_PLATFORM_GROUPS` are the top-level keys of the distribution matrix,
+/// and published files do write them in `excluded_platforms`. The script that
+/// applies the field, `scripts/modify_distribution_matrix.py` in
+/// `extension-ci-tools`, tests `arch in excluded_arch_values` on every branch
+/// the community build uses (`v1.4-andium`, `v1.5-variegata`, `main`,
+/// `v2.0-cyanoptera`), so a group name matches no platform and the build
+/// carries on building all of them.
+fn warn_about_platform_groups(field: &str, list: &str, warnings: &mut Vec<String>) {
+    for group in list
+        .split(';')
+        .filter(|p| DUCKDB_PLATFORM_GROUPS.contains(p))
+    {
+        warnings.push(format!(
+            "extension.{field}: '{group}' is a platform group, not a platform. The community \
+             build compares exact platform names, so it matches nothing here; list the \
+             platforms instead: \"{}\"",
+            platforms_in_group(group).join(";")
+        ));
+    }
+}
+
+/// Warns about each name in `opt_in_platforms` the community build would ignore.
+///
+/// The build only looks the field up for platforms that are opt-in
+/// ([`DUCKDB_OPT_IN_PLATFORMS`]), so anything else in it does nothing, and a
+/// misspelt platform is a silent omission.
+fn warn_about_ignored_opt_ins(list: &str, warnings: &mut Vec<String>) {
+    warn_about_platform_groups("opt_in_platforms", list, warnings);
+    for platform in list.split(';').filter(|p| !p.is_empty()) {
+        if DUCKDB_PLATFORM_GROUPS.contains(&platform) || is_opt_in_platform(platform) {
+            continue;
+        }
+        let why = if validate_platform(platform).is_ok() {
+            "is not an opt-in platform, so the community build ignores it here"
+        } else {
+            "is not a recognized DuckDB build target, so the community build ignores it"
+        };
+        warnings.push(format!(
+            "extension.opt_in_platforms: '{platform}' {why} (the opt-in platforms are {})",
+            DUCKDB_OPT_IN_PLATFORMS.join(", ")
+        ));
+    }
+}
+
 /// Warns about each field this parser reads as text whose unquoted value
 /// `PyYAML` — which the community build reads the file with, following YAML
 /// 1.1 — reads as something else: an unquoted `yes` is a boolean there and
 /// `0.10` the float 0.1. Fields this parser does not read
 /// (`custom_toolchain_script: true`, a real boolean) are left alone.
 fn warn_about_yaml_1_1_retyping(sections: &[&Fields<'_>], warnings: &mut Vec<String>) {
-    const READ_AS_TEXT: [&str; 12] = [
+    const READ_AS_TEXT: [&str; 13] = [
         "name",
         "description",
         "version",
@@ -217,6 +271,7 @@ fn warn_about_yaml_1_1_retyping(sections: &[&Fields<'_>], warnings: &mut Vec<Str
         "licence",
         "requires_toolchains",
         "excluded_platforms",
+        "opt_in_platforms",
         "github",
         "ref",
         "ref_next",
@@ -329,6 +384,31 @@ impl<'a> Fields<'a> {
             self.section
         ));
         Ok(joined)
+    }
+
+    /// `excluded_platforms` and `opt_in_platforms`, in that order: the first
+    /// validated, both warned about where the community build would ignore them.
+    fn platforms(&self, warnings: &mut Vec<String>) -> Result<(String, String), ExtensionError> {
+        let excluded = self.semicolon_list("excluded_platforms", warnings)?;
+        validate_excluded_platforms_str(&excluded).map_err(|e| {
+            ExtensionError::new(format!(
+                "description.yml: extension.excluded_platforms: {e}"
+            ))
+        })?;
+        for retired in excluded
+            .split(';')
+            .filter(|p| DUCKDB_RETIRED_PLATFORMS.contains(p))
+        {
+            warnings.push(format!(
+                "extension.excluded_platforms: '{retired}' is no longer built by DuckDB, so \
+                 excluding it has no effect"
+            ));
+        }
+        warn_about_platform_groups("excluded_platforms", &excluded, warnings);
+
+        let opt_in = self.semicolon_list("opt_in_platforms", warnings)?;
+        warn_about_ignored_opt_ins(&opt_in, warnings);
+        Ok((excluded, opt_in))
     }
 
     /// `maintainers`: a list of names. A lone name is accepted with a warning.

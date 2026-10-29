@@ -576,3 +576,116 @@ fn a_footer_with_the_wrong_magic_is_not_recognised() {
         assert_eq!(out.len(), 100 + 2 * METADATA_SIZE, "magic byte {offset}");
     }
 }
+
+// ── entry-point symbol ────────────────────────────────────────────────────
+
+/// A fake string table: the symbols as the NUL-terminated strings an ELF,
+/// Mach-O or PE file holds them as, among other bytes.
+fn symbols(names: &[&str]) -> Vec<u8> {
+    let mut data = b"\x7fELF\0not a symbol\0".to_vec();
+    for name in names {
+        data.extend_from_slice(name.as_bytes());
+        data.push(0);
+    }
+    data.extend_from_slice(b"duckdb_library_version\0");
+    data
+}
+
+#[test]
+fn the_entry_point_names_are_read_from_the_string_table() {
+    assert_eq!(
+        entry::entry_point_names(&symbols(&["my_ext_init_c_api"])),
+        ["my_ext"]
+    );
+    // Mach-O prefixes a C symbol with an underscore.
+    assert_eq!(
+        entry::entry_point_names(&symbols(&["_my_ext_init_c_api"])),
+        ["_my_ext"]
+    );
+    // The C API v2 entry point is not the one a C API v1 stamp needs, and a
+    // longer name that merely ends the same way is its own name.
+    assert_eq!(
+        entry::entry_point_names(&symbols(&["my_ext_init_c_api_v2"])),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        entry::entry_point_names(&symbols(&["a_init_c_api", "b_init_c_api", "a_init_c_api"])),
+        ["a", "b"]
+    );
+    assert_eq!(entry::entry_point_names(b""), Vec::<String>::new());
+    assert!(
+        entry::entry_point_names(b"_init_c_api\0").is_empty(),
+        "no name"
+    );
+}
+
+#[test]
+fn the_extension_name_is_the_output_file_name_without_its_suffix() {
+    use std::path::Path;
+    let name = |p: &str| entry::extension_name(Path::new(p));
+    assert_eq!(
+        name("/tmp/out/my_ext.duckdb_extension").as_deref(),
+        Some("my_ext")
+    );
+    assert_eq!(name("my_ext.duckdb_extension").as_deref(), Some("my_ext"));
+    // DuckDB goes by the file name alone.
+    assert_eq!(
+        name("v1.2.0/linux_amd64/x.duckdb_extension").as_deref(),
+        Some("x")
+    );
+    assert_eq!(name("libmy_ext.so").as_deref(), Some("libmy_ext"));
+    assert_eq!(name("/").as_deref(), None);
+}
+
+#[test]
+fn a_mismatched_entry_point_is_explained_and_a_matching_one_is_silent() {
+    use std::path::Path;
+    let out = Path::new("my_ext.duckdb_extension");
+    assert_eq!(
+        entry::entry_point_note(&symbols(&["my_ext_init_c_api"]), out),
+        None
+    );
+
+    let note = entry::entry_point_note(&symbols(&["other_init_c_api"]), out).expect("a note");
+    assert!(note.contains("`other_init_c_api`"), "{note}");
+    assert!(note.contains("`my_ext_init_c_api`"), "{note}");
+    assert!(
+        note.contains("other.duckdb_extension"),
+        "names the file to use: {note}"
+    );
+
+    let note = entry::entry_point_note(&symbols(&[]), out).expect("a note");
+    assert!(note.contains("exports no"), "{note}");
+    assert!(note.contains("cdylib"), "{note}");
+}
+
+#[test]
+fn writing_replaces_the_file_instead_of_rewriting_it() {
+    let dir = std::env::temp_dir().join(format!("quack_atomic_{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ext.duckdb_extension");
+    fs::write(&path, b"old build").unwrap();
+
+    // Holding the old file open stands in for a host that has it mapped.
+    let mut held = fs::File::open(&path).unwrap();
+    entry::write_atomically(&path, b"new build, longer").unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"new build, longer");
+    let mut seen = Vec::new();
+    std::io::Read::read_to_end(&mut held, &mut seen).unwrap();
+    assert_eq!(
+        seen, b"old build",
+        "the file the host has open must not change under it"
+    );
+    let leftovers: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| {
+            std::path::Path::new(n)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("tmp"))
+        })
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    let _ = fs::remove_dir_all(&dir);
+}

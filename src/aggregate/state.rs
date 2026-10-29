@@ -347,6 +347,21 @@ impl<T: AggregateState> FfiState<T> {
     /// `DuckDB`'s `CAPIAggregateStateInit` checks, turning it into an ordinary
     /// SQL error — instead of taking the session down.
     ///
+    /// # A failing initialiser in a window frame still crashes the host
+    ///
+    /// That error report is itself the hazard when the aggregate runs as a
+    /// *window* function (a `ROWS`/`RANGE` frame). `DuckDB`'s
+    /// `WindowAggregateStates` fills its table of state pointers one entry per
+    /// *successful* initialisation and then, when one fails, destroys the whole
+    /// table, unwritten entries included: the destructor is handed pointers
+    /// that never pointed at a state. The tag check below cannot help, because
+    /// there is no slot to read a tag from. Reproduced with a plain C
+    /// aggregate, no Rust involved, on `DuckDB` 1.5.6 (55 of 68 pointers
+    /// garbage) and 2.0.0 (65 of 68); the host dies with `SIGSEGV` or `SIGBUS`.
+    /// Ungrouped, grouped, `DISTINCT` and `FILTER` aggregates report a clean
+    /// error. So: **`T::default()` must not panic** for an aggregate that can
+    /// be used in a window.
+    ///
     /// # Uninitialised memory
     ///
     /// `DuckDB` does not promise the state allocation is zeroed, so the tag is

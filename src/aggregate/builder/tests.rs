@@ -318,6 +318,7 @@ fn an_incomplete_aggregate_overload_is_reported_by_index_before_touching_duckdb(
     let set = AggregateFunctionSetBuilder::new("s")
         .overload(
             AggregateOverloadBuilder::new()
+                .param(TypeId::Double)
                 .returns(TypeId::BigInt)
                 .state_size(ss)
                 .init(si)
@@ -346,6 +347,7 @@ fn an_incomplete_aggregate_overload_is_reported_by_index_before_touching_duckdb(
 
     let no_return = AggregateFunctionSetBuilder::new("s").overload(
         AggregateOverloadBuilder::new()
+            .param(TypeId::Double)
             .state_size(ss)
             .init(si)
             .update(su)
@@ -365,6 +367,7 @@ fn a_set_level_return_type_completes_an_overload_without_one() {
         .returns(TypeId::BigInt)
         .overload(
             AggregateOverloadBuilder::new()
+                .param(TypeId::Double)
                 .state_size(ss)
                 .init(si)
                 .update(su)
@@ -372,6 +375,60 @@ fn a_set_level_return_type_completes_an_overload_without_one() {
                 .finalize(sf),
         );
     assert!(set.check_parts().is_ok(), "{:?}", set.check_parts());
+}
+
+/// An aggregate with no parameter is refused with the reason: `DuckDB` 2.0 gives
+/// its `update` a chunk of size 0, so it would count no rows.
+#[test]
+fn an_aggregate_with_no_parameter_is_refused_with_the_reason() {
+    let single = AggregateFunctionBuilder::new("my_count")
+        .returns(TypeId::BigInt)
+        .state_size(ss)
+        .init(si)
+        .update(su)
+        .combine(sc)
+        .finalize(sf);
+    let err = single.check_parts().expect_err("no parameter");
+    assert!(
+        err.as_str().contains("'my_count' takes no parameter"),
+        "{err}"
+    );
+    assert!(err.as_str().contains("DuckDB 2.0"), "{err}");
+    assert!(
+        err.as_str()
+            .contains("CREATE MACRO my_count() AS my_count_1(1)"),
+        "{err}"
+    );
+
+    // One parameter, plain or logical, is enough.
+    let with_param = AggregateFunctionBuilder::new("my_count")
+        .param(TypeId::BigInt)
+        .returns(TypeId::BigInt)
+        .state_size(ss)
+        .init(si)
+        .update(su)
+        .combine(sc)
+        .finalize(sf);
+    assert!(with_param.check_parts().is_ok());
+
+    // A set names the overload.
+    let set = AggregateFunctionSetBuilder::new("s")
+        .returns(TypeId::BigInt)
+        .overload(
+            AggregateOverloadBuilder::new()
+                .state_size(ss)
+                .init(si)
+                .update(su)
+                .combine(sc)
+                .finalize(sf),
+        );
+    let err = set
+        .check_parts()
+        .expect_err("overload 0 takes no parameter");
+    assert!(
+        err.as_str().contains("overload 0 takes no parameter"),
+        "{err}"
+    );
 }
 
 /// `AggregateOverloadBuilder::extra_info` mirrors

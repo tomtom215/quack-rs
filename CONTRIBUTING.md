@@ -45,9 +45,11 @@ needed; the script fetches the linux-amd64 build). CI's `extension-load` job exe
 v2.0.0 and `latest`** — the floor, the 1.5 floor, the newest 1.5 releases, the
 current release, and an early-warning signal for a release not yet pinned
 (`latest` is currently v2.0.0). The current release is v2.0.0, but `Cargo.lock`
-stays on the v1.5.6 bindings, because no `libduckdb-sys` for DuckDB 2.0 is
-published yet; CI's `test-duckdb-2-0` job runs the suite against v2.0.0. Fetch
-the CLI of the release you develop against:
+stays on the v1.5.6 bindings, because the DuckDB 2.0 bindings (`libduckdb-sys`
+1.20000.x) need Rust 1.88, above the 1.86 MSRV, and several CI jobs build one
+extension against the 546-slot v1.5.6 layout and load it into both 1.5.6 and
+2.0.0. CI's `test-duckdb-2-0` job runs the suite against v2.0.0 on the 2.0
+bindings. Fetch the CLI of the release you develop against:
 
 ```bash
 scripts/fetch-duckdb.sh v1.5.6 cli /tmp    # or v2.0.0, or latest
@@ -188,7 +190,16 @@ scripts/sync-book-changelog.py --check
 #    `rust-toolchain.toml` pins `channel = "stable"` and a toolchain file
 #    overrides rustup's default, so a bare `cargo check` silently runs stable
 #    and checks nothing.
+#
+#    Against what a 1.86.0 user's Cargo resolves, not the committed Cargo.lock:
+#    the lock carries `libduckdb-sys` 1.10506.1, which declares rust-version
+#    1.88, so a bare `cargo +1.86.0 check` fails on it. CI re-resolves with the
+#    rust-version-aware fallback first; do the same on a copy, because `update`
+#    rewrites Cargo.lock:
+#      cp -r . /tmp/msrv && cd /tmp/msrv
+#      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +1.86.0 update
 cargo +1.86.0 check
+cargo +1.86.0 check --features duckdb-1-5-4
 
 # 7. Live extension test — build hello-ext, append the metadata footer, then
 #    run every documented SQL check (examples/hello-ext/sql_checks.txt, 31
@@ -437,6 +448,7 @@ quack-rs/
 │   ├── bin/
 │   │   └── append_metadata/
 │   │       ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
+│   │       ├── entry.rs               # The entry point DuckDB will look for, and the atomic write of the stamped file
 │   │       ├── footer.rs              # The 512-byte `DuckDB` extension footer, and the optional 22-byte WebAssembly custom-section header that precedes it
 │   │       ├── main.rs                # Append a DuckDB extension metadata block to a compiled .so / .dylib / .dll file,
 │   │       └── tests.rs               # Unit tests
@@ -577,40 +589,68 @@ quack-rs/
 │   └── ffi_roundtrip/
 │       ├── agg_states.rs              # Every aggregate state is dropped, including the ones `DuckDB` moves
 │       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
+│       ├── aggregate_arity.rs         # An aggregate with no parameter is refused at registration (DuckDB 2.0 passes `update` no row count)
 │       ├── appender_api.rs            # `Appender` methods a no-op replacement survived: schemas, column types, `clear_columns`, defaults
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_export.rs            # `arrow::data_chunk_to_arrow` refuses values `DuckDB` would export wrongly
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
 │       ├── arrow_layout.rs            # Valid Arrow layouts `DuckDB` imports wrongly, refused, and their correct neighbours
 │       ├── bind_expressions.rs        # What a bind callback learns about its arguments from `Expression`
+│       ├── builder_logical.rs         # `param_logical`, `varargs_logical`, `returns_logical` on the aggregate, scalar and table builders
 │       ├── chunk_writer.rs            # `ChunkWriter` against a chunk `DuckDB` allocated
+│       ├── chunk_writer_cols.rs       # `ChunkWriter::{vector, writer, struct_writer}` and `DataChunk::into_chunk_writer` filling a real chunk
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
 │       ├── copy_from_columns.rs       # A typed `COPY … FROM` reader that declares a column is refused
+│       ├── copy_info_errors.rs        # `set_error` from all four COPY phases, and the state passed between them (`duckdb-1-5`)
+│       ├── data_chunk_helpers.rs      # `DataChunk::any_null`, `struct_writer`, `into_chunk_writer` and `ChunkWriter::is_full`
+│       ├── entry_point_inprocess.rs   # `init_extension*` and the entry-point macros run in process against a fake extension access
 │       ├── file_errors.rs             # `FileHandle` reports write, sync and seek failures, and refuses a seek past `i64::MAX`
 │       ├── handles_api.rs             # `StructWriter` child handles and `InMemoryDb::execute`'s row count
+│       ├── inline_paths.rs            # The paths that skip a C call: `is_valid` / `set_null` bit operations and the `ListBuilder` child-writer cache, held to the C API
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
+│       ├── list_api.rs                # The raw `ListVector` workflow, `get_size`, `get_entry`, `child_writer`, `max_child_capacity` on live LIST and MAP vectors
 │       ├── list_limits.rs             # `ListBuilder` stops at `DuckDB`'s byte ceiling, not an element count
+│       ├── logical_type_accessors.rs  # Every `LogicalType` accessor, built by the constructors and read back, against the engine's own `typeof`
+│       ├── map_api.rs                 # `MapVector` reserve, set_size, set_entry, key/value writers and readers on live MAP vectors
 │       ├── mock_parity.rs             # `MockRegistrar` refuses a bad type with the live registration's message
 │       ├── nested_reserve.rs          # which nested buffers a `LIST` reserve moves (the writer contracts)
 │       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
 │       ├── owned_chunk.rs             # `OwnedDataChunk::new`, `capacity` and `reset` against a live `DuckDB`
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
+│       ├── query_extras.rs            # `bind_str`, `bind_null`, `clear_bindings` and an idle `progress`
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
+│       ├── replacement_scan_api.rs    # Replacement-scan `add_*_parameter`, `register_with_data` and `set_error`
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
+│       ├── scalar_bind_data_copy.rs   # `ScalarBindInfo::set_bind_data_copy` and `get_argument` (`duckdb-1-5`)
+│       ├── signature_hazards.rs       # Signatures that crash or invalidate DuckDB: `VARIANT`, refused at the constructor
+│       ├── string_view.rs             # `DuckStringView`, `read_duck_string` and `read_duck_blob` against `duckdb_string_t` records the engine wrote
+│       ├── struct_io.rs               # Every `StructReader` / `StructWriter` field type, round-tripped through a 20-field STRUCT
 │       ├── table_cast.rs              # Table function, cast, replacement scan, SQL macro and COPY regressions
 │       ├── table_description.rs       # `TableDescription` accessors on an index `DuckDB` cannot hold
+│       ├── table_info_api.rs          # `BindInfo` parameter and cardinality methods, `FfiInitData`, `FfiLocalInitData`, `extra_info`
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
+│       ├── timestamp_tz_ns.rs         # `TIMESTAMPTZ_NS` (DuckDB 2.0): vectors, `Value`, and every type the engine can produce
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
 │       ├── typed_scalar_opt.rs        # Typed scalar closures returning `Option`, the `try_*` constructors and `map3`
+│       ├── validity_api.rs            # `ValidityBitmap` against the engine's masks, at the word and vector edges
+│       ├── value_defaults.rs          # `Value::as_*_or` when a value is present
 │       ├── value_getters.rs           # Each typed `Value` getter at its own type; out-of-range TIMETZ / TIME_NS are not cast
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
 │       ├── value_render.rs            # `Value` rendering of values SQL builds and `DuckDB` cannot render
 │       ├── value_temporal.rs          # Every `Value` getter against every temporal source type, at every edge
-│       └── vector_dt.rs               # NULLs in nested output vectors; selection vectors
+│       ├── vector_dt.rs               # NULLs in nested output vectors; selection vectors
+│       ├── vector_ops.rs              # `OwnedVector::into_raw`, `copy_selected`, `slice`, `reference_value`, `reference_vector` (`duckdb-1-5`)
+│       ├── vector_support.rs          # Helpers shared by the vector-module tests
+│       └── writer_api.rs              # `write_timestamp_tz`, `write_str`, and the Ok path of `try_write_varchar` / `try_write_blob`
 ├── benches/
-│   └── interval_bench.rs          # Criterion benchmarks for interval conversion
+│   ├── interval_bench.rs          # Criterion benchmarks for interval conversion
+│   └── engine/                    # Benchmark extension and A/B driver: SDK functions beside hand-written twins, timed in a real DuckDB
+│       ├── Cargo.toml
+│       ├── README.md
+│       ├── compare.py
+│       └── src/lib.rs
 ├── examples/
 │   └── hello-ext/                 # Complete word_count aggregate extension example
 │       ├── Cargo.toml
@@ -625,7 +665,7 @@ quack-rs/
 │   ├── benchmarks.yml             # Criterion benchmark execution
 │   └── README.md                  # Workflow overview and quality gate summary
 ├── CONTRIBUTING.md                # This file
-├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L19, P1–P12), documented in full
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L19, P1–P15), documented in full
 └── README.md                      # Quick start, SDK overview, badge table
 ```
 
@@ -655,8 +695,8 @@ This crate supports `libduckdb-sys = ">=1.4.4, <2"` (the bindings of DuckDB 1.4.
 later 1.x releases). Every DuckDB from 1.4.4 through 2.0.0 loads C API `v1.2.0` extensions.
 The `<2` upper bound does not exclude the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB
 `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is
-1.20000.0, which the range admits. That release was published on 2026-10-22 and declares
-`rust-version` 1.88, so a Rust 1.86 toolchain cannot build it; MSRV-aware resolution
+1.20000.0, which the range admits. The 1.20000.x releases (1.20000.0 on 2026-10-22,
+1.20000.1 on 2026-10-28) declare `rust-version` 1.88, so a Rust 1.86 toolchain cannot build them; MSRV-aware resolution
 (resolver 3, or `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) keeps a 1.86 build on
 1.10506.x. The bound would stop a future `libduckdb-sys` 2.x.
 Before broadening the range to a new major band:

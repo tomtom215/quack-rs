@@ -11,10 +11,21 @@ updates:
       time: "06:00"
       timezone: "UTC"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
     commit-message:
       prefix: "chore(deps)"
+    # The lockfile deliberately stays on the DuckDB 1.5.6 bindings: the 2.0
+    # bindings need Rust 1.88 (above the MSRV), and CI's `test-duckdb-2-0` job
+    # tests them separately. Bumping them here goes red in six jobs. Move the
+    # lockfile by hand when DuckDB 1.5 support ends.
+    ignore:
+      - dependency-name: "duckdb"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "libduckdb-sys"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     # Group patch/minor updates into a single PR to reduce noise
     groups:
       patch-updates:
@@ -33,6 +44,8 @@ updates:
       time: "06:00"
       timezone: "UTC"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "example"
@@ -52,6 +65,8 @@ updates:
       time: "06:00"
       timezone: "UTC"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
     commit-message:
@@ -70,6 +85,8 @@ updates:
       time: "06:00"
       timezone: "UTC"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "github-actions"

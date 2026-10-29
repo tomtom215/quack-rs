@@ -48,6 +48,15 @@ pub struct DescriptionYml {
     /// exclusions. A YAML list in the file is joined with `;` here (and warned
     /// about: the community build passes a list through unsplit).
     pub excluded_platforms: String,
+    /// Opt-in platforms to build, semicolon-separated (`extension.opt_in_platforms`).
+    /// Empty when absent.
+    ///
+    /// The community build only builds the platforms in
+    /// [`DUCKDB_OPT_IN_PLATFORMS`][crate::validate::DUCKDB_OPT_IN_PLATFORMS] when
+    /// they are listed here. A name that is not one of them, or that is not a
+    /// platform at all, is ignored by the build and reported in
+    /// [`warnings`][Self::warnings].
+    pub opt_in_platforms: String,
     /// List of maintainer names (at least one required).
     pub maintainers: Vec<String>,
     // repo section

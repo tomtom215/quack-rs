@@ -63,7 +63,6 @@ This generates:
 my_extension/
 ├── Cargo.toml
 ├── Makefile
-├── extension_config.cmake
 ├── src/lib.rs
 ├── src/wasm_lib.rs
 ├── description.yml
@@ -273,7 +272,19 @@ Community extensions are built for:
 
 An **opt-in** platform is not built unless an extension asks for it, so listing
 one in `excluded_platforms` has no effect. `validate::platform::is_opt_in_platform`
-reports which these are.
+reports which these are. To have one built, list it in `extension.opt_in_platforms`
+(a `;`-separated string, like `excluded_platforms`).
+
+Both fields are matched against the platform names above **exactly**. A group
+name such as `wasm` or `windows` is not a platform: the build's
+`modify_distribution_matrix.py` tests `arch in excluded_arch_values` (on every
+`extension-ci-tools` branch the community build uses), so `excluded_platforms:
+"wasm"` leaves all three `wasm_*` platforms building. Write
+`wasm_mvp;wasm_eh;wasm_threads`. Published files do contain group names, so
+`parse_description_yml` accepts them, with a warning that spells out the
+platforms the group stands for; it also warns about an `opt_in_platforms` entry
+that is a group, is not an opt-in platform, or is not a platform at all, all of
+which the build ignores without a message.
 
 `linux_amd64_gcc4` used to appear in this table and no longer exists: DuckDB
 retired the legacy CXX ABI target, and `DuckDBPlatform()` now raises a compile
@@ -382,11 +393,21 @@ request to `main`:
 
 1. Runs `cargo fmt --check` and `cargo clippy` on Linux, and `cargo test` on Linux,
    macOS and Windows
-2. Builds on the minimum Rust version (1.86.0, which DuckDB's own WebAssembly
-   builds use)
+2. Builds on the minimum Rust version (1.86.0, which the WebAssembly builds of
+   DuckDB 1.x extensions pin)
 3. Runs `make configure` and `make release`, which use `extension-ci-tools` to build
    the `.duckdb_extension` file
 4. Runs the SQLLogicTests in `test/sql` with `make test`
+
+The shared distribution workflow (`MainDistributionPipeline.yml`) does **not**
+run your SQL tests on most platforms. In `extension-ci-tools` at
+`v2.0-cyanoptera`, `base.Makefile` sets `SKIP_TESTS` for `linux_amd64`, both musl
+platforms and the MinGW builds, `ci_phase.py` skips `linux_arm64` and any macOS
+build but native arm64, and the Wasm jobs have no test target. A failure in
+`test/sql` that only shows on Linux is therefore not caught by the community
+build, which is why the generated `extension-ci.yml` runs `make test` itself and
+leaves `DUCKDB_PLATFORM` blank on `ubuntu-latest` (a set value would make the
+Makefile skip the tests there too).
 
 `.github/workflows/MainDistributionPipeline.yml` calls `extension-ci-tools`'
 `_extension_distribution.yml` — the workflow the community build itself runs —
@@ -405,6 +426,9 @@ git init
 # The extension-ci-tools branch the community build uses for your DuckDB release:
 # v2.0-cyanoptera for DuckDB 2.0 (there is no v2.0.0 branch).
 git submodule add -b v2.0-cyanoptera https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+# Cargo.lock is tracked on purpose: the community build rebuilds your `repo.ref`
+# for every DuckDB release, and a missing lock file lets each rebuild re-resolve.
+cargo generate-lockfile
 # Commit before `make configure`.
 git add -A && git commit -m "Initial commit"
 make configure
@@ -426,10 +450,11 @@ release: for DuckDB v2.0.0 its build workflow uses
 `_extension_distribution.yml@v2.0-cyanoptera`, and `extension-ci-tools` has no
 `v2.0.0` branch. (For DuckDB v1.5.6 it used `v1.5-variegata`, and the `v1.5.6`
 branch points to the same commit.) Check out the matching branch so your local
-build uses the same scripts. For DuckDB 2.0, `extension-ci-tools` builds with
-Rust 1.97.1 on every platform, WebAssembly included (it used stable Rust and
-1.86.0 for WebAssembly before), and emsdk 6.0.9 (was 3.1.71); quack-rs's MSRV
-stays 1.86.0. The branch names are listed by
+build uses the same scripts. For DuckDB 2.0, `extension-ci-tools` pins Rust 1.97.1
+on Windows and for WebAssembly (the `v1.5-variegata` branch pins 1.86.0 for
+WebAssembly), installs the current stable on Linux (`rustup` inside the build
+image) and uses the runner's Rust on macOS, with emsdk 6.0.9 (was 3.1.71);
+quack-rs's MSRV stays 1.86.0. The branch names are listed by
 `git ls-remote https://github.com/duckdb/extension-ci-tools`.
 
 **Ignore `configure/`.** It holds the Python virtualenv, `platform.txt` and

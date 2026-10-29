@@ -12,7 +12,6 @@ example function and its tests — from a single function call.
 my_extension/
 ├── Cargo.toml                          # cdylib + rlib crate, MSRV, dependencies, release profile
 ├── Makefile                            # delegates to cargo + extension-ci-tools
-├── extension_config.cmake              # required by extension-ci-tools
 ├── src/
 │   ├── lib.rs                          # entry point, example function, unit test
 │   └── wasm_lib.rs                     # WASM staticlib shim
@@ -27,7 +26,7 @@ my_extension/
 ├── .gitmodules                         # extension-ci-tools submodule (pinned branch)
 ├── .gitignore
 └── .cargo/
-    └── config.toml                     # Windows CRT static linking
+    └── config.toml                     # Windows: static CRT; musl: dynamic CRT (a cdylib needs it)
 ```
 
 ---
@@ -126,12 +125,19 @@ an error if the name breaks one. Uniqueness is yours to check.
 cd my_extension
 git init
 git submodule add -b v2.0-cyanoptera https://github.com/duckdb/extension-ci-tools.git extension-ci-tools
+cargo generate-lockfile
 git add -A
 git commit -m "Scaffold my_extension"
 make configure
 make release
 make test
 ```
+
+`cargo generate-lockfile` writes `Cargo.lock`, which `.gitignore` leaves tracked
+on purpose. The community build checks out your `repo.ref` and rebuilds that same
+commit for every DuckDB release; without a committed lock file, each rebuild
+resolves its dependencies afresh. (`make release` would write the file too, but
+after `git add -A`, so it would stay untracked.)
 
 `git submodule add` is not optional in a new project: the scaffold writes
 `.gitmodules`, but `git submodule update --init` does nothing until the
@@ -155,8 +161,9 @@ by using the Cargo package version (`v0.1.0`) while there is no commit, and
 before committing, run `make clean_all configure` after the first commit so the
 version comes from git.
 
-The project declares `rust-version` (quack-rs's MSRV, 1.86.0; extension-ci-tools
-builds with Rust 1.97.1 for DuckDB 2.0, Wasm included) and uses `resolver = "3"`, so
+The project declares `rust-version` (quack-rs's MSRV, 1.86.0; for DuckDB 2.0,
+extension-ci-tools pins Rust 1.97.1 on Windows and WebAssembly and uses the current
+stable on Linux and macOS) and uses `resolver = "3"`, so
 `cargo` resolves dependencies that build on that release; the generated CI's
 `msrv` job checks it.
 

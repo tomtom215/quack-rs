@@ -286,10 +286,15 @@ holds `duckdb_vector_size()` rows:
 # struct Item { name: String, value: i64 }
 # fn demo(output: duckdb_data_chunk, data: &[Item]) {
 let mut cw = unsafe { DataChunk::from_raw(output).into_chunk_writer() };
+// One writer per column, fetched once: a writer borrows nothing from `cw`, and
+// building one costs several C API calls, so doing it per row is several times
+// slower.
+let mut names = unsafe { cw.writer(0) };
+let mut values = unsafe { cw.writer(1) };
 for item in data {
     let Some(row) = cw.next_row() else { break };   // chunk is full
-    unsafe { cw.writer(0).write_varchar(row, &item.name) };
-    unsafe { cw.writer(1).write_i64(row, item.value) };
+    unsafe { names.write_varchar(row, &item.name) };
+    unsafe { values.write_i64(row, item.value) };
 }
 // set_size called automatically when `cw` is dropped
 # }

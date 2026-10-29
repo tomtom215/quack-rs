@@ -57,6 +57,24 @@ use quack_rs::types::{LogicalType, NullHandling, TypeId};
 use quack_rs::vector::{VectorReader, VectorWriter};
 
 /// A live database plus a connection, torn down in the right order on drop.
+/// Installs the ICU extension once per process, before any other fixture goes on.
+///
+/// A source-built `DuckDB` (`bundled-test`) has no ICU and installs it the first
+/// time a query needs a time zone. The tests run on many threads, each with its
+/// own database, and the installs all write to one extension directory: on
+/// Windows they raced on the final file move ("Could not move file: Access is
+/// denied") and failed whichever test lost. Done here, with the others waiting
+/// in `call_once`, they find a finished install and only load it. A library that
+/// carries ICU treats `INSTALL icu` as a no-op; if the install fails (no
+/// network) nothing changes, and the first query that needs ICU fails as before.
+fn install_icu_once(con: duckdb_connection) {
+    static ICU: std::sync::Once = std::sync::Once::new();
+    ICU.call_once(|| {
+        // SAFETY: `con` is the open connection of the fixture being built.
+        drop(unsafe { query(con, "INSTALL icu") });
+    });
+}
+
 struct Fixture {
     db: libduckdb_sys::duckdb_database,
     con: duckdb_connection,
@@ -82,6 +100,7 @@ impl Fixture {
                 "duckdb_connect"
             );
         }
+        install_icu_once(con);
         Self {
             db,
             con,
@@ -229,6 +248,21 @@ fn engine_merges_scalar_overloads(fx: &Fixture) -> bool {
     quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 0))
 }
 
+/// Whether the linked `DuckDB` copies a scalar bind argument without
+/// aborting on a subquery: v1.5.5 and later. A test that calls the raw
+/// `duckdb_scalar_function_bind_get_argument` itself, so that
+/// [`inspects_arguments_or_refuses`] has no refusal to find, skips the earlier
+/// engines on this alone.
+#[cfg(feature = "duckdb-1-5")]
+fn engine_copies_arguments_safely(fx: &Fixture) -> bool {
+    let version = fx
+        .scalar("SELECT version()", |r, i| unsafe {
+            r.read_str(i).to_owned()
+        })
+        .expect("version() is never NULL");
+    quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 5))
+}
+
 /// Whether the linked `DuckDB` lets a scalar bind callback inspect its
 /// arguments: v1.5.5 and later. Before it, `ScalarBindInfo::argument` asks
 /// for nothing (`DuckDB` would abort on a subquery argument) and fails the
@@ -237,14 +271,14 @@ fn engine_merges_scalar_overloads(fx: &Fixture) -> bool {
 /// those engines instead.
 #[cfg(feature = "duckdb-1-5")]
 fn inspects_arguments_or_refuses(fx: &Fixture, probe: &str) -> bool {
+    if engine_copies_arguments_safely(fx) {
+        return true;
+    }
     let version = fx
         .scalar("SELECT version()", |r, i| unsafe {
             r.read_str(i).to_owned()
         })
         .expect("version() is never NULL");
-    if quack_rs::abi::parse_version(&version).is_some_and(|v| v >= (1, 5, 5)) {
-        return true;
-    }
     // SAFETY: the fixture's connection is open.
     let message = unsafe { quack_rs::query::query(fx.con(), probe) }
         .map_or_else(|e| e.to_string(), |_| String::from("(the query succeeded)"));
@@ -4843,7 +4877,11 @@ quack_rs::scalar_callback!(list_sum, |_info, input, output| {
     let child = unsafe { ListVector::child_reader(vector, total) };
     let mut writer = unsafe { VectorWriter::from_vector(output) };
     for row in 0..rows {
-        let entry = unsafe { ListVector::get_entry(vector, row) };
+        // A NULL row has no entry (its slot is stale bytes): skip it, and let
+        // `propagate_nulls` below make the output NULL.
+        let Some(entry) = (unsafe { ListVector::get_entry_checked(vector, row) }) else {
+            continue;
+        };
         let mut sum = 0_i64;
         for i in 0..entry.length as usize {
             let idx = entry.offset as usize + i;
@@ -4867,7 +4905,10 @@ quack_rs::scalar_callback!(map_lookup, |_info, input, output| {
     let values = unsafe { MapVector::value_reader(vector, total) };
     let mut writer = unsafe { VectorWriter::from_vector(output) };
     for row in 0..rows {
-        let entry = unsafe { MapVector::get_entry(vector, row) };
+        let Some(entry) = (unsafe { MapVector::get_entry_checked(vector, row) }) else {
+            unsafe { writer.set_null(row) };
+            continue;
+        };
         let key = unsafe { wanted.read_str(row) };
         let mut found = None;
         for i in 0..entry.length as usize {
@@ -4905,6 +4946,77 @@ quack_rs::scalar_callback!(array_sum, |_info, input, output| {
     }
     unsafe { chunk.propagate_nulls(&mut writer) };
 });
+
+/// `DuckDB` writes no list entry for a NULL row, so a NULL row's `offset` and
+/// `length` are stale bytes. On 2.0.0 a `nullif(l, [])` column had NULL rows with
+/// lengths around 7·10¹³, and a reader that walked them read far outside the
+/// child vector (a segmentation fault in a minority of runs, and no failure at
+/// all on most). `get_entry_checked` must return `None` for every NULL row, so
+/// each sum below equals `DuckDB`'s own, whatever the buffer held. The shapes are
+/// the ones that produced NULL rows with non-empty garbage entries: `nullif`,
+/// `CASE`, and the unmatched side of a `LEFT JOIN`.
+#[test]
+fn null_list_and_map_rows_are_skipped_not_walked() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; every callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::new("q_list_sum")
+            .param_logical(LogicalType::list(TypeId::BigInt))
+            .returns(TypeId::BigInt)
+            .function(list_sum)
+            .register(fx.con())
+            .expect("register q_list_sum");
+        ScalarFunctionBuilder::new("q_map_lookup")
+            .param_logical(LogicalType::map(TypeId::Varchar, TypeId::BigInt))
+            .param(TypeId::Varchar)
+            .returns(TypeId::BigInt)
+            .null_handling(NullHandling::SpecialNullHandling)
+            .function(map_lookup)
+            .register(fx.con())
+            .expect("register q_map_lookup");
+    }
+    let sum = |sql: &str| {
+        fx.scalar(sql, |r, i| {
+            // SAFETY: one HUGEINT column, row `i`.
+            unsafe { r.read_i128(i) }
+        })
+    };
+    let lists = "SELECT range(i % 50) AS l FROM range(20000) t(i)";
+    for (ours, builtin) in [
+        (
+            format!("SELECT sum(q_list_sum(nullif(l, []))) FROM ({lists})"),
+            format!("SELECT sum(list_sum(nullif(l, []))) FROM ({lists})"),
+        ),
+        (
+            "SELECT sum(q_list_sum(CASE WHEN i % 3 = 0 THEN NULL ELSE range(i % 50) END)) \
+             FROM range(20000) t(i)"
+                .to_owned(),
+            "SELECT sum(list_sum(CASE WHEN i % 3 = 0 THEN NULL ELSE range(i % 50) END)) \
+             FROM range(20000) t(i)"
+                .to_owned(),
+        ),
+        (
+            "SELECT sum(q_list_sum(t.l)) FROM range(10000) s(i) \
+             LEFT JOIN (SELECT i, range(i % 7) AS l FROM range(5000) u(i)) t ON s.i = t.i"
+                .to_owned(),
+            "SELECT sum(list_sum(t.l)) FROM range(10000) s(i) \
+             LEFT JOIN (SELECT i, range(i % 7) AS l FROM range(5000) u(i)) t ON s.i = t.i"
+                .to_owned(),
+        ),
+    ] {
+        let got = sum(&ours);
+        assert!(got.is_some_and(|total| total > 0), "{ours}: {got:?}");
+        assert_eq!(got, sum(&builtin), "{ours}");
+    }
+
+    // MAP: a NULL map is a NULL result, a missing key is too, and the rest are
+    // the values.
+    assert_eq!(
+        sum("SELECT sum(q_map_lookup(CASE WHEN i % 3 = 0 THEN NULL \
+             ELSE MAP{'a': i, 'b': 2 * i} END, 'a')) FROM range(20000) t(i)"),
+        sum("SELECT sum(i) FROM range(20000) t(i) WHERE i % 3 <> 0"),
+    );
+}
 
 #[test]
 fn nested_types_read_correctly_as_scalar_arguments() {
@@ -6033,6 +6145,15 @@ mod tooling;
 #[path = "ffi_roundtrip/value_temporal.rs"]
 mod value_temporal;
 
+#[path = "ffi_roundtrip/timestamp_tz_ns.rs"]
+mod timestamp_tz_ns;
+
+#[path = "ffi_roundtrip/aggregate_arity.rs"]
+mod aggregate_arity;
+
+#[path = "ffi_roundtrip/signature_hazards.rs"]
+mod signature_hazards;
+
 #[path = "ffi_roundtrip/appender_rows.rs"]
 mod appender_rows;
 
@@ -6069,6 +6190,8 @@ mod chunk_writer;
 #[cfg(feature = "duckdb-1-5")]
 #[path = "ffi_roundtrip/file_errors.rs"]
 mod file_errors;
+#[path = "ffi_roundtrip/inline_paths.rs"]
+mod inline_paths;
 #[path = "ffi_roundtrip/lifecycle.rs"]
 mod lifecycle;
 #[path = "ffi_roundtrip/list_limits.rs"]
@@ -6115,3 +6238,63 @@ mod handles_api;
 
 #[path = "ffi_roundtrip/typed_scalar_opt.rs"]
 mod typed_scalar_opt;
+
+#[path = "ffi_roundtrip/vector_support.rs"]
+mod vector_support;
+
+#[path = "ffi_roundtrip/struct_io.rs"]
+mod struct_io;
+
+#[path = "ffi_roundtrip/validity_api.rs"]
+mod validity_api;
+
+#[path = "ffi_roundtrip/map_api.rs"]
+mod map_api;
+
+#[path = "ffi_roundtrip/list_api.rs"]
+mod list_api;
+
+#[path = "ffi_roundtrip/writer_api.rs"]
+mod writer_api;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/vector_ops.rs"]
+mod vector_ops;
+
+#[path = "ffi_roundtrip/chunk_writer_cols.rs"]
+mod chunk_writer_cols;
+
+#[path = "ffi_roundtrip/string_view.rs"]
+mod string_view;
+
+#[path = "ffi_roundtrip/table_info_api.rs"]
+mod table_info_api;
+
+#[path = "ffi_roundtrip/logical_type_accessors.rs"]
+mod logical_type_accessors;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/copy_info_errors.rs"]
+mod copy_info_errors;
+
+#[path = "ffi_roundtrip/builder_logical.rs"]
+mod builder_logical;
+
+#[path = "ffi_roundtrip/replacement_scan_api.rs"]
+mod replacement_scan_api;
+
+#[path = "ffi_roundtrip/entry_point_inprocess.rs"]
+mod entry_point_inprocess;
+
+#[path = "ffi_roundtrip/value_defaults.rs"]
+mod value_defaults;
+
+#[path = "ffi_roundtrip/query_extras.rs"]
+mod query_extras;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/scalar_bind_data_copy.rs"]
+mod scalar_bind_data_copy;
+
+#[path = "ffi_roundtrip/data_chunk_helpers.rs"]
+mod data_chunk_helpers;
