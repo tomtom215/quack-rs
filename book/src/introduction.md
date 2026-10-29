@@ -85,7 +85,7 @@ for it without DuckDB. The full list is in the [Pitfall Catalog](reference/pitfa
 - **SQL macros** — register `CREATE MACRO` statements without any FFI callbacks
 - **Testable state** — `AggregateTestHarness<T>` tests aggregate logic without a live DuckDB
 - **Scaffold generator** — generates a complete community extension project (`Cargo.toml`, `Makefile`, CI, `description.yml`, tests) from one function call
-- **31 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptom, root cause and fix
+- **34 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptom, root cause and fix
 
 ---
 

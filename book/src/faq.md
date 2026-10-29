@@ -19,7 +19,7 @@ utilities for publishing community extensions.
 
 Building a DuckDB extension in Rust means solving a set of undocumented FFI
 problems that each developer otherwise discovers independently. quack-rs
-documents all 31 known pitfalls, and its API prevents most of them. See the
+documents all 34 known pitfalls, and its API prevents most of them. See the
 [Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?

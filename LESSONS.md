@@ -1050,6 +1050,67 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 exist. Do not use it as an existence probe.
 
 
+## P13: A `VARIANT` in a function signature crashes DuckDB
+
+**Status**: Guarded. `LogicalType::try_new` refuses `TypeId::Variant` with an
+error that names the workaround. This is a DuckDB defect, not a quack-rs one.
+
+**Symptom**: the function registers without error. The first query that gives it
+a `VARIANT` argument or result either segfaults (DuckDB 2.0.0, reproduced with
+the guard bypassed) or fails with an internal error that invalidates the
+database (1.5.x).
+
+**Root cause**: DuckDB stores a `VARIANT` as a `STRUCT`, and the type that
+`duckdb_create_logical_type` returns for the id alone has no such layout.
+
+**Workaround**: declare the parameter as `ANY` (`TypeId::Any`), which accepts a
+`VARIANT`.
+
+**Rule**: a type that DuckDB builds from more than its id cannot be made from
+the id alone.
+
+
+## P14: An aggregate with no parameter counts no rows on DuckDB 2.0
+
+**Status**: Guarded. Registering an aggregate, or a set overload, with no
+parameter is an error that names the workaround. This is a DuckDB behaviour
+change in 2.0, not a quack-rs defect.
+
+**Symptom**: `SELECT my_count() FROM t` over 100 rows answers 100 on DuckDB
+1.5.6 and 0 on 2.0.0 (measured against both). A windowed call of such an
+aggregate never reaches `update` on either.
+
+**Root cause**: the C API gives `update` a chunk and the state array and no row
+count; the rows are `chunk.size()`. DuckDB 2.0 stopped setting the chunk's
+cardinality (`CAPIAggregateUpdate`, `aggregate_function-c.cpp`), and a chunk with
+no column reports a size of 0.
+
+**Workaround**: give the aggregate one parameter, and for a zero-argument SQL
+spelling put a macro in front of it: `CREATE MACRO my_count() AS my_count_1(1)`.
+
+**Rule**: an aggregate needs at least one column to have a row count.
+
+
+## P15: The entry of a NULL `LIST` or `MAP` row holds stale bytes
+
+**Status**: Prevented by `ListVector::get_entry_checked` and
+`MapVector::get_entry_checked`. `get_entry` keeps its contract and its docs now
+state the hazard.
+
+**Symptom**: reading `offset` and `length` of a NULL row and indexing the child
+with them reads out of bounds. On DuckDB 2.0.0 lengths around 7·10¹³ were seen,
+and a segmentation fault in a minority of runs.
+
+**Root cause**: DuckDB writes no entry for a NULL row, so the entry array holds
+whatever bytes the allocation had.
+
+**Fix**: use `get_entry_checked`, which returns `None` for a NULL row or an entry
+that does not fit inside the child, or test the row's validity before reading
+the entry.
+
+**Rule**: never read a list entry before the row's validity.
+
+
 ## Community Extension Submission
 
 ### Build System Requirements

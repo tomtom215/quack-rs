@@ -25,7 +25,7 @@ so that you can write a loadable extension entirely in Rust.
 - **Scalar functions as safe closures.** `ScalarFunctionBuilder::map1` and its
   siblings take a plain Rust closure, derive the SQL types from its signature,
   return NULL for NULL input, and turn a panic into a SQL error.
-- **Guards against documented FFI pitfalls.** Most of the 31 pitfalls in
+- **Guards against documented FFI pitfalls.** Most of the 34 pitfalls in
   [`LESSONS.md`](./LESSONS.md) are prevented by a wrapper, such as NULL output
   that is silently lost, a boolean read that is undefined behaviour, or a double
   free in an aggregate destructor. The rest are documented.
@@ -232,7 +232,7 @@ struct layouts first in 1.10504.0, although the DuckDB functions exist from
 - **API reference**: [docs.rs/quack-rs](https://docs.rs/quack-rs). The crate
   root lists every module.
 - [Pitfall Catalog](https://quack-rs.com/reference/pitfalls.html) and
-  [`LESSONS.md`](./LESSONS.md): all 31 known pitfalls (L1–L19, P1–P12), with
+  [`LESSONS.md`](./LESSONS.md): all 34 known pitfalls (L1–L19, P1–P15), with
   symptom, cause and fix.
 - [Community Extensions](https://quack-rs.com/publishing.html): `description.yml`,
   naming, versioning, platforms and submission.

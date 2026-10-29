@@ -157,6 +157,11 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Documentation
 
+- `LESSONS.md` and the book's pitfalls page gain P13 (a `VARIANT` in a signature
+  crashes DuckDB), P14 (an aggregate with no parameter counts no rows on DuckDB 2.0)
+  and P15 (the entry of a NULL `LIST` or `MAP` row holds stale bytes): the three
+  engine behaviours this release guards against. The pitfall count is now 34
+  (L1–L19, P1–P15) wherever it is stated.
 - README: the Quick Start manifest now sets `rust-version` and `resolver = "3"`
   (edition 2021's default resolver ignores `rust-version`, so Rust 1.86 or 1.87
   selected the 2.0 bindings, which need 1.88, and failed); the example uses

@@ -1,6 +1,6 @@
 # Pitfall Catalog
 
-The 31 known pitfalls of writing a DuckDB extension in Rust against the C
+The 34 known pitfalls of writing a DuckDB extension in Rust against the C
 extension API, with the symptom, root cause and fix for each. The first were
 found while building
 [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a
@@ -1007,6 +1007,63 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 
 ---
 
+## P13: A `VARIANT` in a function signature crashes `DuckDB` {#p13}
+
+**Status**: Guarded. `LogicalType::try_new` refuses `TypeId::Variant` with an
+error that names the workaround. This is a `DuckDB` defect, not a quack-rs one.
+
+**Symptom**: the function registers without error. The first query that gives it
+a `VARIANT` argument or result either segfaults (`DuckDB` 2.0.0, reproduced with
+the guard bypassed) or fails with an internal error that invalidates the
+database (1.5.x).
+
+**Root cause**: `DuckDB` stores a `VARIANT` as a `STRUCT`, and the type that
+`duckdb_create_logical_type` returns for the id alone has no such layout.
+
+**Your action**: declare the parameter as `ANY` (`TypeId::Any`), which accepts a
+`VARIANT`.
+
+---
+
+## P14: An aggregate with no parameter counts no rows on `DuckDB` 2.0 {#p14}
+
+**Status**: Guarded. Registering an aggregate, or a set overload, with no
+parameter is an error that names the workaround. This is a `DuckDB` behaviour
+change in 2.0, not a quack-rs defect.
+
+**Symptom**: `SELECT my_count() FROM t` over 100 rows answers 100 on `DuckDB`
+1.5.6 and 0 on 2.0.0 (measured against both). A windowed call of such an
+aggregate never reaches `update` on either.
+
+**Root cause**: the C API gives `update` a chunk and the state array and no row
+count; the rows are `chunk.size()`. `DuckDB` 2.0 stopped setting the chunk's
+cardinality (`CAPIAggregateUpdate`, `aggregate_function-c.cpp`), and a chunk with
+no column reports a size of 0.
+
+**Your action**: give the aggregate one parameter, and for a zero-argument SQL
+spelling put a macro in front of it: `CREATE MACRO my_count() AS my_count_1(1)`.
+
+---
+
+## P15: The entry of a NULL `LIST` or `MAP` row holds stale bytes {#p15}
+
+**Status**: Prevented by `ListVector::get_entry_checked` and
+`MapVector::get_entry_checked`. `get_entry` keeps its contract and its docs now
+state the hazard.
+
+**Symptom**: reading `offset` and `length` of a NULL row and indexing the child
+with them reads out of bounds. On `DuckDB` 2.0.0 lengths around 7·10¹³ were seen,
+and a segmentation fault in a minority of runs.
+
+**Root cause**: `DuckDB` writes no entry for a NULL row, so the entry array holds
+whatever bytes the allocation had.
+
+**Your action**: use `get_entry_checked`, which returns `None` for a NULL row or
+an entry that does not fit inside the child, or test the row's validity before
+reading the entry.
+
+---
+
 ## Summary
 
 | Pitfall | SDK status | Your action |
@@ -1042,3 +1099,6 @@ SELECT count(*) FROM duckdb_settings() WHERE name = 'my_setting';
 | P10: unstable ABI tail shifts | Prevented | Use `init_extension`; set `QUACK_RS_TARGET_DUCKDB_VERSION` when building |
 | P11: freeing a borrowed `const char *` | Fixed | Read the C++ impl before `duckdb_free`; prefer quack-rs wrappers |
 | P12: config-option probe aborts (debug) | Documented | Ask `duckdb_settings()` in SQL instead |
+| P13: `VARIANT` in a signature crashes | Guarded | Declare the parameter as `ANY` |
+| P14: zero-parameter aggregate counts no rows (2.0) | Guarded | One parameter, plus a `CREATE MACRO` for the zero-argument spelling |
+| P15: NULL list/map row has a stale entry | Prevented | Use `get_entry_checked` |

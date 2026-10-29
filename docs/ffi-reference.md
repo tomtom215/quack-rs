@@ -355,7 +355,7 @@ dealing with these constants directly.
 ## Common Mistakes Quick Reference
 
 This page does not keep its own copy of the pitfall list. Every known pitfall
-(L1–L19 and P1–P12), with symptom, root cause and fix, is in
+(L1–L19 and P1–P15), with symptom, root cause and fix, is in
 [`LESSONS.md`](../LESSONS.md); the book's
 [Pitfall Catalog](https://quack-rs.com/reference/pitfalls.html) has the same
 entries with compiled examples and a summary table.
