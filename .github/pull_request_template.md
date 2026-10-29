@@ -16,7 +16,8 @@
 ## Checklist
 
 ### Code quality
-- [ ] `cargo test --all-targets` passes
+- [ ] `cargo test --all-targets` passes, and `cargo test --doc --features duckdb-1-5-4` (doctests are not in `--all-targets`)
+- [ ] The end-to-end tests pass against a real libduckdb (CONTRIBUTING, gate 2c) when the change touches `unsafe`, vectors, or function registration
 - [ ] `cargo clippy --all-targets -- -D warnings` passes
 - [ ] `cargo fmt` applied (no diff)
 - [ ] `cargo doc --no-deps` builds without warnings
@@ -30,7 +31,7 @@
 
 ### Documentation
 - [ ] Public API changes are documented in rustdoc
-- [ ] `CHANGELOG.md` updated under `[Unreleased]` (for user-facing changes)
+- [ ] `CHANGELOG.md` updated under `[Unreleased]` (for user-facing changes), and `scripts/sync-book-changelog.py` run so the book's copy matches
 - [ ] Book (`book/src/`) updated if the change affects extension authors
 - [ ] New FFI pitfall discovered → added to `LESSONS.md` and `book/src/reference/pitfalls.md`
 

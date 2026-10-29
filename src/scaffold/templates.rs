@@ -59,8 +59,10 @@ pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
 name = "{name}"
 version = "{version}"
 edition = "2021"
-# The oldest Rust this project builds with: quack-rs's own MSRV. (extension-ci-tools
-# builds with a newer one: 1.97.1 for DuckDB v2.0.) Raise it only together with
+license = "{license}"
+# The oldest Rust this project builds with: quack-rs's own MSRV. (For DuckDB v2.0,
+# extension-ci-tools pins a newer one, 1.97.1, on Windows and WebAssembly and uses
+# the current stable on Linux and macOS.) Raise it only together with
 # the `msrv` job in .github/workflows/extension-ci.yml.
 rust-version = "{msrv}"
 # Rust-version-aware dependency resolution: `cargo update` and a fresh
@@ -99,6 +101,7 @@ strip = true
 "#,
         name = config.name,
         version = config.version,
+        license = config.license,
         msrv = env!("CARGO_PKG_RUST_VERSION"),
         quack_rs = quack_rs_dependency_version(),
         libduckdb_sys = libduckdb_sys,
@@ -173,7 +176,6 @@ pub(super) fn generate_makefile(config: &ScaffoldConfig) -> String {
 PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 EXTENSION_NAME={name}
-EXT_CONFIG=$(PROJ_DIR)extension_config.cmake
 
 {abi_note}
 USE_UNSTABLE_C_API={unstable}
@@ -470,7 +472,18 @@ pub(super) fn generate_cargo_config() -> String {
      rustflags = [\"-Ctarget-feature=+crt-static\"]\n\
      \n\
      [target.aarch64-pc-windows-msvc]\n\
-     rustflags = [\"-Ctarget-feature=+crt-static\"]\n"
+     rustflags = [\"-Ctarget-feature=+crt-static\"]\n\
+     \n\
+     # The opposite on musl: a `cdylib` cannot be produced with the C runtime linked\n\
+     # statically, which is musl's default (\"target does not support these crate\n\
+     # types\"). Only needed for the opt-in `linux_*_musl` platforms; extension-ci-tools'\n\
+     # Rust makefile passes nothing for them. Checked with `cargo build --release`\n\
+     # on x86_64-unknown-linux-musl, not inside the Alpine build container.\n\
+     [target.x86_64-unknown-linux-musl]\n\
+     rustflags = [\"-Ctarget-feature=-crt-static\"]\n\
+     \n\
+     [target.aarch64-unknown-linux-musl]\n\
+     rustflags = [\"-Ctarget-feature=-crt-static\"]\n"
         .to_string()
 }
 
@@ -483,31 +496,6 @@ pub(super) fn generate_wasm_lib() -> String {
      #[path = \"lib.rs\"]\n\
      mod lib;\n"
         .to_string()
-}
-
-/// Generates `extension_config.cmake`, required by the `EXT_CONFIG` reference in the Makefile.
-///
-/// This file tells `DuckDB`'s CMake-based build system about the extension. Even though
-/// the extension itself is built with `cargo`, `extension-ci-tools` expects this file
-/// to exist for metadata and CI integration purposes.
-pub(super) fn generate_extension_config_cmake(config: &ScaffoldConfig) -> String {
-    let name = &config.name;
-    let github_repo = &config.github_repo;
-    let git_ref = &config.git_ref;
-    format!(
-        "# Extension configuration for `DuckDB`'s build system.\n\
-         # Required by extension-ci-tools even for pure-Rust (cargo) extensions.\n\
-         # See: https://github.com/duckdb/extension-ci-tools\n\
-         #\n\
-         # GIT_TAG is the same revision as `repo.ref` in description.yml: a commit\n\
-         # hash, never a branch, so a build from this file is reproducible.\n\
-         \n\
-         duckdb_extension_load({name}\n\
-         \tLOAD_TESTS\n\
-         \tGIT_URL https://github.com/{github_repo}\n\
-         \tGIT_TAG {git_ref}\n\
-         )\n"
-    )
 }
 
 /// Generates a `SQLLogicTest` skeleton for `test/sql/{name}.test`.

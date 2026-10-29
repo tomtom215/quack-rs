@@ -15,6 +15,7 @@ covers `DECIMAL` and `HUGEINT`, whose conversions live in the same module.
 | `TIMESTAMP_S` | `i64` — seconds since the epoch | `read_timestamp_s` / `write_timestamp_s` |
 | `TIMESTAMP_MS` | `i64` — milliseconds since the epoch | `read_timestamp_ms` / `write_timestamp_ms` |
 | `TIMESTAMP_NS` | `i64` — nanoseconds since the epoch | `read_timestamp_ns` / `write_timestamp_ns` |
+| `TIMESTAMPTZ_NS` (DuckDB 2.0.0+) | `i64` — nanoseconds since the epoch, UTC | `read_timestamp_tz_ns` / `write_timestamp_tz_ns` |
 | `INTERVAL` | `{ months: i32, days: i32, micros: i64 }` | `read_interval` / `write_interval` (see [INTERVAL Type](intervals.md)) |
 
 Turning those integers into year/month/day means implementing the proleptic

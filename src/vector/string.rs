@@ -212,6 +212,12 @@ impl<'a> DuckStringView<'a> {
     #[must_use]
     pub fn as_str(&self) -> Option<&'a str> {
         let slice = self.as_bytes_unsafe()?;
+        // Nearly every column is ASCII, and `is_ascii` is several times faster
+        // than `from_utf8` on the short strings DuckDB stores inline.
+        if slice.is_ascii() {
+            // SAFETY: ASCII bytes are valid UTF-8.
+            return Some(unsafe { std::str::from_utf8_unchecked(slice) });
+        }
         std::str::from_utf8(slice).ok()
     }
 
@@ -516,6 +522,36 @@ mod tests {
         bytes[8..16].copy_from_slice(&0xdead_beef_dead_beef_u64.to_ne_bytes());
 
         assert!(DuckStringView::inline_from_bytes(&bytes).is_none());
+    }
+
+    /// `as_str` takes an ASCII fast path and falls back to full validation:
+    /// both must agree with `std::str::from_utf8` on every inline length, with
+    /// multi-byte text and with an invalid byte in any position.
+    #[test]
+    fn as_str_agrees_with_from_utf8_on_ascii_multibyte_and_invalid_bytes() {
+        let mut cases: Vec<Vec<u8>> = vec![
+            b"plain ascii".to_vec(),
+            "caf\u{e9}".as_bytes().to_vec(),
+            "\u{65e5}\u{672c}\u{8a9e}".as_bytes().to_vec(),
+            "\u{1f986}".as_bytes().to_vec(),
+        ];
+        // One high-bit byte at each position of a 12-byte inline string, valid
+        // only as the continuation of the pair it starts or ends.
+        for at in 0..DUCK_STRING_INLINE_MAX_LEN {
+            for byte in [0x80_u8, 0xC3, 0xFF] {
+                let mut raw = *b"abcdefghijkl";
+                raw[at] = byte;
+                cases.push(raw.to_vec());
+            }
+        }
+        for case in cases {
+            let mut bytes = [0u8; DUCK_STRING_SIZE];
+            let len = u32::try_from(case.len()).expect("fits");
+            bytes[..4].copy_from_slice(&len.to_ne_bytes());
+            bytes[4..4 + case.len()].copy_from_slice(&case);
+            let view = DuckStringView::inline_from_bytes(&bytes).expect("inline");
+            assert_eq!(view.as_str(), std::str::from_utf8(&case).ok(), "{case:?}");
+        }
     }
 
     #[test]

@@ -27,6 +27,28 @@ pub use overload::AggregateOverloadBuilder;
 pub use set::AggregateFunctionSetBuilder;
 pub use single::AggregateFunctionBuilder;
 
+use crate::error::ExtensionError;
+
+/// The refusal of an aggregate that takes no parameter, for `what` (the
+/// function, or one overload of a set).
+///
+/// The C API gives `update` a chunk and the state array and no row count: the
+/// rows are `chunk.size()`. `DuckDB` 2.0 stopped setting the chunk's cardinality
+/// (`CAPIAggregateUpdate`, `aggregate_function-c.cpp`), and a chunk with no
+/// column reports a size of 0, so `SELECT f() FROM t` over 100 rows answers
+/// 100 on `DuckDB` 1.5.6 and 0 on 2.0.0 (checked against both). A windowed call
+/// of such an aggregate never reaches `update` on either. A silent wrong
+/// answer is worse than a refusal.
+pub(super) fn zero_parameter_error(what: &str, name: &str) -> ExtensionError {
+    ExtensionError::new(format!(
+        "{what} takes no parameter: DuckDB 2.0 passes `update` a chunk with no columns, \
+         which reports a size of 0 and has no row count, so the aggregate would count \
+         no rows (and a windowed call never reaches `update` on any version). Give it \
+         one parameter, and for a zero-argument SQL spelling register a macro in front \
+         of it: `CREATE MACRO {name}() AS {name}_1(1)`"
+    ))
+}
+
 /// Former name of [`AggregateOverloadBuilder`].
 ///
 /// Renamed for symmetry with [`ScalarOverloadBuilder`][crate::scalar::ScalarOverloadBuilder];

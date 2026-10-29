@@ -24,7 +24,6 @@ fn generates_all_required_files() {
     let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
     assert!(paths.contains(&"Cargo.toml"));
     assert!(paths.contains(&"Makefile"));
-    assert!(paths.contains(&"extension_config.cmake"));
     assert!(paths.contains(&"src/lib.rs"));
     assert!(paths.contains(&"src/wasm_lib.rs"));
     assert!(paths.contains(&"description.yml"));
@@ -234,6 +233,16 @@ fn cargo_config_has_windows_crt_static() {
         .find(|f| f.path == ".cargo/config.toml")
         .unwrap();
     assert!(cfg.content.contains("crt-static"));
+    // Windows links the C runtime statically; musl must not, or no cdylib is built.
+    for (target, flag) in [
+        ("x86_64-pc-windows-msvc", "+crt-static"),
+        ("aarch64-pc-windows-msvc", "+crt-static"),
+        ("x86_64-unknown-linux-musl", "-crt-static"),
+        ("aarch64-unknown-linux-musl", "-crt-static"),
+    ] {
+        let table = format!("[target.{target}]\nrustflags = [\"-Ctarget-feature={flag}\"]");
+        assert!(cfg.content.contains(&table), "{target}: {}", cfg.content);
+    }
     assert!(cfg.content.contains("x86_64-pc-windows-msvc"));
     assert!(cfg.content.contains("aarch64-pc-windows-msvc"));
 }
@@ -248,42 +257,45 @@ fn wasm_lib_shim_exists() {
     assert!(wasm.content.contains("mod lib"));
 }
 
-// --- extension_config.cmake ---
+// --- files the build does not read ---
 
+/// extension-ci-tools' C API makefiles (`base.Makefile`, `rust.Makefile`, on
+/// every branch the community build uses) never read `EXT_CONFIG`, and
+/// `extension-template-rs` has no such file; one that pinned `GIT_TAG` to a
+/// revision only went stale.
 #[test]
-fn extension_config_cmake_exists() {
+fn no_extension_config_cmake_is_generated() {
     let files = generate_scaffold(&valid_config()).unwrap();
-    assert!(files.iter().any(|f| f.path == "extension_config.cmake"));
+    assert!(!files.iter().any(|f| f.path == "extension_config.cmake"));
+    let makefile = files.iter().find(|f| f.path == "Makefile").unwrap();
+    assert!(
+        !makefile.content.contains("EXT_CONFIG"),
+        "{}",
+        makefile.content
+    );
 }
 
+/// The generated project is licensed: `Cargo.toml` carries the same SPDX
+/// identifier as `description.yml`.
 #[test]
-fn extension_config_cmake_references_name() {
-    let files = generate_scaffold(&valid_config()).unwrap();
-    let cmake = files
-        .iter()
-        .find(|f| f.path == "extension_config.cmake")
-        .unwrap();
-    assert!(cmake.content.contains("duckdb_extension_load(my_analytics"));
-}
-
-#[test]
-fn extension_config_cmake_references_github_repo() {
-    let files = generate_scaffold(&valid_config()).unwrap();
-    let cmake = files
-        .iter()
-        .find(|f| f.path == "extension_config.cmake")
-        .unwrap();
-    assert!(cmake.content.contains("janedoe/duckdb-my-analytics"));
-}
-
-#[test]
-fn extension_config_cmake_has_load_tests() {
-    let files = generate_scaffold(&valid_config()).unwrap();
-    let cmake = files
-        .iter()
-        .find(|f| f.path == "extension_config.cmake")
-        .unwrap();
-    assert!(cmake.content.contains("LOAD_TESTS"));
+fn cargo_toml_declares_the_configured_license() {
+    let config = ScaffoldConfig {
+        license: "Apache-2.0".to_string(),
+        ..valid_config()
+    };
+    let files = generate_scaffold(&config).unwrap();
+    let cargo = files.iter().find(|f| f.path == "Cargo.toml").unwrap();
+    assert!(
+        cargo.content.contains("\nlicense = \"Apache-2.0\"\n"),
+        "{}",
+        cargo.content
+    );
+    let desc = files.iter().find(|f| f.path == "description.yml").unwrap();
+    assert!(
+        desc.content.contains("license: \"Apache-2.0\""),
+        "{}",
+        desc.content
+    );
 }
 
 // --- SQLLogicTest ---

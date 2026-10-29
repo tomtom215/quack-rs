@@ -51,8 +51,22 @@ integer constants, which `libduckdb-sys` exposes as
 | `TypeId::SqlNull` | `SQLNULL` | `DUCKDB_TYPE_SQLNULL` | explicit SQL NULL type |
 | `TypeId::IntegerLiteral` | `INTEGER_LITERAL` | `DUCKDB_TYPE_INTEGER_LITERAL` | unresolved integer literal |
 | `TypeId::StringLiteral` | `STRING_LITERAL` | `DUCKDB_TYPE_STRING_LITERAL` | unresolved string literal |
+| `TypeId::TimestampTzNs` | `TIMESTAMPTZ_NS` | `DUCKDB_TYPE_TIMESTAMP_TZ_NS` (42) | nanoseconds since epoch, timezone-aware (DuckDB 2.0.0+) |
 | `TypeId::Geometry` | `GEOMETRY` | `DUCKDB_TYPE_GEOMETRY` | spatial geometry value (`duckdb-1-5-3`) |
 | `TypeId::Variant` | `VARIANT` | `DUCKDB_TYPE_VARIANT` | self-describing nested value, e.g. Iceberg v3 (`duckdb-1-5-3`) |
+
+> **`TimestampTzNs` needs no feature.** DuckDB 2.0.0 added the type (id 42), and
+> the id is a plain number in the stable C ABI, so it is a literal in quack-rs
+> and the variant exists on every build, against every `libduckdb-sys`. A
+> DuckDB before 2.0.0 has no such type: it never reports id 42, and creating
+> the type (`LogicalType::try_new`, `ScalarFunctionBuilder::register`,
+> `Value::timestamp_tz_ns`) returns an error rather than aborting.
+> `Value::timestamp_tz_ns` and `Value::as_timestamp_tz_ns` do not call the two C
+> functions 2.0.0 added for the type (`duckdb_create_timestamp_tz_ns` and
+> `duckdb_get_timestamp_tz_ns`): they sit in slots 547 and 548 of the API
+> struct, which an extension built against the 1.5.2 – 1.5.6 bindings (the
+> ones that load into both 1.5.6 and 2.0) and every engine before 2.0.0 does
+> not have. See [ABI Compatibility](../concepts/abi.md).
 
 > **Feature gate for `Geometry` / `Variant`:** `DUCKDB_TYPE_GEOMETRY` (40) and
 > `DUCKDB_TYPE_VARIANT` (41) require the **`duckdb-1-5-3`** feature, which layers
@@ -171,6 +185,7 @@ variants as follows:
 | `TimestampS` | `read_timestamp_s` | `write_timestamp_s` | `i64` (s since epoch) |
 | `TimestampMs` | `read_timestamp_ms` | `write_timestamp_ms` | `i64` (ms since epoch) |
 | `TimestampNs` | `read_timestamp_ns` | `write_timestamp_ns` | `i64` (ns since epoch) |
+| `TimestampTzNs` | `read_timestamp_tz_ns` | `write_timestamp_tz_ns` | `i64` (ns since epoch; DuckDB 2.0.0+) |
 | `Decimal` | `read_decimal(row, width)` | `write_decimal(row, width, v)` | `i128` (unscaled) |
 
 `List`, `Map`, `Struct` and `Array` are nested vectors: use the helpers in

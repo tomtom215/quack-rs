@@ -1,0 +1,114 @@
+# Slots of duckdb_ext_api_v1 that no code under src/ uses, and why.
+# Checked by scripts/check-api-coverage.py: a slot must be wrapped or listed here, and
+# a listed slot that src/ starts to use must be deleted from the list.
+#
+# Format: name  class  reason      (class: deprecated | superseded | host-side | candidate)
+
+# --- deprecated: duckdb.h marks every one of these with a deprecation notice ---
+duckdb_row_count deprecated result-set accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_column_data deprecated result-set accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_nullmask_data deprecated result-set accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_result_get_chunk deprecated result-set accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_result_chunk_count deprecated result-set accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_boolean deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_int8 deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_int16 deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_int32 deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_int64 deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_hugeint deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_uhugeint deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_decimal deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_uint8 deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_uint16 deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_uint32 deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_uint64 deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_float deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_double deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_date deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_time deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_timestamp deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_interval deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_varchar deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_string deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_varchar_internal deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_string_internal deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_blob deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_value_is_null deprecated per-cell result accessor (duckdb.h: deprecated since v1.0.0); read data chunks instead
+duckdb_pending_prepared_streaming deprecated (duckdb.h); use duckdb_execute_prepared_streaming, which is wrapped
+duckdb_query_arrow deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_query_arrow_schema deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_prepared_arrow_schema deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_result_arrow_array deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_query_arrow_array deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_arrow_column_count deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_arrow_row_count deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_arrow_rows_changed deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_query_arrow_error deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_destroy_arrow deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_destroy_arrow_stream deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_execute_prepared_arrow deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_arrow_scan deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_arrow_array_scan deprecated legacy Arrow interface (duckdb.h); the duckdb-1-5-4 arrow module uses the data-chunk Arrow calls
+duckdb_stream_fetch_chunk deprecated (duckdb.h); use duckdb_fetch_chunk, which is wrapped
+
+# --- superseded or internal ---
+duckdb_open_ext superseded opening a database is the host's job; InstanceCache wraps the shared-instance route
+duckdb_malloc superseded Rust allocates its own memory; DuckDB-owned buffers are freed with duckdb_free
+duckdb_string_is_inlined superseded DuckStringView decodes duckdb_string_t in Rust
+duckdb_string_t_length superseded DuckStringView decodes duckdb_string_t in Rust
+duckdb_string_t_data superseded DuckStringView decodes duckdb_string_t in Rust
+duckdb_append_varchar superseded duckdb_append_varchar_length is wrapped (no NUL-terminated copy)
+duckdb_bind_varchar superseded duckdb.h: superseded by duckdb_bind_value, which is wrapped
+duckdb_create_varchar superseded duckdb.h: superseded by duckdb_create_varchar_length, which is wrapped
+duckdb_vector_assign_string_element superseded the _len variant is wrapped
+duckdb_appender_begin_row superseded duckdb.h: a no-op kept for compatibility; only duckdb_appender_end_row is needed
+duckdb_validity_set_row_validity superseded duckdb_validity_set_row_valid and _invalid are the calls used
+
+# --- host-side: an embedding application's concern, not a loadable extension's ---
+duckdb_get_profiling_info host-side query profiling of the host's own queries
+duckdb_profiling_info_get_value host-side query profiling of the host's own queries
+duckdb_profiling_info_get_metrics host-side query profiling of the host's own queries
+duckdb_profiling_info_get_child_count host-side query profiling of the host's own queries
+duckdb_profiling_info_get_child host-side query profiling of the host's own queries
+duckdb_pending_prepared host-side incremental execution; execute_streaming plus InterruptHandle cover an extension's need
+duckdb_destroy_pending host-side incremental execution; execute_streaming plus InterruptHandle cover an extension's need
+duckdb_pending_error host-side incremental execution; execute_streaming plus InterruptHandle cover an extension's need
+duckdb_pending_execute_task host-side incremental execution; execute_streaming plus InterruptHandle cover an extension's need
+duckdb_pending_execute_check_state host-side incremental execution; execute_streaming plus InterruptHandle cover an extension's need
+duckdb_execute_pending host-side incremental execution; execute_streaming plus InterruptHandle cover an extension's need
+duckdb_pending_execution_is_finished host-side incremental execution; execute_streaming plus InterruptHandle cover an extension's need
+duckdb_execute_tasks host-side lets an application run DuckDB's scheduler tasks on its own threads
+duckdb_create_task_state host-side lets an application run DuckDB's scheduler tasks on its own threads
+duckdb_execute_tasks_state host-side lets an application run DuckDB's scheduler tasks on its own threads
+duckdb_execute_n_tasks_state host-side lets an application run DuckDB's scheduler tasks on its own threads
+duckdb_finish_execution host-side lets an application run DuckDB's scheduler tasks on its own threads
+duckdb_task_state_is_finished host-side lets an application run DuckDB's scheduler tasks on its own threads
+duckdb_destroy_task_state host-side lets an application run DuckDB's scheduler tasks on its own threads
+duckdb_execution_is_finished host-side lets an application run DuckDB's scheduler tasks on its own threads
+duckdb_extract_statements_error host-side statement extraction for an application's own multi-statement scripts
+duckdb_prepare_extracted_statement host-side statement extraction for an application's own multi-statement scripts
+
+# --- candidate: worth wrapping, not done yet ---
+duckdb_param_type candidate PreparedStatement::parameter_type
+duckdb_param_logical_type candidate PreparedStatement::parameter_type
+duckdb_prepared_statement_type candidate PreparedStatement::statement_type
+duckdb_result_statement_type candidate QueryResult::statement_type
+duckdb_prepared_statement_column_count candidate PreparedStatement::column_count (the name is strdup'd: free it with duckdb_free)
+duckdb_prepared_statement_column_name candidate PreparedStatement::column_name (the name is strdup'd: free it with duckdb_free)
+duckdb_prepared_statement_column_logical_type candidate PreparedStatement::column_type
+duckdb_prepared_statement_column_type candidate PreparedStatement::column_type
+duckdb_get_table_names candidate Connection::table_names
+duckdb_appender_create_query candidate Appender::for_query
+duckdb_create_bignum candidate Value::bignum
+duckdb_get_bignum candidate Value::as_bignum (a null data pointer on allocation failure must be handled)
+duckdb_get_bit candidate Value::as_bit
+duckdb_geometry_type_get_crs candidate LogicalType::geometry_crs (the string is strdup'd)
+duckdb_unsafe_vector_assign_string_element_len candidate VectorWriter::write_varchar could skip the UTF-8 re-check of a &str (1.5.0+)
+duckdb_create_log_storage candidate a safe LogStorage builder (1.5.0+)
+duckdb_destroy_log_storage candidate a safe LogStorage builder (1.5.0+)
+duckdb_log_storage_set_write_log_entry candidate a safe LogStorage builder (1.5.0+)
+duckdb_log_storage_set_extra_data candidate a safe LogStorage builder (1.5.0+)
+duckdb_log_storage_set_name candidate a safe LogStorage builder (1.5.0+)
+duckdb_register_log_storage candidate a safe LogStorage builder (1.5.0+)
+duckdb_create_timestamp_tz_ns candidate wrapped differently on purpose: calling it raises the engine floor to 2.0.0 (Value::timestamp_tz_ns casts instead); absent from the 546-slot header
+duckdb_get_timestamp_tz_ns candidate wrapped differently on purpose: calling it raises the engine floor to 2.0.0 (Value::as_timestamp_tz_ns reads the TIMESTAMP_NS payload); absent from the 546-slot header

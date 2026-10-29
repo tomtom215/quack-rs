@@ -467,8 +467,10 @@ fn every_rendered_parameter_type_matches_duckdbs_own_spelling() {
         TypeId::Varint,
         TypeId::Any,
     ];
+    // VARIANT is not creatable from its id (it is refused up front; see
+    // `a_variant_in_a_function_signature_is_refused`), so it is not here.
     #[cfg(feature = "duckdb-1-5-3")]
-    ids.extend([TypeId::Geometry, TypeId::Variant]);
+    ids.push(TypeId::Geometry);
     // DuckDB 1.4.x has TIME_NS in SQL but not in its C API (it returns an
     // INVALID type for it), so `LogicalType::try_new` refuses it there. Pin
     // exactly that, so a type silently missing anywhere else still fails.
@@ -869,6 +871,19 @@ mod raw_state {
     pub static INITS: AtomicUsize = AtomicUsize::new(0);
     pub static DESTROYED: AtomicUsize = AtomicUsize::new(0);
 
+    /// Held for the whole of a measurement. `INITS` and `DESTROYED` are
+    /// process-wide, and tests run on parallel threads: two measurements at once
+    /// reset and read each other's counts.
+    pub static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Takes [`SERIAL`]; a test that panicked while holding it poisons nothing
+    /// that matters, so a poisoned lock is taken anyway.
+    pub fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub const unsafe extern "C" fn size(_info: duckdb_function_info) -> idx_t {
         8
     }
@@ -892,6 +907,15 @@ mod raw_state {
 
     quack_rs::aggregate_update_callback!(update_nothing, |_info, _input, _states| {});
     quack_rs::aggregate_combine_callback!(combine_nothing, |_info, _source, _target, _count| {});
+
+    quack_rs::aggregate_update_callback!(update_fails, |info, _input, _states| {
+        // SAFETY: DuckDB passes a valid function info.
+        unsafe { AggregateFunctionInfo::new(info) }.set_error("update failed on purpose");
+    });
+    quack_rs::aggregate_combine_callback!(combine_fails, |info, _source, _target, _count| {
+        // SAFETY: DuckDB passes a valid function info.
+        unsafe { AggregateFunctionInfo::new(info) }.set_error("combine failed on purpose");
+    });
 
     quack_rs::aggregate_finalize_callback!(
         finalize_fails,
@@ -945,6 +969,7 @@ fn aggregate_states_are_not_all_destroyed_when_finalize_fails() {
     };
 
     let counts = |finalize: quack_rs::aggregate::FinalizeFn, sql: &str| {
+        let _serial = raw_state::serial();
         raw_state::INITS.store(0, Ordering::SeqCst);
         raw_state::DESTROYED.store(0, Ordering::SeqCst);
         {
@@ -999,6 +1024,99 @@ fn aggregate_states_are_not_all_destroyed_when_finalize_fails() {
             inits, destroyed,
             "{sql}: a successful finalize destroys every state"
         );
+    }
+}
+
+/// Initialised and destroyed state counts for one query of `counted_agg`,
+/// built from the given callbacks, with `threads` worker threads.
+fn state_counts(
+    update: quack_rs::aggregate::UpdateFn,
+    combine: quack_rs::aggregate::CombineFn,
+    finalize: quack_rs::aggregate::FinalizeFn,
+    threads: u32,
+    sql: &str,
+) -> (usize, usize) {
+    use std::sync::atomic::Ordering;
+    let _serial = raw_state::serial();
+    raw_state::INITS.store(0, Ordering::SeqCst);
+    raw_state::DESTROYED.store(0, Ordering::SeqCst);
+    {
+        let fx = Fixture::open();
+        // SAFETY: `con` is open; every callback matches its declared signature.
+        unsafe {
+            AggregateFunctionBuilder::try_new("counted_agg")
+                .expect("valid name")
+                .param(TypeId::BigInt)
+                .returns(TypeId::BigInt)
+                .state_size(raw_state::size)
+                .init(raw_state::init_counted)
+                .update(update)
+                .combine(combine)
+                .finalize(finalize)
+                .destructor(raw_state::destroy_counted)
+                .register(fx.con())
+                .expect("register counted_agg");
+            quack_rs::query::query(fx.con(), &format!("SET threads={threads}")).expect("threads");
+            let _ = quack_rs::query::query(fx.con(), sql);
+        }
+    }
+    (
+        raw_state::INITS.load(Ordering::SeqCst),
+        raw_state::DESTROYED.load(Ordering::SeqCst),
+    )
+}
+
+/// An error from `update` destroys every state it created, on both engines. An
+/// error from `combine` abandons states on `DuckDB` 1.x (not on 2.0.0), but only
+/// when more than one thread built states for `combine` to merge: measured on
+/// 1.5.6 as 2 initialised and 1 destroyed ungrouped, and 10 to 11 initialised
+/// with 3 to 4 destroyed grouped (by 4 threads over a million rows). Pins the
+/// behaviour documented under Known Limitations; if `DuckDB` stops leaking on
+/// 1.x, or starts on 2.0, an assertion fails.
+#[test]
+fn aggregate_states_after_update_and_combine_errors() {
+    let major = Fixture::open().engine_major();
+    for sql in [
+        "SELECT counted_agg(i::BIGINT) FROM range(1000000) t(i)",
+        "SELECT i % 7, counted_agg(i::BIGINT) FROM range(1000000) t(i) GROUP BY 1",
+    ] {
+        for threads in [1_u32, 4] {
+            let (inits, destroyed) = state_counts(
+                raw_state::update_fails,
+                raw_state::combine_nothing,
+                raw_state::finalize_ones,
+                threads,
+                sql,
+            );
+            assert!(inits > 0, "{sql}: nothing was initialised");
+            assert_eq!(
+                inits, destroyed,
+                "{sql} ({threads} threads): a failed update must destroy every state"
+            );
+
+            let (inits, destroyed) = state_counts(
+                raw_state::update_nothing,
+                raw_state::combine_fails,
+                raw_state::finalize_ones,
+                threads,
+                sql,
+            );
+            if major >= 2 || threads == 1 || inits == 1 {
+                // 2.0 destroys them all; with one thread or one state there is
+                // nothing for `combine` to merge, so nothing to abandon.
+                assert_eq!(
+                    inits, destroyed,
+                    "{sql} ({threads} threads, engine {major}): a failed combine"
+                );
+            } else {
+                assert!(
+                    inits > destroyed,
+                    "{sql} ({threads} threads): DuckDB 1.x now destroys every state after a \
+                     failed combine ({inits} initialised, {destroyed} destroyed); \
+                     update Known Limitations"
+                );
+            }
+        }
     }
 }
 

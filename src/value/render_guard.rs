@@ -53,6 +53,7 @@ const fn is_checked_temporal(id: TypeId) -> bool {
             | TypeId::TimestampS
             | TypeId::TimestampMs
             | TypeId::TimestampNs
+            | TypeId::TimestampTzNs
             | TypeId::Time
             | TypeId::TimeTz
     ) || is_time_ns(id)
@@ -187,6 +188,7 @@ mod tests {
             TypeId::TimestampS,
             TypeId::TimestampMs,
             TypeId::TimestampNs,
+            TypeId::TimestampTzNs,
             TypeId::Time,
             TypeId::TimeTz,
         ] {

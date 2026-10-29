@@ -480,9 +480,9 @@ build stays on `1.10506.x` under MSRV-aware resolution.
 CI checks the range in two ways (`.github/workflows/ci.yml`):
 
 - `test-older-engines` runs the test suite against DuckDB 1.4.4 and 1.4.5
-  (default features), 1.5.0 (`duckdb-1-5`), 1.5.3 (`duckdb-1-5-3`) and 1.5.4
-  (`duckdb-1-5-4`); `test-duckdb-2-0` runs it against DuckDB 2.0.0 with the
-  DuckDB 2.0 bindings (1.20000.0); the other test jobs use the release
+  (default features), 1.5.0 (`duckdb-1-5`), 1.5.3 (`duckdb-1-5-3`), and 1.5.4 and
+  1.5.5 (`duckdb-1-5-4`); `test-duckdb-2-0` runs it against DuckDB 2.0.0 with the
+  DuckDB 2.0 bindings (1.20000.1); the other test jobs use the release
   `Cargo.lock` pins.
 - `extension-load` loads the `hello-ext` example, stamped `C_STRUCT` + `v1.2.0`,
   into DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release.
@@ -534,10 +534,18 @@ and `ScalarOverloadBuilder::varargs()`, with no feature flag.
 
 ### ADR-6: Custom C entry point instead of `duckdb-loadable-macros`
 
-`duckdb-loadable-macros` relies on `extract_raw_connection`, which depends on the
-internal `Rc<RefCell<InnerConnection>>` layout of the `duckdb` crate. This is
-fragile and caused SEGFAULTs when the layout changed. `quack-rs` instead uses a
-hand-written C entry point that calls `duckdb_rs_extension_api_init`,
-`get_database` and `duckdb_connect` directly;
+When this decision was made, `duckdb-loadable-macros` relied on
+`extract_raw_connection`, which depends on the internal `Rc<RefCell<InnerConnection>>`
+layout of the `duckdb` crate; that was fragile and caused SEGFAULTs when the layout
+changed. `quack-rs` instead uses a hand-written C entry point that calls
+`duckdb_rs_extension_api_init`, `get_database` and `duckdb_connect` directly;
 `quack_rs::entry_point::init_extension` and the `entry_point!` macros
 encapsulate it.
+
+The original reason no longer holds: `duckdb-loadable-macros` 1.20000.1 uses
+`Connection::open_from_raw` and contains no `extract_raw_connection` (checked
+2026-10-29 against the published crate). The decision stands for other reasons.
+The macro's host crate wraps only scalar and table functions; quack-rs wraps
+more function kinds; it guards callbacks against panics and checks the C API
+layout at load; and it stays on the stable C API v1. The macros crate also has
+a `neo` feature that emits the C API v2 entry point, which quack-rs does not.

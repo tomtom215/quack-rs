@@ -318,20 +318,18 @@ fn description_lines_cannot_form_markdown_blocks() {
     assert_eq!(desc.description, config.description);
 }
 
-/// The `CMake` config pins the same revision as `repo.ref`, not `main`.
+/// `repo.ref` carries the configured revision, not `main`.
 #[test]
-fn extension_config_cmake_pins_the_configured_ref() {
+fn description_yml_pins_the_configured_ref() {
     let config = ScaffoldConfig {
         git_ref: "0123456789abcdef0123456789abcdef01234567".to_string(),
         ..valid_config()
     };
     let files = generate_scaffold(&config).unwrap();
-    let cmake = file(&files, "extension_config.cmake");
-    assert!(
-        cmake.contains("\tGIT_TAG 0123456789abcdef0123456789abcdef01234567\n"),
-        "{cmake}"
-    );
-    assert!(!cmake.contains("GIT_TAG main"), "{cmake}");
+    let yml = file(&files, "description.yml");
+    let desc = parse_description_yml(yml).unwrap();
+    assert_eq!(desc.git_ref, "0123456789abcdef0123456789abcdef01234567");
+    assert!(!yml.contains("ref: main"), "{yml}");
 }
 
 /// Only a run of digits followed by `.` or `)` is an ordered-list marker: a

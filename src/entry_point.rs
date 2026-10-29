@@ -53,7 +53,7 @@
 //! ```rust,no_run
 //! use quack_rs::entry_point::init_extension;
 //!
-//! #[no_mangle]
+//! #[unsafe(no_mangle)]
 //! pub unsafe extern "C" fn my_extension_init_c_api(
 //!     info: libduckdb_sys::duckdb_extension_info,
 //!     access: *const libduckdb_sys::duckdb_extension_access,
@@ -269,7 +269,7 @@ macro_rules! entry_point_v2 {
 /// ```rust,no_run
 /// use quack_rs::entry_point::init_extension;
 ///
-/// #[no_mangle]
+/// #[unsafe(no_mangle)]
 /// pub unsafe extern "C" fn my_ext_init_c_api(
 ///     info: libduckdb_sys::duckdb_extension_info,
 ///     access: *const libduckdb_sys::duckdb_extension_access,
@@ -361,7 +361,7 @@ where
 /// use quack_rs::entry_point::init_extension_v2;
 /// use quack_rs::connection::Registrar;
 ///
-/// #[no_mangle]
+/// #[unsafe(no_mangle)]
 /// pub unsafe extern "C" fn my_ext_init_c_api(
 ///     info: libduckdb_sys::duckdb_extension_info,
 ///     access: *const libduckdb_sys::duckdb_extension_access,

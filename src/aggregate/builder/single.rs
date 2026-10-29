@@ -403,9 +403,19 @@ impl AggregateFunctionBuilder {
         ]
         .into_iter()
         .find_map(|(name, absent)| absent.then_some(name));
-        missing.map_or(Ok(()), |callback| {
-            Err(ExtensionError::new(format!("{callback} callback not set")))
-        })
+        if let Some(callback) = missing {
+            return Err(ExtensionError::new(format!("{callback} callback not set")));
+        }
+        // Last, so an incomplete builder is told what it lacks before it is told
+        // about its arity.
+        if self.params.is_empty() && self.logical_params.is_empty() {
+            let name = self.name.to_string_lossy();
+            return Err(super::zero_parameter_error(
+                &format!("aggregate function '{name}'"),
+                &name,
+            ));
+        }
+        Ok(())
     }
 
     /// Refuses a type [`register`][Self::register] refuses before its first

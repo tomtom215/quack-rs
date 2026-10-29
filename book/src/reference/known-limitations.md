@@ -70,10 +70,16 @@ succeeds, every state is destroyed. The extension cannot tell which states were 
 they own is leaked: with `FfiState<T>`, whatever `T` owns on the heap, and the
 box of a `T` too large to store inline (see the next section). The query still
 fails with your message. If that leak matters (a long-lived process whose
-queries often fail this way), keep what a state owns small. Only `finalize` was
-measured; errors reported from other callbacks were not. The behaviour is
-pinned by
-`aggregate_states_are_not_all_destroyed_when_finalize_fails` in
+queries often fail this way), keep what a state owns small.
+
+Errors from the other callbacks were measured as well (a million rows, ungrouped
+and grouped, one and four threads). An error from `update` destroys every state on
+DuckDB 1.5.6 and 2.0.0. An error from `combine` leaks on DuckDB 1.x when several
+threads built states for it to merge (1.5.6, four threads: 2 initialised and 1
+destroyed ungrouped; 10 or 11 initialised and 3 or 4 destroyed grouped), not with
+one thread, and not on 2.0.0. The behaviour is pinned by
+`aggregate_states_are_not_all_destroyed_when_finalize_fails` and
+`aggregate_states_after_update_and_combine_errors` in
 `tests/ffi_roundtrip/lifecycle.rs`.
 
 ## Grouped-aggregate states the scan never reaches are never destroyed (DuckDB defect)
@@ -249,3 +255,151 @@ quack-rs = { version = "0.19", features = ["duckdb-1-5-3"] }
 
 Neither type yet has dedicated `VectorReader`/`VectorWriter` helpers; access
 their data via the raw pointer from `duckdb_vector_get_data` when needed.
+
+**A `VARIANT` cannot be declared in a function signature.** The type
+`duckdb_create_logical_type(VARIANT)` returns has no `STRUCT` layout, because
+DuckDB stores a VARIANT as a struct. A scalar function declared with it
+registers, and the first query that reaches it takes DuckDB down: on 2.0.0
+`SELECT v_out(1)` is a segmentation fault (`VectorStructBuffer` while
+initialising the result vector; reproduced with the guard bypassed), and on 1.5.x
+`SELECT v_in({'a':1}::VARIANT)` is an internal error that invalidates the
+database. quack-rs therefore refuses `TypeId::Variant` wherever it builds a
+logical type (`LogicalType::try_new`, and so every builder's parameter,
+return-type and result-column slots), with an error that names `ANY`. A function
+that wants to accept a VARIANT declares the parameter as `TypeId::Any`.
+`GEOMETRY` is unaffected.
+
+## Aggregates that take no argument count no rows on DuckDB 2.0
+
+The C API gives an aggregate's `update` callback a chunk and the state array and
+no row count: the number of rows is the chunk's size. DuckDB 2.0 no longer sets
+that cardinality (`CAPIAggregateUpdate`, `aggregate_function-c.cpp`), and a chunk
+with no column reports a size of 0. A zero-argument aggregate (`SELECT my_count()
+FROM t`) therefore answers 100 over 100 rows on DuckDB 1.5.6 and **0** on 2.0.0
+(measured on both, ungrouped and grouped), and a windowed call of such an
+aggregate never reaches `update` on either. quack-rs refuses to register an
+aggregate, or an overload in a set, that has no parameter. Give it one, and put a
+macro in front of it for a zero-argument spelling:
+
+```rust,ignore
+// my_count_1(x) counts the rows it is called on; `x` is ignored.
+AggregateFunctionBuilder::new("my_count_1").param(TypeId::BigInt) /* … */;
+SqlMacro::scalar("my_count", &[], "my_count_1(1::BIGINT)")?; // CREATE MACRO my_count() AS my_count_1(1::BIGINT)
+```
+
+## A failing state initialiser in a window frame crashes the host (DuckDB defect)
+
+When an aggregate's `state_init` reports an error while the aggregate runs as a
+window function with a `ROWS` or `RANGE` frame, DuckDB's
+`WindowAggregateStates` destroys its whole table of state pointers, including
+entries it never wrote. The destructor is handed garbage pointers. A plain C
+aggregate shows it, with no Rust involved: on DuckDB 1.5.6 55 of 68 pointers
+passed to the destructor were garbage, and on 2.0.0 65 of 68. quack-rs's
+`FfiState` reports a panic in `T::default()` as a SQL error, which is exactly this
+trigger; its tag check cannot help, since there is no slot to read. Ungrouped,
+grouped, `DISTINCT` and `FILTER` aggregates report a clean error; a window shape
+kills the process (`SIGSEGV` or `SIGBUS`). **`T::default()` must not panic** for an
+aggregate that can run as a window function.
+
+## NULL rows of `LIST` and `MAP` vectors hold stale entries
+
+DuckDB writes no list entry for a NULL row, so the `offset` and `length` that
+`ListVector::get_entry` and `MapVector::get_entry` return for one are whatever the
+reused buffer held. On 2.0.0 a `nullif(l, [])` column had NULL rows with lengths
+around 7·10¹³, and a loop that walked them read far outside the child vector: a
+segmentation fault in a minority of runs, and no failure at all in most, which is
+how the pattern went unnoticed. `get_entry_checked` returns `None` for a NULL row
+and for an entry that does not lie inside the child; use it, or test the row's
+validity before `get_entry`.
+
+## Table functions take literals only
+
+A table function registered through the C API cannot take a column or a
+subquery as an argument. `LATERAL (SELECT * FROM f(t.n))`, a correlated call, a
+recursive CTE that references the function and `f((SELECT 4))` all fail in the
+binder, on 1.5.6 and 2.0.0, with "does not support lateral join column
+parameters" or "cannot contain subqueries". There is no table-in-table-out
+function in the C API. Pass a `LIST` literal, or write the function as a scalar.
+
+## A function that reads a setting must be marked volatile
+
+DuckDB folds a non-volatile function call whose arguments are constants into the
+plan, once. A function whose `init` reads a setting
+(`ClientContext::config_option`) and is not `.volatile()` then keeps answering
+with the value it read first: after `SET v_setting = 9; PREPARE p AS SELECT f();
+SET v_setting = 10; EXECUTE p;` the plain function returned 9 and the same function
+marked `.volatile()` returned 10. The C API v1 has only `volatile`, not "stable
+within a query".
+
+## Custom COPY formats cannot declare a file extension
+
+The C API v1 has no way to give a COPY function a file extension, so
+`PER_THREAD_OUTPUT`, `PARTITION_BY` and `FILENAME_PATTERN` produce files that end
+in a bare dot (`data_0.`, `part_0.`); the built-in formats give `data_0.csv`.
+Append the extension to the path in your `global_init` if the output needs one.
+
+## SQL macros: no defaults or overloads, and they persist
+
+`SqlMacro` takes plain parameter names; `y := 5` is rejected, and registering the
+same name again replaces the first (`CREATE OR REPLACE`). For a default
+parameter, run `CREATE OR REPLACE MACRO m(x, y := 5) AS x + y` through
+`Connection::execute`. A macro is stored in the user's database, so one whose
+body calls an extension function breaks when the database is opened without the
+extension loaded ("Table Function with name … does not exist"); a custom type
+registered through the C API is not stored.
+
+## DuckDB 2.0's C API v2 offers what v1 cannot
+
+DuckDB 2.0.0 ships a second C API, `duckdb_extension_v2.h` / `duckdb_v2.h`, with
+no stable surface yet: a binary built against it loads only into the exact
+DuckDB release it was built for, and DuckDB 2.0 sends every
+`C_STRUCT_UNSTABLE` binary to its `<name>_init_c_api_v2` entry point. quack-rs
+does not generate that entry point, so none of the following is available
+through it. Each name below exists in the 2.0.0 header and is absent from the v1
+header (checked by `grep`):
+
+- a scalar function's or aggregate's return type chosen at bind time
+  (`duckdb_v2_scalar_function_resolve_types_set_return_type`,
+  `duckdb_v2_aggregate_function_bind_set_return_type`) and the aggregate's row
+  count (`duckdb_v2_aggregate_function_update_get_row_count`);
+- function properties, among them a "consistent within query" stability;
+- an option's update callback (`duckdb_v2_custom_option_set_update_callback`), which
+  can validate or replace a setting's value;
+- filter pushdown for table functions
+  (`duckdb_v2_table_function_set_filter_pushdown`), and a progress callback;
+- a COPY function's file extension (`duckdb_v2_copy_function_set_file_extension`);
+- native macro functions, pragma functions, custom types and log sinks.
+
+The official Rust template and `duckdb-neo` target this API. quack-rs stays on v1
+for the portable binary; see the README's comparison.
+
+## A `STRUCT` with only empty field names is a `TUPLE` on DuckDB 2.0
+
+DuckDB 2.0 has a `TUPLE` type, which the C API reports as a `STRUCT` with empty
+child names, and `duckdb_create_struct_type` with all-empty names now builds one.
+`LogicalType::struct_type(&[("", …), ("", …)])` is accepted and gives a `TUPLE` on 2.0
+and a different type on 1.x. Name the fields.
+
+## A caught panic is still printed to stderr
+
+The macros and typed builders catch a panic at the FFI boundary and report it as a
+SQL error, but Rust's default panic hook has already run by then: it writes the
+panic message to the host process's stderr (and a backtrace when `RUST_BACKTRACE`
+is set), and does so even though the query only fails with an error. quack-rs
+installs no hook, because the hook is process-wide and the host (Python, a CLI, a
+server) owns it. An extension that wants these lines silent or routed to its own
+log can call `std::panic::set_hook` in its entry point, knowing that it replaces
+the host's hook for every thread in the process.
+
+## Loading an extension scans the function catalog once
+
+Every scalar and table registration through quack-rs first lists `duckdb_functions()`
+to refuse a signature that would silently replace an existing function (a built-in
+included) or make calls ambiguous. Registering through the entry point's
+`Connection` does that scan once per `LOAD`, however many functions follow. The cost
+is fixed, not per function: for an extension with one `map1` function, `LOAD` took
+18 ms longer than the same entry point registering the function through the raw C
+API on DuckDB 1.5.6, and 30 ms longer on 2.0.0 (medians of 30 interleaved CLI
+runs each, one 4-vCPU virtual machine, release build; the minima differ by 17 and
+27 ms). The C API has no catalog lookup for functions, so the scan cannot be
+narrowed to a name.

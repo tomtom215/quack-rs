@@ -599,6 +599,20 @@ impl VectorWriter {
         unsafe { self.write_i64(idx, nanos_since_epoch) };
     }
 
+    /// Writes a `TIMESTAMPTZ_NS` value at row `idx`, as nanoseconds since the
+    /// epoch (`DuckDB` 2.0.0+).
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `TIMESTAMPTZ_NS` type.
+    #[inline]
+    pub const unsafe fn write_timestamp_tz_ns(&mut self, idx: usize, nanos_since_epoch: i64) {
+        // SAFETY: TIMESTAMPTZ_NS is stored as i64 nanoseconds
+        // (`timestamp_tz_ns_t` wraps a `timestamp_ns_t`).
+        unsafe { self.write_i64(idx, nanos_since_epoch) };
+    }
+
     /// Writes a `TIME WITH TIME ZONE` value at row `idx`.
     ///
     /// `bits` is `DuckDB`'s packed representation; build one with
@@ -667,10 +681,12 @@ impl VectorWriter {
     pub unsafe fn set_null(&mut self, idx: usize) {
         // SAFETY: self.vector is valid per constructor's contract.
         let validity = unsafe { self.writable_validity() };
-        // SAFETY: validity is now initialized and idx is in bounds per caller's contract.
-        unsafe {
-            duckdb_validity_set_row_invalid(validity, idx as idx_t);
-        }
+        // Clears bit `idx % 64` of word `idx / 64`, which is all
+        // `duckdb_validity_set_row_invalid` does, without the FFI call (see
+        // `VectorReader::is_valid`).
+        // SAFETY: validity is now initialized and idx is in bounds per caller's
+        // contract, so word `idx / 64` lies inside the mask.
+        unsafe { *validity.add(idx >> 6) &= !(1_u64 << (idx & 63)) };
         // SAFETY: self.vector is valid; idx is in bounds per caller's contract.
         unsafe { self.clear_nested(idx..idx + 1) };
     }

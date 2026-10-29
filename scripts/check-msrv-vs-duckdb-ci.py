@@ -18,9 +18,13 @@ Exit codes:
     1  a pinned toolchain is older than quack-rs's MSRV
     2  the workflow could not be fetched or parsed (network, layout change)
 
-By default it checks two refs: `main`, and the branch the community build
-uses for the newest DuckDB release (DISTRIBUTION_REF, kept equal to
-`scaffold::DISTRIBUTION_DUCKDB_VERSION`).
+By default it checks `main`, the branch the community build uses for the
+newest DuckDB release (DISTRIBUTION_REF, kept equal to
+`scaffold::DISTRIBUTION_DUCKDB_VERSION`), and the branches that build the
+DuckDB 1.x releases still in support (SUPPORTED_1X_REFS). The last are the ones
+that constrain the MSRV: `main` and `v2.0-cyanoptera` pin Rust 1.97.1, and
+`v1.5-variegata` and `v1.4-andium` still pin 1.86.0 for their WebAssembly
+build, so a default run that checked only the first two could not fail.
 
 Usage:
     python3 scripts/check-msrv-vs-duckdb-ci.py
@@ -46,6 +50,11 @@ WORKFLOW_URL = (
 # The branch the community build uses for the newest DuckDB release (v2.0.0:
 # duckdb/community-extensions build.yml; extension-ci-tools has no v2.0.0 branch).
 DISTRIBUTION_REF = "v2.0-cyanoptera"
+
+# The extension-ci-tools branches for the DuckDB 1.x lines still supported
+# (1.5 until March 2027, 1.4 until November 2026). Drop one when DuckDB ends
+# support for its line.
+SUPPORTED_1X_REFS = ["v1.5-variegata", "v1.4-andium"]
 
 # Three forms occur upstream, and the pattern must accept all of them: an
 # exact ref (`dtolnay/rust-toolchain@1.86.0`, how the WebAssembly job pins the
@@ -98,10 +107,13 @@ def main() -> int:
     parser.add_argument(
         "--ref",
         action="append",
-        help=f"extension-ci-tools ref to check; repeatable (default: main and {DISTRIBUTION_REF})",
+        help=(
+            "extension-ci-tools ref to check; repeatable "
+            f"(default: main, {DISTRIBUTION_REF} and {', '.join(SUPPORTED_1X_REFS)})"
+        ),
     )
     args = parser.parse_args()
-    refs = args.ref or ["main", DISTRIBUTION_REF]
+    refs = args.ref or ["main", DISTRIBUTION_REF, *SUPPORTED_1X_REFS]
 
     for line, want in SELF_TEST.items():
         got = pins_in(line)

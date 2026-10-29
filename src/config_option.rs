@@ -449,6 +449,7 @@ unsafe fn value_of_type(reader: &VectorReader, type_id: TypeId) -> Option<Value>
             TypeId::TimestampS => Value::timestamp_s(reader.read_timestamp_s(0)).ok()?,
             TypeId::TimestampMs => Value::timestamp_ms(reader.read_timestamp_ms(0)).ok()?,
             TypeId::TimestampNs => Value::timestamp_ns(reader.read_timestamp_ns(0)).ok()?,
+            TypeId::TimestampTzNs => Value::timestamp_tz_ns(reader.read_timestamp_tz_ns(0)).ok()?,
             TypeId::TimestampTz => Value::timestamp_tz(reader.read_timestamp_tz(0)).ok()?,
             TypeId::Interval => Value::interval(reader.read_interval(0)),
             TypeId::Varchar => Value::varchar(reader.read_str(0)),

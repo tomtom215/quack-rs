@@ -220,6 +220,55 @@ impl Value {
         Ok(Self { raw })
     }
 
+    /// Creates a `TIMESTAMPTZ_NS` value (a timestamp with time zone at
+    /// nanosecond precision) from nanoseconds since the epoch (`DuckDB`
+    /// 2.0.0+).
+    ///
+    /// Pairs with [`as_timestamp_tz_ns`][Value::as_timestamp_tz_ns] and the
+    /// [`TypeId::TimestampTzNs`] column type.
+    ///
+    /// `DuckDB` 2.0.0 added `duckdb_create_timestamp_tz_ns` for this, but the
+    /// function sits in the two slots 2.0.0 appended to the C API struct, past
+    /// the 546 an extension built against the 1.5.2 - 1.5.6 bindings (and
+    /// every engine before 2.0.0) has. So this does not call it. It renders the
+    /// `TIMESTAMP_NS` for `nanos` as text and casts the text to
+    /// `TIMESTAMPTZ_NS`, which works on any bindings; no cast reaches
+    /// `TIMESTAMPTZ_NS` from `TIMESTAMP_NS` directly in `DuckDB`'s default
+    /// cast set (`DefaultCasts::TimestampNsCastSwitch`), and the text form
+    /// carries all nine fractional digits.
+    ///
+    /// # Errors
+    ///
+    /// - `nanos` is below `-9_223_286_400_000_000_000` (`1677-09-22
+    ///   00:00:00`) and is not `-i64::MAX` (`-infinity`), as for
+    ///   [`timestamp_ns`][Self::timestamp_ns]. Every larger value is valid;
+    ///   `i64::MAX` is `infinity`.
+    /// - The engine is older than 2.0.0 and has no `TIMESTAMPTZ_NS` type.
+    pub fn timestamp_tz_ns(nanos: i64) -> Result<Self, ExtensionError> {
+        let nanos = check(
+            TypeId::TimestampTzNs,
+            nanos,
+            "timestamp_tz_ns",
+            "TIMESTAMPTZ_NS 1677-09-22 00:00:00 to 2262-04-11 23:47:16.854775806, or ±infinity (±i64::MAX)",
+        )?;
+        let rendered = Self::timestamp_ns(nanos)?.as_str()?;
+        // A finite instant renders without an offset; say it is UTC, which is
+        // what the value means. The infinities render as words and take none.
+        let text = if nanos == i64::MAX || nanos == -i64::MAX {
+            rendered
+        } else {
+            format!("{rendered}+00")
+        };
+        Self::varchar(&text)
+            .cast_copy(TypeId::TimestampTzNs)
+            .ok_or_else(|| {
+                ExtensionError::new(
+                    "Value::timestamp_tz_ns: this DuckDB has no TIMESTAMPTZ_NS type \
+                     (it was added in DuckDB 2.0.0)",
+                )
+            })
+    }
+
     /// Creates an `INTERVAL` value.
     ///
     /// `DuckDB` intervals are `{ months, days, micros }` and deliberately do not
@@ -282,6 +331,12 @@ mod tests {
             ("timestamp_s", Value::timestamp_s, i64::MIN),
             ("timestamp_ms", Value::timestamp_ms, i64::MIN),
             ("timestamp_ns", Value::timestamp_ns, i64::MIN),
+            ("timestamp_tz_ns", Value::timestamp_tz_ns, i64::MIN),
+            (
+                "timestamp_tz_ns",
+                Value::timestamp_tz_ns,
+                -9_223_286_400_000_000_001,
+            ),
         ];
         #[cfg(feature = "duckdb-1-5")]
         let cases = {

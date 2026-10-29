@@ -18,7 +18,7 @@ This directory contains all GitHub Actions workflows for the quack-rs project.
 
 ## Quality gates (enforced by CI)
 
-Every job in `ci.yml` must be green before merging a PR, except the two marked
+Every job in `ci.yml` must be green before merging a PR, except the three marked
 informational. This table is generated from `ci.yml`; the hand-written list it
 replaced had drifted to fewer than half the jobs.
 
@@ -29,6 +29,8 @@ replaced had drifted to fewer than half the jobs.
 | `test-bundled` | Test bundled-test (${{ matrix.os }}) | blocking |
 | `test-bundled-prebuilt` | Test bundled-test-prebuilt (prebuilt libduckdb) | blocking |
 | `test-older-engines` | Test against DuckDB ${{ matrix.engine }} (${{ matrix.features }}) | blocking |
+| `test-duckdb-2-0` | Test against DuckDB v2.0.0 | blocking |
+| `test-bundled-duckdb-2-0` | Test bundled-test on the DuckDB 2.0 bindings (informational) | informational |
 | `test-duckdb-1-5` | Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features | blocking |
 | `wasm` | WASM (wasm32-unknown-emscripten) | blocking |
 | `clippy` | Clippy | blocking |
@@ -41,7 +43,7 @@ replaced had drifted to fewer than half the jobs.
 | `example-check` | Example (hello-ext · ${{ matrix.os }}) | blocking |
 | `scaffold-compile` | Scaffold (compile check) | blocking |
 | `symbol-check` | Symbol check (hello-ext · ${{ matrix.os }}) | blocking |
-| `abi-table` | ABI layout table (vs upstream DuckDB headers) | blocking |
+| `abi-table` | ABI layout table (vs upstream DuckDB headers), and every C API slot wrapped or listed | blocking |
 | `platform-table` | Platform list (vs upstream distribution matrix) | blocking |
 | `spdx-list` | SPDX shortlist (vs official registry) | blocking |
 | `autoload-entries` | Catalog autoload names (vs every supported DuckDB) | blocking |

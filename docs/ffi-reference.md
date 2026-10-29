@@ -25,7 +25,7 @@ each pitfall in detail; this page is the quick-reference.
 ```rust
 // The entry point function name must be: {extension_name}_init_c_api
 // (all lowercase, underscores, no "lib" prefix)
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn my_ext_init_c_api(
     info: duckdb_extension_info,
     access: *const duckdb_extension_access,

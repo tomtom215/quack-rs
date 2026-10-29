@@ -56,7 +56,8 @@
 use libduckdb_sys::{
     duckdb_array_vector_get_child, duckdb_list_entry, duckdb_list_vector_get_child,
     duckdb_list_vector_get_size, duckdb_list_vector_reserve, duckdb_list_vector_set_size,
-    duckdb_struct_vector_get_child, duckdb_vector, duckdb_vector_get_data, idx_t,
+    duckdb_struct_vector_get_child, duckdb_validity_row_is_valid, duckdb_vector,
+    duckdb_vector_get_data, duckdb_vector_get_validity, idx_t,
 };
 
 use crate::vector::{VectorReader, VectorWriter};
@@ -243,10 +244,23 @@ impl ListVector {
 
     /// Returns the `duckdb_list_entry` for a given row (for reading).
     ///
+    /// # NULL rows
+    ///
+    /// `DuckDB` writes no entry for a NULL row. The slot holds stale or
+    /// never-written bytes, so for a NULL row `offset` and `length` are
+    /// arbitrary: on `DuckDB` 2.0.0 a `nullif(l, [])` column gave NULL rows with
+    /// lengths around 7·10¹³, and a loop over such an entry reads far outside
+    /// the child vector (a segmentation fault in a minority of runs). **Check
+    /// the row's validity before using the entry**, or call
+    /// [`get_entry_checked`][Self::get_entry_checked], which does that and also
+    /// refuses an entry that does not lie inside the child.
+    ///
     /// # Safety
     ///
     /// - `vector` must be a valid `DuckDB` LIST vector.
     /// - `row_idx` must be a valid row index.
+    /// - For a NULL row the returned entry is meaningless and must not be used
+    ///   to index the child.
     #[must_use]
     pub unsafe fn get_entry(vector: duckdb_vector, row_idx: usize) -> duckdb_list_entry {
         // SAFETY: `duckdb_vector_get_data` only dereferences the handle, returning
@@ -258,8 +272,49 @@ impl ListVector {
         // `duckdb_list_entry` mirrors, and the `# Safety` contract requires
         // `row_idx` to be a valid row index, so `add(row_idx)` stays in bounds.
         let entry_ptr = unsafe { data.cast::<duckdb_list_entry>().add(row_idx) };
-        // SAFETY: entry_ptr is valid and initialized by DuckDB or a prior set_entry call.
+        // SAFETY: `entry_ptr` points into the entry array, so reading the bytes is
+        // defined (`duckdb_list_entry` is two `u64`s, valid for any bit pattern).
+        // Only a row that is not NULL holds an entry DuckDB or `set_entry` wrote;
+        // a NULL row's bytes are arbitrary, which `# NULL rows` above tells the
+        // caller not to trust.
         unsafe { core::ptr::read_unaligned(entry_ptr) }
+    }
+
+    /// Returns the entry for a row that is not NULL, or `None` for a NULL row
+    /// or an entry that does not lie inside the child vector.
+    ///
+    /// This is the read-side companion of [`get_entry`][Self::get_entry]: it
+    /// checks the row's validity first (a vector with no validity mask has no
+    /// NULL rows), then that `offset + length` does not exceed
+    /// [`get_size`][Self::get_size]. The elements of a returned entry can be
+    /// indexed in a child reader created with `get_size` elements.
+    ///
+    /// # Safety
+    ///
+    /// - `vector` must be a valid `DuckDB` LIST vector.
+    /// - `row_idx` must be a valid row index.
+    #[must_use]
+    pub unsafe fn get_entry_checked(
+        vector: duckdb_vector,
+        row_idx: usize,
+    ) -> Option<duckdb_list_entry> {
+        // SAFETY: `duckdb_vector_get_validity` returns the vector's mask, or null
+        // when it has none (every row valid) or for a null handle; the `# Safety`
+        // contract makes `vector` a valid vector.
+        let validity = unsafe { duckdb_vector_get_validity(vector) };
+        // SAFETY: a non-null mask covers every row of the vector, and `row_idx`
+        // is a valid row index per the contract; a null mask is never read.
+        let is_valid = validity.is_null()
+            || unsafe { duckdb_validity_row_is_valid(validity, row_idx as idx_t) };
+        if !is_valid {
+            return None;
+        }
+        // SAFETY: forwarded from this function's contract; the row is not NULL,
+        // so its entry was written.
+        let entry = unsafe { Self::get_entry(vector, row_idx) };
+        // SAFETY: `vector` is a valid LIST vector per the contract.
+        let child_len = u64::try_from(unsafe { Self::get_size(vector) }).unwrap_or(u64::MAX);
+        entry_in_bounds(entry.offset, entry.length, child_len).then_some(entry)
     }
 
     /// Creates a [`VectorWriter`] for the child vector (elements).
@@ -443,6 +498,10 @@ impl MapVector {
 
     /// Returns the `duckdb_list_entry` for a given MAP row (for reading).
     ///
+    /// Like [`ListVector::get_entry`], the entry of a NULL row is arbitrary:
+    /// check the row's validity first, or use
+    /// [`get_entry_checked`][Self::get_entry_checked].
+    ///
     /// # Safety
     ///
     /// Same as [`ListVector::get_entry`].
@@ -453,6 +512,24 @@ impl MapVector {
         // MAP vector is physically `LIST<STRUCT{key, value}>`, so its data buffer
         // has that same layout.
         unsafe { ListVector::get_entry(vector, row_idx) }
+    }
+
+    /// Returns the entry for a MAP row that is not NULL, or `None` for a NULL
+    /// row or an entry outside the entry list. See
+    /// [`ListVector::get_entry_checked`].
+    ///
+    /// # Safety
+    ///
+    /// Same as [`ListVector::get_entry`].
+    #[must_use]
+    pub unsafe fn get_entry_checked(
+        vector: duckdb_vector,
+        row_idx: usize,
+    ) -> Option<duckdb_list_entry> {
+        // SAFETY: this function's contract is `ListVector::get_entry_checked`'s; a
+        // MAP vector is physically a LIST vector (see `get_entry`), and its list
+        // size is the entry count.
+        unsafe { ListVector::get_entry_checked(vector, row_idx) }
     }
 
     /// Creates a [`VectorWriter`] for the keys vector (STRUCT field 0).
@@ -547,9 +624,36 @@ impl ArrayVector {
     }
 }
 
+/// Whether the span `[offset, offset + length)` lies inside a child vector of
+/// `child_len` elements. An overflowing span does not.
+const fn entry_in_bounds(offset: u64, length: u64, child_len: u64) -> bool {
+    match offset.checked_add(length) {
+        Some(end) => end <= child_len,
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::entry_in_bounds;
     use libduckdb_sys::duckdb_list_entry;
+
+    /// The span check `get_entry_checked` makes on a row that is not NULL.
+    #[test]
+    fn entry_in_bounds_accepts_exactly_the_spans_inside_the_child() {
+        assert!(entry_in_bounds(0, 0, 0), "an empty list in an empty child");
+        assert!(entry_in_bounds(0, 5, 5), "the whole child");
+        assert!(entry_in_bounds(3, 2, 5), "the last elements");
+        assert!(entry_in_bounds(5, 0, 5), "an empty list at the end");
+        assert!(!entry_in_bounds(0, 6, 5), "one past the end");
+        assert!(!entry_in_bounds(4, 2, 5), "straddling the end");
+        assert!(!entry_in_bounds(6, 0, 5), "an offset past the end");
+        // The shapes of a NULL row's stale entry seen on DuckDB 2.0.0: a huge
+        // length, and a sum that wraps.
+        assert!(!entry_in_bounds(0, 68_951_404_952_617, 33_407));
+        assert!(!entry_in_bounds(u64::MAX, 1, u64::MAX));
+        assert!(!entry_in_bounds(1, u64::MAX, u64::MAX));
+    }
 
     #[test]
     fn list_entry_layout() {

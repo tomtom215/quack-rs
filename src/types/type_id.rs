@@ -33,6 +33,15 @@ use libduckdb_sys::{
 #[cfg(feature = "duckdb-1-5-3")]
 use libduckdb_sys::{DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY, DUCKDB_TYPE_DUCKDB_TYPE_VARIANT};
 
+/// `DUCKDB_TYPE_TIMESTAMP_TZ_NS`, the type id `DuckDB` 2.0.0 added (`duckdb.h`).
+///
+/// Spelled as a literal, not as the `libduckdb_sys` constant, so [`TypeId`]
+/// knows the type whichever bindings Cargo resolved: only the 2.0 bindings
+/// (`libduckdb-sys` 1.20000.0+) declare the constant, and the number is part
+/// of the stable C ABI. The same choice is made for the 2.0 error categories
+/// in `error_data`.
+const DUCKDB_TYPE_TIMESTAMP_TZ_NS: DUCKDB_TYPE = 42;
+
 /// Identifies a `DuckDB` column type.
 ///
 /// Use this in the aggregate function builders instead of the raw `DUCKDB_TYPE_*`
@@ -155,6 +164,18 @@ pub enum TypeId {
     /// Added to the C type enum as `DUCKDB_TYPE_VARIANT` (41) in `DuckDB` 1.5.3.
     #[cfg(feature = "duckdb-1-5-3")]
     Variant,
+    /// `TIMESTAMPTZ_NS` — timestamp with time zone at nanosecond precision,
+    /// nanoseconds since epoch (`DuckDB` 2.0.0+)
+    ///
+    /// Added to the C type enum as `DUCKDB_TYPE_TIMESTAMP_TZ_NS` (42) in `DuckDB`
+    /// 2.0.0. Stored exactly like [`TimestampNs`][Self::TimestampNs]: an `i64`
+    /// count of nanoseconds (read it with
+    /// [`VectorReader::read_timestamp_tz_ns`][crate::vector::VectorReader::read_timestamp_tz_ns]).
+    ///
+    /// This variant exists on every build, whatever bindings or features are
+    /// in use, because the id is a plain number. A `DuckDB` before 2.0.0 has no
+    /// such type: it never reports this id, and refuses to create the type.
+    TimestampTzNs,
 }
 
 impl TypeId {
@@ -216,6 +237,7 @@ impl TypeId {
             Self::Geometry => DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY,
             #[cfg(feature = "duckdb-1-5-3")]
             Self::Variant => DUCKDB_TYPE_DUCKDB_TYPE_VARIANT,
+            Self::TimestampTzNs => DUCKDB_TYPE_TIMESTAMP_TZ_NS,
         }
     }
 
@@ -320,40 +342,47 @@ impl TypeId {
         } else if raw == DUCKDB_TYPE_DUCKDB_TYPE_ARRAY {
             Some(Self::Array)
         } else {
-            // Type-enum values `DuckDB` added after the core set. All six are
-            // defined in libduckdb-sys 1.4.4, this crate's floor.
-            {
-                if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS {
-                    return Some(Self::TimeNs);
-                }
-                if raw == DUCKDB_TYPE_DUCKDB_TYPE_ANY {
-                    return Some(Self::Any);
-                }
-                if raw == DUCKDB_TYPE_DUCKDB_TYPE_BIGNUM {
-                    return Some(Self::Varint);
-                }
-                if raw == DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL {
-                    return Some(Self::SqlNull);
-                }
-                if raw == DUCKDB_TYPE_DUCKDB_TYPE_INTEGER_LITERAL {
-                    return Some(Self::IntegerLiteral);
-                }
-                if raw == DUCKDB_TYPE_DUCKDB_TYPE_STRING_LITERAL {
-                    return Some(Self::StringLiteral);
-                }
-            }
-            // DuckDB 1.5.3+ type-enum values (feature-gated).
-            #[cfg(feature = "duckdb-1-5-3")]
-            {
-                if raw == DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY {
-                    return Some(Self::Geometry);
-                }
-                if raw == DUCKDB_TYPE_DUCKDB_TYPE_VARIANT {
-                    return Some(Self::Variant);
-                }
-            }
-            None
+            Self::try_from_later_duckdb_type(raw)
         }
+    }
+
+    /// The type-enum values `DuckDB` added after the core set, for
+    /// [`try_from_duckdb_type`][Self::try_from_duckdb_type].
+    const fn try_from_later_duckdb_type(raw: DUCKDB_TYPE) -> Option<Self> {
+        // The first six are defined in libduckdb-sys 1.4.4, this crate's floor.
+        if raw == DUCKDB_TYPE_DUCKDB_TYPE_TIME_NS {
+            return Some(Self::TimeNs);
+        }
+        if raw == DUCKDB_TYPE_DUCKDB_TYPE_ANY {
+            return Some(Self::Any);
+        }
+        if raw == DUCKDB_TYPE_DUCKDB_TYPE_BIGNUM {
+            return Some(Self::Varint);
+        }
+        if raw == DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL {
+            return Some(Self::SqlNull);
+        }
+        if raw == DUCKDB_TYPE_DUCKDB_TYPE_INTEGER_LITERAL {
+            return Some(Self::IntegerLiteral);
+        }
+        if raw == DUCKDB_TYPE_DUCKDB_TYPE_STRING_LITERAL {
+            return Some(Self::StringLiteral);
+        }
+        // DuckDB 2.0.0: a literal, not a bindings constant (see its definition).
+        if raw == DUCKDB_TYPE_TIMESTAMP_TZ_NS {
+            return Some(Self::TimestampTzNs);
+        }
+        // DuckDB 1.5.3+ type-enum values (feature-gated).
+        #[cfg(feature = "duckdb-1-5-3")]
+        {
+            if raw == DUCKDB_TYPE_DUCKDB_TYPE_GEOMETRY {
+                return Some(Self::Geometry);
+            }
+            if raw == DUCKDB_TYPE_DUCKDB_TYPE_VARIANT {
+                return Some(Self::Variant);
+            }
+        }
+        None
     }
 
     /// Converts a raw `DUCKDB_TYPE` constant back into a [`TypeId`].
@@ -501,6 +530,7 @@ impl TypeId {
             Self::Geometry => "GEOMETRY",
             #[cfg(feature = "duckdb-1-5-3")]
             Self::Variant => "VARIANT",
+            Self::TimestampTzNs => "TIMESTAMPTZ_NS",
         }
     }
 }
@@ -616,6 +646,7 @@ mod tests {
             TypeId::Geometry,
             #[cfg(feature = "duckdb-1-5-3")]
             TypeId::Variant,
+            TypeId::TimestampTzNs,
         ];
         for t in types {
             // sql_name should not be empty and should match Display
@@ -805,7 +836,23 @@ mod tests {
             TypeId::Geometry,
             #[cfg(feature = "duckdb-1-5-3")]
             TypeId::Variant,
+            TypeId::TimestampTzNs,
         ]
+    }
+
+    /// `DUCKDB_TYPE_TIMESTAMP_TZ_NS` is 42 in `DuckDB` 2.0.0's `duckdb.h`. The
+    /// number is part of the stable C ABI, so it is pinned here: the constant
+    /// is a literal, with no bindings constant to be checked against on a
+    /// 1.x build. 42 follows `GEOMETRY` (40) and `VARIANT` (41).
+    #[test]
+    fn timestamp_tz_ns_is_type_42_and_named_like_duckdb_names_it() {
+        assert_eq!(TypeId::TimestampTzNs.to_duckdb_type(), 42);
+        assert_eq!(
+            TypeId::try_from_duckdb_type(42),
+            Some(TypeId::TimestampTzNs)
+        );
+        assert_eq!(TypeId::TimestampTzNs.sql_name(), "TIMESTAMPTZ_NS");
+        assert_eq!(TypeId::from_duckdb_type(42), TypeId::TimestampTzNs);
     }
 
     #[test]

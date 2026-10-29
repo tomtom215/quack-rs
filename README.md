@@ -13,7 +13,7 @@
   </p>
 </div>
 
-**A Rust SDK for building DuckDB loadable extensions — no C, no C++, no glue code.**
+**Write DuckDB loadable extensions in pure Rust — no C, no C++, no glue code.**
 
 ## What it is
 
@@ -41,6 +41,119 @@ so that you can write a loadable extension entirely in Rust.
 - **Community-extension tooling.** A project scaffold, runtime validators for
   `description.yml`, names, versions and platforms, and an `append_metadata`
   binary that writes the footer DuckDB requires.
+
+## Quick Start
+
+**1. `Cargo.toml`.** `panic = "unwind"` is required: under `panic = "abort"`
+nothing can be caught, and a panic kills the user's DuckDB process.
+
+```toml
+[package]
+name = "my_extension"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"       # with resolver 3, Cargo picks dependency versions that build on it
+resolver = "3"
+
+[lib]
+name = "my_extension"       # must match the extension name (Pitfall P1)
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+quack-rs = "0.19"
+libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+
+[profile.release]
+panic = "unwind"            # required
+lto = true                  # the rest are recommended
+opt-level = 3
+codegen-units = 1
+strip = true
+```
+
+**2. `src/lib.rs`.**
+
+```rust
+use libduckdb_sys::duckdb_connection;
+use quack_rs::entry_point;
+use quack_rs::error::ExtensionError;
+use quack_rs::scalar::ScalarFunctionBuilder;
+
+fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
+    // Parameter and return types come from the closure signatures.
+    // A NULL argument gives a NULL result without calling the closure.
+    // `try_map1` lets the closure fail: a plain `x * 2` wraps on overflow in a
+    // release build, and `Err` becomes a SQL error instead.
+    let double_it = ScalarFunctionBuilder::try_map1("double_it", |x: i64| {
+        x.checked_mul(2).ok_or("double_it: BIGINT overflow")
+    })?;
+    let shout = ScalarFunctionBuilder::map1_str("shout", |s: &str| s.to_uppercase())?;
+
+    // SAFETY: `con` is the live connection DuckDB passed to the entry point.
+    unsafe {
+        double_it.register(con)?;
+        shout.register(con)?;
+    }
+    Ok(())
+}
+
+// The symbol must be `<extension name>_init_c_api`.
+entry_point!(my_extension_init_c_api, |con| register(con));
+```
+
+**3. Build, stamp and load.** DuckDB refuses to `LOAD` a bare shared library,
+so append the metadata footer first. `--duckdb-version` is the C API version
+(`v1.2.0`), not a DuckDB release (Pitfall P2). Installing `append_metadata`
+needs Rust 1.88 or newer, because `cargo install` resolves the newest
+`libduckdb-sys`, which requires it; use `cargo +stable install` if your
+project pins an older toolchain. Your extension itself still builds on 1.86.
+
+```shell
+cargo build --release
+cargo install quack-rs --bin append_metadata
+append_metadata target/release/libmy_extension.so my_extension.duckdb_extension \
+    --abi-type C_STRUCT --extension-version v0.1.0 \
+    --duckdb-version v1.2.0 --platform linux_amd64
+
+duckdb -unsigned -c "LOAD './my_extension.duckdb_extension'; SELECT double_it(21), shout('hello');"
+# ┌───────────────┬────────────────┐
+# │ double_it(21) │ shout('hello') │
+# │     int64     │    varchar     │
+# ├───────────────┼────────────────┤
+# │            42 │ HELLO          │
+# └───────────────┴────────────────┘
+```
+
+On macOS the library is `libmy_extension.dylib` (platform `osx_arm64` or
+`osx_amd64`; `osx_amd64` is opt-in in extension-ci-tools for DuckDB 2.0, and
+DuckDB 2.1 drops it); on Windows it is `my_extension.dll` (`windows_amd64`).
+
+To start a community extension from scratch, the
+[project scaffold](https://quack-rs.com/getting-started/scaffold.html) generates
+the `Cargo.toml`, entry point, `description.yml`, SQLLogicTest skeleton and CI
+workflow. [Your First Extension](https://quack-rs.com/getting-started/first-extension.html)
+continues with aggregates and table functions.
+
+## Why quack-rs, and when to use something else
+
+DuckDB 2.0 has two C extension APIs, and the Rust options divide along that
+line. Checked against the published sources of `duckdb` and
+`duckdb-loadable-macros` 1.20000.1, `duckdb-neo` 0.20000.1 and the
+`extension-template-rs` repository's `main` on 2026-10-29:
+
+| | quack-rs | `duckdb` + `duckdb-loadable-macros` | `extension-template-rs` + `duckdb-neo` |
+|---|---|---|---|
+| C API | v1, stable | v1 by default (`<name>_init_c_api`); v2 behind the macros' `neo` feature | v2, unstable (`<name>_init_c_api_v2`) |
+| Binary loads in | every DuckDB from 1.4.4 through 2.0.x, with the default features | set by the C API v1 stamp, as for quack-rs | only the DuckDB release it was built for ("Binaries load only in the exact TARGET_DUCKDB_VERSION", the template's `Makefile`) |
+| Wraps | scalar, aggregate, table, cast, copy and replacement-scan functions; SQL macros | scalar (`vscalar`) and table (`vtab`) functions | modules for scalar, aggregate, table, cast, copy, macro and pragma functions, replacement scans, custom types and options, and log sinks |
+| Status | pre-1.0, audited (below) | the `duckdb` crate | `duckdb-neo` describes itself as experimental |
+
+Use `duckdb-neo` if you target DuckDB 2.0 and later only and want upstream's
+wrapper, or need what only the v2 API offers (pragma functions, for one).
+Use quack-rs if one binary has to load across DuckDB releases, or if you need
+aggregate, cast, copy or replacement-scan functions on the stable API.
+quack-rs does not generate the C API v2 entry point, and will not until DuckDB
+declares part of that API stable.
 
 ## Status
 
@@ -91,84 +204,6 @@ DuckDB's C API whose layout differed between releases before 1.5.6: build such
 an extension against the 1.5.6 bindings and stamp it `C_STRUCT` with C API
 `v1.5.6`, and it loads into DuckDB 1.5.6 and 2.0.0. See
 [ABI Compatibility](https://quack-rs.com/concepts/abi.html) before you enable one.
-
-## Quick Start
-
-**1. `Cargo.toml`.** `panic = "unwind"` is required: under `panic = "abort"`
-nothing can be caught, and a panic kills the user's DuckDB process.
-
-```toml
-[lib]
-name = "my_extension"       # must match the extension name (Pitfall P1)
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-quack-rs = "0.19"
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
-
-[profile.release]
-panic = "unwind"            # required
-lto = true                  # the rest are recommended
-opt-level = 3
-codegen-units = 1
-strip = true
-```
-
-**2. `src/lib.rs`.**
-
-```rust
-use libduckdb_sys::duckdb_connection;
-use quack_rs::entry_point;
-use quack_rs::error::ExtensionError;
-use quack_rs::scalar::ScalarFunctionBuilder;
-
-fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
-    // Parameter and return types come from the closure signatures.
-    // A NULL argument gives a NULL result without calling the closure.
-    let double_it = ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?;
-    let shout = ScalarFunctionBuilder::map1_str("shout", |s: &str| s.to_uppercase())?;
-
-    // SAFETY: `con` is the live connection DuckDB passed to the entry point.
-    unsafe {
-        double_it.register(con)?;
-        shout.register(con)?;
-    }
-    Ok(())
-}
-
-// The symbol must be `<extension name>_init_c_api`.
-entry_point!(my_extension_init_c_api, |con| register(con));
-```
-
-**3. Build, stamp and load.** DuckDB refuses to `LOAD` a bare shared library,
-so append the metadata footer first. `--duckdb-version` is the C API version
-(`v1.2.0`), not a DuckDB release (Pitfall P2).
-
-```shell
-cargo build --release
-cargo install quack-rs --bin append_metadata
-append_metadata target/release/libmy_extension.so my_extension.duckdb_extension \
-    --abi-type C_STRUCT --extension-version v0.1.0 \
-    --duckdb-version v1.2.0 --platform linux_amd64
-
-duckdb -unsigned -c "LOAD './my_extension.duckdb_extension'; SELECT double_it(21), shout('hello');"
-# ┌───────────────┬────────────────┐
-# │ double_it(21) │ shout('hello') │
-# │     int64     │    varchar     │
-# ├───────────────┼────────────────┤
-# │            42 │ HELLO          │
-# └───────────────┴────────────────┘
-```
-
-On macOS the library is `libmy_extension.dylib` (platform `osx_arm64` or
-`osx_amd64`; `osx_amd64` is opt-in in extension-ci-tools for DuckDB 2.0, and
-DuckDB 2.1 drops it); on Windows it is `my_extension.dll` (`windows_amd64`).
-
-To start a community extension from scratch, the
-[project scaffold](https://quack-rs.com/getting-started/scaffold.html) generates
-the `Cargo.toml`, entry point, `description.yml`, SQLLogicTest skeleton and CI
-workflow. [Your First Extension](https://quack-rs.com/getting-started/first-extension.html)
-continues with aggregates and table functions.
 
 ## Cargo features
 

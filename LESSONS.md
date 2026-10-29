@@ -1069,13 +1069,15 @@ Use `quack_rs::scaffold::generate_scaffold` to auto-generate all of these files 
 [`ScaffoldConfig`](https://docs.rs/quack-rs/latest/quack_rs/scaffold/struct.ScaffoldConfig.html).
 
 > **Note**: The C Extension API has a stable and unstable part. The official template enables
-> the unstable API via `USE_UNSTABLE_C_API=1` in the Makefile, and as of 2026-10-21 its `main`
-> is still on DuckDB v1.5.6 (there is no 2.0 Rust template upstream yet). extension-ci-tools
-> `v2.0-cyanoptera` stamps such a build `C_STRUCT_UNSTABLE`, which DuckDB 2.0 cannot load
-> without a `<name>_init_c_api_v2` entry point; for a quack-rs extension using the
-> `duckdb-1-5` features, use `TARGET_DUCKDB_VERSION=v1.5.6` without `USE_UNSTABLE_C_API`
-> instead (P10). See [extension-template-rs](https://github.com/duckdb/extension-template-rs)
-> for details.
+> the unstable API via `USE_UNSTABLE_C_API=1` in the Makefile. As of 2026-10-29 its `main`
+> targets DuckDB v2.0.0 on the C API v2 (`CAPI_VERSION=2`, `duckdb-neo`), builds binaries
+> that "load only in the exact TARGET_DUCKDB_VERSION", and so needs a
+> `<name>_init_c_api_v2` entry point, which quack-rs does not generate. For a quack-rs
+> extension, including one using the `duckdb-1-5` features, stamp the build `C_STRUCT`
+> and use `TARGET_DUCKDB_VERSION=v1.5.6` without `USE_UNSTABLE_C_API` instead (P10).
+> extension-ci-tools `v2.0-cyanoptera` stamps an unstable build `C_STRUCT_UNSTABLE`, which
+> DuckDB 2.0 sends to the v2 entry point. See
+> [extension-template-rs](https://github.com/duckdb/extension-template-rs) for details.
 
 ### description.yml
 

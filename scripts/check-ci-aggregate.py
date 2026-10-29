@@ -7,7 +7,11 @@ Branch protection should require one check, `CI passed` (the `ci-ok` job),
 rather than the 37-odd job and matrix names, which drift out of the required
 list whenever a job is added or renamed. That only works if `ci-ok` itself
 `needs:` every blocking job; this script fails when one is missing, or when an
-informational job (`continue-on-error: true`) is listed and could block.
+informational job (`continue-on-error: true`) is listed and could block. It
+also checks the two properties that make the aggregate safe: it must run
+`if: always()` (otherwise a failed dependency makes it *skipped*, and a skipped
+required check counts as passing), and its step must compare every result to
+`success`.
 
 Usage:
     scripts/check-ci-aggregate.py          # exit 1 on a mismatch
@@ -67,8 +71,35 @@ def parse_jobs(text: str) -> dict[str, dict]:
     return jobs
 
 
+def aggregate_block(text: str) -> str:
+    """The text of the `ci-ok` job: from its id to the next job id or EOF."""
+    start = re.search(rf"^  {AGGREGATE}:\s*$", text, re.MULTILINE)
+    if start is None:
+        return ""
+    rest = text[start.end() :]
+    nxt = re.search(r"^  [A-Za-z0-9_-]+:\s*$", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def safety_errors(block: str) -> list[str]:
+    """What is wrong with the aggregate job's own safety properties."""
+    errors = []
+    if not re.search(r"^    if:\s*always\(\)\s*$", block, re.MULTILINE):
+        errors.append(
+            f"`{AGGREGATE}` must have `if: always()`: without it a failed dependency "
+            "skips the job, and a skipped required check counts as passing"
+        )
+    if not re.search(r'\[\s*"result"\s*\]\s*!=\s*"success"', block):
+        errors.append(
+            f"`{AGGREGATE}`'s step must fail on any result other than "
+            '`"success"` (skipped and cancelled included)'
+        )
+    return errors
+
+
 def main() -> int:
-    jobs = parse_jobs(CI.read_text(encoding="utf-8"))
+    text = CI.read_text(encoding="utf-8")
+    jobs = parse_jobs(text)
     if AGGREGATE not in jobs:
         print(f"error: {CI.name} has no `{AGGREGATE}` job")
         return 1
@@ -84,6 +115,9 @@ def main() -> int:
         failed = True
     for job in sorted(needs - set(jobs)):
         print(f"error: `{AGGREGATE}`.needs names `{job}`, which is not a job")
+        failed = True
+    for message in safety_errors(aggregate_block(text)):
+        print(f"error: {message}")
         failed = True
     if not failed:
         print(f"`{AGGREGATE}` waits on all {len(blocking)} blocking jobs")

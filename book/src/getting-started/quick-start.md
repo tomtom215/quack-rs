@@ -17,6 +17,13 @@ loaded into the DuckDB CLI, in three steps.
 In your extension's `Cargo.toml`:
 
 ```toml
+[package]
+name = "my_extension"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"       # with resolver 3, Cargo picks dependency versions that build on it
+resolver = "3"
+
 [dependencies]
 quack-rs = "0.19"
 libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
@@ -49,8 +56,12 @@ use quack_rs::scalar::ScalarFunctionBuilder;
 
 fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
     // Parameter and return types come from the closure signature, and a NULL
-    // argument gives a NULL result without calling the closure.
-    let double_it = ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?;
+    // argument gives a NULL result without calling the closure. `try_map1`
+    // lets the closure fail: a plain `x * 2` wraps on overflow in a release
+    // build, and an `Err` here becomes a SQL error instead.
+    let double_it = ScalarFunctionBuilder::try_map1("double_it", |x: i64| {
+        x.checked_mul(2).ok_or("double_it: BIGINT overflow")
+    })?;
 
     // SAFETY: `con` is the live connection DuckDB passed to the entry point.
     unsafe { double_it.register(con) }?;
@@ -76,7 +87,9 @@ overloads, bind-time state, nested types — write the callback yourself, as
 cargo build --release
 
 # DuckDB refuses to LOAD a bare .so: append the metadata footer first.
-# quack-rs ships the `append_metadata` binary for this step.
+# quack-rs ships the `append_metadata` binary for this step. Installing it needs
+# Rust 1.88 or newer (it resolves the newest libduckdb-sys); use
+# `cargo +stable install` if this project pins an older toolchain.
 cargo install quack-rs --bin append_metadata
 append_metadata target/release/libmy_extension.so my_extension.duckdb_extension \
     --abi-type C_STRUCT --extension-version v0.1.0 \

@@ -203,7 +203,23 @@ aggregate callback you have no connection at all: the C API gives you a
 
 If a callback or a background thread needs to run SQL, open your own connection
 during registration and keep it. A `duckdb_connection` holds its own reference to
-the database instance, so it stays valid after loading finishes:
+the database instance, so it stays valid after loading finishes. (The
+`duckdb_database` handle you can reach through `Connection::as_raw_database` does
+**not**: DuckDB frees it when `LOAD` returns, so never store it or open a
+connection from it later.)
+
+Keeping a connection has two costs to design around. It keeps the **database
+instance** alive, so closing the host's own connection does not shut the
+database down: a file database is not checkpointed, and its lock is held until
+the process exits. And a process-wide `static`, as below, is *first-wins*: a
+program that opens several database instances (a Python process calling
+`duckdb.connect()` repeatedly) would run every instance's functions on the first
+instance's connection, so a query against a table that exists only in the second
+instance fails with "Table with name … does not exist". The example is right for
+an extension loaded into one database for the life of the process. Otherwise
+keep the connection in state that belongs to one instance (for example, captured
+by that instance's registered function) instead of a `static`, accepting that the
+instance then lives as long as the function does.
 
 ```rust
 use quack_rs::connection::Connection;

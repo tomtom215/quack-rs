@@ -23,15 +23,12 @@ to loadable extensions — in safe builders and RAII types, and guards against t
 pitfalls documented in the [Pitfall Catalog](reference/pitfalls.md), so you can focus on
 extension logic.
 
-DuckDB's own documentation acknowledges the gap:
-
-> *"Writing a Rust-based DuckDB extension requires writing glue code in C++ and will force you
-> to build through DuckDB's CMake & C++ based extension template. We understand that this is not
-> ideal and acknowledge the fact that Rust developers prefer to work on pure Rust codebases."*
->
-> — [DuckDB Community Extensions FAQ](https://duckdb.org/community_extensions/faq#can-i-write-extensions-in-rust)
-
-**quack-rs closes that gap.** No C++. No CMake. No glue code.
+DuckDB's community-extensions FAQ still says that "Currently, writing a Rust-based DuckDB
+extension requires writing glue code in C++", and that a pure-Rust path is in development
+([DuckDB Community Extensions FAQ](https://duckdb.org/community_extensions/faq#can-i-write-extensions-in-rust)).
+That path now exists in two forms. DuckDB's own `extension-template-rs` targets the unstable
+C API v2 with the experimental `duckdb-neo` crate. **quack-rs** targets the stable C API v1,
+so one binary loads across DuckDB releases. No C++. No CMake. No glue code.
 
 ---
 

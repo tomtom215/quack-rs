@@ -40,7 +40,8 @@ use crate::error::ExtensionError;
 /// - **The group names** in [`DUCKDB_PLATFORM_GROUPS`] — `linux`, `osx`,
 ///   `wasm`, `windows` — which are the top-level keys of
 ///   `distribution_matrix.json` and appear in at least one published
-///   extension's exclusion list.
+///   extension's exclusion list. They are accepted, not meaningful: see
+///   [`DUCKDB_PLATFORM_GROUPS`].
 ///
 /// An extension must either build for all of the non-opt-in CI platforms or
 /// declare the ones it cannot in `extension.excluded_platforms`.
@@ -100,8 +101,17 @@ pub const DUCKDB_CI_PLATFORMS: &[&str] = &[
 pub const DUCKDB_RETIRED_PLATFORMS: &[&str] = &["linux_amd64_gcc4"];
 
 /// The group names `distribution_matrix.json` organises its architectures
-/// under, which appear in real `excluded_platforms` fields as a shorthand for
-/// "all of this group".
+/// under, which appear in real `excluded_platforms` fields.
+///
+/// **A group name excludes nothing.** The community build removes a platform
+/// only when its exact `duckdb_arch` is listed (`arch in excluded_arch_values`
+/// in `extension-ci-tools`' `scripts/modify_distribution_matrix.py`, the same
+/// on `v1.4-andium`, `v1.5-variegata`, `main` and `v2.0-cyanoptera`), so
+/// `excluded_platforms: "wasm"` leaves `wasm_eh`, `wasm_mvp` and
+/// `wasm_threads` building. The names are accepted because rejecting them would
+/// reject files the build accepts; [`parse_description_yml`] warns about them.
+///
+/// [`parse_description_yml`]: crate::validate::description_yml::parse_description_yml
 pub const DUCKDB_PLATFORM_GROUPS: &[&str] = &["linux", "osx", "wasm", "windows"];
 
 /// The [`DUCKDB_CI_PLATFORMS`] that are **opt-in**: the community CI does not

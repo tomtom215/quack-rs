@@ -50,7 +50,11 @@ let total_elements = unsafe { ListVector::get_size(list_vec) };
 let elem_reader = unsafe { ListVector::child_reader(list_vec, total_elements) };
 
 for row in 0..row_count {
-    let entry = unsafe { ListVector::get_entry(list_vec, row) };
+    // A NULL row has no entry (the slot holds stale bytes whose length can be
+    // enormous), so `get_entry_checked` returns `None` for it.
+    let Some(entry) = (unsafe { ListVector::get_entry_checked(list_vec, row) }) else {
+        continue;
+    };
     for i in 0..entry.length as usize {
         let elem_idx = entry.offset as usize + i;
         if unsafe { elem_reader.is_valid(elem_idx) } {
@@ -77,7 +81,9 @@ let key_reader   = unsafe { MapVector::key_reader(map_vec, total) };
 let value_reader = unsafe { MapVector::value_reader(map_vec, total) };
 
 for row in 0..row_count {
-    let entry = unsafe { MapVector::get_entry(map_vec, row) };
+    let Some(entry) = (unsafe { MapVector::get_entry_checked(map_vec, row) }) else {
+        continue; // a NULL map
+    };
     for i in 0..entry.length as usize {
         let idx = entry.offset as usize + i;
         let k = unsafe { key_reader.read_str(idx) };   // MAP keys are never NULL
@@ -293,7 +299,8 @@ All helpers are in `quack_rs::vector::complex` (re-exported from `quack_rs::prel
 | `get_size(vec)` | Total number of elements across all rows |
 | `set_size(vec, n)` | Sets the number of elements after writing |
 | `reserve(vec, capacity)` | Reserves capacity in the child vector (at most `max_child_capacity(vec)`) |
-| `get_entry(vec, row)` | Returns `{offset, length}` for a row (reading) |
+| `get_entry(vec, row)` | Returns `{offset, length}` for a row (reading); arbitrary for a NULL row |
+| `get_entry_checked(vec, row)` | The entry of a row that is not NULL and lies inside the child, else `None` |
 | `set_entry(vec, row, offset, length)` | Sets `{offset, length}` for a row (writing) |
 | `child_reader(vec, count)` | Creates a `VectorReader` for the element vector |
 | `child_writer(vec)` | Creates a `VectorWriter` for the element vector |
@@ -308,7 +315,8 @@ All helpers are in `quack_rs::vector::complex` (re-exported from `quack_rs::prel
 | `total_entry_count(vec)` | Total key-value pairs |
 | `reserve(vec, n)` | Reserves capacity for `n` pairs (at most `max_child_capacity(vec)`) |
 | `set_size(vec, n)` | Sets total entry count after writing |
-| `get_entry(vec, row)` | Returns `{offset, length}` for a row (reading) |
+| `get_entry(vec, row)` | Returns `{offset, length}` for a row (reading); arbitrary for a NULL row |
+| `get_entry_checked(vec, row)` | The entry of a row that is not NULL and lies inside the child, else `None` |
 | `set_entry(vec, row, offset, length)` | Sets `{offset, length}` for a row (writing) |
 | `key_reader(vec, count)` / `value_reader(vec, count)` | Creates a `VectorReader` for the keys / values |
 | `key_writer(vec)` / `value_writer(vec)` | Creates a `VectorWriter` for the keys / values |

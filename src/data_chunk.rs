@@ -251,6 +251,11 @@ impl DataChunk {
     ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
     ///   in a callback, after the callback returns. It caches pointers into the
     ///   chunk's buffers, so a read afterwards is a use-after-free.
+    ///
+    /// Build the reader once per chunk and read every row through it: this
+    /// call makes several C API calls, which a `chunk.reader(0).read_i64(row)`
+    /// inside the row loop pays on every row (measured at about 6× the cost of
+    /// the read itself).
     pub unsafe fn reader(&self, col_idx: usize) -> VectorReader {
         // SAFETY: self.raw is valid; col_idx is in bounds per caller's contract.
         unsafe { VectorReader::new(self.raw, col_idx) }

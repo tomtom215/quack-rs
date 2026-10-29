@@ -18,11 +18,15 @@ libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
 > DuckDB 1.4.4 through 2.0.0 load extensions built for C API version `v1.2.0` (1.5.6 and
 > 2.0.0 declare `v1.5.6` and accept every earlier one), so `quack-rs` supports them all with
 > a single bounded range. Releases before 1.4.4 are not supported. The range covers the
-> bindings of every supported release, 1.4.4 through 1.20000.0. The `<2` upper bound does not exclude the DuckDB
+> bindings of every supported release, 1.4.4 through 1.20000.x. The `<2` upper bound does not exclude the DuckDB
 > 2.0 bindings: `libduckdb-sys` numbers DuckDB `vMAJOR.MINOR.PATCH` as
 > `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0`, which the range
-> admits. That release was published on 2026-10-22 and needs Rust 1.88; a Rust 1.86
-> build with MSRV-aware resolution (resolver 3) stays on `1.10506.x`.
+> admits. The 1.20000.x releases need Rust 1.88. On Rust 1.86 or 1.87, Cargo's default
+> (edition 2021, resolver 2) ignores `rust-version` and selects them anyway, so the build
+> fails: set `rust-version = "1.86"` and `resolver = "3"` in your `[package]` (as the
+> [Quick Start](quick-start.md) does), or resolve with
+> `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`. Either keeps the build on
+> `1.10506.0`, the newest release that builds there.
 > See [Extension Anatomy](../concepts/anatomy.md#version-support).
 
 Upgrading an extension from quack-rs 0.16? 0.18 has breaking changes; see
@@ -89,8 +93,8 @@ reports to the user. `catch_unwind` can only catch a panic that **unwinds**: und
 `panic = "abort"` the process terminates at the panic site, before any guard runs, taking
 the user's whole DuckDB session with it.
 
-A raw `unsafe extern "C" fn` that you pass to a builder yourself (such as `double_it` in the
-[Quick Start](quick-start.md)) is installed as written, with no guard. Define it with the
+A raw `unsafe extern "C" fn` that you pass to a builder yourself (such as the callbacks in
+[Scalar Functions](../functions/scalar.md)) is installed as written, with no guard. Define it with the
 matching macro (`scalar_callback!`, `aggregate_update_callback!`, …), which reports a panic
 as a SQL error, or wrap its body in `quack_rs::callback::catch_ffi_panic` and report the
 `Err` it returns yourself.
@@ -108,11 +112,13 @@ outcome the guards exist to prevent.)
 
 quack-rs requires **Rust ≥ 1.86.0**.
 
-1.86.0 is a ceiling as much as a floor. DuckDB's community-extension build
-workflow (`_extension_distribution.yml` in `duckdb/extension-ci-tools`) pins
-Rust **1.86.0** for its WebAssembly jobs, so an extension — and therefore
+1.86.0 is a ceiling as much as a floor while DuckDB 1.x is built. The
+community-extension build workflow (`_extension_distribution.yml` in
+`duckdb/extension-ci-tools`) pins Rust **1.86.0** for its WebAssembly jobs on the
+`v1.4-andium` and `v1.5-variegata` branches, so an extension — and therefore
 quack-rs — must build on it; CI's `msrv-vs-duckdb-ci` job re-derives that pin
-and fails if the MSRV rises above it. The `msrv` job checks the crate with
+and fails if the MSRV rises above it. (The 2.0 branch, `v2.0-cyanoptera`, pins
+1.97.1 for Windows and WebAssembly.) The `msrv` job checks the crate with
 `cargo +1.86.0 check`, and the benchmark dev-dependency (`criterion`) needs
 1.86 as well.
 

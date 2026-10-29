@@ -150,6 +150,8 @@ impl LogicalType {
     ///
     /// - Panics if `type_id` is composite, naming the constructor to use
     ///   instead. Use [`try_new`][Self::try_new] to get a `Result`.
+    /// - Panics if `type_id` is `TypeId::Variant` (`duckdb-1-5-3`): see
+    ///   [`try_new`][Self::try_new].
     /// - Panics if `type_id` is [`TypeId::IntegerLiteral`] or
     ///   [`TypeId::StringLiteral`]: `DuckDB` accepts either in a function or
     ///   type registration, but the first query returning one fails with an
@@ -177,7 +179,10 @@ impl LogicalType {
     ///
     /// Returns an error instead of panicking when `type_id` is composite (see
     /// [`LogicalType::new`]), is [`TypeId::IntegerLiteral`] or
-    /// [`TypeId::StringLiteral`], when the `DuckDB` C API returns a null
+    /// [`TypeId::StringLiteral`], when `type_id` is `TypeId::Variant` (with
+    /// `duckdb-1-5-3`; a type made from the id alone has no `STRUCT` layout,
+    /// and the first query that uses it crashes `DuckDB` or invalidates the
+    /// database), when the `DuckDB` C API returns a null
     /// pointer, or when the running `DuckDB` does not support the type
     /// (`TIME_NS` before 1.5.0, whose C API returns an `INVALID` type for it).
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
@@ -204,7 +209,8 @@ impl LogicalType {
     }
 
     /// The checks [`try_new`][Self::try_new] makes before its first `DuckDB`
-    /// call: a composite id and the two literal types are refused.
+    /// call: a composite id, the two literal types and (with `duckdb-1-5-3`)
+    /// `VARIANT` are refused.
     fn precheck(type_id: TypeId) -> Result<(), LogicalTypeError> {
         if type_id.is_composite() {
             return Err(LogicalTypeError::with_detail(
@@ -221,6 +227,21 @@ impl LogicalType {
                      that returns it fails with an internal error that invalidates the \
                      database, and a parameter of it can never be called. Use BIGINT or \
                      VARCHAR"
+                ),
+            ));
+        }
+        #[cfg(feature = "duckdb-1-5-3")]
+        if type_id == TypeId::Variant {
+            return Err(LogicalTypeError::with_detail(
+                "duckdb_create_logical_type",
+                format!(
+                    "{type_id} cannot be made from its id: DuckDB stores a VARIANT as a \
+                     STRUCT, and the type `duckdb_create_logical_type` returns for the id \
+                     alone has no such layout. A function that declares it registers, and \
+                     the first query that gives it a VARIANT argument or result crashes \
+                     DuckDB (a segmentation fault on 2.0.0) or fails with an internal \
+                     error that invalidates the database (1.5.x). Declare the parameter as \
+                     ANY, which accepts a VARIANT"
                 ),
             ));
         }

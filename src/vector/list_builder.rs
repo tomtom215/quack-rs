@@ -33,9 +33,10 @@
 //! }
 //! ```
 //!
-//! [`ListBuilder`] re-fetches the child writer after every reserve, tracks the
-//! running offset, and writes the parent entries for you, so the sequence cannot
-//! be got wrong.
+//! [`ListBuilder`] keeps one child writer, drops it after every reserve that
+//! grows the child (and fetches a fresh one on the next row), tracks the running
+//! offset, and writes the parent entries for you, so the sequence cannot be got
+//! wrong.
 //!
 //! # Example
 //!
@@ -67,7 +68,9 @@
 //! [`push_map_row`][ListBuilder::push_map_row] hands the closure a writer for
 //! the key child and one for the value child.
 
-use libduckdb_sys::{duckdb_logical_type, duckdb_vector};
+use libduckdb_sys::{
+    duckdb_list_entry, duckdb_logical_type, duckdb_vector, duckdb_vector_get_data,
+};
 
 use crate::types::{LogicalType, TypeId};
 use crate::vector::complex::{ListVector, MapVector, StructVector};
@@ -145,6 +148,7 @@ pub(crate) const fn element_bytes(id: Option<TypeId>) -> u64 {
             | TypeId::TimestampS
             | TypeId::TimestampMs
             | TypeId::TimestampNs
+            | TypeId::TimestampTzNs
             | TypeId::Time
             | TypeId::TimeTz
             | TypeId::TimeNs,
@@ -318,6 +322,13 @@ pub struct ListBuilder {
     /// Set when a requested capacity exceeded `limit`; the builder then writes
     /// every remaining row as NULL rather than letting `DuckDB` throw.
     overflowed: bool,
+    /// The child writer, kept between rows so each row does not rebuild it (and,
+    /// for NULL elements, its NULL state). Dropped whenever a reserve grows the
+    /// child, because that reallocates the child's buffers.
+    child: Option<VectorWriter>,
+    /// The parent's entry array, fetched on first use. A reserve of the child
+    /// does not move it.
+    entries: *mut duckdb_list_entry,
 }
 
 /// What to reserve for `capacity` elements under `limit` (with
@@ -360,6 +371,8 @@ impl ListBuilder {
             limit: MAX_CHILD_CAPACITY_USIZE,
             ceiling: MAX_CHILD_CAPACITY_USIZE,
             overflowed: false,
+            child: None,
+            entries: core::ptr::null_mut(),
         }
     }
 
@@ -442,15 +455,18 @@ impl ListBuilder {
             // `target` is within DuckDB's limit.
             unsafe { ListVector::reserve(self.vector, target) };
             self.reserved = target;
+            // The child's buffers may have moved; a cached writer would dangle.
+            self.child = None;
         }
         true
     }
 
     /// Appends `len` elements for parent row `row_idx`.
     ///
-    /// The closure receives a [`VectorWriter`] for the child vector — freshly
-    /// obtained *after* the reserve, so it is never stale — and `base`, the
-    /// index the row's first element occupies. Write indices `base..base + len`.
+    /// The closure receives a [`VectorWriter`] for the child vector — obtained
+    /// *after* the last reserve, so it is never stale, and the same writer for
+    /// every row between two reserves — and `base`, the index the row's first
+    /// element occupies. Write indices `base..base + len`.
     ///
     /// If the row would exceed the element limit — or an earlier row already
     /// did — the closure is not called and the row is written as NULL; see
@@ -475,13 +491,41 @@ impl ListBuilder {
             return;
         }
         if len > 0 {
-            // SAFETY: the child was just reserved, so this writer is fresh.
-            let mut writer = unsafe { ListVector::child_writer(self.vector) };
-            write(&mut writer, base);
+            let vector = self.vector;
+            // SAFETY: `ensure_capacity` returned true, so the child holds at least
+            // `base + len` elements; it drops the cached writer whenever it grows
+            // the child, so a writer still cached was obtained after the last
+            // reserve and its buffer pointers are current.
+            let writer = self
+                .child
+                .get_or_insert_with(|| unsafe { ListVector::child_writer(vector) });
+            write(writer, base);
         }
         // SAFETY: `row_idx` is in bounds per the caller's contract.
-        unsafe { ListVector::set_entry(self.vector, row_idx, base as u64, len as u64) };
+        unsafe { self.set_entry(row_idx, base, len) };
         self.written = base + len;
+    }
+
+    /// Writes the `{offset, length}` entry of parent row `row_idx`, through the
+    /// entry array fetched once instead of one `duckdb_list_vector_*` call per row.
+    ///
+    /// # Safety
+    ///
+    /// `row_idx` must be within the parent vector's capacity.
+    unsafe fn set_entry(&mut self, row_idx: usize, offset: usize, length: usize) {
+        if self.entries.is_null() {
+            // SAFETY: `self.vector` is a valid LIST vector per the constructor's
+            // contract, and its data is the array of entries.
+            self.entries = unsafe { duckdb_vector_get_data(self.vector) }.cast();
+        }
+        // SAFETY: `self.entries` addresses the parent's entry array, and
+        // `row_idx` is in bounds per this function's contract.
+        unsafe {
+            *self.entries.add(row_idx) = duckdb_list_entry {
+                offset: offset as u64,
+                length: length as u64,
+            };
+        }
     }
 
     /// Appends `len` key/value pairs for parent row `row_idx` of a `MAP`.
@@ -523,7 +567,7 @@ impl ListBuilder {
             write(&mut keys, &mut values, base);
         }
         // SAFETY: `row_idx` is in bounds per the caller's contract.
-        unsafe { ListVector::set_entry(self.vector, row_idx, base as u64, len as u64) };
+        unsafe { self.set_entry(row_idx, base, len) };
         self.written = base + len;
     }
 
@@ -687,6 +731,7 @@ mod tests {
             (TypeId::TimestampS, 8),
             (TypeId::TimestampMs, 8),
             (TypeId::TimestampNs, 8),
+            (TypeId::TimestampTzNs, 8),
             (TypeId::Time, 8),
             (TypeId::TimeTz, 8),
             (TypeId::TimeNs, 8),
