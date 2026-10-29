@@ -2776,7 +2776,7 @@ the `test_all_types()` sweep did not allow for `geometry`, whose `TypeId` exists
 with `duckdb-1-5-3`; and a `duckdb_functions()` parameter rendering differs on 1.4.4
 (`parameter_types` is NULL for a varargs-only function).
 
-CI found four more after the push, three in tests and one in `src/`:
+CI found five more after the push, four in tests and one in `src/`:
 
 - A test that calls the raw `duckdb_scalar_function_bind_get_argument` was gated with a
   helper that asserts the *guarded* wrapper's refusal on engines before v1.5.5, and the
@@ -2818,6 +2818,12 @@ CI found four more after the push, three in tests and one in `src/`:
   isolated by building the same source without assertions. The relaxation touches two
   tests that existed before this pass; what they check about quack-rs is unchanged, and
   the end-of-run `drops == binds + copies` is still exact.
+- On Windows, once the type-id abort was gone, one test failed:
+  `copy_info_errors::each_phase_reads_the_state_the_earlier_phases_left` took the file
+  name of the COPY destination with `rsplit('/')`, which does not split a Windows path,
+  so the callback's note held the whole temporary path. It uses `Path::file_name` now.
+  No Windows machine was available: the change is checked on Linux, and its result on
+  Windows is CI's.
 
 The lesson for this repository is that "all tests pass" must be said per engine, per
 feature set, per toolchain and per build of the engine: the no-feature run, the 1.4.4

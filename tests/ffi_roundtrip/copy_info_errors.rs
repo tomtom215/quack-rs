@@ -227,7 +227,11 @@ quack_rs::copy_global_init_callback!(state_init, |info| {
     let ctx = unsafe { init.get_client_context() };
     note(format!(
         "init: columns={columns} extra={extra:#x} file={} {}",
-        path.rsplit('/').next().unwrap_or_default(),
+        // The file name, whatever the separator: a Windows path uses backslashes.
+        std::path::Path::new(&path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default(),
         connection_of(&ctx)
     ));
     let state = Box::new(GlobalState { rows: 0 });
