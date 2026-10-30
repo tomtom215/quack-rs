@@ -684,8 +684,16 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # `--test integration_test` builds the one test binary that holds the test
+      # (the unfiltered form compiled nine, and eight of them ran nothing).
+      # `--exact` plus the grep: `cargo test <filter>` exits 0 when the filter
+      # matches no test, so renaming the test would have left this job green,
+      # running nothing. The summary line must say exactly one test passed.
       - name: Verify scaffold output compiles
-        run: cargo test scaffold_generated_code_compiles -- --nocapture
+        run: |
+          set -euo pipefail
+          cargo test --test integration_test scaffold_generated_code_compiles -- --exact --nocapture | tee /tmp/scaffold-compile.log
+          grep -qE '^test result: ok\. 1 passed;' /tmp/scaffold-compile.log
 
   symbol-check:
     name: Symbol check (hello-ext · ${{ matrix.os }})
