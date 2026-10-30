@@ -407,7 +407,7 @@ In this crate that is the pointer arithmetic: by a heuristic count
 (`scripts/mutants-expose-unsafe.py` strips comments and strings and matches
 braces), 506 `unsafe fn`s hold 5,127 of 22,898 non-test source lines (22.4%),
 among them most of `VectorReader`, `VectorWriter`, `ListBuilder`, the Arrow
-layout walker and `FfiState`'s callbacks. So a "0 missed" result covers the 2,488
+layout walker and `FfiState`'s callbacks. So a "0 missed" result covers the 2,493
 mutants cargo-mutants lists with this repository's configuration (3,748 with
 `--no-config`), not those lines. The live suite and the sanitizer jobs
 ([above](#what-the-sanitizer-and-valgrind-runs-can-and-cannot-see)) are what

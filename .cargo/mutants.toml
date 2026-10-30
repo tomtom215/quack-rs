@@ -44,7 +44,10 @@ features = ["duckdb-1-5-4"]
 # Thin re-export modules and test-only code produce unproductive mutants.
 exclude_globs = [
     "src/prelude.rs",           # pure re-exports
-    "src/callback.rs",          # macro-generated FFI wrappers (untestable without DuckDB runtime)
+    # src/callback.rs is not excluded: the macros in it are invisible to
+    # cargo-mutants, but catch_ffi_panic, panic_message, panic_c_message and
+    # message_to_c_string are plain functions. `cargo mutants --no-config
+    # --file src/callback.rs --cargo-arg=--lib`: 5 mutants, 4 caught, 1 unviable.
     "src/chunk_writer.rs",      # Drop calls FFI; row tracking tested via unit tests
     "src/vector/struct_writer.rs", # thin delegation to VectorWriter (requires DuckDB runtime)
     "src/vector/struct_reader.rs", # thin delegation to VectorReader (requires DuckDB runtime)
