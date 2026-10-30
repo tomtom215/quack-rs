@@ -186,7 +186,27 @@ fn layout_runs_on(compiled: usize, engine: usize) -> bool {
 }
 
 /// The result of an ABI layout check.
+///
+/// `#[non_exhaustive]`: a future release may report a new outcome, so a
+/// `match` outside quack-rs needs a wildcard arm. [`AbiCheck::is_compatible`]
+/// and [`AbiCheck::error_message`] cover every outcome.
+///
+/// ```rust,compile_fail,E0004
+/// use quack_rs::abi::AbiCheck;
+///
+/// fn passed(check: &AbiCheck) -> bool {
+///     match check {
+///         AbiCheck::Compatible { .. } | AbiCheck::StableOnly => true,
+///         AbiCheck::LayoutMismatch { .. }
+///         | AbiCheck::UnknownEngineVersion { .. }
+///         | AbiCheck::EngineVersionUnavailable { .. }
+///         | AbiCheck::DeclaredVersionMismatch { .. } => false,
+///         // error[E0004]: a wildcard arm is required
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AbiCheck {
     /// The running `DuckDB` uses the `duckdb_ext_api_v1` layout this extension
     /// was compiled against, or one that only appends to it. All calls
@@ -552,7 +572,23 @@ fn decide(compiled_slots: usize, declared: Option<&str>, engine: Option<&str>) -
 
 /// How [`init_extension`][crate::entry_point::init_extension] should react to
 /// the ABI layout check.
+///
+/// `#[non_exhaustive]`: a future release may add a policy, so a `match`
+/// outside quack-rs needs a wildcard arm.
+///
+/// ```rust,compile_fail,E0004
+/// use quack_rs::abi::AbiPolicy;
+///
+/// fn checks(policy: AbiPolicy) -> bool {
+///     match policy {
+///         AbiPolicy::Strict | AbiPolicy::Warn | AbiPolicy::AllowUnknownEngine => true,
+///         AbiPolicy::Trust => false,
+///         // error[E0004]: a wildcard arm is required
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum AbiPolicy {
     /// Refuse to load unless the layout is verified compatible.
     ///
