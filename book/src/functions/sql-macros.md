@@ -210,8 +210,12 @@ The **body** (expression or query) is your own extension code — it is included
 **Never build macro bodies from untrusted user input.** `register` does refuse a body
 that turns the statement into several (`1); DROP TABLE t; SELECT (1`) — it counts
 statements with DuckDB's own parser (`duckdb_extract_statements`) and executes
-nothing if there is more than one — but a body can still change the meaning of the
-single statement it is part of.
+nothing unless the text is exactly one statement — but a body can still change the
+meaning of the single statement it is part of. Text that does not parse at all is
+refused too, with DuckDB's parse message: before 0.20.0 it was executed, which is
+harmless on DuckDB 1.4.4 and 1.5.6 (they parse the whole string first) but not on 2.0.0,
+which runs the statements that precede the parse error (see [Known
+Limitations](../reference/known-limitations.md#duckdb_query-runs-the-statements-before-a-parse-error-on-duckdb-20)).
 
 A scalar body containing `--` gets a newline before the closing parenthesis, so a
 trailing line comment (`"x + 1 -- plus one"`) does not comment it out.
@@ -240,8 +244,8 @@ schema — the **user's** database:
 ## How it works under the hood
 
 `SqlMacro::register` counts the statements in `to_sql()` with
-`duckdb_extract_statements`, refuses more than one, and executes the
-`CREATE OR REPLACE MACRO` statement via `duckdb_query`.
+`duckdb_extract_statements`, refuses a text that is not exactly one statement, and
+executes the `CREATE OR REPLACE MACRO` statement via `duckdb_query`.
 
 The query result is zero-initialized before `duckdb_query`, any error message is read
 with `duckdb_result_error`, and `duckdb_destroy_result` runs on success and failure

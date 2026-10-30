@@ -468,6 +468,20 @@ child names, and `duckdb_create_struct_type` with all-empty names now builds one
 `LogicalType::struct_type(&[("", …), ("", …)])` is accepted and gives a `TUPLE` on 2.0
 and a different type on 1.x. Name the fields.
 
+### `duckdb_query` runs the statements before a parse error on DuckDB 2.0
+
+Given text that does not parse as a whole, DuckDB 1.4.4 and 1.5.6 report a parser error and
+run nothing. DuckDB 2.0.0 runs the statements that come before the error, and the call can
+report success. Measured with a C program that sends `duckdb_query` the text
+`CREATE OR REPLACE MACRO "m"() AS (1); DROP TABLE canary; SELECT ()` (what
+`SqlMacro::register` would have sent for the body `1); DROP TABLE canary; SELECT (`):
+1.4.4 and 1.5.6 returned `Parser Error: syntax error at or near ")"` and the table survived;
+2.0.0 returned success and the table was gone. An extension that passes text it did not
+write itself to `duckdb_query`, `OwnedConnection::query` or `execute` must check first that it
+parses as the statements it expects: `duckdb_extract_statements` reports a count of 0 for text
+that does not parse as a whole, and the count is the number to require. quack-rs's
+`SqlMacro::register` requires exactly 1 since 0.20.0.
+
 ### Other DuckDB 2.0 behaviour changes that reach C API extensions
 
 
