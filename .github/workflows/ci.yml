@@ -60,6 +60,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # On a tag (a release, which reaches this file through workflow_call) the
+  # upstream-comparison guards (scripts/upstream-guard.sh) fail instead of
+  # skipping when upstream cannot be reached.
+  QUACK_STRICT_UPSTREAM: ${{ github.ref_type == 'tag' && '1' || '' }}
   RUSTFLAGS: "-D warnings"
   RUSTDOCFLAGS: "-D warnings"
   # Harden against transient crates.io/CDN download flakes — notably
@@ -545,6 +549,11 @@ jobs:
       # `ci-ok` is the one required check; it is only as good as its `needs`.
       - name: The ci-ok job waits on every blocking job
         run: scripts/check-ci-aggregate.py
+      # The six upstream-comparison steps run through this wrapper; a mapping
+      # that read a missing script, or exit 2 on a release, as a pass would turn
+      # each of them into a check of nothing.
+      - name: The upstream-guard wrapper maps exit codes as documented
+        run: scripts/upstream-guard.sh --self-test
 
   msrv:
     name: MSRV (1.86.0)
@@ -723,24 +732,12 @@ jobs:
         # These guards fetch from upstream. Exit 2 is their documented
         # "could not check" code -- a DuckDB release header was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
-        run: |
-          python3 scripts/check-abi-table.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-abi-table.py
       # Every slot of the C extension API is either used under src/ or listed,
       # with a reason, in scripts/api-coverage-allowlist.txt, so a slot a DuckDB
       # release adds is noticed instead of left for someone to read the header.
       - name: Classify the C API surface
-        run: |
-          python3 scripts/check-api-coverage.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-api-coverage.py
 
   platform-table:
     name: Platform list (vs upstream distribution matrix)
@@ -759,13 +756,7 @@ jobs:
         # These guards fetch from upstream. Exit 2 is their documented
         # "could not check" code -- the distribution matrix was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
-        run: |
-          python3 scripts/check-platform-table.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-platform-table.py
 
   spdx-list:
     name: SPDX shortlist (vs official registry)
@@ -783,13 +774,7 @@ jobs:
         # These guards fetch from upstream. Exit 2 is their documented
         # "could not check" code -- the SPDX registry was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
-        run: |
-          python3 scripts/check-spdx-list.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-spdx-list.py
 
   autoload-entries:
     name: Catalog autoload names (vs every supported DuckDB)
@@ -807,13 +792,7 @@ jobs:
       - name: Verify src/catalog.rs covers every supported release
         # Exit 2 is the documented "could not check" code (upstream
         # unreachable) and must not be read as drift.
-        run: |
-          python3 scripts/check-autoload-entries.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-autoload-entries.py
 
   book:
     name: Book builds (mdBook)
@@ -871,13 +850,7 @@ jobs:
         # These guards fetch from upstream. Exit 2 is their documented
         # "could not check" code -- the pinned-toolchain config was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
-        run: |
-          python3 scripts/check-msrv-vs-duckdb-ci.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-msrv-vs-duckdb-ci.py
 
   extension-load:
     name: Extension load test (DuckDB ${{ matrix.duckdb }})
