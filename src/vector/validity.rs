@@ -155,8 +155,8 @@ impl ValidityBitmap<'_> {
 #[cfg(test)]
 mod tests {
     // Note: validity bitmap tests that require a real DuckDB vector are in
-    // integration tests (tests/integration_test.rs). Unit tests here cover
-    // the struct size and null-bitmap logic.
+    // tests/ffi_roundtrip/validity_api.rs and nested_validity.rs. Unit tests
+    // here cover the struct size and null-bitmap logic.
 
     #[test]
     fn read_only_with_null_ptr() {

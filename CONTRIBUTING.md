@@ -398,6 +398,31 @@ cargo mutants --list
 Configuration is in `.cargo/mutants.toml` — the one place cargo-mutants reads it
 from without `--config`.
 
+**What the gate cannot see.** cargo-mutants 27.1.0 generates no mutants inside
+the body of an `unsafe fn` (free, associated, `const`, trait-default and
+`unsafe extern "C"` alike; it does mutate a safe function that holds `unsafe`
+blocks), never mutates integer literals (`base.add(8)`, `>> 6`, `& 63`, `* 16`
+have no mutants even in a visible function), and cannot look into a macro body.
+In this crate that is the pointer arithmetic: by a heuristic count
+(`scripts/mutants-expose-unsafe.py` strips comments and strings and matches
+braces), 506 `unsafe fn`s hold 5,127 of 22,898 non-test source lines (22.4%),
+among them most of `VectorReader`, `VectorWriter`, `ListBuilder`, the Arrow
+layout walker and `FfiState`'s callbacks. So a "0 missed" result covers the 2,488
+mutants cargo-mutants lists with this repository's configuration (3,748 with
+`--no-config`), not those lines. The live suite and the sanitizer jobs
+([above](#what-the-sanitizer-and-valgrind-runs-can-and-cannot-see)) are what
+stand behind them.
+
+To mutate them in an audit, run `scripts/mutants-expose-unsafe.py` on a copy of
+the tree: it drops the `unsafe` keyword from signatures (the crate denies
+`unsafe_op_in_unsafe_fn`, so the copy still compiles) and, with `--literals`,
+turns the integer operands of pointer arithmetic into expressions cargo-mutants
+can flip. On `src/vector/reader.rs` and `writer.rs` the mutant list goes from 6
+to 192 (344 with literals). The script's header gives the commands. It is not
+run in CI. Moving such arithmetic into small safe functions over integers and
+slices (`stride_offset(idx, width)`, `validity_bit(words, idx)`) makes it both
+mutable and checkable by Miri, and is the better fix where a function allows it.
+
 ### Test naming convention
 
 Tests follow the pattern: `{component}_{scenario}_{expected_outcome}`
