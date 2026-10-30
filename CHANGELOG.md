@@ -577,6 +577,12 @@ Security).
 - **Breaking:** `config_option::ConfigOptionScope` is `#[non_exhaustive]` (DEPS-13).
 - **Breaking:** `tls::TlsVersion` is `#[non_exhaustive]`; comparisons and ordering are
   unchanged (DEPS-13).
+- **Breaking (found by `cargo semver-checks` against v0.19.0):** `ScalarBindInfo`
+  (`duckdb-1-5`) is no longer `RefUnwindSafe`, because it now remembers the bind data it
+  stored so a second `set` can free the first (FFI-12). Code that holds a `&ScalarBindInfo`
+  across its own `catch_unwind` needs `AssertUnwindSafe`; quack-rs's guards already do. The
+  same run reports no other breaking change, and lists the four `#[non_exhaustive]` enums
+  above.
 - **Breaking (behaviour):** see the transactional-registration entry under Changed — an
   extension whose closure relied on carrying on after a failed registration, or that runs
   `BEGIN`/`COMMIT` on the registration connection itself, needs

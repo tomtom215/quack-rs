@@ -77,6 +77,7 @@ reasoning and what happens when 2.1 bindings are published.
 | Change | What to do |
 |--------|------------|
 | `AbiCheck`, `AbiPolicy`, `ConfigOptionScope` and `TlsVersion` are `#[non_exhaustive]`, so DuckDB releases that add a variant do not break your `match`. An exhaustive `match` on one of them outside quack-rs no longer compiles (error E0004). Constructing the variants, comparing them and `TlsVersion`'s ordering are unchanged. | Add a `_` arm. |
+| `ScalarBindInfo` (`duckdb-1-5`) is no longer `RefUnwindSafe`: it remembers the bind data it stored so that a second `set` can free the first. It matters only if you hold a `&ScalarBindInfo` across your own `catch_unwind`. quack-rs's own guards are unaffected. | Wrap it in `AssertUnwindSafe`. |
 | `entry_point!` and `entry_point_v2!` fail to compile when the extension is built with `panic = "abort"` (a profile setting, or `-C panic=abort` in `RUSTFLAGS`), because every panic guard in quack-rs is `catch_unwind`, which does nothing there. The error names the fix. An entry point written by hand around `init_extension` has no such check. | Set `panic = "unwind"` under `[profile.release]` (the scaffold already does). |
 
 ### Behaviour changes
