@@ -357,6 +357,20 @@ impl AggregateOverloadBuilder {
         self
     }
 
+    /// Attaches `value` as this overload's extra info: the safe, typed form
+    /// of [`extra_info`][Self::extra_info], read back with
+    /// [`AggregateFunctionInfo::extra_info_ref`][crate::aggregate::AggregateFunctionInfo::extra_info_ref].
+    /// See
+    /// [`AggregateFunctionBuilder::extra_info_typed`][crate::aggregate::AggregateFunctionBuilder::extra_info_typed]
+    /// for the ownership and threading rules and an example.
+    pub fn extra_info_typed<T: Send + Sync + 'static>(self, value: T) -> Self {
+        let (data, destroy) = crate::extra_info::into_tagged(value);
+        // SAFETY: `into_tagged` returns a fresh allocation, used by no one
+        // else, and the destructor that frees it exactly once without
+        // unwinding; `T: Send + Sync`.
+        unsafe { self.extra_info(data, Some(destroy)) }
+    }
+
     /// Consumes this builder into the owned spec the set stores.
     pub(super) fn into_spec(self) -> OverloadSpec {
         OverloadSpec {

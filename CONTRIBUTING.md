@@ -637,6 +637,7 @@ quack-rs/
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── timestamp_tz_ns.rs         # `TIMESTAMPTZ_NS` (DuckDB 2.0): vectors, `Value`, and every type the engine can produce
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── typed_extra_info.rs        # `extra_info_typed` / `extra_info_ref` on casts and aggregates; a wrong type reads as `None`
 │       ├── typed_scalar_opt.rs        # Typed scalar closures returning `Option`, the `try_*` constructors and `map3`
 │       ├── validity_api.rs            # `ValidityBitmap` against the engine's masks, at the word and vector edges
 │       ├── value_bits.rs              # `BIT` / `BIGNUM` values; every input the C getters abort on reads as `None`

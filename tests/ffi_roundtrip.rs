@@ -6304,6 +6304,8 @@ mod data_chunk_helpers;
 mod appender_query;
 #[path = "ffi_roundtrip/query_metadata.rs"]
 mod query_metadata;
+#[path = "ffi_roundtrip/typed_extra_info.rs"]
+mod typed_extra_info;
 #[path = "ffi_roundtrip/value_bits.rs"]
 mod value_bits;
 #[path = "ffi_roundtrip/value_cast.rs"]

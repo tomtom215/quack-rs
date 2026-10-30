@@ -386,6 +386,42 @@ impl AggregateFunctionBuilder {
         self
     }
 
+    /// Attaches `value` as this function's extra info: the safe, typed form
+    /// of [`extra_info`][Self::extra_info].
+    ///
+    /// quack-rs boxes `value` behind a type tag and generates its destructor,
+    /// which contains a panic in `T::drop` and runs once — when `DuckDB`
+    /// releases the function, or when this builder is dropped unregistered.
+    /// Read it in a callback with
+    /// [`AggregateFunctionInfo::extra_info_ref`][crate::aggregate::AggregateFunctionInfo::extra_info_ref],
+    /// which returns `None` for any other type instead of reinterpreting
+    /// memory. `T` is `Send + Sync` because every thread running the function
+    /// reads the same value.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::aggregate::{AggregateFunctionBuilder, AggregateFunctionInfo};
+    ///
+    /// struct Scale(f64);
+    ///
+    /// let builder = AggregateFunctionBuilder::new("scaled_sum").extra_info_typed(Scale(2.5));
+    /// # drop(builder);
+    ///
+    /// // In `finalize`:
+    /// fn scale(info: &AggregateFunctionInfo) -> f64 {
+    ///     // SAFETY: this function's extra info is only ever set with `extra_info_typed`.
+    ///     unsafe { info.extra_info_ref::<Scale>() }.map_or(1.0, |s| s.0)
+    /// }
+    /// ```
+    pub fn extra_info_typed<T: Send + Sync + 'static>(self, value: T) -> Self {
+        let (data, destroy) = crate::extra_info::into_tagged(value);
+        // SAFETY: `into_tagged` returns a fresh allocation, used by no one
+        // else, and the destructor that frees it exactly once without
+        // unwinding; `T: Send + Sync`.
+        unsafe { self.extra_info(data, Some(destroy)) }
+    }
+
     /// The completeness checks that need no `DuckDB` call: a return type and
     /// the five required callbacks. [`MockRegistrar`][crate::testing::MockRegistrar]
     /// runs them too, so a builder it accepts is not refused at `LOAD` for a
