@@ -343,6 +343,7 @@ quack-rs/
 │       ├── validity.rs                # Validity bitmap helpers for `DuckDB` NULL tracking
 │       └── writer.rs                  # Safe typed writing to `DuckDB` result vectors
 ├── tests/
+│   ├── abi_policy_enforced.rs         # `AbiPolicy` enforced in-process against an engine whose layout differs
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
 │   ├── build_script_env.rs            # The build script run with a crafted `QUACK_RS_TARGET_DUCKDB_VERSION`
@@ -352,6 +353,8 @@ quack-rs/
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
+│   ├── lsan_probe.rs                  # The `leak-check` job's canary: a handle leaked on request must fail LeakSanitizer
+│   ├── property_inputs.rs             # Property tests for `parse_version`, SPDX, `description.yml` and the scaffold's escaping
 │   ├── quack_scaffold_cli.rs          # The `quack_scaffold` binary run as a user runs it: exit status, output and the files it writes
 │   ├── secret_memory_scan.rs          # `SecretEntry`'s zeroize, checked by scanning the process's own memory (Linux)
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
@@ -370,6 +373,7 @@ quack-rs/
 │       ├── chunk_writer.rs            # `ChunkWriter` against a chunk `DuckDB` allocated
 │       ├── chunk_writer_cols.rs       # `ChunkWriter::{vector, writer, struct_writer}` and `DataChunk::into_chunk_writer` filling a real chunk
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
+│       ├── connection_registrar.rs    # Every `Registrar` method of `Connection` reaches `DuckDB`
 │       ├── copy_from_columns.rs       # A typed `COPY … FROM` reader that declares a column is refused
 │       ├── copy_info_errors.rs        # `set_error` from all four COPY phases, and the state passed between them (`duckdb-1-5`)
 │       ├── copy_typed_state.rs        # Typed `COPY TO` state, a `FileHandle` kept across callbacks, `Send` handles (`duckdb-1-5`)
@@ -381,6 +385,7 @@ quack-rs/
 │       ├── hostile_input.rs           # Hostile names, SQL bodies, type nesting and cardinality hints against a real engine
 │       ├── inline_paths.rs            # The paths that skip a C call: `is_valid` / `set_null` bit operations and the `ListBuilder` child-writer cache, held to the C API
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
+│       ├── lifecycle_gaps.rs          # Lifecycle paths no other test reached, found by mutation testing
 │       ├── list_api.rs                # The raw `ListVector` workflow, `get_size`, `get_entry`, `child_writer`, `max_child_capacity` on live LIST and MAP vectors
 │       ├── list_limits.rs             # `ListBuilder` stops at `DuckDB`'s byte ceiling, not an element count
 │       ├── logical_type_accessors.rs  # Every `LogicalType` accessor, built by the constructors and read back, against the engine's own `typeof`
@@ -388,6 +393,7 @@ quack-rs/
 │       ├── mock_parity.rs             # `MockRegistrar` refuses a bad type with the live registration's message
 │       ├── nested_reserve.rs          # which nested buffers a `LIST` reserve moves (the writer contracts)
 │       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
+│       ├── oracle_temporal.rs         # Randomised cross-checks of `datetime` and `interval` against `DuckDB`'s own SQL
 │       ├── overload_keys.rs           # Overloads `DuckDB` resolves by type id alone are refused; closure-built overloads; taken aggregate names
 │       ├── owned_chunk.rs             # `OwnedDataChunk::new`, `capacity` and `reset` against a live `DuckDB`
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
@@ -418,9 +424,11 @@ quack-rs/
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
 │       ├── value_render.rs            # `Value` rendering of values SQL builds and `DuckDB` cannot render
 │       ├── value_temporal.rs          # Every `Value` getter against every temporal source type, at every edge
+│       ├── vector_capacity_guard.rs   # `OwnedVector::new` refuses a capacity whose nested `ARRAY` child would overflow
 │       ├── vector_dt.rs               # NULLs in nested output vectors; selection vectors
 │       ├── vector_ops.rs              # `OwnedVector::into_raw`, `copy_selected`, `slice`, `reference_value`, `reference_vector` (`duckdb-1-5`)
 │       ├── vector_support.rs          # Helpers shared by the vector-module tests
+│       ├── wide_rows.rs               # Every fixed-width and string type echoed over thousands of distinct rows
 │       └── writer_api.rs              # `write_timestamp_tz`, `write_str`, and the Ok path of `try_write_varchar` / `try_write_blob`
 ├── benches/
 │   ├── interval_bench.rs          # Criterion benchmarks

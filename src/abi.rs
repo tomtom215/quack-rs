@@ -426,11 +426,19 @@ pub const fn uses_unstable_api() -> bool {
 /// development build is not knowable from the version string alone.
 #[must_use]
 pub fn parse_version(version: &str) -> Option<(u64, u64, u64)> {
+    /// A part of plain decimal digits: `u64::from_str` alone would also take
+    /// a leading `+` (`"1.5.+4"`), which no `DuckDB` version string has.
+    fn decimal(part: &str) -> Option<u64> {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    }
     let trimmed = version.strip_prefix('v').unwrap_or(version);
     let mut parts = trimmed.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
+    let major = decimal(parts.next()?)?;
+    let minor = decimal(parts.next()?)?;
+    let patch = decimal(parts.next()?)?;
     if parts.next().is_some() {
         return None;
     }

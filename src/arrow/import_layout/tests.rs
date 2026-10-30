@@ -902,3 +902,243 @@ fn index_formats_map_to_their_integer_types() {
     }
     assert_eq!(Indices::of("i"), Some(Indices::I32));
 }
+
+// ── Paths no test reached (found by mutation testing, `unsafe fn` bodies exposed) ──
+//
+// cargo-mutants skips every `unsafe fn`, and `check_node` and its helpers are
+// `unsafe fn`s, so none of the following was ever mutated in CI. Each test
+// below fails when the operator or field named in its doc comment is changed.
+
+fn dictionary_shape() -> Shape {
+    dictionary_of(leaf())
+}
+
+fn int_list() -> Kind {
+    Kind::List {
+        wide: false,
+        map: false,
+    }
+}
+
+/// `copies_validity`'s `n_buffers > 0`. A run-end array has no buffers, so
+/// buffer 0 does not exist; with a nonzero `null_count` the walk must not
+/// look at it (`buffers` is a dangling pointer here).
+#[test]
+fn a_node_with_no_buffers_is_walked_without_reading_buffer_zero() {
+    let ree = Node::new(3, 0, 1, vec![]).with_children(vec![
+        Node::new(1, 0, 0, vec![vec![], i32s(&[3])]),
+        Node::new(1, 0, 0, vec![vec![], i32s(&[20])]),
+    ]);
+    assert_eq!(
+        check_column(3, ree, of(Kind::RunEnd, vec![leaf(), leaf()])),
+        Ok(())
+    );
+}
+
+/// `read_index`'s `buffers.is_null() || n_buffers <= buffer`. The array
+/// declares one buffer but its `buffers` array holds the offsets as well: the
+/// declared count is what bounds the read.
+#[test]
+fn a_buffer_the_array_does_not_declare_is_not_read() {
+    let mut list =
+        Node::new(2, 0, 0, vec![vec![], i32s(&[0, 2, 4])]).with_children(vec![ints(4, 0)]);
+    list.raw.n_buffers = 1;
+    let err = check_column(2, list, of(int_list(), vec![leaf()])).expect_err("undeclared");
+    assert!(err.contains("no offsets buffer"), "{err}");
+}
+
+/// `list_view_range`'s `size > 0`: the lowest offset is the first view's, not
+/// 0. Views that start at element 1 and fill the child exactly are valid.
+#[test]
+fn a_list_view_that_starts_past_element_zero_is_accepted() {
+    let shape = of(Kind::ListView { wide: false }, vec![leaf()]);
+    let view = Node::new(2, 0, 0, vec![vec![], i32s(&[1, 3]), i32s(&[2, 1])])
+        .with_children(vec![ints(4, 0)]);
+    assert_eq!(check_column(2, view, shape), Ok(()));
+}
+
+/// `check_node`'s `Ctx { nested: None, .. }` for a dictionary member of a union:
+/// `DuckDB` converts union members from row 0, so under a list starting at
+/// element 2 the member's indices are read from the wrong rows.
+#[test]
+fn a_dictionary_member_of_a_union_under_a_list_past_zero_is_refused() {
+    let union_shape = of(Kind::SparseUnion, vec![dictionary_shape(), leaf()]);
+    let list = |first: i32| {
+        // The union is rebuilt per call: nodes own their buffers.
+        let member = Node::new(4, 0, 0, vec![vec![], i32s(&[0; 4])]).with_dictionary(ints(1, 0));
+        let union =
+            Node::new(4, 0, 0, vec![vec![0, 1, 0, 1]]).with_children(vec![member, ints(4, 0)]);
+        Node::new(1, 0, 0, vec![vec![], i32s(&[first, first + 2])]).with_children(vec![union])
+    };
+    let shape = of(int_list(), vec![union_shape]);
+    assert_eq!(check_column(1, list(0), shape.clone()), Ok(()));
+    let err = check_column(1, list(2), shape).expect_err("member read from row 0");
+    assert!(
+        err.contains("dictionary indices would be read from row"),
+        "{err}"
+    );
+}
+
+/// `check_node`'s `Ctx { nested: None, .. }` for a run-end member of a union,
+/// and the `shape.kind == Kind::RunEnd` test that selects it: such a member
+/// is read from row 0 under a list starting at element 2 and is refused,
+/// while a plain member of the same union is not.
+#[test]
+fn only_a_run_end_member_of_a_union_is_read_from_row_zero() {
+    let ree = || {
+        Node::new(4, 0, 0, vec![]).with_children(vec![
+            Node::new(1, 0, 0, vec![vec![], i32s(&[4])]),
+            Node::new(1, 0, 0, vec![vec![], i32s(&[20])]),
+        ])
+    };
+    let list = |member: Box<Node>| {
+        let union =
+            Node::new(4, 0, 0, vec![vec![0, 1, 0, 1]]).with_children(vec![member, ints(4, 0)]);
+        Node::new(1, 0, 0, vec![vec![], i32s(&[2, 4])]).with_children(vec![union])
+    };
+    let with_ree = of(
+        int_list(),
+        vec![of(
+            Kind::SparseUnion,
+            vec![of(Kind::RunEnd, vec![leaf(), leaf()]), leaf()],
+        )],
+    );
+    let err = check_column(1, list(ree()), with_ree).expect_err("run-end member");
+    assert!(err.contains("rows would be read from row 0"), "{err}");
+    let plain = of(
+        int_list(),
+        vec![of(Kind::SparseUnion, vec![leaf(), leaf()])],
+    );
+    assert_eq!(check_column(1, list(ints(4, 0)), plain), Ok(()));
+}
+
+/// `check_node`'s `ctx.size > 0 && duck != arrow` for dictionary indices, and
+/// `let rows = ctx.size > 0`: a dictionary under a struct under a struct with
+/// an offset is read from the wrong rows when it has rows, and not when it has none.
+#[test]
+fn a_dictionary_under_nested_structs_is_refused_only_when_it_has_rows() {
+    let shape = of(
+        Kind::Struct,
+        vec![of(Kind::Struct, vec![dictionary_shape()])],
+    );
+    let outer = |rows: i64| {
+        Node::new(rows, 2, 0, vec![vec![]])
+            .with_children(vec![Node::new(5, 0, 0, vec![vec![]]).with_children(vec![
+                Node::new(5, 0, 0, vec![vec![], i32s(&[0; 5])]).with_dictionary(ints(1, 0)),
+            ])])
+    };
+    let err = check_column(3, outer(3), shape.clone()).expect_err("indices from row 0");
+    assert!(
+        err.contains("dictionary indices would be read from row 0 where Arrow puts them at row 2"),
+        "{err}"
+    );
+    assert_eq!(check_column(0, outer(0), shape), Ok(()));
+}
+
+/// `let rows = ctx.size > 0`: a plain field under nested structs with an
+/// offset is misread only when it has rows.
+#[test]
+fn a_zero_row_field_under_nested_structs_is_not_checked_for_its_start() {
+    let shape = of(Kind::Struct, vec![of(Kind::Struct, vec![leaf()])]);
+    let outer =
+        Node::new(0, 2, 0, vec![vec![]]).with_children(vec![
+            Node::new(5, 0, 0, vec![vec![]]).with_children(vec![ints(5, 0)])
+        ]);
+    assert_eq!(check_column(0, outer, shape), Ok(()));
+}
+
+/// `check_node`'s `own_nulls && ctx.size > 0 && validity != arrow`: the
+/// validity of a dictionary's indices is misread under a list starting at 2,
+/// but an empty list there converts no rows and so reads none.
+#[test]
+fn a_dictionary_with_nulls_under_an_empty_list_past_zero_is_accepted() {
+    let shape = of(int_list(), vec![dictionary_shape()]);
+    let child = Node::new(2, 0, 1, vec![bits(2), i32s(&[0, 0])]).with_dictionary(ints(1, 0));
+    let list = Node::new(1, 0, 0, vec![vec![], i32s(&[2, 2])]).with_children(vec![child]);
+    assert_eq!(check_column(1, list, shape), Ok(()));
+}
+
+/// `check_node`'s `Ctx { size: dictionary length, .. }`: the values of a
+/// dictionary are walked with their real row count, so a list view with gaps
+/// among them is found.
+#[test]
+fn a_dictionarys_values_are_checked_for_the_layouts_duckdb_misreads() {
+    let shape = dictionary_of(of(Kind::ListView { wide: false }, vec![leaf()]));
+    let gapped = Node::new(2, 0, 0, vec![vec![], i32s(&[0, 2]), i32s(&[1, 1])])
+        .with_children(vec![ints(3, 0)]);
+    let column = Node::new(2, 0, 0, vec![vec![], i32s(&[0, 1])]).with_dictionary(gapped);
+    let err = check_column(2, column, shape).expect_err("gapped values");
+    assert!(
+        err.contains("dictionary: ") && err.contains("overlap or leave gaps"),
+        "{err}"
+    );
+}
+
+/// `let empty = total == 0 && first == 0` for a fixed-size list: one with no
+/// rows that starts past 0 is not empty to `DuckDB`, so its dictionary child
+/// is read through the fixed-size-list route, which handles dictionaries.
+#[test]
+fn a_zero_row_fixed_size_list_past_zero_keeps_its_dictionary_route() {
+    let shape = of(Kind::FixedList(2), vec![dictionary_shape()]);
+    let child = Node::new(8, 0, 0, vec![vec![], i32s(&[0; 8])]).with_dictionary(ints(1, 0));
+    let fixed = Node::new(0, 3, 0, vec![vec![]]).with_children(vec![child]);
+    assert_eq!(check_column(0, fixed, shape), Ok(()));
+}
+
+/// `check_node`'s `broadcast_nulls: struct_nulls || broadcast_nulls ||
+/// has_validity`: NULLs of a struct above a fixed-size list reach a dictionary
+/// field below it, through the list's child struct, even though the list has
+/// no NULLs itself.
+#[test]
+fn struct_nulls_above_a_fixed_size_list_reach_a_dictionary_below_it() {
+    let shape = of(
+        Kind::Struct,
+        vec![of(
+            Kind::FixedList(2),
+            vec![of(Kind::Struct, vec![dictionary_shape()])],
+        )],
+    );
+    let dict =
+        Node::new(2200, 0, 0, vec![vec![], i32s(&vec![0; 2200])]).with_dictionary(ints(1, 0));
+    let inner = Node::new(2200, 0, 0, vec![vec![]]).with_children(vec![dict]);
+    let fixed = Node::new(1100, 0, 0, vec![vec![]]).with_children(vec![inner]);
+    let top = Node::new(1100, 0, 1, vec![bits(1100)]).with_children(vec![fixed]);
+    let err = check_column(1100, top, shape).expect_err("the struct's NULLs are broadcast");
+    assert!(err.contains("2048-row mask"), "{err}");
+}
+
+/// `check_node`'s run-end `runs` and `values` contexts: both children are
+/// walked with their own row counts (a child declaring more rows than one
+/// vector holds is refused), and the values are read as a plain array, so a
+/// dictionary there is refused.
+#[test]
+fn the_children_of_a_run_end_array_are_walked_with_their_own_sizes_and_route() {
+    let shape = of(Kind::RunEnd, vec![leaf(), leaf()]);
+    let too_many =
+        i64::try_from(max_rows(crate::vector::ops::MAX_CAPACITY as u64)).expect("fits") + 1;
+    let ree = |runs: i64, values: i64| {
+        Node::new(5, 0, 0, vec![]).with_children(vec![
+            Node::new(runs, 0, 0, vec![vec![], i32s(&[5])]),
+            Node::new(values, 0, 0, vec![vec![], i32s(&[42])]),
+        ])
+    };
+    assert_eq!(check_column(5, ree(1, 1), shape.clone()), Ok(()));
+    let err = check_column(5, ree(too_many, 1), shape.clone()).expect_err("run ends");
+    assert!(
+        err.contains("run ends: ") && err.contains("more rows than one DuckDB vector"),
+        "{err}"
+    );
+    let err = check_column(5, ree(1, too_many), shape).expect_err("values");
+    assert!(
+        err.contains("values: ") && err.contains("more rows than one DuckDB vector"),
+        "{err}"
+    );
+
+    let with_dictionary = of(Kind::RunEnd, vec![leaf(), dictionary_shape()]);
+    let column = Node::new(5, 0, 0, vec![]).with_children(vec![
+        Node::new(1, 0, 0, vec![vec![], i32s(&[5])]),
+        Node::new(1, 0, 0, vec![vec![], i32s(&[0])]).with_dictionary(ints(1, 0)),
+    ]);
+    let err = check_column(5, column, with_dictionary).expect_err("dictionary values");
+    assert!(err.contains("where DuckDB reads a plain one"), "{err}");
+}

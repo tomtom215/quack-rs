@@ -1785,8 +1785,12 @@ jobs:
           RUSTFLAGS: "-Zsanitizer=leak"
           # DuckDB's own one-time allocations (extension registry, the default
           # allocator's arenas, static initialisers) are still reachable at
-          # exit and are not quack-rs's business. Suppress by library, so a leak
-          # from a quack-rs frame is still reported.
+          # exit, which LeakSanitizer does not report, so nothing needs
+          # suppressing. lsan-suppressions.txt holds no rules on purpose: a
+          # rule for libduckdb.so is tested against every frame of an
+          # allocation, and every handle DuckDB allocates has such a frame, so
+          # it silenced exactly the leaks this job is for (the step below
+          # leaks a handle on purpose and requires the job to notice).
           # A two-frame stack is useless for attributing a leak to a missing
           # destructor; 30 is enough to name the quack-rs frame.
           LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
@@ -1794,6 +1798,37 @@ jobs:
           # `+nightly` is not optional -- see the note in the `nightly` job.
           cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
             --features bundled-test-prebuilt,duckdb-1-5-4 --test ffi_roundtrip
+      # A leak check is only as good as its ability to fail. tests/lsan_probe.rs
+      # leaks, on request, a Rust allocation (the control), a LogicalType and a
+      # Value, and the run must fail with a leak report each time; with nothing
+      # leaked it must pass. The first version of this job passed over the
+      # LogicalType and the Value because of a suppression.
+      - name: A handle leaked on purpose must fail LeakSanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=leak"
+          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
+        run: |
+          set -u
+          probe() {
+            PROBE="$1" cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
+              --features bundled-test-prebuilt,duckdb-1-5-4 --test lsan_probe 2>&1 \
+              | tee "$RUNNER_TEMP/probe-$1.log"
+            return "${PIPESTATUS[0]}"
+          }
+          if ! probe nothing; then
+            echo "::error::the probe failed although it leaked nothing"
+            exit 1
+          fi
+          for what in rust logical_type value; do
+            if probe "$what"; then
+              echo "::error::PROBE=$what leaked and LeakSanitizer did not fail the run"
+              exit 1
+            fi
+            if ! grep -q 'LeakSanitizer: detected memory leaks' "$RUNNER_TEMP/probe-$what.log"; then
+              echo "::error::PROBE=$what failed, but not with a LeakSanitizer report"
+              exit 1
+            fi
+          done
 
   # AddressSanitizer. LeakSanitizer above answers "did we forget a destructor";
   # ASAN answers "did we write outside an allocation, or use one after it was

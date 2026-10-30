@@ -403,8 +403,8 @@ fn export_built_against_duckdb_version() {
 }
 
 /// `vX.Y.Z` (the `v` optional) with three parts of ASCII digits, each a
-/// `u64`: what `abi::parse_version` accepts, less the leading `+` that
-/// `u64::from_str` also takes. Only such a value reaches a `cargo:` directive.
+/// `u64`: exactly what `abi::parse_version` accepts. Only such a value reaches
+/// a `cargo:` directive.
 fn is_release_version(version: &str) -> bool {
     let parts: Vec<&str> = version
         .strip_prefix('v')

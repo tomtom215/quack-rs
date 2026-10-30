@@ -6321,3 +6321,19 @@ mod hostile_input;
 
 #[path = "ffi_roundtrip/overload_keys.rs"]
 mod overload_keys;
+
+// Eighth review, reviewer `tests`: mutants the live suite did not kill.
+#[path = "ffi_roundtrip/oracle_temporal.rs"]
+mod oracle_temporal;
+#[path = "ffi_roundtrip/wide_rows.rs"]
+mod wide_rows;
+
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/vector_capacity_guard.rs"]
+mod vector_capacity_guard;
+
+#[path = "ffi_roundtrip/lifecycle_gaps.rs"]
+mod lifecycle_gaps;
+
+#[path = "ffi_roundtrip/connection_registrar.rs"]
+mod connection_registrar;
