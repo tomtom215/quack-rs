@@ -660,6 +660,12 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
+          # action caches only the root one unless told otherwise.
+          workspaces: |
+            . -> target
+            examples/hello-ext -> target
       - run: cargo check --manifest-path examples/hello-ext/Cargo.toml --all-targets
       - name: Clippy (Linux only)
         if: runner.os == 'Linux'
@@ -697,6 +703,12 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
+          # action caches only the root one unless told otherwise.
+          workspaces: |
+            . -> target
+            examples/hello-ext -> target
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Verify extension entry point symbol (Linux)
@@ -886,6 +898,12 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
+          # action caches only the root one unless told otherwise.
+          workspaces: |
+            . -> target
+            examples/hello-ext -> target
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Build append_metadata
