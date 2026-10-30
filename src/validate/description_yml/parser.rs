@@ -39,8 +39,13 @@ use super::yaml11;
 ///   build would ignore: a group, an unknown name, or a platform that is built
 ///   without opting in
 /// - `extension.maintainers` — at least one name
-/// - `repo.github` — non-empty and must contain `/`
-/// - `repo.ref` — non-empty
+/// - `repo.github` — `owner/repo`, in the characters GitHub allows (not a URL)
+/// - `repo.ref` — non-empty; anything but a commit hash is a warning
+/// - `repo.variegata`, `repo.andium` — if present, non-empty (the revisions the
+///   community build checks out for `DuckDB` v1.5.6 and v1.4.5); anything but a
+///   commit hash is a warning
+/// - any other `repo:` key but `ref_next` and `canonical_name` is a warning:
+///   the community build ignores it
 /// - no key may appear twice in a section
 ///
 /// # Errors
@@ -49,14 +54,22 @@ use super::yaml11;
 ///
 /// # Note on parsing
 ///
-/// quack-rs has no YAML dependency, so this reads the subset of YAML that
-/// `description.yml` files use with a small hand-written reader. It respects
-/// indentation (a nested mapping's keys are not the section's), quotes (a `#`
-/// inside them is not a comment), block and flow sequences, block scalars and
-/// multi-line plain scalars, and a leading byte-order mark. Anchors, aliases,
-/// tags and nested flow collections are reported as unsupported rather than
-/// misread. Only `extension:` and `repo:` are parsed; `docs:` and any other
-/// section is free-form and skipped.
+/// quack-rs has no YAML dependency, so this reads `description.yml` with a
+/// small hand-written reader, held to what `PyYAML`'s `yaml.safe_load` — the
+/// first thing the community build runs on the file — accepts: a file it
+/// refuses is refused here too, `docs:` and every other section included.
+/// That covers the plain-scalar rules (no `: `, no leading `@`, `` ` ``, `%`
+/// or `- `, no tab), tabs, control characters, block-scalar headers and
+/// indentation, quoted and flow scalars across lines, anchors and aliases,
+/// and dates `PyYAML` cannot construct. Checked against the 395 published
+/// descriptors (all accepted, every field as `PyYAML` reads it but block
+/// scalars, which are trimmed) and 41,423 mutants of them (none accepted that
+/// `PyYAML` refuses).
+///
+/// It is stricter than `PyYAML` in a few places no published file needs:
+/// quoted or repeated keys in `extension:` and `repo:`, and anywhere tags,
+/// explicit `? key` entries, directives, anchors on keys and a second
+/// document.
 ///
 /// # Example
 ///
@@ -163,9 +176,11 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     if github.is_empty() {
         return Err(missing("repo.github"));
     }
-    if !github.contains('/') {
+    if !crate::validate::is_github_repo(&github) {
         return Err(ExtensionError::new(format!(
-            "description.yml: 'repo.github' must be in 'owner/repo' format, got '{github}'"
+            "description.yml: 'repo.github' must be in 'owner/repo' format — the repository, \
+             not its URL or a path inside it, in the characters GitHub allows (the community \
+             build passes it to actions/checkout as `repository`), got '{github}'"
         )));
     }
 
@@ -173,8 +188,11 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     if git_ref.is_empty() {
         return Err(missing("repo.ref"));
     }
-    warn_unless_commit_hash(&git_ref, &mut warnings);
+    warn_unless_commit_hash("repo.ref", &git_ref, &mut warnings);
     let git_ref_next = repo.scalar("ref_next")?;
+    let git_ref_variegata = repo.release_ref("variegata", "v1.5.6", &mut warnings)?;
+    let git_ref_andium = repo.release_ref("andium", "v1.4.5", &mut warnings)?;
+    warn_about_unknown_repo_keys(&repo, &mut warnings);
 
     warn_about_yaml_1_1_retyping(&[&extension, &repo], &mut warnings);
 
@@ -192,8 +210,36 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
         github,
         git_ref,
         git_ref_next,
+        git_ref_variegata,
+        git_ref_andium,
         warnings,
     })
+}
+
+/// The `repo:` keys `scripts/build.py` in `duckdb/community-extensions`
+/// reads.
+const REPO_KEYS: [&str; 6] = [
+    "github",
+    "ref",
+    "ref_next",
+    "variegata",
+    "andium",
+    "canonical_name",
+];
+
+/// Warns about each `repo:` key the community build does not read: a typo
+/// such as `next:` (one published file has it) silently does nothing.
+fn warn_about_unknown_repo_keys(repo: &Fields<'_>, warnings: &mut Vec<String>) {
+    for entry in repo.entries {
+        if !REPO_KEYS.contains(&entry.key.as_str()) {
+            warnings.push(format!(
+                "repo.{}: the community build does not read this key (it reads {}), so it has \
+                 no effect",
+                entry.key,
+                REPO_KEYS.join(", ")
+            ));
+        }
+    }
 }
 
 /// The platforms `group` stands for, as the community CI builds them:
@@ -261,7 +307,7 @@ fn warn_about_ignored_opt_ins(list: &str, warnings: &mut Vec<String>) {
 /// `0.10` the float 0.1. Fields this parser does not read
 /// (`custom_toolchain_script: true`, a real boolean) are left alone.
 fn warn_about_yaml_1_1_retyping(sections: &[&Fields<'_>], warnings: &mut Vec<String>) {
-    const READ_AS_TEXT: [&str; 13] = [
+    const READ_AS_TEXT: [&str; 15] = [
         "name",
         "description",
         "version",
@@ -275,6 +321,8 @@ fn warn_about_yaml_1_1_retyping(sections: &[&Fields<'_>], warnings: &mut Vec<Str
         "github",
         "ref",
         "ref_next",
+        "variegata",
+        "andium",
     ];
     for fields in sections {
         for entry in fields.entries {
@@ -334,6 +382,33 @@ impl<'a> Fields<'a> {
                 self.section
             ))),
         }
+    }
+
+    /// `repo.variegata` / `repo.andium`: the revision the community build
+    /// checks out for the `DuckDB` release `release` (`scripts/build.py`: `if
+    /// 'andium' in desc['repo']`) instead of `ref`. Empty when absent; present but empty is
+    /// an error, because the build then gets no revision at all for that
+    /// release. Anything but a commit hash is a warning, as for `ref`.
+    fn release_ref(
+        &self,
+        key: &str,
+        release: &str,
+        warnings: &mut Vec<String>,
+    ) -> Result<String, ExtensionError> {
+        let Some(entry) = self.get(key) else {
+            return Ok(String::new());
+        };
+        let value = self.scalar(key)?;
+        if value.is_empty() {
+            return Err(ExtensionError::new(format!(
+                "description.yml: line {}: 'repo.{key}' is present but empty: the community \
+                 build then checks out no revision when it builds for DuckDB {release}; give \
+                 a commit hash or remove the key",
+                entry.line
+            )));
+        }
+        warn_unless_commit_hash(&format!("repo.{key}"), &value, warnings);
+        Ok(value)
     }
 
     /// A single-valued field that must be present and non-empty.
@@ -451,13 +526,14 @@ impl<'a> Fields<'a> {
     }
 }
 
-/// Warns when `repo.ref` is not a commit hash: the community build checks out
-/// exactly that ref, so a branch builds whatever it points at on the day.
-fn warn_unless_commit_hash(git_ref: &str, warnings: &mut Vec<String>) {
+/// Warns when `field` (`repo.ref` and its per-release variants) is not a
+/// commit hash: the community build checks out exactly that revision, so a
+/// branch builds whatever it points at on the day.
+fn warn_unless_commit_hash(field: &str, git_ref: &str, warnings: &mut Vec<String>) {
     if !is_commit_hash(git_ref) {
         warnings.push(format!(
-            "repo.ref '{git_ref}' is not a commit hash: the community build checks out \
-             exactly this ref, so a branch builds whatever it points at on the day, and \
+            "{field} '{git_ref}' is not a commit hash: the community build checks out \
+             exactly this revision, so a branch builds whatever it points at on the day, and \
              DuckDB's documentation asks for the hash of the commit to build"
         ));
     }

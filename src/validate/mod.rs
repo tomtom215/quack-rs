@@ -113,6 +113,29 @@ pub fn validate_excluded_platforms_str(s: &str) -> Result<(), crate::error::Exte
     validate_excluded_platforms(&tokens)
 }
 
+/// Whether `repo` is a GitHub repository path, `owner/repo`, in the
+/// characters GitHub allows: letters, digits and `-` in the owner (not first),
+/// and letters, digits, `-`, `_` and `.` in the name (not `.` or `..`).
+///
+/// `repo.github` in `description.yml` is handed to `actions/checkout` as its
+/// `repository`, which takes exactly this — not a URL, and not a path with
+/// more segments. The scaffold writes the same value.
+pub(crate) fn is_github_repo(repo: &str) -> bool {
+    repo.split_once('/').is_some_and(|(owner, name)| {
+        !owner.is_empty()
+            && !owner.starts_with('-')
+            && owner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !name.is_empty()
+            && name != "."
+            && name != ".."
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

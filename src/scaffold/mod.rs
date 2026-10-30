@@ -366,20 +366,7 @@ fn validate_free_text(field: &str, text: &str, multi_line: bool) -> Result<(), E
 /// `owner/repo`, in the characters GitHub allows: the value is written into
 /// `description.yml`.
 fn validate_github_repo(repo: &str) -> Result<(), ExtensionError> {
-    let valid = repo.split_once('/').is_some_and(|(owner, name)| {
-        !owner.is_empty()
-            && !owner.starts_with('-')
-            && owner
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            && !name.is_empty()
-            && name != "."
-            && name != ".."
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-    });
-    if valid {
+    if crate::validate::is_github_repo(repo) {
         Ok(())
     } else {
         Err(ExtensionError::new(format!(
