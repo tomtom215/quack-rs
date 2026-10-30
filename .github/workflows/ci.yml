@@ -653,7 +653,7 @@ jobs:
       - run: cargo +1.86.0 check --features duckdb-1-5-4
 
   dependency-floor:
-    # Cargo.toml declares `duckdb` / `libduckdb-sys` `>=1.4.4, <2`, but every
+    # Cargo.toml declares `duckdb` / `libduckdb-sys` `>=1.4.4, <1.20100`, but every
     # other job builds the newest release Cargo.lock pins. This one resolves the
     # declared floor and runs the library tests there, so the lower bound is a
     # tested claim rather than a hope.

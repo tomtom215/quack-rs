@@ -775,21 +775,37 @@ quack-rs/
 
 ## Releasing
 
-This crate supports `libduckdb-sys = ">=1.4.4, <2"` (the bindings of DuckDB 1.4.4 and
-later 1.x releases). Every DuckDB from 1.4.4 through 2.0.0 loads C API `v1.2.0` extensions.
-The `<2` upper bound does not exclude the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB
-`vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is
-1.20000.0, which the range admits. The 1.20000.x releases (1.20000.0 on 2026-10-22,
-1.20000.1 on 2026-10-28) declare `rust-version` 1.88, so a Rust 1.86 toolchain cannot build them; MSRV-aware resolution
-(resolver 3, or `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) keeps a 1.86 build on
-1.10506.x. The bound would stop a future `libduckdb-sys` 2.x.
-Before broadening the range to a new major band:
+This crate supports `libduckdb-sys = ">=1.4.4, <1.20100"` (the bindings of DuckDB 1.4.4
+through 2.0.x). Every DuckDB from 1.4.4 through 2.0.0 loads C API `v1.2.0` extensions.
+`libduckdb-sys` encodes DuckDB `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`,
+so DuckDB 2.0.0 is 1.20000.0 and DuckDB 2.1.0 will be 1.20100.0; the bound admits the first
+and stops before the second. The 1.20000.x releases (1.20000.0 on 2026-10-22, 1.20000.1 on
+2026-10-28) declare `rust-version` 1.88, so a Rust 1.86 toolchain cannot build them;
+MSRV-aware resolution (resolver 3, or `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`)
+keeps a 1.86 build on 1.10506.x.
 
-1. Read the DuckDB changelog for C API changes.
-2. Check the new C API version string (used in `duckdb_rs_extension_api_init`).
-3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed.
-4. Audit all callback signatures against the new `libduckdb-sys` bindings.
-5. Update the `libduckdb-sys` and `duckdb` version requirements in `Cargo.toml`.
+**Why there is an upper bound.** 1.20000.x keeps the root-level names quack-rs and its
+exported macros use (`libduckdb_sys::duckdb_connection`, ...) behind the default feature
+`capi-v1`, beside a `// TODO: Remove in the future`. With only that re-export deleted from a
+copy of 1.20000.1, quack-rs failed with 214 compile errors (the eighth review reproduced
+it). Without an upper bound, the day a later binding drops it, every new project resolves to
+bindings this crate cannot build against. Published releases cannot be narrowed after the
+fact, which is why the bound is on the newest release and is widened deliberately.
+
+**Widening the bound for a new DuckDB minor** (a patch release of quack-rs):
+
+1. Read the DuckDB release notes and the C API diff (`duckdb.h`, `duckdb_extension.h`):
+   `scripts/check-abi-table.py` and `scripts/check-api-coverage.py` report new slots.
+2. Resolve the new bindings (`cargo update -p duckdb --precise <version>` and
+   `-p libduckdb-sys --precise <version>`) in a copy and run the whole suite against the new
+   engine, as the `test-duckdb-2-0` job does for 2.0. Check specifically that the root-level
+   re-exports still exist (`cargo check` is enough to tell).
+3. Add the release to `KNOWN_LAYOUTS` / `PREFIX_LAYOUTS` in `src/abi.rs` if its slot count
+   differs (the abi-table job derives them), and to the `extension-load` and older-engine
+   matrices.
+4. Update the `libduckdb-sys` and `duckdb` requirements in `Cargo.toml` and in every
+   manifest and document that repeats them (`git grep '<1.20100'`; a test compares them).
+5. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed.
 
 Versions follow [Semantic Versioning](https://semver.org/) as Cargo applies it.
 While the crate is pre-1.0, a breaking change to the public API bumps the

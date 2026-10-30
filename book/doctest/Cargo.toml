@@ -23,9 +23,14 @@ test = false
 
 [dependencies]
 quack-rs = { path = "../..", features = ["duckdb-1-5-4", "bundled-test-prebuilt"] }
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+libduckdb-sys = { version = ">=1.4.4, <1.20100", default-features = false, features = ["loadable-extension"] }
 
 [dev-dependencies]
 proptest = "1"
 
 [workspace]
+
+[package.metadata.cargo-machete]
+# Used by the doctests that build.rs generates from the book and README, which
+# cargo-machete does not read.
+ignored = ["libduckdb-sys", "proptest", "quack-rs"]
