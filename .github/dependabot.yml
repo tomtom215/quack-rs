@@ -36,6 +36,14 @@ updates:
           - "minor"
 
   # ── Cargo dependencies for the hello-ext example ─────────────────────────────
+  # No duckdb / libduckdb-sys ignore here, on purpose. The root lockfile is held
+  # on the DuckDB 1.5.6 bindings for the 1.86 MSRV (above); the example is not
+  # bound by that and tracks the newest bindings (DuckDB 2.0's, 1.20000.x, as
+  # of 0.20.0). It is the one place CI builds them into a real cdylib and loads
+  # it into every pinned DuckDB (example-check, symbol-check, extension-load),
+  # so a bindings PR here is the first signal of a new DuckDB release, tested
+  # by those jobs on the PR itself. Its committed lockfile needs Rust 1.88
+  # (examples/hello-ext/README.md says so).
   - package-ecosystem: cargo
     directory: "/examples/hello-ext"
     schedule:
