@@ -22,6 +22,21 @@ use libduckdb_sys::{
 
 use crate::types::LogicalType;
 
+/// How deep a type may nest before the walks in this crate give up on it.
+///
+/// Every walk over a logical type here is recursive, and `DuckDB` itself puts
+/// no limit on nesting: a type built in a loop from an untrusted schema (a
+/// `LIST` of a `LIST` of ... 20,000 times) overflowed the thread's stack in
+/// `type_string` with a process abort. Nothing real nests this deep.
+///
+/// This bounds quack-rs's own walks only. `DuckDB`'s `LogicalType::ToString`
+/// recurses too, and overflowed a 2 MiB thread at 6,000 levels on 1.5.6 when
+/// a catalog scan listed a function with such a parameter (a debug test
+/// build, `hostile_input::a_deeply_nested_type_is_refused_not_recursed_into`
+/// probing): an extension that builds types from untrusted input must bound
+/// their depth itself.
+pub const MAX_TYPE_NESTING: usize = 256;
+
 /// `DUCKDB_TYPE_ANY`. Spelled as a literal because the constant is absent from
 /// older `libduckdb-sys` bindings; its value (34) is fixed by `duckdb.h`. A
 /// `DuckDB` that predates it reports `ANY` as `INVALID`, which is caught too.
@@ -85,6 +100,25 @@ pub unsafe fn contains_type(
     ty: duckdb_logical_type,
     matches: &dyn Fn(DUCKDB_TYPE) -> bool,
 ) -> bool {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { contains_type_at(ty, matches, 0) }
+}
+
+/// [`contains_type`] at nesting level `depth`. A type nested more than
+/// [`MAX_TYPE_NESTING`] deep counts as a match, like a child `DuckDB` cannot
+/// describe: every caller uses the answer to refuse something.
+///
+/// # Safety
+///
+/// `ty` must be a live `duckdb_logical_type` handle.
+unsafe fn contains_type_at(
+    ty: duckdb_logical_type,
+    matches: &dyn Fn(DUCKDB_TYPE) -> bool,
+    depth: usize,
+) -> bool {
+    if depth > MAX_TYPE_NESTING {
+        return true;
+    }
     // SAFETY: `ty` is live per the caller's contract.
     let id = unsafe { duckdb_get_type_id(ty) };
     if matches(id) {
@@ -93,30 +127,32 @@ pub unsafe fn contains_type(
     if id == DUCKDB_TYPE_DUCKDB_TYPE_LIST {
         // SAFETY: `ty` is a live LIST type; the accessor hands us the child
         // handle and `child_matches` takes ownership of it.
-        unsafe { child_matches(duckdb_list_type_child_type(ty), matches) }
+        unsafe { child_matches(duckdb_list_type_child_type(ty), matches, depth) }
     } else if id == DUCKDB_TYPE_DUCKDB_TYPE_ARRAY {
         // SAFETY: `ty` is a live ARRAY type; the accessor hands us the child
         // handle and `child_matches` takes ownership of it.
-        unsafe { child_matches(duckdb_array_type_child_type(ty), matches) }
+        unsafe { child_matches(duckdb_array_type_child_type(ty), matches, depth) }
     } else if id == DUCKDB_TYPE_DUCKDB_TYPE_MAP {
         // SAFETY: `ty` is a live MAP type; each accessor hands us a child
         // handle and `child_matches` takes ownership of it.
         unsafe {
-            child_matches(duckdb_map_type_key_type(ty), matches)
-                || child_matches(duckdb_map_type_value_type(ty), matches)
+            child_matches(duckdb_map_type_key_type(ty), matches, depth)
+                || child_matches(duckdb_map_type_value_type(ty), matches, depth)
         }
     } else if id == DUCKDB_TYPE_DUCKDB_TYPE_STRUCT {
         // SAFETY: `ty` is a live STRUCT type.
         let count: idx_t = unsafe { duckdb_struct_type_child_count(ty) };
         // SAFETY: `ty` is a live STRUCT type and `i < count`; `child_matches`
         // takes ownership of the child handle the accessor returns.
-        (0..count).any(|i| unsafe { child_matches(duckdb_struct_type_child_type(ty, i), matches) })
+        (0..count)
+            .any(|i| unsafe { child_matches(duckdb_struct_type_child_type(ty, i), matches, depth) })
     } else if id == DUCKDB_TYPE_DUCKDB_TYPE_UNION {
         // SAFETY: `ty` is a live UNION type.
         let count: idx_t = unsafe { duckdb_union_type_member_count(ty) };
         // SAFETY: `ty` is a live UNION type and `i < count`; `child_matches`
         // takes ownership of the member handle the accessor returns.
-        (0..count).any(|i| unsafe { child_matches(duckdb_union_type_member_type(ty, i), matches) })
+        (0..count)
+            .any(|i| unsafe { child_matches(duckdb_union_type_member_type(ty, i), matches, depth) })
     } else {
         false
     }
@@ -130,7 +166,11 @@ pub unsafe fn contains_type(
 ///
 /// `raw` must be null, or a live logical type handle the caller owns and does
 /// not use again: it is inspected through the C API and destroyed here.
-unsafe fn child_matches(raw: duckdb_logical_type, matches: &dyn Fn(DUCKDB_TYPE) -> bool) -> bool {
+unsafe fn child_matches(
+    raw: duckdb_logical_type,
+    matches: &dyn Fn(DUCKDB_TYPE) -> bool,
+    depth: usize,
+) -> bool {
     if raw.is_null() {
         return true;
     }
@@ -138,7 +178,7 @@ unsafe fn child_matches(raw: duckdb_logical_type, matches: &dyn Fn(DUCKDB_TYPE) 
     // `LogicalType` destroys it when it drops at the end of this function.
     let child = unsafe { LogicalType::from_raw(raw) };
     // SAFETY: `child` is live for the duration of the call.
-    unsafe { contains_type(child.as_raw(), matches) }
+    unsafe { contains_type_at(child.as_raw(), matches, depth + 1) }
 }
 
 #[cfg(test)]
@@ -148,7 +188,7 @@ mod tests {
     #[test]
     fn a_child_duckdb_could_not_describe_is_bad() {
         // SAFETY: null is explicitly allowed and makes no DuckDB call.
-        assert!(unsafe { child_matches(std::ptr::null_mut(), &|_| false) });
+        assert!(unsafe { child_matches(std::ptr::null_mut(), &|_| false, 0) });
     }
 
     /// A return type given only as a `TypeId` is refused exactly when it is

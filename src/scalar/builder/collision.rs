@@ -76,6 +76,22 @@ pub const fn id_string(id: TypeId) -> Option<&'static str> {
 ///
 /// `ty` must be a live logical type handle.
 unsafe fn type_string(ty: duckdb_logical_type) -> Option<String> {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { type_string_at(ty, 0) }
+}
+
+/// [`type_string`] at nesting level `depth`; deeper than
+/// [`MAX_TYPE_NESTING`](crate::table::type_check::MAX_TYPE_NESTING) it
+/// returns `None` ("cannot be rendered") instead of recursing until the stack
+/// overflows.
+///
+/// # Safety
+///
+/// `ty` must be a live logical type handle.
+unsafe fn type_string_at(ty: duckdb_logical_type, depth: usize) -> Option<String> {
+    if depth > crate::table::type_check::MAX_TYPE_NESTING {
+        return None;
+    }
     // SAFETY: `ty` is live per this function's contract; every child handle
     // fetched below is owned by the `LogicalType` that wraps it.
     unsafe {
@@ -84,7 +100,7 @@ unsafe fn type_string(ty: duckdb_logical_type) -> Option<String> {
                 return None;
             }
             let owned = LogicalType::from_raw(raw);
-            type_string(owned.as_raw())
+            type_string_at(owned.as_raw(), depth + 1)
         };
         // `LogicalType::ToString` prints an aliased type by its alias, at any
         // depth (`CREATE TYPE myint AS INTEGER` lists as `myint`, and a list

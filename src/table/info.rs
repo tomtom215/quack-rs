@@ -286,7 +286,17 @@ impl BindInfo {
     /// whichever flag records it. A guess the scan may exceed is safe with
     /// `true` on 1.x and with `false` on 2.0.0 only: choose the flag by the
     /// engine's version ([`crate::abi::engine_version`]) or set no hint.
+    ///
+    /// # The hint is clamped to `i64::MAX`
+    ///
+    /// `DuckDB` converts the hint to a signed 64-bit count when it estimates a
+    /// join, and a value above `i64::MAX` makes any query that joins or
+    /// cross-joins the function fail with `INTERNAL Error: Information loss on
+    /// integer cast` (measured on 1.5.6 with `u64::MAX`, the "unknown" a
+    /// careless caller passes). No table has that many rows, so a larger
+    /// `rows` is clamped to `i64::MAX` instead of being passed on.
     pub fn set_cardinality(&self, rows: u64, is_exact: bool) -> &Self {
+        let rows = rows.min(i64::MAX as u64);
         // SAFETY: self.info is valid.
         unsafe {
             duckdb_bind_set_cardinality(self.info, rows as idx_t, is_exact);

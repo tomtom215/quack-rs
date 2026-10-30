@@ -6298,3 +6298,6 @@ mod scalar_bind_data_copy;
 
 #[path = "ffi_roundtrip/data_chunk_helpers.rs"]
 mod data_chunk_helpers;
+
+#[path = "ffi_roundtrip/hostile_input.rs"]
+mod hostile_input;

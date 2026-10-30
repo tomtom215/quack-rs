@@ -321,6 +321,22 @@ unsafe fn take_c_string(ptr: *mut c_char) -> String {
 ///
 /// `ty` must be a live logical type handle.
 unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { describe_at(ty, out, 0) }
+}
+
+/// [`describe`] at nesting level `depth`; deeper than
+/// [`MAX_TYPE_NESTING`](crate::table::type_check::MAX_TYPE_NESTING) it writes
+/// `...` rather than recurse until the stack overflows.
+///
+/// # Safety
+///
+/// `ty` must be a live logical type handle.
+unsafe fn describe_at(ty: duckdb_logical_type, out: &mut String, depth: usize) {
+    if depth > crate::table::type_check::MAX_TYPE_NESTING {
+        out.push_str("...");
+        return;
+    }
     // SAFETY: (whole body) `ty` is a live handle per this function's `# Safety`
     // clause; `duckdb_logical_type_get_alias` and `duckdb_get_type_id` need
     // only that. Every other accessor is called in the arm for the type id it
@@ -348,22 +364,22 @@ unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
             DUCKDB_TYPE_DUCKDB_TYPE_LIST => {
                 let child = Owned::new(duckdb_list_type_child_type(ty));
                 out.push_str("LIST(");
-                describe(child.raw, out);
+                describe_at(child.raw, out, depth + 1);
                 out.push(')');
             }
             DUCKDB_TYPE_DUCKDB_TYPE_ARRAY => {
                 let child = Owned::new(duckdb_array_type_child_type(ty));
                 out.push_str("ARRAY(");
-                describe(child.raw, out);
+                describe_at(child.raw, out, depth + 1);
                 let _ = write!(out, ", {})", duckdb_array_type_array_size(ty));
             }
             DUCKDB_TYPE_DUCKDB_TYPE_MAP => {
                 let key = Owned::new(duckdb_map_type_key_type(ty));
                 let value = Owned::new(duckdb_map_type_value_type(ty));
                 out.push_str("MAP(");
-                describe(key.raw, out);
+                describe_at(key.raw, out, depth + 1);
                 out.push_str(", ");
-                describe(value.raw, out);
+                describe_at(value.raw, out, depth + 1);
                 out.push(')');
             }
             DUCKDB_TYPE_DUCKDB_TYPE_STRUCT => {
@@ -374,6 +390,7 @@ unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
                         i,
                         duckdb_struct_type_child_name(ty, i),
                         duckdb_struct_type_child_type(ty, i),
+                        depth + 1,
                     );
                 }
                 out.push(')');
@@ -386,6 +403,7 @@ unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
                         i,
                         duckdb_union_type_member_name(ty, i),
                         duckdb_union_type_member_type(ty, i),
+                        depth + 1,
                     );
                 }
                 out.push(')');
@@ -421,7 +439,13 @@ unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
 ///
 /// `name` must be null or a `DuckDB`-allocated string, and `ty` a logical type
 /// handle the caller owns.
-unsafe fn describe_member(out: &mut String, i: idx_t, name: *mut c_char, ty: duckdb_logical_type) {
+unsafe fn describe_member(
+    out: &mut String,
+    i: idx_t,
+    name: *mut c_char,
+    ty: duckdb_logical_type,
+    depth: usize,
+) {
     // SAFETY: forwarded from this function's own contract.
     let ty = unsafe { Owned::new(ty) };
     if i > 0 {
@@ -431,7 +455,7 @@ unsafe fn describe_member(out: &mut String, i: idx_t, name: *mut c_char, ty: duc
     let name = unsafe { take_c_string(name) };
     let _ = write!(out, "{name:?} ");
     // SAFETY: `ty` is a live handle owned by the guard above.
-    unsafe { describe(ty.raw, out) };
+    unsafe { describe_at(ty.raw, out, depth) };
 }
 
 #[cfg(test)]
