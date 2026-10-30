@@ -21,7 +21,9 @@
 //! Before registering, the scalar builders render each overload's parameter
 //! and varargs types the way `DuckDB` prints them in `duckdb_functions()` —
 //! aliases included — and refuse an overload that [`shapes_overlap`] one
-//! already listed. Rendering covers every type except `STRUCT`, `UNION`, `ENUM`
+//! already listed, comparing `DECIMAL`s and `MAP`s by type id alone, as
+//! `DuckDB`'s overload resolution does (see `overload_key`). Rendering covers
+//! every type except `STRUCT`, `UNION`, `ENUM`
 //! and the literal pseudo-types; an overload using one of those is not checked
 //! (its rendering in `duckdb_functions()` quotes names in ways not worth
 //! reproducing), which is documented on the builders.
@@ -159,6 +161,67 @@ impl Rendered {
             varargs: self.varargs.as_deref(),
         }
     }
+
+    /// This signature as `DuckDB`'s overload resolution tells it apart from
+    /// another (see [`overload_key`]).
+    fn key(&self) -> Self {
+        Self {
+            fixed: self.fixed.iter().map(|t| overload_key(t)).collect(),
+            varargs: self.varargs.as_deref().map(overload_key),
+        }
+    }
+}
+
+/// `rendered` with every `DECIMAL(w,s)` reduced to `DECIMAL` and every
+/// `MAP(k, v)` to `MAP`, at any depth (`DECIMAL(4,1)[]` becomes `DECIMAL[]`).
+///
+/// `DuckDB` resolves an overload of those types by type id alone
+/// (`CastRules::ImplicitCast`): a call with a `DECIMAL(4,1)` argument
+/// matches `f(DECIMAL(18,3))` at the same zero cost as `f(DECIMAL(4,1))`, and
+/// the generic `DECIMAL` of a built-in, so adding one beside the other makes
+/// every such call ambiguous. (`ENUM` would be a third, but signatures with
+/// one are not rendered at all.)
+fn overload_key(rendered: &str) -> String {
+    let mut out = String::with_capacity(rendered.len());
+    let mut rest = rendered;
+    loop {
+        let at_word_start = !out.ends_with(|c: char| c.is_alphanumeric() || c == '_');
+        let head = ["DECIMAL", "MAP"].into_iter().find(|head| {
+            at_word_start && rest.strip_prefix(head).is_some_and(|r| r.starts_with('('))
+        });
+        if let Some(head) = head {
+            out.push_str(head);
+            rest = after_parentheses(&rest[head.len()..]);
+            continue;
+        }
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(c) => {
+                out.push(c);
+                rest = chars.as_str();
+            }
+            None => return out,
+        }
+    }
+}
+
+/// What follows the parenthesised group `text` starts with, or `""` if the
+/// group is not closed.
+fn after_parentheses(text: &str) -> &str {
+    let mut depth = 0_usize;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return &text[i + 1..];
+                }
+            }
+            _ => {}
+        }
+    }
+    ""
 }
 
 /// Renders one overload's signature, or `None` if any of its types is not
@@ -310,9 +373,10 @@ impl ExistingScalars {
                  overload in one ScalarFunctionSetBuilder"
             )));
         }
+        let key = signature.key();
         let Some(taken) = existing
             .iter()
-            .find(|e| shapes_overlap(e.shape(), signature.shape()))
+            .find(|e| shapes_overlap(e.key().shape(), key.shape()))
         else {
             return Ok(());
         };
@@ -326,11 +390,16 @@ impl ExistingScalars {
                  different name or different parameter types."
             )));
         }
+        let why = if shapes_overlap(taken.shape(), signature.shape()) {
+            String::new()
+        } else {
+            format!(" ({})", super::signature::OVERLOAD_RULE)
+        };
         Err(ExtensionError::new(format!(
             "scalar function '{name}' ({what}): {name}({ours}) accepts the same arguments as the \
-             existing {name}({theirs}) for some calls, and DuckDB would fail every such call \
-             with \"Could not choose a best candidate function\". Choose a different name or \
-             parameter types that no call can match both ways.",
+             existing {name}({theirs}) for some calls{why}, and DuckDB would fail every such \
+             call with \"Could not choose a best candidate function\". Choose a different name \
+             or parameter types that no call can match both ways.",
             ours = display(signature),
         )))
     }
@@ -466,6 +535,78 @@ mod tests {
                 &sig(&["BIGINT", "VARCHAR"], None)
             )
             .is_ok());
+    }
+
+    /// `DECIMAL`s and `MAP`s collapse to their type id at any depth; nothing
+    /// else changes, and a name that merely ends in `MAP` is left alone.
+    #[test]
+    fn overload_keys_ignore_decimal_and_map_parameters() {
+        for (rendered, key) in [
+            ("DECIMAL(18,3)", "DECIMAL"),
+            ("DECIMAL", "DECIMAL"),
+            ("DECIMAL(4,1)[]", "DECIMAL[]"),
+            ("DECIMAL(4,1)[3]", "DECIMAL[3]"),
+            ("MAP(VARCHAR, BIGINT)", "MAP"),
+            ("MAP(VARCHAR, MAP(BIGINT, DECIMAL(9,2)))[]", "MAP[]"),
+            ("MAP(INTEGER[], VARCHAR)[2][]", "MAP[2][]"),
+            ("INTEGER[]", "INTEGER[]"),
+            ("BITMAP(x)", "BITMAP(x)"),
+            ("my_decimal", "my_decimal"),
+            ("MAP(unclosed", "MAP"),
+        ] {
+            assert_eq!(super::overload_key(rendered), key, "{rendered}");
+        }
+    }
+
+    /// A signature that differs from an existing one only in a `DECIMAL`'s
+    /// width and scale or a `MAP`'s key and value types is refused as an
+    /// ambiguity, with the reason; one that differs in an element type or
+    /// an array size is not.
+    #[test]
+    fn check_refuses_signatures_duckdb_resolves_by_type_id_alone() {
+        let mut existing = ExistingScalars::default();
+        existing.record("round", sig(&["DECIMAL"], None));
+        existing.record("f", sig(&["DECIMAL(4,1)[]"], None));
+        existing.record("g", sig(&["MAP(VARCHAR, BIGINT)", "INTEGER"], None));
+        for (name, ours) in [
+            ("round", "DECIMAL(18,3)"),
+            ("f", "DECIMAL(18,3)[]"),
+            ("g", "MAP(BIGINT, VARCHAR)"),
+        ] {
+            let fixed: Vec<&str> = if name == "g" {
+                vec![ours, "INTEGER"]
+            } else {
+                vec![ours]
+            };
+            let err = existing
+                .check(name, "scalar function", &sig(&fixed, None))
+                .expect_err("resolved by type id alone");
+            assert!(
+                err.as_str()
+                    .contains("accepts the same arguments as the existing")
+                    && err.as_str().contains("ignores a DECIMAL's width and scale"),
+                "{name}: {err}"
+            );
+        }
+        for (name, ours) in [
+            ("f", "DECIMAL(4,1)[3]"),
+            ("f", "VARCHAR[]"),
+            ("round", "BIGINT"),
+            ("g", "MAP(VARCHAR, BIGINT)"),
+        ] {
+            assert!(
+                existing
+                    .check(name, "scalar function", &sig(&[ours], None))
+                    .is_ok(),
+                "{name}({ours})"
+            );
+        }
+        // An identical signature is still a replacement, and needs no rule.
+        let err = existing
+            .check("f", "scalar function", &sig(&["DECIMAL(4,1)[]"], None))
+            .expect_err("identical");
+        assert!(err.as_str().contains("already exists"), "{err}");
+        assert!(!err.as_str().contains("ignores a DECIMAL"), "{err}");
     }
 
     /// A varargs-only signature renders without a leading separator.

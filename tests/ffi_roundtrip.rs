@@ -6301,3 +6301,6 @@ mod data_chunk_helpers;
 
 #[path = "ffi_roundtrip/hostile_input.rs"]
 mod hostile_input;
+
+#[path = "ffi_roundtrip/overload_keys.rs"]
+mod overload_keys;

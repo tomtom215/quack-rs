@@ -132,12 +132,17 @@ impl ScalarFunctionSetBuilder {
     /// - Any overload is missing a return type or function callback. The error
     ///   names the overload's index, and is reported before any `DuckDB`
     ///   handle is allocated.
-    /// - Two overloads accept the same call: the same argument types
-    ///   (compared structurally, so `DECIMAL(18,2)` and `DECIMAL(18,3)`
-    ///   differ), or, with varargs, the same types at some argument count
-    ///   (`f(BIGINT)` and `f(BIGINT, BIGINT...)` both take `f(1)`). `DuckDB`
-    ///   itself would accept such a set and then fail every such call with
-    ///   "Could not choose a best candidate function".
+    /// - Two overloads accept the same call: argument types `DuckDB`'s
+    ///   overload resolution cannot tell apart, or, with varargs, such types
+    ///   at some argument count (`f(BIGINT)` and `f(BIGINT, BIGINT...)` both
+    ///   take `f(1)`). It tells `DECIMAL`, `MAP` and `ENUM` parameters apart
+    ///   by type alone, also inside a `LIST`, `ARRAY`, `STRUCT` or `UNION`, so
+    ///   `DECIMAL(4,1)` and `DECIMAL(18,3)` collide, as do `MAP(VARCHAR,
+    ///   BIGINT)` and `MAP(BIGINT, VARCHAR)`; `LIST(INTEGER)` and
+    ///   `LIST(VARCHAR)` do not. `DuckDB` itself would accept such a set and
+    ///   then fail every such call with "Could not choose a best candidate
+    ///   function". The rule, and the two shapes it does not catch, are on
+    ///   `reject_duplicate_overloads` in `src/scalar/builder/signature.rs`.
     /// - An overload accepts the same call as a scalar function that already
     ///   exists (see "Name collisions").
     /// - `DuckDB` reports registration failure.

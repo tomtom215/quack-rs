@@ -169,15 +169,36 @@ pub fn shapes_overlap(a: Shape<'_>, b: Shape<'_>) -> bool {
     (0..arity).all(|i| a.at(i) == b.at(i))
 }
 
+/// Why two overloads whose types differ as written still collide, appended
+/// to the error when they do not collide structurally.
+pub const OVERLOAD_RULE: &str = "DuckDB's overload resolution tells these types apart by \
+     type alone: it ignores a DECIMAL's width and scale, a MAP's key and value types and an \
+     ENUM's members, also inside a LIST, ARRAY, STRUCT or UNION, and matches STRUCT fields and \
+     UNION members by name in any order and case";
+
 /// Fails if two overloads accept the same argument list.
 ///
 /// `signatures[i]` is overload `i`'s merged parameter list. Types are compared
-/// structurally — `DECIMAL(18,2)` and `DECIMAL(18,3)` differ, as do two
-/// `STRUCT`s with different field names, two `ENUM`s with different members,
-/// or two types with different aliases — and varargs are expanded as
-/// [`shapes_overlap`] describes, so only a set `DuckDB` genuinely cannot
-/// resolve is rejected: `{f(BIGINT), f(BIGINT, BIGINT...)}` is, because
-/// `f(1)` matches both.
+/// the way `DuckDB`'s overload resolution compares them
+/// (`CastRules::ImplicitCast`, read at v1.4.4, v1.5.6 and v2.0.0): a call
+/// whose argument types are one overload's parameter types matches every
+/// overload whose types cast to them at no cost, and `DuckDB` cannot prefer
+/// one of several at the same cost. That cost is zero, besides for identical
+/// types, between any two `DECIMAL`s, any two `MAP`s and any two `ENUM`s
+/// (only the type id is compared), and so between two `LIST`s, or two
+/// same-size `ARRAY`s, whose children are such a pair, and between `STRUCT`s
+/// (or `UNION`s) with the same field names, matched in any order and case,
+/// and such field types. Types are therefore compared as [`Render::Overload`]
+/// renders them, while two different aliases, `STRUCT` field names, `ARRAY`
+/// sizes, or element types (`LIST(INTEGER)` and `LIST(VARCHAR)`) keep two
+/// overloads apart. Varargs are expanded as
+/// [`shapes_overlap`] describes, so `{f(BIGINT), f(BIGINT, BIGINT...)}` is
+/// rejected too, because `f(1)` matches both.
+///
+/// Not detected (no two types compare equal, though `DuckDB` resolves some
+/// calls at zero cost to both; read from the source, not run): a `LIST(T)`
+/// beside an `ARRAY(T, n)` (a `LIST` argument casts to either at zero cost),
+/// and a `UNION` whose members are a subset of another's.
 ///
 /// # Safety
 ///
@@ -189,28 +210,43 @@ pub unsafe fn reject_duplicate_overloads(
     name: &str,
     signatures: &[Vec<ParamRef<'_>>],
 ) -> Result<(), ExtensionError> {
-    let parts: Vec<(Vec<String>, Option<String>)> = signatures
-        .iter()
-        // SAFETY: forwarded from this function's own contract.
-        .map(|params| unsafe { signature_parts(params) })
-        .collect();
-    let shapes: Vec<Shape<'_>> = parts
+    let render = |how| -> Vec<(Vec<String>, Option<String>)> {
+        signatures
+            .iter()
+            // SAFETY: forwarded from this function's own contract.
+            .map(|params| unsafe { signature_parts(params, how) })
+            .collect()
+    };
+    let (keys, exact) = (render(Render::Overload), render(Render::Exact));
+    let (key_shapes, shapes) = (as_shapes(&keys), as_shapes(&exact));
+    match first_overlap(&key_shapes) {
+        None => Ok(()),
+        Some((first, second)) => {
+            let why = if shapes_overlap(shapes[first], shapes[second]) {
+                String::new()
+            } else {
+                format!(" ({OVERLOAD_RULE})")
+            };
+            Err(ExtensionError::new(format!(
+                "function set '{name}': overload {first} ({a}) and overload {second} ({b}) \
+                 accept the same arguments{why}; DuckDB would accept the set but fail every \
+                 such call with \"Could not choose a best candidate function\"",
+                a = display_shape(shapes[first]),
+                b = display_shape(shapes[second]),
+            )))
+        }
+    }
+}
+
+/// Rendered signatures as [`Shape`]s, borrowing them.
+fn as_shapes(parts: &[(Vec<String>, Option<String>)]) -> Vec<Shape<'_>> {
+    parts
         .iter()
         .map(|(fixed, varargs)| Shape {
             fixed,
             varargs: varargs.as_deref(),
         })
-        .collect();
-    match first_overlap(&shapes) {
-        None => Ok(()),
-        Some((first, second)) => Err(ExtensionError::new(format!(
-            "function set '{name}': overload {first} ({a}) and overload {second} ({b}) accept \
-             the same arguments; DuckDB would accept the set but fail every such call with \
-             \"Could not choose a best candidate function\"",
-            a = display_shape(shapes[first]),
-            b = display_shape(shapes[second]),
-        ))),
-    }
+        .collect()
 }
 
 /// The indices of the first pair of overlapping shapes, lowest first.
@@ -240,13 +276,26 @@ fn display_shape(shape: Shape<'_>) -> String {
     out
 }
 
-/// Renders each parameter, and the varargs type, as comparable,
-/// human-readable strings.
+/// How [`describe`] renders a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Render {
+    /// Every parameter, as written: `DECIMAL(18,3)`, `STRUCT` fields in order.
+    /// Equal exactly when the types are; used in messages.
+    Exact,
+    /// As `DuckDB`'s overload resolution tells types apart: `DECIMAL`, `MAP`
+    /// and `ENUM` by type id alone, named `STRUCT` fields and `UNION` members
+    /// lower-cased and sorted by name. Two types render equal exactly when
+    /// each casts to the other at no cost (outside the pairs
+    /// [`reject_duplicate_overloads`] lists as not detected).
+    Overload,
+}
+
+/// Renders each parameter, and the varargs type, as `how` says.
 ///
 /// # Safety
 ///
 /// As [`reject_duplicate_overloads`].
-unsafe fn signature_parts(params: &[ParamRef<'_>]) -> (Vec<String>, Option<String>) {
+unsafe fn signature_parts(params: &[ParamRef<'_>], how: Render) -> (Vec<String>, Option<String>) {
     let mut fixed = Vec::with_capacity(params.len());
     let mut varargs = None;
     for param in params {
@@ -255,12 +304,12 @@ unsafe fn signature_parts(params: &[ParamRef<'_>]) -> (Vec<String>, Option<Strin
             ParamRef::Id(id) => fixed.push(id.sql_name().to_owned()),
             ParamRef::Logical(lt) => {
                 // SAFETY: the handle is live per this function's contract.
-                unsafe { describe(lt.as_raw(), &mut out) };
+                unsafe { describe(lt.as_raw(), &mut out, how) };
                 fixed.push(out);
             }
             ParamRef::Varargs(lt) => {
                 // SAFETY: as above.
-                unsafe { describe(lt.as_raw(), &mut out) };
+                unsafe { describe(lt.as_raw(), &mut out, how) };
                 varargs = Some(out);
             }
             ParamRef::VarargsId(id) => varargs = Some(id.sql_name().to_owned()),
@@ -315,24 +364,25 @@ unsafe fn take_c_string(ptr: *mut c_char) -> String {
     s
 }
 
-/// Appends a structural rendering of `ty` to `out`.
+/// Appends a rendering of `ty` to `out`, as `how` says.
 ///
 /// # Safety
 ///
 /// `ty` must be a live logical type handle.
-unsafe fn describe(ty: duckdb_logical_type, out: &mut String) {
+unsafe fn describe(ty: duckdb_logical_type, out: &mut String, how: Render) {
     // SAFETY: forwarded from this function's own contract.
-    unsafe { describe_at(ty, out, 0) }
+    unsafe { describe_at(ty, out, 0, how) }
 }
 
 /// [`describe`] at nesting level `depth`; deeper than
 /// [`MAX_TYPE_NESTING`](crate::table::type_check::MAX_TYPE_NESTING) it writes
-/// `...` rather than recurse until the stack overflows.
+/// `...` rather than recurse until the stack overflows (so two types that
+/// agree down to that depth compare equal).
 ///
 /// # Safety
 ///
 /// `ty` must be a live logical type handle.
-unsafe fn describe_at(ty: duckdb_logical_type, out: &mut String, depth: usize) {
+unsafe fn describe_at(ty: duckdb_logical_type, out: &mut String, depth: usize, how: Render) {
     if depth > crate::table::type_check::MAX_TYPE_NESTING {
         out.push_str("...");
         return;
@@ -352,7 +402,13 @@ unsafe fn describe_at(ty: duckdb_logical_type, out: &mut String, depth: usize) {
             let _ = write!(out, "{}:", take_c_string(alias));
         }
         let raw = duckdb_get_type_id(ty);
+        let coarse = how == Render::Overload;
         match raw {
+            // `DuckDB` resolves overloads of these by type id alone
+            // (`ImplicitCast`'s `from.id() == to.id()` case).
+            DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL if coarse => out.push_str("DECIMAL"),
+            DUCKDB_TYPE_DUCKDB_TYPE_MAP if coarse => out.push_str("MAP"),
+            DUCKDB_TYPE_DUCKDB_TYPE_ENUM if coarse => out.push_str("ENUM"),
             DUCKDB_TYPE_DUCKDB_TYPE_DECIMAL => {
                 let _ = write!(
                     out,
@@ -364,49 +420,49 @@ unsafe fn describe_at(ty: duckdb_logical_type, out: &mut String, depth: usize) {
             DUCKDB_TYPE_DUCKDB_TYPE_LIST => {
                 let child = Owned::new(duckdb_list_type_child_type(ty));
                 out.push_str("LIST(");
-                describe_at(child.raw, out, depth + 1);
+                describe_at(child.raw, out, depth + 1, how);
                 out.push(')');
             }
             DUCKDB_TYPE_DUCKDB_TYPE_ARRAY => {
                 let child = Owned::new(duckdb_array_type_child_type(ty));
                 out.push_str("ARRAY(");
-                describe_at(child.raw, out, depth + 1);
+                describe_at(child.raw, out, depth + 1, how);
                 let _ = write!(out, ", {})", duckdb_array_type_array_size(ty));
             }
             DUCKDB_TYPE_DUCKDB_TYPE_MAP => {
                 let key = Owned::new(duckdb_map_type_key_type(ty));
                 let value = Owned::new(duckdb_map_type_value_type(ty));
                 out.push_str("MAP(");
-                describe_at(key.raw, out, depth + 1);
+                describe_at(key.raw, out, depth + 1, how);
                 out.push_str(", ");
-                describe_at(value.raw, out, depth + 1);
+                describe_at(value.raw, out, depth + 1, how);
                 out.push(')');
             }
             DUCKDB_TYPE_DUCKDB_TYPE_STRUCT => {
-                out.push_str("STRUCT(");
-                for i in 0..duckdb_struct_type_child_count(ty) {
-                    describe_member(
-                        out,
-                        i,
-                        duckdb_struct_type_child_name(ty, i),
-                        duckdb_struct_type_child_type(ty, i),
-                        depth + 1,
-                    );
-                }
-                out.push(')');
+                let members = (0..duckdb_struct_type_child_count(ty))
+                    .map(|i| {
+                        describe_member(
+                            duckdb_struct_type_child_name(ty, i),
+                            duckdb_struct_type_child_type(ty, i),
+                            depth + 1,
+                            how,
+                        )
+                    })
+                    .collect();
+                push_members(out, "STRUCT(", members, how);
             }
             DUCKDB_TYPE_DUCKDB_TYPE_UNION => {
-                out.push_str("UNION(");
-                for i in 0..duckdb_union_type_member_count(ty) {
-                    describe_member(
-                        out,
-                        i,
-                        duckdb_union_type_member_name(ty, i),
-                        duckdb_union_type_member_type(ty, i),
-                        depth + 1,
-                    );
-                }
-                out.push(')');
+                let members = (0..duckdb_union_type_member_count(ty))
+                    .map(|i| {
+                        describe_member(
+                            duckdb_union_type_member_name(ty, i),
+                            duckdb_union_type_member_type(ty, i),
+                            depth + 1,
+                            how,
+                        )
+                    })
+                    .collect();
+                push_members(out, "UNION(", members, how);
             }
             DUCKDB_TYPE_DUCKDB_TYPE_ENUM => {
                 out.push_str("ENUM(");
@@ -432,30 +488,50 @@ unsafe fn describe_at(ty: duckdb_logical_type, out: &mut String, depth: usize) {
     }
 }
 
-/// Appends `name type` for one `STRUCT` field or `UNION` member, taking
-/// ownership of both handles.
+/// One `STRUCT` field or `UNION` member as `(name, "name" type)`, taking
+/// ownership of both handles. [`Render::Overload`] lower-cases the name, as
+/// `DuckDB` matches fields (and, before 2.0.0, union members)
+/// case-insensitively.
 ///
 /// # Safety
 ///
 /// `name` must be null or a `DuckDB`-allocated string, and `ty` a logical type
 /// handle the caller owns.
 unsafe fn describe_member(
-    out: &mut String,
-    i: idx_t,
     name: *mut c_char,
     ty: duckdb_logical_type,
     depth: usize,
-) {
+    how: Render,
+) -> (String, String) {
     // SAFETY: forwarded from this function's own contract.
     let ty = unsafe { Owned::new(ty) };
-    if i > 0 {
-        out.push_str(", ");
-    }
     // SAFETY: forwarded from this function's own contract.
-    let name = unsafe { take_c_string(name) };
-    let _ = write!(out, "{name:?} ");
+    let mut name = unsafe { take_c_string(name) };
+    if how == Render::Overload {
+        name = name.to_lowercase();
+    }
+    let mut out = format!("{name:?} ");
     // SAFETY: `ty` is a live handle owned by the guard above.
-    unsafe { describe_at(ty.raw, out, depth) };
+    unsafe { describe_at(ty.raw, &mut out, depth, how) };
+    (name, out)
+}
+
+/// Appends `open`, the rendered members and `)`. [`Render::Overload`] sorts
+/// them by name, as `DuckDB` matches two named structs' fields by name in
+/// any order; a struct with an unnamed field is matched by position, so its
+/// fields keep their order.
+fn push_members(out: &mut String, open: &str, mut members: Vec<(String, String)>, how: Render) {
+    if how == Render::Overload && members.iter().all(|(name, _)| !name.is_empty()) {
+        members.sort();
+    }
+    out.push_str(open);
+    for (i, (_, member)) in members.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(member);
+    }
+    out.push(')');
 }
 
 #[cfg(test)]
@@ -711,6 +787,42 @@ mod tests {
             merged(&[TypeId::BigInt], &[(2, "two"), (0, "zero")]),
             vec!["Id(BIGINT)", "Logical(two)"]
         );
+    }
+
+    /// Named members are sorted for the overload key (`DuckDB` matches named
+    /// struct fields by name), kept in order for the exact rendering, and
+    /// kept in order for the key too when a name is empty (matched by
+    /// position).
+    #[test]
+    fn members_sort_by_name_only_for_the_overload_key_of_a_named_type() {
+        let members = || {
+            vec![
+                ("b".to_owned(), "\"b\" INTEGER".to_owned()),
+                ("a".to_owned(), "\"a\" VARCHAR".to_owned()),
+            ]
+        };
+        let render = |members, how| {
+            let mut out = String::new();
+            push_members(&mut out, "STRUCT(", members, how);
+            out
+        };
+        assert_eq!(
+            render(members(), Render::Overload),
+            "STRUCT(\"a\" VARCHAR, \"b\" INTEGER)"
+        );
+        assert_eq!(
+            render(members(), Render::Exact),
+            "STRUCT(\"b\" INTEGER, \"a\" VARCHAR)"
+        );
+        let unnamed = vec![
+            (String::new(), "\"\" INTEGER".to_owned()),
+            (String::new(), "\"\" BIGINT".to_owned()),
+        ];
+        assert_eq!(
+            render(unnamed, Render::Overload),
+            "STRUCT(\"\" INTEGER, \"\" BIGINT)"
+        );
+        assert_eq!(render(Vec::new(), Render::Overload), "STRUCT()");
     }
 
     #[test]
