@@ -6,7 +6,9 @@
 //! keep both files within the project's size budget.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use super::*;
 
@@ -18,6 +20,7 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+#[cfg(unix)]
 fn temp_files(dir: &Path) -> Vec<String> {
     fs::read_dir(dir)
         .unwrap()
