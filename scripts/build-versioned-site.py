@@ -64,10 +64,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SITE_URL = "https://quack-rs.com"
 DOCS_RS_LATEST = "https://docs.rs/quack-rs/latest/"
 
-# The oldest release line published: 0.18, the oldest line SECURITY.md still
-# lists as supported (0.16 is end-of-life there). Raise this when a line reaches
-# end of life.
-MIN_RELEASE = (0, 18, 0)
+# The oldest release line published: 0.19, the oldest line SECURITY.md still
+# lists as supported (0.18 is end-of-life there since 0.20.0). Raise this when a
+# line reaches end of life; scripts/check-release-metadata.py fails while the
+# two disagree.
+MIN_RELEASE = (0, 19, 0)
 
 # Every tag up to and including v0.18.0 was built by docs.yml with this
 # version and has no book/mdbook-version file (mdBook 0.5 rejects their

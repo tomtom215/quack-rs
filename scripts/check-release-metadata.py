@@ -105,6 +105,22 @@ def main() -> int:
             f"it compares `{unreleased.group(1) if unreleased else '(missing)'}...HEAD`"
         )
 
+    # The versioned book publishes every release line from MIN_RELEASE on;
+    # RELEASING.md Step 2b raises it in the commit that ends a line's support.
+    supported = [
+        (int(a), int(b))
+        for a, b in re.findall(r"^\|\s*(\d+)\.(\d+)\.x\s*\|\s*Yes\b", read("SECURITY.md"), re.MULTILINE)
+    ]
+    site = re.search(r"^MIN_RELEASE\s*=\s*\((\d+),\s*(\d+),\s*(\d+)\)", read("scripts/build-versioned-site.py"), re.MULTILINE)
+    if not supported:
+        problems.append("SECURITY.md's supported-versions table has no `| X.Y.x | Yes` row")
+    elif not site or (int(site[1]), int(site[2]), int(site[3])) != (*min(supported), 0):
+        oldest = "{}.{}".format(*min(supported))
+        problems.append(
+            f"scripts/build-versioned-site.py MIN_RELEASE is {site.group(0) if site else '(missing)'}, "
+            f"but the oldest line SECURITY.md supports is {oldest}.x: set it to ({oldest.replace('.', ', ')}, 0)"
+        )
+
     if not prerelease:
         date = heading.group(1) if heading else None
         citation = read("CITATION.cff")
