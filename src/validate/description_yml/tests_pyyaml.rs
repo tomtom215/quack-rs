@@ -702,3 +702,105 @@ fn a_block_scalar_keeps_a_deeper_comment_line_after_a_blank_line() {
         false,
     )]);
 }
+
+/// Inside a flow collection `PyYAML` takes a node for a mapping key only if the
+/// `:` after it is on the key's own line, at most 1,024 characters from where
+/// the key began (an anchor in front of it included). Otherwise the `:` is left
+/// with no key and the parser stops at it ("expected ',' or '}'"). The reader
+/// checked neither, and accepted all ten refused rows below. Found by running
+/// 30,120 random flow collections through both readers (109 disagreements,
+/// every one a file only `PyYAML` refuses; none after the fix).
+#[test]
+fn a_flow_key_and_its_colon_share_a_line() {
+    check(&[
+        ("a mapping entry on one line", docs("k: {a: 1}"), true),
+        (
+            "a mapping key continued on the next line",
+            docs("k: {a\nb: c}"),
+            false,
+        ),
+        (
+            "a mapping key and its colon on different lines",
+            docs("k: {a\n: c}"),
+            false,
+        ),
+        (
+            "a quoted mapping key over two lines",
+            docs("k: {\"a\nb\": c}"),
+            false,
+        ),
+        (
+            "a quoted mapping key and its colon on different lines",
+            docs("k: {\"a\"\n: c}"),
+            false,
+        ),
+        (
+            "the second mapping key continued on the next line",
+            docs("k: {a: 1, b\nc: d}"),
+            false,
+        ),
+        ("a mapping value over two lines", docs("k: {a: b\nc}"), true),
+        (
+            "a mapping entry with no value over two lines",
+            docs("k: {a\nb}"),
+            true,
+        ),
+        ("a sequence pair on one line", docs("k: [a, b: c]"), true),
+        (
+            "a sequence pair key continued on the next line",
+            docs("k: [a\nb: c]"),
+            false,
+        ),
+        (
+            "a sequence pair and its colon on different lines",
+            docs("k: [a\n: c]"),
+            false,
+        ),
+        (
+            "a quoted sequence pair key over two lines",
+            docs("k: [\"a\nb\": c]"),
+            false,
+        ),
+        ("an anchored key on one line", docs("k: {&y b: c}"), true),
+        (
+            "an anchor and its key on different lines",
+            docs("k: {&y\nb: c}"),
+            false,
+        ),
+        (
+            "an alias key on one line",
+            docs("a: &x 1\nk: {*x : c}"),
+            true,
+        ),
+        (
+            "an alias key and its colon on different lines",
+            docs("a: &x 1\nk: {*x\n: c}"),
+            false,
+        ),
+    ]);
+}
+
+/// The 1,024-character reach of a flow key, counted from its first character
+/// (the opening quote, or the `&` of an anchor) to the `:`, spaces included.
+/// `PyYAML` 6.0.3 accepts the rows that fit and refuses the others, in a
+/// mapping and in a sequence, for each way a key can begin.
+#[test]
+fn a_flow_key_reaches_at_most_1024_characters_to_its_colon() {
+    for (open, close) in [('{', '}'), ('[', ']')] {
+        for style in ["plain", "quoted", "anchored"] {
+            for (key_len, spaces) in [(1024, 0), (1025, 0), (1023, 1), (1023, 2), (1022, 2)] {
+                let key = match style {
+                    "plain" => "k".repeat(key_len),
+                    "quoted" => format!("\"{}\"", "k".repeat(key_len - 2)),
+                    _ => format!("&y {}", "k".repeat(key_len - 3)),
+                };
+                let text = docs(&format!("f: {open}{key}{}: v{close}", " ".repeat(spaces)));
+                check(&[(
+                    &format!("{style} key of {key_len} characters, {spaces} spaces, in {open}"),
+                    text,
+                    key_len + spaces <= 1024,
+                )]);
+            }
+        }
+    }
+}

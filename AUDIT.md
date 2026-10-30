@@ -3396,6 +3396,16 @@ printed 0 is listed with the exit code):
        14,874 targeted documents show no regression against PyYAML; the reader still refuses
        a tab-only line inside a block scalar and a tag alone on a line, which PyYAML accepts
        (not fixed).
+     - A fourth disagreement came from checking an engineer's remark that PyYAML refuses a
+       mapping key continued on a second line inside `[ … ]`. The reader refused that file
+       only because `extension:` takes no nested flow collections; in a section it merely
+       checks (`docs:`) it accepted it, and `{ … }` in both. PyYAML keeps a flow key only if
+       its `:` is on the key's line and within 1,024 characters of the key's start. 30,120
+       random flow collections: 109 disagreements before the fix, all false accepts; none
+       after, none new, no panic. `cargo mutants` on the functions touched: 38 mutants, 38
+       caught. The 118,500-file random run of the published descriptors reported no false
+       accept and so did not find this one; the flow-collection generator and the question
+       about a split key did.
      A local `cargo mutants` run of 195 mutants in the functions that changed or had
      survived: 184 caught, 11 unviable, 0 missed, 0 timed out. The sharded run on the next
      head is the check of the other mutants.

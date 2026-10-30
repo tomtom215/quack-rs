@@ -8,7 +8,7 @@
 //! and `parse_flow_*` in `yaml/scanner.py` and `yaml/parser.py`, 6.0).
 
 use super::scalar::{anchor_name, check_timestamp, decode_quoted, Segs};
-use super::{nothing_but_a_comment, tab_error, too_deep, Doc, Line, Value, MAX_DEPTH};
+use super::{nothing_but_a_comment, tab_error, too_deep, Doc, Line, Value, MAX_DEPTH, MAX_KEY_LEN};
 
 /// The flow collection that `rest` (starting with `[` or `{`) opens on line
 /// `line`, continued over the following `lines` until it closes — at any
@@ -189,12 +189,18 @@ impl<'a> Cursor<'_, 'a, '_> {
         }
     }
 
-    /// After a key or item: an optional `: value`. Returns whether one was
-    /// there.
-    fn optional_value(&mut self, depth: usize, closing: char) -> Result<bool, String> {
+    /// After a key or item that began at `key_start`: an optional `: value`.
+    /// Returns whether one was there.
+    fn optional_value(
+        &mut self,
+        key_start: (usize, usize),
+        depth: usize,
+        closing: char,
+    ) -> Result<bool, String> {
         if self.peek() != Some(':') {
             return Ok(false);
         }
+        self.check_key_extent(key_start)?;
         self.pos += 1;
         self.skip()?;
         if !matches!(self.peek(), Some(',') | None) && self.peek() != Some(closing) {
@@ -202,6 +208,29 @@ impl<'a> Cursor<'_, 'a, '_> {
             self.skip()?;
         }
         Ok(true)
+    }
+
+    /// `PyYAML` takes a node for a mapping key only if the `:` after it is on
+    /// the key's own line and at most 1024 characters from where the key
+    /// began (`stale_possible_simple_keys` in `yaml/scanner.py`). In a flow
+    /// collection a key that is too far from its `:` is not an error of the
+    /// scanner's; the `:` is left with no key, and the parser stops at it. The
+    /// key began at `key_start`, which includes an anchor in front of it.
+    fn check_key_extent(&self, key_start: (usize, usize)) -> Result<(), String> {
+        let (seg, pos) = key_start;
+        if seg != self.seg {
+            return Err(format!(
+                "line {}: a flow mapping key and its ':' on different lines, which PyYAML refuses",
+                self.line()
+            ));
+        }
+        if self.text()[pos..self.pos].chars().count() > MAX_KEY_LEN {
+            return Err(format!(
+                "line {}: a key longer than {MAX_KEY_LEN} characters, which PyYAML refuses",
+                self.line()
+            ));
+        }
+        Ok(())
     }
 
     /// The rest of a `[ … ]` whose `[` was on `open_line`.
@@ -224,6 +253,7 @@ impl<'a> Cursor<'_, 'a, '_> {
                 }
                 Some(_) => {}
             }
+            let key_start = (self.seg, self.pos);
             let item = self.node(depth + 1)?;
             self.skip()?;
             // `[key: value]` is a one-entry mapping.
@@ -231,7 +261,7 @@ impl<'a> Cursor<'_, 'a, '_> {
             if pair && matches!(item, Value::Seq(_) | Value::Mapping) {
                 return Err(collection_key(self.line()));
             }
-            self.optional_value(depth + 1, ']')?;
+            self.optional_value(key_start, depth + 1, ']')?;
             let item = if pair { Value::Mapping } else { item };
             if self.read && matches!(item, Value::Seq(_) | Value::Mapping) {
                 return Err(format!(
@@ -287,12 +317,13 @@ impl<'a> Cursor<'_, 'a, '_> {
                 }
                 Some(_) => {}
             }
+            let key_start = (self.seg, self.pos);
             let key = self.node(depth + 1)?;
             if matches!(key, Value::Seq(_) | Value::Mapping) {
                 return Err(collection_key(self.line()));
             }
             self.skip()?;
-            self.optional_value(depth + 1, '}')?;
+            self.optional_value(key_start, depth + 1, '}')?;
             match self.peek() {
                 Some(',') => self.pos += 1,
                 Some('}') => {

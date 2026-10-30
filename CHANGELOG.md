@@ -304,9 +304,10 @@ Security).
 - `abi::parse_version` accepted a signed part (`"1.5.+4"`, because `u64::from_str` takes a
   leading `+`); it takes ASCII digits only, like the build script's copy of the rule.
   [TESTS-9]
-- **`parse_description_yml` disagreed with PyYAML 6.0.3 in three places**, found by the
+- **`parse_description_yml` disagreed with PyYAML 6.0.3 in four places**, three found by the
   first sharded run of the mutation job (101 of the 102 mutants that survived were in this
-  reader). Each has a regression test whose expectation is PyYAML's verdict:
+  reader) and one by a differential run on flow collections afterwards. Each has a
+  regression test whose expectation is PyYAML's verdict:
   - A block scalar (`description: |`) lost the lines after a blank line when the next line was
     a `#` line indented as far as the text, so `l1`, a blank line and `# c` read as `l1`
     where PyYAML reads `l1\n\n# c\n`. A comment at the key's own level still ends the scalar.
@@ -314,8 +315,19 @@ Security).
     (`k:\n  &a\n- x`), was refused; PyYAML reads `{k: [x]}`.
   - A quoted key was measured without the spaces before its colon, so one PyYAML refuses at
     1,024 characters (`"…"  : v`, "mapping values are not allowed here") was accepted.
+  - Inside a flow collection, a node followed by `:` was taken for a mapping key wherever the
+    `:` was. PyYAML takes it for one only if the `:` is on the key's own line and at most
+    1,024 characters from where the key began, an anchor in front of it included; otherwise
+    the `:` has no key and the parser stops there ("expected ',' or '}'"). `k: {a` with
+    `b: c}` on the next line, `k: [a` with `b: c]` on the next, `{"a"` with `: c}` on the
+    next, and a key of 1,025 characters were accepted in a section the reader only checks
+    (and in `extension:`, for the mapping form).
   The statement above, that the reader never accepts a file PyYAML refuses, held for 118,500
-  random mutants of the published descriptors and missed the third. On 14,874 targeted
+  random mutants of the published descriptors and missed the third and the fourth. On 30,120
+  random flow collections (token soup over brackets, braces, quotes, anchors, aliases,
+  colons and line breaks, plus keys at the 1,024 boundary) the reader disagreed with PyYAML
+  on 109 documents before the fix, every one a file only PyYAML refuses, and on none after,
+  with no document newly refused and no panic. On 14,874 targeted
   documents (block scalars with comment-like lines, plain, quoted and flow values with
   comments below them) the fixed reader's `description` equals PyYAML's wherever both accept
   (200 differed before), and it matches PyYAML on 474 more documents than before and on none
