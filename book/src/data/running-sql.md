@@ -107,6 +107,11 @@ fails the call, after the ones before it have run (and, outside an explicit
 transaction, committed). An empty string, or just `;`, succeeds with an empty
 result. `prepare` takes exactly one statement.
 
+Text that does not parse as a whole is not safe to pass through: DuckDB 1.4.4 and 1.5.6 run
+nothing, but DuckDB 2.0.0 runs the statements before the error, and the call may still report
+success ([Known
+Limitations](../reference/known-limitations.md#duckdb_query-runs-the-statements-before-a-parse-error-on-duckdb-20)).
+
 ## Bind values, do not interpolate them
 
 Anything that did not come from your own source text — a table name from a
@@ -242,6 +247,14 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
 connection between threads, not using one concurrently. Open one connection per
 thread, or guard it with a mutex.
 
+**Do not change `threads` from a callback.** `SET threads = N` run on a connection you
+kept, from inside a table function's scan, resizes DuckDB's worker pool from one of its
+own workers. The outcome varied from run to run: on DuckDB 2.0.0 the process terminated
+with `terminate called after throwing an instance of 'std::system_error'` in three of four
+runs; on DuckDB 1.5.6 the statement failed with "Invalid argument" in five of six runs and
+succeeded once (the author-tables review also saw the termination on 1.5.6). It is DuckDB
+behaviour that quack-rs cannot intercept. Set `threads` before the query starts.
+
 ## Cancelling a query and reading its progress
 
 `OwnedConnection::interrupt_handle` returns an `InterruptHandle`, which is
@@ -250,7 +263,11 @@ thread can call its `cancel()` to stop the running query, which then fails with
 an interrupt error at DuckDB's next check, or its `progress()` to read a
 `QueryProgress` (`percentage`, `rows_processed`, `total_rows_to_process`).
 `percentage` is `-1.0` when DuckDB cannot report progress, for example when
-the progress bar is disabled (`SET enable_progress_bar = true`).
+the progress bar is disabled (`SET enable_progress_bar = true`). On DuckDB 1.x it also
+stays `-1.0` for as long as any pipeline of the running query cannot estimate its
+progress (the author-tables review read `-1.0` throughout one query on 1.5.6 where 2.0.0
+reported 1.18 %, 1.34 % and 1.47 %; reported by the review, not re-run here). Treat it as
+"unknown", not as an error.
 `OwnedConnection::interrupt` and `progress` do the same on the calling thread.
 
 ```rust

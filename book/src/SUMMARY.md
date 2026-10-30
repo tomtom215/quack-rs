@@ -9,6 +9,7 @@
 - [Quick Start](getting-started/quick-start.md)
 - [Installation](getting-started/installation.md)
   - [Upgrading from 0.16 to 0.18](getting-started/upgrading-0-18.md)
+  - [Upgrading from 0.18 to 0.20](getting-started/upgrading-0-20.md)
 - [Your First Extension](getting-started/first-extension.md)
 - [Project Scaffold](getting-started/scaffold.md)
 

@@ -292,12 +292,16 @@ quack-rs/
 │   │       ├── parser.rs              # Parses and validates a `description.yml` string
 │   │       ├── tests.rs               # Unit tests
 │   │       ├── tests_corpus.rs        # Unit tests
+│   │       ├── tests_pyyaml.rs        # Accepted exactly when PyYAML accepts it, in linear time
 │   │       ├── tests_yaml.rs          # Unit tests
 │   │       ├── validator.rs           # Validates a `description.yml` string and returns `Ok(())` if it passes all checks
 │   │       ├── yaml.rs                # A reader for the subset of YAML that `description.yml` files use
 │   │       ├── yaml11.rs              # Which plain scalars PyYAML (YAML 1.1) reads as booleans, numbers, dates or null
 │   │       └── yaml/
-│   │           └── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
+│   │           ├── block.rs           # Block mappings and sequences, and their keys
+│   │           ├── flow.rs            # Flow collections, nested and spread over lines
+│   │           ├── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
+│   │           └── value.rs           # The value after a mapping key or a sequence marker
 │   ├── value/
 │   │   ├── bits.rs                    # `BIT` and `BIGNUM` values: validated constructors and getters that check type and `NULL` first
 │   │   ├── blob.rs                    # `Value::as_blob` — `BLOB` extraction
@@ -417,7 +421,7 @@ quack-rs/
 ├── .github/workflows/ci.yml       # CI pipeline
 ├── .github/workflows/docs.yml     # GitHub Pages deployment (the versioned site)
 ├── CONTRIBUTING.md
-├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L19, P1–P15)
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L21, P1–P17)
 ├── CHANGELOG.md
 └── README.md
 ```
@@ -426,19 +430,24 @@ quack-rs/
 
 ## Releasing
 
-quack-rs uses `libduckdb-sys = ">=1.4.4, <2"` — a bounded range covering the bindings of
-DuckDB 1.4.4 and later 1.x releases. Every DuckDB from 1.4.4 through 2.0.0 loads C API
-`v1.2.0` extensions. The `<2` upper bound does not exclude the DuckDB 2.0 bindings:
-`libduckdb-sys` numbers DuckDB `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`,
-so DuckDB 2.0.0 is `1.20000.0`, which the range admits. That release was published on
-2026-10-22 and declares `rust-version` 1.88; MSRV-aware resolution keeps a Rust 1.86 build
-on `1.10506.x`. Before broadening the range to a new major band:
+quack-rs uses `libduckdb-sys = ">=1.4.4, <1.20100"` — a bounded range covering the bindings of
+DuckDB 1.4.4 through 2.0.x. Every DuckDB from 1.4.4 through 2.0.x loads C API
+`v1.2.0` extensions. `libduckdb-sys` numbers DuckDB `vMAJOR.MINOR.PATCH` as
+`1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0` and DuckDB 2.1.0 is
+`1.20100.0`, the first release the range excludes. The upper bound exists because the 1.20000
+bindings keep the C API names at the crate root only through a re-export that upstream marks
+for removal (see [Installation](getting-started/installation.md#adding-quack-rs-to-an-existing-extension)).
+The 1.20000 bindings were published on 2026-10-22 and declare `rust-version` 1.88;
+MSRV-aware resolution keeps a Rust 1.86 build on `1.10506.x`. Before widening the upper bound
+to the next DuckDB minor:Before broadening the range to a new major band:
 
 1. Read the DuckDB changelog for C API changes
 2. Check the new C API version string (used in `duckdb_rs_extension_api_init`)
 3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed
 4. Audit all callback signatures against the new `libduckdb-sys` bindings
-5. Update the `libduckdb-sys` and `duckdb` version requirements in `Cargo.toml`
+5. Update the `libduckdb-sys` and `duckdb` version requirements in `Cargo.toml`, in the
+   manifests of `examples/hello-ext`, `fuzz`, `book/doctest` and `benches/engine`, and in
+   every snippet the documentation shows
 
 Versions follow [Semantic Versioning](https://semver.org/) as Cargo applies it.
 While the crate is pre-1.0, a breaking change to the public API bumps the

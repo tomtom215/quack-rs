@@ -82,8 +82,8 @@ intervals and in `epoch_us(interval)`: **1 month = 30 days**.
 This is not date arithmetic: DuckDB adds an interval to a date by calendar
 months (`DATE '2024-01-31' + INTERVAL 1 MONTH` is `2024-02-29`). It also matches
 SQL comparison only when the three fields share a sign: `INTERVAL '1 month' -
-INTERVAL '1 day'` converts to the same total as `INTERVAL '29 days'` but compares
-greater in SQL.
+INTERVAL '1 day'` converts to the same total as `INTERVAL '29 days'`, but DuckDB 1.4.4
+and 1.5.6 compare it as greater (measured), while DuckDB 2.0.0 compares the two as equal.
 
 ### Checked conversion (returns `Option`)
 

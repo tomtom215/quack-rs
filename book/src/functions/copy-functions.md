@@ -6,6 +6,12 @@ This page shows how to register one from a Rust extension with quack-rs'
 
 > **Requires the `duckdb-1-5` feature flag** (DuckDB 1.5.0+).
 
+> **Open the file through DuckDB.** The path of a `COPY` is user input. `std::fs` ignores
+> `SET enable_external_access = false` and `allowed_directories`, and cannot reach
+> `s3://` or `http://` paths; the
+> [`FileSystem`](../duckdb-1-5/file-system.md#security-only-filesystem-honours-duckdbs-permission-settings)
+> wrapper honours the settings and resolves every registered file system.
+
 A format can support writing, reading, or both:
 
 | Direction | You supply | DuckDB calls |
@@ -149,6 +155,16 @@ for i in 0..bind.result_column_count() {
 # }
 ```
 
+## Choosing the format from the file name
+
+`COPY t TO 'out.my_format'` with no `FORMAT` clause picks your format when the file
+extension equals the copy function's name, and so does `COPY t FROM 'in.my_format'` for the
+reader. Measured on DuckDB 1.5.6 and 2.0.0: a copy function named `pr_fmt` was used for
+`out.pr_fmt` and was not used for `out.dat`. A function cannot declare a different
+extension (the C API v1 has no way to: see [Known
+Limitations](../reference/known-limitations.md#custom-copy-formats-cannot-declare-a-file-extension)),
+so name the format after the extension you want recognised.
+
 ## Registering a format name twice
 
 `duckdb_register_copy_function` drops a copy function whose name already exists —
@@ -175,6 +191,13 @@ persisted, so reloading into a database file does not trip the check.
 - Several values (`LST (1, 2)`) arrive as a `LIST`, or an unnamed `STRUCT` when
   their types differ.
 - An explicit `NULL` value is rejected by the binder before your callback runs.
+- **DuckDB does not validate the options of a `COPY … TO` format.** A copy function cannot
+  declare which options it takes, so `(FORMAT my_format, bogus 1)`, an option without a
+  value, a list where you expect a scalar, and a value of the wrong type all reach your
+  bind callback and are accepted unless you reject them. (A built-in format rejects the
+  same typo: `Unrecognized option "bogus" for csv`.) Check every name and type yourself and
+  call `set_error`; otherwise a misspelt option is silently ignored. A `COPY … FROM` reader
+  is different: its options are the table function's named parameters, which DuckDB checks.
 - Field order follows DuckDB's internal hash map, not the statement — look fields
   up by name:
 
@@ -204,6 +227,26 @@ The data pointers are untyped, so the compiler cannot check this for you:
   partition with `PARTITION_BY` (reachable from more than one thread). Guard any
   mutation with a `Mutex` unless you know neither option is in use.
 
+### Typed state, without raw pointers
+
+From 0.20.0 the three data pointers have typed forms that box the value behind a type tag
+and generate a destructor that contains a panic in `T::drop`, so no `Box::into_raw` and no
+`extern "C"` destructor is written by hand (all need `duckdb-1-5`):
+
+| Set | Read |
+|-----|------|
+| `CopyFunctionBuilder::extra_info_typed(value)` | `extra_info_ref::<T>()` on each of the four info types |
+| `CopyBindInfo::set_bind_data_typed(value)` | `bind_data_ref::<T>()` in global init, sink and finalize |
+| `CopyGlobalInitInfo::set_global_state_typed(value)` | `global_state_ref::<T>()` in sink and finalize |
+
+`T` is `Send + Sync + 'static`, because the sink can run on several threads at once; state
+that changes needs a `Mutex` or atomics inside `T`. A read returns `None` when nothing was
+set or when the value has another type, instead of reinterpreting memory. The readers are
+`unsafe` only because they cannot tell a typed value from one set through the raw
+`set_bind_data` or `set_global_state`: use one form per slot. `FileHandle` is `Send` (not
+`Sync`) from 0.20.0, so a file opened in global init can be kept in the global state inside
+a `Mutex`.
+
 ## Callback signatures
 
 | Phase | Signature | Guarded macro |
@@ -227,7 +270,7 @@ the handle at the top of your callback to access helper methods:
 | Method | Description |
 |--------|-------------|
 | `column_count()` | Number of output columns |
-| `column_type(index)` | `LogicalType` of the column at `index`, or `None` if out of range |
+| `column_type(index)` | `LogicalType` of the column at `index`, or `None` if out of range. There is no column *name*: the C API does not give a `COPY … TO` bind callback the names, so a writer that wants a header needs a `names` option from the user |
 | `options()` | The `COPY … TO` options, as one `STRUCT` `Value` (see [Options](#options)) |
 | `get_extra_info()` | Extra-info pointer set on the copy function |
 | `set_bind_data(data, destroy)` | Store bind data and its destructor |

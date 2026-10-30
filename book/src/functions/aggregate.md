@@ -8,9 +8,11 @@ also has a `combine` step that merges partial results from parallel workers.
 
 ## Known DuckDB limitation
 
-> **Before DuckDB 2.0.0, do not use a C API aggregate as `agg(x) OVER ()` or
-> `agg(x ORDER BY y)`.** In those two query shapes DuckDB 1.4.x and 1.5.x read
-> past the end of the state array, which usually crashes the process. This is a
+> **Before DuckDB 2.0.0, do not use a C API aggregate as `agg(x) OVER ()`, over an
+> explicit `UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` frame, or as
+> `agg(x ORDER BY y)`.** In those query shapes DuckDB 1.4.x and 1.5.x read
+> past the end of the state array, which usually crashes the process (and on 1.4.4,
+> `OVER (PARTITION BY p)` without an `ORDER BY` too). This is a
 > DuckDB defect, fixed in 2.0.0, that an extension cannot detect or prevent; see
 > [Pitfall L11](../reference/pitfalls.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y)
 > and [Known Limitations](../reference/known-limitations.md#aggregates-crash-under-over--and-order-by-duckdb-defect-pitfall-l11).

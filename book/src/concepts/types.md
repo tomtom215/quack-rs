@@ -170,10 +170,9 @@ and the C API initialized.
 
 ### Custom types: `set_alias` and `register`
 
-An extension can add a named type to SQL, as `CREATE TYPE` does. Build the
-underlying `LogicalType`, give it a name with `set_alias`, then call
-`register(con)` from your entry point. After that, users can write the name
-anywhere a type name goes:
+An extension can add a named type to SQL. Build the underlying `LogicalType`, give
+it a name with `set_alias`, then call `register(con)` from your entry point. After
+that, users can write the name anywhere a type name goes:
 
 ```sql
 SELECT 'happy'::mood;
@@ -182,6 +181,7 @@ CREATE TABLE diary(day DATE, m mood);
 
 ```rust
 use quack_rs::types::LogicalType;
+# use quack_rs::types::TypeId;
 # use quack_rs::query::OwnedConnection;
 # std::mem::forget(quack_rs::testing::InMemoryDb::open().unwrap());
 # let mut db = std::ptr::null_mut();
@@ -203,7 +203,28 @@ assert!(unsafe { mood.register(con.as_raw()) }.is_err());
 # let chunk = result.next_chunk().unwrap().unwrap();
 # let reader = unsafe { chunk.reader(0) };
 # assert_eq!(unsafe { reader.read_str(0) }, "happy");
+# // An alias over BIGINT is opaque to arithmetic and `sum`, unlike a native CREATE TYPE.
+# let money = LogicalType::new(TypeId::BigInt);
+# unsafe { money.set_alias("money"); money.register(con.as_raw()).unwrap(); }
+# con.execute("CREATE TABLE acct(m money)").unwrap();
+# assert!(con.query("SELECT sum(m) FROM acct").err().unwrap().as_str().contains("No function matches"));
+# con.execute("CREATE TYPE native_money AS BIGINT").unwrap();
+# con.execute("CREATE TABLE native_acct(m native_money)").unwrap();
+# con.query("SELECT m + 1, abs(m), sum(m) FROM native_acct GROUP BY m").unwrap();
 ```
+
+**A registered type is a new type, not a synonym.** A native `CREATE TYPE money AS
+BIGINT` is transparent: `+`, `sum` and `abs` work on it as on `BIGINT`. A type
+registered through the C API keeps its alias and does not inherit the functions of the type
+it is built on. Comparison (`=`, `<`), `GROUP BY` and `max` bind on it; arithmetic, `sum`
+and `abs` do not:
+
+```text
+SELECT sum(m) FROM acct;
+Binder Error: No function matches the given name and argument types 'sum(money)'.
+```
+
+Register casts and the functions your type needs. Checked on DuckDB 1.5.6 and 2.0.0.
 
 - `set_alias(name)` panics if `name` contains a NUL byte; `try_set_alias(name)`
   returns an error instead. `get_alias()` reads the alias back.

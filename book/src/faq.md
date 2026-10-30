@@ -19,25 +19,32 @@ utilities for publishing community extensions.
 
 Building a DuckDB extension in Rust means solving a set of undocumented FFI
 problems that each developer otherwise discovers independently. quack-rs
-documents all 34 known pitfalls, and its API prevents most of them. See the
+documents all 38 known pitfalls, and its API prevents most of them. See the
 [Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?
 
-quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` and supports DuckDB 1.4.4
-through 2.0.0. Releases before 1.4.4 are not supported. CI runs the test
+quack-rs requires `libduckdb-sys = ">=1.4.4, <1.20100"` and, with the default features,
+supports DuckDB 1.4.4 through 2.0.x. An extension that uses a `duckdb-1-5*` feature loads into
+1.5.6 and 2.0.0 only, and refuses a release quack-rs has not listed (see
+[ABI Compatibility](concepts/abi.md#unknown-duckdb-versions)). Releases before 1.4.4 are not
+supported. The upper bound keeps out the
+DuckDB 2.1 bindings until a quack-rs release has been tested against them; see
+[Installation](getting-started/installation.md#adding-quack-rs-to-an-existing-extension).
+CI runs the test
 suite against DuckDB v1.4.4, v1.4.5, v1.5.0, v1.5.3, v1.5.4, v1.5.5, v1.5.6 and
-v2.0.0 (the last with the DuckDB 2.0 bindings, `libduckdb-sys` 1.20000.0), and loads a built
+v2.0.0 (the last with the DuckDB 2.0 bindings, `libduckdb-sys` 1.20000.x), and loads a built
 extension into v1.4.4, v1.5.0, v1.5.5, v1.5.6, v2.0.0 and the latest release.
 DuckDB supports 2.0 (a long-term support release) until at least October 2027,
 1.5 until March 2027 and 1.4 until late November 2026.
 
 The C API version passed to the dispatch-table initializer is `"v1.2.0"`,
 available as `quack_rs::DUCKDB_API_VERSION`. Every supported DuckDB release
-(1.4.4 and later) loads extensions built for it (1.5.6 and 2.0.0 declare C API
+(1.4.4 and later) loads extensions built for it (1.5.6 and 2.0.x declare C API
 `v1.5.6`, but still accept `v1.2.0`). An extension that uses the `duckdb-1-5*`
 features is stamped C API `v1.5.6` instead
-(`quack_rs::DUCKDB_API_VERSION_1_5_6`) and loads into DuckDB 1.5.6 and 2.0.0.
+(`quack_rs::DUCKDB_API_VERSION_1_5_6`) and loads into DuckDB 1.5.6 and 2.0.0; the
+runtime guard refuses a release quack-rs has not listed (2.0.1, for now).
 The C API version is a separate identifier from the DuckDB release and from the
 `libduckdb-sys` crate version, which encodes DuckDB `vMAJOR.MINOR.PATCH` as
 `1.(10000·MAJOR + 100·MINOR + PATCH).N` (e.g. `1.10505.0` for DuckDB 1.5.5,
@@ -50,24 +57,26 @@ Rust **1.86.0** or later. This is enforced in `Cargo.toml` with
 
 ### Is quack-rs production-ready?
 
-It is pre-1.0, and you should judge it against your own requirements rather than
-take a yes. What the record shows:
+It is pre-1.0, and you should judge it against your own requirements; this page cannot
+give you a yes or a no. What the record shows:
 
 - **The API still changes.** Minor releases before 1.0 can break it; each one lists
   its breaking changes, with migration notes, in the [changelog](reference/changelog.md).
-- **Audits keep finding real defects.** The review released as 0.16.0 fixed 24
-  defects in earlier releases, including two heap-corruption paths. The 0.18.0 audits fixed further soundness holes,
-  process aborts and wrong answers, and found one serious defect in unreleased
-  code before it was published: aggregate functions returned wrong results in
-  release builds with Cargo's default profile. `AUDIT.md` in the repository
-  records each audit, what it found, and whether each fix was reproduced against
-  a real DuckDB or derived from DuckDB's source.
+- **Audits keep finding real defects.** The 0.16.0 release, which came out of a review,
+  fixed defects in earlier releases, including two heap-corruption paths. The 0.18.0
+  audits fixed further soundness holes, process aborts and wrong answers, and found one
+  serious defect in unreleased code before it was published: aggregate functions returned
+  wrong results in release builds with Cargo's default profile. `AUDIT.md` in the
+  repository records each audit, what it found, and whether each fix was reproduced
+  against a real DuckDB or derived from DuckDB's source. Use 0.18.0 or later: earlier
+  releases still have the soundness holes in the safe API, and 0.7.0 through 0.15.0 can
+  corrupt the heap when the `duckdb-1-5` features are used.
 - **Some limits are DuckDB's.** The C API has defects quack-rs can only document or
   work around; see [Known Limitations](reference/known-limitations.md).
 
 It was extracted from
 [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a DuckDB
-community extension, where the first 16 of the pitfalls it now documents were
+community extension, where the first of the pitfalls it now documents were
 discovered. If you ship an extension built on it, run end-to-end tests that load
 the extension into each DuckDB release you support (see the
 [Testing Guide](testing.md)).
@@ -102,6 +111,15 @@ or `init_extension`) alongside your other functions. A table macro's body is
 bound when it is created, so the
 `events` table must already exist or `register` returns an error.
 See [SQL Macros](functions/sql-macros.md).
+
+### Can my extension read a file with `std::fs`?
+
+It can, and it should not when the path comes from SQL. `std::fs` ignores DuckDB's
+`enable_external_access` and `allowed_directories` settings, so a function that reads a
+user-supplied path with it works around a restriction the person running DuckDB set
+(`read_csv` on the same path fails with a permission error). Open such paths with the
+`FileSystem` wrapper (feature `duckdb-1-5`); see
+[Virtual File System](duckdb-1-5/file-system.md#security-only-filesystem-honours-duckdbs-permission-settings).
 
 ### Can I register multiple overloads of the same function?
 
@@ -344,7 +362,8 @@ populated by DuckDB at extension load time.
 ### Why not use `duckdb-loadable-macros`?
 
 Use it when it fits. As of `duckdb` and `duckdb-loadable-macros` 1.20000.1 the
-macro opens a `Connection` from the raw database (`Connection::open_from_raw`)
+macro opens a `duckdb::Connection` from the raw database
+(`duckdb::Connection::open_from_raw`)
 and reports errors through the API's `set_error`; an earlier release of the
 macro depended on `extract_raw_connection` and the `duckdb` crate's internal
 layout, which crashed when the layout changed, and that history is why

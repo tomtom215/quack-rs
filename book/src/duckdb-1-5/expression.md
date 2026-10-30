@@ -49,6 +49,10 @@ unsafe extern "C" fn my_bind(info: RawScalarBindInfo) {
 | `fold(&client_context)` | `Result<`[`Value`]`, `[`ErrorData`]`>` — evaluate a constant expression |
 | `from_raw(raw)` (unsafe) / `as_raw()` / `is_null()` | Handle inspection / escape hatches |
 
+A prepared-statement parameter (`?`) is not foldable at bind time: a bind callback that
+requires a constant makes `PREPARE p AS SELECT f(x, ?)` fail (measured on DuckDB 1.5.6 and
+2.0.0). A literal and a constant expression such as `1 + 1` are foldable.
+
 `fold` only succeeds when [`is_foldable`][is_foldable] returns `true`; otherwise it
 returns an [`ErrorData`] of type `InvalidInput`. A successful `fold` can still
 yield a SQL `NULL` (for example `NULL::INTEGER`), whose typed getters return

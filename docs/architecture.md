@@ -28,7 +28,7 @@ quack_rs
 ├── callback         scalar_callback!, table_scan_callback!, … — panic-safe callback wrapper macros
 ├── aggregate
 │   ├── state        FfiState<T> — tagged state slot: T inline (≤ 256 bytes, ≤ usize-aligned) or boxed
-│   ├── callbacks    Type aliases for the six aggregate callbacks (StateSizeFn, StateInitFn, UpdateFn, CombineFn, FinalizeFn, DestroyFn)
+│   ├── callbacks    Type aliases for the aggregate callbacks: the five required ones (StateSizeFn, StateInitFn, UpdateFn, CombineFn, FinalizeFn) and the optional DestroyFn
 │   ├── info         AggregateFunctionInfo — callback info wrapper
 │   └── builder/
 │       ├── single   AggregateFunctionBuilder (single-signature)
@@ -257,15 +257,15 @@ callback's `set_error`, or `access.set_error` at load.
 
 ### 3. Bounded version range
 
-`libduckdb-sys = ">=1.4.4, <2"` — the range is intentional. Every release from
-1.4.4 to 1.5.5 declares C API `v1.2.0` (v1.5.6 and v2.0.0 declare `v1.5.6` and
+`libduckdb-sys = ">=1.4.4, <1.20100"` — the range is intentional. Every release from
+1.4.4 to 1.5.5 declares C API `v1.2.0` (v1.5.6 and v2.0.x declare `v1.5.6` and
 still load `v1.2.0` extensions), and the `v1.2.0` stable part (357 functions) is
 unchanged across them through v2.0.0; the unstable region differs between releases
-(459 / 545 / 546 / 548 functions) and is checked at load by `abi.rs`. The upper bound
-does not exclude the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB
-`vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is
-`1.20000.0` (published 2026-10-22; `rust-version` 1.88), which the range
-admits.
+(459 / 545 / 546 / 548 functions) and is checked at load by `abi.rs`.
+`libduckdb-sys` encodes DuckDB `vMAJOR.MINOR.PATCH` as
+`1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0` (published
+2026-10-22; `rust-version` 1.88), which the range admits, and DuckDB 2.1.0 is
+`1.20100.0`, the first release it excludes (see ADR-2).
 
 ### 4. Testable business logic
 
@@ -289,9 +289,9 @@ on its `ScaffoldConfig` before it generates anything.
 ```
 Extension crate
     ├── quack_rs (this crate)
-    │       ├── libduckdb-sys = ">=1.4.4, <2" { loadable-extension }
-    │       └── duckdb = ">=1.4.4, <2" (optional: only with `bundled-test` / `bundled-test-prebuilt`)
-    └── libduckdb-sys = ">=1.4.4, <2" { loadable-extension }
+    │       ├── libduckdb-sys = ">=1.4.4, <1.20100" { loadable-extension }
+    │       └── duckdb = ">=1.4.4, <1.20100" (optional: only with `bundled-test` / `bundled-test-prebuilt`)
+    └── libduckdb-sys = ">=1.4.4, <1.20100" { loadable-extension }
             └── (DuckDB headers only — no linked library)
 ```
 
@@ -466,16 +466,26 @@ DuckDB version). A DuckDB release can change the C API in ways that break an
 extension without a compile error: new function signatures, changed constant
 values, renamed symbols, or a shifted unstable region.
 
-**Decision**: Use `libduckdb-sys = ">=1.4.4, <2"`. Every DuckDB release from
-1.4.4 to 1.5.5 declares C extension API version `v1.2.0`; 1.5.6 and 2.0.0 declare
+**Decision**: Use `libduckdb-sys = ">=1.4.4, <1.20100"`. Every DuckDB release from
+1.4.4 to 1.5.5 declares C extension API version `v1.2.0`; 1.5.6 and 2.0.x declare
 `v1.5.6` and still load `v1.2.0` extensions. The stable part of the API (357
 functions) is unchanged across all of them. The unstable region differs between
-releases and is checked at load by the ABI guard (`abi.rs`). The `<2` upper
-bound stops a future `libduckdb-sys` 2.x, but not the DuckDB 2.0 bindings:
-`libduckdb-sys` numbers DuckDB 2.0.0 `1.20000.0` (the crate version is
-`1.(10000·major + 100·minor + patch).N`), which the range admits. That release was
-published on 2026-10-22 and declares `rust-version` 1.88, so a Rust 1.86
-build stays on `1.10506.x` under MSRV-aware resolution.
+releases and is checked at load by the ABI guard (`abi.rs`). `libduckdb-sys` numbers
+DuckDB 2.0.0 `1.20000.0` (the crate version is `1.(10000·major + 100·minor + patch).N`),
+which the range admits. That release was published on 2026-10-22 and declares
+`rust-version` 1.88, so a Rust 1.86 build stays on `1.10506.x` under MSRV-aware
+resolution.
+
+The upper bound was `<2` until 0.19, which did not exclude the DuckDB 2.0 bindings and
+admitted every later one. It is now `<1.20100`, the DuckDB 2.1 bindings, because the
+1.20000 bindings keep the C API names at the crate root only through a compatibility
+re-export (`pub use v1::*`, marked `// TODO: Remove in the future` upstream, checked
+2026-10-30 in `libduckdb-sys` 1.20000.1). quack-rs mentions those root paths about 500 times
+in 108 files, and its exported macros hard-code them (`::libduckdb_sys::duckdb_function_info`
+and others), so a release without the re-export breaks quack-rs and every extension that
+uses its macros. In the eighth review, a copy of 1.20000.1 with the re-export deleted made
+quack-rs fail to compile with 214 errors. Each new DuckDB minor therefore needs a quack-rs release that has
+been built and tested against its bindings and engine before the range is widened.
 
 CI checks the range in two ways (`.github/workflows/ci.yml`):
 
@@ -543,7 +553,7 @@ changed. `quack-rs` instead uses a hand-written C entry point that calls
 encapsulate it.
 
 The original reason no longer holds: `duckdb-loadable-macros` 1.20000.1 uses
-`Connection::open_from_raw` and contains no `extract_raw_connection` (checked
+`duckdb::Connection::open_from_raw` and contains no `extract_raw_connection` (checked
 2026-10-29 against the published crate). The decision stands for other reasons.
 The macro's host crate wraps only scalar and table functions; quack-rs wraps
 more function kinds; it guards callbacks against panics and checks the C API
