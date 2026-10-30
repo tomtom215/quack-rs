@@ -190,11 +190,7 @@ fn aliases_inside_flow_collections_are_read() {
             docs("a: &x 1\nb: [*x]"),
             true,
         ),
-        (
-            "an alias at column 0",
-            top("anc: &x 1\nf: [a,\n*x]\n"),
-            true,
-        ),
+        ("an alias at column 0", top("k1: &x 1\nf: [a,\n*x]\n"), true),
         (
             "an alias of an anchor in the same collection",
             top("f: [&x 1,\n*x]\n"),

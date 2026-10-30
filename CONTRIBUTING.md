@@ -681,6 +681,10 @@ quack-rs/
 │   │       ├── parser.rs              # Parses and validates a `description.yml` string
 │   │       ├── tests.rs               # Unit tests
 │   │       ├── tests_corpus.rs        # Unit tests
+│   │       ├── tests_mut_block.rs     # Boundaries of the block-structure reader, found by mutation testing
+│   │       ├── tests_mut_flow_a.rs    # Boundaries of the flow-collection reader (scanning, anchors), found by mutation testing
+│   │       ├── tests_mut_flow_b.rs    # Boundaries of the flow-collection reader (nesting, plain items), found by mutation testing
+│   │       ├── tests_mut_scalar.rs    # Boundaries of the scalar, section and timestamp readers, found by mutation testing
 │   │       ├── tests_pyyaml.rs        # Accepted exactly when PyYAML accepts it, in linear time
 │   │       ├── tests_yaml.rs          # Unit tests
 │   │       ├── validator.rs           # Validates a `description.yml` string and returns `Ok(())` if it passes all checks
