@@ -77,7 +77,7 @@ works:
 
 ```text
 arg_max(ANY, ANY)      -> ANY
-arg_max(ANY, ANY, ANY) -> ANY[]
+arg_max(ANY, ANY, BIGINT) -> ANY[]
 ```
 
 Set the return type on the overload with `AggregateOverloadBuilder::returns` (or

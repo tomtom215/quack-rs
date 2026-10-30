@@ -86,7 +86,7 @@ when `InMemoryDb::open()` runs (see [Testing Guide](../testing.md)).
 graph TD
     EXT["your-extension"]
     QR["quack-rs"]
-    LDS["libduckdb-sys >=1.4.4, <2<br/>{loadable-extension}<br/>(headers only — no linked library)"]
+    LDS["libduckdb-sys >=1.4.4, <1.20100<br/>{loadable-extension}<br/>(headers only — no linked library)"]
 
     EXT --> QR
     EXT --> LDS
@@ -101,12 +101,12 @@ inside the host DuckDB process and uses that process's DuckDB instance, memory a
 
 ## Version support
 
-`libduckdb-sys = ">=1.4.4, <2"` — the bounded range is intentional.
+`libduckdb-sys = ">=1.4.4, <1.20100"` — the bounded range is intentional.
 
-quack-rs supports DuckDB 1.4.4 through 2.0.0. Every one of them loads extensions
+quack-rs supports DuckDB 1.4.4 through 2.0.x. Every one of them loads extensions
 built for **C API version `v1.2.0`**
 (the version string passed to `duckdb_rs_extension_api_init`, `quack_rs::DUCKDB_API_VERSION`).
-DuckDB 1.5.6 and 2.0.0 declare C API version `v1.5.6` and still accept `v1.2.0` extensions. CI runs
+DuckDB 1.5.6 and 2.0.x declare C API version `v1.5.6` and still accept `v1.2.0` extensions. CI runs
 the test suite against DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0, and loads the example
 extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release.
 Using a range rather than an exact pin means:
@@ -116,16 +116,24 @@ Using a range rather than an exact pin means:
   numbers `1.10505.x`) and still resolve against `quack-rs`
 - `quack-rs` itself doesn't force a DuckDB downgrade on users
 
-The `<2` upper bound limits the range to `libduckdb-sys` 1.x, but it does **not** exclude
-the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB `vMAJOR.MINOR.PATCH` as
-`1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0`, which the range
-admits. That release was published on 2026-10-22; it declares `rust-version` 1.88, so a
-Rust 1.86 toolchain cannot build it, and MSRV-aware resolution (resolver 3, or
-`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) keeps a 1.86 build on `1.10506.x`.
+`libduckdb-sys` encodes DuckDB `vMAJOR.MINOR.PATCH` as
+`1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0` and the range
+admits the whole DuckDB 2.0 bindings, `1.20000.x`. That release was published on
+2026-10-22; it declares `rust-version` 1.88, so a Rust 1.86 toolchain cannot build it,
+and MSRV-aware resolution (resolver 3, or `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`)
+keeps a 1.86 build on `1.10506.x`.
+
+**Why the range stops at `1.20100`.** That is the DuckDB 2.1 bindings. quack-rs names the
+C API through the `libduckdb_sys` crate root, which the 1.20000 bindings keep only through
+a re-export of their `v1` module that is marked `// TODO: Remove in the future` upstream;
+quack-rs's exported macros hard-code those root paths too, so an extension that uses them
+would break with it. quack-rs widens the bound for each DuckDB minor after testing it. If you
+want the newer bindings before that, there is no override: wait for the quack-rs release
+(see [Installation](../getting-started/installation.md#adding-quack-rs-to-an-existing-extension)).
 
 > **For your own extension's `Cargo.toml`:** an extension that uses only the stable C API
-> (the default quack-rs features) can keep the same `">=1.4.4, <2"` range; this is what
-> `scaffold::generate_scaffold` writes. An extension that enables the `duckdb-1-5*` features must pin
+> (the default quack-rs features) can keep the same `">=1.4.4, <1.20100"` range; this is
+> what `scaffold::generate_scaffold` writes. An extension that enables the `duckdb-1-5*` features must pin
 > `libduckdb-sys` to the bindings it is stamped for: `~1.10506.0` (the v1.5.2 – v1.5.6 layout)
 > for C API `v1.5.6`, which is what the scaffold writes for `target_duckdb_version = "v1.5.6"`;
 > or, for a `C_STRUCT_UNSTABLE` build pinned to one 1.x release, that release's bindings

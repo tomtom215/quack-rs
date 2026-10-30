@@ -206,7 +206,7 @@ Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 ```toml
 # Zero-config but slow: compile libduckdb from C++ source (~5–10 min cold).
 [dev-dependencies]
-quack-rs = { version = "0.19", features = ["bundled-test"] }
+quack-rs = { version = "0.20", features = ["bundled-test"] }
 ```
 
 ```toml
@@ -218,7 +218,7 @@ quack-rs = { version = "0.19", features = ["bundled-test"] }
 # or duckdb.hpp. Header discovery needs libduckdb-sys >= 1.10503; with an older
 # one, also set DUCKDB_INCLUDE_DIR.
 [dev-dependencies]
-quack-rs = { version = "0.19", features = ["bundled-test-prebuilt"] }
+quack-rs = { version = "0.20", features = ["bundled-test-prebuilt"] }
 ```
 
 Both keep `duckdb` out of a plain `cargo test` and out of your published
@@ -546,9 +546,9 @@ Directives:
 ### Installing DuckDB (1.4.4 or later)
 
 E2E testing needs the DuckDB CLI. Download it with `curl`; no system package
-manager is needed. quack-rs supports DuckDB 1.4.4 through 2.0.0, and every one
+manager is needed. quack-rs supports DuckDB 1.4.4 through 2.0.x, and every one
 of them loads an extension stamped with
-C API version `v1.2.0` (1.4.4 through 1.5.5 declare that version; 1.5.6 and 2.0.0
+C API version `v1.2.0` (1.4.4 through 1.5.5 declare that version; 1.5.6 and 2.0.x
 declare `v1.5.6` and accept every earlier one). The quack-rs CI `extension-load` job
 loads its example extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest
 release (currently 2.0.0).
@@ -675,12 +675,12 @@ quack-rs's own test suite uses proptest for interval conversion and
 
 ```toml
 [dependencies]
-quack-rs = "0.19"
+quack-rs = "0.20"
 
 [dev-dependencies]
 proptest = "1"
 # Only for InMemoryDb; enables the feature for test builds alone.
-quack-rs = { version = "0.19", features = ["bundled-test"] }
+quack-rs = { version = "0.20", features = ["bundled-test"] }
 ```
 
 The `testing` module is compiled unconditionally (not `#[cfg(test)]`), so crates

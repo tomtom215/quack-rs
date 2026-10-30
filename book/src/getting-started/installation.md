@@ -10,24 +10,66 @@ Add the following to your extension's `Cargo.toml`:
 
 ```toml
 [dependencies]
-quack-rs = "0.19"
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+quack-rs = "0.20"
+
+[dependencies.libduckdb-sys]
+version = ">=1.4.4, <1.20100"
+default-features = false
+features = ["loadable-extension"]
 ```
 
-> **Why `>=1.4.4, <2`?**
-> DuckDB 1.4.4 through 2.0.0 load extensions built for C API version `v1.2.0` (1.5.6 and
-> 2.0.0 declare `v1.5.6` and accept every earlier one), so `quack-rs` supports them all with
-> a single bounded range. Releases before 1.4.4 are not supported. The range covers the
-> bindings of every supported release, 1.4.4 through 1.20000.x. The `<2` upper bound does not exclude the DuckDB
-> 2.0 bindings: `libduckdb-sys` numbers DuckDB `vMAJOR.MINOR.PATCH` as
-> `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is `1.20000.0`, which the range
-> admits. The 1.20000.x releases need Rust 1.88. On Rust 1.86 or 1.87, Cargo's default
-> (edition 2021, resolver 2) ignores `rust-version` and selects them anyway, so the build
-> fails: set `rust-version = "1.86"` and `resolver = "3"` in your `[package]` (as the
+Copy this block rather than running `cargo add libduckdb-sys`: `cargo add` writes the
+newest version, with the default features on and without `loadable-extension`.
+
+> **Why `>=1.4.4, <1.20100`?**
+> DuckDB 1.4.4 through 2.0.x load extensions built for C API version `v1.2.0` (1.5.6 and
+> 2.0.x declare `v1.5.6` and accept every earlier one), so `quack-rs` supports them all with
+> a single bounded range. Releases before 1.4.4 are not supported. `libduckdb-sys` numbers
+> DuckDB `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so the range runs
+> from the DuckDB 1.4.4 bindings (`1.10404.x`) through the DuckDB 2.0 bindings
+> (`1.20000.x`) and stops before DuckDB 2.1 (`1.20100.0`).
+>
+> **The upper bound.** quack-rs, and every extension that uses its macros, names the C API
+> through the crate root: `libduckdb_sys::duckdb_connection`,
+> `libduckdb_sys::duckdb_register_scalar_function`, and so on. In the 1.20000 bindings
+> those root names exist only as a compatibility re-export of the crate's `v1` module,
+> marked `// TODO: Remove in the future` upstream. If a later release removes it, quack-rs
+> and your extension stop compiling. So quack-rs widens the range one DuckDB minor at a time,
+> after running its tests against the new bindings and the new engine.
+>
+> **When DuckDB 2.1 bindings (`1.20100.x`) are published**, nothing breaks: Cargo keeps
+> resolving `1.20000.x`, and an extension built that way loads into DuckDB 2.1 with the
+> default stamp as it does into 2.0. If you ask for a newer `libduckdb-sys` yourself, Cargo
+> reports a conflict with this range. There is nothing to configure on your side (a
+> `[patch]` entry does not change a version requirement): wait for the quack-rs release that
+> widens the range; its changelog entry says so.
+>
+> **Rust 1.88.** The 1.20000.x releases need Rust 1.88. On Rust 1.86 or 1.87, Cargo's
+> default (edition 2021, resolver 2) ignores `rust-version` and selects them anyway, so the
+> build fails: set `rust-version = "1.86"` and `resolver = "3"` in your `[package]` (as the
 > [Quick Start](quick-start.md) does), or resolve with
 > `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`. Either keeps the build on
 > `1.10506.0`, the newest release that builds there.
 > See [Extension Anatomy](../concepts/anatomy.md#version-support).
+>
+> **`default-features = false`** is optional. With the 1.20000 bindings it leaves out the
+> HTTP, TLS and download tooling their default features compile: `cargo tree` lists 65 crates
+> for a bare `libduckdb-sys` dependency with the defaults and 30 without them. With the
+> 1.10506 bindings the difference is two crates, because that tooling is not optional
+> there. Write it in your own manifest: a `features = [...]` list elsewhere in the graph
+> turns the defaults back on. `cargo test` with `bundled-test` or `bundled-test-prebuilt` does
+> so too, because the `duckdb` crate asks for them; a plain `cargo build --release` of the
+> extension does not.
+
+### Build requirements
+
+| What you build | What it needs |
+|----------------|---------------|
+| The extension (`cargo build --release`) | Rust 1.86 or newer. A C compiler may be needed: the 1.10506 bindings, and the 1.20000 bindings with their default features, have a build dependency (`ring`, through the download tooling) that compiles C. `default-features = false` with the 1.20000 bindings removes it. |
+| `append_metadata` (`cargo install quack-rs --bin append_metadata`) | Rust 1.88 or newer, because `cargo install` resolves the newest `libduckdb-sys`. |
+| Tests with `bundled-test` | A C++ toolchain; DuckDB compiles from source, about 5 to 10 minutes cold. |
+| Tests with `bundled-test-prebuilt` | A prebuilt libduckdb (`DUCKDB_DOWNLOAD_LIB=1` or `DUCKDB_LIB_DIR`) and a C compiler for the small shim that fills the dispatch table (a C++ compiler when the library comes from a DuckDB 1.4 release zip). |
+| The community-extension flow (`make configure release test`, [scaffold](scaffold.md)) | Python 3 with `venv`, `pip` and network access to PyPI and GitHub, `git` (with a user identity set, for the first commit), and `make`. |
 
 Upgrading an extension from quack-rs 0.16? 0.18 has breaking changes; see
 [Upgrading from 0.16 to 0.18](upgrading-0-18.md) for what to change.
@@ -37,9 +79,9 @@ Upgrading an extension from quack-rs 0.16? 0.18 has breaking changes; see
 ## Cargo features
 
 The default build uses only the C API's stable prefix and works with every DuckDB
-release in the `>=1.4.4, <2` range. Each feature below unlocks more API and raises the
-`libduckdb-sys` version Cargo must resolve. The floors are the ones the comments in
-quack-rs's `Cargo.toml` state.
+release in the `>=1.4.4, <1.20100` range. Each feature below unlocks more API and raises
+the `libduckdb-sys` version Cargo must resolve. The floors are the ones in the feature
+documentation in quack-rs's `Cargo.toml`.
 
 | Feature | Requires | Enables |
 |---------|----------|---------|
@@ -115,8 +157,8 @@ quack-rs requires **Rust ≥ 1.86.0**.
 1.86.0 is a ceiling as much as a floor while DuckDB 1.x is built. The
 community-extension build workflow (`_extension_distribution.yml` in
 `duckdb/extension-ci-tools`) pins Rust **1.86.0** for its WebAssembly jobs on the
-`v1.4-andium` and `v1.5-variegata` branches, so an extension — and therefore
-quack-rs — must build on it; CI's `msrv-vs-duckdb-ci` job re-derives that pin
+`v1.4-andium` and `v1.5-variegata` branches, so an extension, and therefore
+quack-rs, must build on it; CI's `msrv-vs-duckdb-ci` job re-derives that pin
 and fails if the MSRV rises above it. (The 2.0 branch, `v2.0-cyanoptera`, pins
 1.97.1 for Windows and WebAssembly.) The `msrv` job checks the crate with
 `cargo +1.86.0 check`, and the benchmark dev-dependency (`criterion`) needs
@@ -145,9 +187,9 @@ features as a dev-dependency:
 ```toml
 [dev-dependencies]
 # Compiles DuckDB from C++ source: no setup, slow cold build.
-quack-rs = { version = "0.19", features = ["bundled-test"] }
+quack-rs = { version = "0.20", features = ["bundled-test"] }
 # ...or link a prebuilt libduckdb instead (set DUCKDB_DOWNLOAD_LIB=1 or DUCKDB_LIB_DIR):
-# quack-rs = { version = "0.19", features = ["bundled-test-prebuilt"] }
+# quack-rs = { version = "0.20", features = ["bundled-test-prebuilt"] }
 ```
 
 Either one initialises the `loadable-extension` dispatch table from the linked DuckDB, so

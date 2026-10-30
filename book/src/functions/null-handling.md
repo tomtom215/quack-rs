@@ -54,8 +54,11 @@ static void VerifyNullHandling(const BoundFunctionExpression &expr, DataChunk &a
 }
 ```
 
-Every DuckDB a user installs is a release build, so that assertion is compiled
-out.
+Through DuckDB 1.5.6 that check exists only in debug builds, so every DuckDB a user
+installs skips it. DuckDB 2.0.0 compiles it into release builds but runs it only after
+`SET debug_verification_mode = 'VERIFY_FUNCTIONS'` (the default is `NONE`); with that
+setting a callback that ignores validity fails with `INTERNAL Error: VerifyNullHandling
+failed for scalar function ...`, and with the default it is believed, as before.
 
 ### Why the obvious test passes anyway
 

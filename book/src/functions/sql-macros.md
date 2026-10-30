@@ -123,7 +123,7 @@ unsafe {
 # unsafe { quack_rs::query::execute(con, "CREATE TABLE orders AS SELECT current_date - 3 AS order_date UNION ALL SELECT current_date - 30") }.unwrap();
 # register(con).unwrap();
 # assert_eq!(query_i64(con, "SELECT count(*) FROM recent_orders(7)"), 1);
-# assert_eq!(query_i64(con, "SELECT count(*) FROM active_users(users)"), 2);
+# assert_eq!(query_i64(con, "SELECT count(*) FROM active_users('users')"), 2);
 ```
 
 A table macro's body is bound when the macro is created, so every table it names
@@ -134,7 +134,7 @@ fails with a catalog error. To take a table as a parameter, read it through
 Use in DuckDB:
 
 ```sql
-SELECT * FROM active_users(users);
+SELECT * FROM active_users('users');
 SELECT count(*) FROM recent_orders(7);
 ```
 

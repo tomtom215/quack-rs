@@ -336,8 +336,12 @@ name = "my_extension"       # Must match description.yml `name`
 crate-type = ["cdylib"]
 
 [dependencies]
-quack-rs = "0.19"
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+quack-rs = "0.20"
+
+[dependencies.libduckdb-sys]
+version = ">=1.4.4, <1.20100"
+default-features = false
+features = ["loadable-extension"]
 
 [profile.release]
 panic = "unwind"             # Required — "abort" disables quack-rs's panic guards
@@ -447,9 +451,9 @@ again.
 **Pin `extension-ci-tools` to the community build's version.** The community
 repository builds with the `extension-ci-tools` branch for the current DuckDB
 release: for DuckDB v2.0.0 its build workflow uses
-`_extension_distribution.yml@v2.0-cyanoptera`, and `extension-ci-tools` has no
-`v2.0.0` branch. (For DuckDB v1.5.6 it used `v1.5-variegata`, and the `v1.5.6`
-branch points to the same commit.) Check out the matching branch so your local
+`_extension_distribution.yml` from the `v2.0-cyanoptera` branch, and `extension-ci-tools`
+has no `v2.0.0` branch. (For DuckDB v1.5.6 it used `v1.5-variegata`; a `v1.5.6` branch
+exists too, but it is a different commit.) Check out the matching branch so your local
 build uses the same scripts. For DuckDB 2.0, `extension-ci-tools` pins Rust 1.97.1
 on Windows and for WebAssembly (the `v1.5-variegata` branch pins 1.86.0 for
 WebAssembly), installs the current stable on Linux (`rustup` inside the build
@@ -486,7 +490,7 @@ LOAD my_extension;
 
 An extension that uses only the stable C API (the default quack-rs features) is
 stamped `C_STRUCT` with C API version `v1.2.0`, and one binary loads into every
-DuckDB release from 1.4.4 through 2.0.0 for its platform. The `libduckdb-sys = ">=1.4.4, <2"`
+DuckDB release from 1.4.4 through 2.0.x for its platform. The `libduckdb-sys = ">=1.4.4, <1.20100"`
 range above is correct for such an extension.
 
 An extension that enables the `duckdb-1-5*` features should be built against the

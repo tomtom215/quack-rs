@@ -254,8 +254,10 @@ survives review and ships.
 scalar function registered through the C API it does not, at run time:
 `CAPIScalarFunction` calls the callback for every row including NULL ones and
 checks only the *error* flag, and the one NULL check in `ExpressionExecutor` —
-`VerifyNullHandling` — has its entire body inside `#ifdef DEBUG`. Every DuckDB a
-user installs is a release build.
+`VerifyNullHandling` — has its entire body inside `#ifdef DEBUG` through DuckDB
+1.5.6, so a release build skips it; DuckDB 2.0.0 compiles it into release builds
+but runs it only after `SET debug_verification_mode = 'VERIFY_FUNCTIONS'` (default
+`NONE`). Every DuckDB a user installs runs with the default.
 
 **Fix**: use the typed closure constructors, which skip NULL rows and write NULL
 for them, or call `DataChunk::propagate_nulls(&mut writer)` at the end of a

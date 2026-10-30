@@ -19,25 +19,28 @@ utilities for publishing community extensions.
 
 Building a DuckDB extension in Rust means solving a set of undocumented FFI
 problems that each developer otherwise discovers independently. quack-rs
-documents all 34 known pitfalls, and its API prevents most of them. See the
+documents all 38 known pitfalls, and its API prevents most of them. See the
 [Pitfall Catalog](reference/pitfalls.md).
 
 ### What DuckDB version does quack-rs target?
 
-quack-rs requires `libduckdb-sys = ">=1.4.4, <2"` and supports DuckDB 1.4.4
-through 2.0.0. Releases before 1.4.4 are not supported. CI runs the test
+quack-rs requires `libduckdb-sys = ">=1.4.4, <1.20100"` and supports DuckDB 1.4.4
+through 2.0.x. Releases before 1.4.4 are not supported. The upper bound keeps out the
+DuckDB 2.1 bindings until a quack-rs release has been tested against them; see
+[Installation](getting-started/installation.md#adding-quack-rs-to-an-existing-extension).
+CI runs the test
 suite against DuckDB v1.4.4, v1.4.5, v1.5.0, v1.5.3, v1.5.4, v1.5.5, v1.5.6 and
-v2.0.0 (the last with the DuckDB 2.0 bindings, `libduckdb-sys` 1.20000.0), and loads a built
+v2.0.0 (the last with the DuckDB 2.0 bindings, `libduckdb-sys` 1.20000.x), and loads a built
 extension into v1.4.4, v1.5.0, v1.5.5, v1.5.6, v2.0.0 and the latest release.
 DuckDB supports 2.0 (a long-term support release) until at least October 2027,
 1.5 until March 2027 and 1.4 until late November 2026.
 
 The C API version passed to the dispatch-table initializer is `"v1.2.0"`,
 available as `quack_rs::DUCKDB_API_VERSION`. Every supported DuckDB release
-(1.4.4 and later) loads extensions built for it (1.5.6 and 2.0.0 declare C API
+(1.4.4 and later) loads extensions built for it (1.5.6 and 2.0.x declare C API
 `v1.5.6`, but still accept `v1.2.0`). An extension that uses the `duckdb-1-5*`
 features is stamped C API `v1.5.6` instead
-(`quack_rs::DUCKDB_API_VERSION_1_5_6`) and loads into DuckDB 1.5.6 and 2.0.0.
+(`quack_rs::DUCKDB_API_VERSION_1_5_6`) and loads into DuckDB 1.5.6 and 2.0.x.
 The C API version is a separate identifier from the DuckDB release and from the
 `libduckdb-sys` crate version, which encodes DuckDB `vMAJOR.MINOR.PATCH` as
 `1.(10000·MAJOR + 100·MINOR + PATCH).N` (e.g. `1.10505.0` for DuckDB 1.5.5,
@@ -344,7 +347,8 @@ populated by DuckDB at extension load time.
 ### Why not use `duckdb-loadable-macros`?
 
 Use it when it fits. As of `duckdb` and `duckdb-loadable-macros` 1.20000.1 the
-macro opens a `Connection` from the raw database (`Connection::open_from_raw`)
+macro opens a `duckdb::Connection` from the raw database
+(`duckdb::Connection::open_from_raw`)
 and reports errors through the API's `set_error`; an earlier release of the
 macro depended on `extract_raw_connection` and the `duckdb` crate's internal
 layout, which crashed when the layout changed, and that history is why

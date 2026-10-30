@@ -159,11 +159,15 @@ survives review and ships.
   and calls the extension's callback for the whole chunk, NULL rows included,
   then checks only the *error* flag. It never inspects the result's validity.
 - `src/execution/expression_executor/execute_function.cpp` — the only NULL check
-  is `VerifyNullHandling`, whose entire body is inside `#ifdef DEBUG`. It
-  *asserts* that the function already produced NULL wherever an input was NULL.
+  is `VerifyNullHandling`, whose entire body is inside `#ifdef DEBUG` through
+  DuckDB 1.5.6. It *asserts* that the function already produced NULL wherever an
+  input was NULL.
 
-Every DuckDB a user installs is a release build, so that assertion is compiled
-out and a callback that ignores validity is simply believed.
+Every DuckDB a user installs is a release build, so through 1.5.6 that assertion is
+compiled out. DuckDB 2.0.0 compiles it into release builds but runs it only after
+`SET debug_verification_mode = 'VERIFY_FUNCTIONS'` (the default is `NONE`; measured:
+with the setting on, `INTERNAL Error: VerifyNullHandling failed for scalar function`).
+With the default, a callback that ignores validity is simply believed.
 
 A literal `NULL` argument is **constant-folded** during binding — DuckDB
 substitutes NULL without calling the function at all — which is why the obvious
@@ -1227,9 +1231,9 @@ the ABI type stamped in their metadata footer:
 
 - A `C_STRUCT` extension declares a C extension API version (quack-rs stamps
   `v1.2.0`) and loads into every DuckDB release that provides that API — every
-  release from 1.4.4 through 2.0.0, for quack-rs's stable-API surface. One
+  release from 1.4.4 through 2.0.x, for quack-rs's stable-API surface. One
   binary serves them all. An extension using the `duckdb-1-5` features is stamped
-  C API `v1.5.6` and loads into 1.5.6 and 2.0.0.
+  C API `v1.5.6` and loads into 1.5.6 and 2.0.x.
 - A `C_STRUCT_UNSTABLE` or `CPP` extension declares an exact DuckDB release and
   loads only into that release, so it is rebuilt for each one. DuckDB 2.0 loads a
   `C_STRUCT_UNSTABLE` binary only through the C API v2 entry point, which quack-rs
