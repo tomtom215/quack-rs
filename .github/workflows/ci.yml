@@ -616,6 +616,10 @@ jobs:
       # Dependabot does not update.
       - name: Action pins agree, here and in the scaffold's templates
         run: python3 scripts/check-action-pins.py
+      # LESSONS.md (long form) and the book's pitfall page (condensed form) are two
+      # hand-kept copies; they must list the same pitfalls with the same titles.
+      - name: LESSONS.md and the book describe the same pitfalls
+        run: python3 scripts/check-pitfalls-parity.py
 
   msrv:
     name: MSRV (1.86.0)

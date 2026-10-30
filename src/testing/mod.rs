@@ -27,7 +27,7 @@
 //! **In `cargo test`, no `DuckDB` process loads the extension.** However,
 //! `InMemoryDb` works around this automatically: `InMemoryDb::open()` initialises
 //! the dispatch table from the bundled `DuckDB` symbols before opening a connection
-//! (see Pitfall P9 in `LESSONS.md` for the full explanation).
+//! (see [Pitfall P9](https://quack-rs.com/reference/pitfalls.html#p9) for the full explanation).
 //!
 //! Without the `bundled-test` feature, the dispatch table is **not** initialised.
 //! Any direct `libduckdb-sys` call will panic with:
@@ -62,7 +62,7 @@
 //! - Multi-group aggregation results
 //! - Extension loading without crash
 //!
-//! See the [testing guide](https://quack-rs.com/testing.html) and `LESSONS.md` Pitfall P3 for details.
+//! See the [testing guide](https://quack-rs.com/testing.html) and [Pitfall P3](https://quack-rs.com/reference/pitfalls.html#p3-e2e-testing-is-mandatory) for details.
 //!
 //! # Why you need both unit tests AND E2E tests
 //!

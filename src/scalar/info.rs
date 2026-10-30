@@ -383,7 +383,7 @@ impl ScalarBindInfo {
     /// a **silent wrong answer**, not a crash, so always register a copy
     /// callback alongside any bind data you rely on at execution time.
     ///
-    /// Written up as Pitfall L10 in `LESSONS.md`.
+    /// Written up as [Pitfall L10](https://quack-rs.com/reference/pitfalls.html#l10-scalar-bind-data-is-dropped-when-duckdb-copies-the-expression).
     ///
     /// # Calling it twice
     ///

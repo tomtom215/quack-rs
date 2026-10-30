@@ -17,9 +17,12 @@
 /// - `CAPIScalarFunction` calls the extension's callback for the whole
 ///   flattened chunk, NULL rows included, and never inspects the result's
 ///   validity.
-/// - `ExpressionExecutor::Execute` then calls `VerifyNullHandling`, which is
-///   compiled **only under `#ifdef DEBUG`** and merely *asserts* that the
-///   function already produced NULL wherever an input was NULL.
+/// - `ExpressionExecutor::Execute` then calls `VerifyNullHandling`, which only
+///   *asserts* that the function already produced NULL wherever an input was
+///   NULL. Through `DuckDB` 1.5.6 it is compiled **only under `#ifdef DEBUG`**; in
+///   2.0.0 it is compiled in but runs only after
+///   `SET debug_verification_mode = 'VERIFY_FUNCTIONS'`, so a default session
+///   still believes the callback.
 ///
 /// A quick `SELECT my_func(NULL)` does not reveal this, because a literal NULL
 /// is constant-folded before the function is ever called. The wrong answers

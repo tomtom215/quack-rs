@@ -3,8 +3,6 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! # quack-rs
-//!
 //! A Rust SDK for building `DuckDB` loadable extensions on the `DuckDB` C Extension API.
 //!
 //! ## Overview
@@ -127,9 +125,11 @@
 //!    with no guard; define it with the matching `*_callback!` macro or wrap its body in
 //!    [`catch_ffi_panic`][callback::catch_ffi_panic]. Library code panics only where a
 //!    `# Panics` section says so.
-//! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <2`, and the crate supports
-//!    `DuckDB` 1.4.4 through 2.0.0. The bound does not exclude the `DuckDB` 2.0 bindings:
-//!    `libduckdb-sys` numbers `DuckDB` 2.0.0 `1.20000.0` (published 2026-10-22).
+//! 3. **Bounded version range**: `libduckdb-sys` uses `>=1.4.4, <1.20100`, and the crate
+//!    supports `DuckDB` 1.4.4 through 2.0.x. `libduckdb-sys` numbers `DuckDB` 2.0.0 `1.20000.0`
+//!    (published 2026-10-22) and `DuckDB` 2.1.0 will be `1.20100.0`, so the bound admits the 2.0
+//!    bindings and stops before 2.1. The upper bound is deliberate: see `CONTRIBUTING.md`,
+//!    "Releasing".
 //!    CI tests against 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0, and loads an
 //!    extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest `DuckDB` release.
 //! 4. **Testable business logic**: state structs have zero FFI dependencies.
@@ -242,7 +242,7 @@ pub mod table_description;
 /// 'v1.5.5', but we can only load extensions built for `DuckDB` C API 'v1.2.0'
 /// and lower".
 ///
-/// See `LESSONS.md` → Pitfall P2 for full details.
+/// See [Pitfall P2](https://quack-rs.com/reference/pitfalls.html#p2-metadata-version-is-c-api-version-not-duckdb-version) for full details.
 pub const DUCKDB_API_VERSION: &str = "v1.2.0";
 
 /// The C extension API version to stamp an extension that uses the

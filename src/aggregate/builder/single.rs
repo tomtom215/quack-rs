@@ -30,7 +30,9 @@ mod register;
 /// built with quack-rs or by hand:
 ///
 /// - **Window aggregates whose frame is the whole partition**, e.g.
-///   `agg(x) OVER ()` — `WindowConstantAggregator`
+///   `agg(x) OVER ()` or an explicit `ROWS BETWEEN UNBOUNDED PRECEDING AND
+///   UNBOUNDED FOLLOWING` frame (`OVER (PARTITION BY p)` without `ORDER BY`
+///   crashed on 1.4.4 only in the shapes tried) — `WindowConstantAggregator`
 ///   (`src/function/window/window_constant_aggregator.cpp`, ~lines 106 and
 ///   296–299 in `DuckDB` 1.5.5).
 /// - **Ordered aggregates**, e.g. `agg(x ORDER BY y)` —
