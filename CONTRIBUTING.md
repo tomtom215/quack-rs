@@ -27,18 +27,30 @@ Everyone taking part is expected to follow the
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Rust | stable (`rust-toolchain.toml`) | Compiler |
+| Rust | the exact release `rust-toolchain.toml` pins (1.99.1); rustup installs it on first use | Compiler (see [The Rust toolchain](#the-rust-toolchain)) |
 | Rust 1.86.0 toolchain | `rustup toolchain install 1.86.0` | MSRV check (gate 6) |
-| `rustfmt`, `clippy` | stable | Formatting and linting (gates 3, 4) |
-| Python 3 | any current | `scripts/*.py`, including the live extension check (gates 5b, 7) |
+| `rustfmt`, `clippy` | the pinned release (`rust-toolchain.toml` lists both components) | Formatting and linting (gates 3, 4) |
+| Python 3 | 3.11 or later (two scripts use `tomllib`) | `scripts/*.py`, including the live extension check (gates 5b, 7) |
 | DuckDB CLI | 1.4.4 or later; CI also uses 2.0.0 and the latest (currently 2.0.0) | Live extension testing (gate 7, required) |
 | libduckdb shared library | the release `Cargo.lock` pins (currently 1.5.6) | End-to-end tests and book doctests (gate 2c) |
 | `cargo-deny` | 0.20.2 (the version CI installs) | License and advisory checks (gate 8) |
 | `cargo-mutants` | 27.1.0 (the version CI installs) | Mutation testing (gate 9) |
 | `mdbook` | the version in `book/mdbook-version` | Building the book (only for book changes) |
+| `typos`, `taplo`, `cargo-machete`, `actionlint` | 1.46.0, 0.10.0, 0.9.2, 1.7.12 (the release binaries CI downloads) | Spelling, TOML style, unused dependencies, workflow lint (gate 8b; optional locally) |
 
 Install the Rust toolchain via [rustup](https://rustup.rs/). `cargo-msrv` is not
 needed: the MSRV is checked by compiling with the pinned 1.86.0 toolchain.
+
+**DuckDB 2.0's CLI changes its output when it thinks an AI agent is driving
+it.** With `AI_AGENT` or `CLAUDECODE` set in the environment and stdout not a
+terminal, the 2.0.0 CLI prints `duckdb agent mode on: ...` and renders results
+as a Markdown table with column types (`| answer:INTEGER |`) instead of its
+default box layout. Anything that parses the CLI's output must choose a
+format: `-csv` or `-json` (both work on every DuckDB, and override agent
+mode), or `-no-agent`, which turns it off but exists only in the 2.0 CLI
+(1.5.6 exits with "Unrecognized option '-no-agent'"). The scripts here that
+read query results (`scripts/check-hello-ext.py`, the CI probes) pass `-csv`;
+GitHub's runners set neither variable.
 
 Install DuckDB with `scripts/fetch-duckdb.sh` (no system package manager
 needed; the script fetches the linux-amd64 build). CI's `extension-load` job exercises **v1.4.4, v1.5.0, v1.5.5, v1.5.6,
@@ -187,9 +199,9 @@ scripts/sync-book-changelog.py --check
 
 # 6. MSRV — must compile on Rust 1.86.0 [msrv]. Benches are excluded (criterion
 #    needs a newer compiler). `+1.86.0` is required, not stylistic:
-#    `rust-toolchain.toml` pins `channel = "stable"` and a toolchain file
-#    overrides rustup's default, so a bare `cargo check` silently runs stable
-#    and checks nothing.
+#    `rust-toolchain.toml` pins a newer release (`channel`) and a toolchain
+#    file overrides rustup's default, so a bare `cargo check` silently runs
+#    the pinned release and checks nothing.
 #
 #    Against what a 1.86.0 user's Cargo resolves, not the committed Cargo.lock:
 #    the lock carries `libduckdb-sys` 1.10506.1, which declares rust-version
@@ -219,8 +231,21 @@ python3 scripts/check-hello-ext.py --duckdb /tmp/duckdb \
 cargo test --manifest-path examples/hello-ext/Cargo.toml
 cargo clippy --manifest-path examples/hello-ext/Cargo.toml --all-targets -- -D warnings
 
-# 8. Supply chain — license policy and advisories [security]
+# 8. Supply chain — license policy and advisories [security]. The example and
+#    CI-only crates have their own policy file (deny.toml's license rules
+#    cannot hold for them; see its header).
 cargo deny check
+for m in examples/hello-ext fuzz book/doctest; do
+    cargo deny --manifest-path "$m/Cargo.toml" --config deny.ci-crates.toml check
+done
+
+# 8b. Hygiene and workflow lint [hygiene, workflow-lint]: spelling (typos.toml),
+#     TOML style (.taplo.toml), unused dependencies, and the workflow files
+#     (actionlint runs shellcheck on every `run:` block when it is installed).
+typos
+taplo fmt --check && taplo lint
+cargo machete --with-metadata
+actionlint
 ```
 
 ```bash
@@ -230,12 +255,46 @@ cargo mutants --file <changed-files>
 ```
 
 CI sets `RUSTFLAGS="-D warnings"` for every job, so a compiler warning anywhere
-fails the build. CI runs these checks on every push and pull request, together with jobs that
+fails the build. CI runs these checks on every pull request to `main`, on pushes to
+`main` and `claude/**`, weekly, and as the release's gate, together with jobs that
 have no single local command: the other test operating systems, older DuckDB
 engines (`test-older-engines`), WASM, Miri, sanitizers, semver checks, the
 scaffold and ABI-guard end-to-end tests, the book build and its link check,
 and several consistency scripts under `scripts/`. Coverage and mutation testing
 run in separate workflows.
+
+### The Rust toolchain
+
+`rust-toolchain.toml` pins one exact stable release (`channel = "1.99.1"`).
+rustup reads it, so a plain `cargo` here uses that release, and every CI job
+that is not about another toolchain installs the same one; the release
+workflow packages and publishes with it. `scripts/check-toolchain-pin.py` (in
+the `doc` job) fails when a workflow names any other toolchain outside the
+informational jobs. The reason: CI runs with `-D warnings` and clippy's
+`pedantic`, `nursery` and `cargo` groups, so a floating `stable` let every Rust
+release (one every six weeks) change rustc, rustfmt and clippy under every job
+at once, with no change in this repository; 1.99.0's `clippy::assert_is_empty`
+did exactly that (AUDIT.md 12.7).
+
+The exceptions are the MSRV job (`cargo +1.86.0`), the jobs that need nightly
+(Miri, the sanitizers, the fuzzer), and three informational jobs that look
+ahead without blocking: `latest-stable` (the current stable: `fmt`, clippy on
+both feature sets, rustdoc, the library tests), `clippy-beta` and `nightly`.
+They run on every pull request and on the weekly schedule.
+
+Move the pin by a pull request of its own, when `latest-stable` shows a newer
+stable:
+
+1. Check that the release exists: `rustup toolchain install X.Y.Z` (or read
+   `https://static.rust-lang.org/dist/channel-rust-X.Y.Z.toml`).
+2. Change `channel` in `rust-toolchain.toml` and every `toolchain: <old>` in
+   `.github/workflows/*.yml`; `python3 scripts/check-toolchain-pin.py` lists
+   any you missed.
+3. Run the quality gates above (plain `cargo` now uses the new release) and fix
+   what new lints and warnings report, in the same pull request.
+
+The MSRV (`rust-version`, 1.86.0) is a separate decision with its own rules
+(RELEASING.md, "Semantic versioning policy").
 
 ---
 
@@ -269,7 +328,32 @@ function built with quack-rs, runs SQL and checks the answer. Requires
 AddressSanitizer jobs run exactly this target (`--test ffi_roundtrip`), so new
 end-to-end tests belong in it — as a submodule declared with
 `#[path = "ffi_roundtrip/<name>.rs"] mod <name>;` when the root file would
-otherwise grow further.
+otherwise grow further. Know what those runs cannot see (next section).
+
+### What the sanitizer and valgrind runs can and cannot see
+
+CI's `leak-check` (LeakSanitizer) and `asan` (AddressSanitizer) jobs, like a
+local valgrind run of the end-to-end suite, use the **release** libduckdb: the
+same prebuilt library `test-bundled-prebuilt` links. That library carries its
+own copy of jemalloc (it exports 769 `duckdb_je_*` symbols at v1.5.6 and 768
+at v2.0.0, and defines no `malloc` or `free` of its own), and DuckDB's
+`Allocator` takes vector data buffers, LIST entry arrays and string heaps from
+it. Neither valgrind nor AddressSanitizer tracks the blocks jemalloc hands out,
+so **an out-of-bounds or use-after-free write into a vector's data buffer or a
+LIST's entry array is invisible to all of these runs**: the stale writes into a
+LIST entry array of the `ListBuilder` regression found before 0.20.0 drew no
+report under valgrind.
+
+What they do catch: errors in memory the Rust side allocates (Rust's heap,
+boxed aggregate states, the bind and init data quack-rs owns), and in what
+DuckDB allocates through C++ `new` and `malloc`, which includes validity masks
+(an out-of-bounds validity write *is* reported) and the objects behind its
+handles, so LeakSanitizer still sees a handle that is never destroyed. A clean
+sanitizer or valgrind run therefore says nothing about the pointer arithmetic
+into vector buffers; the end-to-end tests' answers, and Miri for the pure-Rust
+paths, are what cover it. A sanitizer run against a DuckDB built from source
+without jemalloc would close the gap; none is set up (CI compiles DuckDB from
+source in `test-bundled` but does not sanitize that build).
 
 ### Property-based tests
 

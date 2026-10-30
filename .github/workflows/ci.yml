@@ -1759,7 +1759,10 @@ jobs:
       # way to catch one is to look at the heap afterwards.
       #
       # LeakSanitizer intercepts malloc globally, so it sees DuckDB's C++
-      # allocations even though libduckdb itself is not instrumented.
+      # allocations even though libduckdb itself is not instrumented -- but
+      # not the vector data buffers and LIST entry arrays the release
+      # libduckdb takes from its own jemalloc (CONTRIBUTING.md, "What the
+      # sanitizer and valgrind runs can and cannot see").
       - name: Fetch a prebuilt libduckdb
         # Version derived from Cargo.lock -- see the note in
         # `test-bundled-prebuilt`. Linking a libduckdb that does not match the
@@ -1793,7 +1796,11 @@ jobs:
   # freed" -- the class that produced the two heap-corruption defects fixed in
   # v0.16.0, and the one a crate doing raw pointer arithmetic into DuckDB's
   # memory is most exposed to. Miri cannot reach it: these paths call foreign
-  # functions.
+  # functions. Its blind spot: this links the release libduckdb, which takes
+  # vector data buffers and LIST entry arrays from its own jemalloc, and ASAN
+  # does not track those blocks, so an out-of-bounds or stale write into them
+  # is not reported here; Rust-heap and validity-mask errors are
+  # (CONTRIBUTING.md, "What the sanitizer and valgrind runs can and cannot see").
   #
   # Blocking since September 2026. It was `continue-on-error` until it had a
   # green run on main, because libduckdb itself is not instrumented and the
