@@ -540,9 +540,11 @@ Directives:
 
 **A skipped file passes.** If `require my_extension` cannot load the extension (the name
 does not match `EXTENSION_NAME`, `[lib] name` or the file name, or the extension file was
-not built), the runner reports the file as `SKIPPED` and exits 0. `make test` and the
-community build then succeed having tested nothing. Read the runner's output for
-`SKIPPED`, and fail the job on it in your own CI.
+not built), the runner reports the file as `SKIPPED` and exits 0. The community build
+then succeeds having tested nothing, and so does a plain `make test`. The `Makefile` that
+the scaffold generates since 0.20.0 runs the runner through a check that fails `make test`
+on `SKIPPED` and when no test file ran; in a project from an older scaffold, read the
+runner's output for `SKIPPED` and fail the job on it in your own CI.
 
 ### Installing DuckDB (1.4.4 or later)
 

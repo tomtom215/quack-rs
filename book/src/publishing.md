@@ -22,7 +22,10 @@ settings and submission for a community extension built with quack-rs.
 It returns paths relative to the project root and writes nothing itself, so join
 them under the project directory — never write them
 relative to the current directory, which would overwrite its `Cargo.toml` and
-`src/lib.rs`:
+`src/lib.rs`. From 0.20.0 the `quack_scaffold` command
+(`cargo install quack-rs --bin quack_scaffold`) writes the project for you, refuses to
+overwrite an existing file without `--force`, and prints the next steps; see
+[Project Scaffold](getting-started/scaffold.md). The same call from Rust:
 
 ```rust,no_run
 use quack_rs::scaffold::{ScaffoldConfig, generate_scaffold};
@@ -63,9 +66,13 @@ This generates:
 my_extension/
 ├── Cargo.toml
 ├── Makefile
+├── README.md
+├── LICENSE
+├── deny.toml
 ├── src/lib.rs
 ├── src/wasm_lib.rs
 ├── description.yml
+├── docs/function_descriptions.csv
 ├── test/sql/my_extension.test
 ├── .github/workflows/extension-ci.yml
 ├── .github/workflows/MainDistributionPipeline.yml
@@ -101,10 +108,11 @@ repo:
   github: "yourorg/duckdb-my-extension"
   # Must be a commit hash, not a branch.
   ref: "0a11ddc058beb2d480ccbfa83e16a68400c5d076"
-  # ref_next: <hash>   # optional: a revision compatible with DuckDB main,
-  #                    # used while a new DuckDB release is being prepared.
-  # variegata: <hash>  # optional: a revision to build for DuckDB v1.5.6 while
-  #                    # `ref` is built for the newest release (v2.0.0).
+  # Optional, each a revision to build instead of `ref` (which is built for
+  # the newest release, v2.0.0):
+  # variegata: <hash>  # for DuckDB v1.5.6
+  # andium: <hash>     # for DuckDB v1.4.5
+  # ref_next: <hash>   # for a DuckDB release still in preparation
 
 docs:
   hello_world: |
@@ -112,8 +120,8 @@ docs:
   extended_description: "One-line description of what your extension does"
 ```
 
-`my_extension_hello` is the SQL macro the generated `src/lib.rs` registers, so the
-`hello_world` example works as generated.
+`my_extension_hello` is the native scalar function the generated `src/lib.rs` registers, so
+the `hello_world` example works as generated.
 
 ### `repo.ref` and the other revision keys
 
@@ -145,8 +153,10 @@ v1.4.4 whichever release the community build is running, and every other release
 to load it (the conform review built such a project: DuckDB 1.5.6 and 2.0.0 both refused it
 with "The file was built specifically for DuckDB version 'v1.4.4'"). Put the revision that targets DuckDB 2.0
 under `ref`, the one that targets 1.5.6 under `variegata` and the one that targets 1.4.5
-under `andium`. quack-rs's scaffold writes only a `variegata` comment and no `andium`
-line, and does not warn about this; the wiring is yours to do.
+under `andium`. The scaffold writes a comment for each of `variegata`, `andium` and
+`ref_next`, and for a `C_STRUCT_UNSTABLE` project a comment that says the project cannot ship
+as generated, with a warning from `generate_scaffold_with_warnings` and from `quack_scaffold`;
+the wiring is yours to do.
 
 `ScaffoldConfig::git_ref` accepts letters, digits, `-`, `_`, `.` and `/`, and defaults
 to the placeholder `REPLACE_WITH_COMMIT_HASH`, which `git` cannot resolve, so an unedited
@@ -314,7 +324,9 @@ published files also carry a `function_type` column, which is ignored). If the f
 exists, its columns **replace** the generated ones through a left join on the function
 name: a function that is missing from the CSV loses any description, it is not merged with
 one. About one extension in eight ships the file (52 of 395 descriptors when this was
-checked).
+checked). The scaffold writes `docs/function_descriptions.csv` with a row for its example
+function; copy it to `extensions/<name>/docs/` in your pull request to the
+community-extensions repository.
 
 > **Pitfall P1** — The `[lib] name` in `Cargo.toml` MUST exactly match the
 > extension name. If your crate name is `duckdb-my-ext` (producing
@@ -363,7 +375,11 @@ Two things break the footer: a tag longer than the footer's fixed 32-byte versio
 (the conform review saw DuckDB 2.0.0 refuse such a file with an `INTERNAL Error: Unknown ABI
 type for extension`), and several tags on one commit (the tool joins them with newlines;
 measured: tags `v0.1.0` and `v0.1.0-rc1` on one commit give the two-line value
-"v0.1.0" then "v0.1.0-rc1"). Keep tags short and put one tag on a released commit.
+"v0.1.0" then "v0.1.0-rc1"). Keep tags short and put one tag on a released commit. The
+`Makefile` that the scaffold generates since 0.20.0 sets `EXTENSION_VERSION` itself (the
+first tag on `HEAD` if it fits and holds only `A-Za-z0-9._+-`, else the short hash, else the
+Cargo version before the first commit). A project that does not set it, such as one from an
+older scaffold, gets `extension-ci-tools`' value, so the rules above apply to it.
 
 ---
 
@@ -476,7 +492,9 @@ strip = true
 ```
 
 The scaffold's `Cargo.toml` has these settings and adds `license`, explanatory comments
-and a `staticlib` example target for WebAssembly builds.
+and a `staticlib` example target for WebAssembly builds. For a project stamped C API `v1.5.6`
+it also enables the `duckdb-1-5*` feature on `quack-rs` and pins `libduckdb-sys` to
+`~1.10506.0`.
 
 > **[ADR-4](https://github.com/tomtom215/quack-rs/blob/main/docs/architecture.md#adr-4-libduckdb-sys-only-at-run-time-no-duckdb-crate)**
 > — Do NOT use the `duckdb` crate's `bundled` feature. A
