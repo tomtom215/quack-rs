@@ -471,8 +471,8 @@ and a different type on 1.x. Name the fields.
 ### `duckdb_query` runs the statements before a parse error on DuckDB 2.0
 
 Given text that does not parse as a whole, DuckDB 1.4.4 and 1.5.6 report a parser error and
-run nothing. DuckDB 2.0.0 runs the statements that come before the error, and the call can
-report success. Measured with a C program that sends `duckdb_query` the text
+run nothing. DuckDB 2.0.0 runs the statements that come before the error (the call may then
+report the error or, as in the measurement below, success). Measured with a C program that sends `duckdb_query` the text
 `CREATE OR REPLACE MACRO "m"() AS (1); DROP TABLE canary; SELECT ()` (what
 `SqlMacro::register` would have sent for the body `1); DROP TABLE canary; SELECT (`):
 1.4.4 and 1.5.6 returned `Parser Error: syntax error at or near ")"` and the table survived;
