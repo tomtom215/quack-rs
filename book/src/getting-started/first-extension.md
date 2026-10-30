@@ -23,8 +23,8 @@ and a good place to begin.
 The repository's [`examples/hello-ext`](https://github.com/tomtom215/quack-rs/tree/main/examples/hello-ext)
 registers these two functions among many others. It writes them as hand-rolled
 `unsafe extern "C" fn`s, which are installed as written and run with no
-`catch_unwind`; its README says to read it for the C API calls and not to copy it.
-The code below is the guarded form.
+`catch_unwind`; its README says it shows what the C API calls look like, not how to
+write new code. The code below is the guarded form.
 
 ---
 

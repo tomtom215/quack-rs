@@ -38,8 +38,10 @@ newest version, with the default features on and without `loadable-extension`.
 > after running its tests against the new bindings and the new engine.
 >
 > **When DuckDB 2.1 bindings (`1.20100.x`) are published**, nothing breaks: Cargo keeps
-> resolving `1.20000.x`, and an extension built that way loads into DuckDB 2.1 with the
-> default stamp as it does into 2.0. If you ask for a newer `libduckdb-sys` yourself, Cargo
+> resolving `1.20000.x`. An extension built that way keeps the default stamp (`C_STRUCT`,
+> `v1.2.0`), which DuckDB's development branch, the 2.1 line, still loads as 2.0 does (its
+> C API v1 loader was unchanged from v2.0.0 to `main` when this was checked; a release of 2.1
+> could still change that). If you ask for a newer `libduckdb-sys` yourself, Cargo
 > reports a conflict with this range. There is nothing to configure on your side (a
 > `[patch]` entry does not change a version requirement): wait for the quack-rs release that
 > widens the range; its changelog entry says so.
