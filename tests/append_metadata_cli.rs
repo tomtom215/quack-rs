@@ -252,7 +252,14 @@ fn a_failed_write_leaves_nothing_behind_and_names_the_output() {
     std::fs::write(&input, vec![b'x'; 64 * 1024]).expect("seed");
     // `ulimit -f 8` caps a file at 4 KiB; SIGXFSZ is ignored so the write
     // fails with EFBIG instead of killing the process.
+    //
+    // Under `cargo llvm-cov` the binary is instrumented and writes a profile
+    // (about 40 KB) when it exits; the limit cut that write off at 4 KiB and the
+    // truncated file made `llvm-profdata merge` fail for the whole report. The
+    // profile goes to /dev/null instead, which the limit does not apply to.
+    // Nothing reads the variable in an uninstrumented build.
     let out = Command::new("sh")
+        .env("LLVM_PROFILE_FILE", "/dev/null")
         .arg("-c")
         .arg("trap '' XFSZ; ulimit -f 8; exec \"$0\" \"$@\"")
         .arg(env!("CARGO_BIN_EXE_append_metadata"))
