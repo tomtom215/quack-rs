@@ -56,25 +56,34 @@ use quack_rs::testing::InMemoryDb;
 use quack_rs::types::{LogicalType, NullHandling, TypeId};
 use quack_rs::vector::{VectorReader, VectorWriter};
 
-/// A live database plus a connection, torn down in the right order on drop.
-/// Installs the ICU extension once per process, before any other fixture goes on.
+/// Installs the extensions the tests need, once per process, before any other
+/// fixture goes on.
 ///
 /// A source-built `DuckDB` (`bundled-test`) has no ICU and installs it the first
-/// time a query needs a time zone. The tests run on many threads, each with its
-/// own database, and the installs all write to one extension directory: on
-/// Windows they raced on the final file move ("Could not move file: Access is
-/// denied") and failed whichever test lost. Done here, with the others waiting
-/// in `call_once`, they find a finished install and only load it. A library that
-/// carries ICU treats `INSTALL icu` as a no-op; if the install fails (no
-/// network) nothing changes, and the first query that needs ICU fails as before.
-fn install_icu_once(con: duckdb_connection) {
-    static ICU: std::sync::Once = std::sync::Once::new();
-    ICU.call_once(|| {
-        // SAFETY: `con` is the open connection of the fixture being built.
-        drop(unsafe { query(con, "INSTALL icu") });
+/// time a query needs a time zone, and no `parquet`, which it installs when a
+/// test registers a COPY format of that name
+/// (`table_cast::registering_a_taken_copy_function_name_is_an_error`). The tests
+/// run on many threads, each with its own database, and the installs all write
+/// to one extension directory. On Windows a reader cannot open a file another
+/// thread is writing: ICU installs raced on the final file move ("Could not
+/// move file: Access is denied"), and `the_name_validator_accepts_every_name_duckdb_does`
+/// failed in `duckdb_extensions()` on a half-written `parquet` `.info` file
+/// ("being used by another process"). Done here, with the others waiting in
+/// `call_once`, they find a finished install and only load it. A library that
+/// carries an extension treats `INSTALL` of it as a no-op; if the install
+/// fails (no network) nothing changes, and the first query that needs the
+/// extension fails as before.
+fn install_extensions_once(con: duckdb_connection) {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        for sql in ["INSTALL icu", "INSTALL parquet"] {
+            // SAFETY: `con` is the open connection of the fixture being built.
+            drop(unsafe { query(con, sql) });
+        }
     });
 }
 
+/// A live database plus a connection, torn down in the right order on drop.
 struct Fixture {
     db: libduckdb_sys::duckdb_database,
     con: duckdb_connection,
@@ -100,7 +109,7 @@ impl Fixture {
                 "duckdb_connect"
             );
         }
-        install_icu_once(con);
+        install_extensions_once(con);
         Self {
             db,
             con,
