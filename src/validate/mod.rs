@@ -13,7 +13,8 @@
 //! # What is validated
 //!
 //! - **Extension name**: A lowercase letter, then lowercase letters, digits and underscores
-//!   (no hyphens: `DuckDB` derives the `<name>_init_c_api` symbol from it)
+//!   (no hyphens: `DuckDB` derives the `<name>_init_c_api` symbol from it); for a
+//!   community extension, also not a `DuckDB` alias (`s3`) or core extension name (`json`)
 //! - **Function name**: Letters, digits and underscores, and not a reserved SQL keyword —
 //!   anything needing quotes in SQL is rejected
 //! - **Semantic versioning**: `validate_semver` for strict semver; extension
@@ -69,7 +70,10 @@ pub mod semver;
 pub mod spdx;
 mod spdx_exceptions;
 
-pub use extension_name::validate_extension_name;
+pub use extension_name::{
+    validate_community_extension_name, validate_extension_name, DUCKDB_CORE_EXTENSION_NAMES,
+    DUCKDB_EXTENSION_ALIASES, DUCKDB_RESERVED_EXTENSION_NAMES,
+};
 pub use function_name::{
     validate_function_name, validate_parameter_name, DUCKDB_RESERVED_KEYWORDS,
     DUCKDB_UNCALLABLE_KEYWORDS, DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS,

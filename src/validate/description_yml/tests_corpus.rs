@@ -177,6 +177,25 @@ fn repo_github_must_be_owner_slash_repo() {
     }
 }
 
+/// `extension.name` may not be a name `DuckDB` uses itself. None of the 395
+/// published files has one (checked over every name in community-extensions
+/// `845779e`; `scripts/check-extension-names.py` repeats the check in CI over
+/// duckdb.org's list of published extensions).
+#[test]
+fn a_reserved_extension_name_is_refused() {
+    let yml = |name: &str| {
+        format!(
+            "extension:\n  name: {name}\n  description: d\n  language: Rust\n  build: cargo\n  \
+             license: MIT\n  maintainers:\n    - a\nrepo:\n  github: a/b\n  ref: 0a1b2c3\n"
+        )
+    };
+    for name in ["s3", "sqlite3", "json", "spatial"] {
+        let err = parse_description_yml(&yml(name)).expect_err(name);
+        assert!(err.as_str().contains("extension.name"), "{name}: {err}");
+    }
+    assert_eq!(parse(&yml("cache_httpfs")).name, "cache_httpfs");
+}
+
 /// `scripts/build.py` reads six `repo:` keys; anything else does nothing, and
 /// one published file has `next:` where `ref_next:` was meant.
 #[test]

@@ -48,6 +48,24 @@ fn hyphenated_extension_name_is_rejected() {
     assert!(err.as_str().contains("'-'"), "{err}");
 }
 
+/// The scaffold used to generate `s3_init_c_api` for `name: s3`, an extension
+/// `INSTALL s3 FROM community` can never fetch (`DuckDB` asks for `httpfs`), and
+/// projects named after core extensions, which the FAQ says must be renamed.
+#[test]
+fn a_name_duckdb_reserves_is_refused() {
+    for name in ["s3", "md", "json", "parquet", "httpfs", "quack"] {
+        let config = ScaffoldConfig {
+            name: name.to_string(),
+            ..valid_config()
+        };
+        let err = generate_scaffold(&config).expect_err(name);
+        assert!(
+            err.as_str().contains("alias") || err.as_str().contains("has to be renamed"),
+            "{name}: {err}"
+        );
+    }
+}
+
 /// `docs.hello_world` is rendered on the community-extensions site as the
 /// example to copy; it used to call `<name>_version()`, which the scaffold
 /// never registers.

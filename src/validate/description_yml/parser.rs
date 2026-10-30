@@ -9,7 +9,7 @@ use crate::validate::platform::{
     DUCKDB_RETIRED_PLATFORMS,
 };
 use crate::validate::{
-    validate_excluded_platforms_str, validate_extension_name, validate_extension_version,
+    validate_community_extension_name, validate_excluded_platforms_str, validate_extension_version,
     validate_platform, validate_spdx_license,
 };
 
@@ -23,7 +23,8 @@ use super::yaml11;
 ///
 /// # What is validated
 ///
-/// - `extension.name` — must pass [`validate_extension_name`]
+/// - `extension.name` — must pass [`validate_community_extension_name`]: well
+///   formed, and not a `DuckDB` alias (`s3`) or core extension name (`json`)
 /// - `extension.description` — non-empty
 /// - `extension.version` — optional; if present, must pass [`validate_extension_version`]
 /// - `extension.language`, `extension.build` — non-empty
@@ -101,7 +102,7 @@ use super::yaml11;
 /// assert!(desc.warnings.is_empty());
 /// ```
 ///
-/// [`validate_extension_name`]: crate::validate::validate_extension_name
+/// [`validate_community_extension_name`]: crate::validate::validate_community_extension_name
 /// [`validate_extension_version`]: crate::validate::validate_extension_version
 /// [`validate_spdx_license`]: crate::validate::validate_spdx_license
 /// [`validate_excluded_platforms_str`]: crate::validate::validate_excluded_platforms_str
@@ -116,7 +117,7 @@ pub fn parse_description_yml(content: &str) -> Result<DescriptionYml, ExtensionE
     if name.is_empty() {
         return Err(missing("extension.name"));
     }
-    validate_extension_name(&name)
+    validate_community_extension_name(&name)
         .map_err(|e| ExtensionError::new(format!("description.yml: extension.name: {e}")))?;
 
     let description = extension.required("description")?;

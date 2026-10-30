@@ -62,12 +62,14 @@ mod tests_generated;
 mod tests_workflows;
 
 use crate::error::ExtensionError;
-use crate::validate::{validate_extension_name, validate_semver, validate_spdx_license};
+use crate::validate::{validate_community_extension_name, validate_semver, validate_spdx_license};
 
 /// Configuration for generating a new extension project.
 #[derive(Debug, Clone)]
 pub struct ScaffoldConfig {
-    /// Extension name (must pass [`validate_extension_name`]).
+    /// Extension name (must pass [`validate_community_extension_name`]: well
+    /// formed, and not a `DuckDB` alias such as `s3` or a core extension name
+    /// such as `json`).
     pub name: String,
     /// Short description of the extension.
     ///
@@ -441,9 +443,10 @@ fn libduckdb_sys_requirement(target: &str) -> Result<String, ExtensionError> {
 /// must be semver, as it is also the Cargo package version),
 /// description, maintainer, GitHub repository, git ref, excluded platforms or
 /// target `DuckDB` version is invalid — including a hyphenated name, which
-/// `DuckDB` could never load (see [`validate_extension_name`]).
+/// `DuckDB` could never load, and a name `DuckDB` itself uses (see
+/// [`validate_community_extension_name`]).
 pub fn generate_scaffold(config: &ScaffoldConfig) -> Result<Vec<GeneratedFile>, ExtensionError> {
-    validate_extension_name(&config.name)?;
+    validate_community_extension_name(&config.name)?;
     // Semver, not the looser `validate_extension_version` that `description.yml`
     // alone would allow: the version is also `[package] version` in Cargo.toml.
     validate_semver(&config.version).map_err(|e| {
