@@ -89,7 +89,6 @@ duckdb_finish_execution host-side lets an application run DuckDB's scheduler tas
 duckdb_task_state_is_finished host-side lets an application run DuckDB's scheduler tasks on its own threads
 duckdb_destroy_task_state host-side lets an application run DuckDB's scheduler tasks on its own threads
 duckdb_execution_is_finished host-side lets an application run DuckDB's scheduler tasks on its own threads
-duckdb_extract_statements_error host-side statement extraction for an application's own multi-statement scripts
 duckdb_prepare_extracted_statement host-side statement extraction for an application's own multi-statement scripts
 
 # --- candidate: worth wrapping, not done yet ---
