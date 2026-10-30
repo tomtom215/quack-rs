@@ -505,6 +505,117 @@ fn deny_toml_ignores_the_zip_advisories_and_allows_the_project_license() {
         1,
         "{deny}"
     );
+    // That term is on the dependency list already, so the count above cannot
+    // tell it from the same expression split into `Apache-2.0`, `WITH` and
+    // `LLVM-exception`.
+    for part in ["WITH", "LLVM-exception"] {
+        assert!(
+            !deny.contains(&format!("\n    \"{part}\",\n")),
+            "{part}: {deny}"
+        );
+    }
     assert!(!deny.contains("@@"), "{deny}");
     assert!(deny.contains("allow = [\n    \"0BSD\",\n"), "{deny}");
+}
+
+/// A `C_STRUCT_UNSTABLE` binary for v1.5.6 or v1.4.5 is submitted as
+/// `repo.variegata` or `repo.andium`; for any other release the community
+/// build builds nothing. The warning says which, and the other two messages
+/// both mention `repo.variegata`, so only the whole sentence tells them apart.
+#[test]
+fn the_unstable_binary_warning_names_the_ref_the_release_is_submitted_as() {
+    let warning = |target: &str| {
+        let config = ScaffoldConfig {
+            use_unstable_c_api: true,
+            target_duckdb_version: target.to_string(),
+            ..valid_config()
+        };
+        generate_scaffold_with_warnings(&config)
+            .unwrap()
+            .warnings
+            .into_iter()
+            .find(|w| w.starts_with("use_unstable_c_api:"))
+            .unwrap_or_else(|| panic!("{target}: no use_unstable_c_api warning"))
+    };
+    let variegata = warning("v1.5.6");
+    assert!(
+        variegata.contains("Submit this revision as repo.variegata (built for v1.5.6)"),
+        "{variegata}"
+    );
+    let andium = warning("v1.4.5");
+    assert!(
+        andium.contains("Submit this revision as repo.andium (built for v1.4.5)"),
+        "{andium}"
+    );
+    let other = warning("v1.5.5");
+    assert!(
+        other.contains("builds no extension for v1.5.5") && !other.contains("Submit this revision"),
+        "{other}"
+    );
+}
+
+/// Which of quack-rs's `duckdb-1-5*` features a project can use follows the
+/// release it is stamped for: the newest for C API v1.5.6 and for an exact
+/// release from 1.5.4, `duckdb-1-5-3` for 1.5.3, `duckdb-1-5` for the other
+/// 1.5 releases, and none for a stable-prefix project or any other release.
+#[test]
+fn the_quack_rs_feature_follows_the_release_the_project_is_stamped_for() {
+    use super::templates::quack_rs_feature;
+    let feature = |unstable: bool, target: &str| {
+        quack_rs_feature(&ScaffoldConfig {
+            use_unstable_c_api: unstable,
+            target_duckdb_version: target.to_string(),
+            ..valid_config()
+        })
+    };
+    assert_eq!(feature(false, "v1.2.0"), None);
+    assert_eq!(feature(false, "v1.5.6"), Some("duckdb-1-5-4"));
+    for (target, want) in [
+        ("v1.5.6", Some("duckdb-1-5-4")),
+        ("v1.5.5", Some("duckdb-1-5-4")),
+        ("v1.5.4", Some("duckdb-1-5-4")),
+        ("v1.5.3", Some("duckdb-1-5-3")),
+        ("v1.5.2", Some("duckdb-1-5")),
+        ("v1.5.0", Some("duckdb-1-5")),
+        ("v1.4.5", None),
+        ("v2.0.0", None),
+    ] {
+        assert_eq!(feature(true, target), want, "C_STRUCT_UNSTABLE {target}");
+    }
+}
+
+/// Parentheses separate the identifiers of an SPDX expression: without that,
+/// `(BUSL-1.1` and `MIT)` are two unknown licenses, so there is no `LICENSE-MIT`
+/// and `cargo deny` is told to allow licenses that do not exist.
+#[test]
+fn a_parenthesised_license_is_split_into_its_identifiers() {
+    let files = generate_scaffold(&with_license("(BUSL-1.1 OR MIT)")).unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"LICENSE-MIT"), "{paths:?}");
+    assert!(paths.contains(&"LICENSE.TODO"), "{paths:?}");
+    let deny = file(&files, "deny.toml");
+    assert!(deny.contains("\n    \"BUSL-1.1\",\n"), "{deny}");
+    assert!(!deny.contains("(BUSL-1.1\""), "{deny}");
+}
+
+/// An exception is part of its license's term: `cargo deny` allows
+/// `GPL-2.0-only WITH Classpath-exception-2.0` as one entry, and not
+/// `GPL-2.0-only` alone, which would allow the license without the exception.
+/// (The test above cannot show it: its `Apache-2.0 WITH LLVM-exception` is on
+/// the dependency list anyway.)
+#[test]
+fn a_license_with_an_exception_is_allowed_as_one_term() {
+    let files =
+        generate_scaffold(&with_license("GPL-2.0-only WITH Classpath-exception-2.0")).unwrap();
+    let deny = file(&files, "deny.toml");
+    assert!(
+        deny.contains("\n    \"GPL-2.0-only WITH Classpath-exception-2.0\",\n"),
+        "{deny}"
+    );
+    for part in ["GPL-2.0-only", "WITH", "Classpath-exception-2.0"] {
+        assert!(
+            !deny.contains(&format!("\n    \"{part}\",\n")),
+            "{part}: {deny}"
+        );
+    }
 }

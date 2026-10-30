@@ -686,6 +686,16 @@ pub enum AbiPolicy {
 mod tests {
     use super::*;
 
+    /// `u64::from_str` takes a leading `+`; a `DuckDB` version string never has
+    /// one, in any of the three parts.
+    #[test]
+    fn parse_version_refuses_a_plus_sign_in_any_part() {
+        assert_eq!(parse_version("v1.5.4"), Some((1, 5, 4)));
+        for bad in ["v+1.5.4", "1.+5.4", "v1.5.+4", "v1..4", "v1.5.", "v-1.5.4"] {
+            assert_eq!(parse_version(bad), None, "{bad}");
+        }
+    }
+
     /// A development engine version cannot be declared or looked up, so the
     /// refusal must not offer either as the fix: before, it told the user to
     /// set `QUACK_RS_TARGET_DUCKDB_VERSION=v1.5.6-dev123`, which the build

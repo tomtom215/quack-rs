@@ -168,25 +168,23 @@ const DEPENDENCY_LICENSES: [&str; 10] = [
 /// The license terms of an SPDX expression the scaffold has checked: each
 /// identifier, with its `WITH` exception if it has one.
 fn license_terms(license: &str) -> Vec<String> {
-    let tokens: Vec<&str> = license
+    let mut tokens = license
         .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
         .filter(|t| !t.is_empty())
-        .collect();
+        .peekable();
     let mut terms = Vec::new();
-    let mut i = 0;
-    while i < tokens.len() {
-        match tokens[i] {
-            "AND" | "OR" => i += 1,
-            id if tokens.get(i + 1) == Some(&"WITH") => {
-                if let Some(exception) = tokens.get(i + 2) {
-                    terms.push(format!("{id} WITH {exception}"));
-                }
-                i += 3;
+    // Every pass takes at least one token, so no change to what a pass does
+    // with the rest can make this loop run forever.
+    while let Some(token) = tokens.next() {
+        if matches!(token, "AND" | "OR") {
+            continue;
+        }
+        if tokens.next_if_eq(&"WITH").is_some() {
+            if let Some(exception) = tokens.next() {
+                terms.push(format!("{token} WITH {exception}"));
             }
-            id => {
-                terms.push(id.to_string());
-                i += 1;
-            }
+        } else {
+            terms.push(token.to_string());
         }
     }
     terms
