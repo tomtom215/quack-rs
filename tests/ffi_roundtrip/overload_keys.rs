@@ -11,6 +11,9 @@
 //! it with "Could not choose a best candidate function"; quack-rs refuses it
 //! at registration, while overloads `DuckDB` does resolve still register and
 //! answer each call with the right overload.
+//!
+//! Also: closure-built functions as overloads of one set (AUTHT2-2), which
+//! is the only way to overload them on `DuckDB` before v1.5.0.
 
 use libduckdb_sys::{duckdb_aggregate_state, duckdb_data_chunk, duckdb_function_info, idx_t};
 use quack_rs::aggregate::{AggregateFunctionSetBuilder, AggregateOverloadBuilder};
@@ -317,4 +320,56 @@ fn a_registration_duckdb_would_resolve_by_type_id_against_the_catalog_is_refused
         .register(fx.con())
     };
     expect_refused(result, "SELECT ok_cat_map(MAP {'k': 1::BIGINT})");
+}
+
+/// Three closures, one name: each call reaches the closure for its argument
+/// type and returns that type, on every engine (a set is one registration).
+/// One closure-built function per name, registered one after another, is
+/// refused before v1.5.0, with a message naming `overload_typed`.
+#[test]
+fn closure_built_functions_overload_one_name_through_a_set() {
+    let fx = Fixture::open();
+    let set = ScalarFunctionSetBuilder::try_new("typed_twice")
+        .expect("name")
+        .overload_typed(
+            ScalarFunctionBuilder::map1("typed_twice", |x: i32| x.wrapping_mul(2)).expect("i32"),
+        )
+        .overload_typed(
+            ScalarFunctionBuilder::map1("typed_twice", |x: i64| x.wrapping_mul(2)).expect("i64"),
+        )
+        .overload_typed(ScalarFunctionBuilder::map1("typed_twice", |x: f64| x * 2.0).expect("f64"));
+    // SAFETY: `con` is open.
+    unsafe { set.register(fx.con()) }.expect("register the set");
+    let text = |sql: &str| {
+        fx.scalar(sql, |r, i| unsafe { r.read_str(i).to_owned() })
+            .expect("not NULL")
+    };
+    for (argument, expected) in [
+        ("21::INTEGER", "42 INTEGER"),
+        ("21::BIGINT", "42 BIGINT"),
+        ("1.25::DOUBLE", "2.5 DOUBLE"),
+    ] {
+        assert_eq!(
+            text(&format!(
+                "SELECT typed_twice({argument})::VARCHAR || ' ' || typeof(typed_twice({argument}))"
+            )),
+            expected,
+            "{argument}"
+        );
+    }
+
+    // One by one: a second registration under the name is an overload from
+    // v1.5.0, refused (with the way out) before it.
+    let one = |name| ScalarFunctionBuilder::map1(name, |x: i32| x).expect("i32");
+    let other = |name| ScalarFunctionBuilder::map1(name, |x: i64| x).expect("i64");
+    // SAFETY: `con` is open.
+    unsafe { one("typed_once").register(fx.con()) }.expect("a fresh name");
+    // SAFETY: as above.
+    let second = unsafe { other("typed_once").register(fx.con()) };
+    if super::engine_merges_scalar_overloads(&fx) {
+        second.expect("an overload of an existing name");
+    } else {
+        let err = second.expect_err("an existing name before v1.5.0");
+        assert!(err.as_str().contains("`overload_typed`"), "{err}");
+    }
 }

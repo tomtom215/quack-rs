@@ -18,6 +18,7 @@ use libduckdb_sys::{
 use libduckdb_sys::{duckdb_scalar_function_set_bind, duckdb_scalar_function_set_init};
 
 use crate::error::ExtensionError;
+use crate::scalar::TypedScalarFunctionBuilder;
 use crate::types::logical_type::SlotCheck;
 use crate::types::{LogicalType, NullHandling};
 use crate::validate::validate_function_name;
@@ -118,6 +119,43 @@ impl ScalarFunctionSetBuilder {
         self
     }
 
+    /// Adds a closure-built function ([`ScalarFunctionBuilder::map1`] and
+    /// its siblings) as one overload of this set.
+    ///
+    /// This is how a closure-built function gets overloads: one set holding
+    /// one closure per argument type, registered once. Registering several
+    /// closure-built functions under one name one by one works only from
+    /// `DuckDB` v1.5.0 (before it, the C API cannot add an overload to an
+    /// existing name), and this works on every engine.
+    ///
+    /// The overload keeps what the closure fixed — its parameter and return
+    /// types, callback and `extra_info` — and its stability
+    /// ([`volatile`][TypedScalarFunctionBuilder::volatile]); the set offers no
+    /// way to change them. It takes the set's name: one built under another
+    /// name (compared case-insensitively, as `DuckDB` compares names) makes
+    /// [`register`][Self::register] fail, naming the overload, rather than
+    /// register it as something its builder did not say.
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder};
+    ///
+    /// # fn demo(con: libduckdb_sys::duckdb_connection) -> Result<(), quack_rs::error::ExtensionError> {
+    /// let set = ScalarFunctionSetBuilder::new("double_it")
+    ///     .overload_typed(ScalarFunctionBuilder::map1("double_it", |x: i32| x.wrapping_mul(2))?)
+    ///     .overload_typed(ScalarFunctionBuilder::map1("double_it", |x: i64| x.wrapping_mul(2))?)
+    ///     .overload_typed(ScalarFunctionBuilder::map1("double_it", |x: f64| x * 2.0)?);
+    /// // SAFETY: `con` is an open connection.
+    /// unsafe { set.register(con) }
+    /// # }
+    /// ```
+    ///
+    /// [`ScalarFunctionBuilder::map1`]: super::ScalarFunctionBuilder::map1
+    pub fn overload_typed(mut self, function: TypedScalarFunctionBuilder) -> Self {
+        self.overloads
+            .push(ScalarOverloadSpec::from_function(function.into_inner()));
+        self
+    }
+
     /// Registers the scalar function set on the given connection.
     ///
     /// # Errors
@@ -186,8 +224,17 @@ impl ScalarFunctionSetBuilder {
                 "no overloads added to scalar function set",
             ));
         }
+        let name = self.name();
         for (i, overload) in self.overloads.iter().enumerate() {
             overload.check_complete(i)?;
+            if let Some(built_as) = &overload.built_as {
+                if built_as.to_lowercase() != name.to_lowercase() {
+                    return Err(ExtensionError::new(format!(
+                        "overload {i} is a closure-built function named '{built_as}', added to \
+                         the function set '{name}': build it under the set's name"
+                    )));
+                }
+            }
         }
         Ok(())
     }

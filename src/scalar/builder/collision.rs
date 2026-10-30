@@ -370,7 +370,8 @@ impl ExistingScalars {
                  exists, and DuckDB before v1.5.0 cannot add an overload to an existing name \
                  (its C API registers with CREATE, not ALTER_ON_CONFLICT), so the registration \
                  would fail with no reason given. Choose a different name, or register every \
-                 overload in one ScalarFunctionSetBuilder"
+                 overload in one ScalarFunctionSetBuilder (`overload` for a callback, \
+                 `overload_typed` for a closure-built function)"
             )));
         }
         let key = signature.key();
@@ -634,6 +635,8 @@ mod tests {
                 .contains("DuckDB before v1.5.0 cannot add an overload"),
             "{err}"
         );
+        // The way out it names exists for closure-built functions too.
+        assert!(err.as_str().contains("`overload_typed`"), "{err}");
         assert!(existing
             .check("fresh", "scalar function", &sig(&["BOOLEAN"], None))
             .is_ok());

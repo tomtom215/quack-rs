@@ -229,3 +229,36 @@ fn a_rejected_set_frees_every_overloads_extra_info_once() {
     assert!(unsafe { set.register(std::ptr::null_mut()) }.is_err());
     assert_eq!(FREED.load(Ordering::SeqCst), 2);
 }
+
+/// A closure-built function becomes an overload with the signature its
+/// closure fixed, and takes the set's name: one built under the same name in
+/// another case is accepted, one built under another name is refused by
+/// index before any `DuckDB` call.
+#[test]
+fn a_closure_built_overload_keeps_its_signature_and_takes_the_sets_name() {
+    let typed = |name, wide: bool| {
+        if wide {
+            ScalarFunctionBuilder::map1(name, |x: i64| x)
+        } else {
+            ScalarFunctionBuilder::map1(name, |x: i32| x)
+        }
+        .expect("builds without a live DuckDB")
+    };
+    let set = ScalarFunctionSetBuilder::new("Double_It")
+        .overload_typed(typed("double_it", true))
+        .overload_typed(typed("DOUBLE_IT", false).volatile());
+    set.check_parts().expect("same name in another case");
+    let params: Vec<_> = set.overloads.iter().map(|o| o.params.clone()).collect();
+    assert_eq!(params, [vec![TypeId::BigInt], vec![TypeId::Integer]]);
+    assert_eq!(set.overloads[0].return_type, Some(TypeId::BigInt));
+    assert!(!set.overloads[0].volatile && set.overloads[1].volatile);
+    assert!(set.overloads.iter().all(|o| o.extra_info.is_some()));
+
+    let set = set.overload_typed(typed("double_ti", true));
+    let err = set.check_parts().expect_err("another name");
+    assert!(
+        err.as_str()
+            .contains("overload 2 is a closure-built function named 'double_ti'"),
+        "{err}"
+    );
+}
