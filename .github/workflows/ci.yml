@@ -9,9 +9,9 @@
 #       dependency-floor, bench-compile, example-check, scaffold-compile,
 #       symbol-check, abi-table, platform-table, spdx-list, autoload-entries,
 #       book, msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
-#       abi-guard-layout, publish-dry-run, security, osv-scan, nightly, miri,
-#       leak-check, asan, semver, fuzz, workflow-lint, ci-ok (the aggregate
-#       required check).
+#       abi-guard-layout, publish-dry-run, security, osv-scan, hygiene, nightly,
+#       miri, leak-check, asan, semver, fuzz, workflow-lint, ci-ok (the
+#       aggregate required check).
 #
 # `dtolnay/rust-toolchain` is pinned, in every workflow, to one commit on the
 # action's `master` branch (commented `# master`: the branch publishes no
@@ -1553,6 +1553,21 @@ jobs:
         run: cargo install cargo-deny --locked --version "0.20.2"
       - name: Run cargo-deny check
         run: cargo deny check
+      # The other committed graphs (hello-ext, the fuzz crate, the book's
+      # doctest crate, and benches/engine once its lockfile is committed) had
+      # their advisories read by the OSV job only. deny.toml cannot be applied
+      # to them (it is strict about unused licenses, and libfuzzer-sys is
+      # "(MIT OR Apache-2.0) AND NCSA"), so they have their own config.
+      - name: Run cargo-deny check on the CI crates
+        run: |
+          set -euo pipefail
+          crates=(examples/hello-ext fuzz book/doctest)
+          if [ -f benches/engine/Cargo.lock ]; then crates+=(benches/engine); fi
+          for m in "${crates[@]}"; do
+            echo "::group::cargo deny: $m"
+            cargo deny --manifest-path "$m/Cargo.toml" --config deny.ci-crates.toml check
+            echo "::endgroup::"
+          done
 
   # OSV / GHSA advisory scan. The cargo-deny job above consults only the RustSec
   # advisory database; OSV.dev aggregates GHSA *and* RustSec, so GHSA-only
@@ -1581,14 +1596,62 @@ jobs:
           chmod +x osv-scanner
       - name: Scan every committed lockfile against OSV
         run: |
-          # All four committed lockfiles. fuzz/Cargo.lock and then
+          set -euo pipefail
+          # Every committed lockfile. fuzz/Cargo.lock and then
           # book/doctest/Cargo.lock were missing: their dependencies are
           # CI-only, but an unscanned lockfile is an unscanned lockfile.
-          ./osv-scanner --config=osv-scanner.toml \
-            --lockfile=Cargo.lock \
-            --lockfile=examples/hello-ext/Cargo.lock \
-            --lockfile=fuzz/Cargo.lock \
-            --lockfile=book/doctest/Cargo.lock
+          # benches/engine/Cargo.lock was gitignored (bench-compile resolved
+          # that crate afresh each run); it is scanned once it is committed.
+          lockfiles=(Cargo.lock examples/hello-ext/Cargo.lock fuzz/Cargo.lock book/doctest/Cargo.lock)
+          if [ -f benches/engine/Cargo.lock ]; then lockfiles+=(benches/engine/Cargo.lock); fi
+          args=()
+          for f in "${lockfiles[@]}"; do args+=("--lockfile=$f"); done
+          ./osv-scanner --config=osv-scanner.toml "${args[@]}"
+
+  # Build-free hygiene checks: spelling (typos.toml), TOML style (.taplo.toml)
+  # and unused dependencies (cargo-machete; the manifests list under
+  # [package.metadata.cargo-machete] what it cannot see: build.rs, a
+  # [[bench]], generated doctests). Each tool is a release binary pinned by
+  # version and SHA-256, as in osv-scan. Only cargo-machete's release publishes
+  # a checksum file (it matches); typos and taplo publish none, so their
+  # hashes are of the release assets as GitHub served them when pinned.
+  hygiene:
+    name: Hygiene (typos, taplo, machete)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # cargo-machete --with-metadata runs `cargo metadata`.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+      - name: Install typos, taplo and cargo-machete (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          fetch() { # <url> <sha256> <file>
+            curl -fsSL --retry 5 -o "$3" "$1"
+            echo "$2  $3" | sha256sum -c -
+          }
+          cd "$RUNNER_TEMP"
+          fetch https://github.com/crate-ci/typos/releases/download/v1.46.0/typos-v1.46.0-x86_64-unknown-linux-musl.tar.gz \
+            c62a626df385c96574743fd4974aeb271a41a67d080a0398e36e1a42782f614a typos.tgz
+          tar -xzf typos.tgz -C bin ./typos
+          fetch https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-x86_64.gz \
+            8fe196b894ccf9072f98d4e1013a180306e17d244830b03986ee5e8eabeb6156 taplo.gz
+          gunzip -c taplo.gz > bin/taplo
+          chmod +x bin/taplo
+          fetch https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-x86_64-unknown-linux-musl.tar.gz \
+            48200087f54c55aabcd4db4af1e25742b49846c02a1b1bfa134711945b35b2e9 machete.tgz
+          tar -xzf machete.tgz --strip-components=1 -C bin \
+            cargo-machete-v0.9.2-x86_64-unknown-linux-musl/cargo-machete
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: typos
+      - run: taplo fmt --check
+      - run: taplo lint
+      - run: cargo machete --with-metadata
 
   nightly:
     name: Nightly (informational)
@@ -2012,6 +2075,7 @@ jobs:
       - publish-dry-run
       - security
       - osv-scan
+      - hygiene
       - miri
       - leak-check
       - asan

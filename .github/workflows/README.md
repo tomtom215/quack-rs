@@ -57,6 +57,7 @@ replaced had drifted to fewer than half the jobs.
 | `publish-dry-run` | Publish dry-run | blocking |
 | `security` | Security (cargo-deny) | blocking |
 | `osv-scan` | Security (OSV / GHSA) | blocking |
+| `hygiene` | Hygiene (typos, taplo, machete) | blocking |
 | `nightly` | Nightly (informational) | informational |
 | `miri` | Miri (undefined behaviour) | blocking |
 | `leak-check` | LeakSanitizer (RAII wrappers vs a real DuckDB) | blocking |
