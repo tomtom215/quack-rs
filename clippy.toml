@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 Tom F. <tomf@tomtomtech.net> (https://github.com/tomtom215)
 #
-# Clippy configuration — pedantic + nursery lint levels.
-# Lint levels are set in Cargo.toml [lints.clippy]; this file holds per-lint overrides.
+# Clippy configuration. The lint levels (pedantic, nursery, cargo, and the
+# few allowed lints) are set in Cargo.toml [lints.clippy]; this file holds
+# per-lint thresholds.
+#
+# All three values below are clippy's own defaults (clippy_config/src/conf.rs
+# at rust-1.99.0: 100, 7, 25), so today this file changes nothing. They are
+# written down so that a future clippy changing a default does not silently
+# change what this crate is held to; raising one is a decision for review.
 
-# Minimum function line count before suggesting extraction.
-# Set to 100 to accommodate FFI registration methods (e.g., builder::register)
-# which are inherently sequential and resist extraction.
+# Lines in a function before `too_many_lines` fires (pedantic).
 too-many-lines-threshold = 100
 
-# Maximum number of function arguments before warning
+# Arguments a function may take before `too_many_arguments` fires.
 too-many-arguments-threshold = 7
 
-# Cognitive complexity threshold
+# Score above which `cognitive_complexity` fires (nursery).
 cognitive-complexity-threshold = 25

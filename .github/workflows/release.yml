@@ -76,7 +76,7 @@ jobs:
         shell: bash
         run: |
           if [[ "$(git cat-file -t "refs/tags/$TAG")" != "tag" ]]; then
-            echo "::error::Tag '$TAG' is a lightweight tag. Release tags are annotated and signed: git tag -s '$TAG' -m 'Release $TAG' (RELEASING.md Step 5)."
+            echo "::error::Tag '$TAG' is a lightweight tag. Release tags must be annotated (RELEASING.md Step 5 also signs them; this job does not verify the signature): git tag -s '$TAG' -m 'Release $TAG'."
             exit 1
           fi
           git fetch --no-tags --quiet origin '+refs/heads/main:refs/remotes/origin/main'
@@ -155,6 +155,13 @@ jobs:
           fi
           echo "::notice::CHANGELOG.md entry found for v$VERSION"
 
+      # Cargo.lock still naming the previous version fails `cargo package
+      # --locked` in the `package` job, after all of ci.yml has run; stale
+      # version snippets ship in the .crate. Say so in the first minute.
+      - name: Release metadata (Cargo.lock, CITATION.cff, SECURITY.md, doc snippets)
+        shell: bash
+        run: python3 scripts/check-release-metadata.py
+
 # ── Job 2: Every CI gate, by running ci.yml itself ──────────────────────────
   ci:
     name: CI
@@ -175,13 +182,14 @@ jobs:
       attestations: write  # write attestation to the repository
     outputs:
       crate_file: ${{ steps.pkg.outputs.crate_file }}
+      rustc: ${{ steps.pkg.outputs.rustc }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       # No cache in this job or in `publish`: a tag-triggered run can restore
       # caches the default branch saved, and this job holds the attestation
       # token. Release speed does not matter.
@@ -201,6 +209,9 @@ jobs:
           CRATE_FILE=$(ls target/package/*.crate)
           CRATE_SIZE=$(wc -c < "$CRATE_FILE")
           echo "crate_file=$CRATE_FILE" >> "$GITHUB_OUTPUT"
+          # The `publish` job installs this rustc and refuses to re-package with
+          # any other: it runs after a manual approval that can take days.
+          echo "rustc=$(rustc --version | awk '{ print $2 }')" >> "$GITHUB_OUTPUT"
           printf '::notice::Packaged %s (%s bytes)\n' "$(basename "$CRATE_FILE")" "$CRATE_SIZE"
 
       - name: Generate SHA-256 checksums
@@ -226,6 +237,8 @@ jobs:
             target/package/SHA256SUMS
           retention-days: 90
           if-no-files-found: error
+          # A re-run of the whole workflow uploads under the same name again.
+          overwrite: true
 
 # ── Job 5: Create GitHub release with artifacts & release notes ───────────────
   github-release:
@@ -300,7 +313,7 @@ jobs:
         run: |
           TAG="v${VERSION}"
 
-          PRE_FLAG=""
+          PRE_FLAG="--prerelease=false"
           [[ "$IS_PRE" == "true" ]] && PRE_FLAG="--prerelease"
 
           RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
@@ -311,7 +324,11 @@ jobs:
           if gh release view "$TAG" &>/dev/null; then
             echo "::warning::Release ${TAG} already exists — updating it."
             echo "::group::Updating GitHub release ${TAG}"
+            # --draft=false: a release left as a draft (created by hand, or by an
+            # earlier failed run) would otherwise stay invisible. $PRE_FLAG sets
+            # the prerelease state both ways, not only to true.
             gh release edit "$TAG" \
+              --draft=false \
               $PRE_FLAG \
               --title "${CRATE} ${TAG}" \
               --notes-file release_notes.md
@@ -374,9 +391,49 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          # The rustc the `package` job attested with: the .crate's bytes depend
+          # on cargo, and this job runs after an approval that can take days.
+          # (rust-toolchain.toml, which overrides the default this action sets,
+          # pins the same release; the next step checks that they agree.)
+          toolchain: ${{ needs.package.outputs.rustc }}
+
+      # Outside the checkout: `cargo package` would otherwise count the
+      # downloaded files as uncommitted changes, and include them in the .crate.
+      - name: Download the attested artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-artifacts
+          path: ${{ runner.temp }}/release-artifacts
+
+      # crates.io versions cannot be replaced, and the post-publish check below
+      # can only report a mismatch. Package here exactly as `cargo publish` will
+      # (no build script runs: --no-verify) and compare with the attested hash
+      # first, so a .crate that differs fails before anything is uploaded, with
+      # no credential in this job yet.
+      - name: The .crate about to be published is the attested one
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          CRATE: ${{ needs.validate.outputs.crate_name }}
+          ATTESTED_RUSTC: ${{ needs.package.outputs.rustc }}
+        shell: bash
+        run: |
+          FILE="${CRATE}-${VERSION}.crate"
+          rustc_here=$(rustc --version | awk '{ print $2 }')
+          if [[ -z "$ATTESTED_RUSTC" || "$rustc_here" != "$ATTESTED_RUSTC" ]]; then
+            echo "::error::this job's rustc is '$rustc_here', the package job's was '$ATTESTED_RUSTC'; nothing was published."
+            exit 1
+          fi
+          cargo package --no-verify --locked
+          want=$(awk -v f="$FILE" '$2 == f || $2 == "./" f { print $1 }' "$RUNNER_TEMP/release-artifacts/SHA256SUMS")
+          got=$(sha256sum "${CARGO_TARGET_DIR:-target}/package/$FILE" | awk '{ print $1 }')
+          echo "attested: $want"
+          echo "packaged: $got"
+          if [[ -z "$want" || "$want" != "$got" ]]; then
+            echo "::error::this job packages a different $FILE than the attested one; nothing was published."
+            exit 1
+          fi
 
       # Preferred credential: crates.io Trusted Publishing, which exchanges
       # this job's OIDC token for a short-lived crates.io token (revoked when
@@ -388,7 +445,7 @@ jobs:
       - name: Obtain a crates.io token via Trusted Publishing
         id: trusted
         continue-on-error: true
-        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
 
       - name: Publish to crates.io
         env:
@@ -444,12 +501,6 @@ jobs:
             echo "> docs.rs may take a few minutes to build and index the documentation."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Download the attested artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-artifacts
-          path: release-artifacts/
-
       # The attestation and SHA256SUMS describe the `.crate` the `package` job
       # built; crates.io serves the one `cargo publish` just built. `cargo
       # package` is reproducible (crates.io's 0.18.0 is byte-identical to a
@@ -471,7 +522,7 @@ jobs:
             sleep 20
           done
           test -s "/tmp/$FILE" || { echo "::error::could not download $FILE from crates.io"; exit 1; }
-          want=$(awk -v f="$FILE" '$2 == f || $2 == "./" f { print $1 }' release-artifacts/SHA256SUMS)
+          want=$(awk -v f="$FILE" '$2 == f || $2 == "./" f { print $1 }' "$RUNNER_TEMP/release-artifacts/SHA256SUMS")
           got=$(sha256sum "/tmp/$FILE" | awk '{ print $1 }')
           echo "attested:  $want"
           echo "crates.io: $got"

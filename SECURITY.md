@@ -5,30 +5,42 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-|---------|--------------------|
-| 0.19.x  | Yes                |
-| 0.18.x  | Yes                |
-| 0.16.x  | No (end-of-life)   |
-| 0.15.x  | No (end-of-life)   |
-| 0.14.x  | No (end-of-life)   |
-| 0.13.x  | No (end-of-life)   |
-| 0.12.x  | No (end-of-life)   |
-| 0.11.x  | No (end-of-life)   |
-| 0.10.x  | No (end-of-life)   |
-| 0.9.x   | No (end-of-life)   |
-| 0.8.x   | No (end-of-life)   |
-| 0.7.x   | No (end-of-life)   |
-| 0.6.x   | No (end-of-life)   |
-| 0.5.x   | No (end-of-life)   |
-| 0.4.x   | No (end-of-life)   |
-| 0.3.x   | No (end-of-life)   |
-| 0.2.x   | No (end-of-life)   |
-| 0.1.x   | No (end-of-life)   |
+| Version        | Supported                               |
+|----------------|-----------------------------------------|
+| 0.20.x         | Yes                                     |
+| 0.19.x         | Yes                                     |
+| 0.18.x         | No (end-of-life)                        |
+| 0.16.x         | No (end-of-life)                        |
+| 0.3.x – 0.15.x | No (end-of-life); **do not use** (below) |
 
-0.17.x does not appear in this table because it was never published: 0.17.0
-was prepared but not released, and its changes ship in 0.18.0 (see the 0.18.0
-entry in `CHANGELOG.md`). On crates.io, 0.18.0 follows 0.16.0.
+The two newest minor lines are supported. quack-rs is pre-1.0, so Cargo
+treats each minor release as a new major line: a project that depends on
+`quack-rs = "0.19"` never moves to 0.20 by itself. The previous line therefore
+keeps receiving security fixes, as patch releases of that line, until the next
+minor release ends its support. 0.18.x reached end-of-life with 0.20.0.
+
+**Releases before 0.16.0 must not be used.** They carry the memory-safety
+defects fixed in 0.16.0 (the "Security" part of its entry in `CHANGELOG.md`).
+Checked against the published crates:
+
+- `DuckStringView::from_bytes` (0.3.0 – 0.15.0) was a safe function that
+  dereferenced a pointer read from its argument's bytes, so safe code could
+  read arbitrary memory.
+- `CopyGlobalInitInfo::get_file_path` (0.8.0 – 0.15.0) freed a string DuckDB
+  still owned, corrupting the heap on every `COPY ... TO` through a quack-rs
+  copy function.
+- With the `duckdb-1-5` feature (0.4.0 – 0.15.0), nothing checked that the
+  running DuckDB's C API function table had the layout the extension was
+  compiled against; loaded into another DuckDB release, such a build could
+  call the wrong functions (`double free or corruption`).
+
+None of these versions has been yanked from crates.io; upgrade to a supported
+line.
+
+crates.io has no 0.1.x or 0.2.x: the first published version is 0.3.0. 0.17.x
+does not appear either because it was never published: 0.17.0 was prepared
+but not released, and its changes ship in 0.18.0 (see the 0.18.0 entry in
+`CHANGELOG.md`). On crates.io, 0.18.0 follows 0.16.0.
 
 ## Reporting a Vulnerability
 

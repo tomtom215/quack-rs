@@ -5,21 +5,37 @@
 #
 # Jobs: check, test, test-bundled, test-bundled-prebuilt, test-older-engines,
 #       test-duckdb-2-0, test-bundled-duckdb-2-0, test-duckdb-1-5,
-#       wasm, clippy, clippy-beta, fmt, doc, msrv, dependency-floor,
-#       bench-compile, example-check, scaffold-compile, symbol-check,
-#       abi-table, platform-table, spdx-list, autoload-entries, book,
-#       msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
-#       abi-guard-layout, publish-dry-run, security, osv-scan, nightly, miri,
-#       leak-check, asan, semver, fuzz, ci-ok (the aggregate required check).
+#       wasm, clippy, clippy-beta, latest-stable, fmt, doc, msrv,
+#       dependency-floor, bench-compile, example-check, scaffold-compile,
+#       symbol-check, abi-table, platform-table, spdx-list, autoload-entries,
+#       book, msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
+#       abi-guard-layout, publish-dry-run, security, osv-scan, hygiene, nightly,
+#       miri, leak-check, asan, semver, fuzz, workflow-lint, ci-ok (the
+#       aggregate required check).
 #
-# `dtolnay/rust-toolchain` is pinned, in every workflow, to e2a55d2 -- a commit
-# on the action's `master` branch (2026-10-08; it moved action inputs into
-# environment variables, upstream #187). The action's per-toolchain
-# branches (`stable`, `nightly`, ...) are regenerated, so a commit taken from
-# one of them stops being reachable from any ref and can be garbage-collected;
-# the previous pin, 631a55b, was such a commit. On `master` the `toolchain:`
-# input is required, so every use states it. The pin fixes the action's code,
-# not the Rust version: `toolchain: stable` still installs the current stable.
+# `dtolnay/rust-toolchain` is pinned, in every workflow, to one commit on the
+# action's `master` branch (commented `# master`: the branch publishes no
+# release tags, and Dependabot moves the pin to master's newest commit; a date
+# in the comment went stale with the first such bump). Every pin since e2a55d2
+# (2026-10-08) passes the action's inputs through environment variables
+# (upstream #187). The action's per-toolchain branches (`stable`, `nightly`,
+# ...) are regenerated, so a commit taken from one of them stops being
+# reachable from any ref and can be garbage-collected; the pin before e2a55d2,
+# 631a55b, was such a commit. On `master` the `toolchain:` input is required,
+# so every use states it. The pin fixes the action's code, not the Rust version.
+# scripts/check-action-pins.py (the `doc` job) keeps every workflow, and the
+# workflows the scaffold generates, on the same commit of each action.
+#
+# The Rust version is pinned separately: rust-toolchain.toml names an exact
+# stable release, and every job that is not about another toolchain installs
+# that one (`toolchain: 1.99.1`). With `-D warnings` and clippy's pedantic and
+# nursery groups, a floating `stable` let each Rust release (every six weeks)
+# change rustc, rustfmt and clippy under every job at once, with no change
+# here. scripts/check-toolchain-pin.py (the `doc` job) fails when a workflow
+# names another toolchain outside the informational jobs. Those see the next
+# releases first: `latest-stable` (the current stable), `clippy-beta`,
+# `nightly`. The pin is moved by a pull request (CONTRIBUTING.md, "The Rust
+# toolchain").
 
 name: CI
 
@@ -60,6 +76,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # On a tag (a release, which reaches this file through workflow_call) the
+  # upstream-comparison guards (scripts/upstream-guard.sh) fail instead of
+  # skipping when upstream cannot be reached.
+  QUACK_STRICT_UPSTREAM: ${{ github.ref_type == 'tag' && '1' || '' }}
   RUSTFLAGS: "-D warnings"
   RUSTDOCFLAGS: "-D warnings"
   # Harden against transient crates.io/CDN download flakes — notably
@@ -78,10 +98,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo check --all-targets
 
   test:
@@ -96,10 +116,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --all-targets
       # Every other job builds tests in debug or with the repository's release
       # profile (one codegen unit, fat LTO). A user's crate usually has Cargo's
@@ -132,10 +152,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # --no-fail-fast: cargo otherwise stops at the first failing test
       # binary, hiding failures in the ones after it.
       - run: cargo test --all-targets --features bundled-test --no-fail-fast
@@ -169,10 +189,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Download pre-built libduckdb
         # The version is DERIVED from Cargo.lock, not written here. It used to
         # be hard-coded with a comment asking the next person to keep it in
@@ -264,10 +284,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Pin the bindings to the engine and download its library
         # The test shim refuses a library whose duckdb_ext_api_v1 size differs
         # from the bindings', so both must be the same release.
@@ -310,10 +330,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Pin the DuckDB 2.0 bindings and download libduckdb v2.0.0
         run: |
           set -euo pipefail
@@ -354,10 +374,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Pin the DuckDB 2.0 bindings
         run: |
           set -euo pipefail
@@ -375,10 +395,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo check --all-targets --features duckdb-1-5
       - run: cargo test --all-targets --features duckdb-1-5
       - run: cargo clippy --all-targets --features duckdb-1-5 -- -D warnings
@@ -397,11 +417,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.99.1
           targets: wasm32-unknown-emscripten
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # DuckDB-WASM target. quack-rs's own lib must compile for wasm32; in
       # loadable-extension mode libduckdb-sys is headers-only, so `cargo check`
       # needs no emscripten toolchain. `--all-targets` is intentionally avoided —
@@ -442,11 +462,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.99.1
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo clippy --all-targets -- -D warnings
 
   # Informational early-warning for clippy lints graduating to stable.
@@ -461,11 +481,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: beta
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # `+beta` for the same reason as the MSRV job above: without it this ran
       # stable clippy and duplicated the `clippy` job.
       - run: cargo +beta clippy --all-targets --features duckdb-1-5-4 -- -D warnings
@@ -486,6 +506,38 @@ jobs:
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
         run: cargo +beta clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-4 -- -D warnings
 
+  # Informational: the current stable Rust, whatever rust-toolchain.toml pins.
+  # Every blocking job builds with the pinned release, so a new stable cannot
+  # turn them red overnight; this job is where its new lints and warnings show
+  # up first, on every pull request and on the weekly schedule. When stable is
+  # newer than the pin and this job is green, move the pin (CONTRIBUTING.md,
+  # "The Rust toolchain"); when it is red, fix the findings in the same PR.
+  latest-stable:
+    name: Latest stable Rust (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      # Over rust-toolchain.toml, for every rustup proxy this job runs,
+      # rust-cache's own `rustc -vV` (part of its cache key) included.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: The stable release this run checks
+        run: rustc +stable --version
+      - run: cargo +stable fmt -- --check
+      - run: cargo +stable clippy --all-targets -- -D warnings
+      - run: cargo +stable clippy --all-targets --features duckdb-1-5-4 -- -D warnings
+      - run: cargo +stable doc --no-deps --features duckdb-1-5-4
+      - run: cargo +stable test --lib --features duckdb-1-5-4
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -494,9 +546,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.99.1
           components: rustfmt
       - run: cargo fmt -- --check
 
@@ -508,10 +560,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
       # duckdb-1-5) rather than --all-features, which would compile DuckDB
       # from source here; `test-bundled` documents --all-features on Linux,
@@ -545,6 +597,25 @@ jobs:
       # `ci-ok` is the one required check; it is only as good as its `needs`.
       - name: The ci-ok job waits on every blocking job
         run: scripts/check-ci-aggregate.py
+      # The six upstream-comparison steps run through this wrapper; a mapping
+      # that read a missing script, or exit 2 on a release, as a pass would turn
+      # each of them into a check of nothing.
+      - name: The upstream-guard wrapper maps exit codes as documented
+        run: scripts/upstream-guard.sh --self-test
+      # Cargo.toml's version, every committed Cargo.lock, the CHANGELOG,
+      # CITATION.cff, SECURITY.md and every `quack-rs = "0.X"` snippet must name
+      # the same release.
+      - name: Release metadata agrees with Cargo.toml
+        run: python3 scripts/check-release-metadata.py
+      # Every job builds with the toolchain rust-toolchain.toml pins, except the
+      # informational ones and those about another toolchain (MSRV, nightly).
+      - name: Workflows use the pinned Rust toolchain
+        run: python3 scripts/check-toolchain-pin.py
+      # One commit per action across the workflows, and the same commits in the
+      # workflows the scaffold generates (src/scaffold/templates_ci.rs), which
+      # Dependabot does not update.
+      - name: Action pins agree, here and in the scaffold's templates
+        run: python3 scripts/check-action-pins.py
 
   msrv:
     name: MSRV (1.86.0)
@@ -554,15 +625,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.86.0"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # `+1.86.0` is not optional, for the same reason the `nightly` and `miri`
-      # jobs below use `+nightly`: `rust-toolchain.toml` pins `channel =
-      # "stable"`, and a rustup toolchain file overrides the default this action
-      # sets. A bare `cargo check` here runs stable and tests nothing -- the
-      # MSRV gate was inert. This matches `cargo +1.86.0 check` in CONTRIBUTING.
+      # jobs below use `+nightly`: `rust-toolchain.toml` pins the toolchain
+      # (`channel`), and a rustup toolchain file overrides the default this
+      # action sets. A bare `cargo check` here runs the pinned release and tests
+      # nothing -- the MSRV gate was inert. This matches `cargo +1.86.0 check`
+      # in CONTRIBUTING.
       #
       # Against what a 1.86.0 user's Cargo resolves, not the committed
       # Cargo.lock: that carries the newest compatible releases, and
@@ -599,10 +671,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Resolve the declared floor
         run: |
           set -euo pipefail
@@ -619,10 +691,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo bench --no-run
       # The engine-level benchmark extension (benches/engine) is a separate crate;
       # keep it compiling, and its driver parsing.
@@ -641,10 +713,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
+          # action caches only the root one unless told otherwise.
+          workspaces: |
+            . -> target
+            examples/hello-ext -> target
       - run: cargo check --manifest-path examples/hello-ext/Cargo.toml --all-targets
       - name: Clippy (Linux only)
         if: runner.os == 'Linux'
@@ -659,12 +737,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # `--test integration_test` builds the one test binary that holds the test
+      # (the unfiltered form compiled nine, and eight of them ran nothing).
+      # `--exact` plus the grep: `cargo test <filter>` exits 0 when the filter
+      # matches no test, so renaming the test would have left this job green,
+      # running nothing. The summary line must say exactly one test passed.
       - name: Verify scaffold output compiles
-        run: cargo test scaffold_generated_code_compiles -- --nocapture
+        run: |
+          set -euo pipefail
+          cargo test --test integration_test scaffold_generated_code_compiles -- --exact --nocapture | tee /tmp/scaffold-compile.log
+          grep -qE '^test result: ok\. 1 passed;' /tmp/scaffold-compile.log
 
   symbol-check:
     name: Symbol check (hello-ext · ${{ matrix.os }})
@@ -678,10 +764,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
+          # action caches only the root one unless told otherwise.
+          workspaces: |
+            . -> target
+            examples/hello-ext -> target
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Verify extension entry point symbol (Linux)
@@ -723,24 +815,16 @@ jobs:
         # These guards fetch from upstream. Exit 2 is their documented
         # "could not check" code -- a DuckDB release header was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
-        run: |
-          python3 scripts/check-abi-table.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
-      # Every slot of the C extension API is either used under src/ or listed,
-      # with a reason, in scripts/api-coverage-allowlist.txt, so a slot a DuckDB
-      # release adds is noticed instead of left for someone to read the header.
+        run: scripts/upstream-guard.sh scripts/check-abi-table.py
+      # Every slot of the C extension API is either used by library code under
+      # src/ or listed, with a reason, in scripts/api-coverage-allowlist.txt, so
+      # a slot a DuckDB release adds is noticed instead of left for someone to
+      # read the header. "Used" excludes comments, string literals and
+      # test-only code; the self-test holds the scanner to that.
+      - name: The C API surface scanner, on fixed snippets
+        run: python3 scripts/check-api-coverage.py --self-test
       - name: Classify the C API surface
-        run: |
-          python3 scripts/check-api-coverage.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-api-coverage.py
 
   platform-table:
     name: Platform list (vs upstream distribution matrix)
@@ -759,13 +843,7 @@ jobs:
         # These guards fetch from upstream. Exit 2 is their documented
         # "could not check" code -- the distribution matrix was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
-        run: |
-          python3 scripts/check-platform-table.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-platform-table.py
 
   spdx-list:
     name: SPDX shortlist (vs official registry)
@@ -783,13 +861,7 @@ jobs:
         # These guards fetch from upstream. Exit 2 is their documented
         # "could not check" code -- the SPDX registry was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
-        run: |
-          python3 scripts/check-spdx-list.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-spdx-list.py
 
   autoload-entries:
     name: Catalog autoload names (vs every supported DuckDB)
@@ -807,13 +879,7 @@ jobs:
       - name: Verify src/catalog.rs covers every supported release
         # Exit 2 is the documented "could not check" code (upstream
         # unreachable) and must not be read as drift.
-        run: |
-          python3 scripts/check-autoload-entries.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-autoload-entries.py
 
   book:
     name: Book builds (mdBook)
@@ -826,9 +892,9 @@ jobs:
           # The versioned-site step below builds each release line from its tag.
           fetch-depth: 0
           fetch-tags: true
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       # docs.yml builds the book only when main is pushed, so a broken page
       # was found after merge. The version is the one book/mdbook-version pins,
       # which docs.yml's build script also reads.
@@ -871,13 +937,7 @@ jobs:
         # These guards fetch from upstream. Exit 2 is their documented
         # "could not check" code -- the pinned-toolchain config was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
-        run: |
-          python3 scripts/check-msrv-vs-duckdb-ci.py || status=$?
-          if [ "${status:-0}" -eq 2 ]; then
-            echo "::warning::upstream unreachable; check skipped, not failed"
-            exit 0
-          fi
-          exit "${status:-0}"
+        run: scripts/upstream-guard.sh scripts/check-msrv-vs-duckdb-ci.py
 
   extension-load:
     name: Extension load test (DuckDB ${{ matrix.duckdb }})
@@ -903,10 +963,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
+          # action caches only the root one unless told otherwise.
+          workspaces: |
+            . -> target
+            examples/hello-ext -> target
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Build append_metadata
@@ -983,10 +1049,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
@@ -1182,10 +1248,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
@@ -1316,10 +1382,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build and stamp a duckdb-1-5 demo against the pinned bindings
         run: |
           set -euo pipefail
@@ -1454,12 +1520,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # `--locked`, as release.yml's `package` and `publish` jobs run it: without
+      # it a Cargo.toml version bump that left Cargo.lock behind passed here
+      # (cargo quietly rewrote the lock file) and failed only at release time.
+      # No `--allow-dirty`: a clean checkout is what is being packaged.
       - name: cargo publish --dry-run
-        run: cargo publish --dry-run --allow-dirty
+        run: cargo publish --dry-run --locked
 
   security:
     name: Security (cargo-deny)
@@ -1469,7 +1539,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Installed explicitly, like every other job, rather than left to
+      # rustup's on-demand install of what rust-toolchain.toml names (on by
+      # default since rustup 1.28.1, but an image can turn it off).
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: false
       - name: Install cargo-deny
@@ -1481,6 +1557,21 @@ jobs:
         run: cargo install cargo-deny --locked --version "0.20.2"
       - name: Run cargo-deny check
         run: cargo deny check
+      # The other committed graphs (hello-ext, the fuzz crate, the book's
+      # doctest crate, and benches/engine once its lockfile is committed) had
+      # their advisories read by the OSV job only. deny.toml cannot be applied
+      # to them (it is strict about unused licenses, and libfuzzer-sys is
+      # "(MIT OR Apache-2.0) AND NCSA"), so they have their own config.
+      - name: Run cargo-deny check on the CI crates
+        run: |
+          set -euo pipefail
+          crates=(examples/hello-ext fuzz book/doctest)
+          if [ -f benches/engine/Cargo.lock ]; then crates+=(benches/engine); fi
+          for m in "${crates[@]}"; do
+            echo "::group::cargo deny: $m"
+            cargo deny --manifest-path "$m/Cargo.toml" --config deny.ci-crates.toml check
+            echo "::endgroup::"
+          done
 
   # OSV / GHSA advisory scan. The cargo-deny job above consults only the RustSec
   # advisory database; OSV.dev aggregates GHSA *and* RustSec, so GHSA-only
@@ -1495,9 +1586,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - name: Install osv-scanner (pinned, checksum-verified)
         run: |
           VER=2.7.0
@@ -1509,14 +1600,62 @@ jobs:
           chmod +x osv-scanner
       - name: Scan every committed lockfile against OSV
         run: |
-          # All four committed lockfiles. fuzz/Cargo.lock and then
+          set -euo pipefail
+          # Every committed lockfile. fuzz/Cargo.lock and then
           # book/doctest/Cargo.lock were missing: their dependencies are
           # CI-only, but an unscanned lockfile is an unscanned lockfile.
-          ./osv-scanner --config=osv-scanner.toml \
-            --lockfile=Cargo.lock \
-            --lockfile=examples/hello-ext/Cargo.lock \
-            --lockfile=fuzz/Cargo.lock \
-            --lockfile=book/doctest/Cargo.lock
+          # benches/engine/Cargo.lock was gitignored (bench-compile resolved
+          # that crate afresh each run); it is scanned once it is committed.
+          lockfiles=(Cargo.lock examples/hello-ext/Cargo.lock fuzz/Cargo.lock book/doctest/Cargo.lock)
+          if [ -f benches/engine/Cargo.lock ]; then lockfiles+=(benches/engine/Cargo.lock); fi
+          args=()
+          for f in "${lockfiles[@]}"; do args+=("--lockfile=$f"); done
+          ./osv-scanner --config=osv-scanner.toml "${args[@]}"
+
+  # Build-free hygiene checks: spelling (typos.toml), TOML style (.taplo.toml)
+  # and unused dependencies (cargo-machete; the manifests list under
+  # [package.metadata.cargo-machete] what it cannot see: build.rs, a
+  # [[bench]], generated doctests). Each tool is a release binary pinned by
+  # version and SHA-256, as in osv-scan. Only cargo-machete's release publishes
+  # a checksum file (it matches); typos and taplo publish none, so their
+  # hashes are of the release assets as GitHub served them when pinned.
+  hygiene:
+    name: Hygiene (typos, taplo, machete)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # cargo-machete --with-metadata runs `cargo metadata`.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.99.1
+      - name: Install typos, taplo and cargo-machete (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          fetch() { # <url> <sha256> <file>
+            curl -fsSL --retry 5 -o "$3" "$1"
+            echo "$2  $3" | sha256sum -c -
+          }
+          cd "$RUNNER_TEMP"
+          fetch https://github.com/crate-ci/typos/releases/download/v1.46.0/typos-v1.46.0-x86_64-unknown-linux-musl.tar.gz \
+            c62a626df385c96574743fd4974aeb271a41a67d080a0398e36e1a42782f614a typos.tgz
+          tar -xzf typos.tgz -C bin ./typos
+          fetch https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-x86_64.gz \
+            8fe196b894ccf9072f98d4e1013a180306e17d244830b03986ee5e8eabeb6156 taplo.gz
+          gunzip -c taplo.gz > bin/taplo
+          chmod +x bin/taplo
+          fetch https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-x86_64-unknown-linux-musl.tar.gz \
+            48200087f54c55aabcd4db4af1e25742b49846c02a1b1bfa134711945b35b2e9 machete.tgz
+          tar -xzf machete.tgz --strip-components=1 -C bin \
+            cargo-machete-v0.9.2-x86_64-unknown-linux-musl/cargo-machete
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: typos
+      - run: taplo fmt --check
+      - run: taplo lint
+      - run: cargo machete --with-metadata
 
   nightly:
     name: Nightly (informational)
@@ -1527,13 +1666,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: nightly
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # `+nightly` is not optional: `rust-toolchain.toml` pins `channel =
-      # "stable"`, and a rustup toolchain file overrides the default this action
-      # sets, so a bare `cargo` here runs stable and this job tests nothing new.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # `+nightly` is not optional: `rust-toolchain.toml` pins a stable release
+      # (`channel`), and a rustup toolchain file overrides the default this
+      # action sets, so a bare `cargo` here runs that release and this job
+      # tests nothing new.
       - name: Test (nightly, informational)
         run: cargo +nightly test --all-targets
 
@@ -1545,11 +1685,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: nightly
           components: miri, rust-src
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # This crate is ~40% unsafe by surface area, and the parts that are *not*
       # FFI -- the duckdb_string_t decoder, the validity bitmap arithmetic, the
       # UUID bit flip, the interval maths, the secret zeroizer -- are exactly
@@ -1575,9 +1715,9 @@ jobs:
           # what this job is for. `cargo test` still runs the full 256.
           PROPTEST_CASES: "8"
         # `+nightly` is not optional -- see the note in the `nightly` job:
-        # `rust-toolchain.toml` pins stable and overrides this action's default,
-        # so a bare `cargo miri` resolves to stable, where the `miri` component
-        # does not exist.
+        # `rust-toolchain.toml` pins a stable release and overrides this action's
+        # default, so a bare `cargo miri` resolves to that release, where the
+        # `miri` component does not exist.
         # `--features duckdb-1-5-4` matters: without it every `duckdb-1-5*`
         # module is cfg'd out, including `src/arrow.rs` -- the largest block of
         # pure-Rust `unsafe` in the crate, and exactly what Miri is here for.
@@ -1607,11 +1747,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: nightly
           components: rust-src
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Half of quack-rs's value proposition is RAII over DuckDB handles:
       # LogicalType, Value, QueryResult, OwnedDataChunk, FileHandle,
       # PreparedStatement, ErrorData, Appender. A missing destructor is not a
@@ -1619,7 +1759,10 @@ jobs:
       # way to catch one is to look at the heap afterwards.
       #
       # LeakSanitizer intercepts malloc globally, so it sees DuckDB's C++
-      # allocations even though libduckdb itself is not instrumented.
+      # allocations even though libduckdb itself is not instrumented -- but
+      # not the vector data buffers and LIST entry arrays the release
+      # libduckdb takes from its own jemalloc (CONTRIBUTING.md, "What the
+      # sanitizer and valgrind runs can and cannot see").
       - name: Fetch a prebuilt libduckdb
         # Version derived from Cargo.lock -- see the note in
         # `test-bundled-prebuilt`. Linking a libduckdb that does not match the
@@ -1653,7 +1796,11 @@ jobs:
   # freed" -- the class that produced the two heap-corruption defects fixed in
   # v0.16.0, and the one a crate doing raw pointer arithmetic into DuckDB's
   # memory is most exposed to. Miri cannot reach it: these paths call foreign
-  # functions.
+  # functions. Its blind spot: this links the release libduckdb, which takes
+  # vector data buffers and LIST entry arrays from its own jemalloc, and ASAN
+  # does not track those blocks, so an out-of-bounds or stale write into them
+  # is not reported here; Rust-heap and validity-mask errors are
+  # (CONTRIBUTING.md, "What the sanitizer and valgrind runs can and cannot see").
   #
   # Blocking since September 2026. It was `continue-on-error` until it had a
   # green run on main, because libduckdb itself is not instrumented and the
@@ -1671,11 +1818,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: nightly
           components: rust-src
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Fetch a prebuilt libduckdb
         # Version derived from Cargo.lock -- see `test-bundled-prebuilt`.
         run: |
@@ -1706,10 +1853,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # quack-rs is an SDK: its public API *is* the product, and a downstream
       # extension that stops compiling on a patch release is a worse outcome
       # than a missing feature. This compares the working tree against the
@@ -1779,10 +1926,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: nightly
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The description.yml parser is hand-rolled and reads a file from an
       # arbitrary GitHub repository; the duckdb_string_t decoder reads 16 bytes
       # whose meaning depends on a length field inside them. Both are exactly
@@ -1867,6 +2014,38 @@ jobs:
           path: fuzz/corpus
           key: fuzz-corpus-${{ github.run_id }}
 
+  # actionlint: workflow syntax and types, `needs` and `uses` references, the
+  # expression contexts, and shellcheck on every `run:` block. The
+  # binary is version- and checksum-pinned, like osv-scanner below.
+  # scripts/check-workflow-expressions.py predates this job and covers one class
+  # of the same errors without a download.
+  workflow-lint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          VER=1.7.12
+          # From the release's actionlint_${VER}_checksums.txt (linux_amd64).
+          SHA=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          curl -fsSL --retry 5 -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${VER}/actionlint_${VER}_linux_amd64.tar.gz"
+          echo "${SHA}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          # Without shellcheck on PATH actionlint skips every `run:` block
+          # silently; a lint that checks less than it says is worse than none.
+          command -v shellcheck >/dev/null || { echo "::error::shellcheck is not installed"; exit 1; }
+          # SC2129 ("group these redirects") is style, not a defect.
+          ./actionlint -color -ignore 'SC2129'
+
   # The one check branch protection should require. Every blocking job is in
   # `needs` (scripts/check-ci-aggregate.py, run by the `doc` job, fails when one
   # is missing), so adding or renaming a job never silently drops it from the
@@ -1907,11 +2086,13 @@ jobs:
       - publish-dry-run
       - security
       - osv-scan
+      - hygiene
       - miri
       - leak-check
       - asan
       - semver
       - fuzz
+      - workflow-lint
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

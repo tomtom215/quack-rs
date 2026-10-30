@@ -48,6 +48,13 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # soundness or security bug, and Cargo.lock is what CI and releases build.
 yanked = "deny"
 
+# Unmaintained and unsound crates anywhere in the graph, not only direct
+# dependencies (the default scope is "workspace"). No crate in any of the five
+# lockfiles is flagged today, so this costs nothing and catches a transitive
+# crate being abandoned.
+unmaintained = "all"
+unsound = "all"
+
 # IDs of advisories to explicitly ignore (document reason in comment).
 # Example: ignore = ["RUSTSEC-2023-0001"]  # false positive for our usage pattern
 ignore = []
@@ -59,8 +66,11 @@ ignore = []
 # same unsafe crate with different soundness properties).
 multiple-versions = "warn"
 
-# Wildcard version requirements (e.g., "*") in direct dependencies: warn.
-wildcards = "warn"
+# Wildcard version requirements (e.g., "*") in direct dependencies: deny. A path
+# dependency without a version is not a wildcard in this sense (the examples and
+# CI crates depend on the working copy by path).
+wildcards = "deny"
+allow-wildcard-paths = true
 
 # Highlight which dependency paths cause multiple-version warnings.
 highlight = "all"
@@ -87,7 +97,11 @@ unknown-registry = "deny"
 # Git sources bypass the crates.io review pipeline and complicate auditing.
 unknown-git = "deny"
 
-allow-registry = ["https://github.com/rust-lang/crates.io-index", "sparse+https://index.crates.io/"]
+# Cargo.lock records crates.io as this URL whether the sparse or the git index
+# was used, so this is the only form cargo-deny ever sees; listing
+# `sparse+https://index.crates.io/` too only produced an `unmatched-source`
+# warning on every run.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 # Uncomment to allow specific git sources (e.g., for unreleased patches):
 # allow-git = ["https://github.com/some-org/some-repo"]
