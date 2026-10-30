@@ -39,7 +39,10 @@ impl AggregateFunctionBuilder {
     /// aggregate function or macro, built-in or not — including an earlier
     /// registration of this same aggregate. (`DuckDB` registers with
     /// `ALTER_ON_CONFLICT`, and turning the create into an alter is not
-    /// implemented for aggregates: `CreateInfo::GetAlterInfo` throws.)
+    /// implemented for aggregates: `CreateInfo::GetAlterInfo` throws.) The C
+    /// API reports only a failure, so after one quack-rs looks the name up in
+    /// `duckdb_functions()` and the error names the entry that holds it; a
+    /// registration that succeeds scans nothing.
     ///
     /// # Safety
     ///
@@ -174,10 +177,14 @@ impl AggregateFunctionBuilder {
         if result == DuckDBSuccess {
             Ok(())
         } else {
+            let name = self.name.to_string_lossy();
+            // SAFETY: `con` is valid per this function's contract.
+            let reason = unsafe { super::super::collision::taken_name_reason(con, &name) };
             Err(ExtensionError::new(format!(
                 "duckdb_register_aggregate_function failed for '{name}': {hint}",
-                name = self.name.to_string_lossy(),
-                hint = crate::error::REGISTRATION_FAILURE_HINT
+                hint = reason
+                    .as_deref()
+                    .unwrap_or(crate::error::REGISTRATION_FAILURE_HINT)
             )))
         }
     }

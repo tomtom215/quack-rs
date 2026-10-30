@@ -37,9 +37,36 @@ pub(super) struct ScalarOverloadSpec {
     pub(super) bind: Option<ScalarBindFn>,
     #[cfg(feature = "duckdb-1-5")]
     pub(super) init: Option<ScalarInitFn>,
+    /// The name a closure-built overload was built under
+    /// ([`ScalarFunctionSetBuilder::overload_typed`]), checked against the
+    /// set's.
+    ///
+    /// [`ScalarFunctionSetBuilder::overload_typed`]: super::ScalarFunctionSetBuilder::overload_typed
+    pub(super) built_as: Option<String>,
 }
 
 impl ScalarOverloadSpec {
+    /// The overload a closure-built function's builder describes, with its
+    /// signature, callback, `extra_info` and stability as they are.
+    pub(super) fn from_function(function: super::ScalarFunctionBuilder) -> Self {
+        Self {
+            built_as: Some(function.name().to_owned()),
+            params: function.params,
+            logical_params: function.logical_params,
+            return_type: function.return_type,
+            return_logical: function.return_logical,
+            function: function.function,
+            null_handling: function.null_handling,
+            extra_info: function.extra_info,
+            varargs: function.varargs,
+            volatile: function.volatile,
+            #[cfg(feature = "duckdb-1-5")]
+            bind: function.bind,
+            #[cfg(feature = "duckdb-1-5")]
+            init: function.init,
+        }
+    }
+
     /// Checks that overload `index` has everything registration needs,
     /// without any `DuckDB` call.
     pub(super) fn check_complete(&self, index: usize) -> Result<(), ExtensionError> {
@@ -274,6 +301,7 @@ impl ScalarOverloadBuilder {
             bind: self.bind,
             #[cfg(feature = "duckdb-1-5")]
             init: self.init,
+            built_as: None,
         }
     }
 }

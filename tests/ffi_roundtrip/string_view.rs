@@ -152,6 +152,97 @@ fn string_views_decode_the_records_duckdb_wrote() {
     }
 }
 
+/// Bytes that are not UTF-8 although they start with an ASCII byte, and one
+/// valid row: inline, a truncated sequence as the last inline byte, and the
+/// pointer form. `DuckDB` validates every VARCHAR SQL builds, but stores
+/// these as given through `duckdb_unsafe_vector_assign_string_element_len`
+/// (as the CLI's `getenv` stores environment bytes).
+#[cfg(feature = "duckdb-1-5")]
+const NOT_UTF8: [&[u8]; 4] = [
+    b"x\xff\xfey",
+    b"abcdefghijk\xc3",
+    b"long-prefix-0123456789\xc3(",
+    b"abcd",
+];
+
+// BIGINT i -> NOT_UTF8[i % 4], assigned unchecked.
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::scalar_callback!(not_utf8_source, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    for row in 0..chunk.size() {
+        let bytes = NOT_UTF8[(unsafe { reader.read_i64(row) } % 4) as usize];
+        // SAFETY: `output` is this call's VARCHAR result vector and `row` is
+        // within the chunk; the bytes are copied (or inlined) by DuckDB.
+        unsafe {
+            libduckdb_sys::duckdb_unsafe_vector_assign_string_element_len(
+                output,
+                row as u64,
+                bytes.as_ptr().cast(),
+                bytes.len() as u64,
+            );
+        }
+    }
+});
+
+// VARCHAR -> "as_str is Some:bytes are UTF-8:read_str length".
+#[cfg(feature = "duckdb-1-5")]
+quack_rs::scalar_callback!(utf8_probe, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let data = unsafe { duckdb_vector_get_data(chunk.vector(0)) }
+        .cast::<u8>()
+        .cast_const();
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        // SAFETY: row `row` of a VARCHAR vector is a 16-byte `duckdb_string_t`.
+        let raw: &[u8; DUCK_STRING_SIZE] = unsafe {
+            &*data
+                .add(row * DUCK_STRING_SIZE)
+                .cast::<[u8; DUCK_STRING_SIZE]>()
+        };
+        let view = unsafe { DuckStringView::from_raw(raw) };
+        let bytes = unsafe { read_duck_blob(data, row) };
+        let summary = format!(
+            "{}:{}:{}",
+            view.as_str().is_some(),
+            std::str::from_utf8(bytes).is_ok(),
+            unsafe { reader.read_str(row) }.len()
+        );
+        unsafe { writer.write_varchar(row, &summary) };
+    }
+});
+
+/// `as_str` returns `None` for bytes that are not UTF-8, also when they
+/// start with ASCII ones: its fast path must look at every byte before it
+/// skips validation (a mutant that checked only the first byte handed out a
+/// `&str` of invalid UTF-8, which is undefined behaviour, and passed every
+/// other live test here). `read_str` reads such a row as `""`.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn string_views_refuse_invalid_utf8_behind_an_ascii_byte() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; each callback matches its declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("not_utf8_source")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::Varchar)
+            .function(not_utf8_source)
+            .register(fx.con())
+            .expect("register not_utf8_source");
+    }
+    register(&fx, "utf8_probe", TypeId::Varchar, utf8_probe);
+    let rows = text_rows(
+        &fx,
+        "SELECT utf8_probe(not_utf8_source(i)) FROM range(8) t(i) ORDER BY i",
+    );
+    let got: Vec<Option<&str>> = rows.iter().map(|r| r[0].as_deref()).collect();
+    let bad = Some("false:false:0");
+    let good = Some("true:true:4");
+    assert_eq!(got, [bad, bad, bad, good, bad, bad, bad, good]);
+}
+
 #[test]
 fn blob_views_read_bytes_that_are_not_utf8() {
     let fx = Fixture::open();

@@ -48,6 +48,16 @@
 //! Each is refused with the node it concerns. The walk mirrors `DuckDB`'s
 //! calls: [`Ctx`] carries what `DuckDB` passes to a node and where Arrow says
 //! the node's rows start, and a node is refused where the two differ.
+//!
+//! The walk also refuses what the Arrow specification forbids and `DuckDB`
+//! reads without a check, out of bounds ([`bounds`]): a list offset that is
+//! negative, decreasing or past the child, a negative list-view offset or
+//! size, a node shorter than the rows its parent reads from it, and a
+//! dictionary index outside the dictionary.
+
+mod bounds;
+
+pub(super) use bounds::Indices;
 
 use super::{ArrowSchema, RawArrowArray};
 
@@ -150,13 +160,20 @@ pub(super) struct Shape {
     pub kind: Kind,
     pub children: Vec<Self>,
     pub dictionary: Option<Box<Self>>,
+    /// A dictionary-encoded node's index type, `None` when the node is not
+    /// dictionary-encoded or its format is not an integer type.
+    pub indices: Option<Indices>,
 }
 
 impl Shape {
     /// The shape of `schema` and everything below it.
     pub(super) fn of(schema: &ArrowSchema) -> Self {
         let count = schema.child_count();
+        let dictionary = schema.dictionary().map(|d| Box::new(Self::of(d)));
         Self {
+            indices: dictionary
+                .as_ref()
+                .and_then(|_| Indices::of(schema.format().unwrap_or(""))),
             // SAFETY: a live schema's metadata is null or well-formed Arrow
             // metadata owned by the producer for as long as the schema lives.
             kind: kind_of(
@@ -167,7 +184,7 @@ impl Shape {
             children: (0..count)
                 .filter_map(|i| schema.child(i).map(Self::of))
                 .collect(),
-            dictionary: schema.dictionary().map(|d| Box::new(Self::of(d))),
+            dictionary,
         }
     }
 }
@@ -361,20 +378,22 @@ unsafe fn list_view_range(
     wide: bool,
 ) -> Result<(i64, i64), String> {
     let size = i64::try_from(size).map_err(|_| "row count out of range".to_owned())?;
+    let row = |i: i64| start.checked_add(i).ok_or("list view row out of range");
     let offset = |i| {
         // SAFETY: row `start + i` for `i < size` is covered by the caller's
         // contract.
-        unsafe { read_index(node, 1, start + i, wide) }.ok_or("no offsets buffer")
+        unsafe { read_index(node, 1, row(i)?, wide) }.ok_or("no offsets buffer")
     };
     let length = |i| {
         // SAFETY: as above, for the sizes buffer.
-        unsafe { read_index(node, 2, start + i, wide) }.ok_or("no sizes buffer")
+        unsafe { read_index(node, 2, row(i)?, wide) }.ok_or("no sizes buffer")
     };
     let mut lowest = if size > 0 { offset(0)? } else { 0 };
     let mut total: i64 = 0;
     let mut furthest: i64 = 0;
     for i in 0..size {
         let (o, l) = (offset(i)?, length(i)?);
+        bounds::list_view_entry(row(i)?, o, l)?;
         total = total.saturating_add(l);
         if l != 0 {
             lowest = lowest.min(o);
@@ -525,6 +544,7 @@ unsafe fn check_node(
         }
         let arrow = in_range(ctx.arrow_start(node.offset))?;
         let duck = in_range(ctx.duck_start(node.offset))?;
+        bounds::covers(node, ctx)?;
         if ctx.size > 0 && duck != arrow {
             return Err(format!(
                 "dictionary indices would be read from row {duck} where Arrow puts them at row \
@@ -571,6 +591,22 @@ unsafe fn check_node(
         }
         // SAFETY: a valid dictionary-encoded array's dictionary is live.
         let dict = unsafe { node.dictionary.as_ref() }.ok_or("the dictionary is null")?;
+        let indices = shape
+            .indices
+            .ok_or("a dictionary-encoded array whose indices are not of an integer type")?;
+        // SAFETY: `covers` confirmed the node holds the rows read from
+        // `arrow` on, and `DuckDB` masks the NULL rows of its own validity
+        // (read from `arrow` too, checked above) only when `null_count > 0`.
+        unsafe {
+            bounds::dictionary_indices(
+                node,
+                indices,
+                arrow,
+                ctx.size,
+                dict.length,
+                own_nulls && node.null_count > 0,
+            )
+        }?;
         let dict_ctx = Ctx {
             size: u64::try_from(dict.length).unwrap_or(0),
             ..Ctx::column(0)
@@ -620,6 +656,7 @@ unsafe fn check_node(
     }
     let reads_values = !matches!(shape.kind, Kind::Struct | Kind::FixedList(_));
     let start = in_range(ctx.duck_start(node.offset))?;
+    bounds::covers(node, ctx)?;
     if rows && reads_values && start != arrow {
         return Err(format!(
             "rows would be read from row {start} where Arrow puts them at row {arrow}"
@@ -656,7 +693,7 @@ unsafe fn check_node(
             Ok(())
         }
         Kind::List { wide, .. } | Kind::ListView { wide } => {
-            let size = i64::try_from(ctx.size).map_err(|_| "row count out of range")?;
+            let item = child(0)?;
             // A list `DuckDB` converts as zero rows is empty to it whatever its
             // offsets say: `ConvertArrowListOffsetsTemplated` returns 0 and 0
             // for `size == 0`, and `ArrowToDuckDBList` then reads the child as
@@ -668,15 +705,9 @@ unsafe fn check_node(
                 unsafe { list_view_range(node, start, ctx.size, wide) }?
             } else {
                 // SAFETY: a list's offsets buffer holds `size + 1` entries
-                // from its start.
-                let first =
-                    unsafe { read_index(node, 1, start, wide) }.ok_or("no offsets buffer")?;
-                // SAFETY: as above.
-                let last = unsafe { read_index(node, 1, start + size, wide) }
-                    .ok_or("no offsets buffer")?;
-                (first, last - first)
+                // from its start (`covers` confirmed the node holds the rows).
+                unsafe { bounds::list_range(node, start, ctx.size, wide, item.length) }?
             };
-            let item = child(0)?;
             if let Kind::ListView { .. } = shape.kind {
                 if first.saturating_add(total) > item.length {
                     return Err(format!(

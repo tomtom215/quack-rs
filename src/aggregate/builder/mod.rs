@@ -16,6 +16,7 @@
 //! [`AggregateFunctionSetBuilder`] enforces this by calling the name-setter
 //! internally for every function added to the set.
 
+mod collision;
 mod overload;
 mod set;
 mod single;

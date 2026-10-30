@@ -163,6 +163,7 @@ quack-rs/
 │   │   ├── mod.rs                     # Builders for registering `DuckDB` aggregate functions
 │   │   ├── state.rs                   # Generic `FfiState<T>` wrapper for safe aggregate state management
 │   │   └── builder/
+│   │       ├── collision.rs           # Which catalog entry holds the name a failed aggregate registration wanted
 │   │       ├── mod.rs                 # Builder types for registering `DuckDB` aggregate functions
 │   │       ├── overload.rs            # One overload within an [`AggregateFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` aggregate function set (multiple overloads)
@@ -183,6 +184,7 @@ quack-rs/
 │   │   ├── export_check.rs            # Values `DuckDB` would export as different values, found before the export
 │   │   ├── import_check.rs            # Structural checks on an imported array, and flattening what the readers cannot index
 │   │   ├── import_layout/
+│   │   │   ├── bounds.rs              # Offsets, lengths and dictionary indices `DuckDB` would read past, refused
 │   │   │   └── tests.rs               # Unit tests
 │   │   ├── import_layout.rs           # Arrow layouts `DuckDB` imports wrongly, found by walking the array with its schema
 │   │   ├── options.rs                 # `ArrowOptions` — the Arrow production settings of a connection or a result
@@ -332,6 +334,7 @@ quack-rs/
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
+│   ├── secret_memory_scan.rs          # `SecretEntry`'s zeroize, checked by scanning the process's own memory (Linux)
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
 │       ├── agg_states.rs              # Every aggregate state is dropped, including the ones `DuckDB` moves
@@ -356,6 +359,7 @@ quack-rs/
 │       ├── entry_point_txn.rs         # A failed `LOAD` rolls back and can be retried; a `LOAD` inside the host's transaction
 │       ├── file_errors.rs             # `FileHandle` reports write, sync and seek failures, and refuses a seek past `i64::MAX`
 │       ├── handles_api.rs             # `StructWriter` child handles and `InMemoryDb::execute`'s row count
+│       ├── hostile_input.rs           # Hostile names, SQL bodies, type nesting and cardinality hints against a real engine
 │       ├── inline_paths.rs            # The paths that skip a C call: `is_valid` / `set_null` bit operations and the `ListBuilder` child-writer cache, held to the C API
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
 │       ├── list_api.rs                # The raw `ListVector` workflow, `get_size`, `get_entry`, `child_writer`, `max_child_capacity` on live LIST and MAP vectors
@@ -365,6 +369,7 @@ quack-rs/
 │       ├── mock_parity.rs             # `MockRegistrar` refuses a bad type with the live registration's message
 │       ├── nested_reserve.rs          # which nested buffers a `LIST` reserve moves (the writer contracts)
 │       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
+│       ├── overload_keys.rs           # Overloads `DuckDB` resolves by type id alone are refused; closure-built overloads; taken aggregate names
 │       ├── owned_chunk.rs             # `OwnedDataChunk::new`, `capacity` and `reset` against a live `DuckDB`
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`

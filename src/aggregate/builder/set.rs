@@ -376,10 +376,13 @@ impl AggregateFunctionSetBuilder {
     /// - An overload has neither its own return type nor a set-level default,
     ///   or is missing a required callback. The error names the overload's
     ///   index, and is reported before any `DuckDB` handle is allocated.
-    /// - Two overloads accept the same call — the same argument types,
-    ///   compared structurally, so `DECIMAL(18,2)` and `DECIMAL(18,3)` differ.
-    ///   `DuckDB` itself would accept such a set and then fail every such call
-    ///   with "Could not choose a best candidate function".
+    /// - Two overloads accept the same call — argument types `DuckDB`'s
+    ///   overload resolution cannot tell apart. It tells `DECIMAL`, `MAP` and
+    ///   `ENUM` parameters apart by type alone, also inside a `LIST`, `ARRAY`,
+    ///   `STRUCT` or `UNION`, so `DECIMAL(4,1)` and `DECIMAL(18,3)` collide;
+    ///   `LIST(INTEGER)` and `LIST(VARCHAR)` do not. `DuckDB` itself would
+    ///   accept such a set and then fail every such call with "Could not
+    ///   choose a best candidate function".
     /// - `DuckDB` reports registration failure.
     ///
     /// # Name collisions
@@ -389,7 +392,10 @@ impl AggregateFunctionSetBuilder {
     /// aggregate function or macro, built-in or not — including an earlier
     /// registration of this same aggregate. (`DuckDB` registers with
     /// `ALTER_ON_CONFLICT`, and turning the create into an alter is not
-    /// implemented for aggregates: `CreateInfo::GetAlterInfo` throws.)
+    /// implemented for aggregates: `CreateInfo::GetAlterInfo` throws.) The C
+    /// API reports only a failure, so after one quack-rs looks the name up in
+    /// `duckdb_functions()` and the error names the entry that holds it; a
+    /// registration that succeeds scans nothing.
     ///
     /// # Safety
     ///
@@ -581,10 +587,14 @@ impl AggregateFunctionSetBuilder {
             // SAFETY: con is valid and set is fully configured.
             let result = unsafe { duckdb_register_aggregate_function_set(con, set) };
             if result != DuckDBSuccess {
+                let name = self.name.to_string_lossy();
+                // SAFETY: `con` is valid per this function's contract.
+                let reason = unsafe { super::collision::taken_name_reason(con, &name) };
                 register_error = Some(ExtensionError::new(format!(
                     "duckdb_register_aggregate_function_set failed for '{name}': {hint}",
-                    name = self.name.to_string_lossy(),
-                    hint = crate::error::REGISTRATION_FAILURE_HINT
+                    hint = reason
+                        .as_deref()
+                        .unwrap_or(crate::error::REGISTRATION_FAILURE_HINT)
                 )));
             }
         }

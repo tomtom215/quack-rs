@@ -6315,3 +6315,9 @@ mod typed_extra_info;
 mod value_bits;
 #[path = "ffi_roundtrip/value_cast.rs"]
 mod value_cast;
+
+#[path = "ffi_roundtrip/hostile_input.rs"]
+mod hostile_input;
+
+#[path = "ffi_roundtrip/overload_keys.rs"]
+mod overload_keys;

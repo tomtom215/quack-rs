@@ -348,3 +348,131 @@ mod capacity {
         );
     }
 }
+
+/// What `get_entry_checked` and `ListBuilder::finish` promise, on vectors
+/// built by hand so that nothing but the code under test decides the answer
+/// (LASTDIFF-9: mutants of both survived the live suite). `OwnedVector` needs
+/// `duckdb-1-5`.
+#[cfg(feature = "duckdb-1-5")]
+mod hand_built {
+    use quack_rs::types::{LogicalType, TypeId};
+    use quack_rs::vector::complex::{ListVector, MapVector};
+    use quack_rs::vector::{ListBuilder, OwnedVector, VectorWriter};
+
+    use super::Fixture;
+
+    /// An entry that reaches past the child's size is refused, for a `LIST`
+    /// and for a `MAP`, as is a NULL row; entries inside the child, an empty
+    /// one at its very end included, are returned. (Each out-of-bounds entry
+    /// is written on purpose, against `set_entry`'s contract, and read only by
+    /// `get_entry_checked`: no `DuckDB` code reads these vectors.)
+    #[test]
+    fn get_entry_checked_refuses_an_entry_past_the_child() {
+        let _fx = Fixture::open();
+        let entries: [(u64, u64); 6] = [(0, 3), (1, 1), (3, 0), (2, 2), (4, 0), (u64::MAX, 2)];
+        let expected = [Some((0, 3)), Some((1, 1)), Some((3, 0)), None, None, None];
+        let shown =
+            |entry: Option<libduckdb_sys::duckdb_list_entry>| entry.map(|e| (e.offset, e.length));
+
+        let list = OwnedVector::new(&LogicalType::list(TypeId::BigInt), 7).expect("list");
+        let raw = list.as_raw();
+        // SAFETY: a live LIST(BIGINT) vector of 7 rows; 3 child elements are
+        // reserved before they are written.
+        unsafe {
+            ListVector::reserve(raw, 3);
+            let mut child = ListVector::child_writer(raw);
+            for i in 0..3 {
+                child.write_i64(i, i as i64);
+            }
+            ListVector::set_size(raw, 3);
+            for (row, (offset, length)) in entries.iter().enumerate() {
+                ListVector::set_entry(raw, row, *offset, *length);
+            }
+            ListVector::set_entry(raw, 6, 0, 1);
+            VectorWriter::from_vector(raw).set_null(6);
+            for (row, want) in expected.iter().enumerate() {
+                assert_eq!(
+                    shown(ListVector::get_entry_checked(raw, row)),
+                    *want,
+                    "LIST row {row}"
+                );
+            }
+            assert_eq!(shown(ListVector::get_entry_checked(raw, 6)), None, "NULL");
+        }
+
+        let map =
+            OwnedVector::new(&LogicalType::map(TypeId::BigInt, TypeId::BigInt), 7).expect("map");
+        let raw = map.as_raw();
+        // SAFETY: a live MAP(BIGINT, BIGINT) vector of 7 rows, as above.
+        unsafe {
+            MapVector::reserve(raw, 3);
+            let (mut keys, mut values) = (MapVector::key_writer(raw), MapVector::value_writer(raw));
+            for i in 0..3 {
+                keys.write_i64(i, i as i64);
+                values.write_i64(i, 10 * i as i64);
+            }
+            MapVector::set_size(raw, 3);
+            for (row, (offset, length)) in entries.iter().enumerate() {
+                MapVector::set_entry(raw, row, *offset, *length);
+            }
+            MapVector::set_entry(raw, 6, 0, 1);
+            VectorWriter::from_vector(raw).set_null(6);
+            for (row, want) in expected.iter().enumerate() {
+                assert_eq!(
+                    shown(MapVector::get_entry_checked(raw, row)),
+                    *want,
+                    "MAP row {row}"
+                );
+            }
+            assert_eq!(shown(MapVector::get_entry_checked(raw, 6)), None, "NULL");
+        }
+    }
+
+    /// `finish` sets the child's size to the sum of the row lengths, empty
+    /// rows adding nothing (a mutant adding one gap element per empty row
+    /// left uninitialised `string_t`s in a VARCHAR child and survived), and
+    /// each row's entry and elements are where the rows put them.
+    #[test]
+    fn finish_sets_the_child_size_to_the_sum_of_the_row_lengths() {
+        let _fx = Fixture::open();
+        let text = |row: usize, j: usize| format!("row {row}, element {j}: past the inline 12");
+        for lengths in [&[2_usize, 0, 3, 0, 0, 1][..], &[0, 0, 0], &[0, 4]] {
+            let rows = lengths.len();
+            let vector = OwnedVector::new(&LogicalType::list(TypeId::Varchar), rows).expect("list");
+            let raw = vector.as_raw();
+            // SAFETY: a live LIST(VARCHAR) vector of `rows` rows; each closure
+            // writes only `base..base + len` with the VARCHAR writer.
+            unsafe {
+                let mut builder = ListBuilder::new(raw);
+                for (row, &len) in lengths.iter().enumerate() {
+                    builder.push_row(row, len, |child, base| {
+                        for j in 0..len {
+                            child.write_varchar(base + j, &text(row, j));
+                        }
+                    });
+                }
+                builder.finish();
+            }
+            let total: usize = lengths.iter().sum();
+            // SAFETY: the same live vector, `total` child elements written.
+            unsafe {
+                assert_eq!(ListVector::get_size(raw), total, "{lengths:?}");
+                let mut offset = 0_u64;
+                let reader = ListVector::child_reader(raw, total);
+                for (row, &len) in lengths.iter().enumerate() {
+                    let entry = ListVector::get_entry(raw, row);
+                    assert_eq!(
+                        (entry.offset, entry.length),
+                        (offset, len as u64),
+                        "{lengths:?}"
+                    );
+                    for j in 0..len {
+                        let at = usize::try_from(offset).expect("fits") + j;
+                        assert_eq!(reader.read_str(at), text(row, j), "{lengths:?}");
+                    }
+                    offset += len as u64;
+                }
+            }
+        }
+    }
+}

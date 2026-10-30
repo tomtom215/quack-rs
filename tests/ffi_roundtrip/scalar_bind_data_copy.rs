@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use quack_rs::data_chunk::DataChunk;
 use quack_rs::scalar::{
-    RawScalarBindInfo, ScalarBindInfo, ScalarFunctionBuilder, ScalarFunctionInfo,
+    RawScalarBindInfo, ScalarBindData, ScalarBindInfo, ScalarFunctionBuilder, ScalarFunctionInfo,
 };
 use quack_rs::types::TypeId;
 use quack_rs::vector::VectorWriter;
@@ -218,4 +218,195 @@ fn get_argument_hands_out_each_argument_as_an_owned_expression() {
         !seen.is_empty() && seen.chunks(3).all(|bind| bind == expected),
         "{seen:?}"
     );
+}
+
+// ─── A typed bind data whose `Clone` panics (FFI-6) ──────────────────────────
+
+/// Typed bind data whose copy always fails.
+struct CloneBomb(i64);
+
+impl Clone for CloneBomb {
+    fn clone(&self) -> Self {
+        panic!("CloneBomb::clone deliberately exploded (factor {})", self.0)
+    }
+}
+
+unsafe extern "C" fn bomb_bind(info: RawScalarBindInfo) {
+    // SAFETY: DuckDB passes a valid bind info.
+    let bind = unsafe { ScalarBindInfo::new(info) };
+    ScalarBindData::set(&bind, CloneBomb(3));
+}
+
+// `i * factor`, with `get`: a copy without its bind data would answer 0.
+quack_rs::scalar_callback!(bomb_get, |info, input, output| {
+    // SAFETY: DuckDB passes a valid function info.
+    let fninfo = unsafe { ScalarFunctionInfo::new(info) };
+    // SAFETY: `bomb_bind` stored a `CloneBomb`, and nothing else did.
+    let factor = unsafe { ScalarBindData::<CloneBomb>::get(&fninfo) }.map_or(0, |b| b.0);
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, reader.read_i64(row) * factor) };
+    }
+});
+
+// The same with `try_get`, which hands the failure to the callback.
+quack_rs::scalar_callback!(bomb_try_get, |info, input, output| {
+    // SAFETY: DuckDB passes a valid function info.
+    let fninfo = unsafe { ScalarFunctionInfo::new(info) };
+    // SAFETY: as above.
+    let factor = match unsafe { ScalarBindData::<CloneBomb>::try_get(&fninfo) } {
+        Ok(found) => found.map_or(0, |b| b.0),
+        Err(e) => {
+            fninfo.set_error(&format!("bomb_try_get: {e}"));
+            return;
+        }
+    };
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, reader.read_i64(row) * factor) };
+    }
+});
+
+/// The reviewer's probe for FFI-6: filters over the function's result are
+/// pushed down, which copies the bound call, and `CloneBomb::clone` panics.
+/// The copy used to get no bind data, so the query answered `(NULL, 0)`
+/// instead of `(4752, 32)` and the panic message was lost. The query now
+/// fails with that message, through `get` and through `try_get`.
+#[test]
+fn a_panicking_bind_data_clone_fails_the_query_with_its_message() {
+    let fx = Fixture::open();
+    for (name, callback) in [
+        ("bomb_get", bomb_get as quack_rs::scalar::ScalarFn),
+        ("bomb_try_get", bomb_try_get),
+    ] {
+        // SAFETY: `con` is open; the callbacks match their signatures.
+        unsafe {
+            ScalarFunctionBuilder::try_new(name)
+                .expect("name")
+                .param(TypeId::BigInt)
+                .returns(TypeId::BigInt)
+                .bind(bomb_bind)
+                .function(callback)
+                .register(fx.con())
+        }
+        .unwrap_or_else(|e| panic!("register {name}: {e}"));
+        let sql = format!(
+            "SELECT sum(v)::BIGINT, count(*) FROM \
+             (SELECT {name}(i) AS v FROM range(50) t(i)) WHERE v > 3 AND v < 100"
+        );
+        // SAFETY: the fixture's connection is open.
+        let answer = unsafe { quack_rs::query::query(fx.con(), &sql) };
+        let err = match answer {
+            Err(e) => e.to_string(),
+            Ok(mut result) => {
+                let chunk = result.next_chunk().expect("fetch").expect("one row");
+                // SAFETY: (BIGINT, BIGINT), one row; the sum may be NULL.
+                let (sum, count) = unsafe {
+                    let sum = chunk.reader(0);
+                    (
+                        sum.is_valid(0).then(|| sum.read_i64(0)),
+                        chunk.reader(1).read_i64(0),
+                    )
+                };
+                panic!("{name}: answered ({sum:?}, {count}) instead of failing")
+            }
+        };
+        assert!(
+            err.contains("CloneBomb::clone deliberately exploded (factor 3)")
+                && err.contains("Clone panicked"),
+            "{name}: {err}"
+        );
+    }
+}
+
+// ─── `ScalarBindData::set` twice in one bind (FFI-12) ────────────────────────
+
+static TRACKED_MADE: AtomicUsize = AtomicUsize::new(0);
+static TRACKED_DROPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// Bind data that counts every value made (clones included) and dropped.
+struct Tracked(i64);
+
+impl Tracked {
+    fn new(factor: i64) -> Self {
+        TRACKED_MADE.fetch_add(1, Ordering::SeqCst);
+        Self(factor)
+    }
+}
+
+impl Clone for Tracked {
+    fn clone(&self) -> Self {
+        Self::new(self.0)
+    }
+}
+
+impl Drop for Tracked {
+    fn drop(&mut self) {
+        TRACKED_DROPPED.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+unsafe extern "C" fn set_twice_bind(info: RawScalarBindInfo) {
+    // SAFETY: DuckDB passes a valid bind info.
+    let bind = unsafe { ScalarBindInfo::new(info) };
+    ScalarBindData::set(&bind, Tracked::new(1));
+    ScalarBindData::set(&bind, Tracked::new(2));
+}
+
+quack_rs::scalar_callback!(set_twice_exec, |info, input, output| {
+    // SAFETY: DuckDB passes a valid function info.
+    let fninfo = unsafe { ScalarFunctionInfo::new(info) };
+    // SAFETY: `set_twice_bind` stored `Tracked`s, and nothing else did.
+    let factor = unsafe { ScalarBindData::<Tracked>::get(&fninfo) }.map_or(0, |t| t.0);
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    for row in 0..chunk.size() {
+        unsafe { writer.write_i64(row, reader.read_i64(row) * factor) };
+    }
+});
+
+/// A second `set` in one bind replaces the first value, which is dropped:
+/// `DuckDB` overwrites the pointer without running its destructor, so before
+/// the fix one value per bind was leaked (reviewer `ffi`: 2 made, 1 dropped).
+/// Every value made, copies included, is dropped once the database closes.
+#[test]
+fn setting_typed_bind_data_twice_drops_the_first_value() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callbacks match their signatures.
+    unsafe {
+        ScalarFunctionBuilder::try_new("set_twice")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .bind(set_twice_bind)
+            .function(set_twice_exec)
+            .register(fx.con())
+    }
+    .expect("register set_twice");
+    // The second value is the one in effect, also in the pushed-down copies.
+    assert_eq!(
+        fx.scalar(
+            "SELECT sum(set_twice(i))::BIGINT FROM range(5) t(i)",
+            |r, i| unsafe { r.read_i64(i) }
+        ),
+        Some(20)
+    );
+    let sql = "SELECT sum(v)::BIGINT FROM \
+               (SELECT set_twice(i) AS v FROM range(50) t(i)) WHERE v > 3 AND v < 100";
+    assert_eq!(
+        fx.scalar(sql, |r, i| unsafe { r.read_i64(i) }),
+        Some(2 * (2..=49).sum::<i64>())
+    );
+    drop(fx);
+    let (made, dropped) = (
+        TRACKED_MADE.load(Ordering::SeqCst),
+        TRACKED_DROPPED.load(Ordering::SeqCst),
+    );
+    assert!(made >= 4, "two binds, two values each: {made}");
+    assert_eq!(dropped, made, "every value made is dropped");
 }

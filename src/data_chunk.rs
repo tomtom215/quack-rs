@@ -333,8 +333,10 @@ impl DataChunk {
 
     /// Creates a [`ChunkWriter`] for this output data chunk.
     ///
-    /// The [`ChunkWriter`] tracks rows via [`next_row()`][ChunkWriter::next_row]
-    /// and automatically calls `set_size` on drop.
+    /// The [`ChunkWriter`] counts the rows claimed with
+    /// [`next_row()`][ChunkWriter::next_row] and not given back with
+    /// [`release_row()`][ChunkWriter::release_row], and calls `set_size` with
+    /// that count on drop: every row claimed must be written or given back.
     ///
     /// # Safety
     ///
