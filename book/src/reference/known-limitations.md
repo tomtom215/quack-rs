@@ -29,6 +29,24 @@ loaded. See [Virtual File
 System](../duckdb-1-5/file-system.md#security-only-filesystem-honours-duckdbs-permission-settings)
 and [Pitfall P17](pitfalls.md#p17).
 
+### A `duckdb-1-5*` extension refuses a DuckDB release quack-rs has not listed
+
+With the default features, one binary loads into every DuckDB from 1.4.4 through 2.0.x. An
+extension that enables a `duckdb-1-5*` feature calls the part of the C API that DuckDB
+declares unstable, and quack-rs has verified that layout for DuckDB 1.5.2 to 1.5.6 and 2.0.0
+only: built against the 1.5.6 bindings and stamped `C_STRUCT` with C API `v1.5.6`, it
+loads into 1.5.6 and 2.0.0. Under the default `AbiPolicy::Strict` it refuses to load into any
+other release with an error that names the fixes, and DuckDB 2.0.1 will be one until a quack-rs
+release lists it. The layout cannot be extrapolated: DuckDB 2.0.0's `duckdb_extension.h` opens
+with "this API is not yet stable, meaning it is only guaranteed to work for this specific
+DuckDB version", 2.0.0 itself put two slots (`duckdb_create_timestamp_tz_ns` and
+`duckdb_get_timestamp_tz_ns`) into the range that 1.5.6 declared stable, and the 1.5.2 patch
+release inserted a slot in the middle of the struct. What to do when a new release appears:
+check the release's `duckdb_extension.h` against the one you built with, then rebuild with
+`QUACK_RS_TARGET_DUCKDB_VERSION` set to it, or move to a quack-rs release that lists it; or stay
+on the default features, which only use the stable prefix and are not affected. See [ABI
+Compatibility](../concepts/abi.md#unknown-duckdb-versions).
+
 ### A function that reads a setting must be marked volatile
 
 DuckDB folds a non-volatile function call whose arguments are constants into the
@@ -93,7 +111,13 @@ is fixed, not per function: for an extension with one `map1` function, `LOAD` to
 API on DuckDB 1.5.6, and 30 ms longer on 2.0.0 (medians of 30 interleaved CLI
 runs each, one 4-vCPU virtual machine, release build; the minima differ by 17 and
 27 ms). The C API has no catalog lookup for functions, so the scan cannot be
-narrowed to a name.
+narrowed to a name, and filtering the query to the names being registered does not make
+it cheaper (`duckdb_functions()` has no pushdown). The scan grows with the catalog: one
+scan took about 20 ms on 1.5.6 and 13 ms on 2.0.0 in an empty database and about 110 ms
+on both with 20,000 user macros (CLI measurements on a shared 4-vCPU machine), and a
+`LOAD` that registers scalar and table functions scans twice. Registering through a
+builder's `register(con)` on the raw connection scans once per call instead of once per
+`LOAD`.
 
 ### SQL macros: no defaults or overloads, and they persist
 
@@ -278,10 +302,10 @@ Called on a SQL `NULL` value, or on a value that cannot be cast to `BIT`, `duckd
 throws a C++ exception through the C boundary, and Rust cannot catch it:
 `fatal runtime error: Rust cannot catch foreign exceptions`, `SIGABRT` (reproduced on
 DuckDB 1.5.6 and 2.0.0 with a `NULL` and with `'abc'`). `duckdb_get_bignum` runs the same
-code (read in the 2.0.0 source, not run). quack-rs has no `as_bit` or `as_bignum` wrapper;
-one would have to check the value's type and its NULL-ness first. Code that calls these
-through the raw bindings must do the same. See [Pitfall
-P16](pitfalls.md#p16).
+code (read in the 2.0.0 source, not run). quack-rs's `Value::as_bit()` and
+`Value::as_bignum()` check the value's type and its NULL-ness first and return `None`
+instead. Code that calls the raw getters through the bindings must do the same. See
+[Pitfall P16](pitfalls.md#p16).
 
 ## What the C API does not offer
 

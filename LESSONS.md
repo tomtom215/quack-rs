@@ -1206,8 +1206,11 @@ the entry.
 
 ## P16: `duckdb_get_bit` and `duckdb_get_bignum` abort on NULL and on values that do not cast
 
-**Status**: Documented. quack-rs has no `as_bit` or `as_bignum` wrapper; one would have to
-make the checks below first. This is a DuckDB defect, not a quack-rs one.
+**Status**: Prevented in quack-rs's own wrappers, a DuckDB defect for everything else.
+`Value::as_bit()` and `Value::as_bignum()` return `None` for a value they cannot read
+instead of calling the C getter on it, and `Value::bit` and `Value::bignum` build only
+well-formed values. Code that calls `duckdb_get_bit` or `duckdb_get_bignum` through the
+raw bindings must make the checks below itself.
 
 **Symptom**: the process aborts with `fatal runtime error: Rust cannot catch foreign
 exceptions` (`SIGABRT`, exit code 134) when `duckdb_get_bit` is called on a SQL `NULL`
@@ -1218,8 +1221,11 @@ source, not run).
 **Root cause**: both functions cast the value (`DefaultCastAs(BIT)` or `BIGNUM`) and read
 the result with no `try`, so the cast's C++ exception leaves an `extern "C"` function.
 
-**Fix**: before calling either, check `Value::type_id()` for the type you expect and
-`Value::is_sql_null()`; both are plain accessors that cannot throw.
+**Fix**: use `Value::as_bit()` / `Value::as_bignum()`. In raw code, before calling either
+getter, check that the handle is not null (a null handle is dereferenced), that
+`Value::type_id()` is the type you expect (convert with `Value::try_cast`, which cannot
+throw, when it is not), and `Value::is_sql_null()`; these are plain accessors that cannot
+throw.
 
 **Rule**: a C API getter that casts can throw; check the type and NULL-ness first, because
 Rust cannot catch a C++ exception.

@@ -24,7 +24,9 @@ newest version, with the default features on and without `loadable-extension`.
 > **Why `>=1.4.4, <1.20100`?**
 > DuckDB 1.4.4 through 2.0.x load extensions built for C API version `v1.2.0` (1.5.6 and
 > 2.0.x declare `v1.5.6` and accept every earlier one), so `quack-rs` supports them all with
-> a single bounded range. Releases before 1.4.4 are not supported. `libduckdb-sys` numbers
+> a single bounded range (an extension that uses a `duckdb-1-5*` feature is narrower: see
+> [ABI Compatibility](../concepts/abi.md#unknown-duckdb-versions)). Releases before 1.4.4 are
+> not supported. `libduckdb-sys` numbers
 > DuckDB `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so the range runs
 > from the DuckDB 1.4.4 bindings (`1.10404.x`) through the DuckDB 2.0 bindings
 > (`1.20000.x`) and stops before DuckDB 2.1 (`1.20100.0`).

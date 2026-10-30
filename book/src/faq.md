@@ -24,8 +24,11 @@ documents all 38 known pitfalls, and its API prevents most of them. See the
 
 ### What DuckDB version does quack-rs target?
 
-quack-rs requires `libduckdb-sys = ">=1.4.4, <1.20100"` and supports DuckDB 1.4.4
-through 2.0.x. Releases before 1.4.4 are not supported. The upper bound keeps out the
+quack-rs requires `libduckdb-sys = ">=1.4.4, <1.20100"` and, with the default features,
+supports DuckDB 1.4.4 through 2.0.x. An extension that uses a `duckdb-1-5*` feature loads into
+1.5.6 and 2.0.0 only, and refuses a release quack-rs has not listed (see
+[ABI Compatibility](concepts/abi.md#unknown-duckdb-versions)). Releases before 1.4.4 are not
+supported. The upper bound keeps out the
 DuckDB 2.1 bindings until a quack-rs release has been tested against them; see
 [Installation](getting-started/installation.md#adding-quack-rs-to-an-existing-extension).
 CI runs the test

@@ -227,6 +227,26 @@ The data pointers are untyped, so the compiler cannot check this for you:
   partition with `PARTITION_BY` (reachable from more than one thread). Guard any
   mutation with a `Mutex` unless you know neither option is in use.
 
+### Typed state, without raw pointers
+
+From 0.20.0 the three data pointers have typed forms that box the value behind a type tag
+and generate a destructor that contains a panic in `T::drop`, so no `Box::into_raw` and no
+`extern "C"` destructor is written by hand (all need `duckdb-1-5`):
+
+| Set | Read |
+|-----|------|
+| `CopyFunctionBuilder::extra_info_typed(value)` | `extra_info_ref::<T>()` on each of the four info types |
+| `CopyBindInfo::set_bind_data_typed(value)` | `bind_data_ref::<T>()` in global init, sink and finalize |
+| `CopyGlobalInitInfo::set_global_state_typed(value)` | `global_state_ref::<T>()` in sink and finalize |
+
+`T` is `Send + Sync + 'static`, because the sink can run on several threads at once; state
+that changes needs a `Mutex` or atomics inside `T`. A read returns `None` when nothing was
+set or when the value has another type, instead of reinterpreting memory. The readers are
+`unsafe` only because they cannot tell a typed value from one set through the raw
+`set_bind_data` or `set_global_state`: use one form per slot. `FileHandle` is `Send` (not
+`Sync`) from 0.20.0, so a file opened in global init can be kept in the global state inside
+a `Mutex`.
+
 ## Callback signatures
 
 | Phase | Signature | Guarded macro |

@@ -96,6 +96,7 @@ reasoning and what happens when 2.1 bindings are published.
 | `data_chunk_from_arrow` refuses (`InvalidInput`) arrays that DuckDB would read out of bounds: list, large-list and map offsets that are negative, decrease or end past the child, a negative list-view offset or size, a child shorter than the rows its parent reads, a dictionary index outside the dictionary. | These arrays violate the Arrow specification; fix the producer. See [Arrow Interop](../duckdb-1-5/arrow.md). |
 | A panicking `Clone` of `ScalarBindData` fails the query with the panic message; before, DuckDB's copy of the bound call silently had no bind data and the query answered as if none had been set. A second `ScalarBindData::set` in one bind frees the value it replaces (it was leaked). | Nothing, unless a test pinned the old answer. |
 | `BindInfo::set_cardinality` clamps its hint to `i64::MAX` (above it, a join with the function failed with an internal error). | Nothing. |
+| A `BIT` value whose bytes are malformed (only the raw `duckdb_create_bit` builds one) is refused by `Value::as_str`, `display_string` and `Debug`, which print `UNRENDERABLE`; DuckDB wrote out of bounds rendering it. | Nothing, unless a test printed such a value. |
 | The entry point runs your registration closure in one transaction and rolls it back when the closure returns `Err` or panics, so a failed `LOAD` leaves no function, macro, type or table behind and can be retried in the same database. Casts, replacement scans and configuration options are not rolled back. A statement that fails inside the closure can abort the transaction (always on DuckDB 2.0), so every later statement fails with "Current transaction is aborted". | Register casts, replacement scans and configuration options last, return the first error instead of carrying on, and do not run `BEGIN`, `COMMIT` or `ROLLBACK` on the registration connection. Passing `Registration::Autocommit` through `options =` restores the earlier behaviour. See [The Entry Point](../concepts/entry-point.md#registration-runs-in-one-transaction). |
 | A `duckdb-1-5*` build under the default `AbiPolicy::Strict` refuses a DuckDB release that quack-rs's layout table does not list. 2.0.1 is not listed yet: a build that loads into 1.5.6 and 2.0.0 refuses 2.0.1. Default-feature builds are unaffected. | Rebuild with `QUACK_RS_TARGET_DUCKDB_VERSION=v2.0.1` once you have checked that release, or upgrade quack-rs to a release that lists it. See [ABI Compatibility](../concepts/abi.md#unknown-duckdb-versions). |
 | An extension named like a DuckDB alias or core extension (`s3`, `md`, `json`, ...) is refused by `generate_scaffold` and `parse_description_yml`. `INSTALL s3 FROM community` asks for `httpfs`, so such an extension could never be installed under its name. | Rename the extension. See [Names DuckDB reserves](../publishing.md#names-duckdb-reserves). |
@@ -110,6 +111,18 @@ reasoning and what happens when 2.1 bindings are published.
 - `entry_point::{EntryPointOptions, Registration}`, taken by `options =` in the entry-point
   macros.
 - `validate::validate_community_extension_name`, with the lists of reserved names.
+- `Value::try_cast`, `array_items`, `union_tag` (`duckdb-1-5`), `bit`, `as_bit`, `bignum` and
+  `as_bignum`: see [Values & Parameters](../data/values-and-parameters.md).
+- `query::StatementType` with `PreparedStatement::statement_type` and `parameter_type`,
+  `QueryResult::statement_type`; with `duckdb-1-5`, `PreparedStatement::columns`,
+  `query::table_names` (and the same method on `OwnedConnection` and `Connection`) and
+  `Appender::for_query`, an appender whose rows feed an `INSERT … SELECT` or `MERGE INTO`.
+- `from_raw` and `into_raw` on `Appender`, `PreparedStatement`, `QueryResult` and
+  `OwnedConnection`, for handles from a C call quack-rs does not wrap.
+- Typed, tag-checked extra info (`extra_info_typed` on the aggregate, cast and `COPY` builders,
+  read with `extra_info_ref::<T>()`) and typed `COPY TO` state: see
+  [Copy Functions](../functions/copy-functions.md#typed-state-without-raw-pointers).
+  `FileHandle` and `ClientContext` are `Send`. `ErrorData` implements `From<ExtensionError>`.
 
 ### New pitfalls
 
