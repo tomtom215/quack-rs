@@ -553,6 +553,9 @@ mod tests {
             ("INTEGER[]", "INTEGER[]"),
             ("BITMAP(x)", "BITMAP(x)"),
             ("my_decimal", "my_decimal"),
+            // An underscore continues a name, so these are not a `DECIMAL`/`MAP`.
+            ("x_DECIMAL(4,1)", "x_DECIMAL(4,1)"),
+            ("x_MAP(a, b)", "x_MAP(a, b)"),
             ("MAP(unclosed", "MAP"),
         ] {
             assert_eq!(super::overload_key(rendered), key, "{rendered}");

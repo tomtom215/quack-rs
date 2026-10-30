@@ -483,7 +483,10 @@ mod tests {
     #[test]
     fn sibling_groups_do_not_count_towards_the_nesting_limit() {
         let group = format!("{}MIT{}", "(".repeat(MAX_NESTING), ")".repeat(MAX_NESTING));
-        let many = vec![group.as_str(); MAX_NESTING + 2].join(" AND ");
+        // More groups than the limit allows levels, so a count that accumulated
+        // would show; three suffice under Miri, where 66 took 160 s.
+        let groups = if cfg!(miri) { 3 } else { MAX_NESTING + 2 };
+        let many = vec![group.as_str(); groups].join(" AND ");
         assert!(validate_spdx_license(&many).is_ok(), "{many}");
         let flat = vec!["(MIT)"; 2 * MAX_NESTING].join(" OR ");
         assert!(validate_spdx_license(&flat).is_ok(), "{flat}");

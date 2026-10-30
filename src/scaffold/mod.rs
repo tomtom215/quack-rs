@@ -69,8 +69,11 @@ mod tests_content;
 mod tests_escaping;
 #[cfg(test)]
 mod tests_generated;
-// Runs `make`, `git` and a shell script: Unix only.
-#[cfg(all(test, unix))]
+// Runs `make`, `git` and a shell script: Unix only. Two attributes rather than
+// `cfg(all(test, unix))`: cargo-mutants skips a module only when it sees a plain
+// `#[cfg(test)]`, and otherwise mutates this file's helpers.
+#[cfg(test)]
+#[cfg(unix)]
 mod tests_make;
 #[cfg(test)]
 mod tests_workflows;

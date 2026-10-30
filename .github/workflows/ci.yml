@@ -1710,7 +1710,12 @@ jobs:
   miri:
     name: Miri (undefined behaviour)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Two sequential runs of the library tests (native, then s390x). On the 0.20.0
+    # pull request the native run alone took 41.6 minutes, 18 of them one parser
+    # test on 100,000-level inputs and 3 more an SPDX test (both shrink under
+    # Miri now), and the s390x run was cancelled at the 60-minute limit with the
+    # aggregate check red. The limit is for the two runs together.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

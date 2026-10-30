@@ -555,14 +555,16 @@ fn a_file_of_many_keys_is_linear() {
 /// (no published descriptor nests more than three).
 #[test]
 fn deep_nesting_is_an_error_not_a_stack_overflow() {
+    // 100,000 levels natively. Miri interprets about a thousand times slower
+    // and this parser has no `unsafe`, so under Miri a thousand levels, sixteen
+    // times the limit, takes the same path: at 100,000 the test alone took 18
+    // minutes of the Miri job's 60.
+    let depth = if cfg!(miri) { 1_000 } else { 100_000 };
     for (what, body) in [
-        (
-            "sequence markers",
-            format!("s:\n  {}x", "- ".repeat(100_000)),
-        ),
+        ("sequence markers", format!("s:\n  {}x", "- ".repeat(depth))),
         (
             "flow sequences",
-            format!("f: {}{}", "[".repeat(100_000), "]".repeat(100_000)),
+            format!("f: {}{}", "[".repeat(depth), "]".repeat(depth)),
         ),
         (
             "mappings",
