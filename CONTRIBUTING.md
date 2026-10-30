@@ -470,6 +470,7 @@ quack-rs/
 │   │   ├── connection.rs              # [`OwnedConnection`] and its cross-thread [`InterruptHandle`]
 │   │   ├── cstr.rs                    # The two C-string conversions the `query` module runs everything through
 │   │   ├── live_tests.rs              # Tests that need a live `DuckDB`
+│   │   ├── metadata.rs                # What a statement is before it runs: `StatementType`, parameter and column types, `table_names`
 │   │   ├── prepared.rs                # Inspecting and executing a [`PreparedStatement`]; `bind.rs` binds its parameters
 │   │   └── result.rs                  # Reading a [`QueryResult`]: its columns, its chunks and what kind of outcome it is
 │   ├── replacement_scan/
@@ -593,6 +594,7 @@ quack-rs/
 │       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
 │       ├── aggregate_arity.rs         # An aggregate with no parameter is refused at registration (DuckDB 2.0 passes `update` no row count)
 │       ├── appender_api.rs            # `Appender` methods a no-op replacement survived: schemas, column types, `clear_columns`, defaults
+│       ├── appender_query.rs          # `Appender::for_query` and the appender's `from_raw` / `into_raw`
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_export.rs            # `arrow::data_chunk_to_arrow` refuses values `DuckDB` would export wrongly
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
@@ -621,6 +623,7 @@ quack-rs/
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_extras.rs            # `bind_str`, `bind_null`, `clear_bindings` and an idle `progress`
+│       ├── query_metadata.rs          # Statement type, parameter and column metadata, `table_names`, raw-handle round trips
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
 │       ├── replacement_scan_api.rs    # Replacement-scan `add_*_parameter`, `register_with_data` and `set_error`
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions

@@ -498,6 +498,30 @@ impl From<ErrorData> for ExtensionError {
     }
 }
 
+/// Wraps an [`ExtensionError`]'s message as [`DuckDbErrorType::Invalid`]
+/// ("no specific category": an `ExtensionError` carries none).
+///
+/// This is what lets `?` propagate a [`Value`][crate::value::Value] or
+/// builder error inside an [`Appender::row`][crate::appender::Appender::row]
+/// closure, whose error type is `ErrorData` under `duckdb-1-5`:
+///
+/// ```rust,no_run
+/// use quack_rs::appender::Appender;
+/// use quack_rs::value::Value;
+///
+/// # fn demo(appender: &Appender) -> Result<(), quack_rs::error_data::ErrorData> {
+/// appender.row(|row| {
+///     let price = Value::decimal(9, 2, 1999)?; // `ExtensionError` -> `ErrorData`
+///     row.append_value(&price)
+/// })
+/// # }
+/// ```
+impl From<ExtensionError> for ErrorData {
+    fn from(err: ExtensionError) -> Self {
+        Self::new(DuckDbErrorType::Invalid, err.as_str())
+    }
+}
+
 /// Checks whether `bytes` form a valid UTF-8 string according to `DuckDB`'s
 /// validator (`DuckDB` 1.5.0+).
 ///

@@ -63,6 +63,8 @@ duckdb_create_varchar superseded duckdb.h: superseded by duckdb_create_varchar_l
 duckdb_vector_assign_string_element superseded the _len variant is wrapped
 duckdb_appender_begin_row superseded duckdb.h: a no-op kept for compatibility; only duckdb_appender_end_row is needed
 duckdb_validity_set_row_validity superseded duckdb_validity_set_row_valid and _invalid are the calls used
+duckdb_param_type superseded duckdb_param_logical_type is wrapped (PreparedStatement::parameter_type); this is that call plus duckdb_get_type_id
+duckdb_prepared_statement_column_type superseded duckdb_prepared_statement_column_logical_type is wrapped (PreparedStatement::columns); this is that call plus duckdb_get_type_id
 
 # --- host-side: an embedding application's concern, not a loadable extension's ---
 duckdb_get_profiling_info host-side query profiling of the host's own queries
@@ -91,16 +93,6 @@ duckdb_prepare_extracted_statement host-side statement extraction for an applica
 # --- candidate: worth wrapping, not done yet ---
 # (duckdb_get_bit / duckdb_get_bignum, now wrapped as Value::as_bit / as_bignum, abort the
 # process on a SQL NULL or a value that does not cast: a wrapper must check type and NULL first.)
-duckdb_param_type candidate PreparedStatement::parameter_type
-duckdb_param_logical_type candidate PreparedStatement::parameter_type
-duckdb_prepared_statement_type candidate PreparedStatement::statement_type
-duckdb_result_statement_type candidate QueryResult::statement_type
-duckdb_prepared_statement_column_count candidate PreparedStatement::column_count (the name is strdup'd: free it with duckdb_free)
-duckdb_prepared_statement_column_name candidate PreparedStatement::column_name (the name is strdup'd: free it with duckdb_free)
-duckdb_prepared_statement_column_logical_type candidate PreparedStatement::column_type
-duckdb_prepared_statement_column_type candidate PreparedStatement::column_type
-duckdb_get_table_names candidate Connection::table_names
-duckdb_appender_create_query candidate Appender::for_query
 duckdb_geometry_type_get_crs candidate LogicalType::geometry_crs (the string is strdup'd)
 duckdb_unsafe_vector_assign_string_element_len candidate VectorWriter::write_varchar could skip the UTF-8 re-check of a &str (1.5.0+)
 duckdb_create_log_storage candidate a safe LogStorage builder (1.5.0+)
