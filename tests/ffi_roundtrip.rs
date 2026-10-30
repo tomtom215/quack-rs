@@ -6285,6 +6285,8 @@ mod replacement_scan_api;
 
 #[path = "ffi_roundtrip/entry_point_inprocess.rs"]
 mod entry_point_inprocess;
+#[path = "ffi_roundtrip/entry_point_txn.rs"]
+mod entry_point_txn;
 
 #[path = "ffi_roundtrip/value_defaults.rs"]
 mod value_defaults;

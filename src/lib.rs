@@ -31,7 +31,7 @@
 //!     Ok(())
 //! }
 //!
-//! // Generates the `#[no_mangle] extern "C"` entry point. Pass the full symbol
+//! // Generates the `#[unsafe(no_mangle)] extern "C"` entry point. Pass the full symbol
 //! // name DuckDB looks up: `{extension_name}_init_c_api`.
 //! entry_point!(my_extension_init_c_api, |con| register(con));
 //! ```
@@ -153,6 +153,13 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
+// docs.rs documents the crate on a nightly with the `docsrs` cfg set, where
+// `doc_cfg` labels every `cfg`-gated item ("Available on crate feature
+// `duckdb-1-5` only") from its `#[cfg]` alone (current nightlies removed
+// `doc_auto_cfg` and do this under `doc_cfg`). A stable build never sets `docsrs`,
+// so this line is inert there. Locally:
+// `RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc --features duckdb-1-5-4`.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::undocumented_unsafe_blocks))]
 
 // quack-rs supports 64-bit targets and `wasm32-unknown-emscripten` (the

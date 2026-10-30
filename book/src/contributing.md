@@ -138,6 +138,8 @@ quack-rs/
 │   ├── data_chunk.rs                  # Ergonomic wrapper around `DuckDB` data chunks
 │   ├── debug_repr.rs                  # Internal helpers for the crate's `Debug` implementations
 │   ├── entry_point.rs                 # Extension entry point helper
+│   ├── entry_point/
+│   │   └── registration.rs            # Runs the registration closure in one transaction, or with autocommit
 │   ├── error.rs                       # Error types for `DuckDB` extension FFI error propagation
 │   ├── error_data.rs                  # Structured error data (`DuckDB` 1.5.0+)
 │   ├── expression.rs                  # Bound expressions (`DuckDB` 1.5.0+)
@@ -324,6 +326,7 @@ quack-rs/
 ├── tests/
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
+│   ├── entry_point_expansion.rs       # The entry-point macros compiled as edition 2024 and under `panic = "abort"`
 │   ├── entry_point_lint.rs            # The entry-point macros accept an `unsafe` registration closure warning-free
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
@@ -350,6 +353,7 @@ quack-rs/
 │       ├── copy_typed_state.rs        # Typed `COPY TO` state, a `FileHandle` kept across callbacks, `Send` handles (`duckdb-1-5`)
 │       ├── data_chunk_helpers.rs      # `DataChunk::any_null`, `struct_writer`, `into_chunk_writer` and `ChunkWriter::is_full`
 │       ├── entry_point_inprocess.rs   # `init_extension*` and the entry-point macros run in process against a fake extension access
+│       ├── entry_point_txn.rs         # A failed `LOAD` rolls back and can be retried; a `LOAD` inside the host's transaction
 │       ├── file_errors.rs             # `FileHandle` reports write, sync and seek failures, and refuses a seek past `i64::MAX`
 │       ├── handles_api.rs             # `StructWriter` child handles and `InMemoryDb::execute`'s row count
 │       ├── inline_paths.rs            # The paths that skip a C call: `is_valid` / `set_null` bit operations and the `ListBuilder` child-writer cache, held to the C API

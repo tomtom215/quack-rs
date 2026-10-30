@@ -90,17 +90,49 @@
 //! `duckdb-1-5` feature is enabled. Extensions that only use the stable region
 //! are unaffected and stay portable across every `DuckDB` release.
 //!
-//! # A caveat that is not ours to fix
+//! # The bindings read the whole struct before this check runs
 //!
 //! `libduckdb-sys` generates its `duckdb_ext_api_v1` with
 //! `DUCKDB_EXTENSION_API_VERSION_UNSTABLE` defined, so the Rust struct always
-//! has every slot regardless of which quack-rs features are on, and
-//! `duckdb_rs_extension_api_init` copies all of them out of the struct `DuckDB`
-//! provides. Loading into an *older* `DuckDB` whose struct has fewer slots
-//! therefore reads a few bytes past its end. The pointers it lands on are only
-//! ever stored, never called, unless the extension actually uses the unstable
-//! region — which is what [`check`] is for — but the read itself is an
-//! upstream detail of `libduckdb-sys`, not something this crate can prevent.
+//! has every slot of the release it was generated from (546 for the v1.5.x
+//! bindings, 548 for v2.0), whatever quack-rs features are on. Its
+//! `duckdb_rs_extension_api_init` asks `DuckDB` for the struct (`get_api`) and
+//! then reads **every one of those slots** through the returned pointer,
+//! storing each non-null one in a process-wide table. The entry point must call
+//! it before [`check`], because [`check`] reaches `duckdb_library_version`
+//! through that table.
+//!
+//! `DuckDB`'s `get_api` returns the address of the `duckdb_ext_api_v1` member
+//! of the loader's per-load state (`DuckDBExtensionLoadState::api_struct` in
+//! `src/main/extension/extension_load.cpp`, a local of the loading call), sized
+//! by the engine's own header. So loading a build against the 546-slot
+//! bindings into `DuckDB` v1.4.x (459 slots) reads 87 pointers, 696 bytes on a
+//! 64-bit target, past the end of that member, and into v1.5.0 – v1.5.1 (545
+//! slots) one pointer: the fields after it in the load state, then the
+//! loader's stack. This happens on **every** such `LOAD`, before any check,
+//! including for a build without `duckdb-1-5` that [`check`] then lets load as
+//! [`AbiCheck::StableOnly`]. The memory is mapped (no crash has been observed or
+//! is expected), and the values it yields are stored but never called by code
+//! that stays in the stable prefix, or when the check refuses the load. They
+//! *are* what an unstable-region wrapper would call after
+//! [`AbiPolicy::Warn`] or [`AbiPolicy::Trust`] let a mismatched layout load —
+//! one more reason those policies are undefined behaviour on a mismatch. The
+//! over-read is in `libduckdb-sys`'s generated code; quack-rs could avoid it
+//! only by calling `get_api` and reading slot 7 itself before handing the
+//! struct to the bindings.
+//!
+//! # A `DuckDB` release the table has not seen
+//!
+//! [`check`] does not extrapolate: a `duckdb-1-5` build under
+//! [`AbiPolicy::Strict`] refuses `DuckDB` v2.0.1 (or any release missing from the
+//! table) as [`AbiCheck::UnknownEngineVersion`] until quack-rs lists it, or until
+//! the build declares the engine with `QUACK_RS_TARGET_DUCKDB_VERSION`. A
+//! default-feature build is [`AbiCheck::StableOnly`] and loads there. The layout
+//! is not assumed to carry over to a 2.0.x patch release: `DuckDB` v2.0.0's
+//! `duckdb_extension.h` opens with
+//! `// WARNING: this API is not yet stable, meaning it is only guaranteed to work for this specific DuckDB version.`,
+//! v2.0.0 itself added two slots to the band v1.5.6 had declared stable, and a
+//! 1.5.x patch release (v1.5.2) once inserted a slot mid-struct.
 //!
 //! # Shipping an extension that uses the unstable API
 //!
@@ -186,7 +218,27 @@ fn layout_runs_on(compiled: usize, engine: usize) -> bool {
 }
 
 /// The result of an ABI layout check.
+///
+/// `#[non_exhaustive]`: a future release may report a new outcome, so a
+/// `match` outside quack-rs needs a wildcard arm. [`AbiCheck::is_compatible`]
+/// and [`AbiCheck::error_message`] cover every outcome.
+///
+/// ```rust,compile_fail,E0004
+/// use quack_rs::abi::AbiCheck;
+///
+/// fn passed(check: &AbiCheck) -> bool {
+///     match check {
+///         AbiCheck::Compatible { .. } | AbiCheck::StableOnly => true,
+///         AbiCheck::LayoutMismatch { .. }
+///         | AbiCheck::UnknownEngineVersion { .. }
+///         | AbiCheck::EngineVersionUnavailable { .. }
+///         | AbiCheck::DeclaredVersionMismatch { .. } => false,
+///         // error[E0004]: a wildcard arm is required
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AbiCheck {
     /// The running `DuckDB` uses the `duckdb_ext_api_v1` layout this extension
     /// was compiled against, or one that only appends to it. All calls
@@ -552,7 +604,23 @@ fn decide(compiled_slots: usize, declared: Option<&str>, engine: Option<&str>) -
 
 /// How [`init_extension`][crate::entry_point::init_extension] should react to
 /// the ABI layout check.
+///
+/// `#[non_exhaustive]`: a future release may add a policy, so a `match`
+/// outside quack-rs needs a wildcard arm.
+///
+/// ```rust,compile_fail,E0004
+/// use quack_rs::abi::AbiPolicy;
+///
+/// fn checks(policy: AbiPolicy) -> bool {
+///     match policy {
+///         AbiPolicy::Strict | AbiPolicy::Warn | AbiPolicy::AllowUnknownEngine => true,
+///         AbiPolicy::Trust => false,
+///         // error[E0004]: a wildcard arm is required
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum AbiPolicy {
     /// Refuse to load unless the layout is verified compatible.
     ///
@@ -935,6 +1003,47 @@ mod tests {
         // Not extrapolated to an unverified patch release.
         assert!(matches!(
             decide(546, None, Some("v2.0.1")),
+            AbiCheck::UnknownEngineVersion { .. }
+        ));
+    }
+
+    /// `DuckDB` v2.0.1 (due 2026-11-18) is not in the table, and nothing in
+    /// `DuckDB`'s own header promises a 2.0.x patch release keeps v2.0.0's
+    /// layout (see "A `DuckDB` release the table has not seen" in the module
+    /// docs). So until it is verified and listed, a `duckdb-1-5` build — on the
+    /// 1.5.6 or the 2.0.0 bindings — reports it as unknown, which
+    /// `AbiPolicy::Strict` refuses with a message naming the remedies, and a
+    /// build that declares v2.0.1 itself is accepted.
+    #[test]
+    fn duckdb_2_0_1_is_unknown_until_the_table_lists_it() {
+        assert_eq!(expected_slot_count("v2.0.1"), None);
+        for compiled in [546, 548] {
+            let check = decide(compiled, None, Some("v2.0.1"));
+            assert_eq!(
+                check,
+                AbiCheck::UnknownEngineVersion {
+                    engine_version: "v2.0.1".into(),
+                    compiled_slots: compiled,
+                },
+                "{compiled}-slot build"
+            );
+            let msg = check.error_message().expect("a refusal has a message");
+            assert!(
+                msg.contains("set QUACK_RS_TARGET_DUCKDB_VERSION=v2.0.1"),
+                "{msg}"
+            );
+            assert!(msg.contains("upgrade quack-rs"), "{msg}");
+            assert!(
+                matches!(
+                    decide(compiled, Some("v2.0.1"), Some("v2.0.1")),
+                    AbiCheck::Compatible { .. }
+                ),
+                "{compiled}-slot build declaring v2.0.1"
+            );
+        }
+        // Declaring v2.0.0 does not vouch for v2.0.1 either.
+        assert!(matches!(
+            decide(548, Some("v2.0.0"), Some("v2.0.1")),
             AbiCheck::UnknownEngineVersion { .. }
         ));
     }
