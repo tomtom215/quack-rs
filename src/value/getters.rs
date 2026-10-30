@@ -44,11 +44,10 @@
 #[cfg(feature = "duckdb-1-5")]
 use libduckdb_sys::duckdb_get_time_ns;
 use libduckdb_sys::{
-    duckdb_create_list_value, duckdb_get_bool, duckdb_get_date, duckdb_get_decimal,
-    duckdb_get_double, duckdb_get_enum_value, duckdb_get_float, duckdb_get_hugeint,
-    duckdb_get_int16, duckdb_get_int32, duckdb_get_int64, duckdb_get_int8, duckdb_get_interval,
-    duckdb_get_list_child, duckdb_get_time, duckdb_get_time_tz, duckdb_get_timestamp,
-    duckdb_get_timestamp_ms, duckdb_get_timestamp_ns, duckdb_get_timestamp_s,
+    duckdb_get_bool, duckdb_get_date, duckdb_get_decimal, duckdb_get_double, duckdb_get_enum_value,
+    duckdb_get_float, duckdb_get_hugeint, duckdb_get_int16, duckdb_get_int32, duckdb_get_int64,
+    duckdb_get_int8, duckdb_get_interval, duckdb_get_time, duckdb_get_time_tz,
+    duckdb_get_timestamp, duckdb_get_timestamp_ms, duckdb_get_timestamp_ns, duckdb_get_timestamp_s,
     duckdb_get_timestamp_tz, duckdb_get_uhugeint, duckdb_get_uint16, duckdb_get_uint32,
     duckdb_get_uint64, duckdb_get_uint8, duckdb_get_uuid, duckdb_value,
 };
@@ -69,31 +68,18 @@ impl Value {
     /// 1.5.6 and 2.0.0 alike), which throws on a failed cast, and
     /// `duckdb_create_list_value` catches that and returns null. The child
     /// is then taken back out (`duckdb_get_list_child` copies it). Neither
-    /// call lets an exception escape.
+    /// call lets an exception escape. The construction itself is
+    /// `Value::cast_into` (`cast.rs`), shared with `Value::try_cast`.
     pub(super) fn cast_copy(&self, target: TypeId) -> Option<Self> {
         if self.raw.is_null() {
             return None;
         }
         let ty = crate::types::LogicalType::try_new(target).ok()?;
-        let mut child = self.raw;
-        // SAFETY: `ty` is a live type owned by this frame; `child` points to
-        // exactly one live handle, matching `value_count == 1`. DuckDB copies
-        // and casts it.
-        let list = unsafe { duckdb_create_list_value(ty.as_raw(), &raw mut child, 1) };
-        // SAFETY: `list` is either null (never dereferenced by `Value`'s
-        // accessors or `Drop`) or an owned handle returned by DuckDB.
-        let list = unsafe { Self::from_raw(list) };
-        if list.is_null() {
-            return None;
-        }
-        // SAFETY: `list` is a live `LIST` with one child; index 0 is in range.
-        let copy = unsafe { duckdb_get_list_child(list.raw, 0) };
-        // SAFETY: `copy` is null or a new owned handle.
-        let copy = unsafe { Self::from_raw(copy) };
+        let copy = self.cast_into(&ty)?;
         // A cast of a non-NULL value that came back SQL `NULL` would send the
         // getter into hazard 1 (`GetValue<T>` on a `NULL` throws): refuse it.
         // No scalar-to-scalar cast is known to do this; the check is one call.
-        (!copy.is_null() && !copy.is_sql_null() && copy.type_id() == Some(target)).then_some(copy)
+        (!copy.is_sql_null() && copy.type_id() == Some(target)).then_some(copy)
     }
 
     /// Runs a `DuckDB` scalar getter that casts to `target`, without its

@@ -6298,3 +6298,9 @@ mod scalar_bind_data_copy;
 
 #[path = "ffi_roundtrip/data_chunk_helpers.rs"]
 mod data_chunk_helpers;
+
+// Eighth review, agent `api`: value readers, statement metadata, typed state.
+#[path = "ffi_roundtrip/value_bits.rs"]
+mod value_bits;
+#[path = "ffi_roundtrip/value_cast.rs"]
+mod value_cast;

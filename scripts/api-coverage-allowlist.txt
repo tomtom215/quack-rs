@@ -89,6 +89,8 @@ duckdb_extract_statements_error host-side statement extraction for an applicatio
 duckdb_prepare_extracted_statement host-side statement extraction for an application's own multi-statement scripts
 
 # --- candidate: worth wrapping, not done yet ---
+# (duckdb_get_bit / duckdb_get_bignum, now wrapped as Value::as_bit / as_bignum, abort the
+# process on a SQL NULL or a value that does not cast: a wrapper must check type and NULL first.)
 duckdb_param_type candidate PreparedStatement::parameter_type
 duckdb_param_logical_type candidate PreparedStatement::parameter_type
 duckdb_prepared_statement_type candidate PreparedStatement::statement_type
@@ -99,9 +101,6 @@ duckdb_prepared_statement_column_logical_type candidate PreparedStatement::colum
 duckdb_prepared_statement_column_type candidate PreparedStatement::column_type
 duckdb_get_table_names candidate Connection::table_names
 duckdb_appender_create_query candidate Appender::for_query
-duckdb_create_bignum candidate Value::bignum
-duckdb_get_bignum candidate Value::as_bignum (a null data pointer on allocation failure must be handled)
-duckdb_get_bit candidate Value::as_bit
 duckdb_geometry_type_get_crs candidate LogicalType::geometry_crs (the string is strdup'd)
 duckdb_unsafe_vector_assign_string_element_len candidate VectorWriter::write_varchar could skip the UTF-8 re-check of a &str (1.5.0+)
 duckdb_create_log_storage candidate a safe LogStorage builder (1.5.0+)

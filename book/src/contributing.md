@@ -294,7 +294,9 @@ quack-rs/
 │   │       └── yaml/
 │   │           └── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
 │   ├── value/
+│   │   ├── bits.rs                    # `BIT` and `BIGNUM` values: validated constructors and getters that check type and `NULL` first
 │   │   ├── blob.rs                    # `Value::as_blob` — `BLOB` extraction
+│   │   ├── cast.rs                    # `Value::try_cast` (exception-free, any type), `array_items` and `union_tag`
 │   │   ├── checks.rs                  # Pure-Rust preconditions checked before a `Value` call reaches `DuckDB`
 │   │   ├── composite.rs               # Composite constructors: `STRUCT`, `LIST`, `ARRAY`, `ENUM`, `MAP`, `UNION`
 │   │   ├── defaults.rs                # The defaulting accessors — `Value::as_*_or`
@@ -375,6 +377,8 @@ quack-rs/
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
 │       ├── typed_scalar_opt.rs        # Typed scalar closures returning `Option`, the `try_*` constructors and `map3`
 │       ├── validity_api.rs            # `ValidityBitmap` against the engine's masks, at the word and vector edges
+│       ├── value_bits.rs              # `BIT` / `BIGNUM` values; every input the C getters abort on reads as `None`
+│       ├── value_cast.rs              # `try_cast`, `array_items`, `union_tag`: reading `ARRAY` and `UNION` values
 │       ├── value_defaults.rs          # `Value::as_*_or` when a value is present
 │       ├── value_getters.rs           # Each typed `Value` getter at its own type; out-of-range TIMETZ / TIME_NS are not cast
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
