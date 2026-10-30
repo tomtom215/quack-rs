@@ -21,6 +21,8 @@ extend-ignore-re = [
     'plattform',
     '"terminat"',
     "'TRUCT",
+    # A statement that does not parse, on purpose (`SELEC nonsense`, `SELEC 1`).
+    '\bSELEC (nonsense|1)\b',
     # A node id in a Mermaid diagram (docs/architecture.md): `CPY[...]`.
     '\bCPY\[',
 ]

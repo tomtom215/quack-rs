@@ -437,8 +437,9 @@ Security).
   than this repository's workflows. [DEPS-15]
 
 - **`parse_description_yml` reads every section the way PyYAML 6 `safe_load` does**, which is
-  what the community build uses. On the 395 published descriptors, and on 41,000 mutants of
-  them, it never accepts a file PyYAML refuses, and it never panics. Tabs, flow collections,
+  what the community build uses. On the 395 published descriptors (community-extensions
+  `845779e`) it agrees with PyYAML 6.0.3 on every one, and on 118,500 random mutants of them
+  (three seeds) it never accepts a file PyYAML refuses and never panics. Tabs, flow collections,
   anchors and aliases, quoted and block scalars, document markers, line breaks (NEL, LS and
   PS included) and nesting are handled as PyYAML handles them. The parse runs in linear time:
   hostile inputs that took 3.8 to 21.5 s (and over 100 s for a comment run) now take at most

@@ -1062,7 +1062,7 @@ fn a_dictionary_with_nulls_under_an_empty_list_past_zero_is_accepted() {
 /// dictionary are walked with their real row count, so a list view with gaps
 /// among them is found.
 #[test]
-fn a_dictionarys_values_are_checked_for_the_layouts_duckdb_misreads() {
+fn the_values_of_a_dictionary_are_checked_for_the_layouts_duckdb_misreads() {
     let shape = dictionary_of(of(Kind::ListView { wide: false }, vec![leaf()]));
     let gapped = Node::new(2, 0, 0, vec![vec![], i32s(&[0, 2]), i32s(&[1, 1])])
         .with_children(vec![ints(3, 0)]);
