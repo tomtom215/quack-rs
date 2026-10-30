@@ -3323,7 +3323,49 @@ printed 0 is listed with the exit code):
 - `cargo semver-checks` against v0.19.0 (`--release-type patch`): the four
   `#[non_exhaustive]` enums and `ScalarBindInfo` no longer being `RefUnwindSafe`, nothing
   else; all five are in the CHANGELOG.
-- The pull request's own CI is the remaining check (14.6).
+- **The pull request's own CI found nine more problems after every gate above had passed
+  locally.** None needed a change to the shipped library code; item 7 also records a
+  limitation of it.
+  1. Windows: `-D warnings` turned unused items in Unix-only test modules into errors
+     (helpers in `scaffold/tests_make.rs`, `temp_files` and a `Path` import in
+     `append_metadata/tests_output.rs`); they are `cfg(unix)` now.
+  2. macOS: APFS refuses to create a file whose name is not UTF-8 (`EILSEQ`), so
+     `a_file_name_that_is_not_utf8_is_used_not_a_panic` cannot run there; it is gated off
+     macOS.
+  3. `scaffold-e2e`: the regular expression that rewrites the scaffolded dependency line
+     dropped its `features`, and the assertion had not followed a change in the scaffold.
+  4. WebAssembly: the test run links with `-C link-arg=-sSTACK_SIZE=8MB` (emscripten's
+     default stack is 64 KB); the job passed on run 724.
+  5. A nightly Cargo lays build scripts out as `build/<package>/<hash>/out/`;
+     `tests/build_script_env.rs` only knew the old layout and finds both now.
+  6. The DuckDB 2.0 source-build job (informational): `rust-cache` restored `target/`
+     without the `duckdb-sources/` directory the 1.20000 bindings unpack there, so the
+     bindings' build script stopped. The job caches the registry only; it passed on run 724.
+  7. `hostile_input::a_deeply_nested_type_is_refused_not_recursed_into` aborted with a
+     stack overflow on the macOS and Windows source builds and once on Linux with the 1.4.5
+     library, and never locally. Cause (a gdb backtrace on a 512 KiB stack, 1.5.6): the
+     test itself registered a scalar set whose parameter was 3,500 levels deep, and the
+     next `register_table` ran its `duckdb_functions()` name check, in which DuckDB's own
+     `LogicalType::ToString` recurses once per level; how much stack that takes depends on
+     how DuckDB was built. quack-rs lets a parameter type nested past its 256-level cap
+     register (a return type past it is refused), so an extension that registers such a
+     type makes every later `duckdb_functions()` scan, its own and other extensions',
+     overflow. That is a limitation, not fixed here: an extension must bound the depth of
+     types it builds from untrusted input. The test is replaced by one that stops at the
+     cap and asserts what the cap changes (a return type nested 256 levels registers, 257
+     is refused; overloads that differ only 300 levels down are refused as duplicates);
+     changing the cap to 255, 257 or 100000 fails it. A type past the cap is refused with
+     the ANY/INVALID message, which does not mention the depth.
+  8. Coverage (`cargo llvm-cov`): all tests passed and the report failed with "invalid
+     instrumentation profile data". The instrumented child of
+     `a_failed_write_leaves_nothing_behind_and_names_the_output` runs under `ulimit -f 8`,
+     which cut its 42,888-byte profile off at 4 KiB. Reproduced locally (91 profile files, one
+     bad, 4,096 bytes) and fixed by sending that child's profile to `/dev/null`.
+  9. Windows (`ffi_roundtrip`): `duckdb_extensions()` could not open a half-written
+     `parquet` file another test thread was installing. `Fixture` installs `icu` and
+     `parquet` once per process now. Not reproducible here; the windows-2025 job decides.
+- What 14.6 lists as unverified on Windows, macOS, WebAssembly and the source builds is
+  answered by the pull request's final CI run, which the pull request page shows.
 
 ### 14.9 Corrections to earlier sections
 
@@ -3381,5 +3423,17 @@ printed 0 is listed with the exit code):
 - A reviewer's snapshot is older than the fixes: `tests` patch 04 would have regressed
   ELF handling, and two of its Arrow tests needed an `indices` field that did not exist
   at its snapshot.
+- A test whose only assertion is that the process survived says little, and this one
+  created its own hazard. The deep-type test left a 3,500-level type in the catalog and the
+  next registration paid for it; how much stack DuckDB's recursion takes depends on the
+  build, so a run against the prebuilt library on my machine could not show it. Shrinking
+  the thread's stack until the local run failed, then reading the backtrace in gdb, found
+  the cause in minutes. Assert on the outcome, and do not leave a hostile object registered.
+- Coverage instrumentation changes what child processes do: a test that limits a child's
+  file size truncates its profile. `rustup component add llvm-tools-preview` and
+  `cargo llvm-cov` reproduce the Coverage workflow locally; I had not tried.
+- A check's `head_sha` has to be compared with the branch head before reading its failure.
+  Runs cancelled by a newer push report `CI passed` as failed (runs 721 and 722), and
+  each push restarts every job, so fixes should be batched.
 - A decision made for lack of verification can be wrong: I declined the runner pins
   because I could not confirm the labels offline, and `infra` confirmed them.
