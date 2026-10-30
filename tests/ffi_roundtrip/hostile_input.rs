@@ -257,94 +257,110 @@ fn a_macro_body_cannot_turn_one_statement_into_several() {
     }
 }
 
+/// How deep quack-rs lets its own walks over a logical type go
+/// (`table::type_check::MAX_TYPE_NESTING`, crate-private). A walk that reaches
+/// a node this many levels below the root gives up instead of recursing on.
+const NESTING_CAP: usize = 256;
+
+fn nested(depth: usize, leaf: TypeId) -> LogicalType {
+    let mut t = LogicalType::new(leaf);
+    for _ in 0..depth {
+        t = LogicalType::try_list_from_logical(&t).expect("nest");
+    }
+    t
+}
+
 /// A type nested a few thousand levels deep, built in a loop (as a reader of
 /// an untrusted schema would), used to overflow the stack in
-/// `scalar::builder::collision::type_string`, which aborts the process.
+/// `scalar::builder::collision::type_string`, which aborts the process. The
+/// walks are capped now, and this pins the cap through what it changes,
+/// at its boundary, so the check does not depend on how much stack the
+/// platform leaves.
+///
+/// It stops at the cap on purpose. `DuckDB` renders the parameter types of
+/// every registered function, recursively, in `duckdb_functions()`, which
+/// `register_table` reads for its name check. An earlier version registered a
+/// 3,500-deep overload and then a table function on a 2 MiB thread: the table
+/// registration overflowed inside `LogicalType::ToString` on the macOS source
+/// build and, intermittently, on 1.4.5 (on 1.5.6 it needed 6,000 levels).
+/// A type deeper than the cap that registers is therefore not a thing this
+/// test may leave in the catalog.
 #[test]
-fn a_deeply_nested_type_is_refused_not_recursed_into() {
-    const DEPTH: usize = 2_000;
-    // `signature::describe` (a set's duplicate check) has a smaller frame
-    // than `collision::type_string`: on this 2 MiB thread in a debug build it
-    // first overflowed between 2,000 and 3,500 levels. `DuckDB`'s own
-    // `LogicalType::ToString` overflows the same stack at 6,000 (a later
-    // catalog scan renders the registered type), so deeper is the engine's
-    // limit, not quack-rs's.
-    const SET_DEPTH: usize = 3_500;
-    let nest_to = |depth: usize| {
-        let mut t = LogicalType::new(TypeId::BigInt);
-        for _ in 0..depth {
-            t = LogicalType::try_list_from_logical(&t).expect("nest");
-        }
-        t
-    };
-    let nest = move || nest_to(DEPTH);
-    // 2 MiB is the default stack of a test thread; the registration runs on it.
-    let worker = std::thread::Builder::new()
-        .stack_size(2 << 20)
-        .spawn(move || {
-            let fx = fixture_with_canary();
-            // SAFETY: the fixture's handles outlive `con`.
-            let con = unsafe { Connection::from_raw(fx.con(), fx.db()) };
-            // SAFETY: the connection is valid for these calls.
-            let scalar = unsafe {
-                con.register_scalar(
-                    ScalarFunctionBuilder::new("deep_scalar")
-                        .param_logical(nest())
-                        .returns_logical(nest())
-                        .function(zero),
-                )
-            };
-            // A set renders every overload for the duplicate check
-            // (`signature::describe`), which recursed the same way.
-            // SAFETY: the connection is valid for this call.
-            let set = unsafe {
-                con.register_scalar_set(
-                    ScalarFunctionSetBuilder::new("deep_set")
-                        .overload(
-                            ScalarOverloadBuilder::new()
-                                .param_logical(nest_to(SET_DEPTH))
-                                .returns(TypeId::BigInt)
-                                .function(zero),
-                        )
-                        .overload(
-                            ScalarOverloadBuilder::new()
-                                .param_logical(nest_to(SET_DEPTH))
-                                .param(TypeId::BigInt)
-                                .returns(TypeId::BigInt)
-                                .function(zero),
-                        ),
-                )
-            };
-            let table = TableFunctionBuilder::new("deep_table")
-                .with_state::<(), _>(move |bind| {
-                    let mut t = LogicalType::new(TypeId::BigInt);
-                    for _ in 0..DEPTH {
-                        t = LogicalType::try_list_from_logical(&t).expect("nest");
-                    }
-                    bind.add_result_column_with_type("x", &t);
-                    Ok(())
-                })
-                .scan(|(), chunk| {
-                    // SAFETY: ending the scan.
-                    unsafe { chunk.set_size(0) };
-                    Ok(())
-                })
-                .build()
-                .expect("build");
-            // SAFETY: the connection is valid for this call.
-            let table = unsafe { con.register_table(table) };
-            assert_untouched(&fx, "deep types");
-            (
-                scalar.map_err(|e| e.to_string()),
-                set.map_err(|e| e.to_string()),
-                table.map_err(|e| e.to_string()),
+fn a_type_nested_past_the_cap_is_refused_not_recursed_into() {
+    // A scalar's return type is walked for `ANY`/`INVALID` before registration.
+    // Exactly at the cap it registers; one level past, the walk gives up and the
+    // type is refused (without the cap it would be walked, found clean, and
+    // registered).
+    for (depth, registers) in [(NESTING_CAP, true), (NESTING_CAP + 1, false)] {
+        let fx = fixture_with_canary();
+        // SAFETY: the fixture's handles outlive `con`.
+        let con = unsafe { Connection::from_raw(fx.con(), fx.db()) };
+        // SAFETY: the connection is valid for this call.
+        let result = unsafe {
+            con.register_scalar(
+                ScalarFunctionBuilder::new("deep_return")
+                    .param(TypeId::BigInt)
+                    .returns_logical(nested(depth, TypeId::BigInt))
+                    .function(zero),
             )
-        })
-        .expect("spawn");
-    // Reaching here at all is the test: the stack did not overflow. Whether a
-    // 2,000-deep type registers is the engine's business.
-    let (scalar, set, table) = worker.join().expect("the worker did not panic");
-    let _ = (scalar, set, table);
+        };
+        assert_eq!(
+            result.is_ok(),
+            registers,
+            "return type nested {depth}: {result:?}"
+        );
+        assert_untouched(&fx, "deep return type");
+    }
+
+    // A set compares its overloads' parameter types by rendering them, to
+    // refuse a duplicate. Below the cap two types that differ only in the
+    // innermost element are different overloads; past it the rendering stops
+    // ("..."), so they compare equal and the second is refused as a duplicate.
+    for (depth, registers) in [(NESTING_CAP - 1, true), (NESTING_CAP + 44, false)] {
+        let fx = fixture_with_canary();
+        // SAFETY: the fixture's handles outlive `con`.
+        let con = unsafe { Connection::from_raw(fx.con(), fx.db()) };
+        // SAFETY: the connection is valid for this call.
+        let result = unsafe {
+            con.register_scalar_set(
+                ScalarFunctionSetBuilder::new("deep_set")
+                    .overload(
+                        ScalarOverloadBuilder::new()
+                            .param_logical(nested(depth, TypeId::BigInt))
+                            .returns(TypeId::BigInt)
+                            .function(zero),
+                    )
+                    .overload(
+                        ScalarOverloadBuilder::new()
+                            .param_logical(nested(depth, TypeId::Integer))
+                            .returns(TypeId::BigInt)
+                            .function(zero),
+                    ),
+            )
+        };
+        assert_eq!(
+            result.is_ok(),
+            registers,
+            "overloads nested {depth}: {result:?}"
+        );
+        assert_untouched(&fx, "deep set");
+        // The catalog scan behind a table function's name check renders every
+        // registered parameter type, so it must still work with one registered.
+        let table = TableFunctionBuilder::new("after_deep_set")
+            .with_state::<(), _>(|bind| {
+                bind.add_result_column("x", TypeId::BigInt);
+                Ok(())
+            })
+            .scan(|(), chunk| {
+                // SAFETY: ending the scan.
+                unsafe { chunk.set_size(0) };
+                Ok(())
+            })
+            .build()
+            .expect("build");
+        // SAFETY: the connection is valid for this call.
+        unsafe { con.register_table(table) }.expect("a table registers after a deep set");
+    }
 }
 
 /// `u64::MAX` is what a careless "unknown" looks like. `DuckDB` converts the

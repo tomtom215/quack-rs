@@ -30,11 +30,18 @@ use crate::types::LogicalType;
 /// `type_string` with a process abort. Nothing real nests this deep.
 ///
 /// This bounds quack-rs's own walks only. `DuckDB`'s `LogicalType::ToString`
-/// recurses too, and overflowed a 2 MiB thread at 6,000 levels on 1.5.6 when
-/// a catalog scan listed a function with such a parameter (a debug test
-/// build, `hostile_input::a_deeply_nested_type_is_refused_not_recursed_into`
-/// probing): an extension that builds types from untrusted input must bound
-/// their depth itself.
+/// recurses too: `duckdb_functions()` renders the parameter types of every
+/// registered function, and a scan of it (the name check in `register_table`
+/// runs one) overflowed a 2 MiB thread with a 3,500-deep parameter type
+/// registered, on the macOS source build and intermittently on 1.4.5, and with
+/// a 6,000-deep one on 1.5.6 (`hostile_input::a_type_nested_past_the_cap_is_refused_not_recursed_into`
+/// probing). An extension that builds types from untrusted input must bound
+/// their depth itself, and not register a parameter type nested deeper than
+/// the engine can render.
+///
+/// A type nested past the cap counts as one that contains `ANY` or `INVALID`
+/// ([`contains_any_or_invalid`]): it is refused with that message, which does
+/// not mention the depth.
 pub const MAX_TYPE_NESTING: usize = 256;
 
 /// `DUCKDB_TYPE_ANY`. Spelled as a literal because the constant is absent from
