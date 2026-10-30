@@ -457,9 +457,19 @@ git tag -s "v0.2.1" -m "Hotfix v0.2.1" origin/hotfix/0.2.1
 git push origin "v0.2.1"
 ```
 
-`main`'s own `Cargo.toml`, lockfiles and CHANGELOG stay as `main` had them
-(resolve the merge in favour of `main` where they conflict, keeping the hotfix's
-CHANGELOG entry), so the next regular release is cut from `main` as usual.
+After the merge `main` must still agree with itself (`scripts/check-release-metadata.py`
+runs on it). Where only the hotfix changed the version, the lockfiles, the
+CHANGELOG, `CITATION.cff` or the README's "latest" line, `main` simply takes
+them, which is right: they describe the newest release. Where `main` changed
+them too (it is already on a newer version), keep `main`'s and add the hotfix's
+CHANGELOG section below `main`'s own.
+
+The release workflow that runs is the one in the tagged commit, i.e. the
+hotfix branch's: a hotfix of a line released before this runbook gained the
+release-metadata check runs that line's older `validate`. Copy
+`scripts/check-release-metadata.py` from `main` into the hotfix checkout and
+run it there before tagging (it checks the tree it sits in); do not commit it
+on the hotfix branch unless the fix needs it.
 
 ---
 
