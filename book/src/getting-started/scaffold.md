@@ -15,7 +15,7 @@ my_extension/
 ├── Cargo.toml                          # cdylib + rlib crate, MSRV, dependencies, release profile
 ├── Makefile                            # delegates to cargo + extension-ci-tools
 ├── README.md                           # build, test and try instructions, and what to submit
-├── LICENSE                             # the license text (see "License files" below)
+├── LICENSE                             # the license text (see "The generated project")
 ├── deny.toml                           # cargo-deny configuration
 ├── src/
 │   ├── lib.rs                          # entry point, an example scalar function, unit test
@@ -247,9 +247,10 @@ places, and push to GitHub — CI runs automatically.
 - **`Cargo.toml`** names `libduckdb-sys` as `>=1.4.4, <1.20100` with
   `default-features = false`, and, for a project stamped C API `v1.5.6` (or an unstable
   DuckDB 1.5 target), enables the `duckdb-1-5*` feature its comments describe on `quack-rs`.
-- **License files.** `LICENSE` holds the text for MIT, Apache-2.0, BSD-2-Clause,
-  BSD-3-Clause, ISC, 0BSD, MIT-0 and Unlicense. An expression gets one `LICENSE-<ID>` per
-  license; any other license gets a `LICENSE.TODO` that names the text to add.
+- **License files.** `LICENSE` holds the text for a single license among MIT, Apache-2.0,
+  BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, MIT-0 and Unlicense. An expression gets one
+  `LICENSE-<name>` file per license (`MIT OR Apache-2.0` gives `LICENSE-MIT` and
+  `LICENSE-APACHE`); any other license gets a `LICENSE.TODO` that names the text to add.
 - **`deny.toml`** configures `cargo deny check`. It ignores RUSTSEC-2026-0367, -0368 and -0369,
   each with a reason: they concern the `zip` crate before 9, which is only a build-script
   dependency of `libduckdb-sys` up to 1.10506.0, the release Cargo resolves for
