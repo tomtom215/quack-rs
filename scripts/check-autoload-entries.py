@@ -26,7 +26,10 @@ also names `geometry`, for `spatial`; 1.5.0 dropped it.)
 Exit codes:
     0  the lists cover every supported release
     1  a release autoloads for a name quack-rs does not list
-    2  upstream could not be reached or parsed
+    2  upstream could not be reached (network failure, HTTP 5xx or 429)
+
+An HTTP 4xx answer, or a header the script cannot read, exits 1 as well: the
+file moved or changed shape and this script needs updating.
 
 Usage:
     python3 scripts/check-autoload-entries.py
@@ -82,7 +85,8 @@ def upstream_names(header: str, array: str) -> set[str]:
     # Each `{` in the array body opens one entry. If upstream changes the entry
     # shape (a third field, a macro), the pattern above matches fewer of them,
     # and an empty or partial set would read as "src/catalog.rs covers every
-    # name": refuse instead ("could not parse", exit 2).
+    # name": refuse instead (exit 1: the file changed shape and this script
+    # needs updating).
     opened = m.group(1).count("{")
     if not entries or len(entries) != opened:
         raise ValueError(f"{array}: {opened} entries, {len(entries)} parsed; has the entry layout changed?")
@@ -135,7 +139,23 @@ def main() -> int:
                 names = upstream_names(header, array)
                 union[array] |= names
                 print(f"{tag}: {array} {len(names)} names")
-        except (urllib.error.URLError, OSError, ValueError) as e:
+        except urllib.error.HTTPError as e:
+            if 400 <= e.code < 500 and e.code != 429:
+                print(
+                    f"::error::{tag}: extension_entries.hpp answered HTTP {e.code}: "
+                    "the file moved, so this check cannot read it",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"{tag}: could not read extension_entries.hpp: {e}", file=sys.stderr)
+            return 2
+        except ValueError as e:
+            print(
+                f"::error::{tag}: extension_entries.hpp has a different shape: {e}",
+                file=sys.stderr,
+            )
+            return 1
+        except (urllib.error.URLError, OSError) as e:
             print(f"{tag}: could not read extension_entries.hpp: {e}", file=sys.stderr)
             return 2
 

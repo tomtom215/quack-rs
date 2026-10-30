@@ -20,7 +20,10 @@ The authority is `json/licenses.json` and `json/exceptions.json` in
 Exit codes:
     0  both lists are correct
     1  an entry is unknown, deprecated or unsorted, or an exception is missing
-    2  the registry could not be fetched or parsed (network, layout change)
+    2  the registry could not be fetched (network failure, HTTP 5xx or 429)
+
+An HTTP 4xx answer, or a registry without the expected key, exits 1 as well: the
+URL or the layout changed and this script needs updating.
 
 Usage:
     python3 scripts/check-spdx-list.py
@@ -31,6 +34,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -57,13 +61,19 @@ def fetch(url: str, key: str) -> tuple[list[dict], str] | None:
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             registry = json.loads(response.read().decode("utf-8"))
-    except Exception as error:  # noqa: BLE001 - any failure is "could not check"
+    except urllib.error.HTTPError as error:
+        if 400 <= error.code < 500 and error.code != 429:
+            print(f"::error::{url} answered HTTP {error.code}: the registry moved")
+            sys.exit(1)
+        print(f"::warning::could not fetch {url}: {error}")
+        return None
+    except Exception as error:  # noqa: BLE001 - network, DNS, TLS, timeouts: "could not check"
         print(f"::warning::could not fetch {url}: {error}")
         return None
     entries = registry.get(key)
     if not entries:
-        print(f"::warning::{url} listed no {key} — layout may have changed")
-        return None
+        print(f"::error::{url} listed no {key}: the registry layout changed")
+        sys.exit(1)
     return entries, registry.get("licenseListVersion", "unknown")
 
 

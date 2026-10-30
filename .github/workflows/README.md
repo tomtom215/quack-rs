@@ -135,9 +135,12 @@ The five jobs that compare a checked-in table with upstream (`abi-table`, which
 has two such steps, `platform-table`, `spdx-list`, `autoload-entries`,
 `msrv-vs-duckdb-ci`) run each script through `scripts/upstream-guard.sh`:
 exit 1 (drift) fails; exit 2
-("could not check": upstream unreachable or unparseable) is a warning on a
-pull request or a schedule run and a failure on a release tag, where nothing
-may be skipped; a missing script fails. `upstream-guard.sh --self-test` runs in
+("could not check": upstream unreachable, an HTTP 5xx or 429) is a warning on a
+pull request or a push and a failure on a release tag and on the weekly
+schedule, where nothing may be skipped; a missing script fails. The scripts
+return 1, not 2, for an HTTP 4xx and for a file that no longer has the
+expected shape: upstream moved something, and a job that degraded to "check
+skipped" for good would never say so. `upstream-guard.sh --self-test` runs in
 the `doc` job.
 
 ## Adding a new workflow

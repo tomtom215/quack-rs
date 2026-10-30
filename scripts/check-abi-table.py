@@ -31,7 +31,8 @@ downloaded suspends the staleness comparison (exit 2) rather than failing it.
 
 Exit codes:
     0  src/abi.rs matches upstream
-    1  it has genuinely drifted, or a header is inconsistent
+    1  it has genuinely drifted, a header is inconsistent, or no release has a
+       header at HEADER_URL (the file moved)
     2  the release tags could not be listed, or at least one release header
        could not be fetched, so the comparison would be unsound -- treat as
        "could not check", not as a failure
@@ -353,8 +354,13 @@ def main() -> int:
         print(f"  {tag}: {len(full)} slots ({len(stable)} stable) layout={digest}")
 
     if not rows:
-        print("::warning::no release headers could be downloaded")
-        return 2
+        if unfetchable:
+            print("::warning::no release headers could be downloaded")
+            return 2
+        # Every release answered 404: the header is not where HEADER_URL says.
+        where = HEADER_URL.replace("{tag}", "<tag>")
+        print(f"::error::no release has a header at {where}: the file moved")
+        return 1
 
     derived = collapse(rows)
     derived_prefixes = derive_prefixes(declarations_by_slots)

@@ -15,8 +15,10 @@ exist.
 
 Exit codes:
     0  every pinned toolchain can build quack-rs
-    1  a pinned toolchain is older than quack-rs's MSRV
-    2  the workflow could not be fetched or parsed (network, layout change)
+    1  a pinned toolchain is older than quack-rs's MSRV, or the workflow answered
+       HTTP 4xx or holds no toolchain pin (it moved or changed shape, and this
+       script needs updating)
+    2  the workflow could not be fetched (network failure, HTTP 5xx or 429)
 
 By default it checks `main`, the branch the community build uses for the
 newest DuckDB release (DISTRIBUTION_REF, kept equal to
@@ -36,6 +38,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -164,16 +167,22 @@ def main() -> int:
         try:
             with urllib.request.urlopen(url, timeout=60) as response:
                 workflow = response.read().decode("utf-8")
-        except Exception as error:  # noqa: BLE001 - any failure is "could not check"
+        except urllib.error.HTTPError as error:
+            if 400 <= error.code < 500 and error.code != 429:
+                print(f"::error::{url} answered HTTP {error.code}: the workflow moved")
+                return 1
+            print(f"::warning::could not fetch {url}: {error}")
+            return 2
+        except Exception as error:  # noqa: BLE001 - network, DNS, TLS, timeouts: "could not check"
             print(f"::warning::could not fetch {url}: {error}")
             return 2
         found = pins_in(workflow)
         if not found:
             print(
-                "::warning::found no dtolnay/rust-toolchain pins in "
-                f"{url} — the workflow layout may have changed"
+                "::error::found no dtolnay/rust-toolchain pins in "
+                f"{url}: the workflow layout changed"
             )
-            return 2
+            return 1
         print(f"{ref}: {', '.join(sorted(set(found)))}")
         pins.extend(found)
 
