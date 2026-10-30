@@ -55,7 +55,7 @@ fn have(tool: &str) -> bool {
         .output()
         .is_ok_and(|o| o.status.success());
     if !found {
-        eprintln!("{tool} not found; skipping");
+        tests::tool_missing(tool);
     }
     found
 }

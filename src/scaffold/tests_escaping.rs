@@ -93,7 +93,7 @@ fn adversarial_text_round_trips_through_pyyaml() {
         .status()
         .is_ok_and(|s| s.success());
     if !has_pyyaml {
-        eprintln!("python3 with PyYAML not found; skipping the PyYAML cross-check");
+        tests::tool_missing("python3 with PyYAML");
         return;
     }
 

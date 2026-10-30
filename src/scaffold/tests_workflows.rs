@@ -237,7 +237,7 @@ fn workflows_parse_as_yaml() {
             .stderr(Stdio::piped())
             .spawn()
         else {
-            eprintln!("python3 not found; skipping");
+            tests::tool_missing("python3");
             return;
         };
         if let Some(mut stdin) = child.stdin.take() {
@@ -246,7 +246,7 @@ fn workflows_parse_as_yaml() {
         let out = child.wait_with_output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if stderr.contains("No module named 'yaml'") {
-            eprintln!("PyYAML not installed; skipping");
+            tests::tool_missing("PyYAML");
             return;
         }
         assert!(out.status.success(), "{path}: {stderr}");

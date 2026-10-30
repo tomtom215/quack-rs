@@ -5,6 +5,40 @@
 
 use super::*;
 
+/// What a test does when a tool it cross-checks with (`python3` with `PyYAML`,
+/// `make`, `git`) is not installed: skip, with a note, or, where
+/// `QUACK_REQUIRE_TOOLS=1` (the Linux `test` job), fail. Without the failure a
+/// runner that lost `PyYAML` kept every one of these tests green while checking
+/// nothing, and `cargo test` hides the note.
+pub(super) fn tool_missing(what: &str) {
+    let required = std::env::var("QUACK_REQUIRE_TOOLS").ok();
+    if let Err(message) = missing_tool_outcome(required.as_deref(), what) {
+        panic!("{message}");
+    }
+}
+
+fn missing_tool_outcome(required: Option<&str>, what: &str) -> Result<(), String> {
+    if required == Some("1") {
+        return Err(format!(
+            "{what} not found, and QUACK_REQUIRE_TOOLS=1 says this run must have it"
+        ));
+    }
+    eprintln!("{what} not found; skipping");
+    Ok(())
+}
+
+#[test]
+fn a_missing_tool_fails_only_where_it_is_required() {
+    assert!(missing_tool_outcome(None, "PyYAML").is_ok());
+    assert!(missing_tool_outcome(Some(""), "PyYAML").is_ok());
+    assert!(missing_tool_outcome(Some("0"), "PyYAML").is_ok());
+    let err = missing_tool_outcome(Some("1"), "PyYAML").unwrap_err();
+    assert!(
+        err.contains("PyYAML") && err.contains("QUACK_REQUIRE_TOOLS"),
+        "{err}"
+    );
+}
+
 fn valid_config() -> ScaffoldConfig {
     ScaffoldConfig {
         name: "my_analytics".to_string(),

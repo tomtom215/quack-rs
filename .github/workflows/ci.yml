@@ -120,7 +120,20 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The scaffold's tests cross-check the files it generates with PyYAML (the
+      # parser the community build reads description.yml with), make and git,
+      # and skip when one is missing; `cargo test` hides the note, so a runner
+      # without PyYAML kept them green while checking nothing. On Linux the tools
+      # are installed and a missing one fails the test (QUACK_REQUIRE_TOOLS=1);
+      # macOS and Windows runners keep the skip.
+      - name: Install the tools the scaffold's tests cross-check with
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-yaml make git
       - run: cargo test --all-targets
+        env:
+          QUACK_REQUIRE_TOOLS: ${{ runner.os == 'Linux' && '1' || '' }}
       # Every other job builds tests in debug or with the repository's release
       # profile (one codegen unit, fat LTO). A user's crate usually has Cargo's
       # default release profile: 16 codegen units, no fat LTO, where rustc gives
