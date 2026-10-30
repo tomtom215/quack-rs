@@ -88,7 +88,8 @@ and report the `Err` it returns yourself.
 
 All of these guards require `panic = "unwind"` in the release profile, which is
 what the scaffold generates and what `validate_release_profile` insists on:
-under `panic = "abort"` nothing can be caught.
+under `panic = "abort"` nothing can be caught, so `entry_point!` and `entry_point_v2!`
+refuse to compile there (an entry point written by hand has no such check).
 
 ---
 

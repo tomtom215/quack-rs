@@ -25,15 +25,17 @@ When DuckDB loads your extension, it:
 
 `quack_rs::entry_point::init_extension` performs this sequence. It also checks the C API
 layout before registration (see [ABI Compatibility](abi.md)) and converts a panic in your
-registration code into a load error. The `entry_point!` macro generates the required
-`#[no_mangle] extern "C"` symbol:
+registration code into a load error, and runs the registration in one transaction that a
+failed `LOAD` rolls back (see [The Entry Point](entry-point.md#registration-runs-in-one-transaction)).
+The `entry_point!` macro generates the required
+`#[unsafe(no_mangle)] extern "C"` symbol:
 
 ```rust
 # use quack_rs::entry_point;
 # use quack_rs::error::ExtensionError;
 # fn register(_con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> { Ok(()) }
 entry_point!(my_extension_init_c_api, |con| register(con));
-// emits: #[no_mangle] pub unsafe extern "C" fn my_extension_init_c_api(...)
+// emits: #[unsafe(no_mangle)] pub unsafe extern "C" fn my_extension_init_c_api(...)
 ```
 
 ---

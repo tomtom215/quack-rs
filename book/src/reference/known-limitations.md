@@ -98,7 +98,9 @@ the host's hook for every thread in the process.
 unwinding, a panic hook that itself panics, and an allocation failure while the panic
 message is formatted (Rust's default handler aborts) all end the host process, whatever
 the guards do. The first was reproduced: `panic in a destructor during cleanup … aborting`,
-exit code 134. Keep `Drop` implementations of your own types from panicking.
+exit code 134. Keep `Drop` implementations of your own types from panicking. And under
+`panic = "abort"` no guard works at all, which is why `entry_point!` and `entry_point_v2!`
+stop the build there.
 
 ### Loading an extension scans the function catalog once
 
