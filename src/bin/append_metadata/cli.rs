@@ -3,6 +3,7 @@
 
 //! Command-line parsing and validation (std-only, no clap).
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use crate::footer::VALID_ABI_TYPES;
@@ -45,7 +46,8 @@ Options (each value can also be given as --option=VALUE):
   --abi-type <TYPE>            C_STRUCT | CPP | C_STRUCT_UNSTABLE  [default: C_STRUCT]
   --extension-version <VER>    Your extension's version (e.g. v0.1.0)  [default: v0.1.0]
   --duckdb-version <VER>       C_STRUCT: the C extension API version (NOT a DuckDB
-                               release -- see LESSONS.md P2): {api} for the stable API,
+                               release -- see pitfall P2, {p2}):
+                               {api} for the stable API,
                                which every DuckDB since v1.2.0 loads, or {api156} for a
                                build using quack-rs's duckdb-1-5 features, which DuckDB
                                v1.5.6 and v2.0.0 load and older releases refuse.
@@ -70,24 +72,40 @@ Options (each value can also be given as --option=VALUE):
   -h, --help                   Print this help message",
         api = quack_rs::DUCKDB_API_VERSION,
         api156 = quack_rs::DUCKDB_API_VERSION_1_5_6,
+        p2 = P2_URL,
     )
 }
 
+/// The book's pitfall P2: the metadata's version field holds the C API
+/// version, not a `DuckDB` release.
+pub const P2_URL: &str =
+    "https://quack-rs.com/reference/pitfalls.html#p2-metadata-version-is-c-api-version-not-duckdb-version";
+
 /// Parses `raw` (without the program name).
+///
+/// Arguments are `OsStr`s, not `str`s: a file name on Unix is any bytes but
+/// NUL, and `std::env::args()` panics on one that is not UTF-8. A flag's name
+/// and value must be UTF-8 (they are compared and stamped as text); the two
+/// positional paths may be anything the operating system allows.
 ///
 /// # Errors
 ///
 /// A message for a missing, unknown, repeated or invalid argument.
-pub fn parse(raw: &[String]) -> Result<Command, String> {
-    let mut positional: Vec<&str> = Vec::new();
+pub fn parse<S: AsRef<OsStr>>(raw: &[S]) -> Result<Command, String> {
+    let mut positional: Vec<&OsStr> = Vec::new();
     let mut abi_type: Option<&str> = None;
     let mut extension_version: Option<&str> = None;
     let mut duckdb_version: Option<&str> = None;
     let mut platform: Option<&str> = None;
     let (mut dump, mut replace, mut wasm) = (false, false, false);
 
-    let mut iter = raw.iter().map(String::as_str);
-    while let Some(raw_arg) = iter.next() {
+    let mut iter = raw.iter().map(AsRef::as_ref);
+    while let Some(raw_os) = iter.next() {
+        // Not UTF-8, so not a flag: it can only be a path.
+        let Some(raw_arg) = raw_os.to_str() else {
+            positional.push(raw_os);
+            continue;
+        };
         // `--flag=value` is the same as `--flag value`.
         let (arg, inline) = match raw_arg.split_once('=') {
             Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
@@ -117,8 +135,8 @@ pub fn parse(raw: &[String]) -> Result<Command, String> {
             flag if flag.starts_with('-') && flag.len() > 1 => {
                 return Err(format!("unknown flag: {flag}"))
             }
-            value => {
-                positional.push(value);
+            _ => {
+                positional.push(raw_os);
                 continue;
             }
         };
@@ -128,8 +146,11 @@ pub fn parse(raw: &[String]) -> Result<Command, String> {
             Some("") => return Err(format!("{arg} requires a value")),
             Some(v) => v,
             None => match iter.next() {
-                Some(v) if !v.starts_with('-') => v,
-                Some(v) => return Err(format!("{arg} requires a value, got the flag {v:?}")),
+                Some(v) => match v.to_str() {
+                    Some(v) if !v.starts_with('-') => v,
+                    Some(v) => return Err(format!("{arg} requires a value, got the flag {v:?}")),
+                    None => return Err(format!("{arg} requires a UTF-8 value, got {v:?}")),
+                },
                 None => return Err(format!("{arg} requires a value")),
             },
         };
@@ -265,7 +286,7 @@ fn parse_release(version: &str) -> Option<(u64, u64, u64)> {
 /// has declared are [`quack_rs::DUCKDB_API_VERSION`] (v1.2.0 – v1.5.5) and
 /// [`quack_rs::DUCKDB_API_VERSION_1_5_6`] (v1.5.6, v2.0.0), so anything but one
 /// of those or an older C API is an error — in practice, a `DuckDB` release
-/// number written where the C API version belongs (LESSONS.md P2). v1.5.6 is
+/// number written where the C API version belongs (the book's pitfall P2). v1.5.6 is
 /// refused by `DuckDB` before v1.5.6, which gets a warning. For `CPP` / `C_STRUCT_UNSTABLE` it is compared with
 /// the engine's version string: a release tag, or a commit hash for dev builds.
 /// `C_STRUCT_UNSTABLE` naming a 2.x or later release is an error: those
@@ -299,7 +320,8 @@ fn check_duckdb_version(
                 "--duckdb-version {version} is not a C API version this crate targets: for \
                  C_STRUCT the field is the C extension API version ({api} or {newest}), not a \
                  DuckDB release; DuckDB has declared only C API {api} and {newest}, and refuses \
-                 a file claiming a C API newer than its own (LESSONS.md P2). Use --duckdb-version {api} (stable API) or {newest} \
+                 a file claiming a C API newer than its own (pitfall P2: {P2_URL}). Use \
+                 --duckdb-version {api} (stable API) or {newest} \
                  (duckdb-1-5 features){pin}."
             ));
         }

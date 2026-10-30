@@ -23,18 +23,32 @@ Both builders are backed by the helper types `BindInfo`, `InitInfo`, `FunctionIn
 
 | Phase | Callback | Called when | Typical work |
 |-------|----------|-------------|--------------|
-| **bind** | `bind_fn` | Query is planned (once per plan) | Extract parameters; declare output columns; store configuration in bind data |
+| **bind** | `bind_fn` | Query is planned (once per plan on DuckDB 1.x; also on every `EXECUTE` of a prepared statement on 2.0.0) | Extract parameters; declare output columns; store configuration in bind data |
 | **init** | `init_fn` | Each execution of the plan starts | Allocate per-scan state (cursor, row index, etc.) |
 | **scan** | `scan_fn` | Each output batch | Fill the output chunk with rows; set its size with `DataChunk::set_size` |
 
 DuckDB calls the scan callback repeatedly until it sets the chunk size to 0, which
 signals the end of the results.
 
-> **Bind once, init many times.** DuckDB keeps the bind data for as long as the
-> bound plan lives and runs `init` against it on **every** execution: each
-> `EXECUTE` of a prepared statement, each iteration of a recursive CTE that
-> references the function. Treat bind data as immutable after bind and build
+> **Bind data outlives the plan; bind itself may run again.** DuckDB keeps the bind
+> data for as long as the bound plan lives and runs `init` against it on **every**
+> execution: each `EXECUTE` of a prepared statement, each iteration of a recursive CTE
+> that references the function. Treat bind data as immutable after bind and build
 > anything a scan consumes (cursors, open files) in `init`.
+>
+> How often `bind` runs depends on the DuckDB release. With a prepared statement that is
+> executed three times, counters in the callbacks read 1 bind and 3 inits on DuckDB 1.4.4
+> and 1.5.6, and **4 binds** and 3 inits on 2.0.0 (one for the `PREPARE`, one for each
+> `EXECUTE`). So a table function that reads a setting in `bind`, where a client
+> context is available, keeps the value from the first bind on 1.x and picks up a changed
+> setting on 2.0. Do not rely on either behaviour: only `bind` is given a client
+> context (`InitInfo` and `FunctionInfo` have none), so a table function cannot read a
+> setting at `init` or scan time.
+
+> **A table function that reads a file must open it through DuckDB.** `std::fs` ignores
+> `SET enable_external_access = false` and `allowed_directories`; the
+> [`FileSystem`](../duckdb-1-5/file-system.md#security-only-filesystem-honours-duckdbs-permission-settings)
+> wrapper (feature `duckdb-1-5`) honours them.
 
 ## Closure-based typed state (`with_state`)
 
@@ -138,17 +152,21 @@ fn register(reg: &impl Registrar) -> ExtResult<()> {
 
 - `S` must be `Send + 'static` (plus `Clone` for `with_state`). `Sync` is **not**
   required, so `TypedTableFunctionBuilder` forces scans to run on a single worker by
-  calling `InitInfo::set_max_threads(1)` internally.
+  calling `InitInfo::set_max_threads(1)` internally. Measured: at `SET threads = 8` a
+  typed function's scan callbacks all ran on one thread, on DuckDB 1.5.6 and 2.0.0. A
+  scan that is the bottleneck of a query, over a large input, needs the raw builder
+  with `set_max_threads` above 1.
 - The typed builder does **not** offer projection pushdown: with pushdown on, the
   scan's chunk holds only the projected columns and a closure written against the
   declared schema would write the wrong column. `build()` returns an error if
   `projection_pushdown(true)` was set on the raw builder before `with_state` /
   `with_bind_init`. Use the raw builder for pushdown.
 - The bind closure must declare at least one column. With `duckdb-1-5`, a bind
-  that declares none is reported as an ordinary bind error; DuckDB itself raises an
-  `INTERNAL Error` with a C++ stack trace for it (and does so for a raw bind
-  callback, which quack-rs cannot check after it returns — call `set_error`
-  yourself).
+  that declares none is reported as an ordinary bind error. Without `duckdb-1-5` the
+  typed builder cannot check, and DuckDB itself raises an `INTERNAL Error` with a C++
+  stack trace (measured on 1.4.4, 1.5.6 and 2.0.0; the database stays usable). A raw bind
+  callback gets the same `INTERNAL Error` on every feature set, because quack-rs cannot
+  check it after it returns: call `set_error` yourself.
 - Extensions that need multi-worker parallelism (`set_max_threads` above 1, with
   `local_init` + thread-local buffers) should use the raw
   [`TableFunctionBuilder`](#builder-api) directly.
@@ -274,7 +292,9 @@ quack_rs::table_scan_callback!(gs_scan, |info, output| {
     };
 
     let remaining = bind.total - state.pos;
-    let batch = remaining.min(2048).max(0) as usize;
+    // Never hard-code the chunk size: use the vector size of the running DuckDB.
+    let capacity = quack_rs::vector::vector_size() as i64;
+    let batch = remaining.min(capacity).max(0) as usize;
 
     let mut writer = unsafe { chunk.writer(0) };
     for i in 0..batch {

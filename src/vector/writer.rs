@@ -681,6 +681,16 @@ impl VectorWriter {
     pub unsafe fn set_null(&mut self, idx: usize) {
         // SAFETY: self.vector is valid per constructor's contract.
         let validity = unsafe { self.writable_validity() };
+        // `duckdb_vector_get_validity` has no mask to give for a vector that is
+        // not flat or constant (a sliced or dictionary vector); the C function
+        // this replaced returned early on a null mask, and so does this.
+        debug_assert!(
+            !validity.is_null(),
+            "set_null on a vector with no validity mask"
+        );
+        if validity.is_null() {
+            return;
+        }
         // Clears bit `idx % 64` of word `idx / 64`, which is all
         // `duckdb_validity_set_row_invalid` does, without the FFI call (see
         // `VectorReader::is_valid`).

@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MIT
+# Configuration for `typos` (https://github.com/crate-ci/typos), v1.46.
+#
+#   typos            # check the repository (exit 0 = clean)
+#   typos --write-changes
+#
+# Every entry below is a word the tool flags that is correct *here*; a real
+# misspelling must be fixed, not listed.
+
+[files]
+# Quotes upstream DuckDB C++ verbatim, including its own identifiers
+# (`lits`, `ivalid`), which are not ours to correct.
+extend-exclude = ["docs/upstream-duckdb-reports.md"]
+
+[default]
+extend-ignore-re = [
+    # ISO locale codes in the catalog autoload tables (`"fo"`, `"sr_ba"`).
+    '"(fo|ba|sr_ba|fa|ff|ha|sa|se|si|sl|ps|pl|ro|ru|sk|sq|sr)"',
+    # Test inputs that are misspelt on purpose (`--plattform`, a prefix match
+    # on `terminat`, the truncated `'TRUCT…'` DuckDB printed).
+    'plattform',
+    '"terminat"',
+    "'TRUCT",
+    # A statement that does not parse, on purpose (`SELEC nonsense`, `SELEC 1`).
+    '\bSELEC (nonsense|1)\b',
+    # A node id in a Mermaid diagram (docs/architecture.md): `CPY[...]`.
+    '\bCPY\[',
+]
+
+[default.extend-words]
+# "mis-dispatch", "mis-stamp": the hyphenated prefix, not a typo for "miss".
+mis = "mis"
+# "café" in UTF-8 test strings, written without the accent.
+caf = "caf"
+# Terms this project uses consistently in prose, error text and tests.
+unparseable = "unparseable"
+unregisterable = "unregisterable"

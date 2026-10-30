@@ -93,7 +93,7 @@ fn adversarial_text_round_trips_through_pyyaml() {
         .status()
         .is_ok_and(|s| s.success());
     if !has_pyyaml {
-        eprintln!("python3 with PyYAML not found; skipping the PyYAML cross-check");
+        tests::tool_missing("python3 with PyYAML");
         return;
     }
 
@@ -379,11 +379,13 @@ fn names_and_refs_that_yaml_1_1_retypes_are_quoted() {
 
 /// The generated `src/lib.rs` must pass `cargo fmt --check`, which the
 /// generated CI's Lint step runs. `rustfmt` keeps a call's arguments on one
-/// line while they fit in 60 columns: the `SqlMacro::scalar` call was always
-/// written across lines (so names of 4 characters or fewer failed) and the
-/// `entry_point!` call always on one (so names of 40 or more failed). Each is
-/// now laid out as `rustfmt` 1.8.0 lays it out; `rustfmt --check` passes for
-/// every name length from 1 to 64.
+/// line while they fit in 60 columns: the old `SqlMacro::scalar` example was
+/// always written across lines (so names of 4 characters or fewer failed) and
+/// the `entry_point!` call always on one (so names of 40 or more failed). The
+/// example now names its function through a `const`, so its registration line
+/// is the same for every name, and `entry_point!` is laid out as `rustfmt`
+/// lays it out; `rustfmt --check` (1.9.0) passes for every name length from 1
+/// to 64.
 #[test]
 fn generated_calls_are_laid_out_as_rustfmt_lays_them_out() {
     let lib = |name: &str| {
@@ -393,27 +395,20 @@ fn generated_calls_are_laid_out_as_rustfmt_lays_them_out() {
         };
         file(&generate_scaffold(&cfg).unwrap(), "src/lib.rs").to_string()
     };
+    let registration =
+        "        ScalarFunctionBuilder::map1_str(HELLO, |name: &str| greet(name))?.register(con)?;\n";
+    for name in ["a", "abcd", "abcdefgh", &"a".repeat(64)] {
+        let text = lib(name);
+        assert!(text.contains(registration), "{text}");
+        assert!(
+            text.contains(&format!("\nconst HELLO: &str = \"{name}_hello\";\n")),
+            "{text}"
+        );
+    }
     let short = lib("abcd");
-    assert!(
-        short.contains(
-            "    SqlMacro::scalar(\"abcd_hello\", &[\"name\"], \"'Hello from abcd! ' || name\")\n"
-        ),
-        "{short}"
-    );
     assert!(
         short.contains("\nquack_rs::entry_point!(abcd_init_c_api, register);\n"),
         "{short}"
-    );
-    // With the `||` body, 7 characters is the longest name that fits.
-    let seven = lib("abcdefg");
-    assert!(
-        seven.contains("    SqlMacro::scalar(\"abcdefg_hello\", &[\"name\"], "),
-        "{seven}"
-    );
-    let eight = lib("abcdefgh");
-    assert!(
-        eight.contains("    SqlMacro::scalar(\n        \"abcdefgh_hello\",\n"),
-        "{eight}"
     );
     let n39 = "a".repeat(39);
     assert!(lib(&n39).contains(&format!(

@@ -41,9 +41,32 @@ use crate::value::Value;
 /// `ClientContext` — and a [`FileSystem`][crate::file_system::FileSystem]
 /// borrowed from it — must not be used after that connection is closed.
 /// Every constructor is `unsafe` and states this in its `# Safety` section.
+///
+/// # Threads
+///
+/// A `ClientContext` is [`Send`]: it may be moved to, used on and dropped on
+/// another thread — into a table function's bind data, for one, to open
+/// files in `init` or `scan`, where the C API has no client context of its
+/// own. It is not [`Sync`]; data that several scan threads read at once
+/// needs it behind a [`Mutex`](std::sync::Mutex).
 pub struct ClientContext {
     ctx: duckdb_client_context,
 }
+
+// SAFETY: a `duckdb_client_context` is a heap `CClientContextWrapper {
+// ClientContext &context; }` (`capi_internal.hpp`, 1.5.6 and 2.0.0): one
+// reference, no thread-bound state, and `duckdb_destroy_client_context` only
+// deletes the wrapper. The `ClientContext` it refers to is the connection's,
+// which `DuckDB`'s executor threads all use while a query runs; the calls this
+// type makes (`get_catalog`, `get_config_option`, `get_connection_id`, and
+// `get_file_system` from `FileSystem::from_client_context`) read through it.
+// The only thread-local state on those paths is the per-thread settings
+// cache (1.5.5+), which is keyed by the settings' owner and version and so
+// answers correctly on any thread — the argument `OwnedConnection`'s `Send`
+// rests on too. The lifetime rule above is unchanged by a move. `Sync` is not implemented: this type does not
+// claim those calls are safe from two threads at the same moment. The live
+// test `a_client_context_is_used_and_dropped_on_another_thread` moves one.
+unsafe impl Send for ClientContext {}
 
 impl ClientContext {
     /// Obtain a client context from a `duckdb_connection`.

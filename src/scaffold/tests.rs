@@ -5,6 +5,40 @@
 
 use super::*;
 
+/// What a test does when a tool it cross-checks with (`python3` with `PyYAML`,
+/// `make`, `git`) is not installed: skip, with a note, or, where
+/// `QUACK_REQUIRE_TOOLS=1` (the Linux `test` job), fail. Without the failure a
+/// runner that lost `PyYAML` kept every one of these tests green while checking
+/// nothing, and `cargo test` hides the note.
+pub(super) fn tool_missing(what: &str) {
+    let required = std::env::var("QUACK_REQUIRE_TOOLS").ok();
+    if let Err(message) = missing_tool_outcome(required.as_deref(), what) {
+        panic!("{message}");
+    }
+}
+
+fn missing_tool_outcome(required: Option<&str>, what: &str) -> Result<(), String> {
+    if required == Some("1") {
+        return Err(format!(
+            "{what} not found, and QUACK_REQUIRE_TOOLS=1 says this run must have it"
+        ));
+    }
+    eprintln!("{what} not found; skipping");
+    Ok(())
+}
+
+#[test]
+fn a_missing_tool_fails_only_where_it_is_required() {
+    assert!(missing_tool_outcome(None, "PyYAML").is_ok());
+    assert!(missing_tool_outcome(Some(""), "PyYAML").is_ok());
+    assert!(missing_tool_outcome(Some("0"), "PyYAML").is_ok());
+    let err = missing_tool_outcome(Some("1"), "PyYAML").unwrap_err();
+    assert!(
+        err.contains("PyYAML") && err.contains("QUACK_REQUIRE_TOOLS"),
+        "{err}"
+    );
+}
+
 fn valid_config() -> ScaffoldConfig {
     ScaffoldConfig {
         name: "my_analytics".to_string(),
@@ -132,8 +166,11 @@ fn invalid_name_rejected() {
 
 #[test]
 fn invalid_license_rejected() {
+    // Not an SPDX expression. (A well-formed identifier outside quack-rs's
+    // shortlist, such as `FAKE-LICENSE`, is accepted with a warning: see
+    // tests_content.rs.)
     let mut config = valid_config();
-    config.license = "FAKE-LICENSE".to_string();
+    config.license = "FAKE LICENSE".to_string();
     assert!(generate_scaffold(&config).is_err());
 }
 
@@ -687,7 +724,7 @@ fn the_generated_workflow_pins_rust_toolchain_to_master_with_an_explicit_toolcha
         .position(|l| l.contains("uses: dtolnay/rust-toolchain@"))
         .expect("a rust-toolchain step");
     assert!(
-        lines[at].contains("dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f"),
+        lines[at].contains("dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8"),
         "{}",
         lines[at]
     );

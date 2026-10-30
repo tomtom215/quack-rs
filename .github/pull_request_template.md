@@ -18,6 +18,7 @@
 ### Code quality
 - [ ] `cargo test --all-targets` passes, and `cargo test --doc --features duckdb-1-5-4` (doctests are not in `--all-targets`)
 - [ ] The end-to-end tests pass against a real libduckdb (CONTRIBUTING, gate 2c) when the change touches `unsafe`, vectors, or function registration
+- [ ] `cargo test --doc --manifest-path book/doctest/Cargo.toml` passes when the change touches `book/src/` or `README.md` (every Rust block there is compiled; gate 2c)
 - [ ] `cargo clippy --all-targets -- -D warnings` passes
 - [ ] `cargo fmt` applied (no diff)
 - [ ] `cargo doc --no-deps` builds without warnings

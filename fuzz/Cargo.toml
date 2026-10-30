@@ -19,7 +19,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 # The same bindings quack-rs uses (fuzz/Cargo.lock pins the release), for the
 # raw `duckdb_create_*` constructors in `value_render`.
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+libduckdb-sys = { version = ">=1.4.4, <1.20100", default-features = false, features = ["loadable-extension"] }
 
 [dependencies.quack-rs]
 path = ".."
@@ -53,6 +53,34 @@ bench = false
 [[bin]]
 name = "validators"
 path = "fuzz_targets/validators.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "append_metadata"
+path = "fuzz_targets/append_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scaffold_text"
+path = "fuzz_targets/scaffold_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "description_roundtrip"
+path = "fuzz_targets/description_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "abi_version"
+path = "fuzz_targets/abi_version.rs"
 test = false
 doc = false
 bench = false

@@ -37,15 +37,20 @@ const NATIVE_CI: &str = ".github/workflows/extension-ci.yml";
 /// ("error: malformed object name 'HEAD'", 37 bytes) into
 /// `configure/extension_version.txt`; it overflowed the footer's 32-byte field
 /// and `DuckDB` refused the file ("Unknown ABI type for extension: 'TRUCT…'").
-/// The Makefile must fall back to the Cargo version, via the
-/// `EXTENSION_VERSION` variable `base.Makefile` reads, before including it.
+/// The Makefile must choose the version itself — a tag that fits, else the
+/// short hash, else the Cargo version — through the `EXTENSION_VERSION`
+/// variable `base.Makefile` reads, before including it. (`tests_make.rs`
+/// runs this logic under `make`.)
 #[test]
 fn makefile_falls_back_to_the_cargo_version_without_a_commit() {
     let files = generate_scaffold(&valid_config()).unwrap();
     let makefile = file(&files, "Makefile");
-    let fallback = makefile
-        .find("ifeq ($(shell git rev-parse --verify --quiet HEAD 2>/dev/null),)")
-        .expect("a check for a commit");
+    let explicit = makefile
+        .find(
+            "ifeq ($(EXTENSION_VERSION),)\n\
+             EXTENSION_VERSION := $(shell t=$$(git tag --points-at HEAD",
+        )
+        .expect("a version from git, unless EXTENSION_VERSION is set");
     let assign = makefile
         .find(
             "EXTENSION_VERSION := v$(shell sed -n 's/^version *= *\"\\([^\"]*\\)\".*/\\1/p' \
@@ -55,12 +60,7 @@ fn makefile_falls_back_to_the_cargo_version_without_a_commit() {
     let include = makefile
         .find("include extension-ci-tools/makefiles/c_api_extensions/base.Makefile")
         .expect("the include");
-    assert!(fallback < assign && assign < include, "{makefile}");
-    // An explicit EXTENSION_VERSION still wins.
-    assert!(
-        makefile.contains("ifeq ($(EXTENSION_VERSION),)"),
-        "{makefile}"
-    );
+    assert!(explicit < assign && assign < include, "{makefile}");
 }
 
 /// H2: `make configure` and `make test` leave `configure/` (a venv),
@@ -204,8 +204,8 @@ fn workflow_pins_current_action_releases() {
     for pin in [
         "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
         "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
-        "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2",
-        "dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08",
+        "Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3",
+        "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15",
     ] {
         assert!(ci.contains(pin), "{pin}");
     }
@@ -237,7 +237,7 @@ fn workflows_parse_as_yaml() {
             .stderr(Stdio::piped())
             .spawn()
         else {
-            eprintln!("python3 not found; skipping");
+            tests::tool_missing("python3");
             return;
         };
         if let Some(mut stdin) = child.stdin.take() {
@@ -246,7 +246,7 @@ fn workflows_parse_as_yaml() {
         let out = child.wait_with_output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if stderr.contains("No module named 'yaml'") {
-            eprintln!("PyYAML not installed; skipping");
+            tests::tool_missing("PyYAML");
             return;
         }
         assert!(out.status.success(), "{path}: {stderr}");
@@ -255,18 +255,22 @@ fn workflows_parse_as_yaml() {
 }
 
 /// M4: `concat` skips NULLs, so `<name>_hello(NULL)` returned a greeting.
+/// The example is now a native function with SQL NULL propagation
+/// (`map1_str`), and the test reads a NULL from a column, where constant
+/// folding cannot answer for the function.
 #[test]
 fn example_function_propagates_null() {
     let files = generate_scaffold(&valid_config()).unwrap();
     let lib = file(&files, "src/lib.rs");
-    assert!(
-        lib.contains("\"'Hello from my_analytics! ' || name\""),
-        "{lib}"
-    );
+    assert!(lib.contains("ScalarFunctionBuilder::map1_str("), "{lib}");
     assert!(!lib.contains("concat("), "{lib}");
     let test = file(&files, "test/sql/my_analytics.test");
     assert!(
-        test.contains("\nquery T\nSELECT my_analytics_hello(NULL);\n----\nNULL\n"),
+        test.contains("(VALUES ('a'), (NULL), ('b')) t(x) ORDER BY x NULLS LAST;\n----\n"),
+        "{test}"
+    );
+    assert!(
+        test.contains("Hello from my_analytics! b\nNULL\n"),
         "{test}"
     );
 }

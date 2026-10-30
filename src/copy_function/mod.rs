@@ -325,6 +325,28 @@ impl CopyFunctionBuilder {
         self
     }
 
+    /// Attaches `value` as this copy function's extra info: the safe, typed
+    /// form of [`extra_info`][Self::extra_info].
+    ///
+    /// quack-rs boxes `value` behind a type tag and generates its destructor,
+    /// which contains a panic in `T::drop` and runs once — when `DuckDB`
+    /// releases the function, or when this builder is dropped unregistered.
+    /// Read it in any callback with `extra_info_ref` (on
+    /// [`CopyBindInfo`][CopyBindInfo::extra_info_ref] and the other three
+    /// info types), which returns `None` for any other type instead of
+    /// reinterpreting memory. `T` is `Send + Sync` because every sink thread
+    /// reads the same value.
+    ///
+    /// For per-statement state, see `set_bind_data_typed` and
+    /// `set_global_state_typed` on the info types.
+    pub fn extra_info_typed<T: Send + Sync + 'static>(self, value: T) -> Self {
+        let (data, destroy) = crate::extra_info::into_tagged(value);
+        // SAFETY: `into_tagged` returns a fresh allocation, used by no one
+        // else, and the destructor that frees it exactly once without
+        // unwinding; `T: Send + Sync`.
+        unsafe { self.extra_info(data, Some(destroy)) }
+    }
+
     /// The completeness checks that need no `DuckDB` call: all of bind, sink
     /// and finalize for `COPY ... TO`, or a `copy_from` for `COPY ... FROM`,
     /// or both. [`MockRegistrar`][crate::testing::MockRegistrar] runs them
@@ -384,6 +406,17 @@ impl CopyFunctionBuilder {
     /// in the in-memory system catalog and never persist, so a name that
     /// resolves is always a live conflict.
     ///
+    /// The probe is a statement that fails, and `DuckDB` 2.0 aborts the
+    /// transaction a failed statement runs in. On the entry point's
+    /// registration connection, which runs the closure in a transaction
+    /// ([`Registration::Transactional`][crate::entry_point::Registration]), it
+    /// therefore runs on a short-lived connection of its own, and a format
+    /// registered earlier in the same transaction (which that connection
+    /// cannot see) is refused from the transaction's own record. On any other
+    /// connection it runs on `con`, so calling `register` on a connection of
+    /// yours inside a transaction you opened aborts that transaction on
+    /// `DuckDB` 2.0.
+    ///
     /// # Errors
     ///
     /// Returns `ExtensionError` if neither direction is implemented, if
@@ -407,8 +440,9 @@ impl CopyFunctionBuilder {
             _ => None,
         };
 
+        let name = self.name.to_string_lossy().into_owned();
         // SAFETY: `con` is valid per this function's contract.
-        unsafe { refuse_taken_format_name(con, &self.name.to_string_lossy()) }?;
+        unsafe { refuse_taken_format_name(con, &name) }?;
 
         // SAFETY: duckdb_create_copy_function allocates a new handle.
         let func = unsafe { duckdb_create_copy_function() };
@@ -470,11 +504,11 @@ impl CopyFunctionBuilder {
         }
 
         if result == DuckDBSuccess {
+            crate::entry_point::record_copy_format(con, &name);
             Ok(())
         } else {
             Err(ExtensionError::new(format!(
-                "duckdb_register_copy_function failed for '{}'",
-                self.name.to_string_lossy()
+                "duckdb_register_copy_function failed for '{name}'"
             )))
         }
     }
@@ -493,6 +527,36 @@ unsafe fn refuse_taken_format_name(
 ) -> Result<(), ExtensionError> {
     use crate::error_data::DuckDbErrorType;
 
+    let taken = || {
+        ExtensionError::new(format!(
+            "copy function '{name}' already exists (a built-in format, another extension's, or \
+             an earlier registration). DuckDB would drop this registration and still report \
+             success, leaving the existing format in charge. Choose a different name."
+        ))
+    };
+    // Inside the entry point's registration transaction the probe below must
+    // not run on `con`: it fails on purpose, and DuckDB 2.0 aborts the
+    // transaction a failed statement runs in. It runs on a connection of its
+    // own instead, which cannot see the formats this transaction registered,
+    // so those are looked up in the transaction's own record.
+    let probe_connection = match crate::entry_point::copy_format_scope(con, name) {
+        Some((_, true)) => return Err(taken()),
+        Some((db, false)) => Some(
+            // SAFETY: the entry point keeps `db` valid while its transaction
+            // is open, which is while `copy_format_scope` returns it.
+            unsafe { crate::query::OwnedConnection::open(db) }.map_err(|e| {
+                ExtensionError::new(format!(
+                    "copy function '{name}': cannot check whether the format name is taken \
+                     (opening a connection for the check failed: {e})"
+                ))
+            })?,
+        ),
+        None => None,
+    };
+    let probe_con = probe_connection
+        .as_ref()
+        .map_or(con, crate::query::OwnedConnection::as_raw);
+
     // The select references a column that cannot exist (there is no FROM
     // clause), so binding always fails — after the format lookup, which
     // happens first in `Binder::Bind(CopyStatement &)`.
@@ -504,9 +568,9 @@ unsafe fn refuse_taken_format_name(
         .map_err(|_| ExtensionError::new("copy function name contains null byte"))?;
     // SAFETY: duckdb_result is a C struct for which all-zero is a valid value.
     let mut result: libduckdb_sys::duckdb_result = unsafe { std::mem::zeroed() };
-    // SAFETY: `con` is valid per this function's contract; `c_sql` outlives
-    // the call.
-    let state = unsafe { libduckdb_sys::duckdb_query(con, c_sql.as_ptr(), &raw mut result) };
+    // SAFETY: `probe_con` is `con`, valid per this function's contract, or a
+    // connection opened above and still alive; `c_sql` outlives the call.
+    let state = unsafe { libduckdb_sys::duckdb_query(probe_con, c_sql.as_ptr(), &raw mut result) };
     let error_type = if state == DuckDBSuccess {
         None
     } else {
@@ -518,11 +582,7 @@ unsafe fn refuse_taken_format_name(
     // SAFETY: `result` was populated by `duckdb_query` and is destroyed once.
     unsafe { libduckdb_sys::duckdb_destroy_result(&raw mut result) };
     match error_type {
-        Some(DuckDbErrorType::Binder) => Err(ExtensionError::new(format!(
-            "copy function '{name}' already exists (a built-in format, another extension's, or \
-             an earlier registration). DuckDB would drop this registration and still report \
-             success, leaving the existing format in charge. Choose a different name."
-        ))),
+        Some(DuckDbErrorType::Binder) => Err(taken()),
         // Not found — including an autoloadable extension's format whose
         // autoload failed.
         Some(

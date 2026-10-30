@@ -186,7 +186,18 @@ pub struct RawScalarInitInfo(pub duckdb_init_info);
 #[cfg(feature = "duckdb-1-5")]
 pub struct ScalarBindInfo {
     info: duckdb_bind_info,
+    /// The value the last [`ScalarBindData::set`][crate::scalar::ScalarBindData::set]
+    /// through this wrapper stored, with its destructor, so that a second
+    /// `set` can free it: `DuckDB` overwrites the pointer without running the
+    /// destructor (`duckdb_scalar_function_set_bind_data`, read at v1.5.6 and
+    /// v2.0.0). Cleared by [`set_bind_data`][Self::set_bind_data], whose
+    /// pointers are the caller's.
+    typed: core::cell::Cell<Option<TypedBindData>>,
 }
+
+/// A bind-data pointer and the destructor that frees it.
+#[cfg(feature = "duckdb-1-5")]
+pub(crate) type TypedBindData = (*mut c_void, unsafe extern "C" fn(*mut c_void));
 
 #[cfg(feature = "duckdb-1-5")]
 impl ScalarBindInfo {
@@ -203,7 +214,21 @@ impl ScalarBindInfo {
     #[inline]
     #[must_use]
     pub const unsafe fn new(info: RawScalarBindInfo) -> Self {
-        Self { info: info.0 }
+        Self {
+            info: info.0,
+            typed: core::cell::Cell::new(None),
+        }
+    }
+
+    /// Records `stored` as the value [`ScalarBindData::set`][crate::scalar::ScalarBindData::set]
+    /// just stored through this wrapper, returning the one it replaced.
+    pub(crate) fn replace_typed_bind_data(&self, stored: TypedBindData) -> Option<TypedBindData> {
+        self.typed.replace(Some(stored))
+    }
+
+    /// Forgets the recorded value, returning it.
+    pub(crate) fn take_typed_bind_data(&self) -> Option<TypedBindData> {
+        self.typed.take()
     }
 
     /// Returns the number of arguments passed to the scalar function.
@@ -358,12 +383,15 @@ impl ScalarBindInfo {
     /// a **silent wrong answer**, not a crash, so always register a copy
     /// callback alongside any bind data you rely on at execution time.
     ///
-    /// Written up as Pitfall L10 in `LESSONS.md`.
+    /// Written up as [Pitfall L10](https://quack-rs.com/reference/pitfalls.html#l10-scalar-bind-data-is-dropped-when-duckdb-copies-the-expression).
     ///
     /// # Calling it twice
     ///
     /// A second call overwrites the pointer and destructor without running the
-    /// first destructor: the first value is leaked.
+    /// first destructor: the first value is leaked. So is a value an earlier
+    /// [`ScalarBindData::set`][crate::scalar::ScalarBindData::set] stored
+    /// (only a second `ScalarBindData::set` through the same wrapper frees
+    /// it).
     ///
     /// # Identical calls share bind data
     ///
@@ -389,6 +417,9 @@ impl ScalarBindInfo {
     /// `data` must be of the type that callback expects, or a matching copy
     /// callback must be registered after this call.
     pub unsafe fn set_bind_data(&self, data: *mut c_void, destroy: duckdb_delete_callback_t) {
+        // What this replaces is no longer a value `ScalarBindData::set` may
+        // free: the caller may hand the same pointer back.
+        self.typed.set(None);
         // SAFETY: self.info is valid per constructor contract.
         unsafe {
             duckdb_scalar_function_set_bind_data(self.info, data, destroy);

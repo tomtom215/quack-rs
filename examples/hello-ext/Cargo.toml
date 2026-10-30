@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.86.0"
 authors = ["Tom F"]
 license = "MIT"
+publish = false
 description = "Example DuckDB community extension built with quack-rs: word_count, first_word, generate_series_ext, VARCHAR→INTEGER cast"
 
 [lib]
@@ -13,7 +14,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 quack_rs = { path = "../..", package = "quack-rs" }
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+libduckdb-sys = { version = ">=1.4.4, <1.20100", default-features = false, features = ["loadable-extension"] }
 
 [profile.release]
 # `unwind`, not `abort`. quack-rs catches panics at every FFI boundary with

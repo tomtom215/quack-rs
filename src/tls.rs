@@ -83,7 +83,24 @@ use crate::error::ExtensionError;
 /// Used for security auditing and warning generation. Providers that allow
 /// versions below [`Tls12`][TlsVersion::Tls12] should emit a warning via
 /// [`WarningCollector`][crate::warning::WarningCollector].
+///
+/// `#[non_exhaustive]`: a later TLS version may be added, so a `match`
+/// outside quack-rs needs a wildcard arm; comparisons (`>=
+/// TlsVersion::Tls12`) keep working.
+///
+/// ```rust,compile_fail,E0004
+/// use quack_rs::tls::TlsVersion;
+///
+/// fn modern(version: TlsVersion) -> bool {
+///     match version {
+///         TlsVersion::Tls10 | TlsVersion::Tls11 => false,
+///         TlsVersion::Tls12 | TlsVersion::Tls13 => true,
+///         // error[E0004]: a wildcard arm is required
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum TlsVersion {
     /// TLS 1.0 — **deprecated** per [RFC 8996](https://datatracker.ietf.org/doc/html/rfc8996).
     Tls10,

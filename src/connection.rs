@@ -242,6 +242,23 @@ pub trait Registrar {
 /// `Connection` provides a uniform API across `DuckDB` 1.4.x and 1.5.x.
 /// When future `DuckDB` releases add new C API surface, additional methods will
 /// be gated on the corresponding feature flag.
+///
+/// # What the collision checks cost
+///
+/// Before the first scalar and the first table function it registers, a
+/// `Connection` lists the catalog once each (see the field docs below), so
+/// that a registration that would silently replace a built-in, or be dropped,
+/// is refused instead. Each listing is a scan of `duckdb_functions()`, which
+/// builds a row for **every function and macro in every attached database**
+/// before any `WHERE` applies: the table function has no filter or projection
+/// pushdown (`src/function/table/system/duckdb_functions.cpp`), so narrowing
+/// the query to the names being registered, or to the name column, does not
+/// make it cheaper. Measured with the `DuckDB` CLI on a shared 4-vCPU machine:
+/// one scan takes about 20 ms on 1.5.6 and 13 ms on 2.0.0 in an empty
+/// database, and about 110 ms on both with 20,000 user macros, so a `LOAD`
+/// into a database with that many macros spends about 0.2 s more on its two
+/// scans. Registering on the raw connection (`register(con)` on a builder)
+/// scans once per call instead of once per load.
 #[derive(Debug)]
 pub struct Connection {
     con: duckdb_connection,
@@ -380,6 +397,28 @@ impl Connection {
     ) -> Result<crate::query::PreparedStatement, ExtensionError> {
         // SAFETY: self.con is valid per Connection invariant.
         unsafe { crate::query::prepare(self.con, sql) }
+    }
+
+    /// The tables `sql` reads or writes, without running it; see
+    /// [`query::table_names`][crate::query::table_names] (`DuckDB` 1.5.0+).
+    ///
+    /// # Errors
+    ///
+    /// See [`query::table_names`][crate::query::table_names].
+    ///
+    /// # Safety
+    ///
+    /// The underlying connection must be valid for the duration of this call.
+    // One FFI call; covered by tests/ffi_roundtrip/query_metadata.rs.
+    #[cfg_attr(test, mutants::skip)]
+    #[cfg(feature = "duckdb-1-5")]
+    pub unsafe fn table_names(
+        &self,
+        sql: &str,
+        qualified: bool,
+    ) -> Result<Vec<String>, ExtensionError> {
+        // SAFETY: self.con is valid per Connection invariant.
+        unsafe { crate::query::table_names(self.con, sql, qualified) }
     }
 
     /// Opens a second, independently owned connection to the same database.

@@ -46,8 +46,15 @@
 //! | `extension.excluded_platforms` | No | Must pass [`validate_excluded_platforms_str`]; a YAML list is accepted with a warning, and so is a group name such as `wasm`, which excludes nothing |
 //! | `extension.opt_in_platforms` | No | Platforms to build that are not built by default; the parser warns about any name the build would ignore |
 //! | `extension.maintainers` | Yes | At least one maintainer |
-//! | `repo.github` | Yes | Non-empty `owner/repo` format |
+//! | `repo.github` | Yes | `owner/repo`, in the characters GitHub allows — not a URL |
 //! | `repo.ref` | Yes | Non-empty git ref; anything but a commit hash is a warning |
+//! | `repo.ref_next` | No | The revision built against `DuckDB` `main` before a release |
+//! | `repo.variegata`, `repo.andium` | No | Non-empty if present: the revisions built for `DuckDB` v1.5.6 and v1.4.5 instead of `ref`; anything but a commit hash is a warning |
+//!
+//! Any other `repo:` key is a warning (the community build ignores it). The
+//! whole file — `docs:` included — must be YAML that `PyYAML`'s
+//! `yaml.safe_load` accepts, since that is the community build's first step;
+//! see [`parse_description_yml`] for what is checked.
 //!
 //! # Reference
 //!
@@ -99,5 +106,15 @@ pub use validator::{validate_description_yml_str, validate_rust_extension};
 mod tests;
 #[cfg(test)]
 mod tests_corpus;
+#[cfg(test)]
+mod tests_mut_block;
+#[cfg(test)]
+mod tests_mut_flow_a;
+#[cfg(test)]
+mod tests_mut_flow_b;
+#[cfg(test)]
+mod tests_mut_scalar;
+#[cfg(test)]
+mod tests_pyyaml;
 #[cfg(test)]
 mod tests_yaml;

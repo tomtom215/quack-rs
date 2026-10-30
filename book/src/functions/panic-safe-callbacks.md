@@ -165,8 +165,9 @@ output does not compile in a scalar function's.
 
 `catch_unwind` cannot catch anything when the crate is built with
 `panic = "abort"`: the process ends at the panic site, before any guard runs.
-Keep your extension on `panic = "unwind"`. The scaffold generates it, and
-`validate_release_profile` rejects `"abort"`. See
+Keep your extension on `panic = "unwind"`. The scaffold generates it,
+`validate_release_profile` rejects `"abort"`, and the `entry_point!` macros refuse to
+compile under it. See
 [Installation](../getting-started/installation.md#why-panic--unwind-not-abort).
 
 ## Prefer the closure-based builders where they fit

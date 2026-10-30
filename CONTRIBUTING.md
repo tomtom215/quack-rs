@@ -27,18 +27,30 @@ Everyone taking part is expected to follow the
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Rust | stable (`rust-toolchain.toml`) | Compiler |
+| Rust | the exact release `rust-toolchain.toml` pins (1.99.1); rustup installs it on first use | Compiler (see [The Rust toolchain](#the-rust-toolchain)) |
 | Rust 1.86.0 toolchain | `rustup toolchain install 1.86.0` | MSRV check (gate 6) |
-| `rustfmt`, `clippy` | stable | Formatting and linting (gates 3, 4) |
-| Python 3 | any current | `scripts/*.py`, including the live extension check (gates 5b, 7) |
+| `rustfmt`, `clippy` | the pinned release (`rust-toolchain.toml` lists both components) | Formatting and linting (gates 3, 4) |
+| Python 3 | 3.11 or later (two scripts use `tomllib`) | `scripts/*.py`, including the live extension check (gates 5b, 7) |
 | DuckDB CLI | 1.4.4 or later; CI also uses 2.0.0 and the latest (currently 2.0.0) | Live extension testing (gate 7, required) |
 | libduckdb shared library | the release `Cargo.lock` pins (currently 1.5.6) | End-to-end tests and book doctests (gate 2c) |
 | `cargo-deny` | 0.20.2 (the version CI installs) | License and advisory checks (gate 8) |
 | `cargo-mutants` | 27.1.0 (the version CI installs) | Mutation testing (gate 9) |
 | `mdbook` | the version in `book/mdbook-version` | Building the book (only for book changes) |
+| `typos`, `taplo`, `cargo-machete`, `actionlint` | 1.46.0, 0.10.0, 0.9.2, 1.7.12 (the release binaries CI downloads) | Spelling, TOML style, unused dependencies, workflow lint (gate 8b; optional locally) |
 
 Install the Rust toolchain via [rustup](https://rustup.rs/). `cargo-msrv` is not
 needed: the MSRV is checked by compiling with the pinned 1.86.0 toolchain.
+
+**DuckDB 2.0's CLI changes its output when it thinks an AI agent is driving
+it.** With `AI_AGENT` or `CLAUDECODE` set in the environment and stdout not a
+terminal, the 2.0.0 CLI prints `duckdb agent mode on: ...` and renders results
+as a Markdown table with column types (`| answer:INTEGER |`) instead of its
+default box layout. Anything that parses the CLI's output must choose a
+format: `-csv` or `-json` (both work on every DuckDB, and override agent
+mode), or `-no-agent`, which turns it off but exists only in the 2.0 CLI
+(1.5.6 exits with "Unrecognized option '-no-agent'"). The scripts here that
+read query results (`scripts/check-hello-ext.py`, the CI probes) pass `-csv`;
+GitHub's runners set neither variable.
 
 Install DuckDB with `scripts/fetch-duckdb.sh` (no system package manager
 needed; the script fetches the linux-amd64 build). CI's `extension-load` job exercises **v1.4.4, v1.5.0, v1.5.5, v1.5.6,
@@ -187,9 +199,9 @@ scripts/sync-book-changelog.py --check
 
 # 6. MSRV — must compile on Rust 1.86.0 [msrv]. Benches are excluded (criterion
 #    needs a newer compiler). `+1.86.0` is required, not stylistic:
-#    `rust-toolchain.toml` pins `channel = "stable"` and a toolchain file
-#    overrides rustup's default, so a bare `cargo check` silently runs stable
-#    and checks nothing.
+#    `rust-toolchain.toml` pins a newer release (`channel`) and a toolchain
+#    file overrides rustup's default, so a bare `cargo check` silently runs
+#    the pinned release and checks nothing.
 #
 #    Against what a 1.86.0 user's Cargo resolves, not the committed Cargo.lock:
 #    the lock carries `libduckdb-sys` 1.10506.1, which declares rust-version
@@ -202,7 +214,7 @@ cargo +1.86.0 check
 cargo +1.86.0 check --features duckdb-1-5-4
 
 # 7. Live extension test — build hello-ext, append the metadata footer, then
-#    run every documented SQL check (examples/hello-ext/sql_checks.txt, 31
+#    run every documented SQL check (examples/hello-ext/sql_checks.txt, 32
 #    statements) in the DuckDB CLI. [extension-load: DuckDB 1.4.4, 1.5.0,
 #    1.5.5, 1.5.6, 2.0.0 and the latest release]
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
@@ -213,14 +225,27 @@ cargo run --bin append_metadata -- \
     --duckdb-version v1.2.0 --platform linux_amd64
 python3 scripts/check-hello-ext.py --duckdb /tmp/duckdb \
     --extension /tmp/hello_ext.duckdb_extension
-# → 31/31 checks pass with the extension loaded
+# → 32/32 checks pass with the extension loaded
 
 # 7b. The example extension's own tests and lints [example-check]
 cargo test --manifest-path examples/hello-ext/Cargo.toml
 cargo clippy --manifest-path examples/hello-ext/Cargo.toml --all-targets -- -D warnings
 
-# 8. Supply chain — license policy and advisories [security]
+# 8. Supply chain — license policy and advisories [security]. The example and
+#    CI-only crates have their own policy file (deny.toml's license rules
+#    cannot hold for them; see its header).
 cargo deny check
+for m in examples/hello-ext fuzz book/doctest; do
+    cargo deny --manifest-path "$m/Cargo.toml" --config deny.ci-crates.toml check
+done
+
+# 8b. Hygiene and workflow lint [hygiene, workflow-lint]: spelling (typos.toml),
+#     TOML style (.taplo.toml), unused dependencies, and the workflow files
+#     (actionlint runs shellcheck on every `run:` block when it is installed).
+typos
+taplo fmt --check && taplo lint
+cargo machete --with-metadata
+actionlint
 ```
 
 ```bash
@@ -230,12 +255,46 @@ cargo mutants --file <changed-files>
 ```
 
 CI sets `RUSTFLAGS="-D warnings"` for every job, so a compiler warning anywhere
-fails the build. CI runs these checks on every push and pull request, together with jobs that
+fails the build. CI runs these checks on every pull request to `main`, on pushes to
+`main` and `claude/**`, weekly, and as the release's gate, together with jobs that
 have no single local command: the other test operating systems, older DuckDB
 engines (`test-older-engines`), WASM, Miri, sanitizers, semver checks, the
 scaffold and ABI-guard end-to-end tests, the book build and its link check,
 and several consistency scripts under `scripts/`. Coverage and mutation testing
 run in separate workflows.
+
+### The Rust toolchain
+
+`rust-toolchain.toml` pins one exact stable release (`channel = "1.99.1"`).
+rustup reads it, so a plain `cargo` here uses that release, and every CI job
+that is not about another toolchain installs the same one; the release
+workflow packages and publishes with it. `scripts/check-toolchain-pin.py` (in
+the `doc` job) fails when a workflow names any other toolchain outside the
+informational jobs. The reason: CI runs with `-D warnings` and clippy's
+`pedantic`, `nursery` and `cargo` groups, so a floating `stable` let every Rust
+release (one every six weeks) change rustc, rustfmt and clippy under every job
+at once, with no change in this repository; 1.99.0's `clippy::assert_is_empty`
+did exactly that (AUDIT.md 12.7).
+
+The exceptions are the MSRV job (`cargo +1.86.0`), the jobs that need nightly
+(Miri, the sanitizers, the fuzzer), and three informational jobs that look
+ahead without blocking: `latest-stable` (the current stable: `fmt`, clippy on
+both feature sets, rustdoc, the library tests), `clippy-beta` and `nightly`.
+They run on every pull request and on the weekly schedule.
+
+Move the pin by a pull request of its own, when `latest-stable` shows a newer
+stable:
+
+1. Check that the release exists: `rustup toolchain install X.Y.Z` (or read
+   `https://static.rust-lang.org/dist/channel-rust-X.Y.Z.toml`).
+2. Change `channel` in `rust-toolchain.toml` and every `toolchain: <old>` in
+   `.github/workflows/*.yml`; `python3 scripts/check-toolchain-pin.py` lists
+   any you missed.
+3. Run the quality gates above (plain `cargo` now uses the new release) and fix
+   what new lints and warnings report, in the same pull request.
+
+The MSRV (`rust-version`, 1.86.0) is a separate decision with its own rules
+(RELEASING.md, "Semantic versioning policy").
 
 ---
 
@@ -269,7 +328,32 @@ function built with quack-rs, runs SQL and checks the answer. Requires
 AddressSanitizer jobs run exactly this target (`--test ffi_roundtrip`), so new
 end-to-end tests belong in it — as a submodule declared with
 `#[path = "ffi_roundtrip/<name>.rs"] mod <name>;` when the root file would
-otherwise grow further.
+otherwise grow further. Know what those runs cannot see (next section).
+
+### What the sanitizer and valgrind runs can and cannot see
+
+CI's `leak-check` (LeakSanitizer) and `asan` (AddressSanitizer) jobs, like a
+local valgrind run of the end-to-end suite, use the **release** libduckdb: the
+same prebuilt library `test-bundled-prebuilt` links. That library carries its
+own copy of jemalloc (it exports 769 `duckdb_je_*` symbols at v1.5.6 and 768
+at v2.0.0, and defines no `malloc` or `free` of its own), and DuckDB's
+`Allocator` takes vector data buffers, LIST entry arrays and string heaps from
+it. Neither valgrind nor AddressSanitizer tracks the blocks jemalloc hands out,
+so **an out-of-bounds or use-after-free write into a vector's data buffer or a
+LIST's entry array is invisible to all of these runs**: the stale writes into a
+LIST entry array of the `ListBuilder` regression found before 0.20.0 drew no
+report under valgrind.
+
+What they do catch: errors in memory the Rust side allocates (Rust's heap,
+boxed aggregate states, the bind and init data quack-rs owns), and in what
+DuckDB allocates through C++ `new` and `malloc`, which includes validity masks
+(an out-of-bounds validity write *is* reported) and the objects behind its
+handles, so LeakSanitizer still sees a handle that is never destroyed. A clean
+sanitizer or valgrind run therefore says nothing about the pointer arithmetic
+into vector buffers; the end-to-end tests' answers, and Miri for the pure-Rust
+paths, are what cover it. A sanitizer run against a DuckDB built from source
+without jemalloc would close the gap; none is set up (CI compiles DuckDB from
+source in `test-bundled` but does not sanitize that build).
 
 ### Property-based tests
 
@@ -284,7 +368,7 @@ tests for all pure-Rust logic (`count_words`, `first_word`, `parse_varchar_to_in
 aggregate state transitions). **Full end-to-end testing against a live DuckDB is
 required** — not left to consumers. This means building the `.so`, appending the extension
 metadata footer with `append_metadata`, and running every SQL check in
-`examples/hello-ext/sql_checks.txt` (29 numbered checks, 31 statements) with
+`examples/hello-ext/sql_checks.txt` (30 numbered checks, 32 statements) with
 `scripts/check-hello-ext.py`. The script also fails if the statements in
 `examples/hello-ext/README.md` drift from that file. CI's `extension-load` job runs it
 against DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release. Gate 7 under
@@ -313,6 +397,39 @@ cargo mutants --list
 
 Configuration is in `.cargo/mutants.toml` — the one place cargo-mutants reads it
 from without `--config`.
+
+On a pull request, `mutants.yml` mutates the whole of every changed source file,
+split over eight jobs (`--shard k/8 --sharding round-robin`); the job named
+"Mutation Testing (incremental)" is the one that fails if any shard does. One
+shard locally: `cargo mutants --file <path> --shard 0/8 --sharding round-robin`.
+A pull request that changes a hundred files generates over a thousand mutants,
+about twenty seconds each: a shard of one-eighth fits the 60-minute limit, one
+job for all of them did not.
+
+**What the gate cannot see.** cargo-mutants 27.1.0 generates no mutants inside
+the body of an `unsafe fn` (free, associated, `const`, trait-default and
+`unsafe extern "C"` alike; it does mutate a safe function that holds `unsafe`
+blocks), never mutates integer literals (`base.add(8)`, `>> 6`, `& 63`, `* 16`
+have no mutants even in a visible function), and cannot look into a macro body.
+In this crate that is the pointer arithmetic: by a heuristic count
+(`scripts/mutants-expose-unsafe.py` strips comments and strings and matches
+braces), 506 `unsafe fn`s hold 5,127 of 22,898 non-test source lines (22.4%),
+among them most of `VectorReader`, `VectorWriter`, `ListBuilder`, the Arrow
+layout walker and `FfiState`'s callbacks. So a "0 missed" result covers the 2,493
+mutants cargo-mutants lists with this repository's configuration (3,748 with
+`--no-config`), not those lines. The live suite and the sanitizer jobs
+([above](#what-the-sanitizer-and-valgrind-runs-can-and-cannot-see)) are what
+stand behind them.
+
+To mutate them in an audit, run `scripts/mutants-expose-unsafe.py` on a copy of
+the tree: it drops the `unsafe` keyword from signatures (the crate denies
+`unsafe_op_in_unsafe_fn`, so the copy still compiles) and, with `--literals`,
+turns the integer operands of pointer arithmetic into expressions cargo-mutants
+can flip. On `src/vector/reader.rs` and `writer.rs` the mutant list goes from 6
+to 192 (344 with literals). The script's header gives the commands. It is not
+run in CI. Moving such arithmetic into small safe functions over integers and
+slices (`stride_offset(idx, width)`, `validity_bit(words, idx)`) makes it both
+mutable and checkable by Miri, and is the better fix where a function allows it.
 
 ### Test naming convention
 
@@ -397,6 +514,8 @@ quack-rs/
 │   ├── data_chunk.rs                  # Ergonomic wrapper around `DuckDB` data chunks
 │   ├── debug_repr.rs                  # Internal helpers for the crate's `Debug` implementations
 │   ├── entry_point.rs                 # Extension entry point helper
+│   ├── entry_point/
+│   │   └── registration.rs            # Runs the registration closure in one transaction, or with autocommit
 │   ├── error.rs                       # Error types for `DuckDB` extension FFI error propagation
 │   ├── error_data.rs                  # Structured error data (`DuckDB` 1.5.0+)
 │   ├── expression.rs                  # Bound expressions (`DuckDB` 1.5.0+)
@@ -420,6 +539,7 @@ quack-rs/
 │   │   ├── mod.rs                     # Builders for registering `DuckDB` aggregate functions
 │   │   ├── state.rs                   # Generic `FfiState<T>` wrapper for safe aggregate state management
 │   │   └── builder/
+│   │       ├── collision.rs           # Which catalog entry holds the name a failed aggregate registration wanted
 │   │       ├── mod.rs                 # Builder types for registering `DuckDB` aggregate functions
 │   │       ├── overload.rs            # One overload within an [`AggregateFunctionSetBuilder`]
 │   │       ├── set.rs                 # Builder for registering a `DuckDB` aggregate function set (multiple overloads)
@@ -440,18 +560,26 @@ quack-rs/
 │   │   ├── export_check.rs            # Values `DuckDB` would export as different values, found before the export
 │   │   ├── import_check.rs            # Structural checks on an imported array, and flattening what the readers cannot index
 │   │   ├── import_layout/
+│   │   │   ├── bounds.rs              # Offsets, lengths and dictionary indices `DuckDB` would read past, refused
 │   │   │   └── tests.rs               # Unit tests
 │   │   ├── import_layout.rs           # Arrow layouts `DuckDB` imports wrongly, found by walking the array with its schema
 │   │   ├── options.rs                 # `ArrowOptions` — the Arrow production settings of a connection or a result
 │   │   ├── schema.rs                  # `ArrowSchema` — an owned Arrow C Data Interface schema
 │   │   └── tests.rs                   # Unit tests
 │   ├── bin/
-│   │   └── append_metadata/
-│   │       ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
-│   │       ├── entry.rs               # The entry point DuckDB will look for, and the atomic write of the stamped file
-│   │       ├── footer.rs              # The 512-byte `DuckDB` extension footer, and the optional 22-byte WebAssembly custom-section header that precedes it
-│   │       ├── main.rs                # Append a DuckDB extension metadata block to a compiled .so / .dylib / .dll file,
-│   │       └── tests.rs               # Unit tests
+│   │   ├── append_metadata/
+│   │   │   ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
+│   │   │   ├── entry.rs               # The entry point DuckDB will look for, and the atomic write of the stamped file
+│   │   │   ├── footer.rs              # The 512-byte `DuckDB` extension footer, and the optional 22-byte WebAssembly custom-section header that precedes it
+│   │   │   ├── main.rs                # Append a DuckDB extension metadata block to a compiled .so / .dylib / .dll file,
+│   │   │   ├── output.rs              # Reading the library and writing the stamped file
+│   │   │   ├── tests.rs               # Unit tests
+│   │   │   └── tests_output.rs        # Unit tests for reading the input and writing the output
+│   │   └── quack_scaffold/
+│   │       ├── cli.rs                 # Command-line parsing (std-only, no clap)
+│   │       ├── main.rs                # Write a new `DuckDB` extension project to disk, from `generate_scaffold_with_warnings`
+│   │       ├── tests.rs               # Unit tests
+│   │       └── write.rs               # Writing the generated files: everything is checked before anything is written
 │   ├── callback/
 │   │   └── payload.rs                 # Disposing of a caught panic payload without re-entering the unwinder
 │   ├── cast/
@@ -470,18 +598,25 @@ quack-rs/
 │   │   ├── connection.rs              # [`OwnedConnection`] and its cross-thread [`InterruptHandle`]
 │   │   ├── cstr.rs                    # The two C-string conversions the `query` module runs everything through
 │   │   ├── live_tests.rs              # Tests that need a live `DuckDB`
+│   │   ├── metadata.rs                # What a statement is before it runs: `StatementType`, parameter and column types, `table_names`
 │   │   ├── prepared.rs                # Inspecting and executing a [`PreparedStatement`]; `bind.rs` binds its parameters
 │   │   └── result.rs                  # Reading a [`QueryResult`]: its columns, its chunks and what kind of outcome it is
 │   ├── replacement_scan/
 │   │   └── mod.rs                     # Builder for registering `DuckDB` replacement scans
 │   ├── scaffold/
+│   │   ├── checks.rs                  # What `generate_scaffold` checks before it writes anything, and the warnings it gives
 │   │   ├── escape.rs                  # Quoting configured free text for YAML and Rust doc comments
+│   │   ├── licenses.rs                # The license text of a generated project
 │   │   ├── mod.rs                     # Project scaffolding for `DuckDB` Rust extensions
 │   │   ├── templates.rs               # Template generators for scaffold file content
 │   │   ├── templates_ci.rs            # The generated project's CI and distribution workflows
+│   │   ├── templates_docs.rs          # The generated project's `README.md`, `docs/function_descriptions.csv` and `deny.toml`
+│   │   ├── templates_make.rs          # The generated `Makefile`: extension-ci-tools' variables and targets, and the skipped-test check
 │   │   ├── tests.rs                   # Unit tests
+│   │   ├── tests_content.rs           # What the scaffold accepts, warns about and refuses, and the files a community submission needs
 │   │   ├── tests_escaping.rs          # Free text reaches the generated files intact
 │   │   ├── tests_generated.rs         # Unit tests
+│   │   ├── tests_make.rs              # Runs the generated `Makefile`'s own logic under `make`
 │   │   └── tests_workflows.rs         # The generated workflows match the community build
 │   ├── scalar/
 │   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks
@@ -546,14 +681,24 @@ quack-rs/
 │   │       ├── parser.rs              # Parses and validates a `description.yml` string
 │   │       ├── tests.rs               # Unit tests
 │   │       ├── tests_corpus.rs        # Unit tests
+│   │       ├── tests_mut_block.rs     # Boundaries of the block-structure reader, found by mutation testing
+│   │       ├── tests_mut_flow_a.rs    # Boundaries of the flow-collection reader (scanning, anchors), found by mutation testing
+│   │       ├── tests_mut_flow_b.rs    # Boundaries of the flow-collection reader (nesting, plain items), found by mutation testing
+│   │       ├── tests_mut_scalar.rs    # Boundaries of the scalar, section and timestamp readers, found by mutation testing
+│   │       ├── tests_pyyaml.rs        # Accepted exactly when PyYAML accepts it, in linear time
 │   │       ├── tests_yaml.rs          # Unit tests
 │   │       ├── validator.rs           # Validates a `description.yml` string and returns `Ok(())` if it passes all checks
 │   │       ├── yaml.rs                # A reader for the subset of YAML that `description.yml` files use
 │   │       ├── yaml11.rs              # Which plain scalars PyYAML (YAML 1.1) reads as booleans, numbers, dates or null
 │   │       └── yaml/
-│   │           └── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
+│   │           ├── block.rs           # Block mappings and sequences, and their keys
+│   │           ├── flow.rs            # Flow collections, nested and spread over lines
+│   │           ├── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
+│   │           └── value.rs           # The value after a mapping key or a sequence marker
 │   ├── value/
+│   │   ├── bits.rs                    # `BIT` and `BIGNUM` values: validated constructors and getters that check type and `NULL` first
 │   │   ├── blob.rs                    # `Value::as_blob` — `BLOB` extraction
+│   │   ├── cast.rs                    # `Value::try_cast` (exception-free, any type), `array_items` and `union_tag`
 │   │   ├── checks.rs                  # Pure-Rust preconditions checked before a `Value` call reaches `DuckDB`
 │   │   ├── composite.rs               # Composite constructors: `STRUCT`, `LIST`, `ARRAY`, `ENUM`, `MAP`, `UNION`
 │   │   ├── defaults.rs                # The defaulting accessors — `Value::as_*_or`
@@ -578,19 +723,27 @@ quack-rs/
 │       ├── validity.rs                # Validity bitmap helpers for `DuckDB` NULL tracking
 │       └── writer.rs                  # Safe typed writing to `DuckDB` result vectors
 ├── tests/
+│   ├── abi_policy_enforced.rs         # `AbiPolicy` enforced in-process against an engine whose layout differs
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
+│   ├── build_script_env.rs            # The build script run with a crafted `QUACK_RS_TARGET_DUCKDB_VERSION`
+│   ├── entry_point_expansion.rs       # The entry-point macros compiled as edition 2024 and under `panic = "abort"`
 │   ├── entry_point_lint.rs            # The entry-point macros accept an `unsafe` registration closure warning-free
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
+│   ├── lsan_probe.rs                  # The `leak-check` job's canary: a handle leaked on request must fail LeakSanitizer
+│   ├── property_inputs.rs             # Property tests for `parse_version`, SPDX, `description.yml` and the scaffold's escaping
+│   ├── quack_scaffold_cli.rs          # The `quack_scaffold` binary run as a user runs it: exit status, output and the files it writes
+│   ├── secret_memory_scan.rs          # `SecretEntry`'s zeroize, checked by scanning the process's own memory (Linux)
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
 │       ├── agg_states.rs              # Every aggregate state is dropped, including the ones `DuckDB` moves
 │       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
 │       ├── aggregate_arity.rs         # An aggregate with no parameter is refused at registration (DuckDB 2.0 passes `update` no row count)
 │       ├── appender_api.rs            # `Appender` methods a no-op replacement survived: schemas, column types, `clear_columns`, defaults
+│       ├── appender_query.rs          # `Appender::for_query` and the appender's `from_raw` / `into_raw`
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_export.rs            # `arrow::data_chunk_to_arrow` refuses values `DuckDB` would export wrongly
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
@@ -600,14 +753,19 @@ quack-rs/
 │       ├── chunk_writer.rs            # `ChunkWriter` against a chunk `DuckDB` allocated
 │       ├── chunk_writer_cols.rs       # `ChunkWriter::{vector, writer, struct_writer}` and `DataChunk::into_chunk_writer` filling a real chunk
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
+│       ├── connection_registrar.rs    # Every `Registrar` method of `Connection` reaches `DuckDB`
 │       ├── copy_from_columns.rs       # A typed `COPY … FROM` reader that declares a column is refused
 │       ├── copy_info_errors.rs        # `set_error` from all four COPY phases, and the state passed between them (`duckdb-1-5`)
+│       ├── copy_typed_state.rs        # Typed `COPY TO` state, a `FileHandle` kept across callbacks, `Send` handles (`duckdb-1-5`)
 │       ├── data_chunk_helpers.rs      # `DataChunk::any_null`, `struct_writer`, `into_chunk_writer` and `ChunkWriter::is_full`
 │       ├── entry_point_inprocess.rs   # `init_extension*` and the entry-point macros run in process against a fake extension access
+│       ├── entry_point_txn.rs         # A failed `LOAD` rolls back and can be retried; a `LOAD` inside the host's transaction
 │       ├── file_errors.rs             # `FileHandle` reports write, sync and seek failures, and refuses a seek past `i64::MAX`
 │       ├── handles_api.rs             # `StructWriter` child handles and `InMemoryDb::execute`'s row count
+│       ├── hostile_input.rs           # Hostile names, SQL bodies, type nesting and cardinality hints against a real engine
 │       ├── inline_paths.rs            # The paths that skip a C call: `is_valid` / `set_null` bit operations and the `ListBuilder` child-writer cache, held to the C API
 │       ├── lifecycle.rs               # Aggregate NULL rows, name collisions, overload builders, bind-data sharing
+│       ├── lifecycle_gaps.rs          # Lifecycle paths no other test reached, found by mutation testing
 │       ├── list_api.rs                # The raw `ListVector` workflow, `get_size`, `get_entry`, `child_writer`, `max_child_capacity` on live LIST and MAP vectors
 │       ├── list_limits.rs             # `ListBuilder` stops at `DuckDB`'s byte ceiling, not an element count
 │       ├── logical_type_accessors.rs  # Every `LogicalType` accessor, built by the constructors and read back, against the engine's own `typeof`
@@ -615,10 +773,13 @@ quack-rs/
 │       ├── mock_parity.rs             # `MockRegistrar` refuses a bad type with the live registration's message
 │       ├── nested_reserve.rs          # which nested buffers a `LIST` reserve moves (the writer contracts)
 │       ├── nested_validity.rs         # `VectorWriter::set_valid` on nested rows, against a live `DuckDB`
+│       ├── oracle_temporal.rs         # Randomised cross-checks of `datetime` and `interval` against `DuckDB`'s own SQL
+│       ├── overload_keys.rs           # Overloads `DuckDB` resolves by type id alone are refused; closure-built overloads; taken aggregate names
 │       ├── owned_chunk.rs             # `OwnedDataChunk::new`, `capacity` and `reset` against a live `DuckDB`
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_extras.rs            # `bind_str`, `bind_null`, `clear_bindings` and an idle `progress`
+│       ├── query_metadata.rs          # Statement type, parameter and column metadata, `table_names`, raw-handle round trips
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
 │       ├── replacement_scan_api.rs    # Replacement-scan `add_*_parameter`, `register_with_data` and `set_error`
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
@@ -632,17 +793,22 @@ quack-rs/
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── timestamp_tz_ns.rs         # `TIMESTAMPTZ_NS` (DuckDB 2.0): vectors, `Value`, and every type the engine can produce
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── typed_extra_info.rs        # `extra_info_typed` / `extra_info_ref` on casts and aggregates; a wrong type reads as `None`
 │       ├── typed_scalar_opt.rs        # Typed scalar closures returning `Option`, the `try_*` constructors and `map3`
 │       ├── validity_api.rs            # `ValidityBitmap` against the engine's masks, at the word and vector edges
+│       ├── value_bits.rs              # `BIT` / `BIGNUM` values; every input the C getters abort on reads as `None`
+│       ├── value_cast.rs              # `try_cast`, `array_items`, `union_tag`: reading `ARRAY` and `UNION` values
 │       ├── value_defaults.rs          # `Value::as_*_or` when a value is present
 │       ├── value_getters.rs           # Each typed `Value` getter at its own type; out-of-range TIMETZ / TIME_NS are not cast
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`
 │       ├── value_query.rs             # `Value` getters, DECIMAL binding, `Expression::fold`
 │       ├── value_render.rs            # `Value` rendering of values SQL builds and `DuckDB` cannot render
 │       ├── value_temporal.rs          # Every `Value` getter against every temporal source type, at every edge
+│       ├── vector_capacity_guard.rs   # `OwnedVector::new` refuses a capacity whose nested `ARRAY` child would overflow
 │       ├── vector_dt.rs               # NULLs in nested output vectors; selection vectors
 │       ├── vector_ops.rs              # `OwnedVector::into_raw`, `copy_selected`, `slice`, `reference_value`, `reference_vector` (`duckdb-1-5`)
 │       ├── vector_support.rs          # Helpers shared by the vector-module tests
+│       ├── wide_rows.rs               # Every fixed-width and string type echoed over thousands of distinct rows
 │       └── writer_api.rs              # `write_timestamp_tz`, `write_str`, and the Ok path of `try_write_varchar` / `try_write_blob`
 ├── benches/
 │   ├── interval_bench.rs          # Criterion benchmarks for interval conversion
@@ -665,7 +831,7 @@ quack-rs/
 │   ├── benchmarks.yml             # Criterion benchmark execution
 │   └── README.md                  # Workflow overview and quality gate summary
 ├── CONTRIBUTING.md                # This file
-├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L19, P1–P15), documented in full
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L21, P1–P17), documented in full
 └── README.md                      # Quick start, SDK overview, badge table
 ```
 
@@ -691,21 +857,37 @@ quack-rs/
 
 ## Releasing
 
-This crate supports `libduckdb-sys = ">=1.4.4, <2"` (the bindings of DuckDB 1.4.4 and
-later 1.x releases). Every DuckDB from 1.4.4 through 2.0.0 loads C API `v1.2.0` extensions.
-The `<2` upper bound does not exclude the DuckDB 2.0 bindings: `libduckdb-sys` encodes DuckDB
-`vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`, so DuckDB 2.0.0 is
-1.20000.0, which the range admits. The 1.20000.x releases (1.20000.0 on 2026-10-22,
-1.20000.1 on 2026-10-28) declare `rust-version` 1.88, so a Rust 1.86 toolchain cannot build them; MSRV-aware resolution
-(resolver 3, or `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) keeps a 1.86 build on
-1.10506.x. The bound would stop a future `libduckdb-sys` 2.x.
-Before broadening the range to a new major band:
+This crate supports `libduckdb-sys = ">=1.4.4, <1.20100"` (the bindings of DuckDB 1.4.4
+through 2.0.x). Every DuckDB from 1.4.4 through 2.0.0 loads C API `v1.2.0` extensions.
+`libduckdb-sys` encodes DuckDB `vMAJOR.MINOR.PATCH` as `1.(10000·MAJOR + 100·MINOR + PATCH).N`,
+so DuckDB 2.0.0 is 1.20000.0 and DuckDB 2.1.0 will be 1.20100.0; the bound admits the first
+and stops before the second. The 1.20000.x releases (1.20000.0 on 2026-10-22, 1.20000.1 on
+2026-10-28) declare `rust-version` 1.88, so a Rust 1.86 toolchain cannot build them;
+MSRV-aware resolution (resolver 3, or `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`)
+keeps a 1.86 build on 1.10506.x.
 
-1. Read the DuckDB changelog for C API changes.
-2. Check the new C API version string (used in `duckdb_rs_extension_api_init`).
-3. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed.
-4. Audit all callback signatures against the new `libduckdb-sys` bindings.
-5. Update the `libduckdb-sys` and `duckdb` version requirements in `Cargo.toml`.
+**Why there is an upper bound.** 1.20000.x keeps the root-level names quack-rs and its
+exported macros use (`libduckdb_sys::duckdb_connection`, ...) behind the default feature
+`capi-v1`, beside a `// TODO: Remove in the future`. With only that re-export deleted from a
+copy of 1.20000.1, quack-rs failed with 214 compile errors (the eighth review reproduced
+it). Without an upper bound, the day a later binding drops it, every new project resolves to
+bindings this crate cannot build against. Published releases cannot be narrowed after the
+fact, which is why the bound is on the newest release and is widened deliberately.
+
+**Widening the bound for a new DuckDB minor** (a patch release of quack-rs):
+
+1. Read the DuckDB release notes and the C API diff (`duckdb.h`, `duckdb_extension.h`):
+   `scripts/check-abi-table.py` and `scripts/check-api-coverage.py` report new slots.
+2. Resolve the new bindings (`cargo update -p duckdb --precise <version>` and
+   `-p libduckdb-sys --precise <version>`) in a copy and run the whole suite against the new
+   engine, as the `test-duckdb-2-0` job does for 2.0. Check specifically that the root-level
+   re-exports still exist (`cargo check` is enough to tell).
+3. Add the release to `KNOWN_LAYOUTS` / `PREFIX_LAYOUTS` in `src/abi.rs` if its slot count
+   differs (the abi-table job derives them), and to the `extension-load` and older-engine
+   matrices.
+4. Update the `libduckdb-sys` and `duckdb` requirements in `Cargo.toml` and in every
+   manifest and document that repeats them (`git grep '<1.20100'`; a test compares them).
+5. Update `DUCKDB_API_VERSION` in `src/lib.rs` if the C API version changed.
 
 Versions follow [Semantic Versioning](https://semver.org/) as Cargo applies it.
 While the crate is pre-1.0, a breaking change to the public API bumps the

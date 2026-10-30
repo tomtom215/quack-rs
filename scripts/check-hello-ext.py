@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Run hello-ext's documented SQL checks against a real DuckDB.
 
-`examples/hello-ext/README.md` lists 31 statements with the answer each should
+`examples/hello-ext/README.md` lists 32 statements with the answer each should
 give once the extension is loaded. CI used to run two of them. This runs all of
 `examples/hello-ext/sql_checks.txt` — the same statements, with the exact CLI
 output each must produce — and also fails if the README's statements and the

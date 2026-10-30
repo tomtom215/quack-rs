@@ -169,6 +169,39 @@ impl CopyBindInfo {
         }
     }
 
+    /// Stores `data` as this statement's bind data: the safe, typed form of
+    /// [`set_bind_data`][Self::set_bind_data]. Read it with `bind_data_ref`
+    /// in the global init, sink and finalize callbacks.
+    ///
+    /// quack-rs boxes `data` behind a type tag and generates its destructor,
+    /// which contains a panic in `T::drop`. `DuckDB` runs it once, when the
+    /// statement's bind result is released — also when a later callback
+    /// reports an error (`copy_function-c.cpp` hands the pointer to its bind
+    /// result before it checks for one). `T` is `Send + Sync` because every
+    /// sink thread reads it. Call this at most once per bind: a second call
+    /// replaces the first value, which is then never dropped.
+    pub fn set_bind_data_typed<T: Send + Sync + 'static>(&self, data: T) {
+        let (ptr, destroy) = crate::extra_info::into_tagged(data);
+        // SAFETY: a fresh allocation, used by no one else, and the destructor
+        // that frees it exactly once without unwinding.
+        unsafe { self.set_bind_data(ptr, Some(destroy)) };
+    }
+
+    /// Borrows the copy function's extra info, set with
+    /// [`CopyFunctionBuilder::extra_info_typed`][crate::copy_function::CopyFunctionBuilder::extra_info_typed],
+    /// as a `T`; `None` when none was set or it holds another type.
+    ///
+    /// # Safety
+    ///
+    /// The extra info, if any, was set through `extra_info_typed`, not the
+    /// raw `extra_info`, whose pointer carries no type tag.
+    #[must_use]
+    pub unsafe fn extra_info_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: null or tagged (this method's contract); DuckDB keeps it
+        // alive while the function is registered, which outlasts `&self`.
+        unsafe { crate::extra_info::tagged_ref(self.get_extra_info()) }
+    }
+
     /// Reports a fatal error, causing `DuckDB` to abort the current query.
     ///
     /// An interior null byte in `message` is replaced by `?`, and an empty
@@ -319,6 +352,52 @@ impl CopyGlobalInitInfo {
         }
     }
 
+    /// Stores `state` as this statement's global state: the safe, typed form
+    /// of [`set_global_state`][Self::set_global_state]. Read it with
+    /// `global_state_ref` in the sink and finalize callbacks.
+    ///
+    /// The destructor is generated and panic-safe, as for
+    /// [`CopyBindInfo::set_bind_data_typed`], and `DuckDB` runs it once when
+    /// the statement ends, also after a sink or finalize error. `T` is
+    /// `Send + Sync` because the sink can run on several threads at once:
+    /// state they change needs a `Mutex` or atomics inside `T`. A
+    /// [`FileHandle`][crate::file_system::FileHandle] kept here belongs in a
+    /// `Mutex` (see its docs on keeping a file open across callbacks). Call
+    /// this at most once per global init.
+    pub fn set_global_state_typed<T: Send + Sync + 'static>(&self, state: T) {
+        let (ptr, destroy) = crate::extra_info::into_tagged(state);
+        // SAFETY: a fresh allocation, used by no one else, and the destructor
+        // that frees it exactly once without unwinding.
+        unsafe { self.set_global_state(ptr, Some(destroy)) };
+    }
+
+    /// Borrows the bind data set with
+    /// [`CopyBindInfo::set_bind_data_typed`] as a `T`; `None` when none was
+    /// set or it holds another type.
+    ///
+    /// # Safety
+    ///
+    /// The bind data, if any, was set through `set_bind_data_typed`, not the
+    /// raw `set_bind_data`, whose pointer carries no type tag.
+    #[must_use]
+    pub unsafe fn bind_data_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: null or tagged (this method's contract); DuckDB keeps it
+        // alive for the whole statement, which outlasts `&self`.
+        unsafe { crate::extra_info::tagged_ref(self.get_bind_data()) }
+    }
+
+    /// Borrows the copy function's extra info as a `T`; see
+    /// [`CopyBindInfo::extra_info_ref`].
+    ///
+    /// # Safety
+    ///
+    /// As for [`CopyBindInfo::extra_info_ref`].
+    #[must_use]
+    pub unsafe fn extra_info_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: as in `CopyBindInfo::extra_info_ref`.
+        unsafe { crate::extra_info::tagged_ref(self.get_extra_info()) }
+    }
+
     /// Reports a fatal error, causing `DuckDB` to abort the current query.
     ///
     /// An interior null byte in `message` is replaced by `?`, and an empty
@@ -411,6 +490,45 @@ impl CopySinkInfo {
         unsafe { duckdb_copy_function_sink_get_global_state(self.info) }
     }
 
+    /// Borrows the bind data as a `T`; see
+    /// [`CopyGlobalInitInfo::bind_data_ref`].
+    ///
+    /// # Safety
+    ///
+    /// As for [`CopyGlobalInitInfo::bind_data_ref`].
+    #[must_use]
+    pub unsafe fn bind_data_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: as in `CopyGlobalInitInfo::bind_data_ref`.
+        unsafe { crate::extra_info::tagged_ref(self.get_bind_data()) }
+    }
+
+    /// Borrows the global state set with
+    /// [`CopyGlobalInitInfo::set_global_state_typed`] as a `T`; `None` when
+    /// none was set or it holds another type.
+    ///
+    /// # Safety
+    ///
+    /// The global state, if any, was set through `set_global_state_typed`,
+    /// not the raw `set_global_state`, whose pointer carries no type tag.
+    #[must_use]
+    pub unsafe fn global_state_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: null or tagged (this method's contract); DuckDB keeps it
+        // alive until the statement ends, which outlasts `&self`.
+        unsafe { crate::extra_info::tagged_ref(self.get_global_state()) }
+    }
+
+    /// Borrows the copy function's extra info as a `T`; see
+    /// [`CopyBindInfo::extra_info_ref`].
+    ///
+    /// # Safety
+    ///
+    /// As for [`CopyBindInfo::extra_info_ref`].
+    #[must_use]
+    pub unsafe fn extra_info_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: as in `CopyBindInfo::extra_info_ref`.
+        unsafe { crate::extra_info::tagged_ref(self.get_extra_info()) }
+    }
+
     /// Reports a fatal error, causing `DuckDB` to abort the current query.
     ///
     /// An interior null byte in `message` is replaced by `?`, and an empty
@@ -501,6 +619,42 @@ impl CopyFinalizeInfo {
     pub unsafe fn get_global_state(&self) -> *mut c_void {
         // SAFETY: self.info is valid per constructor contract.
         unsafe { duckdb_copy_function_finalize_get_global_state(self.info) }
+    }
+
+    /// Borrows the bind data as a `T`; see
+    /// [`CopyGlobalInitInfo::bind_data_ref`].
+    ///
+    /// # Safety
+    ///
+    /// As for [`CopyGlobalInitInfo::bind_data_ref`].
+    #[must_use]
+    pub unsafe fn bind_data_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: as in `CopyGlobalInitInfo::bind_data_ref`.
+        unsafe { crate::extra_info::tagged_ref(self.get_bind_data()) }
+    }
+
+    /// Borrows the global state as a `T`; see
+    /// [`CopySinkInfo::global_state_ref`].
+    ///
+    /// # Safety
+    ///
+    /// As for [`CopySinkInfo::global_state_ref`].
+    #[must_use]
+    pub unsafe fn global_state_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: as in `CopySinkInfo::global_state_ref`.
+        unsafe { crate::extra_info::tagged_ref(self.get_global_state()) }
+    }
+
+    /// Borrows the copy function's extra info as a `T`; see
+    /// [`CopyBindInfo::extra_info_ref`].
+    ///
+    /// # Safety
+    ///
+    /// As for [`CopyBindInfo::extra_info_ref`].
+    #[must_use]
+    pub unsafe fn extra_info_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: as in `CopyBindInfo::extra_info_ref`.
+        unsafe { crate::extra_info::tagged_ref(self.get_extra_info()) }
     }
 
     /// Reports a fatal error, causing `DuckDB` to abort the current query.

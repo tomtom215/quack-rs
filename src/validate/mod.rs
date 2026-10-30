@@ -13,7 +13,8 @@
 //! # What is validated
 //!
 //! - **Extension name**: A lowercase letter, then lowercase letters, digits and underscores
-//!   (no hyphens: `DuckDB` derives the `<name>_init_c_api` symbol from it)
+//!   (no hyphens: `DuckDB` derives the `<name>_init_c_api` symbol from it); for a
+//!   community extension, also not a `DuckDB` alias (`s3`) or core extension name (`json`)
 //! - **Function name**: Letters, digits and underscores, and not a reserved SQL keyword —
 //!   anything needing quotes in SQL is rejected
 //! - **Semantic versioning**: `validate_semver` for strict semver; extension
@@ -69,7 +70,10 @@ pub mod semver;
 pub mod spdx;
 mod spdx_exceptions;
 
-pub use extension_name::validate_extension_name;
+pub use extension_name::{
+    validate_community_extension_name, validate_extension_name, DUCKDB_CORE_EXTENSION_NAMES,
+    DUCKDB_EXTENSION_ALIASES, DUCKDB_RESERVED_EXTENSION_NAMES,
+};
 pub use function_name::{
     validate_function_name, validate_parameter_name, DUCKDB_RESERVED_KEYWORDS,
     DUCKDB_UNCALLABLE_KEYWORDS, DUCKDB_UNREFERENCEABLE_PARAMETER_KEYWORDS,
@@ -111,6 +115,29 @@ pub fn validate_excluded_platforms_str(s: &str) -> Result<(), crate::error::Exte
     }
     let tokens: Vec<&str> = s.split(';').collect();
     validate_excluded_platforms(&tokens)
+}
+
+/// Whether `repo` is a GitHub repository path, `owner/repo`, in the
+/// characters GitHub allows: letters, digits and `-` in the owner (not first),
+/// and letters, digits, `-`, `_` and `.` in the name (not `.` or `..`).
+///
+/// `repo.github` in `description.yml` is handed to `actions/checkout` as its
+/// `repository`, which takes exactly this — not a URL, and not a path with
+/// more segments. The scaffold writes the same value.
+pub(crate) fn is_github_repo(repo: &str) -> bool {
+    repo.split_once('/').is_some_and(|(owner, name)| {
+        !owner.is_empty()
+            && !owner.starts_with('-')
+            && owner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !name.is_empty()
+            && name != "."
+            && name != ".."
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    })
 }
 
 #[cfg(test)]

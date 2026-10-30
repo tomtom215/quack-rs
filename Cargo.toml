@@ -1,6 +1,6 @@
 [package]
 name = "quack-rs"
-version = "0.19.0"
+version = "0.20.0"
 edition = "2021"
 rust-version = "1.86.0"
 authors = ["Tom F. <tomf@tomtomtech.net>"]
@@ -13,31 +13,22 @@ readme = "README.md"
 keywords = ["duckdb", "extension", "ffi", "sql", "analytics"]
 categories = ["database", "api-bindings", "development-tools::ffi"]
 autobenches = false
-exclude = [
-    "docs/",
-    "examples/",
-    "benches/engine/",
-    "fuzz/",
-    ".github/",
-    "book/",
-    "book.toml",
-    "assets/",
-    "deny.toml",
-    "osv-scanner.toml",
-    "AUDIT.md",
-    "RELEASING.md",
-    "LESSONS.md",
-    "CODE_OF_CONDUCT.md",
-    "CONTRIBUTING.md",
-    "GOVERNANCE.md",
-    # Repository tooling (CI checks, the book and release scripts); nothing in
-    # the build uses it.
-    "scripts/",
-    "clippy.toml",
-    "codecov.yml",
-    ".cargo/",
-    "rust-toolchain.toml",
-    "lsan-suppressions.txt",
+# An allow-list: a new top-level file or directory is NOT published unless it is
+# named here (the previous `exclude` list shipped anything new by default).
+# `examples/*.rs` ship because Cargo packages every auto-discovered example and
+# warns ("ignoring example ...") when its file is missing; `examples/hello-ext`
+# is a separate package and is not matched.
+include = [
+    "/src/**",
+    "/tests/**",
+    "/benches/interval_bench.rs",
+    "/examples/*.rs",
+    "/build.rs",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/SECURITY.md",
+    "/CITATION.cff",
 ]
 
 [lib]
@@ -75,7 +66,7 @@ crate-type = ["rlib"]
 ##
 ## ```toml
 ## [dev-dependencies]
-## quack-rs = { version = "0.19", features = ["bundled-test"] }
+## quack-rs = { version = "0.20", features = ["bundled-test"] }
 ## ```
 bundled-test = ["_duckdb-testing", "duckdb/bundled"]
 
@@ -94,7 +85,7 @@ bundled-test = ["_duckdb-testing", "duckdb/bundled"]
 ##
 ## ```toml
 ## [dev-dependencies]
-## quack-rs = { version = "0.19", features = ["bundled-test-prebuilt"] }
+## quack-rs = { version = "0.20", features = ["bundled-test-prebuilt"] }
 ## ```
 bundled-test-prebuilt = ["_duckdb-testing"]
 
@@ -185,8 +176,16 @@ duckdb-1-5-4 = ["duckdb-1-5-3"]
 # so it does not keep out the DuckDB 2.0 bindings.
 
 [dependencies]
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
-duckdb = { version = ">=1.4.4, <2", optional = true }
+# `libduckdb-sys` numbers DuckDB vX.Y.Z as 1.(10000*X + 100*Y + Z).N, so `<1.20100`
+# admits every DuckDB 1.4.4 - 2.0.x binding and stops before DuckDB 2.1 (1.20100.0).
+# The bound is deliberate: 1.20000.x keeps the root-level re-exports quack-rs and its
+# exported macros name (`libduckdb_sys::duckdb_connection`, ...) behind the default
+# feature `capi-v1`, next to a `// TODO: Remove in the future`. If a later binding
+# drops them, an unbounded range would resolve to bindings this crate cannot compile
+# against (214 errors, reproduced). Widen it in a patch release once a new DuckDB
+# minor has been run through CI (AUDIT.md section 14).
+libduckdb-sys = { version = ">=1.4.4, <1.20100", default-features = false, features = ["loadable-extension"] }
+duckdb = { version = ">=1.4.4, <1.20100", optional = true }
 
 [build-dependencies]
 # Used only when `bundled-test` / `bundled-test-prebuilt` is active: compiles the
@@ -265,3 +264,8 @@ undocumented_unsafe_blocks = "warn"
 # feature-gated item would be missing. `bundled-test` is
 # intentionally excluded (it compiles DuckDB from source).
 features = ["duckdb-1-5-4"]
+
+[package.metadata.cargo-machete]
+# Used, but outside the places cargo-machete looks: `cc` by build.rs, `criterion`
+# by benches/interval_bench.rs (a `[[bench]]` with `autobenches = false`).
+ignored = ["cc", "criterion"]

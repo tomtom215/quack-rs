@@ -132,6 +132,21 @@ pub const COMMON_SPDX_LICENSES: &[&str] = &[
 /// assert!(validate_spdx_license("").is_err());
 /// ```
 pub fn validate_spdx_license(license: &str) -> Result<(), ExtensionError> {
+    check_spdx_expression(license)?.map_or(Ok(()), |unlisted| Err(ExtensionError::new(unlisted)))
+}
+
+/// Checks `license` as [`validate_spdx_license`] does, but treats a
+/// well-formed expression that names an identifier outside the shortlist as
+/// `Ok(Some(reason))` — to warn about, not to refuse — and requires every
+/// identifier to use SPDX's characters (`idstring`: letters, digits, `.` and
+/// `-`, plus a trailing `+` on a license), so the value can be written into
+/// TOML and YAML as it is. Used by the scaffold.
+///
+/// # Errors
+///
+/// An empty or malformed expression, an identifier with other characters, or
+/// a listed identifier in the wrong case (`mit`).
+pub(crate) fn check_spdx_expression(license: &str) -> Result<Option<String>, ExtensionError> {
     if license.trim().is_empty() {
         return Err(ExtensionError::new("license identifier must not be empty"));
     }
@@ -148,44 +163,60 @@ pub fn validate_spdx_license(license: &str) -> Result<(), ExtensionError> {
             ))
         })
     });
+    let unlisted = unlisted.map_err(|msg| {
+        ExtensionError::new(format!(
+            "{msg}; expected an SPDX identifier such as 'MIT' or an expression such as \
+             'MIT OR Apache-2.0' — see https://spdx.org/licenses/"
+        ))
+    })?;
+    let Some(unlisted) = unlisted else {
+        return Ok(None);
+    };
+    for token in &tokens {
+        let id = token.strip_suffix('+').unwrap_or(token);
+        let spdx_chars = id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
+        if !matches!(*token, "(" | ")") && (id.is_empty() || !spdx_chars) {
+            return Err(ExtensionError::new(format!(
+                "license expression '{license}' contains '{token}', which is not an SPDX \
+                 identifier: identifiers are letters, digits, '.' and '-' (see \
+                 https://spdx.org/licenses/)"
+            )));
+        }
+    }
     match unlisted {
-        Ok(None) => Ok(()),
         // Deliberately not "is not a recognized SPDX identifier": this list is
         // a shortlist of ~40 out of 700+, so saying that would be wrong for
         // most valid identifiers.
-        Ok(Some(Unlisted::License(id))) => Err(ExtensionError::new(
-            COMMON_SPDX_LICENSES
-                .iter()
-                .find(|known| known.eq_ignore_ascii_case(id))
-                .map_or_else(
-                    || {
-                        format!(
-                            "license '{id}' is not in quack-rs's list of common SPDX \
-                             identifiers. It may still be valid — check \
-                             https://spdx.org/licenses/. Common choices: MIT, Apache-2.0, \
-                             BSD-3-Clause, GPL-3.0-or-later, MPL-2.0"
-                        )
-                    },
-                    |canonical| {
-                        format!(
-                            "license '{id}' should be spelled '{canonical}': SPDX identifiers \
-                             match case-insensitively, but the canonical case is the one the \
-                             SPDX list and its URLs use"
-                        )
-                    },
-                ),
-        )),
+        Unlisted::License(id) => COMMON_SPDX_LICENSES
+            .iter()
+            .find(|known| known.eq_ignore_ascii_case(id))
+            .map_or_else(
+                || {
+                    Ok(Some(format!(
+                        "license '{id}' is not in quack-rs's list of common SPDX identifiers. \
+                         It may still be valid — check https://spdx.org/licenses/. Common \
+                         choices: MIT, Apache-2.0, BSD-3-Clause, GPL-3.0-or-later, MPL-2.0"
+                    )))
+                },
+                // A listed identifier in the wrong case is a mistake, not an
+                // identifier the shortlist lacks.
+                |canonical| {
+                    Err(ExtensionError::new(format!(
+                        "license '{id}' should be spelled '{canonical}': SPDX identifiers match \
+                         case-insensitively, but the canonical case is the one the SPDX list \
+                         and its URLs use"
+                    )))
+                },
+            ),
         // The exception list is the whole registry as of the version it was
         // taken from, so only a newer addition can be valid and missing.
-        Ok(Some(Unlisted::Exception(id))) => Err(ExtensionError::new(format!(
+        Unlisted::Exception(id) => Ok(Some(format!(
             "license exception '{id}' is not in the SPDX license-exception list quack-rs \
              carries (SPDX license list 3.29.0). Check the spelling and case at \
              https://spdx.org/licenses/exceptions-index.html; an exception added to SPDX \
              since then may still be valid"
-        ))),
-        Err(msg) => Err(ExtensionError::new(format!(
-            "{msg}; expected an SPDX identifier such as 'MIT' or an expression such as \
-             'MIT OR Apache-2.0' — see https://spdx.org/licenses/"
         ))),
     }
 }
@@ -452,7 +483,10 @@ mod tests {
     #[test]
     fn sibling_groups_do_not_count_towards_the_nesting_limit() {
         let group = format!("{}MIT{}", "(".repeat(MAX_NESTING), ")".repeat(MAX_NESTING));
-        let many = vec![group.as_str(); MAX_NESTING + 2].join(" AND ");
+        // More groups than the limit allows levels, so a count that accumulated
+        // would show; three suffice under Miri, where 66 took 160 s.
+        let groups = if cfg!(miri) { 3 } else { MAX_NESTING + 2 };
+        let many = vec![group.as_str(); groups].join(" AND ");
         assert!(validate_spdx_license(&many).is_ok(), "{many}");
         let flat = vec!["(MIT)"; 2 * MAX_NESTING].join(" OR ");
         assert!(validate_spdx_license(&flat).is_ok(), "{flat}");

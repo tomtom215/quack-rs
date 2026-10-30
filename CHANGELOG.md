@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-30
+
+This release comes out of an eighth review (`AUDIT.md` section 14): twelve parallel
+reviewers (soundness, the diff since 0.19.0, C API gaps, conformance with DuckDB's
+community-extension process, documentation, CI and supply chain, hardening, the FFI
+boundary, two authors' passes over tables and types, dependencies, and the test suite
+itself), then six work packages that fixed what they found, each with the tests that fail
+without the fix. It also carries the performance work that review measured against 0.19.0.
+
+**It contains breaking changes**, marked **Breaking:** under Changed: the entry-point
+macros refuse `panic = "abort"`, four public enums are `#[non_exhaustive]`, registration
+is transactional, `generate_scaffold` and `parse_description_yml` refuse inputs they used to
+accept, and a zero-argument aggregate no longer registers. "Upgrading from 0.18 to 0.20" in
+the book lists each with what to do. Two High-severity defects were found and fixed before
+release: a segmentation fault in an unpublished `ListBuilder` optimisation, and
+`SqlMacro::register` executing statements ahead of a parse error on DuckDB 2.0.0 (see
+Security).
+
 ### Added
 
 - **`TIMESTAMPTZ_NS`, the type DuckDB 2.0.0 added** (`DUCKDB_TYPE_TIMESTAMP_TZ_NS`,
@@ -47,9 +65,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a change to a vector, validity or list path.
 - `scripts/check-api-coverage.py` and `scripts/api-coverage-allowlist.txt`: every
   slot of `duckdb_ext_api_v1` is either used under `src/` or listed with a class and
-  a reason (546 slots at v1.5.6: 447 used, 99 listed: 45 deprecated, 22 host-side,
-  11 superseded, 21 candidates to wrap). The `abi-table` CI job runs it, so a slot a
+  a reason (546 slots at v1.5.6: 457 wrapped, 89 listed: 45 deprecated, 23 host-side,
+  13 superseded, 8 candidates to wrap). The `abi-table` CI job runs it, so a slot a
   DuckDB release adds is noticed instead of left for someone to read the header.
+
+- **`quack_scaffold` binary** (`cargo install quack-rs --bin quack_scaffold`): writes a new
+  extension project to disk from the command line. Every `ScaffoldConfig` field is a flag
+  (`--description`, `--maintainer`, `--github-repo`, `--version`, `--license`,
+  `--excluded-platforms`, `--target-duckdb-version`, `--unstable-c-api`, `--git-ref`, `--dir`).
+  It refuses to overwrite an existing file unless `--force` is given, and writes nothing if it
+  refuses. It never writes through a symbolic link inside the project. When it is done it
+  prints the next steps: the `git submodule add` command for extension-ci-tools, the build and
+  test commands, and the exact `append_metadata` invocation for stamping without `make`.
+- **`scaffold::generate_scaffold_with_warnings`** and **`scaffold::Scaffold`**: the generated
+  files plus warnings about values that were accepted but deserve a second look. These are: a
+  license id outside quack-rs's shortlist, an excluded platform that is opt-in, excluding every
+  platform, and an unstable-ABI project the community build cannot ship as generated.
+  `generate_scaffold` is unchanged and drops the warnings.
+- **Scaffold: files a community submission needs** (CONFORM-14/15, DEPS-1):
+  - `README.md`: build, test and try instructions, the no-`strip`-after-stamping rule,
+    reduced CI on pull requests, and what to submit.
+  - `docs/function_descriptions.csv`: the duckdb.org extension page takes function
+    descriptions and examples only from this file. It has a row for the example function.
+  - The license text: `LICENSE` for MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD,
+    MIT-0 and Unlicense. An expression gets one `LICENSE-<ID>` per license. Anything else gets
+    a `LICENSE.TODO` naming the text to add.
+  - `deny.toml`: ignores RUSTSEC-2026-0367/-0368/-0369 (zip < 9), each with a reason. That
+    zip is only a build-script dependency of `libduckdb-sys` ≤ 1.10506.0, which is what Cargo
+    resolves for `rust-version = 1.86`. The file also allows the dependency graph's licenses
+    and the project's own. `cargo deny check` passes on a freshly generated, locked project;
+    without the ignores it fails on exactly those three advisories.
+- **`validate::validate_community_extension_name`**: rejects a name `DuckDB` itself uses, both
+  its aliases (`s3`, `md`, `postgres`, ...) and its core extensions (`json`, `parquet`, ...),
+  as well as a badly formed one. The parser and the scaffold use it. `validate_extension_name`
+  stays a syntax check only. (CONFORM-3)
+- **`description.yml`: `repo.variegata` / `repo.andium`** (the refs built for DuckDB v1.5.6 and
+  v1.4.5) are read into `ExtensionDescription::git_ref_variegata` / `git_ref_andium`. An
+  unknown `repo` key is now a warning, and so is a `repo` that is not `owner/repo`.
+  (CONFORM-10)
+
+- `ChunkWriter::release_row(row)` gives back the row the last `next_row` claimed, so the
+  drop does not publish it; the next `next_row` returns the same index. Giving back any
+  other row panics with the row that could be given back. For the
+  `while let Some(row) = cw.next_row()` loop whose source runs out (UNSOUND-1).
+- `ScalarFunctionSetBuilder::overload_typed(TypedScalarFunctionBuilder)`: a closure-built
+  function (`map1`, `map2`, `try_map1`, ...) can now be one overload of a set, keeping the
+  signature its closure fixed. This is the only way to overload closure-built functions on
+  DuckDB 1.4.x, where a second registration under a taken name is refused. An overload built
+  under another name than the set's is refused by `register` (AUTHT2-2).
+- `ScalarBindData::try_get`: the bind data, or the panic message of a `Clone` that failed
+  when DuckDB copied the bound call (FFI-6).
+- `WarningCollector::with_limit(n)`, `WarningCollector::dropped()` and
+  `warning::DEFAULT_MAX_WARNINGS` (HARDEN-8, see Changed).
+
+- `entry_point::Registration` (`Transactional`, the default, or `Autocommit`) and
+  `entry_point::EntryPointOptions` (an `AbiPolicy` plus a `Registration`, built with
+  `EntryPointOptions::new().abi_policy(..).registration(..)`; `From<AbiPolicy>`). The entry
+  point macros take them as `entry_point!(name, options = EntryPointOptions::new()..., |con| ..)`
+  (and `entry_point_v2!`); hand-written entry points use the new
+  `init_extension_with_options` / `init_extension_v2_with_options`. The existing
+  `AbiPolicy` arm and `*_with_policy` functions are unchanged (FFI-2).
+
+- **`Value::try_cast(&LogicalType)`** — SQL `TRY_CAST` of a value to any
+  logical type, nested ones included, with no path for a C++ exception to reach
+  Rust (the cast runs inside `duckdb_create_list_value`'s `try`). Payloads
+  `DuckDB` cannot convert safely (out-of-range timestamps, over-wide `DECIMAL`s)
+  are refused first, inside `ARRAY`s too. All engines (1.4.4+), no feature.
+  (APIGAPS-2)
+- **`Value::array_items()`** — the elements of an `ARRAY` (or `LIST`) value; an
+  `ARRAY` read through `list_items` looks empty because the C API reads `LIST`
+  only. A fixed-size-list argument of a table function, `COPY` option or
+  scalar bind is now readable. All engines. (APIGAPS-2)
+- **`Value::union_tag()`** — the active member of a `UNION` value (its member
+  value reads as text through `try_cast` to `VARCHAR`). Feature `duckdb-1-5`.
+  (APIGAPS-2)
+- **`Value::bit(&[bool])`, `Value::as_bit()`, `Value::bignum(&[u8], bool)`,
+  `Value::as_bignum()`** — `BIT` and `BIGNUM` values. The getters never hand
+  `DuckDB` a value its `duckdb_get_bit` / `duckdb_get_bignum` would abort the
+  process on (SQL `NULL`, `'abc'`, a `BLOB`, `inf`; a null handle segfaulted
+  `duckdb_get_bit`); the constructors build only well-formed, canonical values.
+  All engines. (APIGAPS-3)
+- **`query::StatementType`**, **`PreparedStatement::statement_type()`**,
+  **`QueryResult::statement_type()`**, **`PreparedStatement::parameter_type(i)`**
+  — what a statement is and its parameter types before it runs. All engines
+  (stable slots); `COPY DATABASE` / `UPDATE EXTENSIONS` / `MERGE INTO` are
+  reported as `Invalid` by DuckDB before 1.5.5. (apigaps P1)
+- **`PreparedStatement::columns()`** — result column names and types before
+  execution (`None` while they depend on unbound parameters). Feature
+  `duckdb-1-5`. (apigaps P1)
+- **`query::table_names(con, sql, qualified)`**, **`OwnedConnection::table_names`**,
+  **`Connection::table_names`** — the tables a statement touches, without running
+  it (one statement; `JOIN … USING` is refused by DuckDB's names-only bind).
+  Feature `duckdb-1-5`. (apigaps P1)
+- **`Appender::for_query(con, sql, types, table, columns)`** — an appender whose
+  rows feed a query (`INSERT … SELECT`, `INSERT OR REPLACE`, `MERGE INTO`, …)
+  instead of a table. Feature `duckdb-1-5`. (apigaps P1, slot 409)
+- **`from_raw` / `into_raw`** on `Appender`, `PreparedStatement`, `QueryResult`
+  and `OwnedConnection`, so a handle from an unwrapped C call can be adopted
+  into RAII. All engines. (APIGAPS-9)
+- **Typed, tag-checked extra info**: `extra_info_typed(value)` on
+  `AggregateFunctionBuilder`, `AggregateOverloadBuilder`, `CastFunctionBuilder`
+  and `CopyFunctionBuilder`, read with `extra_info_ref::<T>()` on
+  `AggregateFunctionInfo`, `CastFunctionInfo` and the four `Copy*Info` types; a
+  value of another type reads as `None` instead of reinterpreting memory, and
+  the destructor is generated and panic-safe. All engines (copy: `duckdb-1-5`).
+  (APIGAPS-8)
+- **Typed `COPY TO` state**: `CopyBindInfo::set_bind_data_typed`,
+  `CopyGlobalInitInfo::set_global_state_typed`, and `bind_data_ref` /
+  `global_state_ref` on the later phases — no hand-written `Box::into_raw` /
+  `extern "C"` destructors. Feature `duckdb-1-5`. (AUTHT-3)
+- **`FileHandle` and `ClientContext` are now `Send`** (not `Sync`), and
+  `FileHandle::into_raw` exists: a file opened in a `COPY` `global_init` can be
+  kept in the statement's global state (in a `Mutex`) without an
+  `unsafe impl Send` wrapper; the pattern is documented on `FileHandle`.
+  Feature `duckdb-1-5`. (AUTHT-2)
+- **`From<ExtensionError> for ErrorData`**, so `?` on a `Value` or builder error
+  works inside `Appender::row` with `duckdb-1-5`. (AUTHT-13)
+- **35 new tests from a review of the test suite itself** (`TESTS-3` to `-7`), each
+  written against a mutant that the existing suite let live, found by exposing the
+  bodies of `unsafe fn`s that `cargo-mutants` skips: every fixed-width and string type
+  echoed over 5,000 distinct rows (`wide_rows`, which kills the `u128` stride mutants);
+  the `OwnedVector` capacity guard for `MAP` and `UNION`; twelve Arrow layout-walker unit
+  tests; `AbiPolicy` enforced in-process against a v1.4.4 layout table
+  (`tests/abi_policy_enforced.rs`); `ScalarBindData::get_from_init`, two `extra_info`
+  destructors and `abi::check`; the seven `Registrar` methods of `Connection` that no test
+  executed; randomised cross-checks of `datetime` and `interval` against DuckDB's own SQL
+  (4,000 values per check, fixed seed); and property tests for `parse_version`, SPDX,
+  `description.yml` and the scaffold's escaping. They pass on DuckDB 1.5.6 and 2.0.0.
+- Four fuzz targets, each with a seed directory: `abi_version`, `append_metadata`,
+  `description_roundtrip` and `scaffold_text` (60 s each on this tree; the first run of
+  `description_roundtrip` found its own escaping wrong, because PyYAML refuses U+007F even
+  inside quotes). The fuzz job runs every target `cargo fuzz list` prints.
+- `scripts/mutants-expose-unsafe.py`: prepares a copy of the tree so `cargo-mutants` can
+  mutate what it skips (`unsafe fn` bodies, integer operands of pointer arithmetic). An
+  audit aid, not run in CI; see CONTRIBUTING.md, "Mutation testing". [TESTS-2]
+- `tests/lsan_probe.rs`: the `leak-check` job's canary. It leaks a Rust allocation, a
+  `LogicalType` and a `Value` on request, and the job now requires LeakSanitizer to fail
+  on each. [TESTS-1]
 
 ### Fixed
 
@@ -82,6 +234,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Cargo.toml`: `cc = "1"` could not be resolved by
   `cargo update -Z direct-minimal-versions`; the lower bound is now `1.0.69`.
 
+- CI: `scripts/check-ci-aggregate.py` no longer passes while a gate is removed
+  (a job demoted to informational and dropped from `needs`, a step-level
+  `continue-on-error` in a blocking job or in `ci-ok` itself, a job id with a
+  comment or anchor, a safety pattern kept only in a comment); it also checks
+  the workflows README's gate table. [CI-7]
+- CI: `scaffold-compile` can no longer pass by running zero tests (`--exact`,
+  one test binary, and the libtest summary must say `1 passed`). [CI-8]
+- CI: `gh release edit` now clears a leftover draft flag and sets the
+  prerelease flag both ways. [CI-9]
+- CI: `scripts/check-api-coverage.py` counts a C API slot as wrapped only when
+  library code uses it (not comments, string literals, `#[cfg(test)]` code or
+  test-only modules): `duckdb_open` / `duckdb_close` are test-only, so they are
+  listed as host-side. [APIGAPS-4, CI-14]
+- CI: `check-msrv-vs-duckdb-ci.py` reads `# v1.86.0` / `# rust 1.86.0` pin
+  comments and `toolchain:` inputs as the constraints they are;
+  `check-autoload-entries.py` refuses a reshaped upstream array instead of
+  passing on zero parsed names. [CI-14]
+
+- **Scaffold (HARDEN-5):** a license with a line break or other whitespace (`MIT\nOR
+  Apache-2.0`) was written raw into `Cargo.toml`, which then was not TOML. A version
+  component above `u64::MAX` was accepted, and Cargo then refused to read the project.
+- **Scaffold:** an `excluded_platforms` entry that excludes nothing is now refused. The
+  community build compares exact names, so this covers a platform group such as `wasm` (the
+  error lists its platforms), a retired platform, and a name it does not build. Before, any
+  of these was written into `description.yml` and the workflow as if it worked.
+- **`append_metadata` (HARDEN-3):** the temporary file was `<output>.<pid>.tmp`, opened with
+  create-and-truncate. A symbolic link planted at that guessable name made the tool overwrite
+  the link's target. It is now created exclusively, under a random name.
+- **`append_metadata` (LASTDIFF-6, FFI-11):**
+  - a failed write left the temporary file behind; it is now removed on every failure;
+  - a re-stamp reset the output's permissions; they are now kept;
+  - an output that is a symbolic link was replaced by a regular file; it is now written
+    through, as 0.19.0 did;
+  - errors named the temporary file, and a missing output directory surfaced as a
+    temporary-file error. Errors now name the output and say when the directory does not
+    exist.
+- **`append_metadata` (HARDEN-4):** a file name that is not UTF-8 made it panic (exit 101).
+  Such names are now used as paths; a flag's value must still be UTF-8.
+- **`append_metadata`:** the input is read only if it is a regular file, and only up to 4 GiB.
+  A FIFO blocked it forever, and `/dev/zero` grew its memory until it was killed.
+- **Build script (HARDEN-12):** `QUACK_RS_TARGET_DUCKDB_VERSION` holding a newline could add
+  `cargo:` directives of its own. Only an all-digit `vX.Y.Z` is now forwarded; anything else
+  is a one-line, quoted warning.
+- **`description.yml`:** the `repo.ref` warning now says why a tag is not enough either (a
+  branch or a tag can be moved). (CONFORM-15)
+
+- `ChunkWriter`'s documentation said it counts rows *written*; it counts rows *claimed*,
+  and a claimed row never written was published with stale contents from DuckDB's reused
+  output chunk (a wrong answer; for a hand-written `LIST`/`MAP` column a stale entry).
+  The docs now say so, and `release_row` gives such a row back (UNSOUND-1).
+- A `Clone` of `ScalarBindData` that panicked while DuckDB copied the bound call (filter
+  pushdown does) left the copy with no bind data, so the query answered as if none had
+  been set and the panic message was lost. `ScalarBindData::get` now reports the message as
+  the call's error (the query fails with it), `get_from_init` likewise (FFI-6).
+- The walks over a logical type (`type_string`, `describe`, `contains_type`) are bounded at
+  256 levels: a type nested a few thousand levels deep overflowed the stack and aborted the
+  process (HARDEN-6).
+- `data_chunk_from_arrow`'s list-offset arithmetic is checked (`[i64::MIN, 0]` overflowed
+  `last - first`) (FFI-1).
+- **The `leak-check` CI job could not fail for a missing `duckdb_destroy_*`.**
+  `lsan-suppressions.txt` held `leak:libduckdb.so`, and LeakSanitizer matches a
+  suppression against every frame of an allocation, so it silenced every handle DuckDB
+  allocates. Measured with `tests/lsan_probe.rs`: a leaked `LogicalType` or `Value` exited
+  0 with the rule and 23 with a leak report without it. The rule was not needed: the
+  460 tests of `ffi_roundtrip` exit 0 under LeakSanitizer with no suppression, because
+  DuckDB's own one-time allocations are still reachable at exit. The file now holds no
+  rule, and the job runs the canary. [TESTS-1]
+- `abi::parse_version` accepted a signed part (`"1.5.+4"`, because `u64::from_str` takes a
+  leading `+`); it takes ASCII digits only, like the build script's copy of the rule.
+  [TESTS-9]
+- **`parse_description_yml` disagreed with PyYAML 6.0.3 in four places**, three found by the
+  first sharded run of the mutation job (101 of the 102 mutants that survived were in this
+  reader) and one by a differential run on flow collections afterwards. Each has a
+  regression test whose expectation is PyYAML's verdict:
+  - A block scalar (`description: |`) lost the lines after a blank line when the next line was
+    a `#` line indented as far as the text, so `l1`, a blank line and `# c` read as `l1`
+    where PyYAML reads `l1\n\n# c\n`. A comment at the key's own level still ends the scalar.
+  - An anchor on a line of its own, followed by a sequence written at the key's indentation
+    (`k:\n  &a\n- x`), was refused; PyYAML reads `{k: [x]}`.
+  - A quoted key was measured without the spaces before its colon, so one PyYAML refuses at
+    1,024 characters (`"…"  : v`, "mapping values are not allowed here") was accepted.
+  - Inside a flow collection, a node followed by `:` was taken for a mapping key wherever the
+    `:` was. PyYAML takes it for one only if the `:` is on the key's own line and at most
+    1,024 characters from where the key began, an anchor in front of it included; otherwise
+    the `:` has no key and the parser stops there ("expected ',' or '}'"). `k: {a` with
+    `b: c}` on the next line, `k: [a` with `b: c]` on the next, `{"a"` with `: c}` on the
+    next, and a key of 1,025 characters were accepted in a section the reader only checks
+    (and in `extension:`, for the mapping form).
+  The statement above, that the reader never accepts a file PyYAML refuses, held for 118,500
+  random mutants of the published descriptors and missed the third and the fourth. On 30,120
+  random flow collections (token soup over brackets, braces, quotes, anchors, aliases,
+  colons and line breaks, plus keys at the 1,024 boundary) the reader disagreed with PyYAML
+  on 109 documents before the fix, every one a file only PyYAML refuses, and on none after,
+  with no document newly refused and no panic. On 14,874 targeted
+  documents (block scalars with comment-like lines, plain, quoted and flow values with
+  comments below them) the fixed reader's `description` equals PyYAML's wherever both accept
+  (200 differed before), and it matches PyYAML on 474 more documents than before and on none
+  fewer. It still refuses two things PyYAML accepts, both unchanged: a tab-only content line
+  inside a block scalar (a `|` scalar with a line of six spaces and a tab) and a tag, or an
+  anchor and a tag, alone on a line whose value starts on the next one (`k:\n  !!str`).
+  [MUT-1]
+
+### Security
+
+- **`SqlMacro::register` ran the statements that precede a parse error on DuckDB
+  2.0.0 (SQLMACRO-1).** It counted the body's statements with
+  `duckdb_extract_statements` and refused only a count above one; a body that does
+  not parse counts as zero and was then executed. DuckDB 1.4.4 and 1.5.6 parse the
+  whole string before running anything, so nothing ran there; DuckDB 2.0.0 runs
+  the statements it had already parsed. With the body `1); DROP TABLE canary; --`
+  (the shape of the module documentation's own example) the table was dropped.
+  `register` now requires exactly one statement, and a count of zero is an error
+  that carries the parser's message. A macro body is the extension author's code,
+  not SQL data (the module documentation says never to build one from untrusted
+  text), so exploiting this needed an author who passed untrusted text; the guard
+  the documentation described as a defence failed open on 2.0.0 all the same.
+  Regression test `hostile_input::a_macro_body_cannot_turn_one_statement_into_several`:
+  on the 0.19.0 code it fails on 2.0.0 with "Table with name canary does not exist";
+  it passes on 1.5.6 and 2.0.0 with the fix. Earlier hostile-input sweeps ran on
+  1.5.6 only and could not have seen this (`AUDIT.md` section 14.9 lists the
+  corrections).
+
 ### Performance
 
 - **Nullable columns, string reads and list building cost less in the callback
@@ -90,31 +364,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `duckdb_vector_get_validity`) instead of making one C call per row;
   `DuckStringView::as_str` checks for ASCII before falling back to full UTF-8
   validation; `ListBuilder` keeps its child writer between rows (dropped whenever
-  a reserve grows the child) and writes the parent entries through the entry array.
+  a reserve grows the child) and writes the parent entries through the entry array,
+  which it fetches on every call. An earlier version of this change cached the
+  array's address and crashed with a segmentation fault when a nested list's reserve
+  grew the parent (found in review before release, never published); the test
+  `a_list_builder_on_an_inner_list_survives_the_outer_lists_reserves` fails on that
+  version and passes on this one.
   Measured with `benches/engine/compare.py`, DuckDB 1.5.6, one thread, release
   build with fat LTO, a shared 4-vCPU virtual machine ("Intel(R) Xeon(R) Processor @ 2.10GHz"),
-  20 million rows, base and new interleaved, 18 timed runs per cell; median ns per
-  row, with the hand-written twin in brackets:
+  20 million rows (10 million for the long strings), base and new interleaved, 18
+  timed runs per cell, load average 1.5 at the start; median ns per row, with the
+  hand-written twin in brackets:
 
   | | 0.19.0 | now |
   |---|---|---|
-  | `map1` on a column with 10% NULLs | 7.45 (5.95) | 6.08 |
-  | `map2`, same column | 9.95 (6.20) | 6.75 |
-  | `map1` on a column with no NULLs (control) | 1.95 (1.80) | 2.00 |
-  | `map1_str` returning an `i64`, short strings | 33.15 (21.40) | 24.35 |
-  | the same, 46 to 50-byte strings | 47.30 (39.40) | 42.15 |
-  | `map1_str` returning a `String` (trim), short strings | 63.52 (41.70) | 59.02 |
-  | `ListBuilder`, `[x, x+1, x+2]` | 11.40 (5.45) | 7.45 |
-  | `ListBuilder`, a NULL fourth element | 57.70 (5.25) | 8.60 |
+  | `map1` on a column with 10% NULLs | 7.80 (6.17) | 5.88 |
+  | `map2`, same column | 10.15 (6.15) | 6.60 |
+  | `map1` on a column with no NULLs (control) | 2.05 (1.70) | 2.07 |
+  | `map1_str` returning an `i64`, short strings | 33.55 (21.73) | 24.40 |
+  | the same, 46 to 50-byte strings | 44.80 (41.75) | 44.15 |
+  | `map1_str` returning a `String` (trim), short strings | 61.25 (39.68) | 53.83 |
+  | `ListBuilder`, `[x, x+1, x+2]` | 11.28 (5.03) | 6.88 |
+  | `ListBuilder`, a NULL fourth element | 60.30 (5.58) | 10.72 |
 
-  The same run on DuckDB 2.0.0 (12 runs per cell) gave 7.47 → 5.75, 9.43 → 6.50,
-  2.20 → 2.20, 30.90 → 22.85, 49.60 → 46.50, 65.67 → 57.85, 15.60 → 7.87 and
-  66.27 → 9.30. Non-NULL data is unchanged. A difference is claimed only where
-  the old build's fastest run was slower than the new median; that excludes the
-  46 to 50-byte string row on both engines and `trim` on 1.5.6, whose runs overlap.
-  The remaining gap in `trim` is the `String` that `map1_str` makes you return (one
-  allocation per row); no API change was made for it. `AUDIT.md` section 13 has the
-  spread of every cell.
+  The same run on DuckDB 2.0.0 (12 runs per cell, load average 1.1) gave 7.08 → 6.20,
+  10.88 → 6.17, 2.20 → 2.27, 38.38 → 26.08, 61.90 → 54.90, 66.20 → 61.00,
+  15.38 → 8.15 and 62.05 → 12.85. Non-NULL data is unchanged. A difference is claimed
+  only where the old build's fastest run was slower than the new median; that excludes
+  the control and the 46 to 50-byte string row on both engines, and `trim` on 2.0.0,
+  whose runs overlap. The remaining gap in `trim` is the `String` that `map1_str` makes
+  you return (one allocation per row); no API change was made for it. `AUDIT.md`
+  section 14.7 has the spread of every cell.
 
 ### Changed
 
@@ -155,13 +435,245 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crate types" (reproduced; extension-ci-tools' Rust makefile passes nothing for
   musl, and the platform is opt-in, so the failure only shows after opting in).
 
+- CI: **the Rust toolchain is pinned to 1.99.1** (`rust-toolchain.toml` and
+  every job's `toolchain:`), so a new Rust release can no longer turn every
+  `-D warnings` / clippy-pedantic job red with no change in the repository; an
+  informational `latest-stable` job runs fmt, clippy, rustdoc and the library
+  tests on the current stable, and `scripts/check-toolchain-pin.py` keeps the
+  pins consistent. CONTRIBUTING.md describes how to move the pin. [CI-3]
+- CI: the release workflow re-packages the `.crate` with the rustc the
+  `package` job recorded and **compares it with the attested SHA-256 before
+  uploading it** to crates.io (the existing comparison ran only after the
+  irreversible upload). [CI-6, HARDEN-11]
+- CI: a release commit whose lockfiles still name the previous version now
+  fails in minutes: `scripts/check-release-metadata.py` (the `doc` job and the
+  release `validate` job) checks every committed lockfile, the CHANGELOG
+  heading and links, `CITATION.cff`, the `SECURITY.md` row, README's "latest"
+  line, `MIN_RELEASE` and every `quack-rs = "0.X"` snippet against
+  `Cargo.toml`, and the publish dry-run uses `--locked` like the release.
+  [CI-1, DOCS-1]
+- CI: the five upstream-comparison jobs run through `scripts/upstream-guard.sh`:
+  a missing guard script fails instead of reading as "upstream unreachable",
+  and on a release tag an unreachable upstream fails instead of being skipped.
+  [CI-2]
+- CI: new blocking jobs `workflow-lint` (actionlint, checksum-pinned) and
+  `hygiene` (typos, taplo, cargo-machete, checksum-pinned); cargo-deny now also
+  checks the example and CI-only crates (`deny.ci-crates.toml`), and the OSV
+  scan includes `benches/engine/Cargo.lock`, which is now committed. [CI-11,
+  DEPS-4, DEPS-6]
+- CI: actions bumped (Dependabot #145, folded in by hand): `Swatinem/rust-cache`
+  v2.9.3, `rust-lang/crates-io-auth-action` v1.0.6, `dtolnay/rust-toolchain`
+  master `683b588`; `scripts/check-action-pins.py` fails when the scaffold's
+  generated workflows (`src/scaffold/templates_ci.rs`) pin a different commit
+  than this repository's workflows. [DEPS-15]
+
+- **`parse_description_yml` reads every section the way PyYAML 6 `safe_load` does**, which is
+  what the community build uses. On the 395 published descriptors (community-extensions
+  `845779e`) it agrees with PyYAML 6.0.3 on every one, and on 118,500 random mutants of them
+  (three seeds) it never accepts a file PyYAML refuses and never panics. Tabs, flow collections,
+  anchors and aliases, quoted and block scalars, document markers, line breaks (NEL, LS and
+  PS included) and nesting are handled as PyYAML handles them. The parse runs in linear time:
+  hostile inputs that took 3.8 to 21.5 s (and over 100 s for a comment run) now take at most
+  330 ms. (CONFORM-1, HARDEN-1, HARDEN-2)
+- **Scaffold: the example function is a native scalar function**, written with the typed
+  builder as a one-line closure (`ScalarFunctionBuilder::map1_str`), instead of a
+  `CREATE MACRO`. A macro is written into the user's database, so `LOAD` failed on a
+  read-only one.
+- **Scaffold: the generated `.test` file** now:
+  - carries the upstream header lines (`# name:`, `# description:`, `# group:`);
+  - checks that the function is missing before `require`;
+  - reads its NULL from a column, since a literal NULL is constant-folded before the function
+    is called.
+- **Scaffold: `make test` fails when the SQLLogicTest runner skips a test file or runs none.**
+  The runner reports an unmet `require` as `SKIPPED` and exits 0, so a project whose
+  extension name, `[lib]` name and test file had drifted apart passed having tested nothing.
+- **Scaffold: the extension version written into the metadata footer** is now:
+  - the first tag on HEAD, if it fits the 32-byte field and holds only `A-Za-z0-9._+-`;
+  - otherwise the short commit hash;
+  - before the first commit, the `Cargo.toml` version.
+
+  extension-ci-tools wrote every tag (one per line), or git's error message, and DuckDB 2.0
+  refused the result.
+- **Scaffold: generated `Cargo.toml`.** The `libduckdb-sys` requirement is
+  `>=1.4.4, <1.20100` with `default-features = false` (it was `<2`, which admits the untested
+  DuckDB 2.x bindings). With `--target-duckdb-version v1.5.6` (C API v1.5.6), or for an
+  unstable DuckDB 1.5 target, it enables the `duckdb-1-5*` feature its comments describe.
+  Before, it enabled none, and the author had to add it. (DEPS-2/3, CONFORM-14)
+- **Scaffold: generated `extension-ci.yml`:**
+  - sets `permissions: contents: read`;
+  - checks out with `persist-credentials: false`;
+  - pins `Swatinem/rust-cache` v2.9.3 (`d1527c8f…`) and `dtolnay/rust-toolchain` master
+    2026-10-15 (`683b588c…`).
+  `zizmor --offline` reports nothing for it.
+- **Scaffold: a license may be any SPDX expression.** An identifier outside the shortlist
+  (`BUSL-1.1`, `CC0-1.0`) is a warning instead of an error. A misspelled case of a listed
+  one (`mit`) or a character SPDX does not allow is still an error. (CONFORM-14)
+- **Generated files and `append_metadata` link to the book's pitfalls page** for P2, P4, P5
+  and L11, instead of `LESSONS.md`, which the published crate does not contain. (DOCS-8)
+- **hello-ext: `gen_series_v2`'s callbacks are written with
+  `table_bind_callback!` / `table_init_callback!` / `table_scan_callback!`.** A value past
+  BIGINT is now a query error instead of a wrapped number. New check T30. (FFI-9)
+
+- **Breaking:** `generate_scaffold` refuses configurations it used to accept: a name DuckDB
+  uses (an alias such as `s3` or a core extension such as `json`); a platform group, a
+  retired platform, or a name the community build does not build, in `excluded_platforms`;
+  a version component above `u64::MAX`; a license with characters SPDX does not allow, or a
+  listed id in the wrong case. `parse_description_yml` is stricter where PyYAML is (it
+  rejects files the community build cannot read) and rejects a reserved extension name.
+  (CONFORM-1, -3, HARDEN-5)
+- **Behaviour change:** `WarningCollector` keeps at most 10,000 warnings between drains
+  (`DEFAULT_MAX_WARNINGS`; `with_limit` for another cap). Warnings past the cap are counted
+  in `dropped()` instead of stored, and `drain`/`clear` reset the count. Before, every
+  warning was stored, and a collector never drained grew without bound (2,000,000
+  warnings were 381 MB) (HARDEN-8).
+- **Behaviour change:** the duplicate-overload guard of `ScalarFunctionSetBuilder` and
+  `AggregateFunctionSetBuilder`, and the catalog collision check of scalar registrations,
+  compare types the way DuckDB's overload resolution does: a `DECIMAL`, `MAP` or `ENUM`
+  parameter by type alone (also inside `LIST`, `ARRAY`, `STRUCT`, `UNION`), and named
+  `STRUCT` fields / `UNION` members by name in any order and case. Sets such as
+  `f(DECIMAL(4,1))` + `f(DECIMAL(18,3))`, and a scalar `round(DECIMAL(18,3))` beside the
+  built-in `round(DECIMAL)`, which registered and then made every such call fail with
+  "Could not choose a best candidate function", are now refused at registration with the
+  reason. `LIST(INTEGER)`/`LIST(VARCHAR)`, `INTEGER[3]`/`INTEGER[4]` and other pairs DuckDB
+  resolves still register (AUTHT2-1).
+- **Behaviour change:** `data_chunk_from_arrow` refuses, with `InvalidInput`, Arrow arrays
+  that break bounds DuckDB takes on trust and reads past later: a list, large-list or map
+  offset that is negative, decreases or lies past the child; a negative list-view offset
+  or size; a struct field, list or fixed-size-list child, or union member shorter than the
+  rows its parent reads; a dictionary index outside the dictionary (in any row the indices'
+  own validity does not mark NULL); dictionary indices of a non-integer type. Such arrays
+  violate the Arrow specification; before, they imported and reading the chunk was an
+  out-of-bounds read (SIGSEGV on 1.5.6 and 2.0.0 for a list offset past its child) (FFI-1).
+- `BindInfo::set_cardinality` clamps the hint to `i64::MAX`: above it any join with the
+  function failed with "INTERNAL Error: Information loss on integer cast" (1.5.6) (HARDEN-7).
+- A failed aggregate registration under a taken name now says which catalog entry holds
+  the name (scalar function, aggregate or macro) and what to do, instead of the generic
+  "the C API reports no reason" hint; the catalog is consulted only after the failure
+  (FFI-8).
+- `ScalarBindData::set` called twice through the same `ScalarBindInfo` frees the value it
+  replaces; it used to be leaked (FFI-12).
+- The DuckDB-before-1.5.0 "cannot add an overload to an existing name" error names
+  `overload_typed` beside `overload` (AUTHT2-2).
+
+- **Behaviour change:** the entry point runs the registration closure in one transaction on
+  the registration connection: `BEGIN TRANSACTION`, then `COMMIT` when the closure returns
+  `Ok`, `ROLLBACK` when it returns `Err` or panics. A `LOAD` that fails part-way now leaves
+  no catalog entry behind (scalar, aggregate and table functions, macros, types, copy
+  functions, tables the closure created) and can be retried in the same database; before,
+  everything registered up to the failure stayed and every retry failed at the first name
+  it registered again ("... already exists"). Validated with a real `LOAD` on DuckDB 1.4.4,
+  1.5.6 and 2.0.0. **Not rolled back**, because DuckDB keeps them in the database
+  configuration: casts, replacement scans and configuration options — register those last.
+  Inside the closure: a failed statement can abort the transaction (DuckDB 2.0 on every
+  failed statement), after which later statements fail with "Current transaction is
+  aborted", so return the first error; do not run `BEGIN`/`COMMIT`/`ROLLBACK` on the
+  registration connection; what the closure creates is visible to other connections
+  (including one it opened itself) only once the `LOAD` commits. A `LOAD` issued inside the
+  host's own transaction does not wait on it and is not undone by the host's `ROLLBACK`
+  (as before). Cost: one `BEGIN`/`COMMIT` pair, about 0.3 ms; no measurable change in
+  `LOAD` time. `Registration::Autocommit` restores the old behaviour (FFI-2).
+- `CopyFunctionBuilder::register` on the entry point's registration connection runs its
+  format-name probe (a statement that fails on purpose) on a short-lived connection of its
+  own and checks formats registered earlier in the same transaction from the entry point's
+  own record. On DuckDB 2.0, which aborts a transaction on any failed statement, the probe
+  otherwise made the registration fail with "duckdb_register_copy_function failed for
+  '<name>'" and aborted the transaction. On a connection of yours inside a transaction you
+  opened, the probe still runs on that connection (documented) (FFI-3).
+- The entry-point macros emit `#[unsafe(no_mangle)]` instead of `#[no_mangle]`. Identical
+  today on every edition (Rust 1.82+); a bare `#[no_mangle]` in an exported macro would
+  fail every extension that expands it once quack-rs moves to edition 2024, and
+  `cargo fix --edition` does not rewrite macro bodies (DEPS-12).
+- docs.rs labels every feature-gated item "Available on crate feature `duckdb-1-5` only"
+  (`#![cfg_attr(docsrs, feature(doc_cfg))]`) (DOCS-5, DEPS-7).
+- Docs: the C API struct over-read by `libduckdb-sys` before the ABI guard runs is stated
+  precisely (87 pointers past the engine's struct on 1.4.x for a 546-slot build) (FFI-4);
+  the panics no guard can catch (a panic during an unwind, a panicking panic hook, out of
+  memory) (FFI-10); what the catalog collision scans cost on a large catalog (~0.1 s per
+  scan with 20,000 user macros; narrowing the query does not help) (FFI-7); what a
+  `duckdb-1-5` build does on DuckDB v2.0.1 (refused under `AbiPolicy::Strict` until quack-rs
+  lists it or the build sets `QUACK_RS_TARGET_DUCKDB_VERSION`).
+
+- **Breaking:** `entry_point!` and `entry_point_v2!` refuse to compile an extension built
+  with `panic = "abort"` (`[profile.*] panic = "abort"` or `RUSTFLAGS=-C panic=abort`),
+  with an error that names the fix: under `panic = "abort"` none of quack-rs's
+  `catch_unwind` guards work and any panic aborts the DuckDB process. Build with
+  `panic = "unwind"` (what the scaffold and hello-ext already use). The check runs in the
+  extension's crate; a hand-written entry point around `init_extension_v2` is not
+  checked. `wasm32-unknown-emscripten` defaults to unwinding and is unaffected (FFI-5).
+- **Breaking:** `abi::AbiCheck` is `#[non_exhaustive]`: a `match` on it outside quack-rs
+  needs a wildcard arm (use `is_compatible` / `error_message` to cover every outcome)
+  (DEPS-13).
+- **Breaking:** `abi::AbiPolicy` is `#[non_exhaustive]`: a `match` on it outside quack-rs
+  needs a wildcard arm. Passing a policy is unchanged (DEPS-13).
+- **Breaking:** `config_option::ConfigOptionScope` is `#[non_exhaustive]` (DEPS-13).
+- **Breaking:** `tls::TlsVersion` is `#[non_exhaustive]`; comparisons and ordering are
+  unchanged (DEPS-13).
+- **Breaking (found by `cargo semver-checks` against v0.19.0):** `ScalarBindInfo`
+  (`duckdb-1-5`) is no longer `RefUnwindSafe`, because it now remembers the bind data it
+  stored so a second `set` can free the first (FFI-12). Code that holds a `&ScalarBindInfo`
+  across its own `catch_unwind` needs `AssertUnwindSafe`; quack-rs's guards already do. The
+  same run reports no other breaking change, and lists the four `#[non_exhaustive]` enums
+  above.
+- **Breaking (behaviour):** see the transactional-registration entry under Changed — an
+  extension whose closure relied on carrying on after a failed registration, or that runs
+  `BEGIN`/`COMMIT` on the registration connection itself, needs
+  `options = EntryPointOptions::new().registration(Registration::Autocommit)` (FFI-2).
+
+- A `BIT` value whose bytes are malformed (only the raw `duckdb_create_bit`
+  builds one) is now refused by `Value::as_str`, `display_string` and `Debug`
+  (`UNRENDERABLE`) instead of being rendered through an out-of-bounds write
+  inside `DuckDB`; the `UNRENDERABLE` text names it. (APIGAPS-3)
+- `QueryProgress` / `InterruptHandle::progress` document why `DuckDB` 1.x reports
+  `-1.0` for whole queries (any pipeline without progress keeps it there).
+  (AUTHT-MEAS)
+- `scripts/api-coverage-allowlist.txt`: 11 candidate slots are now wrapped;
+  `duckdb_param_type` / `duckdb_prepared_statement_column_type` are listed as
+  superseded; the log-storage rows carry the upstream double-free caveat and the
+  1.5.2 slot move (APIGAPS-1, APIGAPS-11).
+- **Dependency ceiling.** The `libduckdb-sys` and `duckdb` requirements are
+  `>=1.4.4, <1.20100` (they were `<2`) in the crate and in every manifest in the repository.
+  The 1.20000.x bindings are the DuckDB 2.0 bindings; the next ones (1.20100.x, DuckDB 2.1)
+  are not selected until a quack-rs release widens the range, because `<2` also admitted
+  every release up to 1.99999, whose C API layout nobody had checked. No action for
+  dependants already on 1.10xxx or 1.20000.x; one who needs a later release must wait for
+  quack-rs or pin. CONTRIBUTING.md has the procedure for widening the range, and a test fails
+  if a manifest states a different one. (DEPS-2)
+- `cargo package` selects files with an allow-list (`include`) instead of an `exclude`
+  list, so a new top-level directory is not published by default. (DEPS-7)
+- The build script of `bundled-test` / `bundled-test-prebuilt` fails in seconds, naming
+  the directory, when `libduckdb-sys` reports an include directory that has no
+  `duckdb.hpp` (a partial build cache); it used to poll for ten minutes before panicking.
+- CI: runners are pinned to `ubuntu-24.04`, `macos-26` and `windows-2025` (the images
+  `-latest` named on 2026-10-30), and `scripts/check-action-pins.py` fails on a floating
+  label in any workflow. [CI-12]
+- CI: the upstream-comparison scripts return 2 ("could not check", a warning) only for a
+  network failure, an HTTP 5xx or a 429; an HTTP 4xx, an entry without the expected key,
+  a header the parser cannot read, or every release answering 404 returns 1. Before, a moved
+  or reshaped upstream file turned each of these jobs into a skipped check for good
+  (reproduced for the platform list with a nonexistent ref). `scripts/upstream-guard.sh` also
+  fails a 2 on the weekly schedule, so a gate that has not run for a week is noticed. [TESTS-10]
+- CI: the Linux leg of the `test` job installs `python3-yaml`, `make` and `git` and sets
+  `QUACK_REQUIRE_TOOLS=1`, which turns the scaffold tests' "tool missing, skipping" into a
+  failure (`cargo test` hides the note, so a runner without PyYAML kept them green while they
+  checked nothing). macOS and Windows keep the skip. [TESTS-14]
+- `.cargo/mutants.toml` no longer excludes `src/callback.rs`: the macros in it are invisible
+  to `cargo-mutants`, but its four plain functions are mutated (5 mutants, 4 caught, 1
+  unviable). CONTRIBUTING.md now says what the mutation gate cannot see: `unsafe fn` bodies
+  (506 functions, 22.4% of non-test lines by a heuristic count), integer literals and macro
+  bodies. [TESTS-2, TESTS-11]
+- CI: the incremental mutation job runs as eight shards (`cargo mutants --shard k/8
+  --sharding round-robin`) and a gate job named "Mutation Testing (incremental)". One job did
+  the 1,639 mutants of this release's 102 changed files and was stopped by its runner after 33
+  and 55 minutes; the eight shards took 22 minutes together. The Miri job's limit is 90
+  minutes (the library tests had grown to 41.6 minutes for the native run alone, 18 of them
+  one parser test on 100,000-level inputs, which now uses 1,000 under Miri). [MUT-2]
+
 ### Documentation
 
 - `LESSONS.md` and the book's pitfalls page gain P13 (a `VARIANT` in a signature
   crashes DuckDB), P14 (an aggregate with no parameter counts no rows on DuckDB 2.0)
   and P15 (the entry of a NULL `LIST` or `MAP` row holds stale bytes): the three
-  engine behaviours this release guards against. The pitfall count is now 34
-  (L1–L19, P1–P15) wherever it is stated.
+  engine behaviours this release guards against (four more follow below).
 - README: the Quick Start manifest now sets `rust-version` and `resolver = "3"`
   (edition 2021's default resolver ignores `rust-version`, so Rust 1.86 or 1.87
   selected the 2.0 bindings, which need 1.88, and failed); the example uses
@@ -212,6 +724,166 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bug report template asks for the engine version that fails, the footer
   stamp and the enabled features; the pull request template lists the doctest and
   changelog-sync steps.
+
+- `SECURITY.md`: supported versions for 0.20.0 (0.20.x and 0.19.x; 0.18.x
+  end-of-life), the two-newest-lines policy, and what releases before 0.16.0
+  carry, with version ranges checked against the published crates; no more
+  rows for 0.1.x / 0.2.x, which were never published. [DOCS-13, HARDEN-10]
+- `RELEASING.md`: the release commit updates every lockfile (`cargo update
+  --workspace` in five directories) because the release packages with
+  `--locked`; the hotfix branch is merged into `main` with a merge commit and
+  its tip tagged (the old "tag, then cherry-pick" flow was refused by
+  `validate`); the crates.io fallback token belongs in the `crates-io`
+  environment, with a Trusted Publishing set-up order; several statements
+  corrected to what the workflow does. [DOCS-1, CI-1, CI-5, CI-15, HARDEN-9]
+- `CONTRIBUTING.md`: what the sanitizer and valgrind runs cannot see (the
+  release libduckdb allocates vector data buffers and LIST entry arrays with
+  its own jemalloc, invisible to valgrind and AddressSanitizer), the toolchain
+  pin policy, and DuckDB 2.0's CLI "agent mode" (`AI_AGENT` / `CLAUDECODE`;
+  use `-csv`/`-json`, or `-no-agent` on 2.0 only). [LASTDIFF-3, CI-3]
+
+- **"Your First Extension" teaches guarded callbacks.** The page walked through
+  `hello-ext`'s unguarded `unsafe extern "C" fn`s (a panic in one aborts the DuckDB
+  process) and its `word_count` aggregate, which segfaults under `OVER ()` on DuckDB
+  1.4.4 and 1.5.x, with no warning. It now builds `word_count` with the
+  `aggregate_*_callback!` macros and `first_word` with `ScalarFunctionBuilder::map1_str`
+  (and shows the `scalar_callback!` form), opens with a warning that lists the crashing
+  query shapes, and prints output that was produced by building the page's own code and
+  loading it into DuckDB 1.4.4, 1.5.6 and 2.0.0 (byte-identical). The raw scalar examples in
+  `scalar.md` use `scalar_callback!` and report overflow with `checked_mul` / `checked_add`
+  instead of wrapping (DOCS-4).
+- **The window shapes that crash a C API aggregate are listed as measured.** On DuckDB 1.4.4
+  and 1.5.6 an explicit `ROWS`/`RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`
+  frame (with or without `PARTITION BY`) crashes like `OVER ()` and `agg(x ORDER BY y)` do;
+  `OVER (PARTITION BY p)` without an `ORDER BY` crashes on 1.4.4 but not on 1.5.6; every
+  shape works on 2.0.0 (one process per shape, 5,000 and 300,000 rows). Pitfall L11,
+  `known-limitations.md`, the aggregate pages and the tutorial say so (AUTHOR-TYPES-4).
+- **`std::fs` bypasses `SET enable_external_access = false` and `allowed_directories`**
+  (AUTHT-1, measured on DuckDB 1.5.6 and 2.0.0: `read_csv` and quack-rs's `FileSystem` get a
+  Permission Error, a table function using `std::fs::read` returns the file). Stated in the
+  Virtual File System chapter (new section), the table-function, replacement-scan and
+  `COPY` chapters, Known Limitations, the FAQ, the publishing checklist and a new
+  pitfall, P17.
+- **Four new pitfalls, 38 in all** (L1-L21, P1-P17): L20 `duckdb_register_log_storage`
+  frees its extra data twice when the name is taken (DuckDB 1.5.0 to `main`; quack-rs does not
+  wrap log storage because of it), L21 a `ChunkWriter` row that is claimed but not written is
+  published with stale contents, P16 `duckdb_get_bit` / `duckdb_get_bignum` abort the process
+  on NULL and on values that do not cast, P17 `std::fs` (above). `LESSONS.md` L3 no longer
+  says a raw callback is "made impossible" to panic in (it is not guarded); the six
+  `LESSONS.md` titles that differed from the book's (P2, P3, P5, P7, P9, P12) match it, and
+  every place that states the pitfall count says 38 (DOCS-2).
+- **`known-limitations.md` is grouped** (what your extension must get right / DuckDB defects /
+  what the C API does not offer / DuckDB 2.0 changes / resolved) instead of interleaving
+  resolved history with current limits (DOCS-12), with new entries: no table-in-out functions,
+  progress callbacks, filter pushdown, logging or secret access in the v1 C API; a quack-rs
+  extension cannot be linked statically into a DuckDB 2.0 host; five DuckDB 2.0 behaviour
+  changes that reach C API extensions; panics that cannot be caught (double panic, a panicking
+  hook, an allocation failure). The C API v2 list no longer cites a function that does not
+  exist (`duckdb_v2_table_function_set_filter_pushdown` is `..._callback`) and covers the v2
+  capabilities an author of the wrapped function kinds would look for, each name grepped in
+  the 2.0.0 headers (APIGAPS-6, -7, -10). Table function arguments may be constant
+  expressions, not only literals (AUTHT-10).
+- **Corrections found by running the book against DuckDB 1.4.4, 1.5.6 and 2.0.0.** The scalar
+  bind callback cannot set the return type (the v1 C API has no such function); a `DECIMAL`
+  parameter rounds its argument and DECIMAL/MAP/ENUM overloads cannot be told apart; a type
+  registered with `set_alias` is not a `CREATE TYPE` synonym (`sum`, `abs` and `+` do not bind
+  on it); no callback API accepts an `ErrorData`; a table function's `bind` runs again on every
+  `EXECUTE` on DuckDB 2.0.0 (4 binds against 1 for a prepared statement executed three times);
+  the typed table-function builder scans on one thread; without `duckdb-1-5` a zero-column typed
+  bind is an `INTERNAL Error`; the table-function example no longer hard-codes 2048; a
+  `COPY ... TO` format cannot declare options (unknown names are accepted silently), sees no
+  column names, and is chosen from the file extension only when that equals its name; Arrow
+  import refuses a record batch with a root `offset`; `SET threads` from a callback can abort
+  the process; a prepared-statement parameter is not foldable at bind time; a SQLLogicTest file
+  whose `require` fails is reported `SKIPPED` and exits 0. On DuckDB 2.0.0 an
+  `INTERVAL '1 month' - INTERVAL '1 day'` compares equal to `INTERVAL '29 days'`, a bare
+  identifier as a table macro argument warns (write `'users'`), `VerifyNullHandling` is compiled
+  into release builds and runs after `SET debug_verification_mode = 'VERIFY_FUNCTIONS'`, and
+  `arg_max`'s third parameter is `BIGINT` (DOCS-3, AUTHOR-TYPES-3, -5, -6, -7, -13, AUTHT-4 to -12).
+- **Dependency requirement.** Every snippet and sentence shows `libduckdb-sys` as
+  `>=1.4.4, <1.20100` with `default-features = false`, `quack-rs = "0.20"`, and Installation
+  explains why the range has an upper bound (the 1.20000 bindings keep the C API names at their
+  crate root through a re-export that upstream marks for removal), what to do when the DuckDB 2.1
+  bindings are published (nothing: Cargo stays on 1.20000.x until quack-rs widens the range),
+  what `default-features = false` saves (65 crates against 30 with the 1.20000 bindings,
+  measured with `cargo tree`; 74 against 72 with 1.10506), and the build requirements of each
+  part (a C compiler may be needed by the bindings' build dependencies, a C++ toolchain for
+  `bundled-test`, Python 3, git and network access for the community flow). The README no
+  longer says "no C, no C++, no glue code" without saying what that covers (DEPS-2, DEPS-11).
+- **README front page.** Code lines are at most 64 columns (crates.io clips at about that
+  width), a link row, a maintenance bullet, a "Getting help" section, a pointer to
+  `examples/hello-ext` with the warning that it is not a template, a "use 0.18.0 or later"
+  notice, a shorter comparison table that is no longer cut off, and DuckDB support stated as
+  1.4.4 through 2.0.x everywhere (DOCS-9, DOCS-22).
+- **A `duckdb-1-5*` extension loads only into DuckDB releases whose layout quack-rs has verified**
+  (README "Supported versions", the ABI chapter, FAQ, Installation, Anatomy, a new Known Limitations
+  entry). "DuckDB 1.4.4 through 2.0.x" now describes the default features only; an extension that
+  enables `duckdb-1-5*` loads into 1.5.6 and 2.0.0, and under the default `AbiPolicy::Strict` refuses any
+  release quack-rs has not listed (2.0.1, for example) with an error that names the fixes: build with
+  `QUACK_RS_TARGET_DUCKDB_VERSION` set to the release (after checking its header), upgrade quack-rs, or stay
+  on the default features. The evidence is stated: DuckDB 2.0.0's `duckdb_extension.h` opens with "this API is
+  not yet stable ... only guaranteed to work for this specific DuckDB version", and 2.0.0 put
+  `duckdb_create_timestamp_tz_ns` and `duckdb_get_timestamp_tz_ns` into the range that 1.5.6 declared stable
+  (checked against the 2.0.0 header and the 1.5.6 header). The ABI chapter also says that `libduckdb-sys`
+  reads every slot of its 546- or 548-slot struct before the guard runs, which is 87 pointers past DuckDB
+  1.4.x's smaller struct on every `LOAD` (read from the sources, not measured) (FFI-4).
+- **Registration is transactional, `panic = "abort"` does not compile, four enums are `#[non_exhaustive]`**
+  (The Entry Point chapter, Anatomy, Installation, Panic-Safe Callbacks, Pitfall L3, Known Limitations, the
+  catalog chapter, and the upgrade guide). The sentence "Registration is not transactional: functions
+  registered before a failure stay registered" is replaced by what the entry point now does (FFI-2, FFI-5,
+  FFI-10, DEPS-13): one transaction, what is not rolled back (casts, replacement scans, configuration
+  options: register them last), what a failed statement inside the closure does, and how to get the old
+  behaviour (`Registration::Autocommit`).
+- **Pitfall P16 is now "prevented in quack-rs"** (`Value::as_bit` and `as_bignum` return `None` instead of
+  reaching the aborting C getters), and the book covers the new `Value` readers (`try_cast`, `array_items`,
+  `union_tag`), typed `COPY TO` state and typed extra info, the `Send` `FileHandle`, the catalog-scan cost of a
+  large database (FFI-7), and the `-1.0` progress of DuckDB 1.x (APIGAPS-2, -3, -8, AUTHT-2, -3, -MEAS).
+- **`duckdb_query` runs the statements before a parse error on DuckDB 2.0.0** (Known Limitations, Running SQL,
+  SQL Macros, the upgrade guide). Measured with a C program on 1.4.4, 1.5.6 and 2.0.0: for the text
+  `CREATE OR REPLACE MACRO "m"() AS (1); DROP TABLE canary; SELECT ()`, 1.4.4 and 1.5.6 report a parser error and
+  run nothing; 2.0.0 ran the `DROP TABLE` and returned success. An extension that passes text it did not write to
+  `duckdb_query` must check that it parses as the expected statement count first (`SqlMacro::register` now
+  requires exactly one).
+- **The Project Scaffold chapter and the publishing page follow the new scaffold**: the `quack_scaffold` command (flags,
+  `--force`, the printed next steps), `generate_scaffold_with_warnings`, the new generated files (`README.md`, `LICENSE`
+  files, `deny.toml`, `docs/function_descriptions.csv`), the native example function and `.test` layout, the
+  `make test` skip check, the extension-version choice, the hardened `extension-ci.yml`, what `generate_scaffold` now
+  refuses, and the `Cargo.toml` it writes (`<1.20100`, `default-features = false`, the `duckdb-1-5*` feature for a
+  `v1.5.6` project).
+- **Community-extension publishing** (`publishing.md`): the names DuckDB reserves (ten aliases and
+  the 34 core names; `INSTALL s3 FROM community` fails on 2.0.0; the scaffold and `parse_description_yml` now
+  refuse them), what the description.yml reader checks (PyYAML's rules, `variegata` and `andium`),
+  `function_descriptions.csv`
+  (lives in the community-extensions repository, replaces the generated text), the four revision
+  keys `ref`, `ref_next`, `variegata` and `andium` with `build.py`'s rule and what a project that
+  uses the unstable C API must do, which version DuckDB shows (the tag on `HEAD`, else the short
+  hash; `description.yml`'s `version` is not read; tags over 32 bytes or two tags on one commit
+  break the footer), the keys the build reads (anything else is ignored), reduced CI on pull
+  requests, and not running `strip` on a stamped extension. The page's `description.yml` and
+  `Cargo.toml` examples match the scaffold's output, and the statements that had drifted from
+  upstream (the `v1.5.6` branch is not the `v1.5-variegata` commit, the matrix script differs
+  per `extension-ci-tools` branch, the version is not from `git describe`) are corrected
+  (CONFORM-3, -7, -8, -9, -11, -14).
+- **New page "Upgrading from 0.18 to 0.20"** (Installation > Upgrading): every behaviour change
+  of 0.19.0 and 0.20.0 that can fail a `LOAD` or change a result, with what to do.
+- `scaffold.md` says the scaffold example is in the repository, not the published crate, lists
+  the prerequisites of `make configure`, and warns that `make` ignores `CARGO_TARGET_DIR`; the
+  Testing Guide explains the DuckDB 2.0 CLI's agent mode (`-no-agent`) and reads the NULL test
+  case from a column. `GOVERNANCE.md` says there is one maintainer. The publishing page no longer
+  prints `..._distribution.yml@v2.0-cyanoptera`, which Cloudflare's email obfuscation rewrote to
+  `[email protected]` on the live site (DOCS-6). `docs/E2E_DOGFOOD_REPORT.md` and
+  `docs/duckdb-v1.5.1-evaluation.md` moved to `docs/archive/`.
+
+### Dependencies
+
+- `Cargo.lock`: `proptest` 1.12.0 (a dev-dependency) and `cc` 1.10.0, the updates Dependabot
+  proposed in #148 (`cc` 1.9.0 there); `fuzz/Cargo.lock` and `book/doctest/Cargo.lock`: `cc`
+  1.10.0 (#149). `examples/hello-ext/Cargo.lock`: `libduckdb-sys` 1.20000.1, so the example
+  builds against the DuckDB 2.0 bindings (#143 asked for 1.20000.0, whose bundled engine
+  reports itself as `v2.0.0-dev88614`, which the ABI check refuses). The main lockfile stays
+  on the 1.5.6 bindings (1.10506.1). `benches/engine/Cargo.lock` is committed, so the
+  benchmark crate's dependencies are scanned and reproducible.
+- GitHub Actions bumps from Dependabot #145 are folded in (listed under Changed).
 
 ## [0.19.0] - 2026-10-22
 
@@ -3135,7 +3807,7 @@ is not grouped.
   `-D warnings` makes it an error. `testing::InMemoryDb` was a 59th, only
   visible once the lint ran with `bundled-test` on.
 
-[C-DEBUG]: https://rust-lang.github.io/api-guidelines/debugging.html
+[C-DEBUG]: https://rust-lang.github.io/api-guidelines/debuggability.html#c-debug
 
 ### Changed
 
@@ -4215,6 +4887,9 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 
 ## [0.2.0] - 2026-03-07
 
+0.1.0 and 0.2.0 were never tagged or published: the oldest git tag and the oldest
+crates.io release are 0.3.0, so these two headings have no compare link.
+
 ### Added
 
 - **`validate::description_yml` module** — parse and validate a complete `description.yml`
@@ -4314,7 +4989,8 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 - CI pipeline: check, test, clippy, fmt, doc, MSRV, bench-compile
 - `SECURITY.md` vulnerability disclosure policy
 
-[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/tomtom215/quack-rs/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/tomtom215/quack-rs/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tomtom215/quack-rs/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tomtom215/quack-rs/compare/v0.16.0...v0.18.0
 [0.16.0]: https://github.com/tomtom215/quack-rs/compare/v0.15.0...v0.16.0
@@ -4333,6 +5009,4 @@ the workspace `Cargo.lock` and `examples/hello-ext/Cargo.lock`.
 [0.5.1]: https://github.com/tomtom215/quack-rs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/tomtom215/quack-rs/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/tomtom215/quack-rs/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/tomtom215/quack-rs/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/tomtom215/quack-rs/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/tomtom215/quack-rs/releases/tag/v0.1.0
+[0.3.0]: https://github.com/tomtom215/quack-rs/releases/tag/v0.3.0

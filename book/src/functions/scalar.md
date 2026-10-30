@@ -104,10 +104,15 @@ with `register(con)`, or through a `Registrar` with `register_typed_scalar`.
 #     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
 # unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
-ScalarFunctionBuilder::map1("double_it", |x: i64| x * 2)?.register(con)?;
+ScalarFunctionBuilder::map1("is_even", |x: i64| x % 2 == 0)?.register(con)?;
 # Ok(())
 # }
 ```
+
+Arithmetic inside the closure is yours to check: a plain `x * 2` wraps on overflow in a
+release build and panics (so fails the query) in a debug build. Use `try_map1` and
+`checked_mul` to turn overflow into an error in both, as the
+[Quick Start](../getting-started/quick-start.md) does.
 
 A closure can also return `Option<R>`, where `None` is SQL `NULL`, and the
 `try_map1` / `try_map2` / `try_map3` / `try_map1_str` / `try_map2_str`
@@ -147,6 +152,12 @@ ScalarFunctionBuilder::map3("lerp", |a: f64, b: f64, t: f64| a + (b - a) * t)?.r
 
 ## Complete example: `double_it(BIGINT) → BIGINT`
 
+For a function this small the closure builder above is the better choice
+(`try_map1` with `checked_mul`, as in the [Quick Start](../getting-started/quick-start.md)).
+Written as a raw callback, with `scalar_callback!` for the panic guard, it looks like this.
+`value * 2` would wrap silently in a release build, so the callback reports overflow
+through `ScalarFunctionInfo::set_error`:
+
 ```rust
 # use quack_rs::prelude::*;
 # fn live_connection() -> libduckdb_sys::duckdb_connection {
@@ -165,20 +176,15 @@ ScalarFunctionBuilder::map3("lerp", |a: f64, b: f64, t: f64| a + (b - a) * t)?.r
 #     let reader = unsafe { chunk.reader(0) };
 #     unsafe { reader.is_valid(0).then(|| reader.read_i64(0)) }
 # }
+use quack_rs::scalar::ScalarFunctionInfo;
 use quack_rs::vector::{VectorReader, VectorWriter};
-use libduckdb_sys::{duckdb_function_info, duckdb_data_chunk, duckdb_vector};
 
-unsafe extern "C" fn double_it(
-    _info: duckdb_function_info,
-    input: duckdb_data_chunk,
-    output: duckdb_vector,
-) {
+quack_rs::scalar_callback!(double_it, |info, input, output| {
     // SAFETY: DuckDB provides valid chunk and vector pointers.
     let reader = unsafe { VectorReader::new(input, 0) };   // column 0
     let mut writer = unsafe { VectorWriter::new(output) };
-    let row_count = reader.row_count();
 
-    for row in 0..row_count {
+    for row in 0..reader.row_count() {
         if unsafe { !reader.is_valid(row) } {
             // NULL input → NULL output
             // SAFETY: row < row_count, writer is valid.
@@ -186,9 +192,13 @@ unsafe extern "C" fn double_it(
             continue;
         }
         let value = unsafe { reader.read_i64(row) };
-        unsafe { writer.write_i64(row, value * 2) };
+        let Some(doubled) = value.checked_mul(2) else {
+            unsafe { ScalarFunctionInfo::new(info) }.set_error("double_it: BIGINT overflow");
+            return;
+        };
+        unsafe { writer.write_i64(row, doubled) };
     }
-}
+});
 # let con = live_connection();
 # unsafe {
 #     ScalarFunctionBuilder::new("double_it").param(TypeId::BigInt).returns(TypeId::BigInt)
@@ -197,6 +207,8 @@ unsafe extern "C" fn double_it(
 # assert_eq!(query_i64(con, "SELECT double_it(21)"), Some(42));
 # // From a column, not a literal: `double_it(NULL::BIGINT)` is constant-folded.
 # assert_eq!(query_i64(con, "SELECT double_it(i) FROM (VALUES (NULL::BIGINT)) t(i)"), None);
+# let err = unsafe { quack_rs::query::query(con, "SELECT double_it(9223372036854775807)") }.err().unwrap();
+# assert!(err.as_str().contains("double_it: BIGINT overflow"), "{err}");
 ```
 
 ---
@@ -204,14 +216,10 @@ unsafe extern "C" fn double_it(
 ## Multi-parameter example: `add(BIGINT, BIGINT) → BIGINT`
 
 ```rust
-# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
-#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-unsafe extern "C" fn add(
-    _info: duckdb_function_info,
-    input: duckdb_data_chunk,
-    output: duckdb_vector,
-) {
+use quack_rs::scalar::ScalarFunctionInfo;
+
+quack_rs::scalar_callback!(add, |info, input, output| {
     let col0 = unsafe { VectorReader::new(input, 0) };  // first param
     let col1 = unsafe { VectorReader::new(input, 1) };  // second param
     let mut writer = unsafe { VectorWriter::new(output) };
@@ -223,9 +231,13 @@ unsafe extern "C" fn add(
         }
         let a = unsafe { col0.read_i64(row) };
         let b = unsafe { col1.read_i64(row) };
-        unsafe { writer.write_i64(row, a + b) };
+        let Some(sum) = a.checked_add(b) else {
+            unsafe { ScalarFunctionInfo::new(info) }.set_error("add: BIGINT overflow");
+            return;
+        };
+        unsafe { writer.write_i64(row, sum) };
     }
-}
+});
 ```
 
 ---
@@ -233,14 +245,8 @@ unsafe extern "C" fn add(
 ## VARCHAR example: `shout(VARCHAR) → VARCHAR`
 
 ```rust
-# use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,
-#     duckdb_data_chunk, duckdb_function_info, duckdb_init_info, duckdb_vector, idx_t};
 # use quack_rs::prelude::*;
-unsafe extern "C" fn shout(
-    _info: duckdb_function_info,
-    input: duckdb_data_chunk,
-    output: duckdb_vector,
-) {
+quack_rs::scalar_callback!(shout, |_info, input, output| {
     let reader = unsafe { VectorReader::new(input, 0) };
     let mut writer = unsafe { VectorWriter::new(output) };
 
@@ -253,7 +259,7 @@ unsafe extern "C" fn shout(
         let upper = s.to_uppercase();
         unsafe { writer.write_varchar(row, &upper) };
     }
-}
+});
 ```
 
 ---
@@ -292,6 +298,12 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
     Ok(())
 }
 ```
+
+A function built from a closure (`map1`, `try_map1`, ...) is not a `ScalarOverloadBuilder`: its
+signature is fixed by the closure. Add it to a set with
+`ScalarFunctionSetBuilder::overload_typed(builder)`. That matters on DuckDB 1.4.x, where a
+second registration under a taken name is refused, so closures for several argument types need
+one set; from 1.5.0 DuckDB also accepts them registered one by one.
 
 Like `AggregateFunctionSetBuilder`, this builder calls `duckdb_scalar_function_set_name`
 on every individual function before adding it to the set
@@ -367,6 +379,24 @@ ScalarFunctionBuilder::new("flatten_list")
 # Ok(())
 # }
 ```
+
+### `DECIMAL` parameters are not generic
+
+A `DECIMAL(w, s)` parameter takes exactly that width and scale. DuckDB casts every argument
+to the declared type before your callback runs, and the cast **rounds**: a function
+declared over `DECIMAL(4,1)` that doubles its argument, called with
+`0.123::DECIMAL(3,3)`, sees `0.1` and returns `0.2`, not `0.246` (measured on 1.5.6 and
+2.0.0). Declaring several widths as overloads does not work either: DuckDB's overload
+resolution does not tell `DECIMAL(4,1)` from `DECIMAL(9,3)` apart, so every call to such a
+set fails with "Could not choose a best candidate function" (measured on 1.5.6 and 2.0.0;
+the same holds for `MAP` and `ENUM` parameters of different parameterisations, and for those
+nested inside a `LIST`, `ARRAY` or `STRUCT`). quack-rs 0.20 refuses such a set when you
+register it; 0.19 and earlier registered it, and the first call failed. To accept any `DECIMAL`, declare the
+parameter `TypeId::Any`, read the argument vector's actual type at run time
+(`quack_rs::vector::vector_get_column_type`, then `LogicalType::decimal_width`,
+`decimal_scale` and `decimal_internal_type`) and return a type that does not depend on it
+(`DOUBLE`, `VARCHAR` or `HUGEINT`); or register one function per width under different
+names.
 
 These methods are also available on `ScalarOverloadBuilder` for function sets:
 
@@ -481,9 +511,19 @@ feature is enabled:
 
 ### `bind(bind_fn)`
 
-Sets a custom bind callback that runs at plan time. Use this to inspect argument
-types and set the return type dynamically. Maps to
-`duckdb_scalar_function_set_bind`.
+Sets a custom bind callback that runs at plan time. Use it to inspect the argument
+types and constant arguments, to store bind data for the execute callback, and to reject
+a call with `set_error`. Maps to `duckdb_scalar_function_set_bind`.
+
+**The bind callback cannot set the return type.** The C API v1 has no such function: it
+offers `duckdb_scalar_function_bind_get_argument`, `_get_argument_count`,
+`_get_extra_info` and `_set_error`, and `ScalarBindInfo` wraps exactly those, plus
+`set_bind_data`, `set_bind_data_copy` and `get_client_context`. The return type is the one
+you declared with `returns`. When the result type must depend on the argument types,
+register one overload per result type with `ScalarFunctionSetBuilder` (for example
+`f(INTEGER) → INTEGER[]` and `f(VARCHAR) → STRUCT(v VARCHAR)`). Choosing the return type
+at bind time exists only in the C API v2
+([Known Limitations](../reference/known-limitations.md#duckdb-20s-c-api-v2-offers-what-v1-cannot)).
 
 The callback takes a `RawScalarBindInfo` (wrap it with `ScalarBindInfo::new`),
 not a bare `duckdb_bind_info`: DuckDB passes a table function's bind callback
@@ -502,7 +542,7 @@ do not type-check here.
 # unsafe fn demo(con: duckdb_connection) -> Result<(), ExtensionError> {
 ScalarFunctionBuilder::new("dynamic_return")
     .varargs(TypeId::Varchar)
-    .returns(TypeId::Varchar)   // default; overridden in bind
+    .returns(TypeId::Varchar)   // fixed: bind cannot change it
     .bind(my_bind_fn)
     .function(dynamic_return_fn)
     .register(con)?;
@@ -598,10 +638,19 @@ ScalarFunctionBuilder::new("scaled")
   optimizer duplicates it (filter pushdown through a projection does). Without a
   copy callback the copy has **no** bind data at all, so `set` registers one that
   clones `T`. Wrap data that is expensive or impossible to clone in an `Arc<T>`.
+- **A bind-time constant cannot come from a prepared-statement parameter.** If `bind`
+  rejects an argument that is not foldable (see [Bound Expressions](../duckdb-1-5/expression.md)),
+  a `?` is not foldable: `PREPARE p AS SELECT f(x, ?)` fails at the `PREPARE`, with your
+  message, on DuckDB 1.5.6 and 2.0.0, while a literal or a constant expression such as `1 + 1`
+  folds. Say so in the error text, and tell users to pass such an argument as a literal.
 - **Local state must be `Send`**: it is per thread, but may be freed on another.
-- **Call `set` at most once per callback.** DuckDB overwrites the stored pointer
-  on a second call without freeing the first value, so that value is leaked
-  (never dropped).
+- **A panicking `Clone` fails the query.** DuckDB gives a copied expression no bind data when
+  the copy callback fails; quack-rs records the panic instead, and the first `get` reports it
+  as the call's error (with the panic message), while `try_get` hands it back as an `Err`.
+- **Call `set` once per callback.** A second `ScalarBindData::set` in the same bind frees the
+  value it replaces. DuckDB's own call overwrites the stored pointer without freeing the first
+  value, so a value replaced through the raw `set_bind_data`, or through another wrapper of
+  the same bind call, is leaked (never dropped).
 - **Bind data must depend only on the call's arguments** (their values when
   constant, their types) and `extra_info`. DuckDB's
   `CScalarFunctionBindData::Equals` ignores bind data, so two calls with the same

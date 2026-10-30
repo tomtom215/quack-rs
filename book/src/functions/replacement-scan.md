@@ -15,6 +15,12 @@ register one from a Rust extension with quack-rs.
 `quack-rs` provides `ReplacementScanBuilder` (a static registration helper) and
 `ReplacementScanInfo` (an ergonomic wrapper for callbacks).
 
+> **The table function a replacement scan names must open files through DuckDB.** The
+> path comes straight from the user's SQL. `std::fs` ignores
+> `SET enable_external_access = false` and `allowed_directories`; the
+> [`FileSystem`](../duckdb-1-5/file-system.md#security-only-filesystem-honours-duckdbs-permission-settings)
+> wrapper (feature `duckdb-1-5`) honours them.
+
 ## Registration API
 
 Unlike the other builders in quack-rs, `ReplacementScanBuilder` uses a single

@@ -211,7 +211,10 @@ impl Value {
 
     /// Wraps a possibly-null constructor result, naming the C function that
     /// produced it.
-    fn checked(raw: duckdb_value, api_func: &'static str) -> Result<Self, ExtensionError> {
+    pub(super) fn checked(
+        raw: duckdb_value,
+        api_func: &'static str,
+    ) -> Result<Self, ExtensionError> {
         if raw.is_null() {
             return Err(ExtensionError::new(format!(
                 "{api_func} returned null: the logical type and the supplied values do not \

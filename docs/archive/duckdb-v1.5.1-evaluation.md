@@ -11,19 +11,20 @@
 > does not keep out the DuckDB 2.0 bindings, as the risk table below assumes:
 > `libduckdb-sys` numbers DuckDB 2.0.0 `1.20000.0`, which the range admits. The
 > C API version the extension's `v1.2.0` stamp targets is still accepted by
-> DuckDB 2.0.0.
+> DuckDB 2.0.0. *Note added with 0.20.0:* the bound is now `<1.20100`, which keeps
+> out the DuckDB 2.1 bindings (see the Installation chapter of the book).
 >
 > For the current state, see:
 >
 > - Supported DuckDB releases, the `libduckdb-sys` range and the MSRV: the
->   [README](../README.md#supported-versions) and `Cargo.toml`.
+>   [README](../../README.md#supported-versions) and `Cargo.toml`.
 > - The `libduckdb-sys` release the tests build against: `Cargo.lock` (CI
 >   derives the DuckDB release from it with `scripts/duckdb-version-from-lock.sh`).
 > - The DuckDB releases CI tests and loads into: the `test-older-engines` and
 >   `extension-load` jobs in `.github/workflows/ci.yml`.
 > - The C extension API version: `quack_rs::DUCKDB_API_VERSION` (`src/lib.rs`)
->   and the [ABI Compatibility](../book/src/concepts/abi.md) chapter.
-> - Open limitations: the [Known Limitations](../book/src/reference/known-limitations.md)
+>   and the [ABI Compatibility](../../book/src/concepts/abi.md) chapter.
+> - Open limitations: the [Known Limitations](../../book/src/reference/known-limitations.md)
 >   reference.
 
 **Date:** 2026-03-27

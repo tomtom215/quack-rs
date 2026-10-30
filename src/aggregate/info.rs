@@ -54,6 +54,27 @@ impl AggregateFunctionInfo {
         unsafe { duckdb_aggregate_function_get_extra_info(self.info) }
     }
 
+    /// Borrows the extra info set with `extra_info_typed` (on
+    /// [`AggregateFunctionBuilder`][crate::aggregate::AggregateFunctionBuilder::extra_info_typed]
+    /// or [`AggregateOverloadBuilder`][crate::aggregate::AggregateOverloadBuilder::extra_info_typed])
+    /// as a `T`; `None` when none was set or it holds another type.
+    ///
+    /// # Safety
+    ///
+    /// This function's extra info, if any, was set through `extra_info_typed`
+    /// and not through the raw `extra_info`: the type tag read here is the
+    /// one `extra_info_typed` writes, and a raw pointer carries none.
+    // One FFI call (`get_extra_info`) then the tag check, whose mutants
+    // `extra_info::typed_tests` kill; the `-> None` mutant needs a live engine.
+    #[cfg_attr(test, mutants::skip)]
+    #[must_use]
+    pub unsafe fn extra_info_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: the pointer is null or tagged (this method's contract);
+        // DuckDB keeps it alive while the function is registered, which
+        // outlasts this callback and so `&self`.
+        unsafe { crate::extra_info::tagged_ref(self.get_extra_info()) }
+    }
+
     /// Reports an error from an aggregate function callback, causing `DuckDB`
     /// to abort the current query.
     ///

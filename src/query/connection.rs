@@ -23,6 +23,10 @@ impl InterruptHandle<'_> {
     }
 
     /// Reads the progress of the query currently running on the connection.
+    ///
+    /// `percentage` is `-1.0` whenever `DuckDB` cannot say — see
+    /// [`QueryProgress`] for when that is, which on 1.x includes a whole
+    /// query whose pipelines do not all report progress.
     #[must_use]
     pub fn progress(&self) -> QueryProgress {
         // SAFETY: the `'a` borrow keeps the connection open for this call.
@@ -113,6 +117,59 @@ impl OwnedConnection {
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_connection {
         self.con
+    }
+
+    /// Takes ownership of a raw connection, which is then disconnected
+    /// (`duckdb_disconnect`) on drop.
+    ///
+    /// # Safety
+    ///
+    /// `con` must be a live connection from `duckdb_connect` that nothing
+    /// else disconnects. In particular **not** the connection `DuckDB` passes
+    /// to an extension's entry point
+    /// ([`Connection::as_raw_connection`][crate::connection::Connection::as_raw_connection]):
+    /// that one is borrowed, and the entry point disconnects it.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::query::OwnedConnection;
+    ///
+    /// # unsafe fn demo(db: libduckdb_sys::duckdb_database) {
+    /// let mut raw: libduckdb_sys::duckdb_connection = std::ptr::null_mut();
+    /// // SAFETY: `db` is open.
+    /// if unsafe { libduckdb_sys::duckdb_connect(db, &raw mut raw) } == libduckdb_sys::DuckDBSuccess {
+    ///     // SAFETY: a fresh connection owned by nothing else.
+    ///     let con = unsafe { OwnedConnection::from_raw(raw) };
+    ///     let _ = con.execute("SELECT 1");
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub const unsafe fn from_raw(con: duckdb_connection) -> Self {
+        Self { con }
+    }
+
+    /// Gives up ownership and returns the raw connection, which the caller
+    /// must disconnect (`duckdb_disconnect`) or hand back to
+    /// [`from_raw`][Self::from_raw].
+    #[must_use]
+    pub const fn into_raw(self) -> duckdb_connection {
+        let raw = self.con;
+        std::mem::forget(self);
+        raw
+    }
+
+    /// The tables `sql` reads or writes; see [`table_names`][super::table_names]
+    /// (`DuckDB` 1.5.0+).
+    ///
+    /// # Errors
+    ///
+    /// See [`table_names`][super::table_names].
+    #[cfg(feature = "duckdb-1-5")]
+    pub fn table_names(&self, sql: &str, qualified: bool) -> Result<Vec<String>, ExtensionError> {
+        // SAFETY: `self.con` is open for this value's lifetime.
+        unsafe { super::table_names(self.con, sql, qualified) }
     }
 }
 

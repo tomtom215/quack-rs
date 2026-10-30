@@ -63,8 +63,9 @@
 //! user-supplied input. **Never build macro bodies from untrusted runtime
 //! data.** There is no escaping applied to the body. [`SqlMacro::register`]
 //! does refuse a body that turns the statement into several (`1); DROP TABLE
-//! t; SELECT (1`), using `DuckDB`'s own parser to count them, but a body can
-//! still change the meaning of the one statement it is part of.
+//! t; SELECT (1`), using `DuckDB`'s own parser to count them, and a statement
+//! that does not parse at all, but a body can still change the meaning of the one
+//! statement it is part of. Nothing is executed in either refusal.
 //!
 //! # Where a macro lives, and what that means
 //!
@@ -273,8 +274,9 @@ impl SqlMacro {
     ///
     /// # Errors
     ///
-    /// Returns [`ExtensionError`] if the body makes the SQL more than one
-    /// statement (nothing is executed then), or if `DuckDB` rejects the SQL
+    /// Returns [`ExtensionError`] if the SQL does not parse, or the body makes it
+    /// more than one statement (nothing is executed in either case; the parse
+    /// error is `DuckDB`'s own), or if `DuckDB` rejects the SQL
     /// statement — for example on a read-only database. The error message is
     /// extracted from `duckdb_result_error`.
     ///
@@ -284,8 +286,10 @@ impl SqlMacro {
     pub unsafe fn register(self, con: duckdb_connection) -> Result<(), ExtensionError> {
         let sql = self.to_sql();
         // SAFETY: caller guarantees con is valid and open.
-        let statements = unsafe { count_statements(con, &sql) }?;
-        if statements > 1 {
+        let statements = unsafe { count_statements(con, &sql) }.map_err(|e| {
+            ExtensionError::new(format!("macro '{}': {e} Nothing was executed.", self.name))
+        })?;
+        if statements != 1 {
             return Err(ExtensionError::new(format!(
                 "macro '{}': the body turns CREATE MACRO into {statements} SQL statements; a \
                  macro body must be a single expression or query, with no top-level `;`. \
@@ -353,8 +357,12 @@ fn param_error(param: &str, detail: &str) -> ExtensionError {
 
 /// Counts the statements `DuckDB`'s parser finds in `sql`.
 ///
-/// Returns 0 when `sql` does not parse; executing it then reports the parse
-/// error.
+/// Fails when `sql` does not parse at all (the parser reports 0 statements). That
+/// must not fall through to executing the string: `DuckDB` 2.0 runs the statements of
+/// a multi-statement string that come before a parse error, so a body such as
+/// `1); DROP TABLE t; SELECT (1` (the third statement is not valid SQL) dropped the
+/// table on 2.0.0 while 1.4.4 and 1.5.6, which parse everything first, executed
+/// nothing. The error is `DuckDB`'s own parse error.
 ///
 /// # Safety
 ///
@@ -368,9 +376,38 @@ unsafe fn count_statements(con: duckdb_connection, sql: &str) -> Result<u64, Ext
     let count = unsafe {
         libduckdb_sys::duckdb_extract_statements(con, c_sql.as_ptr(), &raw mut extracted)
     };
+    let parse_error = if count == 0 {
+        // SAFETY: `extracted` came from `duckdb_extract_statements` and is not yet
+        // destroyed. The returned string is owned by it (`wrapper->error.c_str()`
+        // at v1.4.4 and v1.5.6) or null; it is copied here, before the destroy below.
+        let message = unsafe { libduckdb_sys::duckdb_extract_statements_error(extracted) };
+        if message.is_null() {
+            None
+        } else {
+            // SAFETY: non-null, NUL-terminated, valid until the destroy below.
+            Some(
+                unsafe { std::ffi::CStr::from_ptr(message) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+    } else {
+        None
+    };
     // SAFETY: `extracted` came from `duckdb_extract_statements` (or is null,
     // which the destructor accepts) and is destroyed once.
     unsafe { libduckdb_sys::duckdb_destroy_extracted(&raw mut extracted) };
+    if count == 0 {
+        return Err(ExtensionError::new(parse_error.map_or_else(
+            || "DuckDB could not parse the statement.".to_owned(),
+            |message| {
+                format!(
+                    "DuckDB could not parse the statement: {}",
+                    message.trim_end()
+                )
+            },
+        )));
+    }
     Ok(count)
 }
 

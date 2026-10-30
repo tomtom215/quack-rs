@@ -21,7 +21,7 @@
 #   rustup target add wasm32-unknown-emscripten
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 # CI sets these globally, which promotes every warning to an error. Without
 # them a plain `cargo check` here passes on code CI rejects -- an unnecessary

@@ -35,7 +35,7 @@ concurrency:
 jobs:
   build:
     name: Build versioned site
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -47,9 +47,9 @@ jobs:
           fetch-tags: true
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.99.1
 
       # main's API reference for /dev/api/, with the docs.rs feature set
       # (Cargo.toml [package.metadata.docs.rs]). Released versions link to
@@ -94,7 +94,7 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     steps:
       - name: Deploy to GitHub Pages

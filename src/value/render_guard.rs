@@ -141,6 +141,15 @@ impl Value {
                     && self.map_value(i).is_none_or(|value| value.renderable())
             }),
             TypeId::Array | TypeId::Union => !self.type_contains_unchecked_payload(),
+            // `DuckDB`'s own `BIT` values are always well formed, but
+            // `duckdb_create_bit` stores any bytes, and rendering a `BIT`
+            // with no data byte writes 8 characters into a 0-byte buffer
+            // (`Bit::ToString`). Reading the bytes of a non-NULL `BIT` is a
+            // plain copy, so the layout is checked here; inside an `ARRAY` or
+            // `UNION` it cannot be, and the allow-list below still applies.
+            TypeId::Bit => self
+                .bit_bytes()
+                .is_some_and(|bytes| super::bits::bit_layout_ok(&bytes)),
             _ => renders_at_any_payload(id),
         }
     }

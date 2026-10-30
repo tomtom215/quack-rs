@@ -1,6 +1,6 @@
 # Pitfall Catalog
 
-The 34 known pitfalls of writing a DuckDB extension in Rust against the C
+The 38 known pitfalls of writing a DuckDB extension in Rust against the C
 extension API, with the symptom, root cause and fix for each. The first were
 found while building
 [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a
@@ -135,7 +135,8 @@ and report the `Err` it returns yourself.
 
 All of these guards require `panic = "unwind"` in the release profile, which is
 what the scaffold generates and what `validate_release_profile` insists on:
-under `panic = "abort"` nothing can be caught.
+under `panic = "abort"` nothing can be caught, so `entry_point!` and `entry_point_v2!`
+refuse to compile there (an entry point written by hand has no such check).
 
 ---
 
@@ -254,8 +255,10 @@ survives review and ships.
 scalar function registered through the C API it does not, at run time:
 `CAPIScalarFunction` calls the callback for every row including NULL ones and
 checks only the *error* flag, and the one NULL check in `ExpressionExecutor` —
-`VerifyNullHandling` — has its entire body inside `#ifdef DEBUG`. Every DuckDB a
-user installs is a release build.
+`VerifyNullHandling` — has its entire body inside `#ifdef DEBUG` through DuckDB
+1.5.6, so a release build skips it; DuckDB 2.0.0 compiles it into release builds
+but runs it only after `SET debug_verification_mode = 'VERIFY_FUNCTIONS'` (default
+`NONE`). Every DuckDB a user installs runs with the default.
 
 **Fix**: use the typed closure constructors, which skip NULL rows and write NULL
 for them, or call `DataChunk::propagate_nulls(&mut writer)` at the end of a
@@ -376,8 +379,12 @@ documented on `AggregateFunctionBuilder`, `AggregateFunctionSetBuilder` and
 
 **Symptom**: An aggregate that works under `SELECT agg(x) FROM t` and `GROUP BY`
 segfaults (or corrupts memory, or returns a wrong answer) when used as a window
-over a whole-partition frame — `agg(x) OVER ()`, `OVER (PARTITION BY p)` — or as
-an ordered aggregate, `agg(x ORDER BY y)`.
+over a whole-partition frame — `agg(x) OVER ()`, or an explicit `ROWS` or `RANGE
+BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` frame, with or without a
+`PARTITION BY` — or as an ordered aggregate, `agg(x ORDER BY y)`. On 1.4.4 `OVER
+(PARTITION BY p)` without an `ORDER BY` crashes too; on 1.5.6 it did not in the shapes
+measured (5,000 and 300,000 rows). Whether that is a different code path or luck was not
+established, so do not rely on it.
 
 **Root cause**: `CAPIAggregateUpdate` (`src/main/capi/aggregate_function-c.cpp`)
 flattens the input vectors but not the state vector, then hands the callback
@@ -394,9 +401,12 @@ callback, called from `CAPIAggregateUpdate`.
 `duckdb_aggregate_state *` and cannot tell a constant vector from a flat one,
 and reading `states[1]` to find out is itself the out-of-bounds read. Until
 you require DuckDB 2.0.0, document for your users that the aggregate must not be used
-in those two query shapes. Frames that are not whole-partition (`ROWS BETWEEN 5
-PRECEDING AND CURRENT ROW`, segment-tree windows) and `DISTINCT` windows were
-checked and work.
+in those query shapes. Frames that are not whole-partition (the default frame of
+`OVER (ORDER BY i)`, `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, `ROWS BETWEEN 5
+PRECEDING AND CURRENT ROW`, `EXCLUDE`) and `DISTINCT` and `FILTER` were measured and work
+on 1.4.4, 1.5.6 and 2.0.0 ([Known
+Limitations](known-limitations.md#aggregates-crash-under-over--and-order-by-duckdb-defect-pitfall-l11)
+has the table).
 
 DuckDB 2.0.0 fixes it in `CAPIAggregateUpdate`
 (`src/main/capi/v1/aggregate_function-c.cpp`, lines 104-108): a state vector
@@ -623,6 +633,74 @@ NULL or garbage results) and passes all 279. Every other
 CI build is debug or uses the repository's `codegen-units = 1`, fat-LTO
 release profile, which is why the bug got past them; CI's `test` job now
 runs this build.
+
+---
+
+## L20: `duckdb_register_log_storage` frees the extra data twice when the name is taken
+
+**Status**: Documented. quack-rs does not wrap the log-storage functions because of it.
+This is a DuckDB defect, present since 1.5.0 and still on `main` (2026-10-30), not a
+quack-rs one.
+
+**Symptom**: registering a log storage under a name that is already taken returns
+`DuckDBError`, and the extra-data destructor you gave DuckDB has already run. The
+`duckdb_destroy_log_storage` you must still call runs it again on the same pointer.
+Observed on DuckDB 1.5.6 and 2.0.0 with a probe extension that registers the same name
+twice: the destructor ran twice on one address. With a destructor that frees its box this
+is a heap double free (`free(): double free detected in tcache 2`, seen in the eighth
+review). The same happens for a name that a built-in storage already holds.
+
+**Root cause** (`src/main/capi/v1/logging-c.cpp`, identical at 1.5.6, 2.0.0 and `main`):
+
+```cpp
+auto shared_storage_ptr = make_shared_ptr<CallbackLogStorage>(
+    wrapper->name, wrapper->write_log_entry, wrapper->extra_data, wrapper->delete_callback);
+const auto success = RegisterLogStorage(wrapper->name, storage_ptr);
+if (!success) {
+    return DuckDBError;           // shared_storage_ptr dies here and calls delete_callback(extra_data)
+}
+wrapper->extra_data = nullptr;    // only cleared on success
+wrapper->delete_callback = nullptr;
+```
+
+The early failures (a null argument, an empty name, no write callback) return before the
+`CallbackLogStorage` exists and do not consume the data, so a caller cannot treat every
+`DuckDBError` alike.
+
+**Workaround**: never register a name that can already exist. After a failure that got
+past argument validation, clear the extra data with
+`duckdb_log_storage_set_extra_data(ls, NULL, NULL)` before destroying the wrapper (proposed,
+not tested).
+
+**Rule**: a destructor you hand to DuckDB may already have run when the call that took
+it reports failure; read the failure path before you free again.
+
+---
+
+## L21: A chunk row you claim is published, written or not
+
+**Status**: Documented. Since 0.20.0 `ChunkWriter::release_row` gives a claimed row back;
+before 0.20.0 every claimed row was published. The rule is about the chunk the
+scan callback returns.
+
+**Symptom**: a table function whose scan claims a row from the writer and then finds
+nothing to write (its source ended) still returns that row to DuckDB, holding whatever the
+reused output buffer held last. Measured in the eighth review on DuckDB 1.5.6: a scan that
+wrote 2 rows returned 3, and the third was the `7` an earlier chunk had left in that
+position. For a fixed-width column that is a wrong answer, not undefined behaviour
+(valgrind-clean). For a `LIST` or `MAP` column written by hand, a row never written keeps the
+`{offset, length}` entry of an earlier chunk, which can point past the child data this chunk
+filled (CONJECTURED, not reproduced).
+
+**Root cause**: the writer counts the rows you *claimed* and sets the chunk's size from that
+count when it is dropped. DuckDB reuses output vectors across chunks, so a claimed row you
+did not write is published with stale contents.
+
+**Fix**: claim a row only when you are going to write it: check that the source has another
+value first, then claim the row and write it in the same step. A row you have already
+claimed can be given back with `ChunkWriter::release_row(row)` before the writer is dropped.
+
+**Rule**: an output chunk holds the rows you wrote, not the rows you asked for.
 
 ---
 
@@ -1062,6 +1140,57 @@ whatever bytes the allocation had.
 an entry that does not fit inside the child, or test the row's validity before
 reading the entry.
 
+
+## P16: `duckdb_get_bit` and `duckdb_get_bignum` abort on NULL and on values that do not cast {#p16}
+
+**Status**: Prevented in quack-rs's own wrappers, a DuckDB defect for everything else.
+`Value::as_bit()` and `Value::as_bignum()` return `None` for a value they cannot read
+instead of calling the C getter on it, and `Value::bit` and `Value::bignum` build only
+well-formed values. Code that calls `duckdb_get_bit` or `duckdb_get_bignum` through the
+raw bindings must make the checks below itself.
+
+**Symptom**: the process aborts with `fatal runtime error: Rust cannot catch foreign
+exceptions` (`SIGABRT`, exit code 134) when `duckdb_get_bit` is called on a SQL `NULL`
+value or on a value that does not cast to `BIT` (such as the string `'abc'`). Reproduced on
+DuckDB 1.5.6 and 2.0.0. `duckdb_get_bignum` is built the same way (read in the 2.0.0
+source, not run).
+
+**Root cause**: both functions cast the value (`DefaultCastAs(BIT)` or `BIGNUM`) and read
+the result with no `try`, so the cast's C++ exception leaves an `extern "C"` function.
+
+**Fix**: use `Value::as_bit()` / `Value::as_bignum()`. In raw code, before calling either
+getter, check that the handle is not null (a null handle is dereferenced), that
+`Value::type_id()` is the type you expect (convert with `Value::try_cast`, which cannot
+throw, when it is not), and `Value::is_sql_null()`; these are plain accessors that cannot
+throw.
+
+**Rule**: a C API getter that casts can throw; check the type and NULL-ness first, because
+Rust cannot catch a C++ exception.
+
+## P17: `std::fs` bypasses DuckDB's permission settings {#p17}
+
+**Status**: Documented in the [Virtual File
+System](../duckdb-1-5/file-system.md#security-only-filesystem-honours-duckdbs-permission-settings)
+chapter, in the table-function, replacement-scan and `COPY` chapters, in [Known
+Limitations](known-limitations.md) and in the FAQ. quack-rs's `FileSystem` honours the
+settings; nothing can make `std::fs` do so.
+
+**Symptom**: with `SET enable_external_access = false` (or `allowed_directories` set),
+`read_csv('data.csv')` fails with "Permission Error: Cannot access file … file system
+operations are disabled by configuration", and so does a table function that opens the same
+path through `FileSystem`. A table function that reads it with `std::fs::read` returns the
+file. Measured on DuckDB 1.5.6 and 2.0.0.
+
+**Root cause**: DuckDB enforces the settings in its own file system layer. `std::fs` calls
+the operating system directly and never consults it.
+
+**Fix**: open every path that comes from SQL (arguments, options, `COPY` targets,
+replacement-scan names) with `FileSystem::from_client_context(...)` (feature `duckdb-1-5`).
+Without that feature, take the data as a `VARCHAR` or `BLOB` argument.
+
+**Rule**: an extension runs with the process's full privileges; the only restrictions it
+inherits are the ones it asks DuckDB to apply.
+
 ---
 
 ## Summary
@@ -1087,6 +1216,8 @@ reading the entry.
 | L17: `COPY … FROM` reader declares columns | Prevented (typed) / Documented | Read the target's columns; declare none |
 | L18: `LIST` reserve moves nested buffers | Documented | Fetch writers again after each reserve |
 | L19: constant addresses as identities | Fixed | `FfiState` salts its tag with a hash of `TypeId` |
+| L20: log-storage registration frees its extra data twice | DuckDB defect; not wrapped | Do not call `duckdb_register_log_storage` with a name that can exist |
+| L21: a claimed chunk row is published unwritten | Documented | Claim a row only when you will write it |
 | P1: lib name mismatch | Scaffold | Set `[lib] name` in `Cargo.toml` |
 | P2: API version string | Constant | Use `DUCKDB_API_VERSION` |
 | P3: unit tests insufficient | Documented | Write SQLLogicTest E2E tests |
@@ -1095,10 +1226,12 @@ reading the entry.
 | P6: register set silent fail | Prevented | Builder returns `Err` |
 | P7: VARCHAR format undocumented | Prevented | Use `VectorReader::read_str` |
 | P8: INTERVAL layout undocumented | Prevented | Use `DuckInterval` |
-| P9: dispatch table uninitialised | Fixed | `InMemoryDb::open()` initialises it via C++ shim |
+| P9: dispatch table uninitialised | Fixed | `InMemoryDb::open()` initialises it through a small generated shim |
 | P10: unstable ABI tail shifts | Prevented | Use `init_extension`; set `QUACK_RS_TARGET_DUCKDB_VERSION` when building |
 | P11: freeing a borrowed `const char *` | Fixed | Read the C++ impl before `duckdb_free`; prefer quack-rs wrappers |
 | P12: config-option probe aborts (debug) | Documented | Ask `duckdb_settings()` in SQL instead |
 | P13: `VARIANT` in a signature crashes | Guarded | Declare the parameter as `ANY` |
 | P14: zero-parameter aggregate counts no rows (2.0) | Guarded | One parameter, plus a `CREATE MACRO` for the zero-argument spelling |
 | P15: NULL list/map row has a stale entry | Prevented | Use `get_entry_checked` |
+| P16: `duckdb_get_bit` / `duckdb_get_bignum` abort on NULL | DuckDB defect; guarded in `Value::as_bit` / `as_bignum` | Use those, or check `type_id()` and `is_sql_null()` first |
+| P17: `std::fs` ignores `enable_external_access` | Documented | Open user-supplied paths with `FileSystem` (`duckdb-1-5`) |

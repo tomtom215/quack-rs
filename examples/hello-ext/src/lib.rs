@@ -48,7 +48,7 @@ use quack_rs::interval::DuckInterval;
 use quack_rs::replacement_scan::ReplacementScanInfo;
 use quack_rs::scalar::{ScalarFunctionBuilder, ScalarFunctionSetBuilder, ScalarOverloadBuilder};
 use quack_rs::sql_macro::SqlMacro;
-use quack_rs::table::{BindInfo, FfiBindData, FfiInitData, FfiLocalInitData, InitInfo, TableFunctionBuilder};
+use quack_rs::table::{BindInfo, FfiBindData, FfiInitData, FfiLocalInitData, FunctionInfo, InitInfo, TableFunctionBuilder};
 use quack_rs::types::{LogicalType, NullHandling, TypeId};
 use quack_rs::vector::complex::{ListVector, MapVector, StructVector};
 use quack_rs::vector::validity::ValidityBitmap;
@@ -296,93 +296,137 @@ struct GsV2LocalState {
     emitted: i64,
 }
 
-unsafe extern "C" fn gs_v2_bind(info: duckdb_bind_info) {
-    unsafe {
-        let bind_info = BindInfo::new(info);
-        // Value is RAII — automatically destroyed when dropped.
-        // A NULL argument (or a handle DuckDB did not supply) yields 0 rows.
-        let n = bind_info.get_parameter_value(0).as_i64_or(0);
-
-        // Read named param "step" if provided, default to 1. `as_i64` is
-        // `None` when the parameter is absent or `step := NULL`.
-        let step = match bind_info.get_named_parameter_value("step").as_i64() {
-            Some(0) | None => 1i64,
-            Some(s) => s,
-        };
-
-        let total = n.max(0);
-        bind_info
-            .add_result_column("value", TypeId::BigInt)
-            .add_result_column("step_used", TypeId::BigInt)
-            .set_cardinality(total as u64, true);
-        FfiBindData::<GsV2BindData>::set(info, GsV2BindData { total, step });
-    }
+/// The `offset`th value of `gen_series_v2` with step `step`, or `None` when it
+/// is past BIGINT. Wrapping (the release-mode `*`) returned a wrong number.
+fn gs_v2_value(offset: i64, step: i64) -> Option<i64> {
+    offset.checked_mul(step)
 }
 
-unsafe extern "C" fn gs_v2_init(info: duckdb_init_info) {
+// The callbacks go through quack-rs's guard macros: a panic in one becomes a
+// query error instead of unwinding into DuckDB (which aborts the process).
+
+quack_rs::table_bind_callback!(gs_v2_bind, |info| {
+    // SAFETY: `info` is the bind info DuckDB passed to this callback.
+    let bind_info = unsafe { BindInfo::new(info) };
+    // Value is RAII — automatically destroyed when dropped.
+    // A NULL argument (or a handle DuckDB did not supply) yields 0 rows.
+    // SAFETY: the function declares one positional parameter, so index 0 exists.
+    let n = unsafe { bind_info.get_parameter_value(0) }.as_i64_or(0);
+
+    // Read named param "step" if provided, default to 1. `as_i64` is
+    // `None` when the parameter is absent or `step := NULL`.
+    // SAFETY: "step" is the named parameter the function declares.
+    let step = match unsafe { bind_info.get_named_parameter_value("step") }.as_i64() {
+        Some(0) | None => 1i64,
+        Some(s) => s,
+    };
+
+    let total = n.max(0);
+    bind_info
+        .add_result_column("value", TypeId::BigInt)
+        .add_result_column("step_used", TypeId::BigInt)
+        .set_cardinality(total.unsigned_abs(), true);
+    // SAFETY: `info` is the bind info of this callback.
+    unsafe { FfiBindData::<GsV2BindData>::set(info, GsV2BindData { total, step }) };
+});
+
+quack_rs::table_init_callback!(gs_v2_init, |info| {
+    // SAFETY: `info` is the init info DuckDB passed to this callback, and the
+    // bind data was set by `gs_v2_bind` as a `GsV2BindData`.
+    let bind_data = unsafe { FfiBindData::<GsV2BindData>::get_from_init(info) };
+    let (total, step) = bind_data.map_or((0, 1), |d| (d.total, d.step));
+
+    // Demonstrate InitInfo: set_max_threads
+    // SAFETY: as above.
+    let init_info = unsafe { InitInfo::new(info) };
+    init_info.set_max_threads(1);
+
+    // SAFETY: as above.
     unsafe {
-        let bind_data = FfiBindData::<GsV2BindData>::get_from_init(info);
-        let (total, step) = bind_data.map_or((0, 1), |d| (d.total, d.step));
-
-        // Demonstrate InitInfo: set_max_threads
-        let init_info = InitInfo::new(info);
-        init_info.set_max_threads(1);
-
         FfiInitData::<GsV2GlobalState>::set(info, GsV2GlobalState {
             next_offset: 0,
             total,
             step,
         });
     }
-}
+});
 
-unsafe extern "C" fn gs_v2_local_init(info: duckdb_init_info) {
+quack_rs::table_init_callback!(gs_v2_local_init, |info| {
+    // Demonstrates FfiLocalInitData for per-thread state.
+    // In single-threaded mode this is called once.
+    // SAFETY: `info` is the local init info DuckDB passed to this callback.
     unsafe {
-        // Demonstrates FfiLocalInitData for per-thread state.
-        // In single-threaded mode this is called once.
         FfiLocalInitData::<GsV2LocalState>::set(info, GsV2LocalState {
             local_start: 0,
             local_count: 0,
             emitted: 0,
         });
     }
-}
+});
 
-unsafe extern "C" fn gs_v2_scan(info: duckdb_function_info, output: duckdb_data_chunk) {
-    unsafe {
-        let chunk = DataChunk::from_raw(output);
-        let Some(global) = FfiInitData::<GsV2GlobalState>::get_mut(info) else {
-            chunk.set_size(0);
+quack_rs::table_scan_callback!(gs_v2_scan, |info, output| {
+    // SAFETY: `output` is the chunk DuckDB passed to this scan callback.
+    let chunk = unsafe { DataChunk::from_raw(output) };
+    // SAFETY: `info` is this scan's function info; the global state was set
+    // by `gs_v2_init` as a `GsV2GlobalState`.
+    let Some(global) = (unsafe { FfiInitData::<GsV2GlobalState>::get_mut(info) }) else {
+        // SAFETY: `output` is valid for this call.
+        unsafe { chunk.set_size(0) };
+        return;
+    };
+
+    // SAFETY: a plain query of DuckDB's vector size.
+    let vector_size = unsafe { duckdb_vector_size() } as i64;
+    let remaining = global.total - global.next_offset;
+    if remaining <= 0 {
+        // SAFETY: `output` is valid for this call.
+        unsafe { chunk.set_size(0) };
+        return;
+    }
+    let batch_size = remaining.min(vector_size) as usize;
+    let start = global.next_offset;
+    let step = global.step;
+
+    // Every value first: `start + i` stays below `total` (an i64), but the
+    // product can leave BIGINT, which is an error, not a wrapped number.
+    let mut values = Vec::with_capacity(batch_size);
+    for i in 0..batch_size as i64 {
+        let Some(value) = gs_v2_value(start + i, step) else {
+            // SAFETY: `info` is this scan's function info.
+            let function_info = unsafe { FunctionInfo::new(info) };
+            function_info.set_error(&format!(
+                "gen_series_v2: value {} * step {step} is out of range for BIGINT",
+                start + i
+            ));
+            // SAFETY: `output` is valid for this call.
+            unsafe { chunk.set_size(0) };
             return;
         };
+        values.push(value);
+    }
+    global.next_offset += batch_size as i64;
 
-        let vector_size = duckdb_vector_size() as i64;
-        let remaining = global.total - global.next_offset;
-        if remaining <= 0 {
-            chunk.set_size(0);
-            return;
-        }
-        let batch_size = remaining.min(vector_size) as usize;
-        let start = global.next_offset;
-        let step = global.step;
-        global.next_offset += batch_size as i64;
+    // Demonstrate FfiLocalInitData::get_mut in scan
+    // SAFETY: `info` is this scan's function info; the local state was set by
+    // `gs_v2_local_init` as a `GsV2LocalState`.
+    if let Some(local) = unsafe { FfiLocalInitData::<GsV2LocalState>::get_mut(info) } {
+        local.local_start = start;
+        local.local_count = batch_size as i64;
+        local.emitted += batch_size as i64;
+    }
 
-        // Demonstrate FfiLocalInitData::get_mut in scan
-        if let Some(local) = FfiLocalInitData::<GsV2LocalState>::get_mut(info) {
-            local.local_start = start;
-            local.local_count = batch_size as i64;
-            local.emitted += batch_size as i64;
-        }
-
+    // SAFETY: the bind callback declared two BIGINT columns, and every row
+    // index is below the vector size.
+    unsafe {
         let mut writer0 = chunk.writer(0);
         let mut writer1 = chunk.writer(1);
-        for i in 0..batch_size {
-            writer0.write_i64(i, (start + i as i64) * step);
+        for (i, value) in values.into_iter().enumerate() {
+            writer0.write_i64(i, value);
             writer1.write_i64(i, step);
         }
         chunk.set_size(batch_size);
     }
-}
+});
 
 // ============================================================================
 // Cast function: CAST(VARCHAR AS INTEGER) / TRY_CAST(VARCHAR AS INTEGER)
@@ -1441,9 +1485,8 @@ mod tests {
     #[test]
     fn gen_series_v2_step_logic() {
         // With step=2, values should be 0, 2, 4
-        let step = 2i64;
-        let values: Vec<i64> = (0..3).map(|i| i * step).collect();
-        assert_eq!(values, vec![0, 2, 4]);
+        let values: Vec<Option<i64>> = (0..3).map(|i| gs_v2_value(i, 2)).collect();
+        assert_eq!(values, vec![Some(0), Some(2), Some(4)]);
     }
 
     #[test]
@@ -1451,5 +1494,17 @@ mod tests {
         let step = 0i64;
         let effective_step = if step == 0 { 1 } else { step };
         assert_eq!(effective_step, 1);
+    }
+
+    /// FFI-9: `(start + i) * step` wrapped in a release build, so
+    /// `gen_series_v2(3, step := 4611686018427387904)` returned
+    /// -9223372036854775808 as its third value.
+    #[test]
+    fn gen_series_v2_refuses_a_value_past_bigint() {
+        let half = 1i64 << 62;
+        assert_eq!(gs_v2_value(1, half), Some(half));
+        assert_eq!(gs_v2_value(2, half), None);
+        assert_eq!(gs_v2_value(i64::MAX, -1), Some(-i64::MAX));
+        assert_eq!(gs_v2_value(2, i64::MIN), None);
     }
 }

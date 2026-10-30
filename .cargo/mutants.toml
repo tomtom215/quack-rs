@@ -44,7 +44,10 @@ features = ["duckdb-1-5-4"]
 # Thin re-export modules and test-only code produce unproductive mutants.
 exclude_globs = [
     "src/prelude.rs",           # pure re-exports
-    "src/callback.rs",          # macro-generated FFI wrappers (untestable without DuckDB runtime)
+    # src/callback.rs is not excluded: the macros in it are invisible to
+    # cargo-mutants, but catch_ffi_panic, panic_message, panic_c_message and
+    # message_to_c_string are plain functions. `cargo mutants --no-config
+    # --file src/callback.rs --cargo-arg=--lib`: 5 mutants, 4 caught, 1 unviable.
     "src/chunk_writer.rs",      # Drop calls FFI; row tracking tested via unit tests
     "src/vector/struct_writer.rs", # thin delegation to VectorWriter (requires DuckDB runtime)
     "src/vector/struct_reader.rs", # thin delegation to VectorReader (requires DuckDB runtime)
@@ -225,6 +228,15 @@ exclude_re = [
     # with the one asked for, which needs duckdb_create_logical_type; with the
     # comparison inverted, every type creation fails end to end.
     "src/types/logical_type/construct.rs:.*replace != with == in LogicalType::try_new",
+    # construct.rs: LogicalType::refuse_where_the_engine_lacks asks the engine for
+    # its version (abi::engine_version reads the dispatch table), so a --lib run
+    # with no engine cannot reach the TIMESTAMPTZ_NS refusal. Both its mutants
+    # (the body replaced with Ok(()), and `==` to `!=`) were run by hand against
+    # libduckdb 1.5.6: tests/ffi_roundtrip/timestamp_tz_ns.rs
+    # `the_type_id_is_reported_for_a_column_and_creatable_only_where_it_exists`
+    # passes unmutated and fails with each. The pure comparison it uses,
+    # predates_timestamp_tz_ns, stays in the gate.
+    "src/types/logical_type/construct.rs:.*LogicalType::refuse_where_the_engine_lacks",
     # error_data.rs: a non-null ErrorData only comes from DuckDB, and
     # is_null / has_error / message / Drop / check_valid_utf8 are only told
     # apart from their mutants with one (duckdb_error_data_* /

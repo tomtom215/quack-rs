@@ -8,20 +8,48 @@
 //! quack-rs deliberately has no YAML dependency, so this is hand-rolled — but
 //! it follows YAML's structure rather than scanning for `key:` prefixes: a
 //! value belongs to the key whose indentation encloses it, comments are only
-//! recognised outside quotes, and quoted scalars are decoded. Anything outside
-//! the subset (anchors, aliases, tags, nested flow collections) is reported as
-//! unsupported instead of being misread.
+//! recognised outside quotes, and quoted scalars are decoded.
 //!
-//! Only the top-level sections the caller asks for are parsed. Everything else
-//! — `docs:` above all, which is free-form prose — is skipped by indentation
-//! alone, so text in it can never be mistaken for metadata.
+//! The yardstick is `PyYAML`'s `yaml.safe_load`, which the community build
+//! (`scripts/build.py` in `duckdb/community-extensions`) runs first: a file it
+//! refuses never builds, so this reader refuses it too. That is why **every**
+//! section is read, not only the ones whose values the caller wants: a syntax
+//! error in `docs:` fails the community build as surely as one in
+//! `extension:`. Other sections are checked and their values discarded
+//! ([`Mode::Check`]); there, quoted and duplicate keys (which `PyYAML` accepts,
+//! keeping the last) and anchors with their aliases are accepted. The sections
+//! the caller reads ([`Mode::Read`]) take plain keys only, once each, and no
+//! anchors, aliases or nested flow collections.
+//!
+//! Refused everywhere although `PyYAML` reads them, as no descriptor uses them:
+//! tags (`!!str`), explicit `? key` entries, directives, a document end
+//! (`...`) or a second document, and a top-level key in quotes.
+//!
+//! Each value consumes its own lines: a plain or block scalar and a nested
+//! collection the lines indented past its key, a quoted scalar or flow
+//! collection everything up to where it closes, since `PyYAML` does not
+//! check the indentation of those.
 
+mod block;
+mod flow;
 mod scalar;
+mod value;
 
-use scalar::{
-    block_scalar, flow_seq, join_quoted_lines, plain_scalar, quoted_scalar, split_key,
-    starts_quoted, strip_comment,
-};
+use std::collections::HashMap;
+
+use block::{check_plain_key, is_mapping_text, parse_mapping, parse_seq, Block};
+use scalar::{check_code, split_comment, split_key, starts_quoted, strip_comment};
+use value::{parse_value, ValueAt};
+
+/// How deeply mappings, sequences and flow collections may nest. `PyYAML`'s
+/// recursive parser stops near Python's recursion limit; no published
+/// descriptor nests more than three levels, and the bound keeps a hostile file
+/// from exhausting the stack.
+const MAX_DEPTH: usize = 64;
+
+/// `PyYAML` refuses a block-mapping key longer than this ("simple keys" are
+/// limited to 1024 characters before the `:`).
+const MAX_KEY_LEN: usize = 1024;
 
 /// A parsed YAML value, reduced to what the `description.yml` fields need.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,8 +60,8 @@ pub(super) enum Value {
     Scalar(String),
     /// A block (`- item`) or flow (`[a, b]`) sequence.
     Seq(Vec<Self>),
-    /// A nested mapping. Its contents are not needed by any field, so they are
-    /// not kept — but its keys never leak into the enclosing mapping.
+    /// A nested mapping. Its contents are checked but not kept, since no field
+    /// needs them — and its keys never leak into the enclosing mapping.
     Mapping,
 }
 
@@ -49,28 +77,6 @@ pub(super) struct Entry {
     pub(super) plain: bool,
 }
 
-/// Whether a value's text opens a quoted, flow or block scalar, or a
-/// construct this reader refuses.
-fn starts_structured(text: &str) -> bool {
-    text.starts_with(['"', '\'', '[', '{', '|', '>', '&', '*', '!'])
-}
-
-/// Whether the value after `key:` — `rest` on the key's line, then
-/// `children` — is a plain scalar, deciding exactly as `parse_value` does.
-fn is_plain(rest: &str, children: &[Line<'_>]) -> bool {
-    let rest = strip_comment(rest.trim_start());
-    if !rest.is_empty() {
-        return !starts_structured(rest);
-    }
-    children
-        .iter()
-        .find(|l| l.is_content())
-        .is_some_and(|child| {
-            let mapping = split_key(child.text).is_some() && !starts_quoted(child.text);
-            !(child.is_seq_item() || mapping || starts_structured(child.text))
-        })
-}
-
 /// A top-level section such as `extension:`, with its entries in order.
 #[derive(Debug)]
 pub(super) struct Section {
@@ -78,20 +84,72 @@ pub(super) struct Section {
     pub(super) entries: Vec<Entry>,
 }
 
+/// What a mapping is read for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// A section whose fields the caller reads.
+    Read,
+    /// Anything else: checked as `PyYAML` reads it, values discarded.
+    Check,
+}
+
+/// What the reader carries through the whole document.
+#[derive(Default)]
+struct Doc {
+    /// Anchors defined so far, and whether each names a collection: an alias
+    /// may only name one of these, and stands for a node of its kind.
+    anchors: HashMap<String, bool>,
+}
+
+impl Doc {
+    /// Defines the anchor `name`; `false` if it already exists, which
+    /// `PyYAML` refuses ("found duplicate anchor").
+    fn define(&mut self, name: &str) -> bool {
+        if self.anchors.contains_key(name) {
+            return false;
+        }
+        self.anchors.insert(name.to_string(), false);
+        true
+    }
+
+    /// Records what the anchor `name` turned out to name.
+    fn resolve(&mut self, name: &str, value: &Value) {
+        if let Some(collection) = self.anchors.get_mut(name) {
+            *collection = matches!(value, Value::Seq(_) | Value::Mapping);
+        }
+    }
+
+    /// The node the alias `name` stands for, as far as the reader needs it
+    /// (a collection or not), or `None` for an undefined anchor.
+    fn alias(&self, name: &str) -> Option<Value> {
+        self.anchors.get(name).map(|&collection| {
+            if collection {
+                Value::Mapping
+            } else {
+                Value::Null
+            }
+        })
+    }
+}
+
 /// One physical line of the document.
 #[derive(Debug, Clone, Copy)]
 struct Line<'a> {
     /// 1-based line number.
     number: usize,
-    /// Leading spaces.
+    /// Leading spaces (for a whitespace-only line, all of its spaces).
     indent: usize,
-    /// The line with its indentation removed and trailing whitespace trimmed.
+    /// The line after its indentation, with trailing spaces trimmed. Tabs are
+    /// kept: where one may appear depends on what the line holds.
     text: &'a str,
+    /// The whole line, without its line break.
+    raw: &'a str,
 }
 
 impl Line<'_> {
-    const fn is_blank(&self) -> bool {
-        self.text.is_empty()
+    /// Empty once the indentation is gone, or tabs only.
+    fn is_blank(&self) -> bool {
+        self.text.bytes().all(|b| b == b'\t')
     }
 
     fn is_comment(&self) -> bool {
@@ -107,279 +165,293 @@ impl Line<'_> {
     }
 }
 
-/// Reads `content` and parses the bodies of the top-level sections named in
-/// `wanted`; other sections are skipped. A UTF-8 byte-order mark is ignored.
+/// The characters that end a line for the community build: `\r\n`, a lone
+/// `\r` and `\n` (Python's universal newlines, in `build.py`'s `open()`), and
+/// NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR, which `PyYAML` reads as line
+/// breaks itself.
+const LINE_BREAKS: [char; 5] = ['\r', '\n', '\u{85}', '\u{2028}', '\u{2029}'];
+
+/// Splits `content` into lines where the community build does (see
+/// [`LINE_BREAKS`]) and refuses any character outside YAML's printable set,
+/// which `PyYAML` refuses anywhere in a file — `docs:` included.
+fn split_lines(content: &str) -> Result<Vec<Line<'_>>, String> {
+    let mut lines = Vec::new();
+    let mut rest = content;
+    let mut number = 0;
+    loop {
+        number += 1;
+        let (raw, next) = rest.find(LINE_BREAKS).map_or((rest, None), |at| {
+            let len = if rest[at..].starts_with("\r\n") {
+                2
+            } else {
+                rest[at..].chars().next().map_or(1, char::len_utf8)
+            };
+            (&rest[..at], Some(&rest[at + len..]))
+        });
+        if let Some(bad) = raw.chars().find(|&c| !is_yaml_printable(c)) {
+            return Err(format!(
+                "line {number}: the control character U+{:04X} is not allowed in YAML (PyYAML, \
+                 which the community build reads this file with, refuses the whole file)",
+                u32::from(bad)
+            ));
+        }
+        let indent = raw.len() - raw.trim_start_matches(' ').len();
+        lines.push(Line {
+            number,
+            indent,
+            text: raw[indent..].trim_end_matches(' '),
+            raw,
+        });
+        match next {
+            Some(next) => {
+                // The text after a line break is shorter than the text before it;
+                // debug builds check it, since a loop that stood still would
+                // push lines for ever.
+                debug_assert!(next.len() < rest.len(), "split_lines made no progress");
+                rest = next;
+            }
+            None => return Ok(lines),
+        }
+    }
+}
+
+/// Checks lines that hold no value: a blank line may hold no tab (a comment
+/// may hold anything).
+fn check_skipped(lines: &[Line<'_>]) -> Result<(), String> {
+    lines.iter().try_for_each(check_blank_or_comment)
+}
+
+fn check_blank_or_comment(line: &Line<'_>) -> Result<(), String> {
+    if !line.is_comment() && line.text.contains('\t') {
+        return Err(tab_error(line.number));
+    }
+    Ok(())
+}
+
+/// The index of the first content line of `lines` at or after `from`, or
+/// `lines.len()`.
+fn next_content(lines: &[Line<'_>], from: usize) -> usize {
+    lines[from..]
+        .iter()
+        .position(Line::is_content)
+        .map_or(lines.len(), |p| from + p)
+}
+
+fn tab_error(line: usize) -> String {
+    format!(
+        "line {line}: a tab is used for indentation or between tokens, which YAML forbids \
+         (PyYAML accepts a tab only inside quotes, block scalars and comments); use spaces"
+    )
+}
+
+fn too_deep(line: usize) -> String {
+    format!("line {line}: nested more than {MAX_DEPTH} levels deep")
+}
+
+/// Reads `content` and returns the bodies of the top-level sections named in
+/// `wanted`; every other section is checked and discarded. A UTF-8
+/// byte-order mark is ignored.
 ///
 /// # Errors
 ///
-/// A message naming the offending line when the document is malformed or
-/// uses YAML outside the supported subset.
+/// A message naming the offending line when the document is malformed, uses
+/// YAML outside the supported subset, or would be refused by `PyYAML`.
 pub(super) fn read_sections(content: &str, wanted: &[&str]) -> Result<Vec<Section>, String> {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    let mut sections: Vec<(Section, Vec<Line<'_>>)> = Vec::new();
-    let mut seen: Vec<(&str, usize)> = Vec::new();
-    // `current` is the wanted section being collected, if any; `seen` is
-    // non-empty once any top-level key (wanted or not) has opened a section.
-    let mut current: Option<usize> = None;
+    let lines = split_lines(content)?;
+    let mut doc = Doc::default();
+    let mut sections = Vec::new();
+    // Top-level keys by first line: a map, so a file of many keys is linear.
+    let mut seen: HashMap<&str, usize> = HashMap::new();
     let mut seen_content = false;
 
-    for (index, raw) in content.lines().enumerate() {
-        let number = index + 1;
-        let line = raw.trim_end();
-        let starts_indented = line.starts_with([' ', '\t']);
-        let text = line.trim_start();
-
-        if starts_indented || text.is_empty() || text.starts_with('#') {
-            if let Some(i) = current {
-                let indent = line.len() - line.trim_start_matches(' ').len();
-                if line[indent..].starts_with('\t') && !text.is_empty() {
-                    return Err(format!(
-                        "line {number}: a tab is used for indentation, which YAML forbids"
-                    ));
+    let mut i = 0;
+    loop {
+        let j = next_content(&lines, i);
+        check_skipped(&lines[i..j])?;
+        let Some(line) = lines.get(j) else {
+            return Ok(sections);
+        };
+        if line.text.starts_with('\t') {
+            return Err(tab_error(line.number));
+        }
+        if line.indent > 0 {
+            return Err(format!(
+                "line {}: indented text before any top-level key",
+                line.number
+            ));
+        }
+        let text = line.text;
+        // `---` or `...` then a space or the line end, at column 0, is a
+        // document marker to PyYAML (`---x` is a plain scalar).
+        if let Some(after) = text
+            .strip_prefix("---")
+            .or_else(|| text.strip_prefix("..."))
+        {
+            if after.is_empty() || after.starts_with([' ', '\t']) {
+                let only_a_comment = strip_comment(after).is_empty() && !after.contains('\t');
+                if text.starts_with("---") && !seen_content && only_a_comment {
+                    seen_content = true;
+                    i = j + 1;
+                    continue;
                 }
-                sections[i].1.push(Line {
-                    number,
-                    indent,
-                    text,
-                });
-            } else if seen.is_empty()
-                && starts_indented
-                && !text.is_empty()
-                && !text.starts_with('#')
-            {
+                // The end of the document: only comments may follow it.
+                let rest = &lines[j + 1..];
+                if text.starts_with("...") && only_a_comment && next_content(rest, 0) == rest.len()
+                {
+                    check_skipped(rest)?;
+                    return Ok(sections);
+                }
                 return Err(format!(
-                    "line {number}: indented text before any top-level key"
+                    "line {}: only a single YAML document, without text on its `---` line, is \
+                     supported",
+                    line.number
                 ));
             }
-            continue;
-        }
-
-        if text == "---" && !seen_content {
-            seen_content = true;
-            continue;
-        }
-        if text == "---" || text == "..." {
-            return Err(format!(
-                "line {number}: only a single YAML document is supported"
-            ));
         }
         seen_content = true;
 
-        let (key, rest) = split_key(text)
-            .ok_or_else(|| format!("line {number}: expected a top-level `key:`, got '{text}'"))?;
-        if let Some(&(_, first)) = seen.iter().find(|(k, _)| *k == key) {
-            return Err(format!(
-                "line {number}: duplicate top-level key '{key}' (first on line {first})"
-            ));
-        }
-        seen.push((key, number));
-
-        if wanted.contains(&key) {
-            if !strip_comment(rest).is_empty() {
-                return Err(format!(
-                    "line {number}: '{key}' must be a block mapping of `key: value` lines"
-                ));
-            }
-            sections.push((
-                Section {
-                    name: key.to_string(),
-                    entries: Vec::new(),
-                },
-                Vec::new(),
-            ));
-            current = Some(sections.len() - 1);
-        } else {
-            current = None;
-        }
-    }
-
-    sections
-        .into_iter()
-        .map(|(mut section, body)| {
-            section.entries = parse_mapping(&body, &section.name)?;
-            Ok(section)
-        })
-        .collect()
-}
-
-/// Parses the body of a block mapping whose entries all sit at one indent.
-fn parse_mapping(lines: &[Line<'_>], path: &str) -> Result<Vec<Entry>, String> {
-    let mut entries: Vec<Entry> = Vec::new();
-    let Some(field_indent) = lines.iter().find(|l| l.is_content()).map(|l| l.indent) else {
-        return Ok(entries);
-    };
-
-    // Each pass consumes the key's line and then its value's lines, so the
-    // loop always advances and ends when the slice is used up.
-    let mut remaining = lines;
-    while let Some((line, after)) = remaining.split_first() {
-        remaining = after;
-        if !line.is_content() {
-            continue;
-        }
-        if line.indent != field_indent {
-            return Err(format!(
-                "line {}: inconsistent indentation in '{path}' (expected {field_indent} spaces, \
-                 found {})",
-                line.number, line.indent
-            ));
-        }
-        let (key, rest) = split_key(line.text).ok_or_else(|| {
+        let (key, rest) = split_key(text).ok_or_else(|| {
             format!(
-                "line {}: expected `key: value` in '{path}', got '{}'",
-                line.number, line.text
+                "line {}: expected a top-level `key:`, got '{text}'",
+                line.number
             )
         })?;
-        if let Some(first) = entries.iter().find(|e| e.key == key) {
+        check_plain_key(text, key, rest, line.number)?;
+        if let Some(first) = seen.insert(key, line.number) {
             return Err(format!(
-                "line {}: duplicate key '{path}.{key}' (first on line {})",
-                line.number, first.line
+                "line {}: duplicate top-level key '{key}' (first on line {first})",
+                line.number
             ));
         }
-
-        let seq_at_key_level = strip_comment(rest).is_empty();
-        let (children, after_value) =
-            remaining.split_at(value_len(remaining, field_indent, seq_at_key_level));
-        remaining = after_value;
-        let value = parse_value(rest, children, field_indent, line.number)?;
-        entries.push(Entry {
-            key: key.to_string(),
-            line: line.number,
-            value,
-            plain: is_plain(rest, children),
-        });
+        let after = &lines[j + 1..];
+        let used = if wanted.contains(&key) {
+            nothing_but_a_comment(rest, line.number, &format!("'{key}:'")).map_err(|_| {
+                format!(
+                    "line {}: '{key}' must be a block mapping of `key: value` lines",
+                    line.number
+                )
+            })?;
+            let at = next_content(after, 0);
+            let (entries, used) = match after.get(at) {
+                Some(first) if first.indent > 0 => {
+                    parse_mapping(Block::new(None, after), key, Mode::Read, &mut doc, 1)?
+                }
+                Some(first) if first.is_seq_item() => {
+                    return Err(format!(
+                        "line {}: '{key}' must be a block mapping of `key: value` lines",
+                        line.number
+                    ))
+                }
+                _ => (Vec::new(), 0),
+            };
+            sections.push(Section {
+                name: key.to_string(),
+                entries,
+            });
+            used
+        } else {
+            let value = ValueAt {
+                rest,
+                lines: after,
+                parent_indent: 0,
+                line: line.number,
+                seq_at_key_level: strip_comment(rest).is_empty(),
+            };
+            parse_value(&value, key, Mode::Check, &mut doc, 1)?.1
+        };
+        i = j + 1 + used;
     }
-    Ok(entries)
 }
 
 /// How many of `lines`, the lines after a key at `field_indent`, are the
-/// value's own: everything indented deeper, plus a sequence written level with
-/// its key (`key:\n- item`), which YAML allows.
-fn value_len(lines: &[Line<'_>], field_indent: usize, seq_at_key_level: bool) -> usize {
-    (0..lines.len())
-        .find(|&n| {
-            let next = &lines[n];
-            // A comment indented past the key may be block-scalar content, so
-            // it is kept; a blank line, or a comment at the key's level or
-            // shallower, belongs to the value only if more of the value
-            // follows it.
-            let take = if next.is_blank() || (next.is_comment() && next.indent <= field_indent) {
-                continues_after(&lines[n..], field_indent, seq_at_key_level)
-            } else {
-                belongs_to_value(next, field_indent, seq_at_key_level)
-            };
-            !take
-        })
-        .unwrap_or(lines.len())
+/// value's own by indentation: everything indented deeper (a comment among
+/// them may be block-scalar content), up to the last such line before the first
+/// one that is neither deeper nor blank nor a comment at the key's level.
+fn value_len(lines: &[Line<'_>], field_indent: usize) -> usize {
+    let in_run = |l: &Line<'_>| l.is_blank() || (l.is_comment() && l.indent <= field_indent);
+    let stop = lines
+        .iter()
+        .position(|l| !in_run(l) && l.indent <= field_indent)
+        .unwrap_or(lines.len());
+    lines[..stop]
+        .iter()
+        .rposition(|l| !in_run(l))
+        .map_or(0, |last| last + 1)
 }
 
-/// Whether a line sits inside the value of a key at `field_indent`: indented
-/// deeper, or a sequence item level with the key when the key's own line
-/// carried no value.
-fn belongs_to_value(line: &Line<'_>, field_indent: usize, seq_at_key_level: bool) -> bool {
-    line.indent > field_indent
-        || (seq_at_key_level && line.indent == field_indent && line.is_seq_item())
+/// Whether a value's text opens a quoted, flow or block scalar, or a
+/// construct this reader refuses.
+fn starts_structured(text: &str) -> bool {
+    text.starts_with(['"', '\'', '[', '{', '|', '>', '&', '*', '!'])
 }
 
-/// Whether the blank/comment lines at the head of `rest` are followed by more
-/// of the current value (so they belong to it) rather than by the next key.
-fn continues_after(rest: &[Line<'_>], field_indent: usize, seq_at_key_level: bool) -> bool {
-    rest.iter()
-        .find(|l| l.is_content())
-        .is_some_and(|l| belongs_to_value(l, field_indent, seq_at_key_level))
-}
-
-/// Parses the value that follows `key:` — `rest` on the key's own line, and
-/// `children`, the lines that belong to it.
-fn parse_value(
-    rest: &str,
-    children: &[Line<'_>],
-    parent_indent: usize,
-    line: usize,
-) -> Result<Value, String> {
-    let rest = rest.trim_start();
-    let first_child = children.iter().find(|l| l.is_content());
-
-    if strip_comment(rest).is_empty() {
-        return match first_child {
-            None => Ok(Value::Null),
-            Some(child) if child.is_seq_item() => parse_seq(children, child.indent),
-            Some(child) if split_key(child.text).is_some() && !starts_quoted(child.text) => {
-                Ok(Value::Mapping)
-            }
-            // Any other value that starts on the next line reads as if it
-            // started on the key's own: `name:\n  "x"` is `x`, not `"x"` with
-            // its quotes, and a plain one folds the lines below it.
-            Some(child) => {
-                let at = children
-                    .iter()
-                    .position(Line::is_content)
-                    .map_or(children.len(), |i| i + 1);
-                parse_value(child.text, &children[at..], parent_indent, child.number)
-            }
-        };
+/// Whether the value after `key:` — `rest` on the key's line, then the
+/// `used` lines — is a plain scalar, deciding exactly as `parse_value` does.
+fn is_plain(rest: &str, used: &[Line<'_>]) -> bool {
+    let rest = strip_comment(rest);
+    if !rest.is_empty() {
+        return !starts_structured(rest);
     }
-
-    match rest.as_bytes()[0] {
-        b'|' | b'>' => block_scalar(rest, children, parent_indent, line),
-        b'"' | b'\'' => {
-            let text = join_quoted_lines(rest, children);
-            let (value, remainder) = quoted_scalar(&text, line)?;
-            if !strip_comment(remainder).is_empty() {
-                return Err(format!(
-                    "line {line}: unexpected text after a quoted value: '{}'",
-                    remainder.trim()
-                ));
-            }
-            Ok(Value::Scalar(value))
-        }
-        b'[' => {
-            let mut text = strip_comment(rest).to_string();
-            for child in children.iter().filter(|l| l.is_content()) {
-                text.push(' ');
-                text.push_str(strip_comment(child.text));
-            }
-            flow_seq(&text, line)
-        }
-        b'{' => Ok(Value::Mapping),
-        b'&' | b'*' | b'!' => Err(format!(
-            "line {line}: YAML anchors, aliases and tags are not supported in description.yml"
-        )),
-        _ => plain_scalar(rest, children, line),
-    }
+    used.iter().find(|l| l.is_content()).is_some_and(|child| {
+        let mapping = split_key(child.text).is_some() && !starts_quoted(child.text);
+        !(child.is_seq_item() || mapping || starts_structured(child.text))
+    })
 }
 
-/// A block sequence whose `- ` markers sit at `seq_indent`.
-fn parse_seq(lines: &[Line<'_>], seq_indent: usize) -> Result<Value, String> {
-    let mut items = Vec::new();
-    // As in `parse_mapping`, each pass consumes at least the item's own line.
-    let mut remaining = lines;
-    while let Some((line, after)) = remaining.split_first() {
-        remaining = after;
-        if !line.is_content() {
-            continue;
-        }
-        if line.indent != seq_indent || !line.is_seq_item() {
+/// The text of a value after its indicator (`:` or `-`) and the spaces that
+/// follow it; a tab there is refused.
+fn after_spaces(rest: &str, line: usize) -> Result<&str, String> {
+    let value = rest.trim_start_matches(' ');
+    if value.starts_with('\t') {
+        return Err(tab_error(line));
+    }
+    Ok(value)
+}
+
+/// `text`, what follows a complete value on its last line, may hold only
+/// spaces and a comment.
+fn nothing_but_a_comment(text: &str, line: usize, what: &str) -> Result<(), String> {
+    let code = split_comment(text).0;
+    check_code(code, line)?;
+    if !code.trim_matches(' ').is_empty() {
+        return Err(format!(
+            "line {line}: unexpected text after {what}: '{}'",
+            code.trim_matches(' ')
+        ));
+    }
+    Ok(())
+}
+
+/// The lines after a complete value that still lie inside it may only be
+/// blank or comments.
+fn nothing_but_comments(lines: &[Line<'_>], what: &str) -> Result<(), String> {
+    for line in lines {
+        if line.is_content() {
             return Err(format!(
-                "line {}: expected a `- item` at indentation {seq_indent}, got '{}'",
+                "line {}: unexpected text after {what}: '{}'",
                 line.number, line.text
             ));
         }
-        // The item runs up to the next content line at the marker's
-        // indentation or shallower; blank lines and comments never end it.
-        let len = remaining
-            .iter()
-            .position(|l| l.is_content() && l.indent <= seq_indent)
-            .unwrap_or(remaining.len());
-        let (children, after_item) = remaining.split_at(len);
-        remaining = after_item;
-        let item = line.text[1..].trim_start();
-        let value = if split_key(item).is_some() && !starts_quoted(item) {
-            Value::Mapping
-        } else {
-            parse_value(item, children, seq_indent, line.number)?
-        };
-        items.push(value);
+        check_blank_or_comment(line)?;
     }
-    Ok(Value::Seq(items))
+    Ok(())
+}
+
+/// Whether `c` is in YAML 1.1's printable set (`c-printable`), which is also
+/// the set `PyYAML` accepts anywhere in a stream: tab, line feed, carriage
+/// return, `U+0020`–`U+007E`, `U+0085`, `U+00A0`–`U+D7FF`, `U+E000`–`U+FFFD`
+/// and everything above `U+FFFF`. NUL, the other C0 controls, DEL and the C1
+/// controls other than `U+0085` are not.
+const fn is_yaml_printable(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n'
+            | '\r'
+            | ' '..='~'
+            | '\u{85}'
+            | '\u{a0}'..='\u{d7ff}'
+            | '\u{e000}'..='\u{fffd}'
+            | '\u{10000}'..
+    )
 }

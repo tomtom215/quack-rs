@@ -206,7 +206,7 @@ Two features expose `InMemoryDb`; pick the one that fits your build-time budget:
 ```toml
 # Zero-config but slow: compile libduckdb from C++ source (~5–10 min cold).
 [dev-dependencies]
-quack-rs = { version = "0.19", features = ["bundled-test"] }
+quack-rs = { version = "0.20", features = ["bundled-test"] }
 ```
 
 ```toml
@@ -218,7 +218,7 @@ quack-rs = { version = "0.19", features = ["bundled-test"] }
 # or duckdb.hpp. Header discovery needs libduckdb-sys >= 1.10503; with an older
 # one, also set DUCKDB_INCLUDE_DIR.
 [dev-dependencies]
-quack-rs = { version = "0.19", features = ["bundled-test-prebuilt"] }
+quack-rs = { version = "0.20", features = ["bundled-test-prebuilt"] }
 ```
 
 Both keep `duckdb` out of a plain `cargo test` and out of your published
@@ -522,9 +522,6 @@ test/sql/my_extension.test
 
 require my_extension
 
-statement ok
-LOAD my_extension;
-
 query I
 SELECT my_function('hello world');
 ----
@@ -538,17 +535,23 @@ Directives:
 | `require` | Load the extension; skip the file if it is not available |
 | `statement ok` | SQL must succeed |
 | `statement error` | SQL must fail |
-| `query I` | Query returning one INTEGER column |
-| `query II` | Query returning two INTEGER columns |
-| `query T` | Query returning one TEXT column |
+| `query I`, `query II`, `query T`, … | Query whose result has one column per letter; each letter is that column's type (`I` integer, `T` text, `R` real) |
 | `----` | Expected output follows |
+
+**A skipped file passes.** If `require my_extension` cannot load the extension (the name
+does not match `EXTENSION_NAME`, `[lib] name` or the file name, or the extension file was
+not built), the runner reports the file as `SKIPPED` and exits 0. The community build
+then succeeds having tested nothing, and so does a plain `make test`. The `Makefile` that
+the scaffold generates since 0.20.0 runs the runner through a check that fails `make test`
+on `SKIPPED` and when no test file ran; in a project from an older scaffold, read the
+runner's output for `SKIPPED` and fail the job on it in your own CI.
 
 ### Installing DuckDB (1.4.4 or later)
 
 E2E testing needs the DuckDB CLI. Download it with `curl`; no system package
-manager is needed. quack-rs supports DuckDB 1.4.4 through 2.0.0, and every one
+manager is needed. quack-rs supports DuckDB 1.4.4 through 2.0.x, and every one
 of them loads an extension stamped with
-C API version `v1.2.0` (1.4.4 through 1.5.5 declare that version; 1.5.6 and 2.0.0
+C API version `v1.2.0` (1.4.4 through 1.5.5 declare that version; 1.5.6 and 2.0.x
 declare `v1.5.6` and accept every earlier one). The quack-rs CI `extension-load` job
 loads its example extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest
 release (currently 2.0.0).
@@ -602,13 +605,22 @@ SELECT my_function('hello world');
 "
 ```
 
+**Parsing the DuckDB 2.0 CLI's output in a script.** The 2.0 CLI switches to an "agent
+mode" (a Markdown-like table with `name:TYPE` headers and a banner line) when the
+environment variable `AI_AGENT` is set and its output is not a terminal. Measured with
+`AI_AGENT=1` and the output piped: `-csv` overrides it, and `-no-agent` turns it off. `-no-agent` exists only in the 2.0 CLI; the 1.x CLIs reject it ("Unrecognized
+option '-no-agent'"), so a script that runs several releases should unset the variable
+instead of passing the flag.
+
 The community extension CI runs these SQLLogicTest files automatically. Give
 each function at least one test, covering NULL, empty and typical input:
 
 ```sql
-# Test NULL handling
+# Test NULL handling. Read the NULL from a column: DuckDB folds a literal
+# `my_function(NULL)` into the plan and never calls the function, so that query
+# passes even for a callback that gets NULL wrong (Pitfall L8).
 query I
-SELECT my_function(NULL);
+SELECT my_function(x) FROM (VALUES (NULL::VARCHAR)) t(x);
 ----
 NULL
 
@@ -675,12 +687,12 @@ quack-rs's own test suite uses proptest for interval conversion and
 
 ```toml
 [dependencies]
-quack-rs = "0.19"
+quack-rs = "0.20"
 
 [dev-dependencies]
 proptest = "1"
 # Only for InMemoryDb; enables the feature for test builds alone.
-quack-rs = { version = "0.19", features = ["bundled-test"] }
+quack-rs = { version = "0.20", features = ["bundled-test"] }
 ```
 
 The `testing` module is compiled unconditionally (not `#[cfg(test)]`), so crates

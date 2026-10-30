@@ -88,8 +88,9 @@ database's catalog is named `memory`; a database file's is the file's stem
 (`analytics.duckdb` is `analytics`). An empty name returns `None`.
 
 `catalog` also returns `None` when no transaction is active. Inside a function
-callback a transaction is always active. On an idle connection outside a query,
-there is none:
+callback a transaction is always active, and so it is in the registration closure of an
+entry point, which runs in one transaction from 0.20.0 (with `Registration::Autocommit` it
+does not). On an idle connection outside a query, there is none:
 
 ```rust
 # use quack_rs::catalog::CatalogEntryType;

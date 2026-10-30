@@ -4,6 +4,7 @@
   <url><loc>https://quack-rs.com/getting-started/quick-start.html</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://quack-rs.com/getting-started/installation.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/getting-started/upgrading-0-18.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/getting-started/upgrading-0-20.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/getting-started/first-extension.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/getting-started/scaffold.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/concepts/anatomy.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>

@@ -42,7 +42,23 @@ use crate::value::Value;
 use crate::vector::VectorReader;
 
 /// Scope in which a configuration option takes effect.
+///
+/// `#[non_exhaustive]`: `DuckDB` may add a scope, so a `match` outside
+/// quack-rs needs a wildcard arm.
+///
+/// ```rust,compile_fail,E0004
+/// use quack_rs::config_option::ConfigOptionScope;
+///
+/// fn per_connection(scope: ConfigOptionScope) -> bool {
+///     match scope {
+///         ConfigOptionScope::Local | ConfigOptionScope::Session => true,
+///         ConfigOptionScope::Global => false,
+///         // error[E0004]: a wildcard arm is required
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfigOptionScope {
     /// Option is local to the current statement.
     Local,

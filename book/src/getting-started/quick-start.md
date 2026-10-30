@@ -21,24 +21,34 @@ In your extension's `Cargo.toml`:
 name = "my_extension"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.86"       # with resolver 3, Cargo picks dependency versions that build on it
+# With resolver 3, Cargo picks dependency versions that build on this.
+rust-version = "1.86"
 resolver = "3"
 
 [dependencies]
-quack-rs = "0.19"
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+quack-rs = "0.20"
+
+[dependencies.libduckdb-sys]
+version = ">=1.4.4, <1.20100"
+default-features = false
+features = ["loadable-extension"]
 
 [lib]
-name = "my_extension"       # must match your extension name — see Pitfall P1
+# Must match your extension name: see Pitfall P1.
+name = "my_extension"
 crate-type = ["cdylib", "rlib"]
 
 [profile.release]
-panic = "unwind"            # required — quack-rs's panic guards need unwinding (see Installation)
+# Required: quack-rs's panic guards need unwinding (see Installation).
+panic = "unwind"
 lto = true
 opt-level = 3
 codegen-units = 1
 strip = true
 ```
+
+The `libduckdb-sys` range and why it has an upper bound are explained on the
+[Installation](installation.md#adding-quack-rs-to-an-existing-extension) page.
 
 > **Starting from scratch?** The [scaffold generator](scaffold.md) generates a complete
 > community extension project, including this `Cargo.toml`.
@@ -88,8 +98,9 @@ cargo build --release
 
 # DuckDB refuses to LOAD a bare .so: append the metadata footer first.
 # quack-rs ships the `append_metadata` binary for this step. Installing it needs
-# Rust 1.88 or newer (it resolves the newest libduckdb-sys); use
-# `cargo +stable install` if this project pins an older toolchain.
+# Rust 1.88 or newer, because `cargo install` resolves the newest libduckdb-sys,
+# which requires it; use `cargo +stable install` if this project pins an older
+# toolchain.
 cargo install quack-rs --bin append_metadata
 append_metadata target/release/libmy_extension.so my_extension.duckdb_extension \
     --abi-type C_STRUCT --extension-version v0.1.0 \

@@ -38,6 +38,13 @@ across threads via `Arc<WarningCollector>`. A panic on another thread while it
 held the lock does not lose warnings: the collector recovers the list from the
 poisoned lock and keeps using it.
 
+A collector keeps at most 10,000 warnings between drains (`DEFAULT_MAX_WARNINGS`; use
+`WarningCollector::with_limit(n)` for another limit). Warnings past the limit are not stored:
+`emit` counts them, `dropped()` returns the count, and `drain` and `clear` reset it. The first
+warnings are the ones kept. Before 0.20.0 every warning was stored, and a collector that is never
+drained grew for as long as the process lived (2,000,000 warnings were about 381 MB), which a
+condition reported once per request, such as `TLS_NO_VERIFY`, can cause.
+
 ## Usage
 
 ```rust

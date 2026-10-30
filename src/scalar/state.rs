@@ -109,28 +109,68 @@ unsafe extern "C" fn drop_boxed<T>(ptr: *mut c_void) {
     }));
 }
 
-/// Clones a `Box<T>` behind a `duckdb_copy_callback_t`, containing any panic.
+/// What a [`ScalarBindData`] allocation holds.
+enum Slot<T> {
+    /// The value the bind callback stored, or a clone of it.
+    Value(T),
+    /// `T::clone` panicked while `DuckDB` copied the bound expression: the
+    /// panic message, reported when the copy's bind data is read.
+    CopyFailed(String),
+}
+
+/// Clones a `Box<Slot<T>>` behind a `duckdb_copy_callback_t`, containing any
+/// panic.
 ///
-/// Returns null if `T::clone` panics; the copy then has no bind data, which
-/// [`ScalarBindData::get`] reports as `None`.
+/// If `T::clone` panics, the copy holds the panic message instead of a value
+/// ([`Slot::CopyFailed`]), which [`ScalarBindData::get`] reports as the
+/// call's error. `DuckDB`'s copy callback has no error channel, and a null
+/// copy is read as "no bind data", a silent wrong answer.
 ///
 /// # Safety
 ///
-/// `ptr` must be null or point to a live `T` produced by
-/// [`ScalarBindData::set`].
-unsafe extern "C" fn clone_boxed<T: Clone>(ptr: *mut c_void) -> *mut c_void {
+/// `ptr` must be null or point to a live `Slot<T>` produced by
+/// [`ScalarBindData::set`] or by this function.
+unsafe extern "C" fn clone_slot<T: Clone>(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
         return std::ptr::null_mut();
     }
     // `T::clone` is arbitrary user code and this is an `extern "C"` boundary
     // with no error channel, so the unwind is contained here.
-    crate::callback::catch_ffi_panic(|| {
-        // SAFETY: `ptr` points to a live `T` owned by the bind data being
-        // copied; shared access only.
-        let src = unsafe { &*ptr.cast::<T>() };
-        Box::into_raw(Box::new(src.clone())).cast::<c_void>()
+    let copy = crate::callback::catch_ffi_panic(|| {
+        // SAFETY: `ptr` points to a live `Slot<T>` owned by the bind data
+        // being copied; shared access only.
+        match unsafe { &*ptr.cast::<Slot<T>>() } {
+            Slot::Value(value) => Slot::Value(value.clone()),
+            Slot::CopyFailed(message) => Slot::CopyFailed(message.clone()),
+        }
     })
-    .unwrap_or(std::ptr::null_mut())
+    .unwrap_or_else(Slot::CopyFailed);
+    Box::into_raw(Box::new(copy)).cast::<c_void>()
+}
+
+/// The bind data behind `raw`: the value, or `None` after reporting a failed
+/// copy through `report`.
+///
+/// # Safety
+///
+/// `raw` must be null or a live `Slot<T>` that outlives `'a`.
+unsafe fn read_slot<'a, T>(raw: *mut c_void, report: impl FnOnce(&str)) -> Option<&'a T> {
+    // SAFETY: forwarded from this function's own contract.
+    match unsafe { raw.cast::<Slot<T>>().as_ref() }? {
+        Slot::Value(value) => Some(value),
+        Slot::CopyFailed(message) => {
+            report(&copy_failure(message));
+            None
+        }
+    }
+}
+
+/// The error a failed bind-data copy is reported as.
+fn copy_failure(message: &str) -> String {
+    format!(
+        "quack-rs: DuckDB copied this function call (the optimizer does, e.g. to push a filter \
+         down) and the bind data's Clone panicked, so the copy has no bind data: {message}"
+    )
 }
 
 /// Type-safe bind data for a `DuckDB` scalar function.
@@ -181,25 +221,39 @@ impl<T: Send + Sync + 'static> ScalarBindData<T> {
     /// Stores `data` as this function's bind data, and registers the
     /// destructor and copy callback that go with it.
     ///
-    /// Call at most once per bind invocation: `DuckDB` overwrites the stored
-    /// pointer on a second call **without** freeing the first value, so the
-    /// first value is leaked (never dropped). quack-rs cannot free it for you —
-    /// the C API offers no way to read back what a bind callback stored.
-    // The whole body is two FFI calls; with no live engine there is no way to
-    // observe whether they happened, so the `--lib` mutation run cannot kill
-    // `with ()`. Covered end to end by the typed scalar-bind tests.
+    /// A second call through the same `info` replaces the first value, which
+    /// is dropped then: `DuckDB` overwrites the stored pointer without running
+    /// its destructor, so `info` remembers what this stored and frees it. The
+    /// C API offers no way to read back what a bind callback stored, so a
+    /// value stored through another [`ScalarBindInfo`] wrapper of the same
+    /// bind call, or replaced by the raw
+    /// [`set_bind_data`][ScalarBindInfo::set_bind_data], is leaked (never
+    /// dropped).
+    // The body is FFI calls; with no live engine there is no way to observe
+    // whether they happened, so the `--lib` mutation run cannot kill `with
+    // ()`. Covered end to end by the typed scalar-bind tests.
     #[cfg_attr(test, mutants::skip)]
     pub fn set(info: &ScalarBindInfo, data: T)
     where
         T: Clone,
     {
-        let raw = Box::into_raw(Box::new(data)).cast::<c_void>();
-        // SAFETY: `raw` is a fresh `Box<T>`; `drop_boxed::<T>` is the matching
-        // destructor and `clone_boxed::<T>` produces allocations the same
-        // destructor frees. DuckDB owns it from here.
+        let raw = Box::into_raw(Box::new(Slot::Value(data))).cast::<c_void>();
+        let replaced = info.take_typed_bind_data();
+        // SAFETY: `raw` is a fresh `Box<Slot<T>>`; `drop_boxed::<Slot<T>>` is
+        // the matching destructor and `clone_slot::<T>` produces allocations
+        // the same destructor frees. DuckDB owns it from here.
         unsafe {
-            info.set_bind_data(raw, Some(drop_boxed::<T>));
-            info.set_bind_data_copy(Some(clone_boxed::<T>));
+            info.set_bind_data(raw, Some(drop_boxed::<Slot<T>>));
+            info.set_bind_data_copy(Some(clone_slot::<T>));
+        }
+        info.replace_typed_bind_data((raw, drop_boxed::<Slot<T>>));
+        if let Some((previous, destroy)) = replaced {
+            // SAFETY: `previous` is the value an earlier `set` through `info`
+            // stored with `destroy` as its destructor; the call above
+            // overwrote DuckDB's only pointer to it (a plain assignment in
+            // `duckdb_scalar_function_set_bind_data`), and no copy of it can
+            // exist yet: copies are made after the bind callback returns.
+            unsafe { destroy(previous) };
         }
     }
 
@@ -207,7 +261,11 @@ impl<T: Send + Sync + 'static> ScalarBindData<T> {
     ///
     /// Returns `None` if the bind callback never stored anything, or if
     /// `DuckDB` copied the bound expression and `T::clone` panicked while
-    /// copying it.
+    /// copying it. In the second case it also reports the panic message as
+    /// this call's error ([`ScalarFunctionInfo::set_error`]), so the query
+    /// fails with it instead of answering as if no bind data had been set; a
+    /// later `set_error` in the callback replaces that message (use
+    /// [`try_get`][Self::try_get] to handle it yourself).
     ///
     /// # Safety
     ///
@@ -221,15 +279,36 @@ impl<T: Send + Sync + 'static> ScalarBindData<T> {
     pub unsafe fn get<'a>(info: &ScalarFunctionInfo) -> Option<&'a T> {
         // SAFETY: forwarded from this function's own contract.
         let raw = unsafe { info.get_bind_data() };
-        if raw.is_null() {
-            return None;
-        }
-        // SAFETY: `raw` was produced by `set`, and DuckDB keeps it alive for
-        // the whole execution.
-        Some(unsafe { &*raw.cast::<T>() })
+        // SAFETY: `raw` is null or was produced by `set` (or copied from it),
+        // and DuckDB keeps it alive for the whole execution.
+        unsafe { read_slot(raw, |message| info.set_error(message)) }
+    }
+
+    /// Borrows the bind data during execution, or returns the error a failed
+    /// copy of it left: `Ok(None)` if the bind callback never stored
+    /// anything, `Err` with the message [`get`][Self::get] reports if
+    /// `DuckDB` copied the bound expression and `T::clone` panicked.
+    ///
+    /// # Errors
+    ///
+    /// The panic message of the failed `T::clone`, with context.
+    ///
+    /// # Safety
+    ///
+    /// See [`get`][Self::get].
+    pub unsafe fn try_get<'a>(info: &ScalarFunctionInfo) -> Result<Option<&'a T>, String> {
+        // SAFETY: forwarded from this function's own contract.
+        let raw = unsafe { info.get_bind_data() };
+        let mut failure = None;
+        // SAFETY: as in `get`.
+        let value = unsafe { read_slot(raw, |message| failure = Some(message.to_owned())) };
+        failure.map_or(Ok(value), Err)
     }
 
     /// Borrows the bind data during the init callback.
+    ///
+    /// Like [`get`][Self::get], reports a failed copy as the init callback's
+    /// error ([`ScalarInitInfo::set_error`]) and returns `None`.
     ///
     /// # Safety
     ///
@@ -238,11 +317,8 @@ impl<T: Send + Sync + 'static> ScalarBindData<T> {
     pub unsafe fn get_from_init<'a>(info: &ScalarInitInfo) -> Option<&'a T> {
         // SAFETY: forwarded from this function's own contract.
         let raw = unsafe { info.get_bind_data() };
-        if raw.is_null() {
-            return None;
-        }
         // SAFETY: as in `get`.
-        Some(unsafe { &*raw.cast::<T>() })
+        unsafe { read_slot(raw, |message| info.set_error(message)) }
     }
 }
 
@@ -370,37 +446,65 @@ mod tests {
         }
     }
 
+    fn slot(value: Cloned) -> *mut c_void {
+        Box::into_raw(Box::new(Slot::Value(value))).cast()
+    }
+
+    /// The value behind a slot, or the failure it reports.
+    fn read(raw: *mut c_void) -> Result<Option<Cloned>, String> {
+        let mut failure = None;
+        // SAFETY: every `raw` here is null or a live `Slot<Cloned>`.
+        let value = unsafe { read_slot::<Cloned>(raw, |m| failure = Some(m.to_owned())) };
+        failure.map_or_else(|| Ok(value.cloned()), Err)
+    }
+
     #[test]
     fn the_generated_copy_callback_produces_an_independent_box() {
-        let raw = Box::into_raw(Box::new(Cloned(vec![1, 2, 3]))).cast::<c_void>();
-        // SAFETY: `raw` came from `Box::into_raw(Box::new(Cloned(..)))`.
-        let copy = unsafe { clone_boxed::<Cloned>(raw) };
+        let raw = slot(Cloned(vec![1, 2, 3]));
+        // SAFETY: `raw` is a live `Box<Slot<Cloned>>`.
+        let copy = unsafe { clone_slot::<Cloned>(raw) };
         assert!(!copy.is_null());
         assert_ne!(copy, raw, "a copy must be a separate allocation");
-        // SAFETY: both are live `Box<Cloned>` allocations.
-        unsafe {
-            assert_eq!(*copy.cast::<Cloned>(), Cloned(vec![1, 2, 3]));
-            drop_boxed::<Cloned>(raw);
-            // The copy survives the original being freed.
-            assert_eq!(*copy.cast::<Cloned>(), Cloned(vec![1, 2, 3]));
-            drop_boxed::<Cloned>(copy);
-        }
+        assert_eq!(read(copy), Ok(Some(Cloned(vec![1, 2, 3]))));
+        // SAFETY: both are live `Box<Slot<Cloned>>` allocations.
+        unsafe { drop_boxed::<Slot<Cloned>>(raw) };
+        // The copy survives the original being freed.
+        assert_eq!(read(copy), Ok(Some(Cloned(vec![1, 2, 3]))));
+        // SAFETY: as above.
+        unsafe { drop_boxed::<Slot<Cloned>>(copy) };
     }
 
     #[test]
     fn the_generated_copy_callback_tolerates_null() {
         // SAFETY: the null case is handled explicitly.
-        assert!(unsafe { clone_boxed::<Cloned>(std::ptr::null_mut()) }.is_null());
+        assert!(unsafe { clone_slot::<Cloned>(std::ptr::null_mut()) }.is_null());
+        assert_eq!(read(std::ptr::null_mut()), Ok(None), "no bind data");
     }
 
+    /// FFI-6: a panicking `Clone` used to make the copy null, which reads as
+    /// "no bind data" (the query answered wrongly, the panic message was
+    /// lost). The copy now carries the message, reading it reports it, and a
+    /// copy of the copy keeps it.
     #[test]
-    fn a_panicking_clone_yields_null_instead_of_unwinding() {
-        let raw = Box::into_raw(Box::new(Cloned(b"bomb".to_vec()))).cast::<c_void>();
-        // SAFETY: `raw` came from `Box::into_raw(Box::new(Cloned(..)))`.
-        let copy = unsafe { clone_boxed::<Cloned>(raw) };
-        assert!(copy.is_null(), "a failed clone is reported as no bind data");
-        // SAFETY: `raw` is still live and owned here.
-        unsafe { drop_boxed::<Cloned>(raw) };
+    fn a_panicking_clone_is_reported_when_the_copy_is_read() {
+        let raw = slot(Cloned(b"bomb".to_vec()));
+        // SAFETY: `raw` is a live `Box<Slot<Cloned>>`.
+        let copy = unsafe { clone_slot::<Cloned>(raw) };
+        assert!(!copy.is_null(), "a failed clone is not 'no bind data'");
+        let err = read(copy).expect_err("the failure is reported");
+        assert!(
+            err.contains("bind data clone deliberately exploded") && err.contains("Clone panicked"),
+            "{err}"
+        );
+        // SAFETY: `copy` is a live `Box<Slot<Cloned>>`.
+        let again = unsafe { clone_slot::<Cloned>(copy) };
+        assert_eq!(read(again), Err(err));
+        // SAFETY: each is live and freed once.
+        unsafe {
+            drop_boxed::<Slot<Cloned>>(raw);
+            drop_boxed::<Slot<Cloned>>(copy);
+            drop_boxed::<Slot<Cloned>>(again);
+        }
     }
 
     #[test]

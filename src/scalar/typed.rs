@@ -67,6 +67,10 @@
 //!   the wrong width. Register it with
 //!   [`TypedScalarFunctionBuilder::register`] or
 //!   [`Registrar::register_typed_scalar`][crate::connection::Registrar::register_typed_scalar].
+//!   To overload one name with several closures (one per argument type),
+//!   add each to one set with
+//!   [`ScalarFunctionSetBuilder::overload_typed`][crate::scalar::ScalarFunctionSetBuilder::overload_typed]:
+//!   before `DuckDB` v1.5.0 a second registration under a taken name fails.
 //!
 //! # Cost
 //!

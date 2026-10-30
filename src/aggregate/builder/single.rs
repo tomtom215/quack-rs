@@ -30,7 +30,9 @@ mod register;
 /// built with quack-rs or by hand:
 ///
 /// - **Window aggregates whose frame is the whole partition**, e.g.
-///   `agg(x) OVER ()` — `WindowConstantAggregator`
+///   `agg(x) OVER ()` or an explicit `ROWS BETWEEN UNBOUNDED PRECEDING AND
+///   UNBOUNDED FOLLOWING` frame (`OVER (PARTITION BY p)` without `ORDER BY`
+///   crashed on 1.4.4 only in the shapes tried) — `WindowConstantAggregator`
 ///   (`src/function/window/window_constant_aggregator.cpp`, ~lines 106 and
 ///   296–299 in `DuckDB` 1.5.5).
 /// - **Ordered aggregates**, e.g. `agg(x ORDER BY y)` —
@@ -384,6 +386,42 @@ impl AggregateFunctionBuilder {
         // SAFETY: forwarded from this method's own contract.
         self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(data, destroy) });
         self
+    }
+
+    /// Attaches `value` as this function's extra info: the safe, typed form
+    /// of [`extra_info`][Self::extra_info].
+    ///
+    /// quack-rs boxes `value` behind a type tag and generates its destructor,
+    /// which contains a panic in `T::drop` and runs once — when `DuckDB`
+    /// releases the function, or when this builder is dropped unregistered.
+    /// Read it in a callback with
+    /// [`AggregateFunctionInfo::extra_info_ref`][crate::aggregate::AggregateFunctionInfo::extra_info_ref],
+    /// which returns `None` for any other type instead of reinterpreting
+    /// memory. `T` is `Send + Sync` because every thread running the function
+    /// reads the same value.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::aggregate::{AggregateFunctionBuilder, AggregateFunctionInfo};
+    ///
+    /// struct Scale(f64);
+    ///
+    /// let builder = AggregateFunctionBuilder::new("scaled_sum").extra_info_typed(Scale(2.5));
+    /// # drop(builder);
+    ///
+    /// // In `finalize`:
+    /// fn scale(info: &AggregateFunctionInfo) -> f64 {
+    ///     // SAFETY: this function's extra info is only ever set with `extra_info_typed`.
+    ///     unsafe { info.extra_info_ref::<Scale>() }.map_or(1.0, |s| s.0)
+    /// }
+    /// ```
+    pub fn extra_info_typed<T: Send + Sync + 'static>(self, value: T) -> Self {
+        let (data, destroy) = crate::extra_info::into_tagged(value);
+        // SAFETY: `into_tagged` returns a fresh allocation, used by no one
+        // else, and the destructor that frees it exactly once without
+        // unwinding; `T: Send + Sync`.
+        unsafe { self.extra_info(data, Some(destroy)) }
     }
 
     /// The completeness checks that need no `DuckDB` call: a return type and

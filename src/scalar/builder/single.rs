@@ -468,7 +468,11 @@ impl ScalarFunctionBuilder {
     /// an existing `f(BIGINT, BIGINT...)`: `DuckDB` would find `f(1)`
     /// ambiguous). Types are compared as `DuckDB` prints them, aliases
     /// included, so `abs(myint)` for `CREATE TYPE myint AS INTEGER` is its own
-    /// overload. The check covers every parameter type except `STRUCT`,
+    /// overload — except that a `DECIMAL` or `MAP` is compared by type alone,
+    /// at any depth, as `DuckDB`'s overload resolution compares it:
+    /// `round(DECIMAL(18,3))` beside the built-in `round(DECIMAL)` would make
+    /// every `round` of a `DECIMAL` ambiguous, so it is refused. The check
+    /// covers every parameter type except `STRUCT`,
     /// `UNION`, `ENUM` and the `SQLNULL` / literal pseudo-types; a signature
     /// containing one of those is registered unchecked. `DuckDB` itself
     /// refuses a name that belongs to an aggregate function or a macro (such

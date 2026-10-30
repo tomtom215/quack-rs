@@ -145,9 +145,12 @@ impl DataChunk {
     /// - `CAPIScalarFunction` calls the extension's callback for the whole
     ///   flattened chunk, NULL rows included, and never inspects the result's
     ///   validity.
-    /// - `ExpressionExecutor::Execute` then calls `VerifyNullHandling`, which is
-    ///   compiled **only under `#ifdef DEBUG`** and merely *asserts* that the
-    ///   function already produced NULL wherever an input was NULL.
+    /// - `ExpressionExecutor::Execute` then calls `VerifyNullHandling`, which only
+    ///   *asserts* that the function already produced NULL wherever an input was
+    ///   NULL. Through `DuckDB` 1.5.6 it is compiled **only under `#ifdef DEBUG`**; in
+    ///   2.0.0 it is compiled in but runs only after
+    ///   `SET debug_verification_mode = 'VERIFY_FUNCTIONS'`, so a default session
+    ///   still believes the callback.
     ///
     /// So in any release build of `DuckDB` — which is every build a user runs —
     /// a callback that ignores input validity returns a non-NULL answer for a
@@ -333,8 +336,10 @@ impl DataChunk {
 
     /// Creates a [`ChunkWriter`] for this output data chunk.
     ///
-    /// The [`ChunkWriter`] tracks rows via [`next_row()`][ChunkWriter::next_row]
-    /// and automatically calls `set_size` on drop.
+    /// The [`ChunkWriter`] counts the rows claimed with
+    /// [`next_row()`][ChunkWriter::next_row] and not given back with
+    /// [`release_row()`][ChunkWriter::release_row], and calls `set_size` with
+    /// that count on drop: every row claimed must be written or given back.
     ///
     /// # Safety
     ///

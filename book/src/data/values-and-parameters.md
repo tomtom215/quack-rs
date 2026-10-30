@@ -220,6 +220,26 @@ options.struct_child(idx)?.as_str().ok()
 # }
 ```
 
+### `ARRAY`, `UNION`, `BIT` and `BIGNUM` values, and casting a value
+
+`list_items` reads a `LIST` only. On a fixed-size `ARRAY` value (an `INTEGER[3]`
+argument of a table function, a `COPY` option or a scalar bind argument) the C API reports
+no elements, so the call returns an empty `Vec`. From 0.20.0:
+
+- `Value::array_items()` returns the elements of an `ARRAY` or a `LIST`, and `None` for a
+  SQL `NULL` or any other type.
+- `Value::union_tag()` (`duckdb-1-5`) is the index of the active member of a `UNION` value.
+  The member's value reads as text through `try_cast` to `VARCHAR`.
+- `Value::try_cast(&LogicalType)` is SQL `TRY_CAST` of a value to any logical type, nested
+  ones included. It returns `None` where DuckDB cannot convert, and refuses first the
+  payloads DuckDB cannot convert safely (an out-of-range timestamp, a `DECIMAL` that is too
+  wide, also inside an `ARRAY`); no C++ exception can reach Rust.
+- `Value::bit(&[bool])` and `Value::bignum(magnitude, negative)` build `BIT` and `BIGNUM`
+  values (an error for bytes DuckDB cannot use), and `Value::as_bit()` and
+  `Value::as_bignum()` read them. The getters return `None` for a SQL `NULL` and for a
+  value of another type, where the C getters abort the process
+  ([Pitfall P16](../reference/pitfalls.md#p16)).
+
 ---
 
 `DataChunk`, which wraps the chunk a table function's scan callback writes its

@@ -33,7 +33,19 @@
 //!
 //! `catch_unwind` cannot catch anything when the crate is built with
 //! `panic = "abort"`, which silently disables everything in this module. Keep
-//! extension crates on `panic = "unwind"` — the quack-rs scaffold generates that.
+//! extension crates on `panic = "unwind"` — the quack-rs scaffold generates that,
+//! and [`entry_point!`][crate::entry_point!] and
+//! [`entry_point_v2!`][crate::entry_point_v2!] refuse to compile without it.
+//!
+//! # What no guard can catch
+//!
+//! Some failures abort the process, and with it the `DuckDB` host, whatever
+//! quack-rs does: a panic raised while another panic is already unwinding (a
+//! `Drop` that panics during the unwind: Rust prints "panic in a destructor
+//! during cleanup" and aborts), a panic hook that itself panics, and running
+//! out of memory (Rust's default allocation-error handler aborts, also when
+//! the allocation is the one that formats a panic's message). A caught panic is
+//! still reported by the panic hook, which by default prints it to stderr.
 //!
 //! # The body returns `()`
 //!

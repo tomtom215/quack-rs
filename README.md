@@ -11,21 +11,35 @@
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://blog.rust-lang.org/2025/04/03/Rust-1.86.0/"><img src="https://img.shields.io/badge/MSRV-1.86.0-blue.svg" alt="MSRV: 1.86.0"></a>
   </p>
+  <p>
+    <a href="https://quack-rs.com/">Book</a> &nbsp;·&nbsp;
+    <a href="https://docs.rs/quack-rs">API reference</a> &nbsp;·&nbsp;
+    <a href="https://github.com/tomtom215/quack-rs/blob/main/CHANGELOG.md">Changelog</a> &nbsp;·&nbsp;
+    <a href="https://quack-rs.com/reference/known-limitations.html">Known limitations</a>
+  </p>
 </div>
 
-**Write DuckDB loadable extensions in pure Rust — no C, no C++, no glue code.**
+**Write DuckDB loadable extensions in Rust, with no C or C++ to write.**
+Pre-1.0: the API changes between minor releases, and audits keep finding
+defects. Read [Status](#status) before you depend on it.
 
 ## What it is
 
 `quack-rs` wraps DuckDB's [C Extension API](https://duckdb.org/community_extensions/development)
-so that you can write a loadable extension entirely in Rust.
+so that you can write a loadable extension entirely in Rust. Your repository
+holds Rust only: no C or C++ source, no CMake file, no glue layer of your own
+between your functions and the C API. The build still runs other people's C and
+tools: dependencies of the DuckDB bindings may compile C, the `bundled-test*`
+features compile C++ or C, and the community-extension flow needs Python and git
+([Installation](https://quack-rs.com/getting-started/installation.html#build-requirements)
+has the list).
 
 - **Every function kind the C API can register:** scalar, aggregate, table, cast,
   copy and replacement scan functions, plus SQL macros.
 - **Scalar functions as safe closures.** `ScalarFunctionBuilder::map1` and its
   siblings take a plain Rust closure, derive the SQL types from its signature,
   return NULL for NULL input, and turn a panic into a SQL error.
-- **Guards against documented FFI pitfalls.** Most of the 34 pitfalls in
+- **Guards against documented FFI pitfalls.** Most of the 38 pitfalls in
   [`LESSONS.md`](./LESSONS.md) are prevented by a wrapper, such as NULL output
   that is silently lost, a boolean read that is undefined behaviour, or a double
   free in an aggregate destructor. The rest are documented.
@@ -52,20 +66,26 @@ nothing can be caught, and a panic kills the user's DuckDB process.
 name = "my_extension"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.86"       # with resolver 3, Cargo picks dependency versions that build on it
+# With resolver 3, Cargo picks versions that build on this.
+rust-version = "1.86"
 resolver = "3"
 
 [lib]
-name = "my_extension"       # must match the extension name (Pitfall P1)
+# Must match the extension name (Pitfall P1).
+name = "my_extension"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-quack-rs = "0.19"
-libduckdb-sys = { version = ">=1.4.4, <2", features = ["loadable-extension"] }
+quack-rs = "0.20"
+
+[dependencies.libduckdb-sys]
+version = ">=1.4.4, <1.20100"
+default-features = false
+features = ["loadable-extension"]
 
 [profile.release]
-panic = "unwind"            # required
-lto = true                  # the rest are recommended
+panic = "unwind"   # required
+lto = true         # the rest are recommended
 opt-level = 3
 codegen-units = 1
 strip = true
@@ -79,17 +99,25 @@ use quack_rs::entry_point;
 use quack_rs::error::ExtensionError;
 use quack_rs::scalar::ScalarFunctionBuilder;
 
-fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
-    // Parameter and return types come from the closure signatures.
-    // A NULL argument gives a NULL result without calling the closure.
-    // `try_map1` lets the closure fail: a plain `x * 2` wraps on overflow in a
-    // release build, and `Err` becomes a SQL error instead.
-    let double_it = ScalarFunctionBuilder::try_map1("double_it", |x: i64| {
-        x.checked_mul(2).ok_or("double_it: BIGINT overflow")
-    })?;
-    let shout = ScalarFunctionBuilder::map1_str("shout", |s: &str| s.to_uppercase())?;
+fn register(
+    con: duckdb_connection,
+) -> Result<(), ExtensionError> {
+    // Types come from the closure signatures. A NULL
+    // argument gives a NULL result without calling the
+    // closure. `try_map1` lets the closure fail: a plain
+    // `x * 2` wraps on overflow in a release build, and
+    // `Err` becomes a SQL error instead.
+    let double_it = ScalarFunctionBuilder::try_map1(
+        "double_it",
+        |x: i64| x.checked_mul(2).ok_or("double_it: overflow"),
+    )?;
+    let shout = ScalarFunctionBuilder::map1_str(
+        "shout",
+        |s: &str| s.to_uppercase(),
+    )?;
 
-    // SAFETY: `con` is the live connection DuckDB passed to the entry point.
+    // SAFETY: `con` is the live connection DuckDB passed to
+    // the entry point.
     unsafe {
         double_it.register(con)?;
         shout.register(con)?;
@@ -111,11 +139,13 @@ project pins an older toolchain. Your extension itself still builds on 1.86.
 ```shell
 cargo build --release
 cargo install quack-rs --bin append_metadata
-append_metadata target/release/libmy_extension.so my_extension.duckdb_extension \
+append_metadata target/release/libmy_extension.so \
+    my_extension.duckdb_extension \
     --abi-type C_STRUCT --extension-version v0.1.0 \
     --duckdb-version v1.2.0 --platform linux_amd64
 
-duckdb -unsigned -c "LOAD './my_extension.duckdb_extension'; SELECT double_it(21), shout('hello');"
+duckdb -unsigned -c "LOAD './my_extension.duckdb_extension';
+SELECT double_it(21), shout('hello');"
 # ┌───────────────┬────────────────┐
 # │ double_it(21) │ shout('hello') │
 # │     int64     │    varchar     │
@@ -141,12 +171,12 @@ line. Checked against the published sources of `duckdb` and
 `duckdb-loadable-macros` 1.20000.1, `duckdb-neo` 0.20000.1 and the
 `extension-template-rs` repository's `main` on 2026-10-29:
 
-| | quack-rs | `duckdb` + `duckdb-loadable-macros` | `extension-template-rs` + `duckdb-neo` |
+| | quack-rs | `duckdb` + macros | template + `duckdb-neo` |
 |---|---|---|---|
-| C API | v1, stable | v1 by default (`<name>_init_c_api`); v2 behind the macros' `neo` feature | v2, unstable (`<name>_init_c_api_v2`) |
-| Binary loads in | every DuckDB from 1.4.4 through 2.0.x, with the default features | set by the C API v1 stamp, as for quack-rs | only the DuckDB release it was built for ("Binaries load only in the exact TARGET_DUCKDB_VERSION", the template's `Makefile`) |
-| Wraps | scalar, aggregate, table, cast, copy and replacement-scan functions; SQL macros | scalar (`vscalar`) and table (`vtab`) functions | modules for scalar, aggregate, table, cast, copy, macro and pragma functions, replacement scans, custom types and options, and log sinks |
-| Status | pre-1.0, audited (below) | the `duckdb` crate | `duckdb-neo` describes itself as experimental |
+| C API | v1, stable | v1 by default; v2 behind the macros' `neo` feature | v2, unstable |
+| Binary loads in | every DuckDB 1.4.4 to 2.0.x (default features; tested to 2.0.0) | as quack-rs: set by the C API v1 stamp | the one DuckDB release it was built for (the template's `Makefile` says so) |
+| Wraps | scalar, aggregate, table, cast, copy, replacement scan; macros | scalar and table functions | scalar, aggregate, table, cast, copy, macro and pragma functions; scans, types, options, log sinks |
+| Status | pre-1.0 (see Status) | the `duckdb` crate | `duckdb-neo` calls itself experimental |
 
 Use `duckdb-neo` if you target DuckDB 2.0 and later only and want upstream's
 wrapper, or need what only the v2 API offers (pragma functions, for one).
@@ -157,19 +187,23 @@ declares part of that API stable.
 
 ## Status
 
-`quack-rs` is pre-1.0 (0.19.0). Judge it against your own requirements; the
-record so far:
+`quack-rs` is pre-1.0. Judge it against your own requirements; the record so
+far:
 
 - **The API still changes.** A minor release before 1.0 can break it; each lists
   its breaking changes and migration notes in [`CHANGELOG.md`](./CHANGELOG.md).
-- **Audits keep finding real defects.** The review released as 0.16.0 fixed
-  defects in earlier releases, including two heap-corruption paths. The 0.18.0
-  audits fixed further soundness holes in the safe API, process aborts and wrong
-  answers, and found a serious defect in unreleased code before publication:
-  aggregate functions returned wrong results in release builds with Cargo's
-  default profile. [`AUDIT.md`](./AUDIT.md) records each audit, what it found,
-  and whether each fix was reproduced against a real DuckDB or derived from
-  DuckDB's source.
+- **Audits keep finding real defects.** The 0.16.0 release, which came out of a
+  review, fixed defects in earlier releases, including two heap-corruption
+  paths. The 0.18.0 audits fixed further soundness holes in the safe API,
+  process aborts and wrong answers, and found a serious defect in unreleased
+  code before publication: aggregate functions returned wrong results in release
+  builds with Cargo's default profile. [`AUDIT.md`](./AUDIT.md) records each
+  audit, what it found, and whether each fix was reproduced against a real
+  DuckDB or derived from DuckDB's source. **Use 0.18.0 or later.** Earlier
+  releases still have the soundness holes in the safe API, and 0.7.0 through
+  0.15.0 can corrupt the heap when the `duckdb-1-5` features are used.
+- **Maintenance.** One maintainer ([`GOVERNANCE.md`](./GOVERNANCE.md)).
+  [`SECURITY.md`](./SECURITY.md) lists the release lines that receive fixes.
 - **Some limits are DuckDB's.** Defects in DuckDB's C API that quack-rs can only
   document or work around are listed under
   [Known Limitations](https://quack-rs.com/reference/known-limitations.html).
@@ -185,11 +219,18 @@ release you support.
 
 ## Supported versions
 
-- **DuckDB:** 1.4.4 through 2.0.0. The `libduckdb-sys = ">=1.4.4, <2"` range
-  covers the bindings for all of them, 1.4.4 through 1.20000.0 (DuckDB 2.0,
-  published 2026-10-22). 1.20000.0 needs Rust 1.88; on 1.88 or newer
+- **DuckDB:** with the default features, 1.4.4 through 2.0.x (the tests ran
+  against 2.0.0, the newest release when 0.20.0 was published). With a
+  `duckdb-1-5*` feature, only the releases whose C API layout quack-rs has
+  verified: 1.5.6 and 2.0.0. Any other release, a future 2.0.1 included, is
+  refused at `LOAD` (see below).
+- **`libduckdb-sys`:** `>=1.4.4, <1.20100`. That covers the bindings for every
+  DuckDB release above, 1.4.4 through 1.20000.x (the DuckDB 2.0 bindings, first
+  published 2026-10-22). 1.20000.x needs Rust 1.88; on 1.88 or newer
   `cargo update` selects it, and an older toolchain with MSRV-aware resolution
-  stays on 1.10506.x (DuckDB 1.5.6).
+  stays on 1.10506.x (DuckDB 1.5.6). The upper bound keeps out the DuckDB 2.1
+  bindings (1.20100.x) until a quack-rs release has been tested against them
+  ([why](https://quack-rs.com/getting-started/installation.html#adding-quack-rs-to-an-existing-extension)).
 - **Rust (MSRV):** 1.86.0.
 
 DuckDB 2.0.0 (2026-10-21) is a long-term support release, supported until at
@@ -197,12 +238,21 @@ least October 2027; DuckDB supports 1.4 until late November 2026 and 1.5 until
 March 2027.
 
 With the default features, one extension binary loads into every DuckDB release
-from 1.4.4 through 2.0.0, because it is stamped with C API version `v1.2.0`.
+from 1.4.4 through 2.0.x, because it is stamped with C API version `v1.2.0`.
 DuckDB 1.4.4 to 1.5.5 declare that version; 1.5.6 and 2.0.0 declare `v1.5.6`
 and still load `v1.2.0` extensions. The `duckdb-1-5*` features use the part of
-DuckDB's C API whose layout differed between releases before 1.5.6: build such
-an extension against the 1.5.6 bindings and stamp it `C_STRUCT` with C API
-`v1.5.6`, and it loads into DuckDB 1.5.6 and 2.0.0. See
+DuckDB's C API whose layout changed between releases up to 1.5.5 (DuckDB
+labels C API v1.5.6 stable, with the caveat below). Build such an extension against the 1.5.6
+bindings and stamp it `C_STRUCT` with C API `v1.5.6`; it then loads into DuckDB
+1.5.6 and 2.0.0. quack-rs has verified that layout for DuckDB 1.5.2 to 1.5.6 and
+2.0.0 only, and DuckDB's 2.0.0 header says the API is guaranteed for that exact
+release (2.0.0 added two slots to the range that 1.5.6 declared stable). So under
+the default `Strict` policy such an extension refuses to load into a release
+quack-rs has not listed, with an error that says how to fix it. When one appears
+(DuckDB 2.0.1, for example), either rebuild with
+`QUACK_RS_TARGET_DUCKDB_VERSION` set to that release, once you have checked it,
+or move to a quack-rs release that lists it; or stay on the default features,
+which are not affected. See
 [ABI Compatibility](https://quack-rs.com/concepts/abi.html) before you enable one.
 
 ## Cargo features
@@ -232,8 +282,12 @@ struct layouts first in 1.10504.0, although the DuckDB functions exist from
 - **API reference**: [docs.rs/quack-rs](https://docs.rs/quack-rs). The crate
   root lists every module.
 - [Pitfall Catalog](https://quack-rs.com/reference/pitfalls.html) and
-  [`LESSONS.md`](./LESSONS.md): all 34 known pitfalls (L1–L19, P1–P15), with
+  [`LESSONS.md`](./LESSONS.md): all 38 known pitfalls (L1–L21, P1–P17), with
   symptom, cause and fix.
+- [`examples/hello-ext`](./examples/hello-ext): one extension with scalar,
+  aggregate, table, cast, macro and replacement-scan functions, checked in CI.
+  It uses raw callbacks, which are not panic-guarded: read it for the C API
+  calls, do not copy it as a template.
 - [Community Extensions](https://quack-rs.com/publishing.html): `description.yml`,
   naming, versioning, platforms and submission.
 - [Testing Guide](https://quack-rs.com/testing.html): mocks, `AggregateTestHarness`
@@ -241,11 +295,21 @@ struct layouts first in 1.10504.0, although the DuckDB functions exist from
 - [`docs/architecture.md`](./docs/architecture.md): module layout, design
   principles and the architecture decision records.
 - [`CHANGELOG.md`](./CHANGELOG.md): every release, with breaking changes and
-  migration notes. The latest is 0.19.0 (2026-10-22).
+  migration notes. The latest is 0.20.0 (2026-10-30).
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md): development setup, quality gates and
   the test strategy.
 - [`SECURITY.md`](./SECURITY.md): supported versions and how to report a
   vulnerability.
+
+## Getting help
+
+- A bug, or something the book does not answer:
+  [GitHub issues](https://github.com/tomtom215/quack-rs/issues). The bug report
+  template asks for the DuckDB version that fails and the footer stamp.
+- `LOAD` fails before your code runs: the [FAQ](https://quack-rs.com/faq.html)
+  lists the messages DuckDB gives and what causes each.
+- A vulnerability: report it privately, as [`SECURITY.md`](./SECURITY.md)
+  describes.
 
 ## License
 

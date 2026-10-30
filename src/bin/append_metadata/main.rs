@@ -38,8 +38,8 @@
 mod cli;
 mod entry;
 mod footer;
+mod output;
 
-use std::fs;
 use std::process;
 
 use cli::{Args, Command};
@@ -77,8 +77,14 @@ fn stamp(mut data: Vec<u8>, args: &Args) -> Result<(Vec<u8>, [u8; footer::METADA
 }
 
 fn run() -> Result<(), String> {
-    let raw: Vec<String> = std::env::args().collect();
-    let prog = raw.first().map_or("append_metadata", String::as_str);
+    // `args_os`, not `args`: the latter panics on an argument that is not
+    // UTF-8, and a file name on Unix can be any bytes but NUL (HARDEN-4).
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let prog = raw.first().map_or_else(
+        || "append_metadata".into(),
+        |p| p.to_string_lossy().into_owned(),
+    );
+    let prog = prog.as_str();
     let args = match cli::parse(raw.get(1..).unwrap_or_default()) {
         Ok(Command::Help) => {
             eprintln!("{}", cli::help(prog));
@@ -91,8 +97,7 @@ fn run() -> Result<(), String> {
         eprintln!("warning: {warning}");
     }
 
-    let so_data = fs::read(&args.input)
-        .map_err(|e| format!("failed to read {}: {e}", args.input.display()))?;
+    let so_data = output::read_input(&args.input)?;
     // A C API extension is found by `<name>_init_c_api`, `<name>` being the
     // output's file name. A WebAssembly module's export names are not
     // NUL-terminated strings, and a C++ extension has other entry points.
@@ -101,13 +106,13 @@ fn run() -> Result<(), String> {
             eprintln!("warning: {note}");
         }
     }
-    let (output, metadata) = stamp(so_data, &args)?;
+    let (stamped, metadata) = stamp(so_data, &args)?;
 
-    entry::write_atomically(&args.output, &output)?;
+    output::write_atomically(&args.output, &stamped)?;
 
     println!(
         "Written {} bytes → {} ({} for {})",
-        output.len(),
+        stamped.len(),
         args.output.display(),
         args.abi_type,
         args.platform
@@ -129,3 +134,5 @@ fn main() {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_output;

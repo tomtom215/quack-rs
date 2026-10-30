@@ -277,8 +277,13 @@ for row in 0..chunk.size() {
 
 `ChunkWriter` wraps an output `duckdb_data_chunk` and counts the rows handed out
 by `next_row`. It calls `set_size` with that count on drop, so the row count
-cannot be forgotten or set wrongly. `next_row` returns `None` once the chunk
-holds `duckdb_vector_size()` rows:
+cannot be forgotten. `next_row` returns `None` once the chunk
+holds `duckdb_vector_size()` rows. The count is of rows you **claimed**: write every row
+you claim. A claimed row that is never written is published with whatever the reused
+output buffer held last ([Pitfall L21](../reference/pitfalls.md#l21-a-chunk-row-you-claim-is-published-written-or-not)),
+so check that the source has another value before you claim the row, or give the last
+claimed row back with `release_row(row)` before the writer is dropped (it panics for any
+other row, so the mistake is loud):
 
 ```rust
 # use libduckdb_sys::{duckdb_data_chunk, duckdb_function_info, duckdb_vector};

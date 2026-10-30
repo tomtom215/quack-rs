@@ -22,8 +22,9 @@ decide what to build.
 
 Exit codes:
     0  the lists agree
-    1  they diverge
-    2  the matrix could not be fetched or parsed (network, layout change)
+    1  they diverge, or the matrix is not where or what it was (HTTP 4xx, an
+       entry without `duckdb_arch`, no entries): the script needs updating
+    2  the matrix could not be fetched (network failure, HTTP 5xx or 429)
 
 Usage:
     python3 scripts/check-platform-table.py
@@ -36,6 +37,7 @@ import argparse
 import json
 import re
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -83,7 +85,16 @@ def main() -> int:
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             matrix = json.loads(response.read().decode("utf-8"))
-    except Exception as error:  # noqa: BLE001 - any failure is "could not check"
+    except urllib.error.HTTPError as error:
+        if 400 <= error.code < 500 and error.code != 429:
+            print(
+                f"::error::{url} answered HTTP {error.code}: the file moved or the ref "
+                "does not exist, so this check cannot read the distribution matrix"
+            )
+            return 1
+        print(f"::warning::could not fetch {url}: {error}")
+        return 2
+    except Exception as error:  # noqa: BLE001 - network, DNS, TLS, timeouts: "could not check"
         print(f"::warning::could not fetch {url}: {error}")
         return 2
 
@@ -92,13 +103,13 @@ def main() -> int:
         for entry in group.get("include", []):
             arch = entry.get("duckdb_arch")
             if not arch:
-                print(f"::warning::an entry in {url} has no duckdb_arch")
-                return 2
+                print(f"::error::an entry in {url} has no duckdb_arch: the layout changed")
+                return 1
             upstream[arch] = bool(entry.get("opt_in", False))
 
     if not upstream:
-        print(f"::warning::{url} listed no architectures — layout may have changed")
-        return 2
+        print(f"::error::{url} listed no architectures: the layout changed")
+        return 1
 
     upstream_opt_in = {arch for arch, is_opt_in in upstream.items() if is_opt_in}
 

@@ -170,3 +170,8 @@ SELECT value FROM gen_series_v2(3);
 0
 1
 2
+
+== T30
+SELECT * FROM gen_series_v2(3, step := 4611686018427387904);
+----
+ERROR: Invalid Input Error: gen_series_v2: value 2 * step 4611686018427387904 is out of range for BIGINT

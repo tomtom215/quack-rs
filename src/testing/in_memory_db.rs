@@ -46,14 +46,14 @@
 //! ```toml
 //! # In your extension's Cargo.toml:
 //! [dev-dependencies]
-//! quack-rs = { version = "0.19", features = ["bundled-test"] }
+//! quack-rs = { version = "0.20", features = ["bundled-test"] }
 //! ```
 //!
 //! …or link a pre-built libduckdb for a much faster build:
 //!
 //! ```toml
 //! [dev-dependencies]
-//! quack-rs = { version = "0.19", features = ["bundled-test-prebuilt"] }
+//! quack-rs = { version = "0.20", features = ["bundled-test-prebuilt"] }
 //! ```
 //!
 //! With `bundled-test-prebuilt`, build with `DUCKDB_DOWNLOAD_LIB=1` (let
@@ -101,7 +101,7 @@
 // atomic table is populated in one go — after which the `duckdb` crate can
 // open connections and execute queries as usual.
 
-extern "C" {
+unsafe extern "C" {
     /// Writes a `duckdb_ext_api_v1` into `out` with every function pointer set
     /// to the corresponding linked `DuckDB` symbol, as `DuckDB`'s internal
     /// `CreateAPIv1()` does: [`quack_rs_api_v1_size`] bytes, every one of them.

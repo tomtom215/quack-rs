@@ -28,7 +28,7 @@ env:
 jobs:
   coverage:
     name: Test coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # `--all-features` compiles DuckDB from C++; the default limit is 360 minutes.
     timeout-minutes: 90
     steps:
@@ -36,12 +36,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          toolchain: 1.99.1
           components: llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-llvm-cov
         env:

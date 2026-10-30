@@ -30,7 +30,8 @@ if err.has_error() {
 
 ## Constructing an error
 
-Build a structured error to hand back to DuckDB (for example from a callback):
+Build a structured error value, for example in a test or to pass between your own
+functions:
 
 ```rust
 # // ErrorData is a DuckDB object: fill the dispatch table first.
@@ -41,6 +42,13 @@ let err = ErrorData::new(DuckDbErrorType::InvalidInput, "row index out of range"
 assert!(err.has_error());
 assert_eq!(err.error_type(), DuckDbErrorType::InvalidInput);
 ```
+
+**No callback API accepts an `ErrorData`.** A scalar, aggregate, table, cast or `COPY`
+callback reports a failure with its `set_error(&str)`, and DuckDB chooses the error
+category: a scalar function's execution error surfaces as an `Invalid Input Error`, a
+table function's bind error as a `Binder Error`, whatever `DuckDbErrorType` you hold.
+To branch on a kind of failure inside your extension, keep your own error enum and
+format it into the message.
 
 ## Propagating with `?`
 

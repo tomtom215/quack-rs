@@ -67,8 +67,13 @@ mod bind;
 mod chunk;
 mod connection;
 mod cstr;
+mod metadata;
 mod prepared;
 mod result;
+
+#[cfg(feature = "duckdb-1-5")]
+pub use metadata::table_names;
+pub use metadata::StatementType;
 
 use libduckdb_sys::{
     duckdb_connection, duckdb_destroy_prepare, duckdb_destroy_result, duckdb_prepare,
@@ -280,6 +285,15 @@ pub unsafe fn prepare(
 /// `percentage` is `-1.0` when `DuckDB` cannot report progress — the progress
 /// bar is disabled (`SET enable_progress_bar = true` turns it on), no query is
 /// running, or the connection handle was null.
+///
+/// On `DuckDB` 1.x it is also `-1.0` for as long as any pipeline of the
+/// running query cannot estimate its progress: `ProgressBar::Update`
+/// (`progress_bar.cpp`, 1.5.6) leaves the percentage untouched while one
+/// reports none, and the value is refreshed only between the executor tasks
+/// the querying thread runs (`ClientContext::ExecuteTaskInternal`).
+/// A `-1.0` was read throughout a query on 1.5.6 where 2.0.0 reported
+/// 1.18 %, 1.34 %, 1.47 % for the same one (observed in a review, not
+/// re-run for this documentation). Treat `-1.0` as "unknown", not as an error.
 ///
 /// The three fields are read from separate atomics, so they are individually
 /// current but not a consistent snapshot of one instant.

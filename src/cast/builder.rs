@@ -105,6 +105,27 @@ impl CastFunctionInfo {
         unsafe { duckdb_cast_function_get_extra_info(self.info) }
     }
 
+    /// Borrows the extra info set with
+    /// [`CastFunctionBuilder::extra_info_typed`] as a `T`; `None` when none
+    /// was set or it holds another type.
+    ///
+    /// # Safety
+    ///
+    /// This cast's extra info, if any, was set through `extra_info_typed` and
+    /// not through the raw [`extra_info`][CastFunctionBuilder::extra_info]:
+    /// the type tag read here is the one `extra_info_typed` writes, and a raw
+    /// pointer carries none.
+    // One FFI call (`get_extra_info`) then the tag check, whose mutants
+    // `extra_info::typed_tests` kill; the `-> None` mutant needs a live engine.
+    #[cfg_attr(test, mutants::skip)]
+    #[must_use]
+    pub unsafe fn extra_info_ref<T: 'static>(&self) -> Option<&T> {
+        // SAFETY: the pointer is null or tagged (this method's contract);
+        // DuckDB keeps it alive while the cast is registered, which outlasts
+        // this callback and so `&self`.
+        unsafe { crate::extra_info::tagged_ref(self.get_extra_info()) }
+    }
+
     /// Records the error `DuckDB` raises when the callback returns `false`.
     ///
     /// Use this only in [`CastMode::Normal`], where returning `false` fails the
@@ -362,6 +383,42 @@ impl CastFunctionBuilder {
         // SAFETY: forwarded from this method's own contract.
         self.extra_info = Some(unsafe { crate::extra_info::ExtraInfo::new(ptr, destroy) });
         self
+    }
+
+    /// Attaches `value` as this cast's extra info: the safe, typed form of
+    /// [`extra_info`][Self::extra_info].
+    ///
+    /// quack-rs boxes `value` behind a type tag and generates its destructor,
+    /// which contains a panic in `T::drop` and runs once — when `DuckDB`
+    /// releases the cast, or when this builder is dropped unregistered. Read
+    /// it in the callback with [`CastFunctionInfo::extra_info_ref`], which
+    /// returns `None` for any other type instead of reinterpreting memory.
+    /// `T` is `Send + Sync` because every thread running the cast reads the
+    /// same value.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::cast::{CastFunctionBuilder, CastFunctionInfo};
+    /// use quack_rs::types::TypeId;
+    ///
+    /// struct Unit(&'static str);
+    ///
+    /// let builder =
+    ///     CastFunctionBuilder::new(TypeId::Double, TypeId::Varchar).extra_info_typed(Unit("kg"));
+    /// # drop(builder);
+    ///
+    /// fn unit(info: &CastFunctionInfo) -> &str {
+    ///     // SAFETY: this cast's extra info is only ever set with `extra_info_typed`.
+    ///     unsafe { info.extra_info_ref::<Unit>() }.map_or("", |u| u.0)
+    /// }
+    /// ```
+    pub fn extra_info_typed<T: Send + Sync + 'static>(self, value: T) -> Self {
+        let (data, destroy) = crate::extra_info::into_tagged(value);
+        // SAFETY: `into_tagged` returns a fresh allocation, used by no one
+        // else, and the destructor that frees it exactly once without
+        // unwinding; `T: Send + Sync`.
+        unsafe { self.extra_info(data, Some(destroy)) }
     }
 
     /// The completeness checks that need no `DuckDB` call: a function

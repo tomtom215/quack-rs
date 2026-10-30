@@ -484,7 +484,7 @@ impl VectorReader {
         unsafe { crate::vector::string::read_duck_blob(self.data, idx) }
     }
 
-    /// Reads a `UUID` value at row `idx` as an `i128`.
+    /// Reads a `UUID` value at row `idx` as a `u128`.
     ///
     /// Reads the UUID's **textual** 128 bits — the value the column renders,
     /// and what every Rust `Uuid` type holds.

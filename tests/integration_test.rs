@@ -1212,6 +1212,71 @@ fn documented_source_trees_match_the_filesystem() {
     }
 }
 
+/// Every manifest that names `libduckdb-sys` (the root, the example, the fuzz
+/// crate, the benchmarks, the book's doctests) and the manifest the scaffold
+/// writes state the same version requirement.
+///
+/// The ceiling (`<1.20100`, below the `DuckDB` 2.1 bindings) is what keeps an
+/// unseen bindings release out of every build, and there are six places to
+/// raise it; one left behind makes that crate build against bindings the rest
+/// of the repository has not been tested with.
+#[test]
+fn every_manifest_states_the_same_bindings_requirement() {
+    fn requirement(manifest: &str, what: &str) -> String {
+        let line = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("libduckdb-sys = {"))
+            .unwrap_or_else(|| panic!("{what}: no `libduckdb-sys = {{` line"));
+        let rest = line
+            .split_once("version = \"")
+            .unwrap_or_else(|| panic!("{what}: no version in {line:?}"))
+            .1;
+        rest.split('"').next().expect("closing quote").to_owned()
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |rel: &str| {
+        std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+    };
+    let expected = requirement(&read("Cargo.toml"), "Cargo.toml");
+
+    // The generated manifest is checked wherever the test runs.
+    let config = quack_rs::scaffold::ScaffoldConfig {
+        name: "my_ext".to_string(),
+        description: "x".to_string(),
+        maintainer: "Jane Doe".to_string(),
+        github_repo: "janedoe/my-ext".to_string(),
+        ..quack_rs::scaffold::ScaffoldConfig::default()
+    };
+    let files = quack_rs::scaffold::generate_scaffold(&config).expect("scaffold");
+    let generated = files
+        .iter()
+        .find(|f| f.path == "Cargo.toml")
+        .expect("Cargo.toml");
+    assert_eq!(
+        requirement(&generated.content, "the scaffold's Cargo.toml"),
+        expected
+    );
+
+    // The others are not in the published package; skip only when the whole
+    // directory is missing, as in the other tests that read the repository.
+    if !root.join("examples").is_dir() {
+        eprintln!(
+            "SKIPPED every_manifest_states_the_same_bindings_requirement: the auxiliary \
+             manifests are not part of the packaged crate"
+        );
+        return;
+    }
+    for rel in [
+        "examples/hello-ext/Cargo.toml",
+        "fuzz/Cargo.toml",
+        "benches/engine/Cargo.toml",
+        "book/doctest/Cargo.toml",
+    ] {
+        assert_eq!(requirement(&read(rel), rel), expected, "{rel}");
+    }
+}
+
 /// Every "N pitfalls" claim in the documentation matches the number of
 /// pitfalls `LESSONS.md` actually documents.
 ///

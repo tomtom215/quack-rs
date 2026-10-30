@@ -27,7 +27,9 @@
 //! }
 //! ```
 
+mod bits;
 mod blob;
+mod cast;
 mod checks;
 mod composite;
 mod defaults;
@@ -79,6 +81,11 @@ use crate::error::ExtensionError;
 /// - [`as_f32`][Value::as_f32] — cast to FLOAT → `Option<f32>`
 /// - [`as_f64`][Value::as_f64] — cast to DOUBLE → `Option<f64>`
 /// - [`as_bool`][Value::as_bool] — cast to BOOLEAN → `Option<bool>`
+/// - [`as_bit`][Value::as_bit] / [`as_bignum`][Value::as_bignum] — BIT and
+///   BIGNUM, which the C getters would abort the process on for a `NULL`
+/// - [`try_cast`][Value::try_cast] — cast to any [`LogicalType`][crate::types::LogicalType],
+///   nested ones included; [`array_items`][Value::array_items] reads an
+///   `ARRAY`, which [`list_items`][Value::list_items] cannot
 ///
 /// No accessor calls into `DuckDB` for a null handle or a SQL `NULL` — the
 /// scalar getters return `None`, `as_str`/`as_blob` an error — and none
@@ -312,11 +319,14 @@ impl Value {
 /// That is a value holding a timestamp or time payload outside the range
 /// `DuckDB` converts, a `DECIMAL` wider than its type, a `VARIANT`, a
 /// `GEOMETRY` or a type quack-rs does not know, or an `ARRAY` / `UNION` that
-/// could hold one, whose elements the C API gives no way to check first.
+/// could hold one, whose elements the C API gives no way to check first; or a
+/// `BIT` whose bytes are malformed, which only the raw `duckdb_create_bit`
+/// builds.
 pub const UNRENDERABLE: &str = "Value cannot be rendered: it holds a timestamp or time payload \
-     outside the range DuckDB converts, a DECIMAL wider than its type, a VARIANT, a GEOMETRY or a \
-     type quack-rs does not know (or an ARRAY / UNION that could hold one, which cannot be \
-     checked), and DuckDB's rendering would throw through the C API and abort the process";
+     outside the range DuckDB converts, a DECIMAL wider than its type, a VARIANT, a GEOMETRY, a \
+     malformed BIT or a type quack-rs does not know (or an ARRAY / UNION that could hold one, \
+     which cannot be checked), and DuckDB's rendering would throw through the C API and abort \
+     the process";
 
 impl Drop for Value {
     fn drop(&mut self) {

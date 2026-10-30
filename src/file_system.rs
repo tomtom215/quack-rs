@@ -327,10 +327,77 @@ const CHUNK: usize = 64 * 1024;
 ///     let _ = handle.size();
 /// }
 /// ```
+///
+/// # Threads
+///
+/// A `FileHandle` is [`Send`]: it may be moved to, used on and dropped on
+/// another thread. It is not [`Sync`], so two threads cannot use one at
+/// the same time; share it behind a [`Mutex`](std::sync::Mutex). See the
+/// `unsafe impl Send` below for the reasoning.
+///
+/// ```rust,compile_fail
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<quack_rs::file_system::FileHandle<'static>>();
+/// ```
+///
+/// # Keeping a file open across callbacks
+///
+/// A `COPY ... TO` writer opens its file in `global_init`, writes it in
+/// `sink` and closes it in `finalize`, so the handle has to live in the
+/// statement's global state, which is `'static` and shared by every sink
+/// thread. The borrow above cannot express that the state is destroyed while
+/// the statement — and so the connection and database — are still alive, so
+/// end it explicitly, once, and keep the handle in a `Mutex`:
+///
+/// ```rust,no_run
+/// use std::sync::Mutex;
+/// use quack_rs::copy_function::CopyGlobalInitInfo;
+/// use quack_rs::file_system::{FileHandle, FileOpenOptions, FileSystem};
+///
+/// struct Writer {
+///     file: Mutex<FileHandle<'static>>,
+/// }
+///
+/// # fn global_init(info: &CopyGlobalInitInfo) -> Result<(), String> {
+/// // SAFETY: the context is only used inside this callback.
+/// let ctx = unsafe { info.get_client_context() };
+/// let fs = FileSystem::from_client_context(&ctx).ok_or("no file system")?;
+/// // SAFETY: DuckDB copies the path out before the callback returns.
+/// let path = unsafe { info.get_file_path() }.map_err(|e| e.to_string())?;
+/// let path = std::ffi::CString::new(path).map_err(|e| e.to_string())?;
+/// let file = fs.open(&path, &FileOpenOptions::write_create()).map_err(|e| e.to_string())?;
+/// // SAFETY: the handle ends up in this statement's global state, which
+/// // DuckDB destroys before the statement finishes, while the connection and
+/// // the database it was opened against are still open.
+/// let file: FileHandle<'static> = unsafe { FileHandle::from_raw(file.into_raw()) };
+/// info.set_global_state_typed(Writer { file: Mutex::new(file) });
+/// # Ok(())
+/// # }
+/// ```
+///
+/// `sink` then reads it with `global_state_ref::<Writer>()` and locks the
+/// mutex to write; dropping the state closes the file.
 pub struct FileHandle<'fs> {
     handle: duckdb_file_handle,
     _file_system: PhantomData<&'fs ()>,
 }
+
+// SAFETY: a `duckdb_file_handle` is a heap `CFileHandle { ErrorData
+// error_data; unique_ptr<FileHandle> handle; }` (`file_system-c.cpp`,
+// byte-identical in 1.5.6 and 2.0.0), and nothing in it is tied to the thread
+// that created it: `duckdb::FileHandle` holds a reference to the database's
+// file system (one object shared by every connection and thread), the path
+// and the open flags, and a local file's `UnixFileHandle` adds only its file
+// descriptor and a position kept for logging (`local_file_system.cpp`). No
+// call in `file_system-c.cpp` reads thread-local state. Moving a handle to
+// another thread and using or dropping it there is therefore sound.
+// Concurrent use is not — every call writes `error_data` without
+// synchronisation, and `Read`/`Write` move one shared file position — so
+// `Sync` is not implemented. The `'fs` borrow is unaffected: a moved handle
+// still cannot outlive its file system. The live test
+// `a_file_handle_is_used_and_dropped_on_another_thread` opens a file on one
+// thread and writes, reads and drops it on another.
+unsafe impl Send for FileHandle<'_> {}
 
 impl FileHandle<'_> {
     /// Wraps a raw `duckdb_file_handle`, taking ownership.
@@ -354,6 +421,22 @@ impl FileHandle<'_> {
     #[must_use]
     pub const fn as_raw(&self) -> duckdb_file_handle {
         self.handle
+    }
+
+    /// Consumes the `FileHandle` and returns the raw handle without closing
+    /// it, the inverse of [`from_raw`][Self::from_raw].
+    ///
+    /// The caller takes over closing (`duckdb_file_handle_close`) and
+    /// destroying (`duckdb_destroy_file_handle`) it — or hands it back to
+    /// `from_raw`, which is how a handle is moved into state that outlives
+    /// this borrow (see [Keeping a file open across
+    /// callbacks](Self#keeping-a-file-open-across-callbacks)).
+    #[inline]
+    #[must_use]
+    pub const fn into_raw(self) -> duckdb_file_handle {
+        let raw = self.handle;
+        std::mem::forget(self);
+        raw
     }
 
     /// Reads up to `buf.len()` bytes into `buf`, returning the number of bytes
