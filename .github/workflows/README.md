@@ -62,6 +62,7 @@ replaced had drifted to fewer than half the jobs.
 | `asan` | AddressSanitizer | blocking |
 | `semver` | Public API (semver-checks) | blocking |
 | `fuzz` | Fuzz (smoke) | blocking |
+| `workflow-lint` | Workflow lint (actionlint) | blocking |
 | `ci-ok` | CI passed | blocking (aggregate) |
 
 **Branch protection should require exactly one check: `CI passed`** (the
@@ -108,10 +109,9 @@ Neither `yaml.safe_load` nor a JSON-Schema validator catches it, because both
 treat the `run:` block as an opaque string. `scripts/check-workflow-expressions.py`
 runs in the `doc` job and does.
 
-`actionlint` also catches it and catches much more besides. It is not wired in
-here only because it ships as a Go binary from GitHub releases and cannot be
-checksum-pinned the way `osv-scanner` is in `ci.yml`. If a pinned, verifiable
-install becomes available, adding it would be a strict improvement.
+`actionlint` also catches it and catches much more besides; the `workflow-lint`
+job runs it from the release tarball, pinned by version and sha256 the way
+`osv-scanner` is (the release publishes `actionlint_<version>_checksums.txt`).
 
 ## Adding a new workflow
 

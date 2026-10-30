@@ -10,7 +10,8 @@
 #       abi-table, platform-table, spdx-list, autoload-entries, book,
 #       msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
 #       abi-guard-layout, publish-dry-run, security, osv-scan, nightly, miri,
-#       leak-check, asan, semver, fuzz, ci-ok (the aggregate required check).
+#       leak-check, asan, semver, fuzz, workflow-lint, ci-ok (the aggregate
+#       required check).
 #
 # `dtolnay/rust-toolchain` is pinned, in every workflow, to e2a55d2 -- a commit
 # on the action's `master` branch (2026-10-08; it moved action inputs into
@@ -1849,6 +1850,38 @@ jobs:
           path: fuzz/corpus
           key: fuzz-corpus-${{ github.run_id }}
 
+  # actionlint: workflow syntax and types, `needs` and `uses` references, the
+  # expression contexts, and shellcheck on every `run:` block. The
+  # binary is version- and checksum-pinned, like osv-scanner below.
+  # scripts/check-workflow-expressions.py predates this job and covers one class
+  # of the same errors without a download.
+  workflow-lint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          VER=1.7.12
+          # From the release's actionlint_${VER}_checksums.txt (linux_amd64).
+          SHA=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          curl -fsSL --retry 5 -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${VER}/actionlint_${VER}_linux_amd64.tar.gz"
+          echo "${SHA}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          # Without shellcheck on PATH actionlint skips every `run:` block
+          # silently; a lint that checks less than it says is worse than none.
+          command -v shellcheck >/dev/null || { echo "::error::shellcheck is not installed"; exit 1; }
+          # SC2129 ("group these redirects") is style, not a defect.
+          ./actionlint -color -ignore 'SC2129'
+
   # The one check branch protection should require. Every blocking job is in
   # `needs` (scripts/check-ci-aggregate.py, run by the `doc` job, fails when one
   # is missing), so adding or renaming a job never silently drops it from the
@@ -1894,6 +1927,7 @@ jobs:
       - asan
       - semver
       - fuzz
+      - workflow-lint
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
