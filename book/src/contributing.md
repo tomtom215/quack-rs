@@ -191,12 +191,19 @@ quack-rs/
 │   │   ├── schema.rs                  # `ArrowSchema` — an owned Arrow C Data Interface schema
 │   │   └── tests.rs                   # Unit tests
 │   ├── bin/
-│   │   └── append_metadata/
-│   │       ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
-│   │       ├── entry.rs               # The entry point DuckDB will look for, and the atomic write of the stamped file
-│   │       ├── footer.rs              # The 512-byte `DuckDB` extension footer, and the optional 22-byte WebAssembly custom-section header that precedes it
-│   │       ├── main.rs                # Append a DuckDB extension metadata block to a compiled .so / .dylib / .dll file,
-│   │       └── tests.rs               # Unit tests
+│   │   ├── append_metadata/
+│   │   │   ├── cli.rs                 # Command-line parsing and validation (std-only, no clap)
+│   │   │   ├── entry.rs               # The entry point DuckDB will look for, and the atomic write of the stamped file
+│   │   │   ├── footer.rs              # The 512-byte `DuckDB` extension footer, and the optional 22-byte WebAssembly custom-section header that precedes it
+│   │   │   ├── main.rs                # Append a DuckDB extension metadata block to a compiled .so / .dylib / .dll file,
+│   │   │   ├── output.rs              # Reading the library and writing the stamped file
+│   │   │   ├── tests.rs               # Unit tests
+│   │   │   └── tests_output.rs        # Unit tests for reading the input and writing the output
+│   │   └── quack_scaffold/
+│   │       ├── cli.rs                 # Command-line parsing (std-only, no clap)
+│   │       ├── main.rs                # Write a new `DuckDB` extension project to disk, from `generate_scaffold_with_warnings`
+│   │       ├── tests.rs               # Unit tests
+│   │       └── write.rs               # Writing the generated files: everything is checked before anything is written
 │   ├── callback/
 │   │   └── payload.rs                 # Disposing of a caught panic payload without re-entering the unwinder
 │   ├── cast/
@@ -221,13 +228,19 @@ quack-rs/
 │   ├── replacement_scan/
 │   │   └── mod.rs                     # Builder for registering `DuckDB` replacement scans
 │   ├── scaffold/
+│   │   ├── checks.rs                  # What `generate_scaffold` checks before it writes anything, and the warnings it gives
 │   │   ├── escape.rs                  # Quoting configured free text for YAML and Rust doc comments
+│   │   ├── licenses.rs                # The license text of a generated project
 │   │   ├── mod.rs                     # Project scaffolding for `DuckDB` Rust extensions
 │   │   ├── templates.rs               # Template generators for scaffold file content
 │   │   ├── templates_ci.rs            # The generated project's CI and distribution workflows
+│   │   ├── templates_docs.rs          # The generated project's `README.md`, `docs/function_descriptions.csv` and `deny.toml`
+│   │   ├── templates_make.rs          # The generated `Makefile`: extension-ci-tools' variables and targets, and the skipped-test check
 │   │   ├── tests.rs                   # Unit tests
+│   │   ├── tests_content.rs           # What the scaffold accepts, warns about and refuses, and the files a community submission needs
 │   │   ├── tests_escaping.rs          # Free text reaches the generated files intact
 │   │   ├── tests_generated.rs         # Unit tests
+│   │   ├── tests_make.rs              # Runs the generated `Makefile`'s own logic under `make`
 │   │   └── tests_workflows.rs         # The generated workflows match the community build
 │   ├── scalar/
 │   │   ├── info.rs                    # Ergonomic wrapper around `duckdb_function_info` for scalar function callbacks
@@ -332,12 +345,14 @@ quack-rs/
 ├── tests/
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
+│   ├── build_script_env.rs            # The build script run with a crafted `QUACK_RS_TARGET_DUCKDB_VERSION`
 │   ├── entry_point_expansion.rs       # The entry-point macros compiled as edition 2024 and under `panic = "abort"`
 │   ├── entry_point_lint.rs            # The entry-point macros accept an `unsafe` registration closure warning-free
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
+│   ├── quack_scaffold_cli.rs          # The `quack_scaffold` binary run as a user runs it: exit status, output and the files it writes
 │   ├── secret_memory_scan.rs          # `SecretEntry`'s zeroize, checked by scanning the process's own memory (Linux)
 │   ├── secret_zeroize.rs              # `SecretEntry` never frees a buffer that still holds a secret
 │   └── ffi_roundtrip/
