@@ -31,12 +31,11 @@ engine.
 
 ## The types
 
-| Type | Wraps | Freed by |
-|---|---|---|
-| `ArrowOptions` | `duckdb_arrow_options` | `duckdb_destroy_arrow_options` |
-| `ArrowSchema` | the `ArrowSchema` ABI record | `release(schema)` |
-| `ArrowArray` | the `ArrowArray` ABI record | `release(array)` |
-| `ArrowConvertedSchema` | `duckdb_arrow_converted_schema` | `duckdb_destroy_arrow_converted_schema` |
+- `ArrowOptions` wraps `duckdb_arrow_options` and is freed by `duckdb_destroy_arrow_options`.
+- `ArrowSchema` wraps the `ArrowSchema` ABI record and is freed by `release(schema)`.
+- `ArrowArray` wraps the `ArrowArray` ABI record and is freed by `release(array)`.
+- `ArrowConvertedSchema` wraps `duckdb_arrow_converted_schema` and is freed by
+  `duckdb_destroy_arrow_converted_schema`.
 
 `RawArrowSchema` and `RawArrowArray` are the ABI records themselves, re-exported
 for code that already speaks the raw interface.
