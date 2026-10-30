@@ -94,12 +94,12 @@ duckdb_prepare_extracted_statement host-side statement extraction for an applica
 # (duckdb_get_bit / duckdb_get_bignum, now wrapped as Value::as_bit / as_bignum, abort the
 # process on a SQL NULL or a value that does not cast: a wrapper must check type and NULL first.)
 duckdb_geometry_type_get_crs candidate LogicalType::geometry_crs (the string is strdup'd)
-duckdb_unsafe_vector_assign_string_element_len candidate VectorWriter::write_varchar could skip the UTF-8 re-check of a &str (1.5.0+)
-duckdb_create_log_storage candidate a safe LogStorage builder (1.5.0+)
-duckdb_destroy_log_storage candidate a safe LogStorage builder (1.5.0+)
-duckdb_log_storage_set_write_log_entry candidate a safe LogStorage builder (1.5.0+)
-duckdb_log_storage_set_extra_data candidate a safe LogStorage builder (1.5.0+)
-duckdb_log_storage_set_name candidate a safe LogStorage builder (1.5.0+)
-duckdb_register_log_storage candidate a safe LogStorage builder (1.5.0+)
+duckdb_unsafe_vector_assign_string_element_len candidate VectorWriter::write_varchar could skip the UTF-8 re-check of a &str (1.5.0+; the slot moved 544 -> 545 at 1.5.2, so gate on the 546-slot layout features, not on 1.5.0)
+duckdb_create_log_storage candidate a safe LogStorage builder (1.5.0+, slots moved at 1.5.2; see duckdb_register_log_storage)
+duckdb_destroy_log_storage candidate a safe LogStorage builder (1.5.0+, slots moved at 1.5.2; see duckdb_register_log_storage)
+duckdb_log_storage_set_write_log_entry candidate a safe LogStorage builder (1.5.0+, slots moved at 1.5.2; see duckdb_register_log_storage)
+duckdb_log_storage_set_extra_data candidate a safe LogStorage builder (1.5.0+, slots moved at 1.5.2; see duckdb_register_log_storage)
+duckdb_log_storage_set_name candidate a safe LogStorage builder (1.5.0+, slots moved at 1.5.2; see duckdb_register_log_storage)
+duckdb_register_log_storage candidate a safe LogStorage builder (1.5.0+). CAVEAT (upstream defect, 1.5.0 to 2.0.0): when the name is taken it runs the extra-data destructor and leaves it set, so the mandatory duckdb_destroy_log_storage frees it twice; validate in Rust first and clear the extra data on a later DuckDBError
 duckdb_create_timestamp_tz_ns candidate wrapped differently on purpose: calling it raises the engine floor to 2.0.0 (Value::timestamp_tz_ns casts instead); absent from the 546-slot header
 duckdb_get_timestamp_tz_ns candidate wrapped differently on purpose: calling it raises the engine floor to 2.0.0 (Value::as_timestamp_tz_ns reads the TIMESTAMP_NS payload); absent from the 546-slot header
