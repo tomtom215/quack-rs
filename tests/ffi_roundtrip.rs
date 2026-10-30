@@ -6298,3 +6298,18 @@ mod scalar_bind_data_copy;
 
 #[path = "ffi_roundtrip/data_chunk_helpers.rs"]
 mod data_chunk_helpers;
+
+// Eighth review, agent `api`: value readers, statement metadata, typed state.
+#[path = "ffi_roundtrip/appender_query.rs"]
+mod appender_query;
+#[cfg(feature = "duckdb-1-5")]
+#[path = "ffi_roundtrip/copy_typed_state.rs"]
+mod copy_typed_state;
+#[path = "ffi_roundtrip/query_metadata.rs"]
+mod query_metadata;
+#[path = "ffi_roundtrip/typed_extra_info.rs"]
+mod typed_extra_info;
+#[path = "ffi_roundtrip/value_bits.rs"]
+mod value_bits;
+#[path = "ffi_roundtrip/value_cast.rs"]
+mod value_cast;

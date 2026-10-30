@@ -14,7 +14,9 @@ impl Value {
 
     /// Number of elements in a `LIST` value.
     ///
-    /// Returns 0 for non-`LIST` values.
+    /// Returns 0 for non-`LIST` values, an `ARRAY` included: the C API reads
+    /// a `LIST` only. Read an `ARRAY` with
+    /// [`array_items`][Self::array_items].
     #[inline]
     #[must_use]
     pub fn list_len(&self) -> usize {
@@ -71,10 +73,11 @@ impl Value {
     /// Returns an empty vector for a null handle or a value whose type has no
     /// struct children. A `UNION` type is stored as a struct of its tag and
     /// its members, so for a `UNION` value it returns `""` for the tag
-    /// followed by the member names. Those names cannot be paired with
-    /// values: [`struct_child`][Self::struct_child] returns `None` for every
-    /// index of a `UNION` value, and the C API has no other way to read its
-    /// member.
+    /// followed by the member names. [`struct_child`][Self::struct_child]
+    /// returns `None` for every index of a `UNION` value; read the active
+    /// member's index with `union_tag` (feature `duckdb-1-5`; its name is
+    /// then `struct_field_names()[tag + 1]`) and its value, as text, with
+    /// [`try_cast`][Self::try_cast] to `VARCHAR`.
     ///
     /// Pair it with [`struct_child`][Self::struct_child], which is positional:
     ///

@@ -117,6 +117,82 @@ impl core::fmt::Debug for ExtraInfo {
     }
 }
 
+// ─── Typed payloads ──────────────────────────────────────────────────────────
+//
+// `DuckDB` hands an extra-info, bind-data or global-state pointer back as a
+// bare `void *`, so every typed getter over one has to trust that the pointer
+// holds the type it asks for. A wrong guess (two functions sharing a getter, a
+// refactor that changes one side) reinterpreted memory. The typed setters
+// (`extra_info_typed`, `set_bind_data_typed`, `set_global_state_typed`) store
+// a `Tagged<T>` instead, whose first field is `T`'s `TypeId`, and the typed
+// getters (`extra_info_ref`, `bind_data_ref`, `global_state_ref`) compare it
+// before they read: a `T` asked for as a `U` is `None`.
+
+/// A `T` behind its `TypeId`. `repr(C)` puts `type_id` at offset 0 whatever
+/// `T` is, so the tag of any `Tagged<_>` can be read without knowing its `T`.
+#[repr(C)]
+struct Tagged<T> {
+    type_id: core::any::TypeId,
+    value: T,
+}
+
+/// Boxes `value` with its type tag and returns the pointer together with the
+/// destructor that frees it: a pair that satisfies every raw setter's contract
+/// (freed exactly once, by a destructor that does not unwind).
+pub fn into_tagged<T: Send + Sync + 'static>(value: T) -> (*mut c_void, TaggedDestroy) {
+    let tagged = Box::new(Tagged {
+        type_id: core::any::TypeId::of::<T>(),
+        value,
+    });
+    (
+        Box::into_raw(tagged).cast::<c_void>(),
+        drop_tagged::<T> as TaggedDestroy,
+    )
+}
+
+/// The destructor [`into_tagged`] returns.
+pub type TaggedDestroy = unsafe extern "C" fn(*mut c_void);
+
+/// Frees a `Tagged<T>` from [`into_tagged`], containing a panic in `T::drop`
+/// (an unwind out of an `extern "C" fn` aborts the process).
+///
+/// # Safety
+///
+/// `ptr` is null or came from `into_tagged::<T>` and is freed only here.
+unsafe extern "C" fn drop_tagged<T: 'static>(ptr: *mut c_void) {
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: `ptr` came from `Box::into_raw(Box<Tagged<T>>)` in
+    // `into_tagged::<T>` (this function's contract), and DuckDB or `ExtraInfo`
+    // calls the destructor once.
+    drop(crate::callback::catch_ffi_panic(|| unsafe {
+        drop(Box::from_raw(ptr.cast::<Tagged<T>>()));
+    }));
+}
+
+/// Borrows the `T` behind a pointer from [`into_tagged`], or `None` when the
+/// pointer is null or holds a different type.
+///
+/// # Safety
+///
+/// `ptr` is null, or a live pointer that [`into_tagged`] returned for *some*
+/// type — never one that a raw setter stored — and it stays live for `'a`.
+pub unsafe fn tagged_ref<'a, T: 'static>(ptr: *mut c_void) -> Option<&'a T> {
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: every `Tagged<_>` is `repr(C)` with its `TypeId` first, and `ptr`
+    // points at one (this function's contract), so its first bytes are a
+    // valid, aligned `TypeId` whatever its `T` is.
+    let stored = unsafe { ptr.cast::<core::any::TypeId>().read() };
+    if stored != core::any::TypeId::of::<T>() {
+        return None;
+    }
+    // SAFETY: the tag says the allocation is a `Tagged<T>`; it lives for `'a`.
+    Some(unsafe { &(*ptr.cast::<Tagged<T>>()).value })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +276,122 @@ mod tests {
             drop(ExtraInfo::new(std::ptr::null_mut(), None));
         }
         assert_eq!(FREED.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod typed_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug, PartialEq)]
+    struct Config(u32);
+
+    #[test]
+    fn a_tagged_value_reads_back_as_its_own_type_only() {
+        let (ptr, destroy) = into_tagged(Config(7));
+        // SAFETY: `ptr` came from `into_tagged` and is live until `destroy`.
+        unsafe {
+            assert_eq!(tagged_ref::<Config>(ptr), Some(&Config(7)));
+            assert_eq!(tagged_ref::<u32>(ptr), None, "same layout, different type");
+            assert_eq!(tagged_ref::<String>(ptr), None);
+            destroy(ptr);
+        }
+    }
+
+    #[test]
+    fn a_null_pointer_reads_as_none_and_frees_nothing() {
+        // SAFETY: null is explicitly allowed by both.
+        unsafe {
+            assert_eq!(tagged_ref::<Config>(std::ptr::null_mut()), None);
+            drop_tagged::<Config>(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn the_destructor_drops_the_value_exactly_once() {
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct Counted;
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let (ptr, destroy) = into_tagged(Counted);
+        assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+        // SAFETY: freed once, here.
+        unsafe { destroy(ptr) };
+        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_panicking_drop_does_not_escape_the_destructor() {
+        struct Bomb;
+        impl Drop for Bomb {
+            fn drop(&mut self) {
+                panic!("typed payload destructor deliberately exploded");
+            }
+        }
+        let (ptr, destroy) = into_tagged(Bomb);
+        // Reaching the next line is the assertion: an unwind out of the
+        // `extern "C"` destructor would abort the test binary.
+        // SAFETY: freed once, here.
+        unsafe { destroy(ptr) };
+    }
+
+    /// Every builder's `extra_info_typed` keeps the value until the builder
+    /// itself is dropped (unregistered), then frees it once. A body replaced
+    /// by `Default::default()` (viable for `AggregateOverloadBuilder`) would
+    /// drop it at the call instead.
+    #[test]
+    fn each_builder_holds_its_typed_extra_info_until_it_is_dropped() {
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct Counted;
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        use crate::types::TypeId;
+        let aggregate =
+            crate::aggregate::AggregateFunctionBuilder::new("f").extra_info_typed(Counted);
+        let overload = crate::aggregate::AggregateOverloadBuilder::new().extra_info_typed(Counted);
+        let cast = crate::cast::CastFunctionBuilder::new(TypeId::Blob, TypeId::BigInt)
+            .extra_info_typed(Counted);
+        #[cfg(feature = "duckdb-1-5")]
+        let copy = crate::copy_function::CopyFunctionBuilder::try_new("fmt")
+            .expect("valid name")
+            .extra_info_typed(Counted);
+        assert_eq!(
+            DROPS.load(Ordering::SeqCst),
+            0,
+            "each builder still holds its value"
+        );
+        drop(aggregate);
+        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+        drop(overload);
+        assert_eq!(DROPS.load(Ordering::SeqCst), 2);
+        drop(cast);
+        assert_eq!(DROPS.load(Ordering::SeqCst), 3);
+        #[cfg(feature = "duckdb-1-5")]
+        {
+            drop(copy);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 4);
+        }
+    }
+
+    #[test]
+    fn an_unregistered_typed_extra_info_is_freed_by_extra_info_drop() {
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct Counted;
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let (ptr, destroy) = into_tagged(Counted);
+        // SAFETY: the pair from `into_tagged` meets `ExtraInfo::new`'s contract.
+        drop(unsafe { ExtraInfo::new(ptr, Some(destroy)) });
+        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
     }
 }

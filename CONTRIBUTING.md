@@ -554,6 +554,7 @@ quack-rs/
 │   │   ├── connection.rs              # [`OwnedConnection`] and its cross-thread [`InterruptHandle`]
 │   │   ├── cstr.rs                    # The two C-string conversions the `query` module runs everything through
 │   │   ├── live_tests.rs              # Tests that need a live `DuckDB`
+│   │   ├── metadata.rs                # What a statement is before it runs: `StatementType`, parameter and column types, `table_names`
 │   │   ├── prepared.rs                # Inspecting and executing a [`PreparedStatement`]; `bind.rs` binds its parameters
 │   │   └── result.rs                  # Reading a [`QueryResult`]: its columns, its chunks and what kind of outcome it is
 │   ├── replacement_scan/
@@ -637,7 +638,9 @@ quack-rs/
 │   │       └── yaml/
 │   │           └── scalar.rs          # Scalar-level pieces of the `description.yml` YAML reader: decoding plain, quoted, block and flow values, and recognising keys and comments
 │   ├── value/
+│   │   ├── bits.rs                    # `BIT` and `BIGNUM` values: validated constructors and getters that check type and `NULL` first
 │   │   ├── blob.rs                    # `Value::as_blob` — `BLOB` extraction
+│   │   ├── cast.rs                    # `Value::try_cast` (exception-free, any type), `array_items` and `union_tag`
 │   │   ├── checks.rs                  # Pure-Rust preconditions checked before a `Value` call reaches `DuckDB`
 │   │   ├── composite.rs               # Composite constructors: `STRUCT`, `LIST`, `ARRAY`, `ENUM`, `MAP`, `UNION`
 │   │   ├── defaults.rs                # The defaulting accessors — `Value::as_*_or`
@@ -675,6 +678,7 @@ quack-rs/
 │       ├── agg_window.rs              # Aggregates in the running-window and sorted-aggregate paths
 │       ├── aggregate_arity.rs         # An aggregate with no parameter is refused at registration (DuckDB 2.0 passes `update` no row count)
 │       ├── appender_api.rs            # `Appender` methods a no-op replacement survived: schemas, column types, `clear_columns`, defaults
+│       ├── appender_query.rs          # `Appender::for_query` and the appender's `from_raw` / `into_raw`
 │       ├── appender_rows.rs           # What happens to buffered rows when an append fails mid-row
 │       ├── arrow_export.rs            # `arrow::data_chunk_to_arrow` refuses values `DuckDB` would export wrongly
 │       ├── arrow_import.rs            # `arrow::data_chunk_from_arrow` checks against a live `DuckDB`
@@ -686,6 +690,7 @@ quack-rs/
 │       ├── collision.rs               # The scalar signature-collision check, held to `DuckDB`'s own binder
 │       ├── copy_from_columns.rs       # A typed `COPY … FROM` reader that declares a column is refused
 │       ├── copy_info_errors.rs        # `set_error` from all four COPY phases, and the state passed between them (`duckdb-1-5`)
+│       ├── copy_typed_state.rs        # Typed `COPY TO` state, a `FileHandle` kept across callbacks, `Send` handles (`duckdb-1-5`)
 │       ├── data_chunk_helpers.rs      # `DataChunk::any_null`, `struct_writer`, `into_chunk_writer` and `ChunkWriter::is_full`
 │       ├── entry_point_inprocess.rs   # `init_extension*` and the entry-point macros run in process against a fake extension access
 │       ├── file_errors.rs             # `FileHandle` reports write, sync and seek failures, and refuses a seek past `i64::MAX`
@@ -703,6 +708,7 @@ quack-rs/
 │       ├── panic_guards.rs            # The panic-guard macros and `set_error` methods, against a live `DuckDB`
 │       ├── query_docs.rs              # Pins the documented behaviour of `query`, `PreparedStatement`, `DbConfig`
 │       ├── query_extras.rs            # `bind_str`, `bind_null`, `clear_bindings` and an idle `progress`
+│       ├── query_metadata.rs          # Statement type, parameter and column metadata, `table_names`, raw-handle round trips
 │       ├── query_stream.rs            # A streaming result that stops early must not look like a finished one
 │       ├── replacement_scan_api.rs    # Replacement-scan `add_*_parameter`, `register_with_data` and `set_error`
 │       ├── scalar_agg.rs              # Scalar and aggregate builder regressions
@@ -716,8 +722,11 @@ quack-rs/
 │       ├── temporal_binds.rs          # Temporal and over-4-GiB values refused by `PreparedStatement` binds and the `Appender`
 │       ├── timestamp_tz_ns.rs         # `TIMESTAMPTZ_NS` (DuckDB 2.0): vectors, `Value`, and every type the engine can produce
 │       ├── tooling.rs                 # Checks of quack-rs's tooling tables against the linked `DuckDB`
+│       ├── typed_extra_info.rs        # `extra_info_typed` / `extra_info_ref` on casts and aggregates; a wrong type reads as `None`
 │       ├── typed_scalar_opt.rs        # Typed scalar closures returning `Option`, the `try_*` constructors and `map3`
 │       ├── validity_api.rs            # `ValidityBitmap` against the engine's masks, at the word and vector edges
+│       ├── value_bits.rs              # `BIT` / `BIGNUM` values; every input the C getters abort on reads as `None`
+│       ├── value_cast.rs              # `try_cast`, `array_items`, `union_tag`: reading `ARRAY` and `UNION` values
 │       ├── value_defaults.rs          # `Value::as_*_or` when a value is present
 │       ├── value_getters.rs           # Each typed `Value` getter at its own type; out-of-range TIMETZ / TIME_NS are not cast
 │       ├── value_nested.rs            # Nested `Value` construction and inspection against a live `DuckDB`

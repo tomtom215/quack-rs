@@ -169,6 +169,50 @@ impl PreparedStatement {
     pub const fn as_raw(&self) -> duckdb_prepared_statement {
         self.statement
     }
+
+    /// Takes ownership of a raw `duckdb_prepared_statement`, which is then
+    /// destroyed (`duckdb_destroy_prepare`) on drop: the way back into this
+    /// crate's RAII for a statement a raw call created —
+    /// `duckdb_prepare_extracted_statement`, or `duckdb_prepare` itself.
+    ///
+    /// A statement whose prepare failed is accepted: every method then
+    /// reports failure (`execute` returns its error, `statement_type` is
+    /// [`Invalid`][super::StatementType::Invalid], the counts are 0).
+    ///
+    /// # Safety
+    ///
+    /// `statement` must be a live statement from a `duckdb_prepare*` call
+    /// that nothing else destroys, and its connection must stay open for as
+    /// long as the returned value is used.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::query::PreparedStatement;
+    ///
+    /// # unsafe fn demo(con: libduckdb_sys::duckdb_connection) {
+    /// let mut raw: libduckdb_sys::duckdb_prepared_statement = std::ptr::null_mut();
+    /// // SAFETY: `con` is open.
+    /// unsafe { libduckdb_sys::duckdb_prepare(con, c"SELECT 1".as_ptr(), &raw mut raw) };
+    /// // SAFETY: `raw` came from `duckdb_prepare` and is owned by nothing else.
+    /// let stmt = unsafe { PreparedStatement::from_raw(raw) };
+    /// let _ = stmt.execute();
+    /// # }
+    /// ```
+    #[must_use]
+    pub const unsafe fn from_raw(statement: duckdb_prepared_statement) -> Self {
+        Self { statement }
+    }
+
+    /// Gives up ownership and returns the raw statement, which the caller
+    /// must destroy (`duckdb_destroy_prepare`) or hand back to
+    /// [`from_raw`][Self::from_raw].
+    #[must_use]
+    pub const fn into_raw(self) -> duckdb_prepared_statement {
+        let raw = self.statement;
+        std::mem::forget(self);
+        raw
+    }
 }
 
 impl std::fmt::Debug for PreparedStatement {

@@ -325,6 +325,28 @@ impl CopyFunctionBuilder {
         self
     }
 
+    /// Attaches `value` as this copy function's extra info: the safe, typed
+    /// form of [`extra_info`][Self::extra_info].
+    ///
+    /// quack-rs boxes `value` behind a type tag and generates its destructor,
+    /// which contains a panic in `T::drop` and runs once — when `DuckDB`
+    /// releases the function, or when this builder is dropped unregistered.
+    /// Read it in any callback with `extra_info_ref` (on
+    /// [`CopyBindInfo`][CopyBindInfo::extra_info_ref] and the other three
+    /// info types), which returns `None` for any other type instead of
+    /// reinterpreting memory. `T` is `Send + Sync` because every sink thread
+    /// reads the same value.
+    ///
+    /// For per-statement state, see `set_bind_data_typed` and
+    /// `set_global_state_typed` on the info types.
+    pub fn extra_info_typed<T: Send + Sync + 'static>(self, value: T) -> Self {
+        let (data, destroy) = crate::extra_info::into_tagged(value);
+        // SAFETY: `into_tagged` returns a fresh allocation, used by no one
+        // else, and the destructor that frees it exactly once without
+        // unwinding; `T: Send + Sync`.
+        unsafe { self.extra_info(data, Some(destroy)) }
+    }
+
     /// The completeness checks that need no `DuckDB` call: all of bind, sink
     /// and finalize for `COPY ... TO`, or a `copy_from` for `COPY ... FROM`,
     /// or both. [`MockRegistrar`][crate::testing::MockRegistrar] runs them

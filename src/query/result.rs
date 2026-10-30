@@ -211,6 +211,53 @@ impl QueryResult {
     pub const fn as_raw(&self) -> &duckdb_result {
         &self.result
     }
+
+    /// Takes ownership of a raw `duckdb_result`, which is then destroyed
+    /// (`duckdb_destroy_result`) on drop: the way back into this crate's
+    /// RAII for a result a raw call filled in (`duckdb_execute_pending`, for
+    /// one).
+    ///
+    /// # Safety
+    ///
+    /// `result` must have been filled in by a successful `DuckDB` call
+    /// (`duckdb_query`, `duckdb_execute_prepared`, `duckdb_execute_pending`,
+    /// …) and must not be destroyed by anyone else. Its connection must stay
+    /// open while it is read. Chunks already fetched from it are not seen
+    /// again: [`next_chunk`][Self::next_chunk] continues where the raw
+    /// fetching stopped.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::query::QueryResult;
+    ///
+    /// # unsafe fn demo(con: libduckdb_sys::duckdb_connection) {
+    /// // SAFETY: zeroed is a valid `duckdb_result`; DuckDB fills it in.
+    /// let mut raw: libduckdb_sys::duckdb_result = unsafe { std::mem::zeroed() };
+    /// // SAFETY: `con` is open.
+    /// let state = unsafe { libduckdb_sys::duckdb_query(con, c"SELECT 1".as_ptr(), &raw mut raw) };
+    /// if state == libduckdb_sys::DuckDBSuccess {
+    ///     // SAFETY: filled in by a successful `duckdb_query`, owned by nothing else.
+    ///     let result = unsafe { QueryResult::from_raw(raw) };
+    ///     assert_eq!(result.column_count(), 1);
+    /// }
+    /// # }
+    /// ```
+    #[must_use]
+    pub const unsafe fn from_raw(result: duckdb_result) -> Self {
+        Self::new(result)
+    }
+
+    /// Gives up ownership and returns the raw result, which the caller must
+    /// destroy (`duckdb_destroy_result`) or hand back to
+    /// [`from_raw`][Self::from_raw]. Whether [`next_chunk`][Self::next_chunk]
+    /// had reached the end is not carried over.
+    #[must_use]
+    pub const fn into_raw(self) -> duckdb_result {
+        let raw = self.result;
+        std::mem::forget(self);
+        raw
+    }
 }
 
 impl std::fmt::Debug for QueryResult {

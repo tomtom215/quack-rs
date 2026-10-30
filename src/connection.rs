@@ -382,6 +382,28 @@ impl Connection {
         unsafe { crate::query::prepare(self.con, sql) }
     }
 
+    /// The tables `sql` reads or writes, without running it; see
+    /// [`query::table_names`][crate::query::table_names] (`DuckDB` 1.5.0+).
+    ///
+    /// # Errors
+    ///
+    /// See [`query::table_names`][crate::query::table_names].
+    ///
+    /// # Safety
+    ///
+    /// The underlying connection must be valid for the duration of this call.
+    // One FFI call; covered by tests/ffi_roundtrip/query_metadata.rs.
+    #[cfg_attr(test, mutants::skip)]
+    #[cfg(feature = "duckdb-1-5")]
+    pub unsafe fn table_names(
+        &self,
+        sql: &str,
+        qualified: bool,
+    ) -> Result<Vec<String>, ExtensionError> {
+        // SAFETY: self.con is valid per Connection invariant.
+        unsafe { crate::query::table_names(self.con, sql, qualified) }
+    }
+
     /// Opens a second, independently owned connection to the same database.
     ///
     /// Unlike the borrowed registration connection, the returned
