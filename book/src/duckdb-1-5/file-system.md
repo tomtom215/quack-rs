@@ -9,6 +9,12 @@ then resolve through every registered file system — `httpfs` (`s3://`,
 `http://`) when it is loaded, in-memory files, and so on — where `std::fs` only
 ever sees local disk.
 
+> **Security: `std::fs` ignores DuckDB's permission settings.** A deployment can lock
+> DuckDB down with `SET enable_external_access = false` or `SET allowed_directories`. An
+> extension that opens a user-supplied path with `std::fs` reads it anyway. Open such
+> paths with `FileSystem` instead: see
+> [the section below](#security-only-filesystem-honours-duckdbs-permission-settings).
+
 ## Obtaining a `FileSystem`
 
 A `FileSystem` comes from a [`ClientContext`], which most function callbacks can
@@ -103,6 +109,36 @@ silently treat as an empty file.
 
 `FileSystem` exposes `open(path, options)` and `error_data()`. Both `FileSystem`
 and `FileHandle` are RAII: they are destroyed (and the handle closed) on drop.
+
+## Security: only `FileSystem` honours DuckDB's permission settings
+
+DuckDB can be locked down so that SQL cannot reach the file system:
+`SET enable_external_access = false`, or `SET allowed_directories = ['/data']` together
+with it. Everything DuckDB opens itself goes through its file system layer and obeys those
+settings, and so does a file you open with `FileSystem`. **`std::fs` does not.** It talks
+to the operating system directly, so a table function, replacement scan or `COPY` reader
+that passes a path from SQL to `std::fs::read` or `File::open` is a way around the
+restriction the person running DuckDB set. Measured on DuckDB 1.5.6 and 2.0.0 with a table
+function that returns a file's size, once through each API:
+
+```sql
+SET enable_external_access = false;
+SELECT count(*) FROM read_csv('data.csv');   -- Permission Error: Cannot access file ...
+SELECT * FROM size_via_filesystem('data.csv');  -- Permission error from FileSystem::open
+SELECT * FROM size_via_std_fs('data.csv');      -- returns the size: no restriction applied
+```
+
+`allowed_directories` behaves the same way: `read_csv` and `FileSystem` refuse a path
+outside the list, `std::fs` reads it. The same holds for anything else your extension does
+on its own, such as a network connection opened with a Rust crate: no DuckDB setting
+reaches it.
+
+The rule for an extension that reads or writes a path it did not hard-code: open it with
+`FileSystem`, from the `ClientContext` of the bind callback (or the copy callbacks). That
+needs the `duckdb-1-5` feature and DuckDB 1.5.0 or later. Without it, do not open
+user-supplied paths at all; take the data as a `VARCHAR` or `BLOB` argument and let SQL
+do the reading. `FileSystem` also resolves `s3://` and `http://` paths when `httpfs` is
+loaded, which `std::fs` never does.
 
 ## Lifetimes
 

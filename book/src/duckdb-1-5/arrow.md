@@ -162,6 +162,10 @@ therefore makes the caller's job:
 It also refuses valid Arrow layouts that DuckDB imports wrongly: it walks the
 array alongside its schema and returns `InvalidInput`, naming the node, for
 
+- a **record batch with a nonzero `offset`** (the top-level struct array): DuckDB ignores
+  a top-level offset and would import the wrong rows. The error says to export the batch
+  without an offset and slice its children instead; an arrow-rs `RecordBatch::slice` is
+  exported that way;
 - an offset below the top level that DuckDB applies to the wrong rows: a
   struct inside an offset struct or a list, a union's members, a run-end-encoded
   array's value validity (`docs/upstream-duckdb-reports.md`, item 24);

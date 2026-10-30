@@ -242,6 +242,14 @@ fn register(con: &Connection) -> Result<(), ExtensionError> {
 connection between threads, not using one concurrently. Open one connection per
 thread, or guard it with a mutex.
 
+**Do not change `threads` from a callback.** `SET threads = N` run on a connection you
+kept, from inside a table function's scan, resizes DuckDB's worker pool from one of its
+own workers. The outcome varied from run to run: on DuckDB 2.0.0 the process terminated
+with `terminate called after throwing an instance of 'std::system_error'` in three of four
+runs; on DuckDB 1.5.6 the statement failed with "Invalid argument" in five of six runs and
+succeeded once (the author-tables review also saw the termination on 1.5.6). It is DuckDB
+behaviour that quack-rs cannot intercept. Set `threads` before the query starts.
+
 ## Cancelling a query and reading its progress
 
 `OwnedConnection::interrupt_handle` returns an `InterruptHandle`, which is
