@@ -264,22 +264,38 @@ fn timestamp_decomposition_agrees_with_duckdb_for_random_microseconds() {
         };
         micros.push(m);
     }
+    // DuckDB 2.0.0 raises an INTERNAL error, which `TRY` does not catch, when it
+    // renders a timestamp below the documented range (its `__cast` to VARCHAR
+    // "threw an execution error, but the function is not marked as fallible");
+    // 1.x answers NULL. Those values are not put to the engine on 2.0.0 and are
+    // expected to be refused: the 1.x runs hold the engine to that answer.
+    // `-i64::MAX` is the negative-infinity sentinel and answers NULL on both.
+    let engine_throws =
+        |m: i64| fx.engine_major() >= 2 && m < -9_223_372_022_400_000_000 && m != -i64::MAX;
     let values: Vec<String> = micros
         .iter()
         .enumerate()
+        .filter(|(_, m)| !engine_throws(**m))
         .map(|(i, m)| format!("({i}, CAST('{m}' AS BIGINT))"))
         .collect();
-    let rows = indexed_rows(
+    let mut answers = indexed_rows(
         &fx,
         &format!(
             "SELECT i::VARCHAR, TRY(CAST(make_timestamp(m) AS VARCHAR)) \
              FROM (VALUES {}) t(i, m)",
             values.join(", ")
         ),
-    );
-    assert_eq!(rows.len(), micros.len());
+    )
+    .into_iter();
+    let skipped = micros.iter().filter(|m| engine_throws(**m)).count();
+    assert_eq!(answers.len() + skipped, micros.len());
     let (mut some, mut none) = (0_u32, 0_u32);
-    for (row, &m) in rows.iter().zip(&micros) {
+    for &m in &micros {
+        let row = if engine_throws(m) {
+            vec![None, None]
+        } else {
+            answers.next().expect("one answer per value asked")
+        };
         // SAFETY: the fixture initialised the dispatch table.
         let decoded = unsafe { datetime::timestamp_from_micros(m) };
         match (&decoded, row[1].as_deref()) {
