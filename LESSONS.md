@@ -351,8 +351,8 @@ over a whole-partition frame — `agg(x) OVER ()`, or an explicit `ROWS` or `RAN
 BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` frame, with or without a
 `PARTITION BY` — or as an ordered aggregate, `agg(x ORDER BY y)`. On 1.4.4 `OVER
 (PARTITION BY p)` without an `ORDER BY` crashes too; on 1.5.6 it did not in the shapes
-measured (5,000 and 300,000 rows), but it takes the same DuckDB code path family, so do not
-rely on that.
+measured (5,000 and 300,000 rows). Whether that is a different code path or luck was not
+established, so do not rely on it.
 
 **Root cause**: `CAPIAggregateUpdate` (`src/main/capi/aggregate_function-c.cpp`)
 flattens the input vectors but not the state vector, then hands the callback
@@ -648,8 +648,9 @@ it reports failure; read the failure path before you free again.
 
 ## L21: A chunk row you claim is published, written or not
 
-**Status**: Documented. The rule is about the chunk the scan callback returns; the
-`ChunkWriter` docs state it.
+**Status**: Documented. Since 0.20.0 a claimed row can be given back before the writer is
+dropped; before 0.20.0 every claimed row was published. The rule is about the chunk the
+scan callback returns.
 
 **Symptom**: a table function whose scan claims a row from the writer and then finds
 nothing to write (its source ended) still returns that row to DuckDB, holding whatever the
@@ -665,7 +666,9 @@ count when it is dropped. DuckDB reuses output vectors across chunks, so a claim
 did not write is published with stale contents.
 
 **Fix**: claim a row only when you are going to write it: check that the source has another
-value first, then claim the row and write it in the same step.
+value first, then claim the row and write it in the same step. A row you have already
+claimed can be given back before the writer is dropped (the `ChunkWriter` API documentation
+names the call).
 
 **Rule**: an output chunk holds the rows you wrote, not the rows you asked for.
 

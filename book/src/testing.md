@@ -603,6 +603,13 @@ SELECT my_function('hello world');
 "
 ```
 
+**Parsing the DuckDB 2.0 CLI's output in a script.** The 2.0 CLI switches to an "agent
+mode" (a Markdown-like table with `name:TYPE` headers and a banner line) when the
+environment variable `AI_AGENT` is set and its output is not a terminal. Measured with
+`AI_AGENT=1` and the output piped: `-csv` overrides it, and `-no-agent` turns it off. `-no-agent` exists only in the 2.0 CLI; the 1.x CLIs reject it ("Unrecognized
+option '-no-agent'"), so a script that runs several releases should unset the variable
+instead of passing the flag.
+
 The community extension CI runs these SQLLogicTest files automatically. Give
 each function at least one test, covering NULL, empty and typical input:
 

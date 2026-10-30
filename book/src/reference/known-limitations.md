@@ -333,11 +333,12 @@ Checked by searching the 1.5.6 and 2.0.0 `duckdb.h`, `duckdb_extension.h` and, f
 2.0.0 v2 headers, `duckdb_v2.h`:
 
 - a table function cannot take rows from a subquery (no table-in-table-out function exists
-  in either C API), cannot report progress (`InterruptHandle::progress` stays at `-1.0` or
-  `0.0` for it), and receives no filters (no filter pushdown in v1);
-- there are no logging functions you can call from an extension, and no way to read a
-  secret's contents through the API. quack-rs offers `list_duckdb_secrets`, which asks
-  SQL (`duckdb_secrets()`) and redacts the value;
+  in either C API), has no progress callback, and receives no filters (no filter pushdown
+  in v1);
+- the only logging functions are the log *storage* (sink) functions, such as
+  `duckdb_register_log_storage` (see the entry on its double free below); nothing writes a log
+  record. There is no function that reads a secret. quack-rs offers `list_duckdb_secrets`,
+  which asks SQL (`duckdb_secrets()`) and redacts the value;
 - `COPY` has no column names, option schema or file extension (see below).
 
 DuckDB 2.0's C API v2 has most of these (next entries).

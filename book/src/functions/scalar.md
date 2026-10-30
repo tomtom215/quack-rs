@@ -381,10 +381,11 @@ to the declared type before your callback runs, and the cast **rounds**: a funct
 declared over `DECIMAL(4,1)` that doubles its argument, called with
 `0.123::DECIMAL(3,3)`, sees `0.1` and returns `0.2`, not `0.246` (measured on 1.5.6 and
 2.0.0). Declaring several widths as overloads does not work either: DuckDB's overload
-resolution does not tell `DECIMAL(4,1)` from `DECIMAL(9,3)` apart, so a set with both
-registers and then fails every call with "Could not choose a best candidate function"
-(the same holds for `MAP` and `ENUM` parameters of different parameterisations, and for
-those nested inside a `LIST`, `ARRAY` or `STRUCT`). To accept any `DECIMAL`, declare the
+resolution does not tell `DECIMAL(4,1)` from `DECIMAL(9,3)` apart, so every call to such a
+set fails with "Could not choose a best candidate function" (measured on 1.5.6 and 2.0.0;
+the same holds for `MAP` and `ENUM` parameters of different parameterisations, and for those
+nested inside a `LIST`, `ARRAY` or `STRUCT`). quack-rs 0.20 refuses such a set when you
+register it; 0.19 and earlier registered it, and the first call failed. To accept any `DECIMAL`, declare the
 parameter `TypeId::Any`, read the argument vector's actual type at run time
 (`quack_rs::vector::vector_get_column_type`, then `LogicalType::decimal_width`,
 `decimal_scale` and `decimal_internal_type`) and return a type that does not depend on it
@@ -631,6 +632,11 @@ ScalarFunctionBuilder::new("scaled")
   optimizer duplicates it (filter pushdown through a projection does). Without a
   copy callback the copy has **no** bind data at all, so `set` registers one that
   clones `T`. Wrap data that is expensive or impossible to clone in an `Arc<T>`.
+- **A bind-time constant cannot come from a prepared-statement parameter.** If `bind`
+  rejects an argument that is not foldable (see [Bound Expressions](../duckdb-1-5/expression.md)),
+  a `?` is not foldable: `PREPARE p AS SELECT f(x, ?)` fails at the `PREPARE`, with your
+  message, on DuckDB 1.5.6 and 2.0.0, while a literal or a constant expression such as `1 + 1`
+  folds. Say so in the error text, and tell users to pass such an argument as a literal.
 - **Local state must be `Send`**: it is per thread, but may be freed on another.
 - **Call `set` at most once per callback.** DuckDB overwrites the stored pointer
   on a second call without freeing the first value, so that value is leaked

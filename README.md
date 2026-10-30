@@ -28,12 +28,11 @@ defects. Read [Status](#status) before you depend on it.
 `quack-rs` wraps DuckDB's [C Extension API](https://duckdb.org/community_extensions/development)
 so that you can write a loadable extension entirely in Rust. Your repository
 holds Rust only: no C or C++ source, no CMake file, no glue layer of your own
-between your functions and the C API. Dependencies still compile some C: Cargo
-may build C code that comes with the DuckDB bindings' dependencies, the
-`bundled-test` and `bundled-test-prebuilt` features compile C++ or C, and the
-community-extension build flow needs Python and git
-([Installation](https://quack-rs.com/getting-started/installation.html) has the
-list).
+between your functions and the C API. The build still runs other people's C and
+tools: dependencies of the DuckDB bindings may compile C, the `bundled-test*`
+features compile C++ or C, and the community-extension flow needs Python and git
+([Installation](https://quack-rs.com/getting-started/installation.html#build-requirements)
+has the list).
 
 - **Every function kind the C API can register:** scalar, aggregate, table, cast,
   copy and replacement scan functions, plus SQL macros.
@@ -227,10 +226,8 @@ release you support.
   published 2026-10-22). 1.20000.x needs Rust 1.88; on 1.88 or newer
   `cargo update` selects it, and an older toolchain with MSRV-aware resolution
   stays on 1.10506.x (DuckDB 1.5.6). The upper bound keeps out the DuckDB 2.1
-  bindings (1.20100.x) until a quack-rs release has been tested against them,
-  because `libduckdb-sys` keeps the C API names at its crate root only through
-  a re-export marked for removal. When they appear, Cargo stays on 1.20000.x
-  until quack-rs widens the range.
+  bindings (1.20100.x) until a quack-rs release has been tested against them
+  ([why](https://quack-rs.com/getting-started/installation.html#adding-quack-rs-to-an-existing-extension)).
 - **Rust (MSRV):** 1.86.0.
 
 DuckDB 2.0.0 (2026-10-21) is a long-term support release, supported until at
