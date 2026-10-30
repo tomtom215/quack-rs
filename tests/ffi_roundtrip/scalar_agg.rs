@@ -446,8 +446,10 @@ fn logical_overload(ty: LogicalType, f: quack_rs::scalar::ScalarFn) -> ScalarOve
         .function(f)
 }
 
-/// The comparison is structural, not by type id: parameterised types that
-/// differ only in a parameter are not duplicates, and a set of them registers.
+/// The comparison is `DuckDB`'s overload resolution, not the type id:
+/// parameterised types it tells apart (a list's element type, a struct's
+/// field names) are not duplicates, and a set of them registers; a `DECIMAL`
+/// that differs only in width and scale is one (see `overload_keys.rs`).
 #[test]
 fn overloads_differing_only_in_type_parameters_are_not_duplicates() {
     let fx = Fixture::open();
@@ -478,17 +480,24 @@ fn overloads_differing_only_in_type_parameters_are_not_duplicates() {
         Some(2)
     );
 
-    // Same type id, different parameters: not an exact duplicate, so quack-rs
-    // does not reject it. (DuckDB 1.5.5's binder cannot choose between two
-    // DECIMAL overloads that differ only in width/scale, so such a set is of
-    // little use — but that is DuckDB's overload resolution, not a duplicate
-    // declaration.)
+    // Same type id, different parameters, for a type whose parameters
+    // DuckDB's overload resolution ignores (DECIMAL; MAP and ENUM too): such
+    // a set registered here once, and every call to it then failed with
+    // "Could not choose a best candidate function" (AUTHT2-1). This used to
+    // assert that it registers; it is refused now, with the reason.
     let decimals = ScalarFunctionSetBuilder::try_new("dec_scale")
         .expect("name")
         .overload(logical_overload(LogicalType::decimal(18, 2), writes_one))
         .overload(logical_overload(LogicalType::decimal(18, 3), writes_two));
     // SAFETY: `con` is open.
-    unsafe { decimals.register(fx.con()) }.expect("DECIMAL(18,2) and DECIMAL(18,3) differ");
+    let err = unsafe { decimals.register(fx.con()) }
+        .expect_err("DuckDB cannot tell DECIMAL(18,2) from DECIMAL(18,3) apart");
+    assert!(
+        err.as_str()
+            .contains("overload 0 (DECIMAL(18,2)) and overload 1 (DECIMAL(18,3))")
+            && err.as_str().contains("ignores a DECIMAL's width and scale"),
+        "{err}"
+    );
 
     let structs = ScalarFunctionSetBuilder::try_new("struct_pick")
         .expect("name")
