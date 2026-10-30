@@ -313,8 +313,9 @@ fn a_fifo_as_input_is_refused_not_waited_on() {
 }
 
 /// HARDEN-4: `std::env::args()` panicked (exit 101, a backtrace) on a file
-/// name that is not UTF-8.
-#[cfg(unix)]
+/// name that is not UTF-8. Not on macOS: APFS and HFS+ refuse to create such a
+/// file (`EILSEQ`, "Illegal byte sequence"), so there is no name to pass.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn a_file_name_that_is_not_utf8_is_used_not_a_panic() {
     use std::os::unix::ffi::OsStrExt;

@@ -69,7 +69,8 @@ mod tests_content;
 mod tests_escaping;
 #[cfg(test)]
 mod tests_generated;
-#[cfg(test)]
+// Runs `make`, `git` and a shell script: Unix only.
+#[cfg(all(test, unix))]
 mod tests_make;
 #[cfg(test)]
 mod tests_workflows;

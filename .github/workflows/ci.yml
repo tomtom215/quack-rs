@@ -460,7 +460,10 @@ jobs:
       - name: Unit tests on wasm32 (node)
         env:
           CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUNNER: node
-          RUSTFLAGS: "-D warnings -C link-arg=-sALLOW_MEMORY_GROWTH=1 -C link-arg=-sMAXIMUM_MEMORY=4GB"
+          # STACK_SIZE: emscripten's default stack is 64 KB, and the description.yml
+          # reader's depth test (64 nested levels, debug build) ran out of it with
+          # "memory access out of bounds".
+          RUSTFLAGS: "-D warnings -C link-arg=-sALLOW_MEMORY_GROWTH=1 -C link-arg=-sMAXIMUM_MEMORY=4GB -C link-arg=-sSTACK_SIZE=8MB"
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
@@ -1225,8 +1228,12 @@ jobs:
           import pathlib, re, sys
           d = pathlib.Path("/tmp/scaffolded_capi")
           p = d / "Cargo.toml"
-          s, n = re.subn(r'quack-rs = \{ version = "[^"]+" \}',
-                         'quack-rs = { path = "%s", features = ["duckdb-1-5"] }' % sys.argv[1], p.read_text())
+          s = p.read_text()
+          # A project stamped C API v1.5.6 enables the duckdb-1-5* feature itself
+          # (the old step added `duckdb-1-5` by hand); only the version becomes a path.
+          assert 'features = ["duckdb-1-5-4"]' in s, s
+          s, n = re.subn(r'quack-rs = \{ version = "[^"]+"',
+                         'quack-rs = { path = "%s"' % sys.argv[1], s)
           assert n == 1, n
           p.write_text(s)
           p = d / "src/lib.rs"
