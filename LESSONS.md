@@ -1368,7 +1368,8 @@ the ABI type stamped in their metadata footer:
   `v1.2.0`) and loads into every DuckDB release that provides that API — every
   release from 1.4.4 through 2.0.x, for quack-rs's stable-API surface. One
   binary serves them all. An extension using the `duckdb-1-5` features is stamped
-  C API `v1.5.6` and loads into 1.5.6 and 2.0.x.
+  C API `v1.5.6` and loads into 1.5.6 and 2.0.0 (the default `Strict` guard refuses a
+  release quack-rs has not listed, such as 2.0.1).
 - A `C_STRUCT_UNSTABLE` or `CPP` extension declares an exact DuckDB release and
   loads only into that release, so it is rebuilt for each one. DuckDB 2.0 loads a
   `C_STRUCT_UNSTABLE` binary only through the C API v2 entry point, which quack-rs

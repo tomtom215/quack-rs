@@ -148,19 +148,27 @@ under `ref`, the one that targets 1.5.6 under `variegata` and the one that targe
 under `andium`. quack-rs's scaffold writes only a `variegata` comment and no `andium`
 line, and does not warn about this; the wiring is yours to do.
 
-quack-rs does not check that `repo.ref` is a hash. `ScaffoldConfig::git_ref`
-accepts letters, digits, `-`, `_`, `.` and `/`, and defaults to the placeholder
-`REPLACE_WITH_COMMIT_HASH`, which `git` cannot resolve, so an unedited file cannot
-be built by accident. `validate_description_yml_str` only requires `repo.ref` to be
-non-empty.
+`ScaffoldConfig::git_ref` accepts letters, digits, `-`, `_`, `.` and `/`, and defaults
+to the placeholder `REPLACE_WITH_COMMIT_HASH`, which `git` cannot resolve, so an unedited
+file cannot be built by accident. `parse_description_yml` (and with it
+`validate_description_yml_str`) requires `repo.ref` to be non-empty and **warns** when it
+is not 7 to 64 hexadecimal digits: a tag is legal, and a branch name does not fail the
+build, it only moves. From 0.20.0 the same check applies to `variegata` and `andium` (an
+empty value is an error), and both are returned as `DescriptionYml::git_ref_variegata`
+and `git_ref_andium`.
 
 ### What the community build reads
 
 `scripts/build.py` in `duckdb/community-extensions` reads `description.yml` like this:
 
-- It starts with `yaml.safe_load` (PyYAML). `validate_description_yml_str` checks the
-  fields quack-rs knows, not every rule of YAML, so also run
-  `python3 -c 'import yaml; yaml.safe_load(open("description.yml"))'` yourself.
+- It starts with `yaml.safe_load` (PyYAML). From 0.20.0 `validate_description_yml_str`
+  and `parse_description_yml` read the whole document by PyYAML's rules (a plain scalar
+  PyYAML refuses, a tab indent, an unterminated quote or an undefined alias anywhere in the
+  file is an error), in time linear in the file size; in a few documented cases they are
+  stricter than PyYAML (a repeated or quoted key under `extension:` or `repo:`, a tag, a
+  second document). Before 0.20.0 they checked only the fields quack-rs knows. Running
+  `python3 -c 'import yaml; yaml.safe_load(open("description.yml"))'` yourself is still
+  the cheapest second opinion.
 - It requires the directory name `extensions/<dir>/` to equal `extension.name`.
 - It reads `extension.name`, `repo.github` and `repo.ref`, and, when present,
   `repo.canonical_name`, `repo.ref_next`, `repo.variegata`, `repo.andium`,
@@ -277,11 +285,21 @@ extension "httpfs" at URL ".../v2.0.0/linux_amd64/httpfs.duckdb_extension.gz" (H
 | Kind | Names |
 |------|-------|
 | Aliases (`name` → what DuckDB looks up) | `http`, `https`, `s3` → `httpfs`; `md` → `motherduck`; `mysql` → `mysql_scanner`; `odbc` → `odbc_scanner`; `postgres` → `postgres_scanner`; `sqlite`, `sqlite3` → `sqlite_scanner`; `uc_catalog` → `unity_catalog` |
-| The core extensions of the DuckDB 2.0 documentation | `autocomplete`, `avro`, `aws`, `azure`, `delta`, `ducklake`, `encodings`, `excel`, `fts`, `httpfs`, `iceberg`, `icu`, `inet`, `json`, `lance`, `legacy_parser`, `motherduck`, `mysql`, `odbc`, `parquet`, `postgres`, `quack`, `sirius`, `spatial`, `sqlite`, `tpcds`, `tpch`, `unity_catalog`, `ui`, `vortex`, `vss` |
+| The 34 core extensions (the union of what DuckDB 1.4.4, 1.5.6 and 2.0.0 build in or autoload, and the DuckDB 2.0 documentation's list) | `autocomplete`, `avro`, `aws`, `azure`, `core_functions`, `delta`, `ducklake`, `encodings`, `excel`, `fts`, `httpfs`, `iceberg`, `icu`, `inet`, `jemalloc`, `json`, `lance`, `legacy_parser`, `motherduck`, `mysql_scanner`, `odbc_scanner`, `parquet`, `postgres_scanner`, `quack`, `sirius`, `spatial`, `sqlite_scanner`, `sqlsmith`, `tpcds`, `tpch`, `ui`, `unity_catalog`, `vortex`, `vss` |
 
-The list changes with DuckDB releases: take it from `src/main/extension/extension_alias.cpp`
-in the DuckDB source and the core extensions table of the DuckDB documentation, not from
-this page.
+The community-extensions FAQ says a community extension whose name matches a core
+extension "has to be renamed". Since 0.20.0 `generate_scaffold`, `parse_description_yml`
+and `quack_rs::validate::validate_community_extension_name` refuse all 44 names (the ten
+aliases and the 34 core names) and say which extension an alias stands for;
+`validate_extension_name` stays the syntax check, which accepts DuckDB's own names.
+Whether another *community* extension already has your name is still yours to look up
+(`extensions/` in `duckdb/community-extensions`).
+
+The list changes with DuckDB releases: `scripts/check-extension-names.py` in the quack-rs
+repository compares quack-rs's copy with `src/main/extension/extension_alias.cpp`,
+`extension_helper.cpp` and `extension_entries.hpp` in the DuckDB source and with the
+core extensions table of the DuckDB documentation. For a name you are about to choose,
+read those rather than this page.
 
 ### Function descriptions
 

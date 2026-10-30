@@ -148,8 +148,13 @@ as a SQL error, or wrap its body in `quack_rs::callback::catch_ffi_panic` and re
 behaviour on Rust ≥ 1.81 — the runtime aborts the process — but that is exactly the
 outcome the guards exist to prevent.)
 
-`validate_release_profile` rejects `panic = "abort"`, and the scaffold generator emits
-`panic = "unwind"`.
+`validate_release_profile` rejects `panic = "abort"`, the scaffold generator emits
+`panic = "unwind"`, and `entry_point!` and `entry_point_v2!` stop the build with an error
+that names the fix when the extension is compiled under `panic = "abort"` (a profile
+setting, or `-C panic=abort` in `RUSTFLAGS`). An entry point you write by hand around
+`init_extension` has no such check. Under `unwind` a few failures still abort the process
+whatever quack-rs does: a panic while another panic unwinds, a panic hook that itself
+panics, and running out of memory.
 
 ---
 

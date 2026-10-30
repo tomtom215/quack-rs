@@ -185,7 +185,14 @@ features or to upgrade DuckDB.
 `Strict` also refuses a DuckDB release quack-rs has no verified layout for — a
 newer release (such as v2.0.1 or v2.1.0), or a `-dev` build. That is deliberate:
 DuckDB changed the unstable region in every minor release from 1.3.0 to 2.0.0, and
-in the 1.5.2 patch release, so "unknown" is not evidence of "compatible". A build
+in the 1.5.2 patch release, so "unknown" is not evidence of "compatible". DuckDB's
+own header says the same: DuckDB v2.0.0's `duckdb_extension.h` opens with "this API
+is not yet stable, meaning it is only guaranteed to work for this specific DuckDB
+version", and v2.0.0 itself added two slots to the band that v1.5.6 had declared
+stable. So a `duckdb-1-5*` extension that loads into 1.5.6 and 2.0.0 is refused by
+2.0.1 until a quack-rs release lists it or you rebuild with
+`QUACK_RS_TARGET_DUCKDB_VERSION=v2.0.1`; an extension built with the default
+features reports `StableOnly` and loads there. A build
 against the v1.5.2 – v1.5.6 bindings is accepted on v2.0.0, whose layout only
 appends to it; a build against 1.5.0/1.5.1 (545 slots) is still refused there.
 The refusal lists the fixes, best first:

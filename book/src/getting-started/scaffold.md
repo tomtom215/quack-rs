@@ -72,17 +72,23 @@ fn main() {
 }
 ```
 
-The repository's `scaffold_to_dir` example does the same from the command
-line. It lives in the repository, **not in the published crate** (the crate's
-`exclude` list leaves `examples/` out), so running it means cloning
-`tomtom215/quack-rs`; the first build compiles every dev-dependency and takes a few
-minutes. In a project that already depends on `quack-rs`, the program above does the
-same without a clone.
+The `scaffold_to_dir` example does the same from the command line. Since 0.20.0 the
+published crate includes it, so `cargo install quack-rs --example scaffold_to_dir`
+installs a `scaffold_to_dir` command (the build compiles the crate's dev-dependencies
+too and takes a couple of minutes: 1 minute 50 seconds on a 4-vCPU machine when
+built from a checkout with `cargo install --path . --example scaffold_to_dir`). Older
+releases leave `examples/` out of the package: clone `tomtom215/quack-rs` and use
+`cargo run --example scaffold_to_dir -- ...`, or use the program above in a project that
+already depends on `quack-rs`. The two forms take the same arguments:
 
 ```bash
-cargo run --example scaffold_to_dir -- my_extension            # writes ./my_extension
+cargo install quack-rs --example scaffold_to_dir   # once (0.20.0 or later)
+scaffold_to_dir my_extension                       # writes ./my_extension
 # An extension using the duckdb-1-5* features: C_STRUCT, C API v1.5.6
-cargo run --example scaffold_to_dir -- my_extension ../my_extension --c-api v1.5.6
+scaffold_to_dir my_extension ../my_extension --c-api v1.5.6
+
+# From a checkout of the repository, the same arguments after `--`:
+cargo run --example scaffold_to_dir -- my_extension
 ```
 
 `--c-api v1.5.6` sets `target_duckdb_version` to `v1.5.6`: the binary loads into
@@ -119,10 +125,11 @@ Extension names must satisfy all of:
 
 Use vendor-prefixed names to avoid collisions: `myorg_analytics`, not `analytics`.
 
-The scaffold generator checks the first two rules before generating any files and returns
-an error if the name breaks one. Uniqueness is yours to check, and so is the list of names
-DuckDB itself reserves (aliases such as `s3` and `md`, and the core extensions): see
-[Names DuckDB reserves](../publishing.md#names-duckdb-reserves).
+The scaffold generator checks the first two rules before generating any files, and
+refuses the names DuckDB itself reserves (aliases such as `s3` and `md`, and the core
+extensions: see [Names DuckDB reserves](../publishing.md#names-duckdb-reserves)). It
+returns an error if the name breaks one. Uniqueness among community extensions is yours
+to check.
 
 ---
 

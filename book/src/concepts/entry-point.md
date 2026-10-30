@@ -138,7 +138,7 @@ flowchart TD
     L["<b>2. ABI layout check</b><br/>Applies the AbiPolicy (Strict by default)"]
     B["<b>3. access.get_database</b>(info)<br/>Returns the duckdb_database handle"]
     C["<b>4. duckdb_connect</b>(db, &amp;mut con)<br/>Opens a connection for function registration"]
-    D["<b>5. register</b>(con) ← your closure<br/>A panic becomes an error"]
+    D["<b>5. register</b>(con) ← your closure<br/>Runs in one transaction; a panic becomes an error"]
     E["<b>6. duckdb_disconnect</b>(&amp;mut con)<br/>Always runs, even if registration failed"]
     F{Error?}
     G["return <b>true</b>"]
@@ -160,9 +160,41 @@ fails the `LOAD` with that message. (When DuckDB itself detects the failure, as 
 message.) The layout check in step 2 only runs when a `duckdb-1-5*`
 feature is enabled; see [ABI Compatibility](abi.md).
 
-Registration is not transactional: functions registered before a failure stay registered
-for the life of the database. Do fallible setup work (reading configuration, building
-lookup tables) before the first `register` call.
+### Registration runs in one transaction
+
+From 0.20.0 the entry point runs your closure between `BEGIN TRANSACTION` and `COMMIT`
+on the registration connection, and rolls back when the closure returns `Err` or panics.
+Every registration the C API makes through a connection joins that connection's
+transaction, so a `LOAD` that fails part-way leaves **no catalog entry behind** (no
+scalar, aggregate or table function, macro, type, copy function or table the closure
+created), and loading again in the same database works. Before 0.20.0 the functions
+registered before the failure stayed, and every retry failed at the first name it
+registered again.
+
+Three things are **not** rolled back, because DuckDB keeps them in the database
+configuration, not the catalog: casts, replacement scans and configuration options.
+Register those last, after everything that can fail. A retry registers a cast again (the
+new one replaces the old), appends a second replacement scan, and quack-rs refuses a
+configuration option whose name is taken.
+
+What the transaction means for the closure:
+
+- A statement or registration that fails can abort the transaction (DuckDB 2.0 aborts it
+  on every failed statement; 1.x on most failures that are not binder, catalog or parser
+  errors). Every later statement in the closure then fails with "Current transaction is
+  aborted", so return the first error instead of carrying on.
+- Do not run `BEGIN`, `COMMIT` or `ROLLBACK` on the registration connection.
+- What the closure creates is visible to other connections only once the `LOAD`
+  commits, including to a connection the closure opened itself.
+- A `LOAD` issued inside the host's own transaction does not wait for it. The registration
+  connection has a transaction of its own and commits on its own, so the host rolling back
+  does not undo the registrations.
+
+To get the earlier behaviour, where every statement commits on its own, pass
+`options = EntryPointOptions::new().registration(Registration::Autocommit)` to
+`entry_point!` or `entry_point_v2!` (the types are in `quack_rs::entry_point`). Do fallible
+setup work (reading configuration, building lookup tables) before the first `register`
+call either way, so that the transaction holds registrations only.
 
 ---
 

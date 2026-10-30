@@ -241,7 +241,9 @@ and still load `v1.2.0` extensions. The `duckdb-1-5*` features use the part of
 DuckDB's C API whose layout changed between releases up to 1.5.5 (DuckDB
 declares it stable from 1.5.6). Build such an extension against the 1.5.6
 bindings and stamp it `C_STRUCT` with C API `v1.5.6`; it then loads into DuckDB
-1.5.6 and 2.0.x. See
+1.5.6 and 2.0.0. The runtime guard refuses a DuckDB release that quack-rs has not
+listed (2.0.1, for now): DuckDB's header guarantees that layout only for one
+exact release. See
 [ABI Compatibility](https://quack-rs.com/concepts/abi.html) before you enable one.
 
 ## Cargo features

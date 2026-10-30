@@ -40,7 +40,8 @@ available as `quack_rs::DUCKDB_API_VERSION`. Every supported DuckDB release
 (1.4.4 and later) loads extensions built for it (1.5.6 and 2.0.x declare C API
 `v1.5.6`, but still accept `v1.2.0`). An extension that uses the `duckdb-1-5*`
 features is stamped C API `v1.5.6` instead
-(`quack_rs::DUCKDB_API_VERSION_1_5_6`) and loads into DuckDB 1.5.6 and 2.0.x.
+(`quack_rs::DUCKDB_API_VERSION_1_5_6`) and loads into DuckDB 1.5.6 and 2.0.0; the
+runtime guard refuses a release quack-rs has not listed (2.0.1, for now).
 The C API version is a separate identifier from the DuckDB release and from the
 `libduckdb-sys` crate version, which encodes DuckDB `vMAJOR.MINOR.PATCH` as
 `1.(10000·MAJOR + 100·MINOR + PATCH).N` (e.g. `1.10505.0` for DuckDB 1.5.5,
