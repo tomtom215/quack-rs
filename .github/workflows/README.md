@@ -18,7 +18,7 @@ This directory contains all GitHub Actions workflows for the quack-rs project.
 
 ## Quality gates (enforced by CI)
 
-Every job in `ci.yml` must be green before merging a PR, except the three marked
+Every job in `ci.yml` must be green before merging a PR, except the four marked
 informational. This table is generated from `ci.yml`; the hand-written list it
 replaced had drifted to fewer than half the jobs.
 
@@ -35,6 +35,7 @@ replaced had drifted to fewer than half the jobs.
 | `wasm` | WASM (wasm32-unknown-emscripten) | blocking |
 | `clippy` | Clippy | blocking |
 | `clippy-beta` | Clippy (beta, informational) | informational |
+| `latest-stable` | Latest stable Rust (informational) | informational |
 | `fmt` | Format | blocking |
 | `doc` | Documentation | blocking |
 | `msrv` | MSRV (1.86.0) | blocking |

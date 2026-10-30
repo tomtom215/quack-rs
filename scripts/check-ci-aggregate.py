@@ -47,7 +47,7 @@ AGGREGATE = "ci-ok"
 
 # The jobs that are allowed to be informational (`continue-on-error: true`, and
 # outside `ci-ok`'s needs). Adding one is a decision; make it here.
-INFORMATIONAL = {"clippy-beta", "nightly", "test-bundled-duckdb-2-0"}
+INFORMATIONAL = {"clippy-beta", "latest-stable", "nightly", "test-bundled-duckdb-2-0"}
 
 # (job, step name) pairs allowed to carry a step-level `continue-on-error`.
 INFORMATIONAL_STEPS = {

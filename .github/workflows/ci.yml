@@ -5,10 +5,10 @@
 #
 # Jobs: check, test, test-bundled, test-bundled-prebuilt, test-older-engines,
 #       test-duckdb-2-0, test-bundled-duckdb-2-0, test-duckdb-1-5,
-#       wasm, clippy, clippy-beta, fmt, doc, msrv, dependency-floor,
-#       bench-compile, example-check, scaffold-compile, symbol-check,
-#       abi-table, platform-table, spdx-list, autoload-entries, book,
-#       msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
+#       wasm, clippy, clippy-beta, latest-stable, fmt, doc, msrv,
+#       dependency-floor, bench-compile, example-check, scaffold-compile,
+#       symbol-check, abi-table, platform-table, spdx-list, autoload-entries,
+#       book, msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
 #       abi-guard-layout, publish-dry-run, security, osv-scan, nightly, miri,
 #       leak-check, asan, semver, fuzz, workflow-lint, ci-ok (the aggregate
 #       required check).
@@ -20,7 +20,18 @@
 # one of them stops being reachable from any ref and can be garbage-collected;
 # the previous pin, 631a55b, was such a commit. On `master` the `toolchain:`
 # input is required, so every use states it. The pin fixes the action's code,
-# not the Rust version: `toolchain: stable` still installs the current stable.
+# not the Rust version.
+#
+# The Rust version is pinned separately: rust-toolchain.toml names an exact
+# stable release, and every job that is not about another toolchain installs
+# that one (`toolchain: 1.99.1`). With `-D warnings` and clippy's pedantic and
+# nursery groups, a floating `stable` let each Rust release (every six weeks)
+# change rustc, rustfmt and clippy under every job at once, with no change
+# here. scripts/check-toolchain-pin.py (the `doc` job) fails when a workflow
+# names another toolchain outside the informational jobs. Those see the next
+# releases first: `latest-stable` (the current stable), `clippy-beta`,
+# `nightly`. The pin is moved by a pull request (CONTRIBUTING.md, "The Rust
+# toolchain").
 
 name: CI
 
@@ -85,7 +96,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --all-targets
 
@@ -103,7 +114,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --all-targets
       # Every other job builds tests in debug or with the repository's release
@@ -139,7 +150,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # --no-fail-fast: cargo otherwise stops at the first failing test
       # binary, hiding failures in the ones after it.
@@ -176,7 +187,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Download pre-built libduckdb
         # The version is DERIVED from Cargo.lock, not written here. It used to
@@ -271,7 +282,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Pin the bindings to the engine and download its library
         # The test shim refuses a library whose duckdb_ext_api_v1 size differs
@@ -317,7 +328,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Pin the DuckDB 2.0 bindings and download libduckdb v2.0.0
         run: |
@@ -361,7 +372,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Pin the DuckDB 2.0 bindings
         run: |
@@ -382,7 +393,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --all-targets --features duckdb-1-5
       - run: cargo test --all-targets --features duckdb-1-5
@@ -404,7 +415,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
           targets: wasm32-unknown-emscripten
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # DuckDB-WASM target. quack-rs's own lib must compile for wasm32; in
@@ -449,7 +460,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --all-targets -- -D warnings
@@ -491,6 +502,38 @@ jobs:
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
         run: cargo +beta clippy --all-targets --features bundled-test-prebuilt,duckdb-1-5-4 -- -D warnings
 
+  # Informational: the current stable Rust, whatever rust-toolchain.toml pins.
+  # Every blocking job builds with the pinned release, so a new stable cannot
+  # turn them red overnight; this job is where its new lints and warnings show
+  # up first, on every pull request and on the weekly schedule. When stable is
+  # newer than the pin and this job is green, move the pin (CONTRIBUTING.md,
+  # "The Rust toolchain"); when it is red, fix the findings in the same PR.
+  latest-stable:
+    name: Latest stable Rust (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      # Over rust-toolchain.toml, for every rustup proxy this job runs,
+      # rust-cache's own `rustc -vV` (part of its cache key) included.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: The stable release this run checks
+        run: rustc +stable --version
+      - run: cargo +stable fmt -- --check
+      - run: cargo +stable clippy --all-targets -- -D warnings
+      - run: cargo +stable clippy --all-targets --features duckdb-1-5-4 -- -D warnings
+      - run: cargo +stable doc --no-deps --features duckdb-1-5-4
+      - run: cargo +stable test --lib --features duckdb-1-5-4
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -501,7 +544,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
           components: rustfmt
       - run: cargo fmt -- --check
 
@@ -515,7 +558,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
       # duckdb-1-5) rather than --all-features, which would compile DuckDB
@@ -560,6 +603,10 @@ jobs:
       # the same release.
       - name: Release metadata agrees with Cargo.toml
         run: python3 scripts/check-release-metadata.py
+      # Every job builds with the toolchain rust-toolchain.toml pins, except the
+      # informational ones and those about another toolchain (MSRV, nightly).
+      - name: Workflows use the pinned Rust toolchain
+        run: python3 scripts/check-toolchain-pin.py
 
   msrv:
     name: MSRV (1.86.0)
@@ -574,10 +621,11 @@ jobs:
           toolchain: "1.86.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # `+1.86.0` is not optional, for the same reason the `nightly` and `miri`
-      # jobs below use `+nightly`: `rust-toolchain.toml` pins `channel =
-      # "stable"`, and a rustup toolchain file overrides the default this action
-      # sets. A bare `cargo check` here runs stable and tests nothing -- the
-      # MSRV gate was inert. This matches `cargo +1.86.0 check` in CONTRIBUTING.
+      # jobs below use `+nightly`: `rust-toolchain.toml` pins the toolchain
+      # (`channel`), and a rustup toolchain file overrides the default this
+      # action sets. A bare `cargo check` here runs the pinned release and tests
+      # nothing -- the MSRV gate was inert. This matches `cargo +1.86.0 check`
+      # in CONTRIBUTING.
       #
       # Against what a 1.86.0 user's Cargo resolves, not the committed
       # Cargo.lock: that carries the newest compatible releases, and
@@ -616,7 +664,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Resolve the declared floor
         run: |
@@ -636,7 +684,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo bench --no-run
       # The engine-level benchmark extension (benches/engine) is a separate crate;
@@ -658,7 +706,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
@@ -682,7 +730,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # `--test integration_test` builds the one test binary that holds the test
       # (the unfiltered form compiled nine, and eight of them ran nothing).
@@ -709,7 +757,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
@@ -833,7 +881,7 @@ jobs:
           fetch-tags: true
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       # docs.yml builds the book only when main is pushed, so a broken page
       # was found after merge. The version is the one book/mdbook-version pins,
       # which docs.yml's build script also reads.
@@ -904,7 +952,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # hello-ext is its own Cargo workspace (examples/hello-ext/target); the
@@ -990,7 +1038,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install DuckDB CLI
         run: |
@@ -1189,7 +1237,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install DuckDB CLI
         run: |
@@ -1323,7 +1371,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build and stamp a duckdb-1-5 demo against the pinned bindings
         run: |
@@ -1461,7 +1509,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # `--locked`, as release.yml's `package` and `publish` jobs run it: without
       # it a Cargo.toml version bump that left Cargo.lock behind passed here
@@ -1478,6 +1526,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Installed explicitly, like every other job, rather than left to
+      # rustup's on-demand install of what rust-toolchain.toml names (on by
+      # default since rustup 1.28.1, but an image can turn it off).
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-targets: false
@@ -1506,7 +1560,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - name: Install osv-scanner (pinned, checksum-verified)
         run: |
           VER=2.7.0
@@ -1540,9 +1594,10 @@ jobs:
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # `+nightly` is not optional: `rust-toolchain.toml` pins `channel =
-      # "stable"`, and a rustup toolchain file overrides the default this action
-      # sets, so a bare `cargo` here runs stable and this job tests nothing new.
+      # `+nightly` is not optional: `rust-toolchain.toml` pins a stable release
+      # (`channel`), and a rustup toolchain file overrides the default this
+      # action sets, so a bare `cargo` here runs that release and this job
+      # tests nothing new.
       - name: Test (nightly, informational)
         run: cargo +nightly test --all-targets
 
@@ -1584,9 +1639,9 @@ jobs:
           # what this job is for. `cargo test` still runs the full 256.
           PROPTEST_CASES: "8"
         # `+nightly` is not optional -- see the note in the `nightly` job:
-        # `rust-toolchain.toml` pins stable and overrides this action's default,
-        # so a bare `cargo miri` resolves to stable, where the `miri` component
-        # does not exist.
+        # `rust-toolchain.toml` pins a stable release and overrides this action's
+        # default, so a bare `cargo miri` resolves to that release, where the
+        # `miri` component does not exist.
         # `--features duckdb-1-5-4` matters: without it every `duckdb-1-5*`
         # module is cfg'd out, including `src/arrow.rs` -- the largest block of
         # pure-Rust `unsafe` in the crate, and exactly what Miri is here for.
@@ -1717,7 +1772,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # quack-rs is an SDK: its public API *is* the product, and a downstream
       # extension that stops compiling on a patch release is a worse outcome

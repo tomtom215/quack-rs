@@ -49,7 +49,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
 
       # main's API reference for /dev/api/, with the docs.rs feature set
       # (Cargo.toml [package.metadata.docs.rs]). Released versions link to

@@ -189,7 +189,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08
         with:
-          toolchain: stable
+          toolchain: 1.99.1
       # No cache in this job or in `publish`: a tag-triggered run can restore
       # caches the default branch saved, and this job holds the attestation
       # token. Release speed does not matter.
@@ -209,8 +209,8 @@ jobs:
           CRATE_FILE=$(ls target/package/*.crate)
           CRATE_SIZE=$(wc -c < "$CRATE_FILE")
           echo "crate_file=$CRATE_FILE" >> "$GITHUB_OUTPUT"
-          # The `publish` job installs exactly this toolchain: it runs after a
-          # manual approval that can take days, and `stable` may have moved.
+          # The `publish` job installs this rustc and refuses to re-package with
+          # any other: it runs after a manual approval that can take days.
           echo "rustc=$(rustc --version | awk '{ print $2 }')" >> "$GITHUB_OUTPUT"
           printf '::notice::Packaged %s (%s bytes)\n' "$(basename "$CRATE_FILE")" "$CRATE_SIZE"
 
