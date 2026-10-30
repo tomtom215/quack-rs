@@ -76,7 +76,7 @@ fn excluded_platforms_take_either_separator_and_an_empty_list() {
     ));
     assert_eq!(args.config.excluded_platforms, ["wasm_mvp", "wasm_eh"]);
     let args = parse_ok(&format!("demo {REQUIRED} --excluded-platforms="));
-    assert!(args.config.excluded_platforms.is_empty());
+    assert_eq!(args.config.excluded_platforms, Vec::<String>::new());
 }
 
 #[test]
