@@ -1,5 +1,8 @@
 # DuckDB C API Reference for Extension Authors
 
+> **These code blocks are sketches, not compiled.** They show the C API shapes the SDK wraps;
+> the book's examples are compiled on every pull request.
+
 This page documents the DuckDB C API surface used by `quack-rs`, including
 correct callback signatures, memory ownership rules, and gotchas discovered
 through production use. The [LESSONS.md](../LESSONS.md) companion file documents
@@ -22,7 +25,7 @@ each pitfall in detail; this page is the quick-reference.
 
 ## Extension Entry Point
 
-```rust
+```rust,ignore
 // The entry point function name must be: {extension_name}_init_c_api
 // (all lowercase, underscores, no "lib" prefix)
 #[unsafe(no_mangle)]
@@ -56,7 +59,7 @@ duckdb_disconnect(&mut con)
 *C API version* (`"v1.2.0"`), not the DuckDB release version (`"v1.4.4"`). DuckDB
 1.4.4 to 1.5.5 declare C API `v1.2.0`; 1.5.6 and 2.0.0 declare `v1.5.6` and still load
 `v1.2.0` extensions. `quack_rs::DUCKDB_API_VERSION` holds `"v1.2.0"`. See
-[Pitfall P2](../LESSONS.md#p2-extension-metadata-version-is-c-api-version-not-duckdb-version).
+[Pitfall P2](../LESSONS.md#p2-metadata-version-is-c-api-version-not-duckdb-version).
 
 ---
 
@@ -64,7 +67,7 @@ duckdb_disconnect(&mut con)
 
 ### Single function
 
-```rust
+```rust,ignore
 unsafe {
     ScalarFunctionBuilder::new("double_it")
         .param(TypeId::BigInt)
@@ -76,7 +79,7 @@ unsafe {
 
 ### Function set (multiple overloads)
 
-```rust
+```rust,ignore
 unsafe {
     ScalarFunctionSetBuilder::new("my_add")
         .overload(
@@ -97,7 +100,7 @@ unsafe {
 
 ### Complex parameter and return types
 
-```rust
+```rust,ignore
 use quack_rs::types::{LogicalType, TypeId};
 
 ScalarFunctionBuilder::new("flatten_list")
@@ -107,7 +110,7 @@ ScalarFunctionBuilder::new("flatten_list")
     .register(con)?
 ```
 
-```rust
+```rust,ignore
 ScalarOverloadBuilder::new()
     .param(TypeId::Varchar)
     .returns_logical(LogicalType::list(TypeId::Timestamp))  // LIST(TIMESTAMP) return
@@ -116,7 +119,7 @@ ScalarOverloadBuilder::new()
 
 ### NULL handling
 
-```rust
+```rust,ignore
 ScalarFunctionBuilder::new("my_fn")
     // Declares the function may return non-NULL for NULL input. The callback
     // receives NULL rows under either setting (Pitfall L8).
@@ -130,7 +133,7 @@ ScalarFunctionBuilder::new("my_fn")
 
 ### Single function
 
-```rust
+```rust,ignore
 unsafe {
     AggregateFunctionBuilder::new("my_agg")
         .param(TypeId::Varchar)    // one call per input parameter
@@ -147,7 +150,7 @@ unsafe {
 
 ### Function set (multiple arities)
 
-```rust
+```rust,ignore
 unsafe {
     AggregateFunctionSetBuilder::new("retention")
         .returns_logical(LogicalType::list(TypeId::Boolean))  // LIST(BOOLEAN) return
@@ -179,7 +182,7 @@ The following are the correct Rust signatures for DuckDB aggregate callbacks.
 Note that `update`, `combine`, and `finalize` take `*mut duckdb_aggregate_state`
 (a pointer to an **array** of state pointers), **not** `duckdb_aggregate_state`.
 
-```rust
+```text
 // state_size: called once; returns sizeof(your FFI state struct)
 unsafe extern "C" fn state_size(
     info: duckdb_function_info,
@@ -231,7 +234,7 @@ unsafe extern "C" fn destroy(
 
 ### Reading input vectors (inside `update`)
 
-```rust
+```rust,ignore
 // Get column i from the input chunk
 let row_count = duckdb_data_chunk_get_size(chunk) as usize;
 let vector = duckdb_data_chunk_get_vector(chunk, col_idx as idx_t);
@@ -252,7 +255,7 @@ let b = *data.add(row) != 0;
 
 ### Writing output vectors (inside `finalize`)
 
-```rust
+```rust,ignore
 let data = duckdb_vector_get_data(result) as *mut u8;
 
 // Write a value
@@ -290,7 +293,7 @@ bytes 8..16  : pointer to heap-allocated string data (*const u8), native
                may hold stale bytes
 ```
 
-```rust
+```rust,ignore
 // Correct reading:
 let bytes: [u8; 16] = ptr::read(data.add(row * 16) as *const [u8; 16]);
 let len = u32::from_ne_bytes(bytes[..4].try_into().unwrap()) as usize;
@@ -355,7 +358,7 @@ dealing with these constants directly.
 ## Common Mistakes Quick Reference
 
 This page does not keep its own copy of the pitfall list. Every known pitfall
-(L1–L19 and P1–P15), with symptom, root cause and fix, is in
+(L1–L21 and P1–P17), with symptom, root cause and fix, is in
 [`LESSONS.md`](../LESSONS.md); the book's
 [Pitfall Catalog](https://quack-rs.com/reference/pitfalls.html) has the same
 entries with compiled examples and a summary table.

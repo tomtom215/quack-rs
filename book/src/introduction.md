@@ -5,7 +5,7 @@
 
 # quack-rs: DuckDB extensions in Rust
 
-**A Rust SDK for building DuckDB loadable extensions — no C++ required.**
+**A Rust SDK for building DuckDB loadable extensions — no C or C++ to write.**
 
 [![CI](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/tomtom215/quack-rs/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/quack-rs.svg)](https://crates.io/crates/quack-rs)
@@ -18,7 +18,7 @@
 ## What is quack-rs?
 
 `quack-rs` is a Rust SDK for building [DuckDB](https://duckdb.org/) loadable extensions
-without C++ or CMake. It wraps DuckDB's C Extension API — the C interface DuckDB exposes
+without writing C++ or CMake. It wraps DuckDB's C Extension API — the C interface DuckDB exposes
 to loadable extensions — in safe builders and RAII types, and guards against the FFI
 pitfalls documented in the [Pitfall Catalog](reference/pitfalls.md), so you can focus on
 extension logic.
@@ -28,7 +28,9 @@ extension requires writing glue code in C++", and that a pure-Rust path is in de
 ([DuckDB Community Extensions FAQ](https://duckdb.org/community_extensions/faq#can-i-write-extensions-in-rust)).
 That path now exists in two forms. DuckDB's own `extension-template-rs` targets the unstable
 C API v2 with the experimental `duckdb-neo` crate. **quack-rs** targets the stable C API v1,
-so one binary loads across DuckDB releases. No C++. No CMake. No glue code.
+so one binary loads across DuckDB releases. Your repository holds Rust only: no C++, no
+CMake, and no glue layer of your own between your functions and the C API. (Some of the
+tools around it still build C: see [Build requirements](getting-started/installation.md#build-requirements).)
 
 ---
 
@@ -57,9 +59,10 @@ so one binary loads across DuckDB releases. No C++. No CMake. No glue code.
 
 `quack-rs` was extracted from
 [duckdb-behavioral](https://github.com/tomtom215/duckdb-behavioral), a production DuckDB
-community extension. Building that extension revealed **16 undocumented pitfalls** in DuckDB's
-Rust FFI surface — struct layouts, callback contracts, and initialization sequences that
-aren't covered anywhere in the DuckDB documentation or `libduckdb-sys` docs.
+community extension. Building that extension revealed the first **undocumented pitfalls**
+in DuckDB's Rust FFI surface — struct layouts, callback contracts, and initialization
+sequences that aren't covered anywhere in the DuckDB documentation or `libduckdb-sys` docs.
+The catalogue has grown since, from building and auditing quack-rs itself.
 
 Three of those pitfalls caused extension-breaking bugs that passed 435 unit tests before
 being caught by end-to-end tests:
@@ -77,7 +80,7 @@ for it without DuckDB. The full list is in the [Pitfall Catalog](reference/pitfa
 
 ## Key features
 
-- **Zero C++** — no `CMakeLists.txt`, no header files, no glue code
+- **No C++ in your repository** — no `CMakeLists.txt`, no header files, no glue layer of your own
 - **Every function kind the C API can register** — scalar, aggregate, table, cast, replacement scan, copy function (`duckdb-1-5`) — plus SQL macros
 - **Panic-safe FFI** — the entry point and the callbacks quack-rs generates catch panics and report them as SQL errors; registration errors surface via `Result`
 - **RAII memory management** — `LogicalType` and `FfiState<T>` prevent leaks and double-frees
@@ -85,7 +88,7 @@ for it without DuckDB. The full list is in the [Pitfall Catalog](reference/pitfa
 - **SQL macros** — register `CREATE MACRO` statements without any FFI callbacks
 - **Testable state** — `AggregateTestHarness<T>` tests aggregate logic without a live DuckDB
 - **Scaffold generator** — generates a complete community extension project (`Cargo.toml`, `Makefile`, CI, `description.yml`, tests) from one function call
-- **34 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptom, root cause and fix
+- **38 pitfalls documented** — every known DuckDB Rust FFI pitfall, with symptom, root cause and fix
 
 ---
 

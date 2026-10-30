@@ -399,7 +399,7 @@ quack-rs/
 ├── .github/workflows/ci.yml       # CI pipeline
 ├── .github/workflows/docs.yml     # GitHub Pages deployment (the versioned site)
 ├── CONTRIBUTING.md
-├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L19, P1–P15)
+├── LESSONS.md                     # The DuckDB Rust FFI pitfalls (L1–L21, P1–P17)
 ├── CHANGELOG.md
 └── README.md
 ```

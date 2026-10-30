@@ -6,11 +6,11 @@ function in Rust with `AggregateFunctionSetBuilder`, including variadic aggregat
 such as `retention(c1, c2, ..., c32)` and overloads with different return types.
 
 > **Known DuckDB limitation.** C-API aggregates — including every overload in a
-> set — read out of bounds under `agg(x) OVER ()` (whole-partition window frames)
-> and `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
+> set — read out of bounds under `agg(x) OVER ()` and other whole-partition window frames,
+> and under `agg(x ORDER BY y)`. This is a DuckDB C API defect; see
 > [Aggregate Functions](aggregate.md#known-duckdb-limitation) for the details and
-> DuckDB source lines. On DuckDB 1.4.x and 1.5.x, do not use C-API aggregates
-> in those two query shapes.
+> [Known Limitations](../reference/known-limitations.md#aggregates-crash-under-over--and-order-by-duckdb-defect-pitfall-l11) for the exact shapes. On DuckDB 1.4.x and 1.5.x, do not use
+> C-API aggregates in those query shapes.
 >
 > Reported upstream as [duckdb/duckdb#26109](https://github.com/duckdb/duckdb/issues/26109)
 > and fixed in DuckDB 2.0.0.
