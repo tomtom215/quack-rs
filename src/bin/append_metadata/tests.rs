@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::footer::{field_text, make_field, METADATA_SIZE, VALID_ABI_TYPES};
+use std::fs;
 use std::io::Write as _;
 
 fn argv(s: &str) -> Vec<String> {
@@ -305,7 +306,7 @@ fn empty_versions_are_rejected() {
     .is_err());
 }
 
-/// `LESSONS.md` P2: for `C_STRUCT` the field is the C API version. `DuckDB` 1.5.5
+/// Pitfall P2: for `C_STRUCT` the field is the C API version. `DuckDB` 1.5.5
 /// refuses a file claiming C API v1.5.5 ("requires a newer C API"), so the
 /// stamp was useless — and the tool used to write it without complaint.
 #[test]
@@ -668,7 +669,7 @@ fn writing_replaces_the_file_instead_of_rewriting_it() {
 
     // Holding the old file open stands in for a host that has it mapped.
     let mut held = fs::File::open(&path).unwrap();
-    entry::write_atomically(&path, b"new build, longer").unwrap();
+    output::write_atomically(&path, b"new build, longer").unwrap();
 
     assert_eq!(fs::read(&path).unwrap(), b"new build, longer");
     let mut seen = Vec::new();
