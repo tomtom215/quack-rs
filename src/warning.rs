@@ -32,6 +32,7 @@
 //! ```
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Severity level for extension warnings.
@@ -109,17 +110,63 @@ impl fmt::Display for ExtensionWarning {
 /// threads via `Arc<WarningCollector>`. A panic on another thread while it held
 /// the lock does not lose warnings: every operation is a single `Vec` call, so
 /// the list is intact, and the collector keeps using it.
+///
+/// # Bounded
+///
+/// A collector keeps at most a limit of warnings between drains
+/// ([`DEFAULT_MAX_WARNINGS`], 10,000, from [`new`][Self::new]; any other with
+/// [`with_limit`][Self::with_limit]). Past it, [`emit`][Self::emit] does not
+/// store the warning but counts it in [`dropped`][Self::dropped], so a
+/// condition reported once per request or row cannot grow the list without
+/// bound in a long-lived process (2,000,000 warnings were 381 MB). The first
+/// warnings are the ones kept.
+///
+/// **Behaviour change** in 0.20.0: before it, every warning was stored, and
+/// a collector never drained grew for as long as the process lived.
 pub struct WarningCollector {
     warnings: Mutex<Vec<ExtensionWarning>>,
+    /// The most warnings kept at once; later ones are counted, not stored.
+    limit: usize,
+    /// How many warnings were discarded because the collector was full.
+    dropped: AtomicU64,
 }
 
+/// How many warnings a [`WarningCollector::new`] collector keeps before it
+/// starts counting instead of storing.
+///
+/// A warning is emitted by the code that notices the condition, and that code
+/// runs once per request or per row: an extension that warns about every
+/// request made without certificate verification grew the list by about 190
+/// bytes each (380 MB for two million), without bound, for as long as nobody
+/// drained it.
+pub const DEFAULT_MAX_WARNINGS: usize = 10_000;
+
 impl WarningCollector {
-    /// Creates a new, empty `WarningCollector`.
+    /// Creates a new, empty `WarningCollector` that keeps at most
+    /// [`DEFAULT_MAX_WARNINGS`] warnings between drains.
+    ///
+    /// Warnings past the limit are counted ([`dropped`][Self::dropped]), not
+    /// stored.
     #[must_use]
     pub const fn new() -> Self {
+        Self::with_limit(DEFAULT_MAX_WARNINGS)
+    }
+
+    /// Creates a collector that keeps at most `limit` warnings between drains.
+    #[must_use]
+    pub const fn with_limit(limit: usize) -> Self {
         Self {
             warnings: Mutex::new(Vec::new()),
+            limit,
+            dropped: AtomicU64::new(0),
         }
+    }
+
+    /// How many warnings were discarded because the collector already held
+    /// its limit. [`drain`][Self::drain] and [`clear`][Self::clear] reset it.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// Locks the list, recovering it if a panic poisoned the lock: each
@@ -129,9 +176,17 @@ impl WarningCollector {
         self.warnings.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Emits a warning, adding it to the collector.
+    /// Emits a warning, adding it to the collector, or counting it in
+    /// [`dropped`][Self::dropped] when the collector is full.
     pub fn emit(&self, warning: ExtensionWarning) {
-        self.lock().push(warning);
+        let mut list = self.lock();
+        if list.len() < self.limit {
+            list.push(warning);
+        } else {
+            // Under the lock, so the count always describes the list a
+            // concurrent `drain` takes.
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Returns the number of warnings currently collected.
@@ -153,13 +208,20 @@ impl WarningCollector {
     }
 
     /// Drains all collected warnings, returning them and leaving the collector empty.
+    ///
+    /// Resets [`dropped`][Self::dropped]: read it first to learn how many
+    /// warnings the full collector discarded since the last drain.
     pub fn drain(&self) -> Vec<ExtensionWarning> {
-        std::mem::take(&mut *self.lock())
+        let mut list = self.lock();
+        self.dropped.store(0, Ordering::Relaxed);
+        std::mem::take(&mut *list)
     }
 
-    /// Clears all collected warnings.
+    /// Clears all collected warnings and resets [`dropped`][Self::dropped].
     pub fn clear(&self) {
-        self.lock().clear();
+        let mut list = self.lock();
+        self.dropped.store(0, Ordering::Relaxed);
+        list.clear();
     }
 }
 
@@ -191,10 +253,14 @@ impl core::fmt::Debug for WarningCollector {
             Ok(warnings) => f
                 .debug_struct("WarningCollector")
                 .field("warnings", &*warnings)
+                .field("limit", &self.limit)
+                .field("dropped", &self.dropped())
                 .finish(),
             Err(()) => f
                 .debug_struct("WarningCollector")
                 .field("warnings", &"<locked>")
+                .field("limit", &self.limit)
+                .field("dropped", &self.dropped())
                 .finish(),
         }
     }
@@ -466,5 +532,40 @@ mod tests {
         assert_eq!(first.len(), 1);
         let second = c.drain();
         assert!(second.is_empty());
+    }
+    /// A collector nobody drains must not grow without bound: past its limit
+    /// a warning is counted, not stored (2,000,000 stored ones were 380 MB).
+    #[test]
+    fn a_full_collector_counts_instead_of_growing() {
+        let c = WarningCollector::with_limit(3);
+        for i in 0..10 {
+            c.emit(warning(
+                if i < 3 { "KEPT" } else { "LOST" },
+                WarningSeverity::Low,
+            ));
+        }
+        assert_eq!(c.len(), 3);
+        assert_eq!(c.dropped(), 7);
+        assert!(c.snapshot().iter().all(|w| w.code == "KEPT"));
+        assert!(format!("{c:?}").contains("dropped: 7"));
+        assert_eq!(c.drain().len(), 3);
+        assert_eq!(c.dropped(), 0, "draining resets the count");
+        c.emit(warning("AGAIN", WarningSeverity::Low));
+        assert_eq!((c.len(), c.dropped()), (1, 0));
+        let full = WarningCollector::with_limit(0);
+        full.emit(warning("X", WarningSeverity::Info));
+        assert_eq!((full.len(), full.dropped()), (0, 1));
+        full.clear();
+        assert_eq!(full.dropped(), 0);
+    }
+
+    #[test]
+    fn the_default_collector_keeps_the_documented_number() {
+        let c = WarningCollector::new();
+        for _ in 0..DEFAULT_MAX_WARNINGS + 5 {
+            c.emit(warning("W", WarningSeverity::Info));
+        }
+        assert_eq!(c.len(), DEFAULT_MAX_WARNINGS);
+        assert_eq!(c.dropped(), 5);
     }
 }
