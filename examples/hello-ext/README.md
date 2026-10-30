@@ -7,18 +7,20 @@ implementation or copy-paste starting point for your own extension. Features
 that need the `duckdb-1-5*` flags (copy functions, Arrow, config options, …)
 are not in it; their chapters in the book have examples.
 
-> **This example uses the raw callback style on purpose.** Its 28
+> **This example mostly uses the raw callback style on purpose.** Its 24
 > `unsafe extern "C" fn`s are installed exactly as written and run with no
 > `catch_unwind`: a panic in one aborts the DuckDB process. It shows what the
 > C API calls look like, not how to write new code. For that, use the typed
 > builders (`ScalarFunctionBuilder::map1` / `try_map1`, which return a SQL error
 > for a panic) and the `*_callback!` macros, as the
-> [Quick Start](https://quack-rs.com/getting-started/quick-start.html) does.
+> [Quick Start](https://quack-rs.com/getting-started/quick-start.html) does —
+> and as `gen_series_v2` does here: its four callbacks are written with
+> `table_bind_callback!`, `table_init_callback!` and `table_scan_callback!`.
 
 > **The aggregates here (`word_count`, `typed_sum`) must not be used as
 > `agg(x) OVER ()` or `agg(x ORDER BY y)`.** A DuckDB defect crashes every C API
 > aggregate in those two shapes — see
-> [Pitfall L11](../../LESSONS.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
+> [Pitfall L11](https://quack-rs.com/reference/pitfalls.html#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
 
 ## What it registers
 
@@ -45,7 +47,7 @@ are not in it; their chapters in the book have examples.
 All functions use `entry_point_v2!` with `Connection`/`Registrar` for type-safe
 registration.
 
-All **29 numbered SQL checks** (31 statements, listed under "Load in DuckDB CLI" below)
+All **30 numbered SQL checks** (32 statements, listed under "Load in DuckDB CLI" below)
 must return their expected results. CI's `extension-load` job runs every one of them with
 `scripts/check-hello-ext.py` on **DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest
 release** (2.0.0 at the time of writing).
@@ -185,7 +187,7 @@ duckdb -unsigned
 ```sql
 LOAD 'hello_ext.duckdb_extension';
 
--- 29 numbered checks (31 statements); CI runs them on DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and latest:
+-- 30 numbered checks (32 statements); CI runs them on DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and latest:
 
 -- T01: word_count aggregate
 SELECT word_count(sentence) AS wc FROM (
@@ -265,6 +267,9 @@ SELECT make_kv_map(NULL, 42);                                        -- NULL
 
 -- T29: gen_series_v2 projection pushdown (value column only)
 SELECT value FROM gen_series_v2(3);                                  -- 0, 1, 2
+
+-- T30: gen_series_v2 refuses a value past BIGINT (2 * 2^62) instead of wrapping
+SELECT * FROM gen_series_v2(3, step := 4611686018427387904);         -- error
 ```
 
 ## Adapting this for your own extension
