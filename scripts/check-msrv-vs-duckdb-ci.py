@@ -65,21 +65,50 @@ SUPPORTED_1X_REFS = ["v1.5-variegata", "v1.4-andium"]
 # anchor it found nothing, and it never saw the `@1.86.0` pin at all.
 TOOLCHAIN_PIN = re.compile(
     r"uses:\s*(?:&[\w-]+\s+)?dtolnay/rust-toolchain@"
-    r"(?:[0-9a-f]{40}\s*#\s*(?P<commented>\S+)|(?P<ref>[\w.-]+))"
+    r"(?:[0-9a-f]{40}[ \t]*(?:#[ \t]*(?P<commented>[^\n]*))?|(?P<ref>[\w.-]+))"
 )
+# A SHA pin's comment names its toolchain in any of these styles: `# 1.86.0`,
+# `# v1.86.0`, `# rust 1.86.0`. Read only the first word, a `v1.86.0` became
+# `v1.86.0` (not a version) and `rust 1.86.0` became `rust`, both "floating":
+# an upstream switch to either style would have silenced this guard.
+COMMENT_VERSION = re.compile(r"(?<![\w.])v?(\d+\.\d+(?:\.\d+)?)(?![\w.])")
+# The `toolchain:` input that a pin of the action's `master` branch requires
+# (the style quack-rs's own workflows use): `@<sha> # master` then
+# `toolchain: 1.86.0`. Only the input says which Rust that is.
+TOOLCHAIN_INPUT = re.compile(r"(?m)^[ \t]*toolchain:[ \t]*[\"']?(?P<value>[^\"'\s#]+)")
 
 SELF_TEST = {
-    "        uses: dtolnay/rust-toolchain@1.86.0": "1.86.0",
-    "        uses: dtolnay/rust-toolchain@stable": "stable",
+    "        uses: dtolnay/rust-toolchain@1.86.0": ["1.86.0"],
+    "        uses: dtolnay/rust-toolchain@stable": ["stable"],
     "        uses: &rust-toolchain-action dtolnay/rust-toolchain@"
-    "46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1": "1.97.1",
+    "46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1": ["1.97.1"],
     "      - uses: dtolnay/rust-toolchain@"
-    "e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08": "master",
+    "e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08": ["master"],
+    "      - uses: dtolnay/rust-toolchain@"
+    "46511b1c83438f0dd37c02d843619ece5a4abb5b # v1.86.0": ["1.86.0"],
+    "      - uses: dtolnay/rust-toolchain@"
+    "46511b1c83438f0dd37c02d843619ece5a4abb5b # rust 1.86.0": ["1.86.0"],
+    "      - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b": ["(no comment)"],
+    "      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master\n"
+    "        with:\n          toolchain: 1.86.0": ["master", "1.86.0"],
+    "        with:\n          toolchain: \"1.85\"  # wasm": ["1.85"],
 }
 
 
+def pin_of(match: re.Match[str]) -> str:
+    if match.group("ref") is not None:
+        return match.group("ref")
+    comment = (match.group("commented") or "").strip()
+    version = COMMENT_VERSION.search(comment)
+    if version:
+        return version.group(1)
+    return comment.split()[0] if comment else "(no comment)"
+
+
 def pins_in(workflow: str) -> list[str]:
-    return [m.group("commented") or m.group("ref") for m in TOOLCHAIN_PIN.finditer(workflow)]
+    found = [(m.start(), pin_of(m)) for m in TOOLCHAIN_PIN.finditer(workflow)]
+    found += [(m.start(), m.group("value")) for m in TOOLCHAIN_INPUT.finditer(workflow)]
+    return [pin for _, pin in sorted(found)]
 SEMVER = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?$")
 
 
@@ -91,7 +120,7 @@ def msrv() -> tuple[int, int, int]:
 
 
 def parse(version: str) -> tuple[int, int, int] | None:
-    match = SEMVER.match(version)
+    match = SEMVER.match(version.removeprefix("v"))
     if not match:
         return None
     major, minor, patch = match.groups()
@@ -117,8 +146,13 @@ def main() -> int:
 
     for line, want in SELF_TEST.items():
         got = pins_in(line)
-        if got != [want]:
-            print(f"self-test failed: {line.strip()!r} gave {got}, expected [{want!r}]")
+        if got != want:
+            print(f"self-test failed: {line.strip()!r} gave {got}, expected {want!r}")
+            return 1
+    # A pin that names a release is a constraint, however it is spelled.
+    for text, want in {"1.86.0": (1, 86, 0), "v1.86.0": (1, 86, 0), "1.85": (1, 85, 0), "stable": None}.items():
+        if parse(text) != want:
+            print(f"self-test failed: parse({text!r}) gave {parse(text)}, expected {want}")
             return 1
 
     ours = msrv()

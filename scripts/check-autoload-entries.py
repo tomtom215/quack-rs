@@ -39,6 +39,7 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -77,7 +78,29 @@ def upstream_names(header: str, array: str) -> set[str]:
     m = re.search(rf"{array}\[\]\s*=\s*\{{(.*?)\}};", header, re.DOTALL)
     if not m:
         raise ValueError(f"{array} not found")
-    return {name.lower() for name, _ in re.findall(r'\{"([^"]+)",\s*"([^"]+)"\}', m.group(1))}
+    entries = re.findall(r'\{"([^"]+)",\s*"([^"]+)"\}', m.group(1))
+    # Each `{` in the array body opens one entry. If upstream changes the entry
+    # shape (a third field, a macro), the pattern above matches fewer of them,
+    # and an empty or partial set would read as "src/catalog.rs covers every
+    # name": refuse instead ("could not parse", exit 2).
+    opened = m.group(1).count("{")
+    if not entries or len(entries) != opened:
+        raise ValueError(f"{array}: {opened} entries, {len(entries)} parsed; has the entry layout changed?")
+    return {name.lower() for name, _ in entries}
+
+
+def fetch(url: str, attempts: int = 3) -> str:
+    """The body at `url`, retried: this script makes two requests per release,
+    and a release run (QUACK_STRICT_UPSTREAM=1) fails on one dropped connection."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r:
+                return r.read().decode("utf-8")
+        except (urllib.error.URLError, OSError):
+            if attempt == attempts:
+                raise
+            time.sleep(5 * attempt)
+    raise AssertionError("unreachable")
 
 
 def rust_names(text: str, const: str) -> set[str]:
@@ -107,8 +130,7 @@ def main() -> int:
     union: dict[str, set[str]] = {array: set() for array in LISTS}
     for tag in tags:
         try:
-            with urllib.request.urlopen(HEADER_URL.format(tag=tag), timeout=60) as r:
-                header = r.read().decode("utf-8")
+            header = fetch(HEADER_URL.format(tag=tag))
             for array in LISTS:
                 names = upstream_names(header, array)
                 union[array] |= names
