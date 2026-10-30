@@ -3297,6 +3297,8 @@ printed 0 is listed with the exit code):
   (four tests failed once with "No space left on device" when the disk filled, and passed
   when re-run alone: the total is the 1,785 of the first run plus those four); **1.4.4**
   (bindings 1.4.4, default features) 1,479 pass, 0 fail. All 21 test binaries ran each time.
+- The book and README code blocks (`cargo test --doc --manifest-path book/doctest/Cargo.toml`,
+  libduckdb 1.5.6, bindings 1.10506.1): 255 pass, 5 ignored, 0 fail.
 - LeakSanitizer (nightly, `-Zsanitizer=leak`, no `-Zbuild-std`) over `ffi_roundtrip`
   with the empty suppression file: 460 tests, exit 0. The four new fuzz targets ran
   60 s each (`description_roundtrip` 120 s more after its fix, 787,689 inputs).
