@@ -34,7 +34,7 @@ use quack_rs::vector::VectorWriter;
 
 use super::Fixture;
 
-extern "C" {
+unsafe extern "C" {
     /// The harness's shim: fills a `duckdb_ext_api_v1` with the linked
     /// `DuckDB`'s functions, as `CreateAPIv1()` does. (`quack_rs::testing`
     /// declares the same two symbols privately.)

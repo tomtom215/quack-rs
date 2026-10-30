@@ -580,6 +580,7 @@ quack-rs/
 ├── tests/
 │   ├── aggregate_leaks.rs             # Aggregate states `DuckDB` never destroys leak no Rust heap
 │   ├── append_metadata_cli.rs         # The `append_metadata` binary run end to end: exit status, output and the file it writes
+│   ├── entry_point_expansion.rs       # The entry-point macros compiled as edition 2024 and under `panic = "abort"`
 │   ├── entry_point_lint.rs            # The entry-point macros accept an `unsafe` registration closure warning-free
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)

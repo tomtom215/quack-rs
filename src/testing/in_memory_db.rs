@@ -101,7 +101,7 @@
 // atomic table is populated in one go — after which the `duckdb` crate can
 // open connections and execute queries as usual.
 
-extern "C" {
+unsafe extern "C" {
     /// Writes a `duckdb_ext_api_v1` into `out` with every function pointer set
     /// to the corresponding linked `DuckDB` symbol, as `DuckDB`'s internal
     /// `CreateAPIv1()` does: [`quack_rs_api_v1_size`] bytes, every one of them.

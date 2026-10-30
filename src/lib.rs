@@ -31,7 +31,7 @@
 //!     Ok(())
 //! }
 //!
-//! // Generates the `#[no_mangle] extern "C"` entry point. Pass the full symbol
+//! // Generates the `#[unsafe(no_mangle)] extern "C"` entry point. Pass the full symbol
 //! // name DuckDB looks up: `{extension_name}_init_c_api`.
 //! entry_point!(my_extension_init_c_api, |con| register(con));
 //! ```
