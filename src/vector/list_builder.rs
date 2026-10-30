@@ -326,9 +326,6 @@ pub struct ListBuilder {
     /// for NULL elements, its NULL state). Dropped whenever a reserve grows the
     /// child, because that reallocates the child's buffers.
     child: Option<VectorWriter>,
-    /// The parent's entry array, fetched on first use. A reserve of the child
-    /// does not move it.
-    entries: *mut duckdb_list_entry,
 }
 
 /// What to reserve for `capacity` elements under `limit` (with
@@ -372,7 +369,6 @@ impl ListBuilder {
             ceiling: MAX_CHILD_CAPACITY_USIZE,
             overflowed: false,
             child: None,
-            entries: core::ptr::null_mut(),
         }
     }
 
@@ -506,22 +502,25 @@ impl ListBuilder {
         self.written = base + len;
     }
 
-    /// Writes the `{offset, length}` entry of parent row `row_idx`, through the
-    /// entry array fetched once instead of one `duckdb_list_vector_*` call per row.
+    /// Writes the `{offset, length}` entry of parent row `row_idx`.
+    ///
+    /// The entry array is fetched on every call, not cached: when this LIST is
+    /// itself inside the child of another LIST or MAP (a `LIST(LIST(T))`, a LIST
+    /// field of a list's STRUCT elements), a reserve on that outer list
+    /// reallocates this vector's data buffer (L18), and a builder kept across
+    /// the outer list's rows would write through a dangling pointer.
     ///
     /// # Safety
     ///
     /// `row_idx` must be within the parent vector's capacity.
     unsafe fn set_entry(&mut self, row_idx: usize, offset: usize, length: usize) {
-        if self.entries.is_null() {
-            // SAFETY: `self.vector` is a valid LIST vector per the constructor's
-            // contract, and its data is the array of entries.
-            self.entries = unsafe { duckdb_vector_get_data(self.vector) }.cast();
-        }
-        // SAFETY: `self.entries` addresses the parent's entry array, and
-        // `row_idx` is in bounds per this function's contract.
+        // SAFETY: `self.vector` is a valid LIST vector per the constructor's
+        // contract, and its data is the array of entries.
+        let entries = unsafe { duckdb_vector_get_data(self.vector) }.cast::<duckdb_list_entry>();
+        // SAFETY: `entries` addresses the parent's entry array, and `row_idx` is
+        // in bounds per this function's contract.
         unsafe {
-            *self.entries.add(row_idx) = duckdb_list_entry {
+            *entries.add(row_idx) = duckdb_list_entry {
                 offset: offset as u64,
                 length: length as u64,
             };

@@ -189,6 +189,7 @@ impl LogicalType {
     /// `DuckDB` built with assertions aborts on a type id it does not know).
     pub fn try_new(type_id: TypeId) -> Result<Self, LogicalTypeError> {
         Self::precheck(type_id)?;
+        Self::refuse_where_the_engine_lacks(type_id)?;
         // SAFETY: any DUCKDB_TYPE value is accepted; DuckDB returns an owned
         // handle or null.
         let inner = unsafe { duckdb_create_logical_type(type_id.to_duckdb_type()) };
@@ -210,9 +211,34 @@ impl LogicalType {
         Ok(created)
     }
 
-    /// The checks [`try_new`][Self::try_new] makes before it creates a type: a
-    /// composite id, the two literal types, (with `duckdb-1-5-3`) `VARIANT`
-    /// and `TIMESTAMPTZ_NS` on an engine older than 2.0.0 are refused.
+    /// The engine-dependent refusal [`try_new`][Self::try_new] makes before it
+    /// sends an id: `TIMESTAMPTZ_NS` on an engine older than 2.0.0. Kept out of
+    /// [`precheck`][Self::precheck], which `check_slot_offline` (and so
+    /// `MockRegistrar`) runs with no `DuckDB` behind the dispatch table.
+    fn refuse_where_the_engine_lacks(type_id: TypeId) -> Result<(), LogicalTypeError> {
+        if type_id == TypeId::TimestampTzNs {
+            // SAFETY: only `try_new` calls this, right before it creates the type
+            // with `duckdb_create_logical_type`, which needs the dispatch table
+            // initialised too.
+            let engine = unsafe { crate::abi::engine_version() };
+            if let Some(engine) = engine.filter(|v| predates_timestamp_tz_ns(v)) {
+                return Err(LogicalTypeError::with_detail(
+                    "duckdb_create_logical_type",
+                    format!(
+                        "{type_id} (type id 42) was added in DuckDB 2.0.0 and this is DuckDB \
+                         {engine}. The id is not sent: a DuckDB built with assertions aborts \
+                         the process on a type id it does not know, and one built without \
+                         them answers with an INVALID type"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The checks [`try_new`][Self::try_new] makes before it creates a type
+    /// that need no engine: a composite id, the two literal types and (with
+    /// `duckdb-1-5-3`) `VARIANT` are refused.
     fn precheck(type_id: TypeId) -> Result<(), LogicalTypeError> {
         if type_id.is_composite() {
             return Err(LogicalTypeError::with_detail(
@@ -231,23 +257,6 @@ impl LogicalType {
                      VARCHAR"
                 ),
             ));
-        }
-        if type_id == TypeId::TimestampTzNs {
-            // SAFETY: `try_new` creates the type with `duckdb_create_logical_type`
-            // right after this, so the dispatch table is initialised whenever
-            // this runs.
-            let engine = unsafe { crate::abi::engine_version() };
-            if let Some(engine) = engine.filter(|v| predates_timestamp_tz_ns(v)) {
-                return Err(LogicalTypeError::with_detail(
-                    "duckdb_create_logical_type",
-                    format!(
-                        "{type_id} (type id 42) was added in DuckDB 2.0.0 and this is DuckDB \
-                         {engine}. The id is not sent: a DuckDB built with assertions aborts \
-                         the process on a type id it does not know, and one built without \
-                         them answers with an INVALID type"
-                    ),
-                ));
-            }
         }
         #[cfg(feature = "duckdb-1-5-3")]
         if type_id == TypeId::Variant {
@@ -736,10 +745,14 @@ fn check_array_size(size: u64) -> Result<(), LogicalTypeError> {
 }
 
 /// Whether `engine`, a `duckdb_library_version()` string, names a release older
-/// than 2.0.0, which has no `TIMESTAMPTZ_NS`. A development build (`v2.0.0-dev1`)
-/// or anything else `parse_version` cannot read is not known to predate it.
+/// than 2.0.0, which has no `TIMESTAMPTZ_NS`. A development build is judged by
+/// the release it names (`v1.5.7-dev12` predates it, `v2.0.0-dev88614` does
+/// not); anything else `parse_version` cannot read is not known to predate it.
 fn predates_timestamp_tz_ns(engine: &str) -> bool {
-    crate::abi::parse_version(engine).is_some_and(|version| version < (2, 0, 0))
+    let release = engine
+        .split_once('-')
+        .map_or(engine, |(release, _)| release);
+    crate::abi::parse_version(release).is_some_and(|version| version < (2, 0, 0))
 }
 
 #[cfg(test)]
@@ -753,14 +766,23 @@ mod tests {
     /// "less than", on each of major, minor and patch.
     #[test]
     fn only_a_release_before_2_0_0_predates_timestamp_tz_ns() {
-        for older in ["v1.4.4", "v1.5.0", "v1.5.6", "v1.99.99", "1.5.6", "v0.9.9"] {
+        for older in [
+            "v1.4.4",
+            "v1.5.0",
+            "v1.5.6",
+            "v1.99.99",
+            "1.5.6",
+            "v0.9.9",
+            "v1.5.6-dev1",
+            "v1.5.7-dev12",
+        ] {
             assert!(predates_timestamp_tz_ns(older), "{older}");
         }
         for newer in ["v2.0.0", "v2.0.1", "v2.1.0", "v3.0.0", "2.0.0"] {
             assert!(!predates_timestamp_tz_ns(newer), "{newer}");
         }
         // Unreadable versions are let through: the version is not known.
-        for unknown in ["", "v2.0.0-dev88614", "v1.5.6-dev1", "garbage", "v1.5"] {
+        for unknown in ["", "v2.0.0-dev88614", "garbage", "v1.5"] {
             assert!(!predates_timestamp_tz_ns(unknown), "{unknown:?}");
         }
     }

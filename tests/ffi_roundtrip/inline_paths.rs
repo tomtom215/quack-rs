@@ -195,3 +195,60 @@ fn a_list_builder_keeps_correct_elements_across_reserves_and_nulls() {
         "{sql}"
     );
 }
+
+// A `ListBuilder` on the inner LIST of a `LIST(LIST(BIGINT))`, made once per
+// chunk and kept across the outer builder's rows. Each outer reserve that grows
+// reallocates the inner LIST vector's entry array (it is the outer child's
+// data, L18), so a builder that cached that array wrote into freed memory
+// (SIGSEGV on DuckDB 1.5.6 at 20,000 rows).
+quack_rs::scalar_callback!(hoisted_inner_list, |_info, input, output| {
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let inner_vec = unsafe { quack_rs::vector::complex::ListVector::get_child(output) };
+    let mut outer = unsafe { ListBuilder::new(output) };
+    let mut inner = unsafe { ListBuilder::new(inner_vec) };
+    for row in 0..chunk.size() {
+        let x = unsafe { reader.read_i64(row) };
+        let n = usize::try_from(x % 7).expect("non-negative");
+        unsafe {
+            outer.push_row(row, n, |_w, base| {
+                for j in 0..n {
+                    let v = x * 100 + j as i64;
+                    inner.push_row(base + j, 2, |w, b| {
+                        w.write_i64(b, v);
+                        w.write_i64(b + 1, -v);
+                    });
+                }
+            });
+        }
+    }
+    unsafe { inner.finish() };
+    unsafe { outer.finish() };
+});
+
+#[test]
+fn a_list_builder_on_an_inner_list_survives_the_outer_lists_reserves() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("hoisted_inner_list")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::list_from_logical(&LogicalType::list(
+                TypeId::BigInt,
+            )))
+            .function(hoisted_inner_list)
+            .register(fx.con())
+            .expect("register");
+    }
+    let sql = "WITH t AS (SELECT i AS x FROM range(20000) t(i)) \
+         SELECT (count(*) FILTER (WHERE hoisted_inner_list(x) IS DISTINCT FROM \
+                 list_transform(range(x % 7), j -> [x * 100 + j, -(x * 100 + j)])))::VARCHAR \
+                || ',' || count(*)::VARCHAR FROM t";
+    assert_eq!(
+        fx.scalar(sql, |r, i| unsafe { r.read_str(i).to_owned() })
+            .as_deref(),
+        Some("0,20000"),
+        "{sql}"
+    );
+}

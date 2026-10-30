@@ -6,7 +6,11 @@
 //! `DuckDB` takes the extension's name from the *file name* and, for a C API
 //! extension, calls the symbol `<name>_init_c_api`. A library that exports
 //! `a_init_c_api` stamped into `b.duckdb_extension` stamps without complaint
-//! and then fails at `LOAD` with `undefined symbol: b_init_c_api`.
+//! and then fails at `LOAD` with `did not contain function "b_init_c_api"`.
+//!
+//! The name is `FileSystem::ExtractBaseName` of the path, lowercased
+//! (`extension_load.cpp`, 1.5.6 and 2.0.0): the file name up to its first
+//! `.`. A Mach-O symbol table spells the C symbol with a leading `_`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,17 +19,25 @@ use std::path::{Path, PathBuf};
 /// string table of an ELF, Mach-O or PE file.
 const ENTRY_SUFFIX: &[u8] = b"_init_c_api\0";
 
-/// The extension name `DuckDB` derives from `output`: its file name without
-/// the `.duckdb_extension` suffix (or, failing that, without any extension).
+/// The extension name `DuckDB` derives from `output`: its file name up to the
+/// first `.`, lowercased, as `ExtractBaseName` and `StringUtil::Lower` make it.
 pub fn extension_name(output: &Path) -> Option<String> {
     let name = output.file_name()?.to_str()?;
-    let stem = name.strip_suffix(".duckdb_extension").unwrap_or_else(|| {
-        Path::new(name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(name)
-    });
-    (!stem.is_empty()).then(|| stem.to_owned())
+    let stem = name.split('.').next().unwrap_or(name);
+    (!stem.is_empty()).then(|| stem.to_lowercase())
+}
+
+/// Whether `data` is a Mach-O image (thin or universal), whose symbol and
+/// export tables carry each C symbol with a leading underscore.
+fn is_macho(data: &[u8]) -> bool {
+    matches!(
+        data.get(..4),
+        Some(
+            [0xfe, 0xed, 0xfa, 0xce | 0xcf]
+                | [0xce | 0xcf, 0xfa, 0xed, 0xfe]
+                | [0xca, 0xfe, 0xba, 0xbe]
+        )
+    )
 }
 
 /// Every `X` for which `data` holds the NUL-terminated string `X_init_c_api`,
@@ -65,7 +77,14 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// all `DuckDB` goes by.
 pub fn entry_point_note(data: &[u8], output: &Path) -> Option<String> {
     let expected = extension_name(output)?;
-    let found = entry_point_names(data);
+    let mut found = entry_point_names(data);
+    if is_macho(data) {
+        for name in &mut found {
+            if let Some(c_name) = name.strip_prefix('_') {
+                *name = c_name.to_owned();
+            }
+        }
+    }
     if found.contains(&expected) {
         return None;
     }
@@ -84,7 +103,7 @@ pub fn entry_point_note(data: &[u8], output: &Path) -> Option<String> {
         format!(
             "the input exports {list}, but DuckDB takes the extension name from the file \
              name and will look for `{expected}_init_c_api` in `{}`: LOAD fails with \
-             \"undefined symbol\" unless the file is named `{}.duckdb_extension`",
+             \"did not contain function\" unless the file is named `{}.duckdb_extension`",
             output.display(),
             found[0]
         )

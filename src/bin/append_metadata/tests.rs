@@ -689,3 +689,38 @@ fn writing_replaces_the_file_instead_of_rewriting_it() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `DuckDB` looks for `<lower(file name up to its first '.')>_init_c_api`, and a
+/// Mach-O symbol table spells a C symbol with a leading `_`. Each case below
+/// was checked against `LOAD` in the 1.5.6 and 2.0.0 CLIs (reviewer `lastdiff`).
+#[test]
+fn the_name_is_duckdbs_lowercased_base_name_and_a_mach_o_underscore_is_not_part_of_it() {
+    use std::path::Path;
+    let name = |p: &str| entry::extension_name(Path::new(p));
+    assert_eq!(name("My_Ext.duckdb_extension").as_deref(), Some("my_ext"));
+    assert_eq!(
+        name("my_ext.v1.duckdb_extension").as_deref(),
+        Some("my_ext")
+    );
+    let out = Path::new("my_ext.duckdb_extension");
+    // A thin 64-bit Mach-O: the symbol is `_my_ext_init_c_api`.
+    let mut macho = vec![0xcf, 0xfa, 0xed, 0xfe];
+    macho.extend_from_slice(b"\0\x01_my_ext_init_c_api\0");
+    assert_eq!(entry::entry_point_note(&macho, out), None);
+    // An ELF symbol with a leading underscore is another name.
+    assert!(entry::entry_point_note(&symbols(&["_my_ext_init_c_api"]), out).is_some());
+    // DuckDB lowercases the file name, not the symbol.
+    let upper = Path::new("My_Ext.duckdb_extension");
+    assert_eq!(
+        entry::entry_point_note(&symbols(&["my_ext_init_c_api"]), upper),
+        None
+    );
+    assert!(entry::entry_point_note(&symbols(&["My_Ext_init_c_api"]), upper).is_some());
+    assert_eq!(
+        entry::entry_point_note(
+            &symbols(&["my_ext_init_c_api"]),
+            Path::new("my_ext.v1.duckdb_extension")
+        ),
+        None
+    );
+}
