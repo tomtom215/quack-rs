@@ -23,11 +23,12 @@ use super::ScaffoldConfig;
 /// `actions/checkout` v7.0.1.
 const CHECKOUT: &str = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
 /// `dtolnay/rust-toolchain`: the action publishes no release tags for its
-/// `master` branch, whose `toolchain:` input is required.
+/// `master` branch, whose `toolchain:` input is required. The commit of
+/// 2026-10-15 ("Add 1.99.1 patch release").
 const RUST_TOOLCHAIN: &str =
-    "dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master 2026-10-08";
-/// `Swatinem/rust-cache` v2.9.2.
-const RUST_CACHE: &str = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2";
+    "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-15";
+/// `Swatinem/rust-cache` v2.9.3 (the commit the annotated tag points to).
+const RUST_CACHE: &str = "Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3";
 /// `actions/setup-python` v7.0.0 (node24).
 const SETUP_PYTHON: &str = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0";
 
@@ -51,6 +52,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+
+# Read-only: nothing here writes to the repository, so the GITHUB_TOKEN gets
+# no write scope that a compromised step could use.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -81,6 +87,8 @@ jobs:
       - uses: @@CHECKOUT@@
         with:
           submodules: recursive
+          # Do not leave the token in .git/config for the steps that follow.
+          persist-credentials: false
 
       # Pinning the action does not pin your Rust version: `toolchain: stable`
       # installs the current stable release on every run.
@@ -121,6 +129,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: @@CHECKOUT@@
+        with:
+          persist-credentials: false
 
       - uses: @@RUST_TOOLCHAIN@@
         with:
@@ -145,6 +155,12 @@ const DISTRIBUTION: &str = r"# Builds the @@NAME@@ extension for every DuckDB pl
 #
 # `exclude_archs` must list the same platforms as `excluded_platforms` in
 # description.yml. To opt a platform in, remove it from both.
+#
+# On a pull request the reusable workflow runs in reduced CI mode (its
+# `reduced_ci_mode` input defaults to `auto`): it builds only linux_amd64,
+# windows_amd64 and wasm_eh, and the other platforms first build on a push to
+# main. A pull request to duckdb/community-extensions is built the same way.
+# Pass `reduced_ci_mode: disabled` under `with:` to build everything on every run.
 name: Main Extension Distribution Pipeline
 on:
   push:

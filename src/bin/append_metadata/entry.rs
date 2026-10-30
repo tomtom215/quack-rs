@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Tom F. <https://github.com/tomtom215/>
 
-//! The entry-point symbol `DuckDB` looks for, and writing the stamped file.
+//! The entry-point symbol `DuckDB` looks for.
 //!
 //! `DuckDB` takes the extension's name from the *file name* and, for a C API
 //! extension, calls the symbol `<name>_init_c_api`. A library that exports
@@ -12,8 +12,7 @@
 //! (`extension_load.cpp`, 1.5.6 and 2.0.0): the file name up to its first
 //! `.`. A Mach-O symbol table spells the C symbol with a leading `_`.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The suffix of the symbol `DuckDB` calls, with the NUL that ends it in the
 /// string table of an ELF, Mach-O or PE file.
@@ -106,34 +105,6 @@ pub fn entry_point_note(data: &[u8], output: &Path) -> Option<String> {
              \"did not contain function\" unless the file is named `{}.duckdb_extension`",
             output.display(),
             found[0]
-        )
-    })
-}
-
-/// Writes `bytes` to `path` by writing a sibling file and renaming it over
-/// `path`.
-///
-/// `fs::write` truncates and rewrites the file in place. A process that has
-/// the previous build loaded has that file mapped, so rewriting it under the
-/// process crashes it on the next call into the extension (checked: a host
-/// that loaded the extension, then had it re-stamped, died with `SIGSEGV`),
-/// and a write that fails halfway leaves a truncated library. A rename
-/// replaces the directory entry and leaves the old file intact for whoever
-/// has it open.
-pub fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| format!("{} has no file name", path.display()))?;
-    let mut temp_name = name.to_os_string();
-    temp_name.push(format!(".{}.tmp", std::process::id()));
-    let temp: PathBuf = path.with_file_name(temp_name);
-    fs::write(&temp, bytes).map_err(|e| format!("failed to write {}: {e}", temp.display()))?;
-    fs::rename(&temp, path).map_err(|e| {
-        let _ = fs::remove_file(&temp);
-        format!(
-            "failed to replace {} (is it loaded by a running process, on a system that \
-             forbids replacing a mapped file?): {e}",
-            path.display()
         )
     })
 }

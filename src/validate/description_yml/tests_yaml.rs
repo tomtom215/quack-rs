@@ -181,13 +181,23 @@ fn scalar(text: &str) -> yaml::Value {
     yaml::Value::Scalar(text.to_string())
 }
 
+/// A leading `---` and a final `...` (followed by nothing but comments) are
+/// one document, as `yaml.safe_load` (`PyYAML` 6.0.3) reads them; it refuses
+/// a key after `...` ("expected '<document start>'"), a second `---`
+/// ("expected a single document in the stream") and a key on the `---` line
+/// itself ("mapping values are not allowed here"). The final `...` used to be
+/// refused too.
 #[test]
 fn a_leading_document_marker_is_accepted_but_a_second_document_is_not() {
     let sections = yaml::read_sections("---\nextension:\n  a: 1\n", &["extension"]).unwrap();
     assert_eq!(sections[0].entries[0].value, scalar("1"));
+    let sections = yaml::read_sections("extension:\n  a: 1\n...\n# end\n", &["extension"]).unwrap();
+    assert_eq!(sections[0].entries[0].value, scalar("1"));
     for yml in [
         "extension:\n  a: 1\n---\nrepo:\n  b: 2\n",
-        "extension:\n  a: 1\n...\n",
+        "extension:\n  a: 1\n...\nrepo:\n  b: 2\n",
+        "extension:\n  a: 1\n--- # c\n",
+        "---  extension:\n  a: 1\n",
     ] {
         let err = yaml::read_sections(yml, &["extension"]).unwrap_err();
         assert!(err.contains("single YAML document"), "{yml:?}: {err}");
@@ -372,10 +382,19 @@ fn a_colon_inside_a_key_or_a_url_is_not_the_key_separator() {
     );
 }
 
+/// This used to be read as `value` and a comment. `PyYAML` 6.0.3 refuses it —
+/// `yaml.safe_load("description: value\t# note")`: "while scanning for the
+/// next token found character '\t' that cannot start any token" — because it
+/// skips only spaces between tokens, so the community build fails on it. A
+/// space before the `#` is a comment.
 #[test]
-fn a_tab_before_a_hash_starts_a_comment() {
-    let body = "  description: value\t# note\n";
-    assert_eq!(read(body, "description").unwrap(), scalar("value"));
+fn a_tab_before_a_hash_is_refused_as_pyyaml_refuses_it() {
+    let err = read("  description: value\t# note\n", "description").unwrap_err();
+    assert!(err.contains("tab"), "{err}");
+    assert_eq!(
+        read("  description: value # note\n", "description").unwrap(),
+        scalar("value")
+    );
 }
 
 /// `PyYAML` reads `name:\n  "my_ext"` as `my_ext`; the reader kept the quotes

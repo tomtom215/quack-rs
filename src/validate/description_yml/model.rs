@@ -73,6 +73,18 @@ pub struct DescriptionYml {
     /// both the latest stable release and `main`, and once the release hash is
     /// set `ref_next` is swapped in for `ref`.
     pub git_ref_next: String,
+    /// `repo.variegata` — the revision the community build checks out when it
+    /// builds for `DuckDB` v1.5.6 (the `v1.5-variegata` release line) instead
+    /// of [`git_ref`][Self::git_ref]; empty when absent. 133 of the 395
+    /// published descriptors set it.
+    ///
+    /// `ref` is built for the newest release (v2.0.0). An extension stamped
+    /// for one exact `DuckDB` 1.x release (`C_STRUCT_UNSTABLE`) needs its
+    /// v1.5.6 build here, from a revision whose `Makefile` targets v1.5.6.
+    pub git_ref_variegata: String,
+    /// `repo.andium` — as [`git_ref_variegata`][Self::git_ref_variegata], for
+    /// `DuckDB` v1.4.5 (the `v1.4-andium` line); empty when absent.
+    pub git_ref_andium: String,
     /// Non-fatal findings, one human-readable sentence each: the file is
     /// accepted, but something in it is unusual enough to be worth a look.
     pub warnings: Vec<String>,

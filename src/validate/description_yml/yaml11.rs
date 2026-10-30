@@ -216,9 +216,78 @@ fn is_timestamp(s: &str) -> bool {
     zone_ok && clock_ok
 }
 
+/// Why `PyYAML`'s `SafeConstructor` cannot build the date or time that the
+/// plain scalar `s` resolves to, in Python's words, or `None` when `s` is not
+/// a timestamp or is a valid one.
+///
+/// `yaml.safe_load` constructs every value in the file, so `ref: 2024-13-01`
+/// — or the same text anywhere in `docs:` — makes the community build fail
+/// with "month must be in 1..12" (`construct_yaml_timestamp` hands the fields
+/// to `datetime.date` / `datetime.datetime`, which check their ranges).
+pub(super) fn unconstructible_timestamp(s: &str) -> Option<&'static str> {
+    if !is_timestamp(s) {
+        return None;
+    }
+    let (date, time) = s.find(['T', 't', ' ', '\t']).map_or((s, None), |at| {
+        (&s[..at], Some(s[at + 1..].trim_start_matches([' ', '\t'])))
+    });
+    let mut parts = date
+        .split('-')
+        .map(|p| p.parse::<u32>().unwrap_or(u32::MAX));
+    let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
+    if year == 0 {
+        return Some("year 0 is out of range");
+    }
+    if !(1..=12).contains(&month) {
+        return Some("month must be in 1..12");
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if day == 0 || day > days {
+        return Some("day is out of range for month");
+    }
+    let time = time?;
+    let (clock, zone) = time
+        .find(['Z', '+', '-'])
+        .map_or((time, ""), |at| time.split_at(at));
+    let clock = clock.trim_end_matches([' ', '\t']);
+    let hms = clock.split_once('.').map_or(clock, |(hms, _)| hms);
+    let mut fields = hms.split(':').map(|p| p.parse::<u32>().unwrap_or(u32::MAX));
+    let (hour, minute, second) = (fields.next()?, fields.next()?, fields.next()?);
+    if hour > 23 {
+        return Some("hour must be in 0..23");
+    }
+    if minute > 59 {
+        return Some("minute must be in 0..59");
+    }
+    if second > 59 {
+        return Some("second must be in 0..59");
+    }
+    if let Some(offset) = zone.strip_prefix(['+', '-']) {
+        let (hours, minutes) = offset.split_once(':').unwrap_or((offset, "0"));
+        let total = hours
+            .parse::<u32>()
+            .unwrap_or(u32::MAX)
+            .saturating_mul(60)
+            .saturating_add(minutes.parse::<u32>().unwrap_or(u32::MAX));
+        if total >= 24 * 60 {
+            return Some(
+                "offset must be a timedelta strictly between -timedelta(hours=24) and \
+                 timedelta(hours=24)",
+            );
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::implicit_type;
+    use super::{implicit_type, unconstructible_timestamp};
 
     /// Pinned against `yaml.safe_load` (`PyYAML` 6.0.1): each value, written
     /// unquoted after `v: `, loads as the named type.
@@ -366,6 +435,37 @@ mod tests {
     fn matches_pyyaml_at_every_resolver_edge() {
         for &(value, want) in RESOLVER_EDGES {
             assert_eq!(implicit_type(value), want, "{value:?}");
+        }
+    }
+
+    /// Each value written unquoted after `v: `, with what `yaml.safe_load`
+    /// (`PyYAML` 6.0.3) says: the last line of its error, or `None` when it
+    /// builds the date or time.
+    #[test]
+    fn a_timestamp_pyyaml_cannot_construct_is_named() {
+        for (value, want) in [
+            ("2024-13-01", Some("month must be in 1..12")),
+            ("2024-00-10", Some("month must be in 1..12")),
+            ("2024-02-30", Some("day is out of range for month")),
+            ("2023-02-29", Some("day is out of range for month")),
+            ("1900-02-29", Some("day is out of range for month")),
+            ("2024-04-31", Some("day is out of range for month")),
+            ("2024-1-32 01:00:00", Some("day is out of range for month")),
+            ("0000-01-01", Some("year 0 is out of range")),
+            ("2024-01-01 24:00:00", Some("hour must be in 0..23")),
+            ("2024-01-01 01:60:00", Some("minute must be in 0..59")),
+            ("2024-01-01 01:00:60", Some("second must be in 0..59")),
+            ("2024-01-01 01:00:00+24:00", Some("offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24)")),
+            ("2024-01-01 01:00:00-24", Some("offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24)")),
+            ("2024-02-29", None),
+            ("2000-02-29", None),
+            ("2024-01-01 01:00:00+23:59", None),
+            ("2024-01-01t01:02:03.1234567Z", None),
+            // Not timestamps at all.
+            ("2024-13", None),
+            ("v2024-13-01", None),
+        ] {
+            assert_eq!(unconstructible_timestamp(value), want, "{value:?}");
         }
     }
 }

@@ -182,10 +182,27 @@ pub fn validate_platform(platform: &str) -> Result<(), ExtensionError> {
              CXX ABI target and no longer builds it (excluding it is a harmless no-op).",
         ));
     }
+    // Only the platforms the community CI builds: the group names and the
+    // legacy names `DUCKDB_PLATFORMS` also accepts are not targets.
     Err(ExtensionError::new(format!(
-        "platform '{platform}' is not a recognized DuckDB build target; valid targets: {}",
-        DUCKDB_PLATFORMS.join(", ")
+        "platform '{platform}' is not a recognized DuckDB build target; the community CI \
+         builds: {}",
+        DUCKDB_CI_PLATFORMS.join(", ")
     )))
+}
+
+/// The platforms `group` (one of [`DUCKDB_PLATFORM_GROUPS`]) stands for, as
+/// the community CI builds them: `wasm` is `wasm_eh`, `wasm_mvp` and
+/// `wasm_threads`.
+pub(crate) fn platforms_in_group(group: &str) -> Vec<&'static str> {
+    DUCKDB_CI_PLATFORMS
+        .iter()
+        .copied()
+        .filter(|p| {
+            p.strip_prefix(group)
+                .is_some_and(|rest| rest.starts_with('_'))
+        })
+        .collect()
 }
 
 /// Validates a list of excluded platform identifiers.
