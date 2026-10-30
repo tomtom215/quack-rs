@@ -132,7 +132,9 @@ fn a_hostile_function_name_is_refused_or_registered_as_a_name_never_run() {
 
         // The unvalidated `new` constructors reach the C API with the name
         // as given. It is a name there, never SQL: the registration either
-        // fails (an empty name) or succeeds under that literal name.
+        // fails (an empty name) or succeeds under that literal name. Before
+        // v1.5.0 a scalar cannot take a name the catalog already has (`*` is
+        // a built-in operator), and that refusal is the other outcome.
         // SAFETY: the connection is valid for these calls.
         let registered = unsafe {
             con.register_scalar(
@@ -142,8 +144,13 @@ fn a_hostile_function_name_is_refused_or_registered_as_a_name_never_run() {
                     .function(zero),
             )
         };
+        let taken_before_1_5 = !super::engine_merges_scalar_overloads(&fx)
+            && registered.as_ref().is_err_and(|e| {
+                e.as_str()
+                    .contains("DuckDB before v1.5.0 cannot add an overload to an existing name")
+            });
         assert_eq!(
-            registered.is_ok(),
+            registered.is_ok() || taken_before_1_5,
             !name.is_empty(),
             "{name:?}: {registered:?}"
         );

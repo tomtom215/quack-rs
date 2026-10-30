@@ -196,9 +196,10 @@ pub const OVERLOAD_RULE: &str = "DuckDB's overload resolution tells these types 
 /// rejected too, because `f(1)` matches both.
 ///
 /// Not detected (no two types compare equal, though `DuckDB` resolves some
-/// calls at zero cost to both; read from the source, not run): a `LIST(T)`
-/// beside an `ARRAY(T, n)` (a `LIST` argument casts to either at zero cost),
-/// and a `UNION` whose members are a subset of another's.
+/// calls at zero cost to both): a `LIST(T)` beside an `ARRAY(T, n)` (a call
+/// with a `T[]` argument fails as ambiguous, one with `T[n]` resolves), and a
+/// `UNION` whose members are a subset of another's (a call with the smaller
+/// union fails); both checked on `DuckDB` 2.0.0 and 1.4.4.
 ///
 /// # Safety
 ///
