@@ -108,7 +108,7 @@ transaction, committed). An empty string, or just `;`, succeeds with an empty
 result. `prepare` takes exactly one statement.
 
 Text that does not parse as a whole is not safe to pass through: DuckDB 1.4.4 and 1.5.6 run
-nothing, but DuckDB 2.0.0 runs the statements before the error, and the call can still report
+nothing, but DuckDB 2.0.0 runs the statements before the error, and the call may still report
 success ([Known
 Limitations](../reference/known-limitations.md#duckdb_query-runs-the-statements-before-a-parse-error-on-duckdb-20)).
 
