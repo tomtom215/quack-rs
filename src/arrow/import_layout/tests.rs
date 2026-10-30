@@ -802,6 +802,22 @@ fn negative_list_view_offsets_or_sizes_are_refused() {
     );
 }
 
+/// Zero is not negative: an empty view (size 0) and a view at element 0 are
+/// ordinary, and only a value below zero is read as an enormous unsigned one.
+#[test]
+fn a_list_view_entry_of_zero_is_not_negative() {
+    use super::bounds::list_view_entry;
+    for (offset, size) in [(0, 0), (0, 3), (3, 0), (i64::MAX, 0), (0, i64::MAX)] {
+        assert_eq!(list_view_entry(7, offset, size), Ok(()), "{offset}, {size}");
+    }
+    for (offset, size) in [(-1, 0), (0, -1), (i64::MIN, 0), (0, i64::MIN)] {
+        assert!(
+            list_view_entry(7, offset, size).is_err(),
+            "{offset}, {size}"
+        );
+    }
+}
+
 /// Every node must hold the rows its parent reads from it: a fixed-size
 /// list's child `size * rows` after the list's start, a struct's field the
 /// struct's rows after its offset. `DuckDB` reads them unchecked.
