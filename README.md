@@ -295,7 +295,7 @@ struct layouts first in 1.10504.0, although the DuckDB functions exist from
 - [`docs/architecture.md`](./docs/architecture.md): module layout, design
   principles and the architecture decision records.
 - [`CHANGELOG.md`](./CHANGELOG.md): every release, with breaking changes and
-  migration notes. The latest is 0.19.0 (2026-10-22).
+  migration notes. The latest is 0.20.0 (2026-10-30).
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md): development setup, quality gates and
   the test strategy.
 - [`SECURITY.md`](./SECURITY.md): supported versions and how to report a

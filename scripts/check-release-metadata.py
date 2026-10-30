@@ -4,8 +4,8 @@
 """Check that everything a release bumps agrees with Cargo.toml's version.
 
 A release bumps one version in about twenty places: Cargo.toml, the committed
-lockfiles (Cargo.lock and those of examples/hello-ext, fuzz, book/doctest and,
-once committed, benches/engine, which all record quack-rs itself), the
+lockfiles (Cargo.lock and those of examples/hello-ext, fuzz, book/doctest and
+benches/engine, which all record quack-rs itself), the
 CHANGELOG heading and its two link definitions, CITATION.cff, SECURITY.md's
 supported-versions table, README.md's "The latest is ..." line, and every
 `quack-rs = "0.X"` snippet in the README, the book and the rustdoc.
@@ -38,13 +38,13 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# (lockfile, must exist). benches/engine's lockfile is checked once it is committed.
+# (lockfile, must exist).
 LOCKFILES = [
     ("Cargo.lock", True),
     ("examples/hello-ext/Cargo.lock", True),
     ("fuzz/Cargo.lock", True),
     ("book/doctest/Cargo.lock", True),
-    ("benches/engine/Cargo.lock", False),
+    ("benches/engine/Cargo.lock", True),
 ]
 
 # Where a "quack-rs = ..." dependency snippet is something a reader copies.

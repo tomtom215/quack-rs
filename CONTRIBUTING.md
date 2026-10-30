@@ -214,7 +214,7 @@ cargo +1.86.0 check
 cargo +1.86.0 check --features duckdb-1-5-4
 
 # 7. Live extension test — build hello-ext, append the metadata footer, then
-#    run every documented SQL check (examples/hello-ext/sql_checks.txt, 31
+#    run every documented SQL check (examples/hello-ext/sql_checks.txt, 32
 #    statements) in the DuckDB CLI. [extension-load: DuckDB 1.4.4, 1.5.0,
 #    1.5.5, 1.5.6, 2.0.0 and the latest release]
 cargo build --release --manifest-path examples/hello-ext/Cargo.toml
@@ -225,7 +225,7 @@ cargo run --bin append_metadata -- \
     --duckdb-version v1.2.0 --platform linux_amd64
 python3 scripts/check-hello-ext.py --duckdb /tmp/duckdb \
     --extension /tmp/hello_ext.duckdb_extension
-# → 31/31 checks pass with the extension loaded
+# → 32/32 checks pass with the extension loaded
 
 # 7b. The example extension's own tests and lints [example-check]
 cargo test --manifest-path examples/hello-ext/Cargo.toml
@@ -368,7 +368,7 @@ tests for all pure-Rust logic (`count_words`, `first_word`, `parse_varchar_to_in
 aggregate state transitions). **Full end-to-end testing against a live DuckDB is
 required** — not left to consumers. This means building the `.so`, appending the extension
 metadata footer with `append_metadata`, and running every SQL check in
-`examples/hello-ext/sql_checks.txt` (29 numbered checks, 31 statements) with
+`examples/hello-ext/sql_checks.txt` (30 numbered checks, 32 statements) with
 `scripts/check-hello-ext.py`. The script also fails if the statements in
 `examples/hello-ext/README.md` drift from that file. CI's `extension-load` job runs it
 against DuckDB 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release. Gate 7 under

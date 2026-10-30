@@ -1052,7 +1052,7 @@ jobs:
           }
           echo "Extension loaded and produced correct results"
       - name: Every documented hello-ext check
-        # examples/hello-ext/README.md documents 31 statements and their
+        # examples/hello-ext/README.md documents 32 statements and their
         # results; this used to run two of them. The script runs all of
         # examples/hello-ext/sql_checks.txt and also fails if the README's
         # statements drift from that fixture.
@@ -1575,15 +1575,14 @@ jobs:
       - name: Run cargo-deny check
         run: cargo deny check
       # The other committed graphs (hello-ext, the fuzz crate, the book's
-      # doctest crate, and benches/engine once its lockfile is committed) had
-      # their advisories read by the OSV job only. deny.toml cannot be applied
+      # doctest crate and benches/engine) had their advisories read by the OSV
+      # job only. deny.toml cannot be applied
       # to them (it is strict about unused licenses, and libfuzzer-sys is
       # "(MIT OR Apache-2.0) AND NCSA"), so they have their own config.
       - name: Run cargo-deny check on the CI crates
         run: |
           set -euo pipefail
-          crates=(examples/hello-ext fuzz book/doctest)
-          if [ -f benches/engine/Cargo.lock ]; then crates+=(benches/engine); fi
+          crates=(examples/hello-ext fuzz book/doctest benches/engine)
           for m in "${crates[@]}"; do
             echo "::group::cargo deny: $m"
             cargo deny --manifest-path "$m/Cargo.toml" --config deny.ci-crates.toml check
@@ -1621,10 +1620,9 @@ jobs:
           # Every committed lockfile. fuzz/Cargo.lock and then
           # book/doctest/Cargo.lock were missing: their dependencies are
           # CI-only, but an unscanned lockfile is an unscanned lockfile.
-          # benches/engine/Cargo.lock was gitignored (bench-compile resolved
-          # that crate afresh each run); it is scanned once it is committed.
-          lockfiles=(Cargo.lock examples/hello-ext/Cargo.lock fuzz/Cargo.lock book/doctest/Cargo.lock)
-          if [ -f benches/engine/Cargo.lock ]; then lockfiles+=(benches/engine/Cargo.lock); fi
+          # benches/engine/Cargo.lock was gitignored until 0.20.0
+          # (bench-compile resolved that crate afresh each run).
+          lockfiles=(Cargo.lock examples/hello-ext/Cargo.lock fuzz/Cargo.lock book/doctest/Cargo.lock benches/engine/Cargo.lock)
           args=()
           for f in "${lockfiles[@]}"; do args+=("--lockfile=$f"); done
           ./osv-scanner --config=osv-scanner.toml "${args[@]}"

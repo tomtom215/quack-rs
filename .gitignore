@@ -1,7 +1,6 @@
 /target/
 examples/hello-ext/target/
 benches/engine/target/
-benches/engine/Cargo.lock
 book/doctest/target/
 book/book/
 mutants.out/
