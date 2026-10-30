@@ -816,9 +816,13 @@ jobs:
         # "could not check" code -- a DuckDB release header was unreachable -- and must not
         # be read as drift. Only exit 1 means the checked-in data is wrong.
         run: scripts/upstream-guard.sh scripts/check-abi-table.py
-      # Every slot of the C extension API is either used under src/ or listed,
-      # with a reason, in scripts/api-coverage-allowlist.txt, so a slot a DuckDB
-      # release adds is noticed instead of left for someone to read the header.
+      # Every slot of the C extension API is either used by library code under
+      # src/ or listed, with a reason, in scripts/api-coverage-allowlist.txt, so
+      # a slot a DuckDB release adds is noticed instead of left for someone to
+      # read the header. "Used" excludes comments, string literals and
+      # test-only code; the self-test holds the scanner to that.
+      - name: The C API surface scanner, on fixed snippets
+        run: python3 scripts/check-api-coverage.py --self-test
       - name: Classify the C API surface
         run: scripts/upstream-guard.sh scripts/check-api-coverage.py
 
