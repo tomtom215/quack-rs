@@ -15,27 +15,46 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The newest `build-script-build` of this package under a `build` directory
-/// next to the test binary (`target/<profile>/build/quack-rs-<hash>/`).
+/// The newest build-script binary of this package under a `build` directory
+/// above the test binary. Cargo's directory layout has two forms:
+/// `build/quack-rs-<hash>/build-script-build` (stable today) and
+/// `build/quack-rs/<hash>/out/build_script_build` (the new layout, on nightly,
+/// where the test binary sits in `out/` too).
 fn build_script() -> PathBuf {
     let exe = std::env::current_exe().expect("current_exe");
     let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for dir in exe.ancestors().skip(1).take(4) {
+    let mut consider = |dir: &Path| {
+        for name in [
+            "build-script-build",
+            "build-script-build.exe",
+            "build_script_build",
+            "build_script_build.exe",
+        ] {
+            let path = dir.join(name);
+            let Ok(modified) = path.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
+                newest = Some((modified, path));
+            }
+        }
+    };
+    for dir in exe.ancestors().skip(1).take(6) {
         let Ok(entries) = std::fs::read_dir(dir.join("build")) else {
             continue;
         };
         for entry in entries.flatten() {
-            if !entry.file_name().to_string_lossy().starts_with("quack-rs-") {
-                continue;
-            }
-            for name in ["build-script-build", "build-script-build.exe"] {
-                let path = entry.path().join(name);
-                let Ok(modified) = path.metadata().and_then(|m| m.modified()) else {
-                    continue;
-                };
-                if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
-                    newest = Some((modified, path));
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "quack-rs" {
+                for hashed in std::fs::read_dir(entry.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                {
+                    consider(&hashed.path().join("out"));
                 }
+            } else if name.starts_with("quack-rs-") {
+                consider(&entry.path());
             }
         }
     }

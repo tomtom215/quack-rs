@@ -391,6 +391,14 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # The 1.20000 bindings unpack DuckDB's sources into target/duckdb-sources/,
+          # outside the directories the cache keeps for a build script; a restored
+          # target/ then holds the build record without the sources, and the build
+          # script (run 705, run 711) stops with "neither duckdb_extension.h nor
+          # duckdb.hpp is there". Only the registry is cached, so this builds DuckDB
+          # from scratch each time.
+          cache-targets: "false"
       - name: Pin the DuckDB 2.0 bindings
         run: |
           set -euo pipefail
