@@ -92,7 +92,7 @@ env:
 jobs:
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -111,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-26, windows-2025]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -147,7 +147,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-26, windows-2025]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -183,7 +183,7 @@ jobs:
   # Linux only — the pre-built release archive is published per-platform.
   test-bundled-prebuilt:
     name: Test bundled-test-prebuilt (prebuilt libduckdb)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -253,7 +253,7 @@ jobs:
     # until the suite ran against the oldest release of each range, which
     # this job now does on every run.
     name: Test against DuckDB ${{ matrix.engine }} (${{ matrix.features }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -324,7 +324,7 @@ jobs:
     # bindings and nothing else covers on the 2.0 ones: clippy, rustdoc and the
     # doctests. (`test-bundled-duckdb-2-0` covers the source-build path.)
     name: Test against DuckDB v2.0.0
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -367,7 +367,7 @@ jobs:
   # quack-rs.
   test-bundled-duckdb-2-0:
     name: Test bundled-test on the DuckDB 2.0 bindings (informational)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     timeout-minutes: 90
     steps:
@@ -389,7 +389,7 @@ jobs:
 
   test-duckdb-1-5:
     name: Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -411,7 +411,7 @@ jobs:
 
   wasm:
     name: WASM (wasm32-unknown-emscripten)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -456,7 +456,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -474,7 +474,7 @@ jobs:
   # before the lint blocks merges. continue-on-error keeps it non-blocking.
   clippy-beta:
     name: Clippy (beta, informational)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     continue-on-error: true
     steps:
@@ -514,7 +514,7 @@ jobs:
   # "The Rust toolchain"); when it is red, fix the findings in the same PR.
   latest-stable:
     name: Latest stable Rust (informational)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     continue-on-error: true
     env:
@@ -540,7 +540,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -554,7 +554,7 @@ jobs:
 
   doc:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -619,7 +619,7 @@ jobs:
 
   msrv:
     name: MSRV (1.86.0)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -665,7 +665,7 @@ jobs:
     # job above covers 1.86.0 with the locked dependencies; this covers the
     # dependency floor with a current compiler.
     name: Dependency floor (duckdb / libduckdb-sys 1.4.4)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -685,7 +685,7 @@ jobs:
 
   bench-compile:
     name: Benchmark (compile check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -708,7 +708,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-26, windows-2025]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -731,7 +731,7 @@ jobs:
 
   scaffold-compile:
     name: Scaffold (compile check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -759,7 +759,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -801,7 +801,7 @@ jobs:
 
   abi-table:
     name: ABI layout table (vs upstream DuckDB headers), and every C API slot wrapped or listed
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -828,7 +828,7 @@ jobs:
 
   platform-table:
     name: Platform list (vs upstream distribution matrix)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -847,7 +847,7 @@ jobs:
 
   spdx-list:
     name: SPDX shortlist (vs official registry)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -865,7 +865,7 @@ jobs:
 
   autoload-entries:
     name: Catalog autoload names (vs every supported DuckDB)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -883,7 +883,7 @@ jobs:
 
   book:
     name: Book builds (mdBook)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -922,7 +922,7 @@ jobs:
 
   msrv-vs-duckdb-ci:
     name: MSRV vs DuckDB's extension CI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -941,7 +941,7 @@ jobs:
 
   extension-load:
     name: Extension load test (DuckDB ${{ matrix.duckdb }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -1043,7 +1043,7 @@ jobs:
 
   scaffold-e2e:
     name: Scaffold end-to-end (build, stamp, load, query)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1242,7 +1242,7 @@ jobs:
     # whatever DuckDB loads it. It never reaches the layout comparison itself --
     # `abi-guard-layout` below is the job that exercises LayoutMismatch.
     name: ABI guard refuses a build whose declared DuckDB version contradicts its bindings
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1376,7 +1376,7 @@ jobs:
     # into the DuckDB its bindings came from it must work. The engines are
     # pinned releases, not `latest`, so the expected verdict never shifts.
     name: ABI guard refuses a real layout mismatch (and accepts the matching DuckDB)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1514,7 +1514,7 @@ jobs:
 
   publish-dry-run:
     name: Publish dry-run
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1533,7 +1533,7 @@ jobs:
 
   security:
     name: Security (cargo-deny)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1580,7 +1580,7 @@ jobs:
   # via the `libduckdb-sys` build-dependency. The binary is version- and checksum-pinned.
   osv-scan:
     name: Security (OSV / GHSA)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1621,7 +1621,7 @@ jobs:
   # hashes are of the release assets as GitHub served them when pinned.
   hygiene:
     name: Hygiene (typos, taplo, machete)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1659,7 +1659,7 @@ jobs:
 
   nightly:
     name: Nightly (informational)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     continue-on-error: true
     steps:
@@ -1679,7 +1679,7 @@ jobs:
 
   miri:
     name: Miri (undefined behaviour)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1741,7 +1741,7 @@ jobs:
 
   leak-check:
     name: LeakSanitizer (RAII wrappers vs a real DuckDB)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1812,7 +1812,7 @@ jobs:
   # ASAN subsumes LSAN, so once this is blocking, `leak-check` can fold into it.
   asan:
     name: AddressSanitizer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1846,7 +1846,7 @@ jobs:
 
   semver:
     name: Public API (semver-checks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1916,7 +1916,7 @@ jobs:
 
   fuzz:
     name: Fuzz (smoke)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 60 s per target on a push or pull request; 10 minutes per target on the
     # weekly schedule, which is long enough to grow the corpus meaningfully.
     timeout-minutes: 90
@@ -2021,7 +2021,7 @@ jobs:
   # of the same errors without a download.
   workflow-lint:
     name: Workflow lint (actionlint)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2093,7 +2093,7 @@ jobs:
       - semver
       - fuzz
       - workflow-lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Every blocking job succeeded

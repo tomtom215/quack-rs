@@ -126,6 +126,7 @@ kind of pin consistent:
 | What | Pinned by | Checked by |
 |---|---|---|
 | Actions | full commit SHA, version in the trailing comment (`# v2.9.3`, or `# master` for `dtolnay/rust-toolchain`, which has no release tags) | `scripts/check-action-pins.py`: one commit per action across all workflows, and the same commits in the workflows the scaffold generates (`src/scaffold/templates_ci.rs`), which Dependabot does not update |
+| Runner images | `ubuntu-24.04`, `macos-26`, `windows-2025`, never `*-latest` (GitHub moves those labels; each pinned label was the `-latest` image on 2026-10-30) | `scripts/check-action-pins.py`: a floating label in any workflow fails |
 | Rust | an exact release in `rust-toolchain.toml`, repeated in every `toolchain:` input | `scripts/check-toolchain-pin.py`: `stable` / `beta` only in informational jobs; MSRV and nightly where they are the point |
 | Release binaries (osv-scanner, actionlint, typos, taplo, cargo-machete) | version and SHA-256 in the job | the job itself (`sha256sum -c`) |
 | Cargo-installed tools (cargo-deny, cargo-semver-checks, cargo-fuzz, mdBook, ...) | `cargo install --locked --version` | — |

@@ -28,7 +28,7 @@ env:
 jobs:
   coverage:
     name: Test coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # `--all-features` compiles DuckDB from C++; the default limit is 360 minutes.
     timeout-minutes: 90
     steps:

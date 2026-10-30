@@ -17,6 +17,12 @@ failing (DEPS-15). This fails when
   a different first word (`# v2.9.2` beside `# v2.9.3`);
 * a pin in src/scaffold/templates_ci.rs names an action repository this
   repository's workflows use, at another commit or with another version;
+* a workflow names a floating runner image (`ubuntu-latest`, `macos-latest`,
+  `windows-latest`): GitHub moves those labels (`macos-latest` and
+  `windows-latest` already have), and a job must not change under a pull
+  request that did not touch it. The pinned labels are `ubuntu-24.04`,
+  `macos-26` and `windows-2025` (each was the `-latest` image on 2026-10-30;
+  actions/runner-images lists them);
 * either side yields no pins at all (a layout change must not read as "all
   consistent").
 
@@ -48,6 +54,7 @@ TEMPLATE_PIN = re.compile(
     r"(?:\s+#\s*(?P<comment>[^\"]*?))?\s*\"\s*;"
 )
 SHA = re.compile(r"^[0-9a-f]{40}$")
+FLOATING_RUNNER = re.compile(r"\b(?:ubuntu|macos|windows)-latest\b")
 
 
 def repo_of(action: str) -> str:
@@ -68,6 +75,12 @@ def main() -> int:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if line.lstrip().startswith("#"):
                 continue
+            floating = FLOATING_RUNNER.search(line)
+            if floating:
+                problems.append(
+                    f"{path.name}:{number}: `{floating.group(0)}` is a floating runner image; "
+                    "pin it (ubuntu-24.04, macos-26, windows-2025)"
+                )
             m = USES.match(line)
             if not m:
                 continue

@@ -51,7 +51,7 @@ env:
 jobs:
   validate:
     name: Validate release tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       version:       ${{ steps.meta.outputs.version }}
@@ -174,7 +174,7 @@ jobs:
   package:
     name: Package and attest
     needs: [ci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -244,7 +244,7 @@ jobs:
   github-release:
     name: Create GitHub release
     needs: [validate, package, publish]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write  # create release, upload assets
@@ -377,7 +377,7 @@ jobs:
   publish:
     name: Publish to crates.io
     needs: [validate, package]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # The 'crates-io' environment requires a manual approval step.
     # Configure it at: Settings → Environments → crates-io → Required reviewers
@@ -539,7 +539,7 @@ jobs:
     # A prerelease gets no book of its own (scripts/build-versioned-site.py
     # skips prerelease tags); main's /dev/ already shows it.
     if: needs.validate.outputs.is_prerelease == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       actions: write
