@@ -150,7 +150,7 @@ is enough. An extension whose Makefile pins `TARGET_DUCKDB_VERSION` with
 revision per line: the build compiles whatever revision it is given with the extension's
 own Makefile, so a revision that pins DuckDB v1.4.4 is stamped `C_STRUCT_UNSTABLE` for
 v1.4.4 whichever release the community build is running, and every other release refuses
-to load it (the conform review built such a project: DuckDB 1.5.6 and 2.0.0 both refused it
+to load it (built and loaded: DuckDB 1.5.6 and 2.0.0 both refused it
 with "The file was built specifically for DuckDB version 'v1.4.4'"). Put the revision that targets DuckDB 2.0
 under `ref`, the one that targets 1.5.6 under `variegata` and the one that targets 1.4.5
 under `andium`. The scaffold writes a comment for each of `variegata`, `andium` and
@@ -190,7 +190,7 @@ and `git_ref_andium`.
 - `requires_toolchains` is a `;`-separated list. The workflow looks for each token
   between semicolons (`;rust;`), so write `rust;python3` with no spaces: in
   `rust; python3` the second token is `" python3"` and is lost. The workflow acts on
-  `rust` and `go` (checked) and, per the conform review, on `python3`, `parser_tools`,
+  `rust` and `go` (checked) and, read in its source and not run, on `python3`, `parser_tools`,
   `fortran`, `unixodbc`, `multimedia`, `cuda`, `omp` and `downgraded_aws_cli`; an unknown
   token is ignored too.
 - `test_config` is a JSON string of environment variables for the test run, for example
@@ -372,7 +372,7 @@ commit** (`git tag --points-at HEAD`, then `git log -1 --format=%h` in
 `extension-ci-tools`' `configure_helper.py`; it is not `git describe`). So the community
 build reports a short hash for your extension unless the commit it builds carries a tag.
 Two things break the footer: a tag longer than the footer's fixed 32-byte version field
-(the conform review saw DuckDB 2.0.0 refuse such a file with an `INTERNAL Error: Unknown ABI
+(DuckDB 2.0.0 refuses such a file with an `INTERNAL Error: Unknown ABI
 type for extension`), and several tags on one commit (the tool joins them with newlines;
 measured: tags `v0.1.0` and `v0.1.0-rc1` on one commit give the two-line value
 "v0.1.0" then "v0.1.0-rc1"). Keep tags short and put one tag on a released commit. The
@@ -412,8 +412,7 @@ name such as `wasm` or `windows` is not a platform. On the 1.x lines
 (`v1.5-variegata`, `v1.4-andium`) the matrix comes from
 `modify_distribution_matrix.py`, which splits on `;` only and tests
 `arch in excluded_arch_values`; on `v2.0-cyanoptera` it comes from the Go program
-`extbuild matrix` (which the conform review read to trim spaces and split on `,` too;
-not run here). Either way `excluded_platforms: "wasm"` leaves all three `wasm_*`
+`extbuild matrix` (which, read in its source and not run, trims spaces and splits on `,` too). Either way `excluded_platforms: "wasm"` leaves all three `wasm_*`
 platforms building. Write `wasm_mvp;wasm_eh;wasm_threads`: separated by `;`, no spaces,
 which both accept. Published files do contain group names, so
 `parse_description_yml` accepts them, with a warning that spells out the

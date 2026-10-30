@@ -191,7 +191,7 @@ after `git add -A`, so it would stay untracked.)
 **Leave `CARGO_TARGET_DIR` unset for `make`.** extension-ci-tools' `rust.Makefile` copies
 the library from `./target/release/`; with `CARGO_TARGET_DIR` set, Cargo builds elsewhere
 and `make release` stops with `FileNotFoundError: './target/release/lib<name>.so'`
-(reported by the author-tables review, which saw it with a scaffolded project).
+(seen with a scaffolded project).
 
 `git submodule add` is not optional in a new project: the scaffold writes
 `.gitmodules`, but `git submodule update --init` does nothing until the

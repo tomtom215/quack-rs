@@ -165,7 +165,7 @@ endif
 /// reports a file whose `require <name>` is not met as `SKIPPED` and exits 0:
 /// when the extension name, the `[lib]` name and the `.test` file drift apart,
 /// or the extension file is missing, `make test` passed having tested nothing
-/// (reviewer `conform`, against `v2.0-cyanoptera`). `base.Makefile` runs the
+/// (checked against `v2.0-cyanoptera`). `base.Makefile` runs the
 /// commands below as `@$(TEST_RUNNER_RELEASE)` / `@$(TEST_RUNNER_DEBUG)`, and
 /// a recipe expands its variables when it runs, so redefining them after the
 /// `include` takes effect; its own `tests_skipped` (platforms it cannot test

@@ -693,7 +693,7 @@ fn writing_replaces_the_file_instead_of_rewriting_it() {
 
 /// `DuckDB` looks for `<lower(file name up to its first '.')>_init_c_api`, and a
 /// Mach-O symbol table spells a C symbol with a leading `_`. Each case below
-/// was checked against `LOAD` in the 1.5.6 and 2.0.0 CLIs (reviewer `lastdiff`).
+/// was checked against `LOAD` in the 1.5.6 and 2.0.0 CLIs.
 #[test]
 fn the_name_is_duckdbs_lowercased_base_name_and_a_mach_o_underscore_is_not_part_of_it() {
     use std::path::Path;

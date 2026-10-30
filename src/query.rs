@@ -290,10 +290,10 @@ pub unsafe fn prepare(
 /// running query cannot estimate its progress: `ProgressBar::Update`
 /// (`progress_bar.cpp`, 1.5.6) leaves the percentage untouched while one
 /// reports none, and the value is refreshed only between the executor tasks
-/// the querying thread runs (`ClientContext::ExecuteTaskInternal`). The
-/// author-tables review read `-1.0` throughout a query on 1.5.6 where
-/// 2.0.0 reported 1.18 %, 1.34 %, 1.47 % for the same one (reported by that
-/// review, not re-run here). Treat `-1.0` as "unknown", not as an error.
+/// the querying thread runs (`ClientContext::ExecuteTaskInternal`).
+/// A `-1.0` was read throughout a query on 1.5.6 where 2.0.0 reported
+/// 1.18 %, 1.34 %, 1.47 % for the same one (observed in a review, not
+/// re-run for this documentation). Treat `-1.0` as "unknown", not as an error.
 ///
 /// The three fields are read from separate atomics, so they are individually
 /// current but not a consistent snapshot of one instant.

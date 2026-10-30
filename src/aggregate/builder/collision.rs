@@ -11,7 +11,7 @@
 //! `GetAlterInfo`, so `CreateInfo::GetAlterInfo` throws for **any** existing
 //! scalar function, aggregate or macro of that name; before v1.5.0 it
 //! registers with `CREATE` (`ERROR_ON_CONFLICT`). Either way the C API returns
-//! a bare `DuckDBError` (reviewer `ffi`, FFI-8, read at v1.5.6 and v2.0.0).
+//! a bare `DuckDBError` (FFI-8, read at v1.5.6 and v2.0.0).
 //!
 //! Unlike a scalar, whose collision is a silent replacement and so has to be
 //! caught before registering (`scalar::builder::collision`), an aggregate's

@@ -252,7 +252,7 @@ kept, from inside a table function's scan, resizes DuckDB's worker pool from one
 own workers. The outcome varied from run to run: on DuckDB 2.0.0 the process terminated
 with `terminate called after throwing an instance of 'std::system_error'` in three of four
 runs; on DuckDB 1.5.6 the statement failed with "Invalid argument" in five of six runs and
-succeeded once (the author-tables review also saw the termination on 1.5.6). It is DuckDB
+succeeded once (the termination was also seen on 1.5.6). It is DuckDB
 behaviour that quack-rs cannot intercept. Set `threads` before the query starts.
 
 ## Cancelling a query and reading its progress
@@ -265,8 +265,8 @@ an interrupt error at DuckDB's next check, or its `progress()` to read a
 `percentage` is `-1.0` when DuckDB cannot report progress, for example when
 the progress bar is disabled (`SET enable_progress_bar = true`). On DuckDB 1.x it also
 stays `-1.0` for as long as any pipeline of the running query cannot estimate its
-progress (the author-tables review read `-1.0` throughout one query on 1.5.6 where 2.0.0
-reported 1.18 %, 1.34 % and 1.47 %; reported by the review, not re-run here). Treat it as
+progress (`-1.0` was read throughout one query on 1.5.6 where 2.0.0 reported
+1.18 %, 1.34 % and 1.47 %; observed in a review, not re-run for this page). Treat it as
 "unknown", not as an error.
 `OwnedConnection::interrupt` and `progress` do the same on the calling thread.
 

@@ -378,7 +378,7 @@ mod tests {
     }
 
     /// `INSTALL s3 FROM community` on `DuckDB` 2.0.0 fails with `Failed to
-    /// download extension "httpfs" ... (HTTP 404)` (reviewer `conform`): the
+    /// download extension "httpfs" ... (HTTP 404)`: the
     /// alias is applied before the repository is asked.
     #[test]
     fn an_alias_is_refused_and_names_the_extension_it_stands_for() {
