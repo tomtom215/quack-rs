@@ -243,7 +243,7 @@ fn a_list_builder_on_an_inner_list_survives_the_outer_lists_reserves() {
     }
     let sql = "WITH t AS (SELECT i AS x FROM range(20000) t(i)) \
          SELECT (count(*) FILTER (WHERE hoisted_inner_list(x) IS DISTINCT FROM \
-                 list_transform(range(x % 7), j -> [x * 100 + j, -(x * 100 + j)])))::VARCHAR \
+                 list_transform(range(x % 7), lambda j: [x * 100 + j, -(x * 100 + j)])))::VARCHAR \
                 || ',' || count(*)::VARCHAR FROM t";
     assert_eq!(
         fx.scalar(sql, |r, i| unsafe { r.read_str(i).to_owned() })
