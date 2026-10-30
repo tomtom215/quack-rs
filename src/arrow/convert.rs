@@ -267,6 +267,16 @@ pub unsafe fn schema_from_arrow(
 ///   module docs of `src/arrow/import_layout.rs` and
 ///   `docs/upstream-duckdb-reports.md` (items 9 and 24 to 28) give the
 ///   details;
+/// - a node anywhere in `array` breaks a bound the Arrow specification sets
+///   and `DuckDB` takes on trust, reading past it once the chunk is read (a
+///   SIGSEGV on 1.5.6 and 2.0.0 for a list offset past its child): a list,
+///   large list or map offset that is negative, decreases, or lies past the
+///   child; a negative list-view offset or size; a struct field, list or
+///   fixed-size-list child, or union member shorter than the rows its parent
+///   reads from it; a dictionary index outside the dictionary in a row its own
+///   validity does not mark NULL (a row NULL only in an enclosing struct must
+///   still hold a valid index, as the specification requires), or indices of
+///   a non-integer type;
 /// - the array and its schema disagree on a node's child count or
 ///   dictionary encoding.
 ///

@@ -82,6 +82,17 @@ fn leaf() -> Shape {
         kind: Kind::Leaf,
         children: vec![],
         dictionary: None,
+        indices: None,
+    }
+}
+
+/// A dictionary-encoded node with 32-bit indices over `values`.
+fn dictionary_of(values: Shape) -> Shape {
+    Shape {
+        kind: Kind::Leaf,
+        children: vec![],
+        dictionary: Some(Box::new(values)),
+        indices: Some(Indices::I32),
     }
 }
 
@@ -90,6 +101,7 @@ fn of(kind: Kind, children: Vec<Shape>) -> Shape {
         kind,
         children,
         dictionary: None,
+        indices: None,
     }
 }
 
@@ -233,11 +245,7 @@ fn overlapping_or_gapped_list_views_are_refused() {
 
 #[test]
 fn dictionaries_duckdb_imports_wrongly_are_refused() {
-    let dict_shape = Shape {
-        kind: Kind::Leaf,
-        children: vec![],
-        dictionary: Some(Box::new(leaf())),
-    };
+    let dict_shape = dictionary_of(leaf());
     let dict = |length, offset, nulls| {
         Node::new(
             length,
@@ -273,11 +281,7 @@ fn dictionaries_duckdb_imports_wrongly_are_refused() {
     let err = check_column(4096, strukt, in_struct).expect_err("struct NULLs");
     assert!(err.contains("enclosing struct"), "{err}");
     // A dictionary of dictionaries.
-    let nested = Shape {
-        kind: Kind::Leaf,
-        children: vec![],
-        dictionary: Some(Box::new(dict_shape)),
-    };
+    let nested = dictionary_of(dict_shape);
     let node = Node::new(1, 0, 0, vec![vec![], i32s(&[0])]).with_dictionary(dict(1, 0, 0));
     let err = check_column(1, node, nested).expect_err("nested dictionary");
     assert!(err.contains("shares one dictionary cache"), "{err}");
@@ -396,11 +400,7 @@ fn a_zero_row_list_reads_its_child_as_plain_whatever_its_offsets_say() {
 /// list's child, where nothing over-flattens it.
 #[test]
 fn a_dictionary_under_a_fixed_size_list_under_a_map_is_refused() {
-    let dict_shape = Shape {
-        kind: Kind::Leaf,
-        children: vec![],
-        dictionary: Some(Box::new(leaf())),
-    };
+    let dict_shape = dictionary_of(leaf());
     let fl = |child: Shape| of(Kind::FixedList(3), vec![child]);
     // A fixed-size list INT[3] of 10 rows whose child is 30 dict indices.
     let fl_arr = || {
@@ -452,11 +452,7 @@ fn a_child_count_or_dictionary_mismatch_is_refused() {
         err.contains("0 child array(s) where its schema has 1"),
         "{err}"
     );
-    let dict_shape = Shape {
-        kind: Kind::Leaf,
-        children: vec![],
-        dictionary: Some(Box::new(leaf())),
-    };
+    let dict_shape = dictionary_of(leaf());
     let err = check_column(1, ints(1, 0), dict_shape).expect_err("dictionary");
     assert!(err.contains("disagree on dictionary"), "{err}");
 }
@@ -498,11 +494,7 @@ fn a_shape_count_that_differs_from_the_column_count_is_refused() {
 /// directly under the fixed-size list gets no `parent_mask` and is fine.
 #[test]
 fn fixed_list_nulls_reach_a_dictionary_through_a_struct() {
-    let dict_shape = Shape {
-        kind: Kind::Leaf,
-        children: vec![],
-        dictionary: Some(Box::new(leaf())),
-    };
+    let dict_shape = dictionary_of(leaf());
     let dict =
         || Node::new(2200, 0, 0, vec![vec![], i32s(&vec![0; 2200])]).with_dictionary(ints(1, 0));
     let fixed = |nulls, child: Box<Node>| {
@@ -531,11 +523,7 @@ fn fixed_list_nulls_reach_a_dictionary_through_a_struct() {
 /// read its type ids as one.
 #[test]
 fn an_unknown_null_count_where_duckdb_disagrees_with_itself_is_refused() {
-    let dict_shape = Shape {
-        kind: Kind::Leaf,
-        children: vec![],
-        dictionary: Some(Box::new(leaf())),
-    };
+    let dict_shape = dictionary_of(leaf());
     let dict = |nulls| {
         Node::new(3, 0, nulls, vec![vec![0b101], i32s(&[0, 7, 1])]).with_dictionary(ints(2, 0))
     };
@@ -705,4 +693,212 @@ fn validity_under_a_list_starting_past_zero_is_accepted() {
     let child = Node::new(4, 0, 1, vec![bits(4), i32s(&[1, 2, 3, 4])]);
     let list = Node::new(1, 0, 0, vec![vec![], i32s(&[2, 4])]).with_children(vec![child]);
     assert_eq!(check_column(1, list, shape), Ok(()));
+}
+
+// ─── Bounds DuckDB takes on trust (FFI-1) ────────────────────────────────────
+
+fn i64s(values: &[i64]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
+}
+
+fn list_kind(wide: bool, map: bool) -> Shape {
+    of(Kind::List { wide, map }, vec![leaf()])
+}
+
+/// A list's offsets are read as unsigned and never compared with its child:
+/// a negative first offset, one past the child, or offsets that decrease
+/// (also in the middle, where the end offsets look fine) made `DuckDB` import
+/// entries that point outside the child, and reading the chunk segfaulted on
+/// 1.5.6 and 2.0.0. `[i64::MIN, 0]` also overflowed `last - first` (a panic
+/// under overflow checks). Offsets that exactly cover the child are fine.
+#[test]
+fn list_offsets_outside_the_child_are_refused() {
+    let rows = |offsets: &[i32]| i64::try_from(offsets.len() - 1).expect("rows");
+    // One `+l` list column over a 4-element child.
+    let narrow = |offsets: &[i32]| {
+        Node::new(rows(offsets), 0, 0, vec![vec![], i32s(offsets)]).with_children(vec![ints(4, 0)])
+    };
+    for ok in [&[0, 2][..], &[0, 4], &[1, 1], &[0, 1, 1, 4]] {
+        assert_eq!(
+            check_column(rows(ok), narrow(ok), list_kind(false, false)),
+            Ok(()),
+            "{ok:?}"
+        );
+    }
+    for (offsets, expected) in [
+        (&[-5, -3][..], "list offset -5 of row 0 is negative"),
+        (
+            &[2, 9],
+            "run from child element 2 to 9, past the child's 4 element(s)",
+        ),
+        (&[3, 1], "decrease from 3 to 1 at row 0"),
+        (&[0, 3, 2], "decrease from 3 to 2 at row 1"),
+        (&[0, 9, 2], "decrease from 9 to 2 at row 1"),
+    ] {
+        let err = check_column(rows(offsets), narrow(offsets), list_kind(false, false))
+            .expect_err("out of the child");
+        assert!(
+            err.starts_with("column 0: ") && err.contains(expected),
+            "{offsets:?}: {err}"
+        );
+    }
+
+    // `+L` and `+m` read their offsets the same way.
+    let wide = |offsets: &[i64]| {
+        Node::new(1, 0, 0, vec![vec![], i64s(offsets)]).with_children(vec![ints(4, 0)])
+    };
+    assert_eq!(
+        check_column(1, wide(&[0, 4]), list_kind(true, false)),
+        Ok(())
+    );
+    for (offsets, expected) in [
+        (&[i64::MIN, 0][..], "is negative"),
+        (&[-6, -2], "is negative"),
+        (&[0, i64::MAX], "past the child's 4 element(s)"),
+        (&[4, 0], "decrease from 4 to 0"),
+    ] {
+        let err = check_column(1, wide(offsets), list_kind(true, false)).expect_err("large list");
+        assert!(err.contains(expected), "{offsets:?}: {err}");
+    }
+    let err = check_column(1, narrow(&[0, 9]), list_kind(false, true)).expect_err("map");
+    assert!(err.contains("past the child's 4 element(s)"), "{err}");
+
+    // The offsets of a list in a list's child are checked too.
+    let inner = Node::new(2, 0, 0, vec![vec![], i32s(&[0, 1, 7])]).with_children(vec![ints(4, 0)]);
+    let outer = Node::new(1, 0, 0, vec![vec![], i32s(&[0, 2])]).with_children(vec![inner]);
+    let shape = of(
+        Kind::List {
+            wide: false,
+            map: false,
+        },
+        vec![list_kind(false, false)],
+    );
+    let err = check_column(1, outer, shape).expect_err("inner offsets");
+    assert!(
+        err.contains("list child: list offsets run from child element 0 to 7"),
+        "{err}"
+    );
+}
+
+/// A list view's offsets and sizes are read as unsigned too: a negative size
+/// shrinks the total `DuckDB` imports while a view still reaches past it, and
+/// a negative offset passed the overlap check.
+#[test]
+fn negative_list_view_offsets_or_sizes_are_refused() {
+    let shape = of(Kind::ListView { wide: false }, vec![leaf()]);
+    let view = |offsets: &[i32], sizes: &[i32]| {
+        Node::new(1, 0, 0, vec![vec![], i32s(offsets), i32s(sizes)]).with_children(vec![ints(4, 0)])
+    };
+    assert_eq!(check_column(1, view(&[2], &[2]), shape.clone()), Ok(()));
+    let err = check_column(1, view(&[-2], &[2]), shape.clone()).expect_err("negative offset");
+    assert!(
+        err.contains("list view offset -2 at row 0 is negative"),
+        "{err}"
+    );
+    let err = check_column(1, view(&[2], &[-1]), shape).expect_err("negative size");
+    assert!(
+        err.contains("list view size -1 at row 0 is negative"),
+        "{err}"
+    );
+}
+
+/// Every node must hold the rows its parent reads from it: a fixed-size
+/// list's child `size * rows` after the list's start, a struct's field the
+/// struct's rows after its offset. `DuckDB` reads them unchecked.
+#[test]
+fn a_child_shorter_than_its_parent_reads_is_refused() {
+    let fixed =
+        |child_rows| Node::new(2, 0, 0, vec![vec![]]).with_children(vec![ints(child_rows, 0)]);
+    let shape = of(Kind::FixedList(3), vec![leaf()]);
+    assert_eq!(check_column(2, fixed(6), shape.clone()), Ok(()));
+    let err = check_column(2, fixed(5), shape).expect_err("short fixed-size list child");
+    assert!(
+        err.contains("array child: the array has 5 row(s), but its parent reads 6 row(s) of it"),
+        "{err}"
+    );
+
+    // A struct in a struct, at offset 1: its field needs 1 + 3 rows.
+    let shape = of(Kind::Struct, vec![of(Kind::Struct, vec![leaf()])]);
+    let nested = |field_rows| {
+        Node::new(3, 0, 0, vec![vec![]]).with_children(vec![
+            Node::new(3, 1, 0, vec![vec![]]).with_children(vec![ints(field_rows, 0)])
+        ])
+    };
+    let err = check_column(3, nested(3), shape.clone()).expect_err("short field");
+    assert!(
+        err.contains(
+            "field 0: field 0: the array has 3 row(s), but its parent reads 3 row(s) of it \
+             from row 1"
+        ),
+        "{err}"
+    );
+    // One more row is enough (under a parent at offset 0 `DuckDB` applies
+    // the inner offset correctly).
+    assert_eq!(check_column(3, nested(4), shape), Ok(()));
+}
+
+/// `DuckDB` builds a dictionary's selection from its indices unchecked (it
+/// only points the NULL rows at a sentinel), so an index outside the
+/// dictionary is read past it. The NULL rows of the indices' own validity may
+/// hold anything.
+#[test]
+fn dictionary_indices_outside_the_dictionary_are_refused() {
+    let dict_shape = dictionary_of(leaf());
+    let indices = |values: &[i32], nulls, validity: Vec<u8>| {
+        let rows = i64::try_from(values.len()).expect("rows");
+        Node::new(rows, 0, nulls, vec![validity, i32s(values)]).with_dictionary(ints(2, 0))
+    };
+    assert_eq!(
+        check_column(3, indices(&[0, 1, 0], 0, vec![]), dict_shape.clone()),
+        Ok(())
+    );
+    for (values, expected) in [
+        (
+            &[0, 2, 1][..],
+            "dictionary index 2 at row 1 is outside the dictionary's 2",
+        ),
+        (&[-1, 0, 0], "dictionary index -1 at row 0"),
+        (&[0, 0, i32::MAX], "dictionary index 2147483647 at row 2"),
+    ] {
+        let err = check_column(3, indices(values, 0, vec![]), dict_shape.clone())
+            .expect_err("out of the dictionary");
+        assert!(err.contains(expected), "{values:?}: {err}");
+    }
+    // Row 1 is NULL in the indices' own bitmap: `DuckDB` does not use it.
+    assert_eq!(
+        check_column(3, indices(&[0, 99, 1], 1, vec![0b101]), dict_shape.clone()),
+        Ok(())
+    );
+    // With `null_count` 0 the bitmap is not read, so every row is used.
+    let err = check_column(3, indices(&[0, 99, 1], 0, vec![0b101]), dict_shape)
+        .expect_err("the bitmap is not read");
+    assert!(err.contains("index 99 at row 1"), "{err}");
+
+    // Unsigned 8-bit indices: 255 is not -1.
+    let shape = Shape {
+        indices: Indices::of("C"),
+        ..dictionary_of(leaf())
+    };
+    let node = Node::new(2, 0, 0, vec![vec![], vec![1, 255]]).with_dictionary(ints(2, 0));
+    let err = check_column(2, node, shape).expect_err("u8 index");
+    assert!(err.contains("dictionary index 255 at row 1"), "{err}");
+
+    // Indices whose format is not an integer type are refused outright.
+    let shape = Shape {
+        indices: None,
+        ..dictionary_of(leaf())
+    };
+    let err = check_column(1, indices(&[0], 0, vec![]), shape).expect_err("not integers");
+    assert!(err.contains("not of an integer type"), "{err}");
+}
+
+#[test]
+fn index_formats_map_to_their_integer_types() {
+    for format in ["c", "C", "s", "S", "i", "I", "l", "L"] {
+        assert!(Indices::of(format).is_some(), "{format}");
+    }
+    for format in ["", "u", "f", "g", "+l", "i:", "n"] {
+        assert_eq!(Indices::of(format), None, "{format}");
+    }
+    assert_eq!(Indices::of("i"), Some(Indices::I32));
 }

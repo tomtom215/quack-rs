@@ -896,3 +896,142 @@ fn a_fixed_size_list_format_is_read_as_duckdb_reads_it() {
         );
     }
 }
+
+// ─── Bounds DuckDB takes on trust (FFI-1) ────────────────────────────────────
+
+/// Imports `column`, which must be refused with `what`. Imported instead, its
+/// rows are first read back, as the extension would read them: for these
+/// layouts that read is out of bounds (before they were refused, a list
+/// offset of -5 made it a SIGSEGV on 1.5.6 and 2.0.0, reviewer `ffi`), so
+/// the test fails with the signal the defect causes rather than a tidy panic.
+fn refused_before_read(
+    con: &OwnedConnection,
+    schema: Box<Sch>,
+    column: Box<Arr>,
+    rows: i64,
+    sql_type: &str,
+    what: &str,
+) {
+    match import_one(con, schema, column, rows) {
+        Ok((chunk, _keep)) => {
+            let read = render(con, &chunk, sql_type);
+            panic!("imported, and read back as {read:?}: {what}");
+        }
+        Err(message) => assert!(message.contains(what), "{what}: {message}"),
+    }
+}
+
+/// A list's offsets that are negative, decreasing or past its child, for
+/// `+l`, `+L` and `+m`; a fixed-size list's child shorter than its rows; and
+/// a dictionary index past the dictionary: `DuckDB` imports each without a
+/// check and reads it out of bounds later. Each is refused before `DuckDB`
+/// sees it, beside a neighbouring valid layout that imports with the values
+/// the Arrow specification gives.
+#[test]
+fn list_offsets_and_indices_outside_their_child_are_refused_before_duckdb_reads_them() {
+    let fx = Fixture::open();
+    let con = connect(&fx);
+    let child = || ints(&[1, 2, 3, 4], 0);
+    let narrow = |offsets: &[i32]| {
+        let rows = offsets.len() as i64 - 1;
+        arr(rows, 0, 0, vec![vec![], bytes(offsets)], vec![child()])
+    };
+    let list = || sch("+l", vec![sch("i", vec![])]);
+    assert_eq!(
+        imports(&con, list(), narrow(&[0, 2, 4]), 2, "INTEGER[]"),
+        ["[1, 2]", "[3, 4]"]
+    );
+    for (offsets, what) in [
+        (&[-5, -3][..], "list offset -5 of row 0 is negative"),
+        (&[2, 9], "past the child's 4 element(s)"),
+        (&[0, 9, 2], "decrease from 9 to 2 at row 1"),
+    ] {
+        let rows = offsets.len() as i64 - 1;
+        refused_before_read(&con, list(), narrow(offsets), rows, "INTEGER[]", what);
+    }
+
+    let large = |offsets: &[i64]| arr(1, 0, 0, vec![vec![], bytes(offsets)], vec![child()]);
+    let large_list = || sch("+L", vec![sch("i", vec![])]);
+    assert_eq!(
+        imports(&con, large_list(), large(&[1, 4]), 1, "INTEGER[]"),
+        ["[2, 3, 4]"]
+    );
+    refused_before_read(
+        &con,
+        large_list(),
+        large(&[-6, -2]),
+        1,
+        "INTEGER[]",
+        "list offset -6 of row 0 is negative",
+    );
+
+    let map = |end: i32| {
+        let entries = arr(4, 0, 0, vec![vec![]], vec![child(), child()]);
+        arr(1, 0, 0, vec![vec![], bytes(&[0_i32, end])], vec![entries])
+    };
+    let map_schema = || {
+        sch(
+            "+m",
+            vec![sch(
+                "+s",
+                vec![
+                    named("key", sch("i", vec![])),
+                    named("value", sch("i", vec![])),
+                ],
+            )],
+        )
+    };
+    assert_eq!(
+        imports(&con, map_schema(), map(2), 1, "MAP(INTEGER, INTEGER)"),
+        ["{1=1, 2=2}"]
+    );
+    refused_before_read(
+        &con,
+        map_schema(),
+        map(9),
+        1,
+        "MAP(INTEGER, INTEGER)",
+        "past the child's 4 element(s)",
+    );
+
+    let fixed = |child: Box<Arr>| arr(2, 0, 0, vec![vec![]], vec![child]);
+    let fixed_schema = || sch("+w:3", vec![sch("i", vec![])]);
+    assert_eq!(
+        imports(
+            &con,
+            fixed_schema(),
+            fixed(ints(&[1, 2, 3, 4, 5, 6], 0)),
+            2,
+            "INTEGER[3]"
+        ),
+        ["[1, 2, 3]", "[4, 5, 6]"]
+    );
+    refused_before_read(
+        &con,
+        fixed_schema(),
+        fixed(ints(&[1, 2, 3, 4, 5], 0)),
+        2,
+        "INTEGER[3]",
+        "the array has 5 row(s), but its parent reads 6 row(s) of it",
+    );
+
+    let indices = |values: &[i32]| {
+        with_dict(
+            arr(2, 0, 0, vec![vec![], bytes(values)], vec![]),
+            padded_dictionary(),
+        )
+    };
+    let dict_schema = || dict_sch("i", sch("i", vec![]));
+    assert_eq!(
+        imports(&con, dict_schema(), indices(&[1, 0]), 2, "INTEGER"),
+        ["6", "5"]
+    );
+    refused_before_read(
+        &con,
+        dict_schema(),
+        indices(&[0, 100_000]),
+        2,
+        "INTEGER",
+        "dictionary index 100000 at row 1 is outside the dictionary's 2 value(s)",
+    );
+}
