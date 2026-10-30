@@ -398,6 +398,14 @@ cargo mutants --list
 Configuration is in `.cargo/mutants.toml` — the one place cargo-mutants reads it
 from without `--config`.
 
+On a pull request, `mutants.yml` mutates the whole of every changed source file,
+split over eight jobs (`--shard k/8 --sharding round-robin`); the job named
+"Mutation Testing (incremental)" is the one that fails if any shard does. One
+shard locally: `cargo mutants --file <path> --shard 0/8 --sharding round-robin`.
+A pull request that changes a hundred files generates over a thousand mutants,
+about twenty seconds each: a shard of one-eighth fits the 60-minute limit, one
+job for all of them did not.
+
 **What the gate cannot see.** cargo-mutants 27.1.0 generates no mutants inside
 the body of an `unsafe fn` (free, associated, `const`, trait-default and
 `unsafe extern "C"` alike; it does mutate a safe function that holds `unsafe`

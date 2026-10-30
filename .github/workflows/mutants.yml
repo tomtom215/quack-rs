@@ -94,11 +94,23 @@ jobs:
           retention-days: 30
 
   # ── Incremental mutation testing (PRs only) ──────────────────────────────
+  #
+  # Sharded: each of the eight jobs below tests every eighth mutant
+  # (`--shard k/8 --sharding round-robin`), so a pull request that touches a
+  # hundred source files finishes in about an eighth of the time. One job did all
+  # of a 102-file, 1,639-mutant pull request (0.20.0) and was stopped by its
+  # runner after 33 and 55 minutes, long before it was done. `mutants-incremental-gate`
+  # below is the single check to require: it keeps the name this check always had.
   mutants-incremental:
-    name: "Mutation Testing (incremental)"
+    name: "Mutation Testing (incremental) shard ${{ matrix.shard }}"
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      # A survivor in one shard must not hide the others' results.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -152,6 +164,8 @@ jobs:
         if: steps.changed.outputs.skip == 'false'
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
         run: |
           echo "::group::cargo-mutants execution log"
 
@@ -203,12 +217,20 @@ jobs:
           # in `mutants.out/mutants.out/`, where the report step below never
           # looked -- so every count read 0, the score printed 100%, and the
           # job passed green no matter how many mutants survived.
+          # `--shard k/n` with `--sharding round-robin`: mutant i goes to shard
+          # i % n, which spreads the slow files over all shards. (The default,
+          # `slice`, hands each shard a consecutive run of mutants in file
+          # order.) A shard with no mutants -- more shards than mutants, on a
+          # small pull request -- finds nothing to test and exits 0, which the
+          # report below accepts for an incremental run.
           set +e
           cargo mutants "${ARGS[@]}" \
             --features duckdb-1-5-4 \
             --cargo-arg=--lib \
             --exclude-re 'ErrorData' \
             --output . \
+            --shard "${SHARD}/${SHARDS}" \
+            --sharding round-robin \
             --timeout 120 \
             --jobs 4 2>&1 | tee /tmp/mutants-run.log
           # `${PIPESTATUS[0]}`, not `$?`: these steps run under the default
@@ -239,8 +261,30 @@ jobs:
         if: always() && steps.changed.outputs.skip == 'false'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mutation-report-incremental
+          name: mutation-report-incremental-${{ matrix.shard }}
           path: |
             mutants.out/
             /tmp/mutants-run.log
           retention-days: 14
+
+  # The one check that stands for the shards. It keeps the name of the single
+  # job it replaces, "Mutation Testing (incremental)", so a branch-protection
+  # rule that requires that name still means the same thing. `always()` because
+  # a failed shard must turn this red rather than skip it, and a skipped
+  # required check counts as passed.
+  mutants-incremental-gate:
+    name: "Mutation Testing (incremental)"
+    if: always() && github.event_name == 'pull_request'
+    needs: mutants-incremental
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          RESULT: ${{ needs.mutants-incremental.result }}
+        run: |
+          if [ "$RESULT" != success ]; then
+            echo "::error::the mutation shards finished as '${RESULT}', not 'success': see the shard jobs"
+            exit 1
+          fi
+          echo "All mutation shards passed."
