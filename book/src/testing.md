@@ -522,9 +522,6 @@ test/sql/my_extension.test
 
 require my_extension
 
-statement ok
-LOAD my_extension;
-
 query I
 SELECT my_function('hello world');
 ----
@@ -538,10 +535,14 @@ Directives:
 | `require` | Load the extension; skip the file if it is not available |
 | `statement ok` | SQL must succeed |
 | `statement error` | SQL must fail |
-| `query I` | Query returning one INTEGER column |
-| `query II` | Query returning two INTEGER columns |
-| `query T` | Query returning one TEXT column |
+| `query I`, `query II`, `query T`, … | Query whose result has one column per letter; each letter is that column's type (`I` integer, `T` text, `R` real) |
 | `----` | Expected output follows |
+
+**A skipped file passes.** If `require my_extension` cannot load the extension (the name
+does not match `EXTENSION_NAME`, `[lib] name` or the file name, or the extension file was
+not built), the runner reports the file as `SKIPPED` and exits 0. `make test` and the
+community build then succeed having tested nothing. Read the runner's output for
+`SKIPPED`, and fail the job on it in your own CI.
 
 ### Installing DuckDB (1.4.4 or later)
 
@@ -606,9 +607,11 @@ The community extension CI runs these SQLLogicTest files automatically. Give
 each function at least one test, covering NULL, empty and typical input:
 
 ```sql
-# Test NULL handling
+# Test NULL handling. Read the NULL from a column: DuckDB folds a literal
+# `my_function(NULL)` into the plan and never calls the function, so that query
+# passes even for a callback that gets NULL wrong (Pitfall L8).
 query I
-SELECT my_function(NULL);
+SELECT my_function(x) FROM (VALUES (NULL::VARCHAR)) t(x);
 ----
 NULL
 

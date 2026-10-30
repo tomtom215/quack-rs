@@ -264,7 +264,25 @@ quack_rs::scalar_callback!(first_word_raw, |_info, input, output| {
 });
 ```
 
-You register it with `ScalarFunctionBuilder::new(…).param(TypeId::Varchar).returns(TypeId::Varchar).function(first_word_raw)`.
+The raw builder takes the callback together with the signature you declare for it:
+
+```rust
+# use libduckdb_sys::duckdb_connection;
+# use quack_rs::prelude::*;
+# quack_rs::scalar_callback!(first_word_raw, |_info, _input, _output| {});
+# fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
+// SAFETY: `con` is the live connection DuckDB passed to the entry point.
+unsafe {
+    ScalarFunctionBuilder::new("first_word_raw")
+        .param(TypeId::Varchar)
+        .returns(TypeId::Varchar)
+        .function(first_word_raw)
+        .register(con)?;
+}
+# Ok(())
+# }
+```
+
 `set_null` calls `duckdb_vector_ensure_validity_writable` before writing the NULL flag,
 which DuckDB requires; `VectorWriter` does it for you.
 
@@ -361,10 +379,12 @@ fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 ```
 
 `register` returns `Err` if DuckDB reports a failure, and the entry point turns that into
-a `LOAD` error the user sees. The NULL test above reads the NULL from a column
-(`FROM (VALUES (NULL::VARCHAR)) t(x)`), not from a literal: DuckDB folds a literal `NULL`
-argument into the plan before it ever calls the function, so `SELECT first_word(NULL)`
-passes even for a callback that gets NULL wrong
+a `LOAD` error the user sees.
+
+When you test NULL handling, read the NULL from a column, as
+`SELECT first_word(x) FROM (VALUES (NULL::VARCHAR)) t(x)` does, not from a literal:
+DuckDB folds a literal `NULL` argument into the plan before it ever calls the function,
+so `SELECT first_word(NULL)` passes even for a callback that gets NULL wrong
 ([Pitfall L8](../reference/pitfalls.md#l8-default_null_handling-does-not-propagate-nulls-for-scalar-functions)).
 
 ---

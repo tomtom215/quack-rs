@@ -73,7 +73,11 @@ fn main() {
 ```
 
 The repository's `scaffold_to_dir` example does the same from the command
-line:
+line. It lives in the repository, **not in the published crate** (the crate's
+`exclude` list leaves `examples/` out), so running it means cloning
+`tomtom215/quack-rs`; the first build compiles every dev-dependency and takes a few
+minutes. In a project that already depends on `quack-rs`, the program above does the
+same without a clone.
 
 ```bash
 cargo run --example scaffold_to_dir -- my_extension            # writes ./my_extension
@@ -115,11 +119,18 @@ Extension names must satisfy all of:
 Use vendor-prefixed names to avoid collisions: `myorg_analytics`, not `analytics`.
 
 The scaffold generator checks the first two rules before generating any files and returns
-an error if the name breaks one. Uniqueness is yours to check.
+an error if the name breaks one. Uniqueness is yours to check, and so is the list of names
+DuckDB itself reserves (aliases such as `s3` and `md`, and the core extensions): see
+[Names DuckDB reserves](../publishing.md#names-duckdb-reserves).
 
 ---
 
 ## After scaffolding
+
+You need `git` with a user name and email configured (the first commit fails without),
+`make`, Python 3 with the `venv` module, and network access to PyPI and GitHub:
+`make configure` creates a virtual environment, installs the `duckdb` package from PyPI,
+and installs the SQLLogicTest runner from a pinned commit on GitHub.
 
 ```bash
 cd my_extension
@@ -138,6 +149,11 @@ on purpose. The community build checks out your `repo.ref` and rebuilds that sam
 commit for every DuckDB release; without a committed lock file, each rebuild
 resolves its dependencies afresh. (`make release` would write the file too, but
 after `git add -A`, so it would stay untracked.)
+
+**Leave `CARGO_TARGET_DIR` unset for `make`.** extension-ci-tools' `rust.Makefile` copies
+the library from `./target/release/`; with `CARGO_TARGET_DIR` set, Cargo builds elsewhere
+and `make release` stops with `FileNotFoundError: './target/release/lib<name>.so'`
+(reported by the author-tables review, which saw it with a scaffolded project).
 
 `git submodule add` is not optional in a new project: the scaffold writes
 `.gitmodules`, but `git submodule update --init` does nothing until the

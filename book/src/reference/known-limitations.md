@@ -115,7 +115,7 @@ whole-partition window or as an ordered aggregate, and the usual result is a
 segmentation fault that takes the host process down. The book's own example
 aggregate does it. Measured with `word_count` from [Your First
 Extension](../getting-started/first-extension.md), one query shape per process, over 5,000
-and over 300,000 rows (`n/a` = not applicable to the release):
+and over 300,000 rows:
 
 | Query shape | 1.4.4 | 1.5.6 | 2.0.0 |
 |-------------|-------|-------|-------|

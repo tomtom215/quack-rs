@@ -72,7 +72,8 @@ newest version, with the default features on and without `loadable-extension`.
 | The community-extension flow (`make configure release test`, [scaffold](scaffold.md)) | Python 3 with `venv`, `pip` and network access to PyPI and GitHub, `git` (with a user identity set, for the first commit), and `make`. |
 
 Upgrading an extension from quack-rs 0.16? 0.18 has breaking changes; see
-[Upgrading from 0.16 to 0.18](upgrading-0-18.md) for what to change.
+[Upgrading from 0.16 to 0.18](upgrading-0-18.md) for what to change. From 0.18 or 0.19,
+see [Upgrading from 0.18 to 0.20](upgrading-0-20.md).
 
 ---
 
@@ -154,7 +155,7 @@ outcome the guards exist to prevent.)
 
 quack-rs requires **Rust ≥ 1.86.0**.
 
-1.86.0 is a ceiling as much as a floor while DuckDB 1.x is built. The
+While DuckDB 1.x is built, 1.86.0 is a ceiling as much as a floor. The
 community-extension build workflow (`_extension_distribution.yml` in
 `duckdb/extension-ci-tools`) pins Rust **1.86.0** for its WebAssembly jobs on the
 `v1.4-andium` and `v1.5-variegata` branches, so an extension, and therefore

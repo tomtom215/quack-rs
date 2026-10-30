@@ -30,6 +30,12 @@ final decision-making authority.
 | ------ | ------------- | ------------------ |
 | Tom F. | @tomtom215    | Initial Maintainer |
 
+**There is one maintainer, and no other committers.** The rules below that need a
+second person (a second approver, a majority vote, a tie-break) describe what happens
+once there is one; today the maintainer decides. What gates a merge to `main` is the
+`CI passed` check that [RELEASING.md](./RELEASING.md) configures as the required status
+check, not a second reviewer.
+
 ## Decision-Making Process
 
 The project uses **lazy consensus**:
@@ -65,7 +71,9 @@ how reports are handled.
    following the [Keep a Changelog](https://keepachangelog.com/) format.
 3. **Release Steps:**
    - A maintainer opens a release PR updating version numbers and the changelog.
-   - The PR must pass CI and receive at least one maintainer approval.
+   - The PR must pass CI. When there is more than one maintainer, it also needs the
+     approval of a maintainer who did not write it; with one maintainer, the
+     maintainer merges once CI is green.
    - After the PR is merged and CI on `main` passes, the maintainer pushes a
      tag (`vX.Y.Z`, GPG-signed where possible; RELEASING.md Step 5) for the
      merged commit. The tag push starts the

@@ -67,7 +67,7 @@ nothing can be caught, and a panic kills the user's DuckDB process.
 name = "my_extension"
 version = "0.1.0"
 edition = "2021"
-# With resolver 3, Cargo picks dependency versions that build on this.
+# With resolver 3, Cargo picks versions that build on this.
 rust-version = "1.86"
 resolver = "3"
 
@@ -100,19 +100,25 @@ use quack_rs::entry_point;
 use quack_rs::error::ExtensionError;
 use quack_rs::scalar::ScalarFunctionBuilder;
 
-fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
-    // Types come from the closure signatures. A NULL argument gives a
-    // NULL result without calling the closure. `try_map1` lets the
-    // closure fail: a plain `x * 2` wraps on overflow in a release
-    // build, and `Err` becomes a SQL error instead.
-    let double_it = ScalarFunctionBuilder::try_map1("double_it", |x: i64| {
-        x.checked_mul(2).ok_or("double_it: BIGINT overflow")
-    })?;
-    let shout =
-        ScalarFunctionBuilder::map1_str("shout", |s: &str| s.to_uppercase())?;
+fn register(
+    con: duckdb_connection,
+) -> Result<(), ExtensionError> {
+    // Types come from the closure signatures. A NULL
+    // argument gives a NULL result without calling the
+    // closure. `try_map1` lets the closure fail: a plain
+    // `x * 2` wraps on overflow in a release build, and
+    // `Err` becomes a SQL error instead.
+    let double_it = ScalarFunctionBuilder::try_map1(
+        "double_it",
+        |x: i64| x.checked_mul(2).ok_or("double_it: overflow"),
+    )?;
+    let shout = ScalarFunctionBuilder::map1_str(
+        "shout",
+        |s: &str| s.to_uppercase(),
+    )?;
 
-    // SAFETY: `con` is the live connection DuckDB passed to the entry
-    // point.
+    // SAFETY: `con` is the live connection DuckDB passed to
+    // the entry point.
     unsafe {
         double_it.register(con)?;
         shout.register(con)?;
@@ -166,12 +172,12 @@ line. Checked against the published sources of `duckdb` and
 `duckdb-loadable-macros` 1.20000.1, `duckdb-neo` 0.20000.1 and the
 `extension-template-rs` repository's `main` on 2026-10-29:
 
-| | quack-rs | `duckdb` + `duckdb-loadable-macros` | `extension-template-rs` + `duckdb-neo` |
+| | quack-rs | `duckdb` + macros | template + `duckdb-neo` |
 |---|---|---|---|
-| C API | v1, stable | v1 by default (`<name>_init_c_api`); v2 behind the macros' `neo` feature | v2, unstable (`<name>_init_c_api_v2`) |
-| Binary loads in | every DuckDB from 1.4.4 through 2.0.x (tested through 2.0.0), with the default features | set by the C API v1 stamp, as for quack-rs | only the DuckDB release it was built for ("Binaries load only in the exact TARGET_DUCKDB_VERSION", the template's `Makefile`) |
-| Wraps | scalar, aggregate, table, cast, copy and replacement-scan functions; SQL macros | scalar (`vscalar`) and table (`vtab`) functions | modules for scalar, aggregate, table, cast, copy, macro and pragma functions, replacement scans, custom types and options, and log sinks |
-| Status | pre-1.0, audited (below) | the `duckdb` crate | `duckdb-neo` describes itself as experimental |
+| C API | v1, stable | v1 by default; v2 behind the macros' `neo` feature | v2, unstable |
+| Binary loads in | every DuckDB 1.4.4 to 2.0.x (default features; tested to 2.0.0) | as quack-rs: set by the C API v1 stamp | the one DuckDB release it was built for (the template's `Makefile` says so) |
+| Wraps | scalar, aggregate, table, cast, copy, replacement scan; macros | scalar and table functions | scalar, aggregate, table, cast, copy, macro and pragma functions; scans, types, options, log sinks |
+| Status | pre-1.0 (see Status) | the `duckdb` crate | `duckdb-neo` calls itself experimental |
 
 Use `duckdb-neo` if you target DuckDB 2.0 and later only and want upstream's
 wrapper, or need what only the v2 API offers (pragma functions, for one).

@@ -156,24 +156,27 @@ non-empty.
 
 ### What the community build reads
 
-`scripts/build.py` in `duckdb/community-extensions` starts with `yaml.safe_load` on the
-file, requires the directory name `extensions/<dir>/` to equal `extension.name`, and reads
-only these keys: `extension.name`, `repo.github`, `repo.ref`, and, when present,
-`repo.canonical_name`, `repo.ref_next`, `repo.variegata`, `repo.andium`,
-`extension.excluded_platforms`, `extension.opt_in_platforms`,
-`extension.requires_toolchains`, `extension.custom_toolchain_script`,
-`extension.vcpkg_url`, `extension.vcpkg_commit` and `extension.test_config`. **Any other
-key is ignored without a message**, so a misspelt `excluded_platform:` or `ref_nxt:` does
-nothing. `requires_toolchains` is a `;`-separated list, and the workflow looks for each
-token between semicolons (`;rust;`): write `rust;python3` with no spaces, because
-`rust; python3` loses `python3`. The workflow acts on `rust` and `go` (checked), and, per the
-conform review, on `python3`, `parser_tools`, `fortran`, `unixodbc`, `multimedia`, `cuda`,
-`omp` and `downgraded_aws_cli`; an unknown token is ignored too. `test_config` is a JSON string of environment
-variables for the test run, for example `{"test_env_variables": {"SKIP_TESTS": "1"}}`;
-quack-rs neither generates nor validates it. YAML is parsed by PyYAML, not by quack-rs's
-own reader, so run `python3 -c 'import yaml; yaml.safe_load(open("description.yml"))'`
-as well: `validate_description_yml_str` checks the fields it knows, not every rule of
-YAML.
+`scripts/build.py` in `duckdb/community-extensions` reads `description.yml` like this:
+
+- It starts with `yaml.safe_load` (PyYAML). `validate_description_yml_str` checks the
+  fields quack-rs knows, not every rule of YAML, so also run
+  `python3 -c 'import yaml; yaml.safe_load(open("description.yml"))'` yourself.
+- It requires the directory name `extensions/<dir>/` to equal `extension.name`.
+- It reads `extension.name`, `repo.github` and `repo.ref`, and, when present,
+  `repo.canonical_name`, `repo.ref_next`, `repo.variegata`, `repo.andium`,
+  `extension.excluded_platforms`, `extension.opt_in_platforms`,
+  `extension.requires_toolchains`, `extension.custom_toolchain_script`,
+  `extension.vcpkg_url`, `extension.vcpkg_commit` and `extension.test_config`.
+  **Any other key is ignored without a message**: a misspelt `excluded_platform:` or
+  `ref_nxt:` does nothing.
+- `requires_toolchains` is a `;`-separated list. The workflow looks for each token
+  between semicolons (`;rust;`), so write `rust;python3` with no spaces: in
+  `rust; python3` the second token is `" python3"` and is lost. The workflow acts on
+  `rust` and `go` (checked) and, per the conform review, on `python3`, `parser_tools`,
+  `fortran`, `unixodbc`, `multimedia`, `cuda`, `omp` and `downgraded_aws_cli`; an unknown
+  token is ignored too.
+- `test_config` is a JSON string of environment variables for the test run, for example
+  `{"test_env_variables": {"SKIP_TESTS": "1"}}`. quack-rs neither generates nor validates it.
 
 ### Validating the whole file
 
@@ -485,9 +488,9 @@ assert!(validate_release_profile("abort", "true", "3", "1").is_err());
 crash, and `catch_unwind` cannot catch anything under `panic = "abort"`: the
 runtime aborts before unwinding starts, killing the user's DuckDB session.
 
-The older advice to set `abort` came from panics escaping an `extern "C"`
-boundary once being undefined behavior. They no longer are — Rust defines that
-as an abort — and quack-rs catches them before the boundary anyway.
+The older advice to set `abort` dates from when a panic escaping an `extern "C"`
+function was undefined behavior. It now aborts the process by definition, and
+quack-rs catches panics before the boundary anyway.
 
 ---
 

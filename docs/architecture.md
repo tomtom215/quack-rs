@@ -28,7 +28,7 @@ quack_rs
 ├── callback         scalar_callback!, table_scan_callback!, … — panic-safe callback wrapper macros
 ├── aggregate
 │   ├── state        FfiState<T> — tagged state slot: T inline (≤ 256 bytes, ≤ usize-aligned) or boxed
-│   ├── callbacks    Type aliases for the six aggregate callbacks (StateSizeFn, StateInitFn, UpdateFn, CombineFn, FinalizeFn, DestroyFn)
+│   ├── callbacks    Type aliases for the aggregate callbacks: the five required ones (StateSizeFn, StateInitFn, UpdateFn, CombineFn, FinalizeFn) and the optional DestroyFn
 │   ├── info         AggregateFunctionInfo — callback info wrapper
 │   └── builder/
 │       ├── single   AggregateFunctionBuilder (single-signature)
