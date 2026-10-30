@@ -234,9 +234,15 @@ fn folded_description_flow_maintainers_and_toolchain_list() {
         desc.warnings
     );
     assert!(has_warning(&desc, "'GPL-3.0'"), "{:?}", desc.warnings);
-    // It pins a tag, not a commit.
+    // It pins a tag, not a commit; the warning says why a tag is not enough
+    // (it used to speak of a branch only, CONFORM-15).
     assert!(
         has_warning(&desc, "repo.ref 'v0.1.0' is not a commit hash"),
+        "{:?}",
+        desc.warnings
+    );
+    assert!(
+        has_warning(&desc, "a branch or tag can be moved"),
         "{:?}",
         desc.warnings
     );

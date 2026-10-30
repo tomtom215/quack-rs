@@ -24,6 +24,35 @@ fn quack_rs_dependency_version() -> String {
     }
 }
 
+/// The `libduckdb-sys` requirement of a stable-ABI (`C_STRUCT` v1.2.0) project:
+/// every bindings release quack-rs supports, from the 1.4.4 floor up to and
+/// not including the `DuckDB` 2.1 bindings (1.20100.x), which quack-rs has not
+/// been tested with.
+pub(super) const LIBDUCKDB_SYS_RANGE: &str = ">=1.4.4, <1.20100";
+
+/// The newest of quack-rs's `duckdb-1-5*` features a project stamped for
+/// `config` can use, if any: the point of stamping C API v1.5.6, or an exact
+/// `DuckDB` 1.5 release, is to use them.
+pub(super) fn quack_rs_feature(config: &ScaffoldConfig) -> Option<&'static str> {
+    if !super::pins_bindings(config) {
+        return None;
+    }
+    if !config.use_unstable_c_api {
+        return Some("duckdb-1-5-4");
+    }
+    let mut parts = config
+        .target_duckdb_version
+        .trim_start_matches('v')
+        .split('.')
+        .map(|p| p.parse::<u32>().unwrap_or(0));
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(1), Some(5), Some(patch)) if patch >= 4 => Some("duckdb-1-5-4"),
+        (Some(1), Some(5), Some(3)) => Some("duckdb-1-5-3"),
+        (Some(1), Some(5), _) => Some("duckdb-1-5"),
+        _ => None,
+    }
+}
+
 pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
     // A C_STRUCT v1.2.0 build only uses the frozen stable prefix of the C API,
     // so any bindings work. A build that may use the `duckdb-1-5*` features is
@@ -31,11 +60,24 @@ pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
     // pinned: to the exact release for C_STRUCT_UNSTABLE, to the v1.5.6 ones
     // (the layout DuckDB v1.5.6 and v2.0.0 share) for C_STRUCT v1.5.6.
     let libduckdb_sys = if super::pins_bindings(config) {
-        super::libduckdb_sys_requirement(&config.target_duckdb_version)
-            .unwrap_or_else(|_| String::from(">=1.4.4, <2"))
+        super::checks::libduckdb_sys_requirement(&config.target_duckdb_version)
+            .unwrap_or_else(|_| String::from(LIBDUCKDB_SYS_RANGE))
     } else {
-        String::from(">=1.4.4, <2")
+        String::from(LIBDUCKDB_SYS_RANGE)
     };
+    let (quack_rs_note, quack_rs_features) = quack_rs_feature(config).map_or_else(
+        || (String::new(), String::new()),
+        |feature| {
+            (
+                format!(
+                    "# `{feature}`: quack-rs's API past the stable prefix of the C extension API,\n\
+                     # which is what this project's stamping (TARGET_DUCKDB_VERSION in the\n\
+                     # Makefile) is for. Without it the project builds for the stable API only.\n"
+                ),
+                format!(", features = [\"{feature}\"]"),
+            )
+        },
+    );
     let libduckdb_sys_note = if config.use_unstable_c_api {
         format!(
             "# Pinned to the bindings for DuckDB {target} (TARGET_DUCKDB_VERSION in the\n\
@@ -52,14 +94,38 @@ pub(super) fn generate_cargo_toml(config: &ScaffoldConfig) -> String {
              # release` refuses a mismatch.\n",
         )
     } else {
-        String::new()
+        String::from(
+            "# Any bindings release quack-rs supports, below the DuckDB 2.1 bindings\n\
+             # (1.20100), which this quack-rs has not been tested with: a C_STRUCT v1.2.0\n\
+             # binary uses only the stable prefix of the C API, which all of them have.\n",
+        )
     };
+    // Cargo unifies features: with the defaults left on here they would be on
+    // for quack-rs's copy of libduckdb-sys as well.
+    let libduckdb_sys_note = libduckdb_sys_note
+        + "# `default-features = false`: the defaults (from 1.20000, an HTTP/TLS client\n\
+           # that downloads libduckdb, and vcpkg / pkg-config probing) are for linking a\n\
+           # whole DuckDB, not for a loadable extension; Cargo unifies features, so\n\
+           # enabling them here would enable them for quack-rs's copy too.\n";
     format!(
         r#"[package]
 name = "{name}"
 version = "{version}"
 edition = "2021"
-license = "{license}"
+license = "{license}""#,
+        name = config.name,
+        version = config.version,
+        // Normalised to single spaces, as in `description.yml`: the SPDX check
+        // splits an expression on any Unicode whitespace, so `MIT\nOR
+        // Apache-2.0` passes it, but a line break inside this TOML basic string
+        // is not TOML. (Identifiers hold only letters, digits, `.`, `-`, `+`.)
+        license = config
+            .license
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    ) + &format!(
+        r#"
 # The oldest Rust this project builds with: quack-rs's own MSRV. (For DuckDB v2.0,
 # extension-ci-tools pins a newer one, 1.97.1, on Windows and WebAssembly and uses
 # the current stable on Linux and macOS.) Raise it only together with
@@ -84,8 +150,8 @@ crate-type = ["staticlib"]
 path = "src/wasm_lib.rs"
 
 [dependencies]
-quack-rs = {{ version = "{quack_rs}" }}
-{libduckdb_sys_note}libduckdb-sys = {{ version = "{libduckdb_sys}", features = ["loadable-extension"] }}
+{quack_rs_note}quack-rs = {{ version = "{quack_rs}"{quack_rs_features} }}
+{libduckdb_sys_note}libduckdb-sys = {{ version = "{libduckdb_sys}", default-features = false, features = ["loadable-extension"] }}
 
 [profile.release]
 opt-level = 3
@@ -100,188 +166,48 @@ panic = "unwind"
 strip = true
 "#,
         name = config.name,
-        version = config.version,
-        license = config.license,
         msrv = env!("CARGO_PKG_RUST_VERSION"),
         quack_rs = quack_rs_dependency_version(),
-        libduckdb_sys = libduckdb_sys,
-        libduckdb_sys_note = libduckdb_sys_note,
     )
 }
-
-pub(super) fn generate_makefile(config: &ScaffoldConfig) -> String {
-    // Mirrors duckdb/extension-template-rs: `EXTENSION_NAME`,
-    // `TARGET_DUCKDB_VERSION` and `USE_UNSTABLE_C_API` are the variables
-    // `extension-ci-tools/makefiles/c_api_extensions/base.Makefile` actually
-    // reads, and the aggregate targets below are what `make` users invoke.
-    let unstable = u8::from(config.use_unstable_c_api);
-    let abi_note = if config.use_unstable_c_api {
-        "# USE_UNSTABLE_C_API=1: the binary is stamped C_STRUCT_UNSTABLE and DuckDB will\n\
-         # only load it into exactly TARGET_DUCKDB_VERSION, a DuckDB 1.x release. (DuckDB\n\
-         # 2.0 loads C_STRUCT_UNSTABLE only through the C API v2 entry point, which\n\
-         # quack-rs does not generate: for 2.0 use USE_UNSTABLE_C_API=0 with\n\
-         # TARGET_DUCKDB_VERSION=v1.5.6.)"
-    } else if super::pins_bindings(config) {
-        "# USE_UNSTABLE_C_API=0 with TARGET_DUCKDB_VERSION=v1.5.6: the binary is stamped\n\
-         # C_STRUCT for C API v1.5.6, which DuckDB v1.5.6 and v2.0.0 load and older\n\
-         # releases refuse. This is the stamping for quack-rs's `duckdb-1-5` / `-3` / `-4`\n\
-         # features: DuckDB declared that whole layout stable from v1.5.6. TARGET_DUCKDB_VERSION\n\
-         # is the *C API* version here, not a DuckDB release. See LESSONS.md P2."
-    } else {
-        "# USE_UNSTABLE_C_API=0: the binary is stamped C_STRUCT and loads into any DuckDB\n\
-         # whose C extension API version is >= TARGET_DUCKDB_VERSION (every release from\n\
-         # v1.2.0, 2.0 included). Only valid while you stay off quack-rs's `duckdb-1-5` /\n\
-         # `-3` / `-4` features (for those, TARGET_DUCKDB_VERSION=v1.5.6);\n\
-         # TARGET_DUCKDB_VERSION is the *C API* version (v1.2.0), not a DuckDB release.\n\
-         # See LESSONS.md P2."
-    };
-    // Unstable builds only: tell quack-rs's ABI check which release the bindings
-    // were built against (so it accepts a release its layout table predates,
-    // which is what happens every time DuckDB ships and the community
-    // repository rebuilds this extension from unchanged source), test against
-    // that same release, and refuse to build when the resolved libduckdb-sys
-    // is for a different one. Without that last guard, bumping
-    // TARGET_DUCKDB_VERSION alone makes the extension *declare* a release its
-    // bindings do not match — and for a release quack-rs has no layout entry
-    // for, the declaration is trusted.
-    let (declare_block, check_prereq, check_target) = if config.use_unstable_c_api {
-        (
-            "\n# pip version of DuckDB that `make test` runs against: the pinned release.\n\
-             DUCKDB_TEST_VERSION=$(patsubst v%,%,$(TARGET_DUCKDB_VERSION))\n\
-             \n\
-             # Lets quack-rs's ABI check accept a DuckDB release newer than its layout table.\n\
-             export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)\n",
-            "check_duckdb_pin ",
-            CHECK_DUCKDB_PIN_TARGET,
-        )
-    } else if super::pins_bindings(config) {
-        // Tested against whatever DuckDB extension-ci-tools installs (the
-        // newest release), which is the point: the binary is meant for v2.0.
-        (
-            "\n# The bindings are DuckDB v1.5.6's (see Cargo.toml): tells quack-rs's ABI check so.\n\
-             export QUACK_RS_TARGET_DUCKDB_VERSION = $(TARGET_DUCKDB_VERSION)\n",
-            "check_duckdb_pin ",
-            CHECK_DUCKDB_PIN_TARGET,
-        )
-    } else {
-        ("", "", "")
-    };
-    let ci_tools_ref = super::extension_ci_tools_ref(config);
-    format!(
-        r#"# DuckDB Rust extension Makefile.
-# Delegates to cargo for building and to extension-ci-tools for metadata.
-
-.PHONY: all configure debug release test test_debug test_release clean clean_all{phony_check}
-
-PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-
-EXTENSION_NAME={name}
-
-{abi_note}
-USE_UNSTABLE_C_API={unstable}
-TARGET_DUCKDB_VERSION={target_version}
-{declare_block}
-# Extension version written into the metadata footer. extension-ci-tools reads
-# it from git (the tag on HEAD, else the short commit hash) -- and in a
-# repository with no commit yet it records git's error message instead, which
-# overflows the footer's 32-byte version field and leaves a file DuckDB refuses
-# to load ('Unknown ABI type for extension'). Until HEAD exists, fall back to
-# the package version in Cargo.toml. Set EXTENSION_VERSION to override both;
-# after the first commit, run `make clean_all configure` to switch to git.
-ifeq ($(EXTENSION_VERSION),)
-ifeq ($(shell git rev-parse --verify --quiet HEAD 2>/dev/null),)
-EXTENSION_VERSION := v$(shell sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
-endif
-endif
-
-all: configure release
-
-# Include extension-ci-tools build rules. A freshly generated project has a
-# .gitmodules but no submodule yet, and `git submodule update --init` does
-# nothing until the submodule has been added once (LESSONS.md P4). Use the
-# branch the distribution workflow names as `ci_tools_version`.
-ifeq ($(wildcard extension-ci-tools/makefiles/c_api_extensions/base.Makefile),)
-$(error extension-ci-tools is missing. In a new repository run: git submodule add -b {ci_tools_ref} https://github.com/duckdb/extension-ci-tools.git extension-ci-tools -- in a clone of an existing one: git submodule update --init --recursive)
-endif
-include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
-include extension-ci-tools/makefiles/c_api_extensions/rust.Makefile
-
-configure: venv platform extension_version
-
-debug: {check_prereq}build_extension_library_debug build_extension_with_metadata_debug
-release: {check_prereq}build_extension_library_release build_extension_with_metadata_release
-{check_target}
-test: test_release
-test_debug: test_extension_debug
-test_release: test_extension_release
-
-clean: clean_build clean_rust
-clean_all: clean_configure clean
-"#,
-        name = config.name,
-        ci_tools_ref = ci_tools_ref,
-        abi_note = abi_note,
-        unstable = unstable,
-        target_version = config.target_duckdb_version,
-        declare_block = declare_block,
-        check_prereq = check_prereq,
-        check_target = check_target,
-        phony_check = if super::pins_bindings(config) {
-            " check_duckdb_pin"
-        } else {
-            ""
-        },
-    )
-}
-
-/// The `check_duckdb_pin` rule of an unstable-ABI `Makefile`.
-///
-/// Asks cargo which `libduckdb-sys` the build resolves to, decodes the
-/// `DuckDB` release it ships (the same mapping as quack-rs's
-/// `scripts/duckdb-version-from-lock.sh`) and fails unless it is
-/// `TARGET_DUCKDB_VERSION`. A plain string so the recipe's tab and `$$` reach
-/// the file exactly.
-const CHECK_DUCKDB_PIN_TARGET: &str = "
-# The bindings compiled in come from the libduckdb-sys pin in Cargo.toml, not
-# from TARGET_DUCKDB_VERSION. Refuse to build when they name different releases.
-check_duckdb_pin:
-\t@v=$$(cargo tree -e normal -i libduckdb-sys --depth 0 --prefix none | sed -n 's/^libduckdb-sys v//p' | head -n 1); \\
-\tm=$$(echo \"$$v\" | cut -d. -f2); \\
-\tif [ \"$${m:-0}\" -ge 10000 ] 2>/dev/null; then got=\"v$$((m / 10000)).$$((m / 100 % 100)).$$((m % 100))\"; else got=\"v$$v\"; fi; \\
-\tif [ \"$$got\" != \"$(TARGET_DUCKDB_VERSION)\" ]; then \\
-\t\techo \"error: libduckdb-sys $$v is DuckDB $$got, but TARGET_DUCKDB_VERSION=$(TARGET_DUCKDB_VERSION); update the libduckdb-sys pin in Cargo.toml\" >&2; \\
-\t\texit 1; \\
-\tfi
-";
 
 pub(super) fn generate_lib_rs(config: &ScaffoldConfig) -> String {
     format!(
-        r##"{description}
+        r#"{description}
 //!
 //! A DuckDB extension built with [quack-rs](https://github.com/tomtom215/quack-rs).
 
 use quack_rs::prelude::*;
 
 // ---------------------------------------------------------------------------
-// Example: a simple SQL macro. Replace with your own functions.
+// Example: a scalar function. Replace it with your own functions.
 // ---------------------------------------------------------------------------
 
-/// The example function: `{name}_hello(name)` greets `name`. `||` returns NULL
-/// when `name` is NULL, as SQL functions conventionally do (`concat` would
-/// skip the NULL and still return a greeting).
-fn hello_macro() -> Result<SqlMacro, ExtensionError> {{
-    {hello_call}
+/// The extension's name, as DuckDB knows it.
+const EXTENSION: &str = "{name}";
+
+/// The SQL name of the example function.
+const HELLO: &str = "{name}_hello";
+
+/// What `{name}_hello(name)` returns. Plain Rust, so it is unit-tested below
+/// without DuckDB.
+fn greet(name: &str) -> String {{
+    format!("Hello from {{EXTENSION}}! {{name}}")
 }}
 
 /// Registers all extension functions on the given connection.
 fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError> {{
-    // Example: register a scalar SQL macro (no unsafe callbacks needed).
-    // Replace this with your own aggregate, scalar, or table functions.
+    // A native scalar function from a closure: quack-rs derives the SQL types
+    // from the closure's signature (VARCHAR -> VARCHAR), returns NULL for a
+    // NULL argument without calling it, and turns a panic into a query error.
+    // A native function lives in the extension, so the user's database is not
+    // changed and LOAD works on a read-only one too (an SQL macro would be
+    // written into the database).
     //
     // SAFETY: `con` is the connection quack-rs opened for this entry point and
     // is valid for the duration of this function.
     unsafe {{
-        hello_macro()?.register(con)?;
+        ScalarFunctionBuilder::map1_str(HELLO, |name: &str| greet(name))?.register(con)?;
     }}
     Ok(())
 }}
@@ -292,26 +218,21 @@ fn register(con: libduckdb_sys::duckdb_connection) -> Result<(), ExtensionError>
 
 {entry_point_call}
 
-// Unit tests run under plain `cargo test`: building a function definition
-// needs no DuckDB. Calling into DuckDB does, so behaviour against a real engine
-// is tested in test/sql/{name}.test (SQLLogicTest, run by `make test`).
+// Unit tests run under plain `cargo test` and need no DuckDB. Behaviour
+// against a real engine is tested in test/sql/{name}.test (SQLLogicTest, run
+// by `make test`).
 #[cfg(test)]
 mod tests {{
     use super::*;
 
     #[test]
-    fn hello_macro_renders_the_expected_sql() -> Result<(), ExtensionError> {{
-        assert_eq!(
-            hello_macro()?.to_sql(),
-            r#"CREATE OR REPLACE MACRO "{name}_hello"("name") AS ('Hello from {name}! ' || name)"#
-        );
-        Ok(())
+    fn greets_by_name() {{
+        assert_eq!(greet("world"), format!("Hello from {{EXTENSION}}! world"));
     }}
 }}
-"##,
+"#,
         description = doc_comment_lines(&config.description),
         name = config.name,
-        hello_call = hello_macro_call(&config.name),
         entry_point_call = entry_point_call(&config.name),
     )
 }
@@ -325,28 +246,6 @@ fn entry_point_call(name: &str) -> String {
         format!("quack_rs::entry_point!({args});")
     } else {
         format!("quack_rs::entry_point!(\n    {name}_init_c_api,\n    register\n);")
-    }
-}
-
-/// The `SqlMacro::scalar(...)` call in `hello_macro`, laid out the way
-/// `rustfmt` lays it out for this name, so the generated project's
-/// `cargo fmt --check` passes. `rustfmt` keeps a call's arguments on one line
-/// while they fit in `fn_call_width` (60 columns by default); a short name
-/// fits, a longer one does not.
-fn hello_macro_call(name: &str) -> String {
-    let args = [
-        format!("\"{name}_hello\""),
-        String::from("&[\"name\"]"),
-        format!("\"'Hello from {name}! ' || name\""),
-    ];
-    let one_line = args.join(", ");
-    if one_line.len() <= 60 {
-        format!("SqlMacro::scalar({one_line})")
-    } else {
-        format!(
-            "SqlMacro::scalar(\n        {},\n    )",
-            args.join(",\n        ")
-        )
     }
 }
 
@@ -399,22 +298,30 @@ pub(super) fn generate_description_yml(config: &ScaffoldConfig) -> String {
     // the build unreproducible.
     let _ = writeln!(yml, "  # Must be a commit hash, not a branch.");
     let _ = writeln!(yml, "  ref: {}", yaml_quoted(&config.git_ref));
-    let _ = writeln!(
-        yml,
-        "  # ref_next: <hash>   # optional: a revision compatible with DuckDB main,"
-    );
-    let _ = writeln!(
-        yml,
-        "  #                    # used while a new DuckDB release is being prepared."
-    );
-    let _ = writeln!(
-        yml,
-        "  # variegata: <hash>  # optional: a revision to build for DuckDB v1.5.6 while"
-    );
-    let _ = writeln!(
-        yml,
-        "  #                    # `ref` is built for the newest release (v2.0.0)."
-    );
+    // scripts/build.py builds `ref` for the newest release, `variegata` for
+    // v1.5.6, `andium` for v1.4.5 and `ref_next` for a release in preparation.
+    let latest = super::DISTRIBUTION_DUCKDB_VERSION;
+    let release_lines: &[&str] = if config.use_unstable_c_api {
+        &[
+            "  # This project is stamped C_STRUCT_UNSTABLE: the binary loads into one DuckDB",
+            "  # release only, and the community build builds `ref` for the newest release",
+            "  # (@@LATEST@@), which refuses it. Point `ref` at a revision stamped C_STRUCT, and",
+            "  # give this one under the key for its release:",
+            "  # variegata: <hash>  # built for DuckDB v1.5.6",
+            "  # andium: <hash>     # built for DuckDB v1.4.5",
+        ]
+    } else {
+        &[
+            "  # Optional, each a revision to build instead of `ref` (which is built for",
+            "  # the newest release, @@LATEST@@):",
+            "  # variegata: <hash>  # for DuckDB v1.5.6",
+            "  # andium: <hash>     # for DuckDB v1.4.5",
+            "  # ref_next: <hash>   # for a DuckDB release still in preparation",
+        ]
+    };
+    for line in release_lines {
+        let _ = writeln!(yml, "{}", line.replace("@@LATEST@@", latest));
+    }
 
     // 332 of the 346 published descriptors (community-extensions `5ae7df8`)
     // have a `docs:` section; it is what renders on the community-extensions
@@ -503,19 +410,35 @@ pub(super) fn generate_wasm_lib() -> String {
 /// `SQLLogicTest` is `DuckDB`'s integration test format. Tests in this file run via
 /// `make test` against a real `DuckDB` process with the extension loaded.
 ///
+/// The header lines are the ones `DuckDB`'s own test files and
+/// `duckdb/extension-template-rs` carry. The runner executes the file top to
+/// bottom and loads the extension at `require`, so the `statement error`
+/// before it proves the function comes from this extension. The NULL is read
+/// from a column: a literal `NULL` argument is constant-folded, so it never
+/// reaches the function's per-row NULL handling.
+///
 /// Pitfall P5: Expected values must match `DuckDB`'s exact output format.
 /// Generate expected values by running queries in the `DuckDB` CLI and copying the output.
 pub(super) fn generate_sqllogictest(config: &ScaffoldConfig) -> String {
     let name = &config.name;
     format!(
-        "# Integration tests for the {name} extension.\n\
-         # Run via: make test\n\
+        "# name: test/sql/{name}.test\n\
+         # description: test the {name} extension\n\
+         # group: [{name}]\n\
          #\n\
-         # Format reference: https://duckdb.org/dev/sqllogictest/intro.html\n\
+         # Run with `make test`. Format: https://duckdb.org/docs/stable/dev/sqllogictest/intro\n\
          # - query T = VARCHAR result, query I = INTEGER, query R = REAL, query B = BOOLEAN\n\
-         # - Expected output must match DuckDB's exact format (see LESSONS.md Pitfall P5)\n\
+         # - Expected output must match DuckDB's exact format:\n\
+         #   {P5_URL}\n\
          \n\
-         # Verify the extension loads without error\n\
+         # Before the extension is loaded, the function does not exist.\n\
+         statement error\n\
+         SELECT {name}_hello('world');\n\
+         ----\n\
+         Catalog Error: Scalar Function with name {name}_hello does not exist!\n\
+         \n\
+         # Loads the extension. A file whose `require` cannot be met is skipped,\n\
+         # which the Makefile's test target turns into a failure.\n\
          require {name}\n\
          \n\
          # The example function registered in src/lib.rs.\n\
@@ -524,17 +447,13 @@ pub(super) fn generate_sqllogictest(config: &ScaffoldConfig) -> String {
          ----\n\
          Hello from {name}! world\n\
          \n\
-         # One row per input row.\n\
+         # One row per input row, and NULL in, NULL out. The NULL comes from a\n\
+         # column: a literal NULL argument would be folded away before the call.\n\
          query T\n\
-         SELECT {name}_hello(x) FROM (VALUES ('a'), ('b')) t(x) ORDER BY x;\n\
+         SELECT {name}_hello(x) FROM (VALUES ('a'), (NULL), ('b')) t(x) ORDER BY x NULLS LAST;\n\
          ----\n\
          Hello from {name}! a\n\
          Hello from {name}! b\n\
-         \n\
-         # NULL in, NULL out.\n\
-         query T\n\
-         SELECT {name}_hello(NULL);\n\
-         ----\n\
          NULL\n\
          \n\
          # ---- Add a test like these for each function you add. ----\n\
@@ -543,6 +462,10 @@ pub(super) fn generate_sqllogictest(config: &ScaffoldConfig) -> String {
          # SELECT {name}_count(col) FROM (VALUES (1), (2), (3)) t(col);\n\
          # ----\n\
          # 3\n\
-         "
+         ",
     )
 }
+
+/// The book's pitfall P5 (`SQLLogicTest` expected values).
+const P5_URL: &str =
+    "https://quack-rs.com/reference/pitfalls.html#p5-sqllogictest-expected-values-must-match-exactly";

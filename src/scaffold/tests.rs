@@ -132,8 +132,11 @@ fn invalid_name_rejected() {
 
 #[test]
 fn invalid_license_rejected() {
+    // Not an SPDX expression. (A well-formed identifier outside quack-rs's
+    // shortlist, such as `FAKE-LICENSE`, is accepted with a warning: see
+    // tests_content.rs.)
     let mut config = valid_config();
-    config.license = "FAKE-LICENSE".to_string();
+    config.license = "FAKE LICENSE".to_string();
     assert!(generate_scaffold(&config).is_err());
 }
 
@@ -687,7 +690,7 @@ fn the_generated_workflow_pins_rust_toolchain_to_master_with_an_explicit_toolcha
         .position(|l| l.contains("uses: dtolnay/rust-toolchain@"))
         .expect("a rust-toolchain step");
     assert!(
-        lines[at].contains("dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f"),
+        lines[at].contains("dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8"),
         "{}",
         lines[at]
     );

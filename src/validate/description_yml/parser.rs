@@ -5,7 +5,7 @@
 
 use crate::error::ExtensionError;
 use crate::validate::platform::{
-    is_opt_in_platform, DUCKDB_CI_PLATFORMS, DUCKDB_OPT_IN_PLATFORMS, DUCKDB_PLATFORM_GROUPS,
+    is_opt_in_platform, platforms_in_group, DUCKDB_OPT_IN_PLATFORMS, DUCKDB_PLATFORM_GROUPS,
     DUCKDB_RETIRED_PLATFORMS,
 };
 use crate::validate::{
@@ -241,19 +241,6 @@ fn warn_about_unknown_repo_keys(repo: &Fields<'_>, warnings: &mut Vec<String>) {
             ));
         }
     }
-}
-
-/// The platforms `group` stands for, as the community CI builds them:
-/// `wasm` is `wasm_eh`, `wasm_mvp` and `wasm_threads`.
-fn platforms_in_group(group: &str) -> Vec<&'static str> {
-    DUCKDB_CI_PLATFORMS
-        .iter()
-        .copied()
-        .filter(|p| {
-            p.strip_prefix(group)
-                .is_some_and(|rest| rest.starts_with('_'))
-        })
-        .collect()
 }
 
 /// Warns about each platform group name in `list`, the value of `field`.
@@ -528,14 +515,16 @@ impl<'a> Fields<'a> {
 }
 
 /// Warns when `field` (`repo.ref` and its per-release variants) is not a
-/// commit hash: the community build checks out exactly that revision, so a
-/// branch builds whatever it points at on the day.
+/// commit hash: the community build checks out exactly that revision, and a
+/// branch or a tag (11 of the 395 published refs at community-extensions
+/// `845779e`) can be moved to another commit.
 fn warn_unless_commit_hash(field: &str, git_ref: &str, warnings: &mut Vec<String>) {
     if !is_commit_hash(git_ref) {
         warnings.push(format!(
             "{field} '{git_ref}' is not a commit hash: the community build checks out \
-             exactly this revision, so a branch builds whatever it points at on the day, and \
-             DuckDB's documentation asks for the hash of the commit to build"
+             exactly this revision, and a branch or tag can be moved to another commit, so \
+             the build is not pinned; DuckDB's documentation asks for the hash of the commit \
+             to build"
         ));
     }
 }

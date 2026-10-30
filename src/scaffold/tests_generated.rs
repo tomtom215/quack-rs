@@ -97,20 +97,29 @@ fn unstable_scaffold_pins_libduckdb_sys_to_the_target_release() {
         let files = generate_scaffold(&unstable_config(target)).unwrap();
         let cargo = file(&files, "Cargo.toml");
         let expected = format!(
-            "libduckdb-sys = {{ version = \"{requirement}\", features = [\"loadable-extension\"] }}"
+            "libduckdb-sys = {{ version = \"{requirement}\", default-features = false, \
+             features = [\"loadable-extension\"] }}"
         );
         assert!(cargo.contains(&expected), "{target}: {cargo}");
-        assert!(!cargo.contains(">=1.4.4, <2"), "{target}: {cargo}");
+        assert!(!cargo.contains(">=1.4.4, <1.20100"), "{target}: {cargo}");
     }
 }
 
+/// `C_STRUCT` uses only the frozen stable prefix, so any bindings quack-rs
+/// supports work — up to, not including, the `DuckDB` 2.1 ones (1.20100.x),
+/// which `<2` admitted. The default features are off: they include nothing a
+/// loadable extension uses.
 #[test]
 fn stable_scaffold_leaves_libduckdb_sys_open() {
-    // C_STRUCT uses only the frozen stable prefix; any 1.x binding works.
     let files = generate_scaffold(&valid_config()).unwrap();
-    assert!(file(&files, "Cargo.toml").contains(
-        "libduckdb-sys = { version = \">=1.4.4, <2\", features = [\"loadable-extension\"] }"
-    ));
+    let cargo = file(&files, "Cargo.toml");
+    assert!(
+        cargo.contains(
+            "libduckdb-sys = { version = \">=1.4.4, <1.20100\", default-features = false, \
+             features = [\"loadable-extension\"] }"
+        ),
+        "{cargo}"
+    );
     let makefile = file(&files, "Makefile");
     assert!(!makefile.contains("check_duckdb_pin"), "{makefile}");
     assert!(!makefile.contains("DUCKDB_TEST_VERSION"), "{makefile}");
@@ -226,11 +235,9 @@ fn generated_lib_rs_carries_a_real_unit_test() {
     assert!(lib.contains("#[cfg(test)]"), "{lib}");
     assert!(lib.contains("#[test]"), "{lib}");
     // The test exercises the function `register` actually registers.
-    assert!(lib.contains("hello_macro()"), "{lib}");
+    assert!(lib.contains("|name: &str| greet(name)"), "{lib}");
     assert!(
-        lib.contains(
-            r#"CREATE OR REPLACE MACRO "my_analytics_hello"("name") AS ('Hello from my_analytics! ' || name)"#
-        ),
+        lib.contains(r#"assert_eq!(greet("world"), format!("Hello from {EXTENSION}! world"));"#),
         "{lib}"
     );
 }
