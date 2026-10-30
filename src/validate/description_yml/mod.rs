@@ -107,6 +107,14 @@ mod tests;
 #[cfg(test)]
 mod tests_corpus;
 #[cfg(test)]
+mod tests_mut_block;
+#[cfg(test)]
+mod tests_mut_flow_a;
+#[cfg(test)]
+mod tests_mut_flow_b;
+#[cfg(test)]
+mod tests_mut_scalar;
+#[cfg(test)]
 mod tests_pyyaml;
 #[cfg(test)]
 mod tests_yaml;

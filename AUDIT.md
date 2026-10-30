@@ -3323,9 +3323,9 @@ printed 0 is listed with the exit code):
 - `cargo semver-checks` against v0.19.0 (`--release-type patch`): the four
   `#[non_exhaustive]` enums and `ScalarBindInfo` no longer being `RefUnwindSafe`, nothing
   else; all five are in the CHANGELOG.
-- **The pull request's own CI found nine more problems after every gate above had passed
-  locally.** None needed a change to the shipped library code; item 7 also records a
-  limitation of it.
+- **The pull request's own CI found eleven more problems after every gate above had passed
+  locally.** Items 1 to 10 needed no change to the shipped library code (item 7 also records
+  a limitation of it); item 11 changed the description.yml reader (MUT-1).
   1. Windows: `-D warnings` turned unused items in Unix-only test modules into errors
      (helpers in `scaffold/tests_make.rs`, `temp_files` and a `Path` import in
      `append_metadata/tests_output.rs`); they are `cfg(unix)` now.
@@ -3364,6 +3364,41 @@ printed 0 is listed with the exit code):
   9. Windows (`ffi_roundtrip`): `duckdb_extensions()` could not open a half-written
      `parquet` file another test thread was installing. `Fixture` installs `icu` and
      `parquet` once per process now. Not reproducible here; the windows-2025 job decides.
+  10. Miri: the job's two runs (native, then s390x) share a 60-minute limit and the native one
+     alone took 41.6 minutes; by the timestamps in its log, 1,086 s went to one parser test on
+     100,000-level inputs and 160 s to an SPDX test, both of which use smaller inputs under
+     Miri now. The limit is 90 minutes. The next run took 18.1 and 17.5 minutes (MUT-2).
+  11. Mutation testing: one job for all of a 102-file pull request (1,639 mutants) was stopped
+     by its runner after 33 and 55 minutes, having reported 6 and 12 survivors. It is eight
+     shards now (`--shard k/8 --sharding round-robin`) and a gate job with the old check name;
+     all eight finished in 22 minutes and tested 1,617 mutants: 85 missed and 17 timed out,
+     101 of them in the YAML reader added in this release and one in `arrow/import_layout`.
+     Four engineers (subagents, each in its own worktree) worked the YAML ones from PyYAML's
+     verdicts, not the reader's; I merged and re-checked their results.
+     - 79 of the 85 missed were killed by 33 new tests in four modules (`tests_mut_*.rs`) and
+       three regression tests (below); every row's expectation is PyYAML 6.0.3's, except rows
+       that pin the reader's own documented limits (nesting of 64, no anchors in a field it
+       reads, no explicit `? ` keys, error wording), each commented as such.
+     - 14 of the 17 timeouts were loops that spin when an index update is mutated. Each loop
+       now carries a `debug_assert!` that a round made progress (flow `skip`, `seq`, `map`
+       and `plain`; block `parse_mapping` and `parse_seq`; `split_lines`), so a mutant fails
+       instead of hanging. Release builds are unchanged. The other 3 were mutants of
+       `value_len`'s memo, which made a run of k blank lines cost k² steps: it is a linear
+       scan now.
+     - 4 of the missed were equivalent, and the code that made them so is gone: a parameter
+       of `value_len` that every caller passed as `false`, a `check_code` call on text that is
+       only spaces, the text of a comment that no caller read (`split_comment` returns whether
+       there is one), and a `<=` in the memo.
+     - 2 of the missed, and one more found while probing, were PyYAML disagreements in the
+       reader (CHANGELOG, Fixed). Random mutation of the 395 published descriptors (118,500
+       files) had found none of them, so the claim that the reader never accepts what PyYAML
+       refuses was wrong at the edges. After the fixes, 16,195 mutated descriptors and
+       14,874 targeted documents show no regression against PyYAML; the reader still refuses
+       a tab-only line inside a block scalar and a tag alone on a line, which PyYAML accepts
+       (not fixed).
+     A local `cargo mutants` run of 195 mutants in the functions that changed or had
+     survived: 184 caught, 11 unviable, 0 missed, 0 timed out. The sharded run on the next
+     head is the check of the other mutants.
 - What 14.6 lists as unverified on Windows, macOS, WebAssembly and the source builds is
   answered by the pull request's final CI run, which the pull request page shows.
 
@@ -3423,6 +3458,16 @@ printed 0 is listed with the exit code):
 - A reviewer's snapshot is older than the fixes: `tests` patch 04 would have regressed
   ELF handling, and two of its Arrow tests needed an `indices` field that did not exist
   at its snapshot.
+- Random mutation of valid files is weak exactly where a hand-written parser has its edge
+  cases. 118,500 mutants of the published descriptors found no disagreement with PyYAML; the
+  mutation job, asked which boundary comparisons no test pins, found three in a day, and a
+  grid built around each (anchor lines, comment lines in block scalars, key lengths of
+  1,020 to 1,025 with spaces) showed their extent. Use both.
+- Delegating a mutation sweep works when each worker has its own worktree, its own target
+  directory and a written rule that PyYAML, not the code under test, supplies the expected
+  value: three of four reports found real disagreements instead of encoding them. All four
+  worktrees started from `main`, not the pushed head, and the workers noticed because line
+  numbers did not match.
 - A test whose only assertion is that the process survived says little, and this one
   created its own hazard. The deep-type test left a 3,500-level type in the catalog and the
   next registration paid for it; how much stack DuckDB's recursion takes depends on the
