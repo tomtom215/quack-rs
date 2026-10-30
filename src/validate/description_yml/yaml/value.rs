@@ -45,7 +45,7 @@ pub(super) fn parse_value(
     }
     // The lines that are the value's by indentation: all a plain or block
     // scalar may use.
-    let own = || value_len(at.lines, at.parent_indent, false);
+    let own = || value_len(at.lines, at.parent_indent);
 
     match rest.as_bytes()[0] {
         b'|' | b'>' => {
@@ -63,13 +63,13 @@ pub(super) fn parse_value(
                 at.lines[used - 1].number
             };
             nothing_but_a_comment(remainder, end_line, "a quoted value")?;
-            let tail = value_len(&at.lines[used..], at.parent_indent, false);
+            let tail = value_len(&at.lines[used..], at.parent_indent);
             nothing_but_comments(&at.lines[used..used + tail], "a quoted value")?;
             Ok((Value::Scalar(value), used + tail))
         }
         b'[' | b'{' => {
             let (value, used) = flow::parse(rest, line, at.lines, mode == Mode::Read, doc, depth)?;
-            let tail = value_len(&at.lines[used..], at.parent_indent, false);
+            let tail = value_len(&at.lines[used..], at.parent_indent);
             nothing_but_comments(&at.lines[used..used + tail], "a flow collection")?;
             Ok((value, used + tail))
         }
@@ -152,12 +152,15 @@ fn on_following_lines(
     } else {
         // Any other value that starts on the next line reads as if it started
         // on the key's own: `name:\n  "x"` is `x`, not `"x"` with its quotes,
-        // and a plain one folds the lines below it.
+        // and a plain one folds the lines below it. `seq_at_key_level` stays
+        // the key's: an anchor or tag on a line of its own may still be
+        // followed by a sequence written at the key's indentation
+        // (`k:\n  &a\n- x`, which PyYAML reads as `{k: [x]}`); a scalar never
+        // reads one, whatever the flag says.
         let next = ValueAt {
             rest: child.text,
             lines: &at.lines[first + 1..],
             line: child.number,
-            seq_at_key_level: false,
             ..*at
         };
         let (value, used) = parse_value(&next, path, mode, doc, depth)?;

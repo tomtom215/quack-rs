@@ -77,8 +77,9 @@ fn quoted_key(text: &str, line: usize) -> Result<Option<(String, &str)>, String>
     if !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
         return Ok(None);
     }
-    check_code(&after[..after.len() - after_spaces.len()], line)?;
-    if text[..text.len() - after.len()].chars().count() > MAX_KEY_LEN {
+    // PyYAML measures a simple key from its first character to the `:`, the
+    // spaces before the colon included (as it does for a plain key).
+    if text[..text.len() - after_spaces.len()].chars().count() > MAX_KEY_LEN {
         return Err(format!(
             "line {line}: a key longer than {MAX_KEY_LEN} characters, which PyYAML refuses"
         ));
@@ -134,6 +135,7 @@ pub(super) fn parse_mapping(
     let mut pending = block.head;
     let mut i = 0;
     loop {
+        let (turn_start, had_head) = (i, pending.is_some());
         let (line, after) = if let Some(head) = pending.take() {
             (head, 0)
         } else {
@@ -194,6 +196,13 @@ pub(super) fn parse_mapping(
             value: parsed,
         });
         i = after + used;
+        // A turn that did not start from the head entry took a line of its own
+        // (`after > i`), so `i` moved on and the loop ends. Debug builds check
+        // it: a turn that stood still would spin for ever.
+        debug_assert!(
+            had_head || i > turn_start,
+            "a mapping entry made no progress"
+        );
     }
 }
 
@@ -216,6 +225,7 @@ pub(super) fn parse_seq(
     let mut pending = block.head;
     let mut i = 0;
     loop {
+        let (turn_start, had_head) = (i, pending.is_some());
         let (line, after) = if let Some(head) = pending.take() {
             (head, 0)
         } else {
@@ -268,5 +278,10 @@ pub(super) fn parse_seq(
         };
         items.push(value);
         i = after + used;
+        // As in `parse_mapping`: a turn after the head item always moves `i` on.
+        debug_assert!(
+            had_head || i > turn_start,
+            "a sequence item made no progress"
+        );
     }
 }

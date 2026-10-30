@@ -66,14 +66,15 @@ pub(super) fn check_code(code: &str, line: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Splits unquoted text at its comment: a `#` at the start or after a space
-/// begins one, while `C#` or `#1` inside a word does not. (After a tab, `#`
-/// is not a comment to `PyYAML` either: the tab itself is the error.)
-pub(super) fn split_comment(text: &str) -> (&str, Option<&str>) {
+/// Splits unquoted text at its comment: the text before it, and whether there
+/// is one. A `#` at the start or after a space begins a comment, while `C#` or
+/// `#1` inside a word does not. (After a tab, `#` is not a comment to `PyYAML`
+/// either: the tab itself is the error.) The comment's own text is never read.
+pub(super) fn split_comment(text: &str) -> (&str, bool) {
     let bytes = text.as_bytes();
     (0..bytes.len())
         .find(|&i| bytes[i] == b'#' && (i == 0 || bytes[i - 1] == b' '))
-        .map_or((text, None), |i| (&text[..i], Some(&text[i + 1..])))
+        .map_or((text, false), |i| (&text[..i], true))
 }
 
 /// `text` without its comment and without surrounding spaces.
@@ -173,7 +174,7 @@ pub(super) fn plain_scalar(
     check_plain_text(head, line)?;
     let mut value = head.trim_end_matches(' ').to_string();
     // The line of the comment that ended the value, once one has.
-    let mut ended_on = comment.map(|_| line);
+    let mut ended_on = comment.then_some(line);
     let mut breaks = 0usize;
     for child in children {
         if child.is_blank() {
@@ -205,7 +206,7 @@ pub(super) fn plain_scalar(
         }
         let (text, comment) = split_comment(child.text);
         check_plain_text(text, child.number)?;
-        if comment.is_some() {
+        if comment {
             ended_on = Some(child.number);
         }
         if breaks == 0 {

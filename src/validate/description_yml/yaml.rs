@@ -203,7 +203,13 @@ fn split_lines(content: &str) -> Result<Vec<Line<'_>>, String> {
             raw,
         });
         match next {
-            Some(next) => rest = next,
+            Some(next) => {
+                // The text after a line break is shorter than the text before it;
+                // debug builds check it, since a loop that stood still would
+                // push lines for ever.
+                debug_assert!(next.len() < rest.len(), "split_lines made no progress");
+                rest = next;
+            }
             None => return Ok(lines),
         }
     }
@@ -359,46 +365,19 @@ pub(super) fn read_sections(content: &str, wanted: &[&str]) -> Result<Vec<Sectio
 }
 
 /// How many of `lines`, the lines after a key at `field_indent`, are the
-/// value's own by indentation: everything indented deeper, plus a sequence
-/// written level with its key (`key:\n- item`), which YAML allows.
-fn value_len(lines: &[Line<'_>], field_indent: usize, seq_at_key_level: bool) -> usize {
-    // A blank line, or a comment at the key's level or shallower, belongs to
-    // the value only if more of the value follows it. Every line of one such
-    // run gets the same answer (it depends only on the first content line
-    // after the run), so it is worked out once per run: asking again for
-    // each line made a run of k blank lines cost k² steps.
-    let mut run_answer: Option<(usize, bool)> = None; // (index of the content line, belongs)
-    for (n, next) in lines.iter().enumerate() {
-        // A comment indented past the key may be block-scalar content, so
-        // it is kept.
-        let take = if next.is_blank() || (next.is_comment() && next.indent <= field_indent) {
-            match run_answer {
-                Some((until, answer)) if n < until => answer,
-                _ => {
-                    let until = next_content(lines, n);
-                    let answer = lines
-                        .get(until)
-                        .is_some_and(|l| belongs_to_value(l, field_indent, seq_at_key_level));
-                    run_answer = Some((until, answer));
-                    answer
-                }
-            }
-        } else {
-            belongs_to_value(next, field_indent, seq_at_key_level)
-        };
-        if !take {
-            return n;
-        }
-    }
-    lines.len()
-}
-
-/// Whether a line sits inside the value of a key at `field_indent`: indented
-/// deeper, or a sequence item level with the key when the key's own line
-/// carried no value.
-fn belongs_to_value(line: &Line<'_>, field_indent: usize, seq_at_key_level: bool) -> bool {
-    line.indent > field_indent
-        || (seq_at_key_level && line.indent == field_indent && line.is_seq_item())
+/// value's own by indentation: everything indented deeper (a comment among
+/// them may be block-scalar content), up to the last such line before the first
+/// one that is neither deeper nor blank nor a comment at the key's level.
+fn value_len(lines: &[Line<'_>], field_indent: usize) -> usize {
+    let in_run = |l: &Line<'_>| l.is_blank() || (l.is_comment() && l.indent <= field_indent);
+    let stop = lines
+        .iter()
+        .position(|l| !in_run(l) && l.indent <= field_indent)
+        .unwrap_or(lines.len());
+    lines[..stop]
+        .iter()
+        .rposition(|l| !in_run(l))
+        .map_or(0, |last| last + 1)
 }
 
 /// Whether a value's text opens a quoted, flow or block scalar, or a

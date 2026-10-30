@@ -584,3 +584,121 @@ fn deep_nesting_is_an_error_not_a_stack_overflow() {
     let sixty_deep = format!("f: {}{}", "[".repeat(60), "]".repeat(60));
     assert!(parse_description_yml(&docs(&sixty_deep)).is_ok());
 }
+
+/// Found by the mutation run on the 0.20.0 pull request (`value.rs`, the
+/// `seq_at_key_level: false` forced on a value that starts on the line after
+/// its key): an anchor on a line of its own may be followed by a sequence at
+/// the key's indentation, which `PyYAML` reads as `{k: [x]}`. A scalar there
+/// never could.
+#[test]
+fn an_anchor_line_may_be_followed_by_a_sequence_at_the_keys_indentation() {
+    check(&[
+        ("anchor line, then `- x`", top("k:\n  &a\n- x\n"), true),
+        ("two items", top("k:\n  &a\n- x\n- y\n"), true),
+        (
+            "a comment on the anchor line",
+            top("k:\n  &a # c\n- x\n- y\n"),
+            true,
+        ),
+        ("then another key", top("k:\n  &a\n- x\nm: 1\n"), true),
+        ("an empty item", top("k:\n  &a\n-\n"), true),
+        ("a nested item", top("k:\n  &a\n- - x\n"), true),
+        ("inside docs", docs("k:\n  &a\n- x"), true),
+        // Not a sequence value: none of these reads `- y` at the key's indentation.
+        ("plain scalar, then `- y`", top("k:\n  x\n- y\n"), false),
+        (
+            "quoted scalar, then `- y`",
+            top("k:\n  \"x\"\n- y\n"),
+            false,
+        ),
+        ("flow sequence, then `- y`", top("k:\n  [x]\n- y\n"), false),
+        (
+            "anchored scalar, then `- y`",
+            top("k:\n  &a x\n- y\n"),
+            false,
+        ),
+        (
+            "anchor line, indented item, then `- y`",
+            top("k:\n  &a\n  - x\n- y\n"),
+            false,
+        ),
+    ]);
+}
+
+/// A quoted key is measured from its opening quote to the `:`, the spaces
+/// before the colon included: `PyYAML` refuses one longer than 1,024 characters
+/// by that count ("mapping values are not allowed here"), as it does a plain
+/// key.
+#[test]
+fn a_quoted_key_counts_the_spaces_before_its_colon() {
+    for quote in ['"', '\''] {
+        let line = |key_len: usize, spaces: usize| {
+            let key = format!("{quote}{}{quote}", "k".repeat(key_len - 2));
+            docs(&format!("{key}{}: v", " ".repeat(spaces)))
+        };
+        check(&[
+            ("1,024 characters, no space", line(1024, 0), true),
+            ("1,024 characters and a space", line(1024, 1), false),
+            ("1,023 characters and a space", line(1023, 1), true),
+            ("1,023 characters and two spaces", line(1023, 2), false),
+            ("1,022 characters and two spaces", line(1022, 2), true),
+        ]);
+    }
+}
+
+/// A comment-looking line inside a block scalar is content when it is indented
+/// as far as the text. Found by the mutation run on the 0.20.0 pull request:
+/// `value_len` ended the value at a blank line when the next content line
+/// (skipping every comment) was not the value's, so `description: |` with a
+/// blank line and `# c` under it read `l1` where `PyYAML` reads `l1\n\n# c\n`.
+/// Values are `PyYAML`'s; the reader trims the ends of a description.
+#[test]
+fn a_block_scalar_keeps_a_deeper_comment_line_after_a_blank_line() {
+    for (what, line, pyyaml_value) in [
+        (
+            "literal, blank, comment",
+            "description: |\n    l1\n\n    # c",
+            "l1\n\n# c\n",
+        ),
+        (
+            "folded, blank, comment",
+            "description: >\n    l1\n\n    # c",
+            "l1\n# c\n",
+        ),
+        (
+            "literal, blank, comment, text",
+            "description: |\n    l1\n\n    # c\n    l2",
+            "l1\n\n# c\nl2\n",
+        ),
+        (
+            "literal, two blanks, comment",
+            "description: |\n    l1\n\n\n    # c",
+            "l1\n\n\n# c\n",
+        ),
+        (
+            "literal, comment under text",
+            "description: |\n    l1\n    # c",
+            "l1\n# c\n",
+        ),
+        // A comment at the key's own level ends the scalar.
+        (
+            "literal, blank, shallow comment",
+            "description: |\n    l1\n\n  # c",
+            "l1\n",
+        ),
+        (
+            "plain, blank, deeper comment",
+            "description: x\n\n    # c",
+            "x",
+        ),
+    ] {
+        let desc = parse_description_yml(&desc(line)).unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_eq!(desc.description.trim(), pyyaml_value.trim(), "{what}");
+    }
+    // Text after a shallow comment is no longer the scalar's: `PyYAML` refuses it.
+    check(&[(
+        "literal, blank, shallow comment, text",
+        desc("description: |\n    l1\n\n  # c\n    l2"),
+        false,
+    )]);
+}

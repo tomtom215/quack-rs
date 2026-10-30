@@ -307,6 +307,25 @@ Security).
 - `abi::parse_version` accepted a signed part (`"1.5.+4"`, because `u64::from_str` takes a
   leading `+`); it takes ASCII digits only, like the build script's copy of the rule.
   [TESTS-9]
+- **`parse_description_yml` disagreed with PyYAML 6.0.3 in three places**, found by the
+  first sharded run of the mutation job (101 of the 102 mutants that survived were in this
+  reader). Each has a regression test whose expectation is PyYAML's verdict:
+  - A block scalar (`description: |`) lost the lines after a blank line when the next line was
+    a `#` line indented as far as the text, so `l1`, a blank line and `# c` read as `l1`
+    where PyYAML reads `l1\n\n# c\n`. A comment at the key's own level still ends the scalar.
+  - An anchor on a line of its own, followed by a sequence written at the key's indentation
+    (`k:\n  &a\n- x`), was refused; PyYAML reads `{k: [x]}`.
+  - A quoted key was measured without the spaces before its colon, so one PyYAML refuses at
+    1,024 characters (`"…"  : v`, "mapping values are not allowed here") was accepted.
+  The statement above, that the reader never accepts a file PyYAML refuses, held for 118,500
+  random mutants of the published descriptors and missed the third. On 14,874 targeted
+  documents (block scalars with comment-like lines, plain, quoted and flow values with
+  comments below them) the fixed reader's `description` equals PyYAML's wherever both accept
+  (200 differed before), and it matches PyYAML on 474 more documents than before and on none
+  fewer. It still refuses two things PyYAML accepts, both unchanged: a tab-only content line
+  inside a block scalar (a `|` scalar with a line of six spaces and a tab) and a tag, or an
+  anchor and a tag, alone on a line whose value starts on the next one (`k:\n  !!str`).
+  [MUT-1]
 
 ### Security
 
@@ -633,6 +652,12 @@ Security).
   unviable). CONTRIBUTING.md now says what the mutation gate cannot see: `unsafe fn` bodies
   (506 functions, 22.4% of non-test lines by a heuristic count), integer literals and macro
   bodies. [TESTS-2, TESTS-11]
+- CI: the incremental mutation job runs as eight shards (`cargo mutants --shard k/8
+  --sharding round-robin`) and a gate job named "Mutation Testing (incremental)". One job did
+  the 1,639 mutants of this release's 102 changed files and was stopped by its runner after 33
+  and 55 minutes; the eight shards took 22 minutes together. The Miri job's limit is 90
+  minutes (the library tests had grown to 41.6 minutes for the native run alone, 18 of them
+  one parser test on 100,000-level inputs, which now uses 1,000 under Miri). [MUT-2]
 
 ### Documentation
 

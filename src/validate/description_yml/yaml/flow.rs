@@ -91,6 +91,7 @@ impl<'a> Cursor<'_, 'a, '_> {
     /// there as `PyYAML` does (it skips only spaces).
     fn skip(&mut self) -> Result<(), String> {
         loop {
+            let round_start = (self.seg, self.pos);
             match self.peek() {
                 Some(' ') => self.pos += 1,
                 Some('\t') => return Err(tab_error(self.line())),
@@ -102,6 +103,10 @@ impl<'a> Cursor<'_, 'a, '_> {
                     }
                 }
             }
+            // Every round that does not return moves the cursor on, so the loop
+            // ends. (Debug builds check it; a round that stood still would
+            // otherwise spin for ever.)
+            debug_assert!((self.seg, self.pos) > round_start, "skip made no progress");
         }
     }
 
@@ -203,6 +208,7 @@ impl<'a> Cursor<'_, 'a, '_> {
     fn seq(&mut self, open_line: usize, depth: usize) -> Result<Value, String> {
         let mut items = Vec::new();
         loop {
+            let round_start = (self.seg, self.pos);
             self.skip()?;
             match self.peek() {
                 None => return Err(unterminated(open_line, "sequence")),
@@ -249,12 +255,17 @@ impl<'a> Cursor<'_, 'a, '_> {
                     ))
                 }
             }
+            debug_assert!(
+                (self.seg, self.pos) > round_start,
+                "a round made no progress"
+            );
         }
     }
 
     /// The rest of a `{ … }` whose `{` was on `open_line`.
     fn map(&mut self, open_line: usize, depth: usize) -> Result<Value, String> {
         loop {
+            let round_start = (self.seg, self.pos);
             self.skip()?;
             match self.peek() {
                 None => return Err(unterminated(open_line, "mapping")),
@@ -297,6 +308,10 @@ impl<'a> Cursor<'_, 'a, '_> {
                     ))
                 }
             }
+            debug_assert!(
+                (self.seg, self.pos) > round_start,
+                "a round made no progress"
+            );
         }
     }
 
@@ -308,6 +323,7 @@ impl<'a> Cursor<'_, 'a, '_> {
         let mut value = String::new();
         let mut gap = String::new();
         loop {
+            let round_start = (self.seg, self.pos);
             let rest = self.rest();
             let mut end = 0;
             for (i, c) in rest.char_indices() {
@@ -357,6 +373,10 @@ impl<'a> Cursor<'_, 'a, '_> {
             if self.peek() == Some('#') {
                 break;
             }
+            debug_assert!(
+                (self.seg, self.pos) > round_start,
+                "a round made no progress"
+            );
         }
         check_timestamp(&value, line)?;
         Ok(match value.as_str() {
