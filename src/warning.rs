@@ -187,6 +187,7 @@ impl WarningCollector {
             // concurrent `drain` takes.
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
+        drop(list);
     }
 
     /// Returns the number of warnings currently collected.
