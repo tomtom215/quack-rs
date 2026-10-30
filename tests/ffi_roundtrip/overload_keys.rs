@@ -373,3 +373,61 @@ fn closure_built_functions_overload_one_name_through_a_set() {
         assert!(err.as_str().contains("`overload_typed`"), "{err}");
     }
 }
+
+/// An aggregate cannot take a name any scalar function, aggregate or macro
+/// already has, and the C API says only `DuckDBError` (FFI-8). The failure
+/// now names the entry that holds the name, for the single builder and the
+/// set builder, built-ins and the extension's own earlier registration alike.
+#[test]
+fn an_aggregate_under_a_taken_name_is_refused_naming_the_entry() {
+    let fx = Fixture::open();
+    let single = |name: &str| {
+        quack_rs::aggregate::AggregateFunctionBuilder::try_new(name)
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns(TypeId::BigInt)
+            .state_size(dummy_aggregate::size)
+            .init(dummy_aggregate::init)
+            .update(dummy_aggregate::update)
+            .combine(dummy_aggregate::combine)
+            .finalize(dummy_aggregate::finalize)
+    };
+    let set = |name: &str| {
+        AggregateFunctionSetBuilder::try_new(name)
+            .expect("name")
+            .returns(TypeId::BigInt)
+            .overload(
+                AggregateOverloadBuilder::new()
+                    .param(TypeId::BigInt)
+                    .state_size(dummy_aggregate::size)
+                    .init(dummy_aggregate::init)
+                    .update(dummy_aggregate::update)
+                    .combine(dummy_aggregate::combine)
+                    .finalize(dummy_aggregate::finalize),
+            )
+    };
+    for (name, holder) in [
+        ("sum", "an aggregate function named 'sum' already exists ("),
+        ("lower", "a scalar function named 'lower' already exists ("),
+        ("list_sum", "a macro named 'list_sum' already exists ("),
+    ] {
+        // SAFETY: `con` is open; the callbacks match their signatures.
+        let err = unsafe { single(name).register(fx.con()) }.expect_err("a taken name");
+        assert!(err.as_str().contains(holder), "{name}: {err}");
+        // SAFETY: as above.
+        let err = unsafe { set(name).register(fx.con()) }.expect_err("a taken name");
+        assert!(err.as_str().contains(holder), "{name} (set): {err}");
+    }
+    // SAFETY: as above.
+    unsafe { single("agg_once").register(fx.con()) }.expect("a fresh name");
+    // SAFETY: as above.
+    let err = unsafe { set("AGG_ONCE").register(fx.con()) }.expect_err("taken by itself");
+    assert!(
+        err.as_str()
+            .contains("an aggregate function named 'agg_once' already exists (")
+            && err
+                .as_str()
+                .contains("cannot register an aggregate under a taken name"),
+        "{err}"
+    );
+}
