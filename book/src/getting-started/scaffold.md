@@ -86,7 +86,8 @@ cargo run --example scaffold_to_dir -- my_extension ../my_extension --c-api v1.5
 ```
 
 `--c-api v1.5.6` sets `target_duckdb_version` to `v1.5.6`: the binary loads into
-DuckDB 1.5.6 and 2.0.0. `--unstable <release>` (`use_unstable_c_api`) pins the
+DuckDB 1.5.6 and 2.0.0. The generated `Cargo.toml` pins the bindings to `~1.10506.0`; check
+that its `quack-rs` dependency enables the `duckdb-1-5*` feature you use, and add it if not. `--unstable <release>` (`use_unstable_c_api`) pins the
 binary to one DuckDB 1.x release instead, such as `--unstable v1.5.5`; DuckDB 2.0
 cannot load such a binary, and the scaffold refuses a 2.x release there.
 

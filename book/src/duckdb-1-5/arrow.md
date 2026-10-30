@@ -166,6 +166,11 @@ array alongside its schema and returns `InvalidInput`, naming the node, for
   a top-level offset and would import the wrong rows. The error says to export the batch
   without an offset and slice its children instead; an arrow-rs `RecordBatch::slice` is
   exported that way;
+- a list, large list or map whose offsets are negative, decrease, or end past the child
+  (DuckDB reads the child through them without a bounds check: a segmentation fault on 1.5.6
+  and 2.0.0), a list view with a negative offset or size, a child (struct field, fixed-size-list
+  child, union member) shorter than the rows its parent reads, and a dictionary index outside the
+  dictionary;
 - an offset below the top level that DuckDB applies to the wrong rows: a
   struct inside an offset struct or a list, a union's members, a run-end-encoded
   array's value validity (`docs/upstream-duckdb-reports.md`, item 24);

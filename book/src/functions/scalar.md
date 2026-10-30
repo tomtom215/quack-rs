@@ -299,6 +299,12 @@ unsafe fn register(con: duckdb_connection) -> Result<(), ExtensionError> {
 }
 ```
 
+A function built from a closure (`map1`, `try_map1`, ...) is not a `ScalarOverloadBuilder`: its
+signature is fixed by the closure. Add it to a set with
+`ScalarFunctionSetBuilder::overload_typed(builder)`. That matters on DuckDB 1.4.x, where a
+second registration under a taken name is refused, so closures for several argument types need
+one set; from 1.5.0 DuckDB also accepts them registered one by one.
+
 Like `AggregateFunctionSetBuilder`, this builder calls `duckdb_scalar_function_set_name`
 on every individual function before adding it to the set
 ([Pitfall L6](../reference/pitfalls.md#l6-function-set-name-must-be-set-on-each-member)).
@@ -638,9 +644,13 @@ ScalarFunctionBuilder::new("scaled")
   message, on DuckDB 1.5.6 and 2.0.0, while a literal or a constant expression such as `1 + 1`
   folds. Say so in the error text, and tell users to pass such an argument as a literal.
 - **Local state must be `Send`**: it is per thread, but may be freed on another.
-- **Call `set` at most once per callback.** DuckDB overwrites the stored pointer
-  on a second call without freeing the first value, so that value is leaked
-  (never dropped).
+- **A panicking `Clone` fails the query.** DuckDB gives a copied expression no bind data when
+  the copy callback fails; quack-rs records the panic instead, and the first `get` reports it
+  as the call's error (with the panic message), while `try_get` hands it back as an `Err`.
+- **Call `set` once per callback.** A second `ScalarBindData::set` in the same bind frees the
+  value it replaces. DuckDB's own call overwrites the stored pointer without freeing the first
+  value, so a value replaced through the raw `set_bind_data`, or through another wrapper of
+  the same bind call, is leaked (never dropped).
 - **Bind data must depend only on the call's arguments** (their values when
   constant, their types) and `extra_info`. DuckDB's
   `CScalarFunctionBindData::Equals` ignores bind data, so two calls with the same

@@ -648,8 +648,8 @@ it reports failure; read the failure path before you free again.
 
 ## L21: A chunk row you claim is published, written or not
 
-**Status**: Documented. Since 0.20.0 a claimed row can be given back before the writer is
-dropped; before 0.20.0 every claimed row was published. The rule is about the chunk the
+**Status**: Documented. Since 0.20.0 `ChunkWriter::release_row` gives a claimed row back;
+before 0.20.0 every claimed row was published. The rule is about the chunk the
 scan callback returns.
 
 **Symptom**: a table function whose scan claims a row from the writer and then finds
@@ -667,8 +667,7 @@ did not write is published with stale contents.
 
 **Fix**: claim a row only when you are going to write it: check that the source has another
 value first, then claim the row and write it in the same step. A row you have already
-claimed can be given back before the writer is dropped (the `ChunkWriter` API documentation
-names the call).
+claimed can be given back with `ChunkWriter::release_row(row)` before the writer is dropped.
 
 **Rule**: an output chunk holds the rows you wrote, not the rows you asked for.
 
