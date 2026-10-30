@@ -76,7 +76,7 @@ jobs:
         shell: bash
         run: |
           if [[ "$(git cat-file -t "refs/tags/$TAG")" != "tag" ]]; then
-            echo "::error::Tag '$TAG' is a lightweight tag. Release tags are annotated and signed: git tag -s '$TAG' -m 'Release $TAG' (RELEASING.md Step 5)."
+            echo "::error::Tag '$TAG' is a lightweight tag. Release tags must be annotated (RELEASING.md Step 5 also signs them; this job does not verify the signature): git tag -s '$TAG' -m 'Release $TAG'."
             exit 1
           fi
           git fetch --no-tags --quiet origin '+refs/heads/main:refs/remotes/origin/main'
@@ -154,6 +154,13 @@ jobs:
             exit 1
           fi
           echo "::notice::CHANGELOG.md entry found for v$VERSION"
+
+      # Cargo.lock still naming the previous version fails `cargo package
+      # --locked` in the `package` job, after all of ci.yml has run; stale
+      # version snippets ship in the .crate. Say so in the first minute.
+      - name: Release metadata (Cargo.lock, CITATION.cff, SECURITY.md, doc snippets)
+        shell: bash
+        run: python3 scripts/check-release-metadata.py
 
 # ── Job 2: Every CI gate, by running ci.yml itself ──────────────────────────
   ci:

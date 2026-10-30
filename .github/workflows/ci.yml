@@ -554,6 +554,11 @@ jobs:
       # each of them into a check of nothing.
       - name: The upstream-guard wrapper maps exit codes as documented
         run: scripts/upstream-guard.sh --self-test
+      # Cargo.toml's version, every committed Cargo.lock, the CHANGELOG,
+      # CITATION.cff, SECURITY.md and every `quack-rs = "0.X"` snippet must name
+      # the same release.
+      - name: Release metadata agrees with Cargo.toml
+        run: python3 scripts/check-release-metadata.py
 
   msrv:
     name: MSRV (1.86.0)
@@ -1431,8 +1436,12 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # `--locked`, as release.yml's `package` and `publish` jobs run it: without
+      # it a Cargo.toml version bump that left Cargo.lock behind passed here
+      # (cargo quietly rewrote the lock file) and failed only at release time.
+      # No `--allow-dirty`: a clean checkout is what is being packaged.
       - name: cargo publish --dry-run
-        run: cargo publish --dry-run --allow-dirty
+        run: cargo publish --dry-run --locked
 
   security:
     name: Security (cargo-deny)
