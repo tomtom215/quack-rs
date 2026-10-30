@@ -2,11 +2,12 @@
 
 # quack-rs — audit log, August – October 2026
 
-Sections 1–6 are the first audit, below. Sections 7–13 are the later ones, newest
+Sections 1–6 are the first audit, below. Sections 7–14 are the later ones, newest
 last: 7 (second audit, 0.17.0 → 0.18.0), 8–10 (third to fifth, before 0.18.0),
-11 (sixth review, after 0.18.0), 12 (the DuckDB 2.0.0 review) and 13 (the seventh
-review, after 0.19.0). Each ends with how it was verified, and later sections
-correct earlier ones where they were wrong (13.4 lists the corrections).
+11 (sixth review, after 0.18.0), 12 (the DuckDB 2.0.0 review), 13 (the seventh
+review, after 0.19.0) and 14 (the eighth review, released as 0.20.0). Each ends with
+how it was verified, and later sections correct earlier ones where they were wrong
+(13.4 and 14.9 list the corrections).
 
 The first audit (sections 1–6) reviewed `v0.16.0`, against **DuckDB 1.5.4**
 (prebuilt `libduckdb`, x86-64 Linux) with `libduckdb-sys 1.10504.0`.
@@ -2669,6 +2670,8 @@ one thread, and not on 2.0.0.
 
 ### 13.7 Performance
 
+Superseded where the cells overlap by 14.7, which re-measured them on the 0.20.0 tree.
+
 Measured with `benches/engine/compare.py` (committed; see its README), the same
 benchmark extension built against 0.19.0 and against this tree, and its hand-written
 twin, interleaved across sessions. DuckDB CLI 1.5.6 and 2.0.0, `SET threads=1`, 20
@@ -2881,3 +2884,500 @@ Linux 1.5.6 build was run after the push, above), `cargo-deny`, `cargo-mutants` 
 the changed files, a Wasm build, and the changed workflows in GitHub Actions before
 the push: they were checked by the three scripts above and by reading, and the
 first run in Actions is the one that found the failures listed above.
+
+## 14. Eighth review, October 2026 (after 0.19.0, released as 0.20.0)
+
+Commissioned as the most adversarial review of the whole repository that could be made,
+with the instruction to fix and implement what it finds and not to call the result
+finished until a public release could be cut from the merged pull request. Reviewed at
+`3c8ee2d` (a frozen snapshot of the branch that follows 0.19.0, `9c2dc76`), against
+DuckDB 1.4.4, 1.5.6 and 2.0.0.
+
+Labels, as in section 13. **VALIDATED**: I ran it against the real binaries, or pinned it
+with a test and showed the test fails on the code without the fix. **REPORTED**: a
+reviewer's or work package's finding with its evidence, which I did not re-run; where I
+fixed one, the fix rests on the code or upstream source it names. **READ**: from
+DuckDB's source, not run. **CONJECTURED**: reasoned, not tested.
+
+### 14.1 Method
+
+- Twelve reviewers, each in its own scratch copy of the snapshot, each told to disprove
+  rather than confirm: `unsound` (soundness of the data plane), `lastdiff` (every line
+  that changed since 0.19.0), `apigaps` (the C API against both headers), `conform`
+  (a scaffolded project built and loaded into three engines, against the community
+  build's scripts), `docs`, `ci` (workflows and scripts, mutated one by one), `harden`
+  (hostile input, resource limits, the release process), `ffi` (every callback kind on
+  the control plane), `author-tables` and `author-types` (an extension written against
+  the SDK by someone who has not read its source: table functions, COPY, replacement
+  scans; scalar functions, aggregates, types), `deps` (dependency ranges, packaging,
+  tooling) and `tests` (coverage, mutation, fuzzing, sanitizers, flakiness).
+- The findings ledger had 130 rows when the implementation phase began (a row can cover
+  a range, e.g. DOCS-10..23): 2 High, 46 Medium, 56 Low (51 Low, 3 Low/Nit, 2
+  Low-Medium), 9 Nit, 14 informational and 3 recommendations. Two more High findings
+  came later: SQLMACRO-1 (14.2), found while implementing, and the `tests` reviewer's
+  17 items, whose own count is 0 Critical, 2 High, 8 Medium, 5 Low and 2 Nit or
+  informational.
+- Six work packages fixed what the ledger assigned them, each in its own worktree and
+  each told to show that its test fails on the pre-fix commit and passes after: `infra`
+  (workflows, scripts, release process, repository configuration), `scaffold`
+  (`src/scaffold`, `src/validate`, `src/bin`, the build script), `corea` (vectors, the
+  chunk writer, Arrow, scalar and aggregate builders, types), `coreb` (the entry point,
+  callbacks, the ABI guard), `api` (values, queries, appenders, new wrappers) and `docs`.
+  I merged them with merge commits (`b833f5a` infra, `201a5c7` api, `327939d` coreb,
+  `90d397f` corea, `f2186d0` docs, `6664103` scaffold) and resolved by hand the places
+  where two packages had edited the same lines.
+- What I fixed myself, outside the packages, is in 14.2 and 14.3.
+- Reviewers' patches were adopted line by line. Two were rejected with evidence (14.4).
+
+### 14.2 High-severity findings
+
+1. **`ListBuilder` cached the parent's entry array; a nested list's reserve freed it
+   (LASTDIFF-1).** A regression against 0.19.0 inside the unreleased performance work,
+   never published. With an inner `ListBuilder` over a `LIST(LIST(..))` whose reserve grew
+   the parent, the next `set_entry` wrote through a dangling pointer. VALIDATED: the
+   regression test `a_list_builder_on_an_inner_list_survives_the_outer_lists_reserves`
+   segfaults (signal 11) on `3c8ee2d` and passes with the fix, against 1.5.6 and 2.0.0. `set_entry` fetches the array on every call (`734bb15`).
+   The first version of the test used the arrow lambda `j -> ...`, which DuckDB 2.0.0
+   rejects; I committed it without running it on 2.0.0 and CI's 2.0.0 job failed
+   (`691c160` fixes the SQL, `lambda j:`).
+2. **`SqlMacro::register` ran statements ahead of a parse error on DuckDB 2.0.0
+   (SQLMACRO-1).** Found by the `corea` package, which ran `harden`'s hostile-input test
+   on 2.0.0. VALIDATED on 2.0.0: body `1); DROP TABLE canary; --` makes SQL that does not
+   parse as a whole, `duckdb_extract_statements` reports 0 statements, the old code
+   refused only a count above 1 and executed it, and 2.0.0's `duckdb_query` runs the
+   statements it has parsed before it reports the error (1.4.4 and 1.5.6 parse first).
+   The test `hostile_input::a_macro_body_cannot_turn_one_statement_into_several` fails
+   on the old code with "Table with name canary does not exist". Fixed in `32e8d64`:
+   exactly one statement, and a count of zero is an error carrying
+   `duckdb_extract_statements_error`. Severity: a macro body is the author's code, not
+   SQL data, and the documentation says never to build one from untrusted text, so
+   exploiting it needed an author who did; the guard the documentation described as a
+   defence failed open on 2.0.0. See 14.9 for the earlier claim this corrects.
+3. **The release process could publish a stale `Cargo.lock` (DOCS-1, CI-1).**
+   `RELEASING.md` told the maintainer not to touch `Cargo.lock`, `release.yml` packages
+   with `--locked`, and the failure arrives only after the whole of `ci.yml` has run.
+   REPORTED by `docs` and `ci` (the latter simulated it). Now
+   `scripts/check-release-metadata.py` checks every committed lockfile, the CHANGELOG
+   heading and links, `CITATION.cff`, `SECURITY.md`, the README's latest line and every
+   `quack-rs = "0.X"` snippet, in the `doc` job and in the release `validate` job, and
+   `RELEASING.md` lists the five lockfiles. VALIDATED here: with Cargo.toml at 0.20.0 and
+   the rest at 0.19.0 it listed 12 stale places, and it passes on the final tree.
+4. **The `leak-check` job could not fail for a missing `duckdb_destroy_*` (TESTS-1).**
+   VALIDATED with a canary (`tests/lsan_probe.rs`, nightly, `-Zsanitizer=leak`, prebuilt
+   libduckdb 1.5.6): with `leak:libduckdb.so` in `lsan-suppressions.txt` a leaked
+   `LogicalType` and a leaked `Value` exit 0 (stderr: "Suppressions used"); with the rule
+   removed they exit 23 with a leak report; a leaked Rust `Box` exits 23 either way. The
+   rule matched every frame of an allocation, so it covered every handle DuckDB
+   allocates. It was not needed: all 460 tests of `ffi_roundtrip` exit 0 under
+   LeakSanitizer with no suppression. The job now runs the canary and requires the
+   report. A first attempt at this measurement ran the probe through an empty variable
+   and "passed" vacuously; I caught it from the empty path in the output and redid it
+   with the executable cargo printed.
+5. **The mutation gate cannot see `unsafe fn` bodies (TESTS-2).** cargo-mutants 27.1.0
+   generates no mutants inside them, never mutates integer literals and cannot look into
+   macros; nothing said so, and the "0 missed" results in earlier sections never covered
+   the pointer arithmetic. VALIDATED on this tree: 2,493 mutants are listed with the
+   repository configuration (3,748 with `--no-config`); a heuristic count (comments and
+   strings blanked, braces matched) puts 506 `unsafe fn`s at 5,127 of 22,898 non-test
+   lines (22.4%); on `src/vector/reader.rs` and `writer.rs` the list grows from 6 to 192
+   with the `unsafe` keyword removed from signatures and to 344 with the literals
+   wrapped. `scripts/mutants-expose-unsafe.py` does that on a copy; CONTRIBUTING.md
+   says what the gate cannot see. The `tests` reviewer ran it over the vector layer and
+   found real holes (14.3).
+
+### 14.3 Other findings, by work package
+
+Each package's tests were required to fail on the pre-fix commit. I did not re-run those
+proofs unless the entry says VALIDATED; the final tree passes every suite (14.8).
+
+**`corea`** (REPORTED unless noted).
+- UNSOUND-1: `ChunkWriter` counts rows *claimed*; a claimed row never written was
+  published with stale contents. `release_row` and corrected documentation. The test
+  fails against `3c8ee2d`'s `chunk_writer.rs` (`[1, 2, 7]`, left 2051, right 2050). The
+  conjectured out-of-bounds variant for hand-written `LIST`/`MAP` columns was not built
+  (CONJECTURED).
+- FFI-1: `data_chunk_from_arrow` read past the child for list offsets that are negative,
+  decreasing or past the child, list-view offsets and sizes, struct and union children
+  shorter than their parent, and dictionary indices outside the dictionary
+  (`src/arrow/import_layout/bounds.rs`). The live test died with SIGSEGV on the old
+  code. Not covered: string and binary offsets, whose data buffer length is not in the
+  C Data Interface.
+- HARDEN-6/7/8: logical-type walks bounded at 256 levels (DuckDB's own
+  `LogicalType::ToString` overflows a 2 MiB thread at 6,000 levels, so the cap protects
+  quack-rs's walks only); `set_cardinality` clamped; `WarningCollector` capped at 10,000
+  (a behaviour change, listed).
+- AUTHT2-1: eight type pairs the duplicate-overload guard let through are ambiguous on
+  1.5.6; they are refused at registration now and five distinct pairs still register.
+  `LIST(T)` beside `ARRAY(T, n)` and a `UNION` whose members are a subset of another's
+  were not detected (READ in `cast_rules.cpp`, not run).
+- AUTHT2-2 `overload_typed`, FFI-6 and FFI-12 (bind data), FFI-8 (the aggregate
+  name-collision diagnosis), LASTDIFF-9 (three live tests that kill mutants).
+- Live `ffi_roundtrip` as the package reported it: 1.5.6 413/413, 1.4.4 277/277, 2.0.0
+  412/413 (the failure was SQLMACRO-1, outside its files).
+
+**`coreb`** (REPORTED; the pre/post evidence is in the commits).
+- FFI-2/FFI-3: registration is transactional (`BEGIN` before the closure, `COMMIT` on
+  `Ok`, `ROLLBACK` on `Err` or a panic), with `Registration::Autocommit` to opt out. A
+  probe extension that fails after step N leaves 0 catalog entries on 1.4.4, 1.5.6 and
+  2.0.0 and the retry succeeds (before: 6 entries stay and the retry is refused); a `LOAD`
+  inside the host's own transaction does not wait; one `BEGIN`/`COMMIT` pair costs
+  0.27–0.38 ms and the `hello-ext` `LOAD` medians went 37.6 → 36.5 ms (1.5.6),
+  76.8 → 61.0 ms (2.0.0), 40.9 → 37.1 ms (1.4.4) over 30 interleaved runs each. Not
+  rolled back, because DuckDB keeps them in the database configuration: casts,
+  replacement scans, configuration options. The copy-format probe moved to its own
+  connection because 2.0 aborts a transaction on any failed statement.
+- FFI-5: `panic = "abort"` fails to compile in the extension's crate (scratch cdylib:
+  abort fails with the message, unwind builds, `RUSTFLAGS=-C panic=abort` fails;
+  `cargo check --target wasm32-unknown-emscripten` passes; no emscripten link was run).
+- DEPS-12: `#[unsafe(no_mangle)]` in the macros. The `734bb15` macros give four "unsafe
+  attribute used without unsafe" under edition 2024; the library itself compiles under
+  edition 2024. Remaining blockers are in tests (nine E0716 temporaries, an
+  `extern "C"` block without `unsafe`).
+- DEPS-13: four enums are `#[non_exhaustive]`. FFI-7: the catalog scan cannot be
+  narrowed (`duckdb_functions()` has no pushdown). FFI-4, FFI-10: documented.
+- DuckDB 2.0.x layout (decided in section 13.3): not extrapolated. `AbiPolicy::Strict`
+  keeps refusing a DuckDB release a `duckdb-1-5*` build was not verified against;
+  2.0.1 is due 2026-11-18 and a quack-rs release listing it should follow (14.4).
+
+**`api`** (REPORTED).
+- APIGAPS-2/-3: `Value::try_cast`, `array_items`, `union_tag`, `bit`, `as_bit`, `bignum`,
+  `as_bignum`. The C getters' aborts were reproduced first with a raw-call probe on
+  1.4.4, 1.5.6 and 2.0.0 (exit 134 on NULL and `'abc'`, 139 on a null handle); every such
+  input is `None` now.
+- Statement metadata (`StatementType`, `parameter_type`, `columns`, `table_names`),
+  `Appender::for_query`, `from_raw`/`into_raw` on four owner types, typed extra info on
+  four builders, typed `COPY TO` state, `FileHandle` and `ClientContext` `Send`
+  (justified from `file_system-c.cpp`, byte-identical on 1.5.6 and 2.0.0; not `Sync`).
+- `duckdb_prepared_statement_type` aborts on a failed prepare (1.5.6): guarded.
+- Mutation gate on the new code with the PR job's flags: 0 missed.
+- APIGAPS-5 (a typed query error) declined: it needs a central error-type change.
+
+**`scaffold`.**
+- CONFORM-1, HARDEN-1/2: `parse_description_yml` follows PyYAML 6 `safe_load`.
+  VALIDATED here: on the 395 descriptors of community-extensions `845779e` quack-rs and
+  PyYAML agree on all 395, and on 3 x 39,500 random mutants (characters from a
+  YAML-significant alphabet deleted, inserted or replaced; lines duplicated, deleted,
+  swapped or re-indented; truncation) quack-rs accepted none that PyYAML refuses and
+  never panicked. In the other direction quack-rs refuses more than PyYAML (it accepted
+  18,398, 18,080 and 18,426 of the mutants against PyYAML's 24,846, 24,501 and 24,820);
+  what separates them was not itemised. The package reports 8 deliberate strictnesses and
+  hostile inputs that took 3.8 to 21.5 s now taking at most 330 ms (REPORTED).
+- CONFORM-3: 44 reserved names (10 aliases and 34 core extensions) checked against
+  DuckDB and the community list by `scripts/check-extension-names.py`, which passes here
+  and reports the package's 8 of 8 mutants caught (REPORTED).
+- CONFORM-4/5/6/12/13/14/15, HARDEN-5, DEPS-1/3, DOCS-8: the scaffold writes a native
+  example function, a SQLLogicTest with the upstream header, a `make test` that fails when
+  the runner skips a file, `README.md`, the license text, `deny.toml`,
+  `docs/function_descriptions.csv`, a hardened `extension-ci.yml`, and refuses names and
+  platforms the community build ignores. VALIDATED here: a freshly generated project
+  (`quack_scaffold`, 15 files) builds, is stamped by `append_metadata` and its LOAD works
+  on 1.4.4, 1.5.6 and 2.0.0 including `-readonly` against an on-disk database; its unit
+  test and `clippy -D warnings` pass; `cargo-deny` 0.20.2 passes on it (advisories,
+  bans, licenses, sources); the chapter of the book matches the generated tree, the v1.5.6
+  bindings pin (`~1.10506.0`), the refusal of an unstable 2.x target, the dual-license
+  file names and the `LICENSE.TODO` fallback.
+- HARDEN-3/4, LASTDIFF-6, FFI-11 (`append_metadata`: exclusive random temporary file,
+  mode kept, symlink output written through, non-UTF-8 argument, FIFO input) and HARDEN-12
+  (the build script forwards only an all-digit `vX.Y.Z`): REPORTED to fail against
+  `734bb15`. Windows behaviour of the rename and permission copy was not tested, and a
+  non-writable output directory (the rename needs a writable directory) is CONJECTURED.
+- `hello-ext`: `gen_series_v2` refuses a value past BIGINT and uses the guard macros
+  (FFI-9); its checks are 32 now.
+
+**`infra`** (REPORTED; the scripts and the YAML I re-ran, see 14.8).
+- CI-1/DOCS-1 (above), CI-2 (a missing guard script no longer reads as "upstream
+  unreachable"; on a tag an unreachable upstream fails), CI-3 (the Rust toolchain is
+  pinned to 1.99.1; an informational `latest-stable` job tracks the next one), CI-6/
+  HARDEN-11 (the `.crate` hash is compared before the upload), CI-7 (the aggregate check
+  no longer passes while a gate is removed; 18 mutation probes), CI-8, CI-9, CI-11
+  (actionlint), DEPS-4/6 (cargo-deny over the CI-only graphs, typos, taplo, machete,
+  `.editorconfig`), DEPS-15 (the scaffold's action pins are checked against the
+  workflows'), CI-13, and Dependabot #145 folded in.
+- Every action SHA and tool SHA-256 re-checked against upstream; shellcheck over 158
+  extracted `run:` blocks found the same 7 pre-existing notes as the baseline; the
+  release `validate` job simulated for v0.20.0 and for the documented hotfix flow.
+- Runner images are pinned (`ubuntu-24.04`, `macos-26`, `windows-2025`) and
+  `check-action-pins.py` fails on a floating label (CI-12). I first declined this as
+  unverifiable and reversed it when `infra` showed each label is a real image: the
+  decision was wrong and is recorded in 14.10.
+
+**`docs`** (REPORTED, and spot-checked by me where stated).
+- The tutorial now teaches guarded callbacks and its output was produced by building the
+  page's code and loading it into 1.4.4, 1.5.6 and 2.0.0. The window shapes that crash a
+  C API aggregate are listed as measured (one process per shape, 5,000 and 300,000
+  rows). `std::fs` bypassing `enable_external_access` is documented (AUTHT-1, new pitfall
+  P17). Four new pitfalls (38 in all), and `scripts/check-pitfalls-parity.py` keeps
+  `LESSONS.md` and the book on the same list. `known-limitations.md` is regrouped,
+  the upgrade guide "Upgrading from 0.18 to 0.20" is new, README and publishing pages
+  follow the community build (reserved names, the four revision keys, the 32-byte footer
+  field, reduced CI on pull requests, not running `strip`).
+- Five DuckDB 2.0 behaviours missing from section 12.4 are in `known-limitations.md`:
+  `duckdb_appender_close` returns an earlier flush error, `duckdb_data_chunk_set_size`
+  ignores a rejected size in release builds, every C API scalar is `SetFallible()`, the
+  constant-vector marking of an all-constant scalar call is gone, and `COPY` options with
+  several values of different types arrive as `TUPLE` (READ in the 1.5.6 and 2.0.0
+  sources, not run). Measured and also written down: `VerifyNullHandling` is compiled in
+  2.0.0 and gated by `debug_verification_mode`; a table function's bind runs on every
+  `EXECUTE`; `INTERVAL '1 month' - INTERVAL '1 day'` equals `'29 days'`; a bare identifier
+  table-function argument warns.
+- Written from the packages' WIP: I re-checked the scaffold chapter against generated
+  projects (above), and removed the review names that had leaked into published pages.
+- Not verified: Windows and macOS rendering; the Go `extbuild` behaviours the `conform`
+  reviewer read; `duckdb_get_bignum` (same code as `duckdb_get_bit`, not run); static
+  registration (read in 2.0.0's `extension_load.cpp`).
+
+**The `tests` reviewer's findings, and what I did with them** (merge phase).
+- TESTS-1, -2: 14.2.
+- TESTS-3 to -7: 35 new tests (`wide_rows`, `vector_capacity_guard`, twelve Arrow
+  layout-walker unit tests, `abi_policy_enforced`, `lifecycle_gaps`,
+  `connection_registrar`, `oracle_temporal`, `property_inputs`, `lsan_probe`), each
+  written against a surviving mutant. The reviewer proved the kills on `3c8ee2d` with the
+  bodies of `unsafe fn`s exposed; I ran them on the merged tree against 1.5.6 and 2.0.0.
+  Three adaptations: the Arrow shapes now carry `indices` (a field `corea` added), one
+  test was dropped (a list starting 2^40 elements into a three-element child is refused
+  by the new bounds check before the arithmetic it targeted, and
+  `list_offsets_outside_the_child_are_refused` covers the refusal), and the timestamp
+  oracle skips the values DuckDB 2.0.0 cannot answer (below).
+- **A DuckDB 2.0.0 defect found by that oracle (VALIDATED, not reported upstream):**
+  `CAST(make_timestamp(m) AS VARCHAR)` for `m` below -9223372022400000000 raises
+  `INTERNAL Error: Scalar function "__cast" threw an execution error, but the function is
+  not marked as fallible ... Date out of range in timestamp conversion`, which `TRY()`
+  does not catch; 1.x answers NULL. quack-rs's render guard refuses such values before
+  they reach the engine.
+- TESTS-9: `parse_version` refused a signed part; fixed, with a proptest whose saved
+  failing case (`0.+0.0`) is checked in as `tests/property_inputs.proptest-regressions`.
+- TESTS-10: the upstream-comparison scripts returned 2 ("could not check") for an HTTP
+  404 and for a reshaped file as well as for an unreachable network (VALIDATED for the
+  platform list: `--ref this-ref-does-not-exist` exited 2). Now 4xx and shape surprises
+  return 1 and the scheduled run fails a 2.
+- TESTS-13/14: four fuzz targets with seeds (the fuzz job copies `fuzz/seeds/<target>/`
+  and would have failed without them); `QUACK_REQUIRE_TOOLS=1` turns the scaffold tests'
+  silent skip into a failure on the Linux test leg.
+- TESTS-11 (partly): `src/callback.rs` is mutated now (5 mutants, 4 caught, 1 unviable).
+- TESTS-12, -15: two comments corrected (Miri cannot run the Arrow module; `validity.rs`
+  pointed at the wrong test file).
+
+**Manifest, packaging and dependency changes** (mine).
+- DEPS-2: `libduckdb-sys` and `duckdb` are `>=1.4.4, <1.20100` everywhere (was `<2`).
+  VALIDATED: `cargo check --all-targets` and `cargo test --lib` pass on the 1.4.4,
+  1.10506.1 and 1.20000.1 bindings (867 tests each before the packages merged); deleting
+  the 1.20000.1 bindings' root re-export (marked "TODO: Remove in the future" upstream)
+  gave 214 compile errors, which is why the ceiling stops below 1.20100. A test fails if a
+  manifest states another range.
+- DEPS-7: an `include` allow-list; `cargo package --list --locked` lists 291 files,
+  191 under `src/` and 87 under `tests/`, and `cargo publish --dry-run --locked` builds
+  the packaged crate.
+- `build.rs` fails in seconds, naming the directory, when `libduckdb-sys` reports an
+  include directory without `duckdb.hpp` (CI run 705's informational job polled for ten
+  minutes on a partial cache). Not exercised against a source build here.
+- Lockfiles: see the CHANGELOG. Dependabot #143, #148 and #149 are folded in by hand
+  and should close as superseded once the pull request merges.
+- Rustdoc the engines contradict was corrected (`44f67d7`); `check-api-coverage.py`
+  now reports 457 of 546 slots wrapped and 89 not used (8 candidates, 45 deprecated, 23
+  host-side, 13 superseded), after I removed `duckdb_extract_statements_error` from the
+  allowlist (a stale line that would have failed the `abi-table` job).
+
+### 14.4 Not done, declined or rejected
+
+- **The pure-Rust replacement of the C++ test shim** (`deps` patch 0004, a prototype that
+  generates the extern declarations in `build.rs`) is not applied. It passed the live
+  suite on three bindings and on Rust 1.86.0 in the reviewer's runs, but it touches the
+  `bundled-test` build, which I cannot run here, and Windows and macOS, which nobody has
+  run it on. It only affects the test harness (the shipped extension does not use it).
+  Worth a release of its own with CI as the judge.
+- **`tests` patch 04 (strip a leading `_` from every exported symbol) is rejected.** The
+  tree already tells a Mach-O symbol table from an ELF one by its magic number (the
+  `lastdiff` fix, `734bb15`); the reviewer's repro input produces no warning now, and an
+  ELF symbol `_my_ext_init_c_api` really is a different symbol DuckDB cannot load, which
+  the blanket strip would have silenced.
+- APIGAPS-5 (a typed query error), AUTHT2-8..14 (list builders for `LIST(STRUCT)` and
+  `LIST(LIST)`, further helpers), DEPS-10 (the exact `tempfile` pin; `criterion` for one
+  bench), DEPS-14 (splitting `append_metadata` out of the runtime crate) and the wrappers
+  for the 8 candidate slots (among them `duckdb_geometry_type_get_crs`) are left for a
+  later release. `src/copy_function/info.rs` is 735 lines against the 500-line guideline
+  (debt, marked here).
+- TESTS-11: no scheduled full mutation sweep was added (the sweep is
+  `workflow_dispatch` only, and the pull-request job runs `--lib` over changed files), and
+  the files whose mutants only a live engine can kill remain un-mutated in CI. TESTS-12
+  and -16, as nits: `tests/secret_zeroize.rs` cannot run under Miri (its allocator reads
+  uninitialised memory), `INSTALL icu` writes `~/.duckdb`, the interrupt test cancels
+  after a fixed 250 ms, and four test binaries repeat a ten-line fixture.
+- UNSOUND-2 (the 64-bit `FfiState` tag) is declined: the documented mitigation stands.
+- DEPS-9: only `proptest` and `cc` were updated in the root lock; the other compatible
+  updates (`arrow` 58 → 60, for one) are not applied, because `libduckdb-sys` and
+  `duckdb` must stay on the 1.5.6 bindings the lock is for.
+- A DuckDB 2.0.1 layout is not extrapolated (14.3, `coreb`).
+
+### 14.5 For the owner (outward-facing; nothing here was done)
+
+- Yank 0.3.0–0.15.0 and file RustSec advisories for the heap-corruption defects fixed in
+  0.16.0 (HARDEN-10). The advisory drafts are in the review's scratch directory, not in
+  the repository.
+- Move the crates.io token into the `crates-io` environment and configure Trusted
+  Publishing (HARDEN-9; `RELEASING.md` has the order).
+- Report `duckdb_register_log_storage` freeing its extra data twice when the name is taken
+  (APIGAPS-1; present from DuckDB 1.5.0 to `main`; quack-rs does not wrap it).
+- Disable Cloudflare's email obfuscation for the book, or keep the reworded page (DOCS-6).
+- Branch protection, the `crates-io` environment and the tag ruleset could not be read
+  (CI-UNREADABLE); confirm `CI passed` is the required check.
+- CI-4 (the release gate depends on DuckDB `latest`, extension-ci-tools branches and
+  PyPI) and CI-10 (duplicate push and pull-request runs on `claude/**`) are policy
+  decisions.
+- `SECURITY.md` now supports 0.20.x and 0.19.x and marks 0.18.x end of life.
+
+### 14.6 Not verified
+
+Windows, macOS and WebAssembly (no local runner; the `test` matrix, the Wasm job and
+the `scaffold-e2e` job are the check); the `bundled-test` source build on any
+platform; live engines other than 1.4.4, 1.5.6 and 2.0.0 (CI's older-engine matrix
+covers 1.4.5, 1.5.0 and 1.5.3); AddressSanitizer, Miri and valgrind over the new code
+(CI runs `asan`, `leak-check` and `miri`; `leak-check`'s command ran here without
+`-Zbuild-std`); every changed workflow as GitHub runs it, including the new canary step,
+the `apt-get` step, the scheduled strictness and the release workflow; the fuzz targets
+beyond 60 to 120 seconds each; the `ListBuilder` change under valgrind (the release
+libduckdb's own allocator hides vector buffers from valgrind and AddressSanitizer: 14.9).
+
+### 14.7 Performance
+
+Measured with `benches/engine/compare.py` on a quiet shared 4-vCPU virtual machine
+("Intel(R) Xeon(R) Processor @ 2.10GHz", release build, fat LTO, one thread, base =
+`git archive v0.19.0`, new = this tree; both stamped by `append_metadata`; results
+checked equal before timing; load average at start 1.5 on 1.5.6 and 1.1 on 2.0.0).
+
+**DuckDB 1.5.6, 6 sessions x 3 timed runs (n = 18).** Seconds per query (median, min–max) and median ns per row; the hand-written twin is the floor, not a goal.
+
+| Query | 0.19.0 | now | hand-written |
+|---|---|---|---|
+| nullable BIGINT, map1 | 0.156 (0.140–0.197) s, 7.80 ns | 0.117 (0.113–0.204) s, 5.88 ns | 0.123 (0.110–0.157) s, 6.17 ns |
+| nullable BIGINT, map2 | 0.203 (0.182–0.243) s, 10.15 ns | 0.132 (0.118–0.186) s, 6.60 ns | 0.123 (0.112–0.161) s, 6.15 ns |
+| non-NULL BIGINT, map1 | 0.041 (0.034–0.062) s, 2.05 ns | 0.041 (0.034–0.073) s, 2.07 ns | 0.034 (0.031–0.056) s, 1.70 ns |
+| VARCHAR -> BIGINT, short strings | 0.671 (0.582–0.854) s, 33.55 ns | 0.488 (0.446–0.705) s, 24.40 ns | 0.434 (0.377–0.550) s, 21.73 ns |
+| VARCHAR -> BIGINT, long strings | 0.448 (0.415–0.595) s, 44.80 ns | 0.442 (0.407–0.561) s, 44.15 ns | 0.417 (0.369–0.585) s, 41.75 ns |
+| VARCHAR -> VARCHAR trim, short | 1.225 (1.111–1.423) s, 61.25 ns | 1.077 (1.020–1.211) s, 53.83 ns | 0.794 (0.750–0.962) s, 39.68 ns |
+| BIGINT -> [x, x+1, x+2] | 0.226 (0.213–0.295) s, 11.28 ns | 0.138 (0.125–0.189) s, 6.88 ns | 0.101 (0.092–0.126) s, 5.03 ns |
+| BIGINT -> [x, x+1, x+2, NULL] | 1.206 (1.086–1.423) s, 60.30 ns | 0.214 (0.197–0.249) s, 10.72 ns | 0.112 (0.091–0.156) s, 5.58 ns |
+
+**DuckDB 2.0.0, 4 sessions x 3 timed runs (n = 12).** Seconds per query (median, min–max) and median ns per row; the hand-written twin is the floor, not a goal.
+
+| Query | 0.19.0 | now | hand-written |
+|---|---|---|---|
+| nullable BIGINT, map1 | 0.142 (0.135–0.191) s, 7.08 ns | 0.124 (0.105–0.136) s, 6.20 ns | 0.121 (0.107–0.139) s, 6.08 ns |
+| nullable BIGINT, map2 | 0.217 (0.194–0.245) s, 10.88 ns | 0.123 (0.115–0.137) s, 6.17 ns | 0.121 (0.115–0.147) s, 6.08 ns |
+| non-NULL BIGINT, map1 | 0.044 (0.041–0.059) s, 2.20 ns | 0.045 (0.040–0.061) s, 2.27 ns | 0.042 (0.038–0.063) s, 2.08 ns |
+| VARCHAR -> BIGINT, short strings | 0.768 (0.609–0.928) s, 38.38 ns | 0.522 (0.449–0.719) s, 26.08 ns | 0.428 (0.395–0.614) s, 21.40 ns |
+| VARCHAR -> BIGINT, long strings | 0.619 (0.500–0.829) s, 61.90 ns | 0.549 (0.464–0.714) s, 54.90 ns | 0.487 (0.451–0.623) s, 48.75 ns |
+| VARCHAR -> VARCHAR trim, short | 1.324 (1.197–1.492) s, 66.20 ns | 1.220 (1.045–1.365) s, 61.00 ns | 0.952 (0.823–1.089) s, 47.62 ns |
+| BIGINT -> [x, x+1, x+2] | 0.307 (0.285–0.386) s, 15.38 ns | 0.163 (0.152–0.220) s, 8.15 ns | 0.104 (0.098–0.118) s, 5.22 ns |
+| BIGINT -> [x, x+1, x+2, NULL] | 1.241 (1.154–1.416) s, 62.05 ns | 0.257 (0.221–0.319) s, 12.85 ns | 0.105 (0.100–0.141) s, 5.28 ns |
+
+
+Reading: a difference is claimed only where the old build's fastest run is slower than
+the new median. That holds for `map1` and `map2` on a nullable column, short strings and
+both `ListBuilder` shapes on both engines, and for `trim` on 1.5.6 only; it does not
+hold for the control or the long strings on either engine, or for `trim` on 2.0.0. The
+`ListBuilder` NULL-element row is 10.72 ns on 1.5.6 here, against 8.60 ns in the table
+the CHANGELOG carried before I re-measured, in the same code path that `734bb15` changed
+to fetch the entry array on every call; I did not isolate the cost of that fix from
+run-to-run noise.
+
+### 14.8 How this pass was verified
+
+On the final tree (commands as CI runs them, with `RUSTFLAGS="-D warnings"`; a gate that
+printed 0 is listed with the exit code):
+
+- Formatting, `clippy --all-targets -D warnings` with default features, `duckdb-1-5`,
+  `duckdb-1-5-3`, `duckdb-1-5-4`, and the four live configurations
+  (`bundled-test-prebuilt` alone and with `duckdb-1-5`, `duckdb-1-5-3`, `duckdb-1-5-4`); `cargo doc --no-deps`
+  with and without `duckdb-1-5-4` under `RUSTDOCFLAGS="-D warnings"`: all exit 0.
+- `cargo test --all-targets`: 1,109 tests pass in 20 binaries (default features); 1,249
+  with `duckdb-1-5-4`; doctests 235 pass, 3 ignored.
+- Live suites (`bundled-test-prebuilt`, prebuilt libduckdb of the engine's own version),
+  `cargo test --all-targets --no-fail-fast`: **1.5.6** (bindings 1.10506.1, `duckdb-1-5-4`)
+  1,789 pass, 0 fail; **2.0.0** (bindings 1.20000.1, `duckdb-1-5-4`) 1,789 pass, 0 fail
+  (four tests failed once with "No space left on device" when the disk filled, and passed
+  when re-run alone: the total is the 1,785 of the first run plus those four); **1.4.4**
+  (bindings 1.4.4, default features) 1,479 pass, 0 fail. All 21 test binaries ran each time.
+- LeakSanitizer (nightly, `-Zsanitizer=leak`, no `-Zbuild-std`) over `ffi_roundtrip`
+  with the empty suppression file: 460 tests, exit 0. The four new fuzz targets ran
+  60 s each (`description_roundtrip` 120 s more after its fix, 787,689 inputs).
+- MSRV: `cargo +1.86.0 check` with and without `duckdb-1-5-4`, after the
+  fallback resolver picked `libduckdb-sys` 1.10506.0: exit 0.
+- `hello-ext` on the 1.20000.1 bindings: 43 unit tests, clippy, and its 32 live checks
+  pass on 1.4.4, 1.5.6 and 2.0.0 (32/32 each).
+- Scripts: every check of the `doc` job (`sync-book-changelog`, `generate-sitemap`,
+  `check-workflow-expressions`, `check-ci-aggregate` with 37 blocking jobs,
+  `upstream-guard --self-test` with 14 cases, `check-release-metadata`,
+  `check-toolchain-pin`, `check-action-pins`, `check-pitfalls-parity` with 38 pitfalls),
+  `check-api-coverage` and its self-test (23 expectations), `check-extension-names`,
+  the four upstream guards against live upstream (the ABI table over every release
+  header), `actionlint` with CI's `-ignore SC2129`, `typos`, `taplo`, `cargo-machete`,
+  `cargo-deny` over the root and the four CI-only crates, `cargo package --list --locked`
+  and `cargo publish --dry-run --locked`: exit 0. `zizmor --offline` still exits 12 on
+  informational and low-confidence findings (the `infra` package counted 50 before its
+  changes and 53 after, the three new ones being the pedantic `superfluous-actions`
+  note); it is not a CI gate.
+- `mdbook build` (0.4.40), the per-page SEO check (52 pages), the book and README link
+  check (327 relative and 52 docs.rs links) and the versioned-site build pass.
+- `cargo semver-checks` against v0.19.0 (`--release-type patch`): the four
+  `#[non_exhaustive]` enums and `ScalarBindInfo` no longer being `RefUnwindSafe`, nothing
+  else; all five are in the CHANGELOG.
+- The pull request's own CI is the remaining check (14.6).
+
+### 14.9 Corrections to earlier sections
+
+- **Section 13 and `harden`'s "no SQL injection" result** (35 hostile names through ten
+  constructors on live 1.5.6, canary untouched) held on 1.5.6 only. On DuckDB 2.0.0
+  `SqlMacro::register` ran statements ahead of a parse error (14.2, item 2). A hostile-input
+  sweep has to run on every supported engine major.
+- **Valgrind and AddressSanitizer do not see DuckDB's vector data and list-entry
+  buffers.** The release libduckdb allocates them with its own jemalloc (769 `duckdb_je_*`
+  symbols); earlier sections that read a clean valgrind or ASan run as covering them were
+  wrong, as the `ListBuilder` regression (14.2, item 1) showed. CONTRIBUTING.md says what
+  the sanitizer runs can and cannot see.
+- **"0 missed" mutation results never covered `unsafe fn` bodies** (14.2, item 5).
+- **The `leak-check` job did not check what its comment said** until 14.2, item 4.
+- Section 13.5 item 1 lists `check_string_len`, `try_write_varchar`/`try_write_blob`,
+  `ArrowArray::take_from`, `ArrowSchema::take_from`, `ErrorData::has_error`,
+  `WarningCollector::drain`, `set_max_threads`, `set_cardinality` and query progress as
+  unreached; the `tests` reviewer's line coverage of the live, unit and integration run
+  executes all nine (REPORTED). Section 13.2 item 14 put the unexecuted public functions
+  at 144; on `3c8ee2d` the reviewer counted 170 production functions never executed (29
+  containing `unsafe`), none in `struct_reader`, `struct_writer`, `validity` or
+  `MapVector` (REPORTED).
+- The 13.7 timings are superseded by 14.7. The CHANGELOG's coverage figure "445 of 546
+  slots wrapped" was a count at one moment; the script reports 457 now.
+- The "28 fuzz files" figure for the fuzz crate counted seeds and a lockfile; it had four
+  targets, one of them live, and has eight now.
+- Section 12.4 lacks five DuckDB 2.0 behaviours (14.3, `docs`).
+- Section 13.3 recorded that a core-extension name list for the scaffold was not
+  shipped, because `duckdb_extensions()` mixes core and autoloadable names. The list is
+  derived from DuckDB's own sources now (`scripts/check-extension-names.py` compares
+  it with `main` and `v2.0.0` and with the community list), and the scaffold and
+  `parse_description_yml` refuse its 10 aliases and 34 core names, because
+  `INSTALL s3 FROM community` fails on 2.0.0 (the alias is applied before the
+  repository is asked).
+
+### 14.10 Process lessons (mine)
+
+- A mutation proof must name the pre-fix commit. My first proof of the `ListBuilder`
+  fix reverted a file with `git show HEAD:...` and then I committed; `HEAD` already held
+  the fix and the "without the fix" run passed vacuously. I redid it against `3c8ee2d` and
+  grepped the reverted file for `self.entries` to confirm it held the old code.
+- Run a new live test on every engine major before committing it (the lambda syntax).
+- A check that prints nothing proves nothing: an empty variable made the first LeakSanitizer
+  probe run no probe, and `cmd | grep` let a failing `clippy` run reach a commit; both were
+  caught before they were pushed, one by the empty path in the output, one by re-running
+  with an explicit status check.
+- A full disk invalidates results quietly: four tests failed with ENOSPC and the other 1,785
+  passed; I re-ran only after reading the failure text.
+- Local gates miss what only a script checks: the stale API-coverage allowlist line, the
+  typos findings and two stale "31 checks" counts were found by running every script of
+  the `doc` and `hygiene` jobs, not by the test suites. And a doc comment I had edited in
+  `tests/ffi_roundtrip.rs`, which only the live configurations compile, failed
+  `clippy::doc_markdown` there and in no other gate; I found it by running clippy in
+  those configurations last.
+- A reviewer's snapshot is older than the fixes: `tests` patch 04 would have regressed
+  ELF handling, and two of its Arrow tests needed an `indices` field that did not exist
+  at its snapshot.
+- A decision made for lack of verification can be wrong: I declined the runner pins
+  because I could not confirm the labels offline, and `infra` confirmed them.

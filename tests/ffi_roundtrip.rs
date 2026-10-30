@@ -5379,7 +5379,7 @@ fn typed_scalar_bind_data_and_local_state_need_no_hand_written_destructor() {
 /// exported through the C Data Interface and re-imported through it, and the
 /// values are compared with the ones the query produced. If an ownership rule in
 /// the wrapper were wrong, this is where a double free or a leak shows up — the
-/// `leak-check` CI job (LeakSanitizer) and the `asan` job run this file. Miri
+/// `leak-check` CI job (`LeakSanitizer`) and the `asan` job run this file. Miri
 /// does not: it cannot call into a foreign library.
 #[cfg(feature = "duckdb-1-5-4")]
 mod arrow_interop {
