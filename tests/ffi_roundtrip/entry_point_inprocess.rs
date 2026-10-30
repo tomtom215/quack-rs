@@ -25,7 +25,9 @@ use libduckdb_sys::{
 use quack_rs::abi::AbiPolicy;
 use quack_rs::connection::Registrar;
 use quack_rs::entry_point::{
-    init_extension, init_extension_v2, init_extension_v2_with_policy, init_extension_with_policy,
+    init_extension, init_extension_v2, init_extension_v2_with_options,
+    init_extension_v2_with_policy, init_extension_with_options, init_extension_with_policy,
+    EntryPointOptions, Registration,
 };
 use quack_rs::error::ExtensionError;
 use quack_rs::scalar::ScalarFunctionBuilder;
@@ -44,7 +46,7 @@ unsafe extern "C" {
 
 /// A stand-in for `DuckDB`'s extension loader: the state behind the `info`
 /// pointer and the three callbacks of its access struct.
-struct Loader {
+pub struct Loader {
     /// What `get_api` returns; `None` makes it return null, as a `DuckDB` that
     /// does not provide the requested C API version does.
     api: Option<Box<MaybeUninit<duckdb_ext_api_v1>>>,
@@ -59,7 +61,7 @@ struct Loader {
 }
 
 impl Loader {
-    fn serving(database: duckdb_database) -> Self {
+    pub fn serving(database: duckdb_database) -> Self {
         // SAFETY: both are plain C functions without preconditions.
         let (bytes, expected) = unsafe {
             (
@@ -84,7 +86,7 @@ impl Loader {
         }
     }
 
-    const fn info(&self) -> duckdb_extension_info {
+    pub const fn info(&self) -> duckdb_extension_info {
         std::ptr::from_ref(self).cast_mut().cast()
     }
 
@@ -92,7 +94,7 @@ impl Loader {
         self.requested.lock().expect("lock").clone()
     }
 
-    fn error(&self) -> Option<String> {
+    pub fn error(&self) -> Option<String> {
         self.error.lock().expect("lock").clone()
     }
 }
@@ -138,7 +140,7 @@ unsafe extern "C" fn set_error(info: duckdb_extension_info, message: *const c_ch
     *loader.error.lock().expect("lock") = Some(message);
 }
 
-fn access() -> duckdb_extension_access {
+pub fn access() -> duckdb_extension_access {
     duckdb_extension_access {
         set_error: Some(set_error),
         get_database: Some(get_database),
@@ -154,13 +156,13 @@ quack_rs::scalar_callback!(answer, |_info, input, output| {
     }
 });
 
-fn answer_fn(name: &str) -> ScalarFunctionBuilder {
+pub fn answer_fn(name: &str) -> ScalarFunctionBuilder {
     ScalarFunctionBuilder::new(name)
         .returns(TypeId::BigInt)
         .function(answer)
 }
 
-fn call(fx: &Fixture, name: &str) -> Option<i64> {
+pub fn call(fx: &Fixture, name: &str) -> Option<i64> {
     fx.scalar(&format!("SELECT {name}()"), |r, i| unsafe { r.read_i64(i) })
 }
 
@@ -243,19 +245,28 @@ fn every_abi_policy_loads_on_the_engine_it_was_built_for() {
     }
 }
 
-/// Registration is not transactional: what the closure registered before it
-/// failed stays, and the failure reaches the loader's `set_error` verbatim.
+/// With `Registration::Autocommit` registration is not transactional: what
+/// the closure registered before it failed stays (the default rolls it back:
+/// see `entry_point_txn`), and the failure reaches the loader's `set_error`
+/// verbatim.
 #[test]
-fn a_registration_error_fails_the_load_but_keeps_earlier_registrations() {
+fn with_autocommit_a_registration_error_fails_the_load_but_keeps_earlier_registrations() {
     let fx = Fixture::open();
     let access = access();
+    let autocommit = EntryPointOptions::new().registration(Registration::Autocommit);
     let loader = Loader::serving(fx.db());
     // SAFETY: as above.
     let accepted = unsafe {
-        init_extension_v2(loader.info(), &raw const access, "v1.2.0", |con| {
-            con.register_scalar(answer_fn("ep_before_failure"))?;
-            Err(ExtensionError::new("refused: configuration is missing"))
-        })
+        init_extension_v2_with_options(
+            loader.info(),
+            &raw const access,
+            "v1.2.0",
+            autocommit,
+            |con| {
+                con.register_scalar(answer_fn("ep_before_failure"))?;
+                Err(ExtensionError::new("refused: configuration is missing"))
+            },
+        )
     };
     assert!(!accepted);
     assert_eq!(
@@ -267,12 +278,20 @@ fn a_registration_error_fails_the_load_but_keeps_earlier_registrations() {
     let loader = Loader::serving(fx.db());
     // SAFETY: as above.
     let accepted = unsafe {
-        init_extension(loader.info(), &raw const access, "v1.2.0", |_con| {
-            Err(ExtensionError::new("raw closure refused"))
-        })
+        init_extension_with_options(
+            loader.info(),
+            &raw const access,
+            "v1.2.0",
+            autocommit,
+            |con| {
+                answer_fn("ep_before_raw_failure").register(con)?;
+                Err(ExtensionError::new("raw closure refused"))
+            },
+        )
     };
     assert!(!accepted);
     assert_eq!(loader.error().as_deref(), Some("raw closure refused"));
+    assert_eq!(call(&fx, "ep_before_raw_failure"), Some(42));
 }
 
 #[test]

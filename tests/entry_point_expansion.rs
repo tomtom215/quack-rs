@@ -56,6 +56,12 @@ pub mod abi {
 }
 
 pub mod entry_point {
+    pub struct EntryPointOptions;
+    impl EntryPointOptions {
+        pub fn new() -> Self {
+            Self
+        }
+    }
     macro_rules! stand_in {
         ($($name:ident),*) => {$(
             pub unsafe fn $name<P, R>(
@@ -69,7 +75,12 @@ pub mod entry_point {
             }
         )*};
     }
-    stand_in!(__entry_point, __entry_point_v2);
+    stand_in!(
+        __entry_point,
+        __entry_point_v2,
+        __entry_point_with_options,
+        __entry_point_v2_with_options
+    );
 }
 
 fn register(_: u8) -> Result<(), ()> {
@@ -83,6 +94,8 @@ entry_point!(two_arg_init_c_api, register);
 entry_point!(three_arg_init_c_api, crate::abi::AbiPolicy::Trust, register);
 entry_point_v2!(two_arg_v2_init_c_api, register);
 entry_point_v2!(three_arg_v2_init_c_api, crate::abi::AbiPolicy::Trust, register);
+entry_point!(options_init_c_api, options = crate::entry_point::EntryPointOptions::new(), register);
+entry_point_v2!(options_v2_init_c_api, options = crate::entry_point::EntryPointOptions::new(), register);
 ";
 
 /// Writes the fixture and compiles it with `rustc`, returning its exit status
@@ -147,8 +160,8 @@ fn the_entry_point_macros_refuse_to_compile_under_panic_abort() {
     let (ok, stderr) = compile("2021", "abort");
     assert!(!ok, "a panic = \"abort\" build compiled:\n{stderr}");
     let message = "quack-rs: this DuckDB extension is being compiled with `panic = \"abort\"`";
-    // Once per expansion: four invocations, every arm of both macros.
-    assert_eq!(stderr.matches(message).count(), 4, "{stderr}");
+    // Once per expansion: six invocations, every arm of both macros.
+    assert_eq!(stderr.matches(message).count(), 6, "{stderr}");
     assert!(
         stderr.contains("set it under `[profile.release]`"),
         "the error names the fix:\n{stderr}"

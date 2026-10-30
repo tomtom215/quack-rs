@@ -25,22 +25,49 @@
 //! `init_extension` uses `Result` for all error propagation and never calls
 //! `unwrap()` or `panic!()` inside an FFI callback.
 //!
-//! # Registration is not transactional
+//! # Registration is transactional
 //!
-//! Each `register` call commits to `DuckDB`'s catalog on its own; there is no
-//! enclosing transaction the entry point could roll back. If the registration
-//! closure registers some functions and then returns `Err` (or panics), the
-//! `LOAD` fails — but the functions registered before the failure **stay
-//! registered** and callable for the life of the database, while `DuckDB`
-//! does not list the extension as loaded. Retrying the `LOAD` in the same
-//! process then fails at the first function it re-registers: `DuckDB`
-//! refuses an aggregate name registered twice, and quack-rs refuses a scalar
-//! signature that already exists.
+//! The registration connection is an ordinary connection, so the entry point
+//! runs the closure inside `BEGIN TRANSACTION` on it, `COMMIT`s when the
+//! closure returns `Ok` and `ROLLBACK`s when it returns `Err` or panics
+//! ([`Registration::Transactional`], the default). Every registration the C API
+//! makes through a connection joins that transaction. So a `LOAD` that fails
+//! part-way leaves **no catalog entry** behind — no scalar, aggregate or table
+//! function, macro, type, copy function or table the closure created — and
+//! retrying it in the same database works. Before quack-rs 0.20 the functions
+//! registered before the failure stayed, and every retry failed at the first
+//! name it registered again.
 //!
-//! So do every fallible thing that does not register — reading
-//! configuration, validating settings, building lookup tables — **before**
-//! the first `register` call, and treat an error after it as leaving the
-//! database partially extended.
+//! What is **not** rolled back, because `DuckDB` keeps it in the database
+//! configuration rather than the catalog: casts
+//! ([`register_cast`][crate::connection::Registrar::register_cast]),
+//! replacement scans and configuration options. A retry registers a cast
+//! again (the new one replaces the old) and appends a second replacement
+//! scan, and quack-rs refuses a configuration option whose name is taken, so
+//! register those **last**, after everything that can fail.
+//!
+//! What the transaction changes for the closure:
+//!
+//! - A statement or registration that fails can abort the transaction
+//!   (`DuckDB` 2.0 aborts it on every failed statement; 1.x on most failures
+//!   that are not binder, catalog or parser errors), after which every later
+//!   statement in the closure fails with "Current transaction is aborted".
+//!   Return the first error rather than carrying on past it.
+//! - The closure must not run `BEGIN`, `COMMIT` or `ROLLBACK` on the
+//!   registration connection.
+//! - What the closure creates is visible to other connections only once the
+//!   `LOAD` commits, including a connection the closure opened itself with
+//!   [`Connection::open_connection`].
+//!
+//! Choose [`Registration::Autocommit`] (through [`EntryPointOptions`]) to get
+//! the old behaviour back: every statement commits on its own.
+//!
+//! The transaction costs two statements, `BEGIN` and `COMMIT`, per `LOAD`.
+//! A `LOAD` issued inside the host's own transaction does not wait on it: the
+//! registration connection is a separate connection with a transaction of its
+//! own, which commits on its own (so the host rolling back does not undo the
+//! registrations), and `DuckDB`'s catalog reports a conflicting write as an
+//! error rather than waiting for the other transaction.
 //!
 //! # `panic = "abort"` is refused at compile time
 //!
@@ -74,6 +101,11 @@
 //! quack_rs::entry_point!(b_init_c_api, AbiPolicy::Trust, |con| register(con));
 //! quack_rs::entry_point_v2!(c_init_c_api, |_con| Ok(()));
 //! quack_rs::entry_point_v2!(d_init_c_api, AbiPolicy::Warn, |_con| Ok(()));
+//! quack_rs::entry_point_v2!(
+//!     e_init_c_api,
+//!     options = quack_rs::entry_point::EntryPointOptions::new(),
+//!     |_con| Ok(())
+//! );
 //! ```
 //!
 //! # Usage
@@ -112,6 +144,12 @@ use crate::abi::AbiPolicy;
 use crate::connection::Connection;
 use crate::error::ExtensionError;
 
+mod registration;
+
+#[cfg(feature = "duckdb-1-5")]
+pub(crate) use registration::{copy_format_scope, record_copy_format};
+pub use registration::{EntryPointOptions, Registration};
+
 /// Generates the `#[unsafe(no_mangle)] unsafe extern "C"` entry point for a `DuckDB` extension.
 ///
 /// This macro eliminates the boilerplate of writing the entry point manually.
@@ -127,18 +165,25 @@ use crate::error::ExtensionError;
 ///   `fn(duckdb_connection) -> Result<(), ExtensionError>` that registers your
 ///   functions on the given connection.
 ///
-/// # ABI policy
+/// # ABI policy and options
 ///
-/// A three-argument form takes an [`AbiPolicy`] between
-/// the name and the closure:
+/// A three-argument form takes an [`AbiPolicy`] between the name and the
+/// closure, and `options = ` an [`EntryPointOptions`] sets the policy and the
+/// [`Registration`] mode together:
 ///
 /// ```rust,no_run
 /// use quack_rs::abi::AbiPolicy;
+/// use quack_rs::entry_point::{EntryPointOptions, Registration};
 /// use quack_rs::error::ExtensionError;
 ///
 /// quack_rs::entry_point!(my_ext_init_c_api, AbiPolicy::Trust, |_con| {
 ///     Ok::<(), ExtensionError>(())
 /// });
+/// quack_rs::entry_point!(
+///     my_other_ext_init_c_api,
+///     options = EntryPointOptions::new().registration(Registration::Autocommit),
+///     |_con| Ok::<(), ExtensionError>(())
+/// );
 /// ```
 ///
 /// The default is [`AbiPolicy::Strict`], which
@@ -151,9 +196,10 @@ use crate::error::ExtensionError;
 /// `panic = "abort"`, under which none of quack-rs's panic guards work. See the
 /// [module documentation](mod@crate::entry_point#panic--abort-is-refused-at-compile-time).
 ///
-/// Registration is **not transactional**: functions registered before the
-/// closure fails stay registered. See the
-/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
+/// The closure runs in one transaction, so a failed `LOAD` leaves no catalog
+/// entry behind; casts, replacement scans and configuration options are not
+/// rolled back. See the
+/// [module documentation](mod@crate::entry_point#registration-is-transactional).
 ///
 /// # Example
 ///
@@ -174,6 +220,14 @@ macro_rules! entry_point {
     ($fn_name:ident, $register:expr) => {
         $crate::entry_point!($fn_name, $crate::abi::AbiPolicy::Strict, $register);
     };
+    ($fn_name:ident, options = $options:expr, $register:expr) => {
+        $crate::__quack_rs_entry_point_fn!(
+            $fn_name,
+            __entry_point_with_options,
+            || -> $crate::entry_point::EntryPointOptions { $options },
+            $register
+        );
+    };
     ($fn_name:ident, $policy:expr, $register:expr) => {
         $crate::__quack_rs_entry_point_fn!($fn_name, __entry_point, || $policy, $register);
     };
@@ -192,12 +246,14 @@ macro_rules! entry_point {
 /// - `$fn_name`: The exact symbol name `DuckDB` will call.
 /// - `$register`: A closure of type `fn(&Connection) -> Result<(), ExtensionError>`.
 ///
-/// Like [`entry_point!`][crate::entry_point!], it takes an optional [`AbiPolicy`] between the two,
-/// and fails to compile under `panic = "abort"`.
+/// Like [`entry_point!`][crate::entry_point!], it takes an optional [`AbiPolicy`], or
+/// `options = ` an [`EntryPointOptions`], between the two, and fails to
+/// compile under `panic = "abort"`.
 ///
-/// Registration is **not transactional**: functions registered before the
-/// closure fails stay registered. See the
-/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
+/// The closure runs in one transaction, so a failed `LOAD` leaves no catalog
+/// entry behind; casts, replacement scans and configuration options are not
+/// rolled back. See the
+/// [module documentation](mod@crate::entry_point#registration-is-transactional).
 ///
 /// # Example
 ///
@@ -216,14 +272,22 @@ macro_rules! entry_point_v2 {
     ($fn_name:ident, $register:expr) => {
         $crate::entry_point_v2!($fn_name, $crate::abi::AbiPolicy::Strict, $register);
     };
+    ($fn_name:ident, options = $options:expr, $register:expr) => {
+        $crate::__quack_rs_entry_point_fn!(
+            $fn_name,
+            __entry_point_v2_with_options,
+            || -> $crate::entry_point::EntryPointOptions { $options },
+            $register
+        );
+    };
     ($fn_name:ident, $policy:expr, $register:expr) => {
         $crate::__quack_rs_entry_point_fn!($fn_name, __entry_point_v2, || $policy, $register);
     };
 }
 
 /// The `extern "C"` function both entry-point macros generate: `$helper` is
-/// `__entry_point` or `__entry_point_v2`, `$options` the closure that yields
-/// its policy. Not public API.
+/// one of the `__entry_point*` functions, `$options` the closure that yields
+/// its policy or options. Not public API.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __quack_rs_entry_point_fn {
@@ -302,9 +366,10 @@ macro_rules! __quack_rs_refuse_panic_abort {
 /// 5. Disconnects with `duckdb_disconnect`.
 /// 6. On any error, reports via `access.set_error` and returns `false`.
 ///
-/// Registration is **not transactional**: functions registered before the
-/// closure fails stay registered. See the
-/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
+/// The closure runs in one transaction, so a failed `LOAD` leaves no catalog
+/// entry behind; casts, replacement scans and configuration options are not
+/// rolled back. See the
+/// [module documentation](mod@crate::entry_point#registration-is-transactional).
 ///
 /// # Return value
 ///
@@ -350,7 +415,15 @@ where
     F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
 {
     // SAFETY: forwarded from this function's own contract.
-    unsafe { init_extension_with_policy(info, access, api_version, AbiPolicy::default(), register) }
+    unsafe {
+        init_extension_with_options(
+            info,
+            access,
+            api_version,
+            EntryPointOptions::default(),
+            register,
+        )
+    }
 }
 
 /// [`init_extension`] with an explicit [`AbiPolicy`].
@@ -375,11 +448,31 @@ pub unsafe fn init_extension_with_policy<F>(
 where
     F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
 {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { init_extension_with_options(info, access, api_version, policy.into(), register) }
+}
+
+/// [`init_extension`] with explicit [`EntryPointOptions`]: the [`AbiPolicy`]
+/// and the [`Registration`] mode.
+///
+/// # Safety
+///
+/// Same invariants as [`init_extension`].
+pub unsafe fn init_extension_with_options<F>(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    api_version: &str,
+    options: EntryPointOptions,
+    register: F,
+) -> bool
+where
+    F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
+{
     // SAFETY: `init_extension_internal`'s `# Safety` is "same invariants as
     // `init_extension`", which this function's own `# Safety` ("same invariants as
     // `init_extension`") passes on unchanged: `info` and `access` are the pointers DuckDB
     // passed to the entry point, valid for the duration of this call.
-    match unsafe { init_extension_internal(info, access, api_version, policy, register) } {
+    match unsafe { init_extension_internal(info, access, api_version, options, register) } {
         Ok(result) => result,
         Err(e) => {
             // SAFETY: access is a valid pointer per the caller's contract.
@@ -399,9 +492,10 @@ where
 /// Prefer this over [`init_extension`] for new extensions. The raw
 /// `duckdb_connection` entry point is retained for backward compatibility.
 ///
-/// Registration is **not transactional**: functions registered before the
-/// closure fails stay registered. See the
-/// [module documentation](mod@crate::entry_point#registration-is-not-transactional).
+/// The closure runs in one transaction, so a failed `LOAD` leaves no catalog
+/// entry behind; casts, replacement scans and configuration options are not
+/// rolled back. See the
+/// [module documentation](mod@crate::entry_point#registration-is-transactional).
 ///
 /// # Return value
 ///
@@ -443,7 +537,13 @@ where
 {
     // SAFETY: forwarded from this function's own contract.
     unsafe {
-        init_extension_v2_with_policy(info, access, api_version, AbiPolicy::default(), register)
+        init_extension_v2_with_options(
+            info,
+            access,
+            api_version,
+            EntryPointOptions::default(),
+            register,
+        )
     }
 }
 
@@ -464,11 +564,31 @@ pub unsafe fn init_extension_v2_with_policy<F>(
 where
     F: FnOnce(&Connection) -> Result<(), crate::error::ExtensionError>,
 {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { init_extension_v2_with_options(info, access, api_version, policy.into(), register) }
+}
+
+/// [`init_extension_v2`] with explicit [`EntryPointOptions`]: the
+/// [`AbiPolicy`] and the [`Registration`] mode.
+///
+/// # Safety
+///
+/// Same invariants as [`init_extension_v2`].
+pub unsafe fn init_extension_v2_with_options<F>(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    api_version: &str,
+    options: EntryPointOptions,
+    register: F,
+) -> bool
+where
+    F: FnOnce(&Connection) -> Result<(), crate::error::ExtensionError>,
+{
     // SAFETY: `init_extension_v2_internal`'s `# Safety` is "same invariants as
     // `init_extension_v2`", which this function's own `# Safety` ("same invariants as
     // `init_extension_v2`") passes on unchanged: `info` and `access` are the pointers
     // DuckDB passed to the entry point, valid for the duration of this call.
-    match unsafe { init_extension_v2_internal(info, access, api_version, policy, register) } {
+    match unsafe { init_extension_v2_internal(info, access, api_version, options, register) } {
         Ok(result) => result,
         Err(e) => {
             // SAFETY: access is a valid pointer per the caller's contract.
@@ -487,7 +607,7 @@ unsafe fn init_extension_v2_internal<F>(
     info: duckdb_extension_info,
     access: *const duckdb_extension_access,
     api_version: &str,
-    policy: AbiPolicy,
+    options: EntryPointOptions,
     register: F,
 ) -> Result<bool, crate::error::ExtensionError>
 where
@@ -524,7 +644,7 @@ where
     // stable prefix. See `crate::abi` for why this matters.
     //
     // SAFETY: the dispatch table was initialised by the call above.
-    unsafe { enforce_abi_policy(info, access, policy)? };
+    unsafe { enforce_abi_policy(info, access, options.get_abi_policy())? };
 
     // Step 2: Get the database handle. `None` means DuckDB failed and has
     // already recorded why; reporting again would overwrite its message.
@@ -548,8 +668,11 @@ where
     // SAFETY: raw_con and db are both valid for the duration of this scope.
     let con = unsafe { Connection::from_raw(raw_con, db) };
     // PITFALL L3: see `init_extension_internal` — user code must not unwind out
-    // of the C entry point.
-    let result = catch_registration_panic(|| register(&con));
+    // of the C entry point. `registration::run` runs the closure under
+    // `catch_unwind`, in a transaction unless the options say otherwise.
+    // SAFETY: `raw_con` is open on `db` and used by nothing else meanwhile.
+    let result =
+        unsafe { registration::run(raw_con, db, options.get_registration(), || register(&con)) };
 
     // Step 5: Always disconnect, even if registration failed.
     // SAFETY: raw_con was successfully created by duckdb_connect above.
@@ -568,7 +691,7 @@ unsafe fn init_extension_internal<F>(
     info: duckdb_extension_info,
     access: *const duckdb_extension_access,
     api_version: &str,
-    policy: AbiPolicy,
+    options: EntryPointOptions,
     register: F,
 ) -> Result<bool, ExtensionError>
 where
@@ -610,7 +733,7 @@ where
     // stable prefix. See `crate::abi` for why this matters.
     //
     // SAFETY: the dispatch table was initialised by the call above.
-    unsafe { enforce_abi_policy(info, access, policy)? };
+    unsafe { enforce_abi_policy(info, access, options.get_abi_policy())? };
 
     // Step 2: Get the database handle. `None` means DuckDB failed and has
     // already recorded why; reporting again would overwrite its message.
@@ -636,7 +759,14 @@ where
     // panic is converted into an `ExtensionError` that DuckDB reports as a LOAD
     // failure. (`catch_unwind` is inert under `panic = "abort"`; see the module
     // docs for why quack-rs recommends `panic = "unwind"` for extensions.)
-    let result = catch_registration_panic(|| register(raw_con));
+    // `registration::run` does that, in a transaction unless the options say
+    // otherwise.
+    // SAFETY: `raw_con` is open on `db` and used by nothing else meanwhile.
+    let result = unsafe {
+        registration::run(raw_con, db, options.get_registration(), || {
+            register(raw_con)
+        })
+    };
 
     // Step 5: Always disconnect, even if registration failed.
     // SAFETY: raw_con was successfully created by duckdb_connect above.
@@ -685,12 +815,15 @@ unsafe fn database_from_access(
 /// Evaluates an entry-point macro's `$policy` and `$register` arguments, with
 /// a panic in either turned into an error rather than unwinding out of the
 /// generated `extern "C"` function.
-fn evaluate_arguments<P, R, F>(policy: P, register: R) -> Result<(AbiPolicy, F), ExtensionError>
+fn evaluate_arguments<P, R, F>(
+    options: P,
+    register: R,
+) -> Result<(EntryPointOptions, F), ExtensionError>
 where
-    P: FnOnce() -> AbiPolicy,
+    P: FnOnce() -> EntryPointOptions,
     R: FnOnce() -> F,
 {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (policy(), register()))).map_err(
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (options(), register()))).map_err(
         |panic| {
             ExtensionError::new(format!(
                 "evaluating the entry point's arguments panicked: {}",
@@ -700,8 +833,9 @@ where
     )
 }
 
-/// What [`entry_point!`][crate::entry_point!] expands to: [`init_extension_with_policy`], with the
-/// macro's arguments evaluated under the panic guard. Not public API.
+/// What [`entry_point!`][crate::entry_point!] expands to with an [`AbiPolicy`] argument:
+/// [`init_extension_with_options`], with the macro's arguments evaluated
+/// under the panic guard. Not public API.
 ///
 /// # Safety
 ///
@@ -719,10 +853,32 @@ where
     R: FnOnce() -> F,
     F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
 {
-    match evaluate_arguments(policy, register) {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe { __entry_point_with_options(info, access, api_version, || policy().into(), register) }
+}
+
+/// What [`entry_point!`][crate::entry_point!] expands to with `options = `. Not public API.
+///
+/// # Safety
+///
+/// Same invariants as [`init_extension`].
+#[doc(hidden)]
+pub unsafe fn __entry_point_with_options<P, R, F>(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    api_version: &str,
+    options: P,
+    register: R,
+) -> bool
+where
+    P: FnOnce() -> EntryPointOptions,
+    R: FnOnce() -> F,
+    F: FnOnce(duckdb_connection) -> Result<(), ExtensionError>,
+{
+    match evaluate_arguments(options, register) {
         // SAFETY: forwarded from this function's own contract.
-        Ok((policy, register)) => unsafe {
-            init_extension_with_policy(info, access, api_version, policy, register)
+        Ok((options, register)) => unsafe {
+            init_extension_with_options(info, access, api_version, options, register)
         },
         Err(e) => {
             // SAFETY: `access` is null or valid per the caller's contract.
@@ -732,8 +888,9 @@ where
     }
 }
 
-/// What [`entry_point_v2!`][crate::entry_point_v2!] expands to: [`init_extension_v2_with_policy`],
-/// with the macro's arguments evaluated under the panic guard. Not public API.
+/// What [`entry_point_v2!`][crate::entry_point_v2!] expands to with an [`AbiPolicy`] argument:
+/// [`init_extension_v2_with_options`], with the macro's arguments evaluated
+/// under the panic guard. Not public API.
 ///
 /// # Safety
 ///
@@ -751,10 +908,34 @@ where
     R: FnOnce() -> F,
     F: FnOnce(&Connection) -> Result<(), ExtensionError>,
 {
-    match evaluate_arguments(policy, register) {
+    // SAFETY: forwarded from this function's own contract.
+    unsafe {
+        __entry_point_v2_with_options(info, access, api_version, || policy().into(), register)
+    }
+}
+
+/// What [`entry_point_v2!`][crate::entry_point_v2!] expands to with `options = `. Not public API.
+///
+/// # Safety
+///
+/// Same invariants as [`init_extension_v2`].
+#[doc(hidden)]
+pub unsafe fn __entry_point_v2_with_options<P, R, F>(
+    info: duckdb_extension_info,
+    access: *const duckdb_extension_access,
+    api_version: &str,
+    options: P,
+    register: R,
+) -> bool
+where
+    P: FnOnce() -> EntryPointOptions,
+    R: FnOnce() -> F,
+    F: FnOnce(&Connection) -> Result<(), ExtensionError>,
+{
+    match evaluate_arguments(options, register) {
         // SAFETY: forwarded from this function's own contract.
-        Ok((policy, register)) => unsafe {
-            init_extension_v2_with_policy(info, access, api_version, policy, register)
+        Ok((options, register)) => unsafe {
+            init_extension_v2_with_options(info, access, api_version, options, register)
         },
         Err(e) => {
             // SAFETY: `access` is null or valid per the caller's contract.
@@ -942,7 +1123,8 @@ mod tests {
 
     use super::{
         catch_registration_panic, database_from_access, evaluate_arguments,
-        init_extension_internal, policy_verdict, AbiPolicy, AbiVerdict,
+        init_extension_internal, policy_verdict, AbiPolicy, AbiVerdict, EntryPointOptions,
+        Registration,
     };
     use crate::error::ExtensionError;
 
@@ -1105,7 +1287,7 @@ mod tests {
                 core::ptr::null_mut(),
                 core::ptr::null(),
                 "v1.2\0.0",
-                AbiPolicy::Trust,
+                AbiPolicy::Trust.into(),
                 |_| Ok(()),
             )
         };
@@ -1311,16 +1493,17 @@ mod tests {
 
     #[test]
     fn a_panicking_entry_point_argument_is_an_error_naming_the_panic() {
-        let (policy, register) =
-            evaluate_arguments(|| AbiPolicy::Trust, || 7).expect("no panic, no error");
-        assert_eq!((policy, register), (AbiPolicy::Trust, 7));
-        let err = evaluate_arguments(|| AbiPolicy::Strict, || -> u8 { panic!("bad register") })
+        let autocommit = EntryPointOptions::new().registration(Registration::Autocommit);
+        let (options, register) =
+            evaluate_arguments(|| autocommit, || 7).expect("no panic, no error");
+        assert_eq!((options, register), (autocommit, 7));
+        let err = evaluate_arguments(EntryPointOptions::new, || -> u8 { panic!("bad register") })
             .expect_err("a panic is an error");
         assert_eq!(
             err.as_str(),
             "evaluating the entry point's arguments panicked: bad register"
         );
-        let err = evaluate_arguments(|| -> AbiPolicy { panic!("bad policy") }, || 0)
+        let err = evaluate_arguments(|| -> EntryPointOptions { panic!("bad policy") }, || 0)
             .expect_err("a panic is an error");
         assert!(err.as_str().ends_with("bad policy"), "{err}");
     }
