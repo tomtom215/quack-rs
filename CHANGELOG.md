@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Two RustSec advisories against locked dependencies; the scheduled CI run of
+  2026-11-09 failed on the first.** `cargo update --precise` in each affected
+  lockfile, and nothing else:
+  - RUSTSEC-2026-0442 (`arrow-data` 58.4.0, out-of-bounds read in
+    `RunEndEncoded` validation; fixed in 58.4.1, which also moves `arrow-buffer`
+    and `arrow-schema`) in `Cargo.lock`, `book/doctest/Cargo.lock` and
+    `fuzz/Cargo.lock`. The crate is reached only through the optional `duckdb`
+    dependency behind the `bundled-test*` features: it is not in the default
+    feature graph, and quack-rs's own `arrow` module does not use arrow-rs.
+  - RUSTSEC-2026-0486 (`rustix` 1.1.5, `xattr` functions mark unwritten bytes
+    initialised; fixed in 1.1.6) in `Cargo.lock`, `book/doctest/Cargo.lock`,
+    `examples/hello-ext/Cargo.lock` and `fuzz/Cargo.lock`. It is a
+    dev-dependency (`proptest` → `tempfile`) of the library. OSV listed it only
+    after the 2026-11-09 run, so the next scheduled run would have failed on it
+    as well.
+
+  VALIDATED: `cargo deny check` (0.20.2, the CI version) reports both advisories
+  on the previous `Cargo.lock` and `advisories ok, bans ok, licenses ok, sources ok`
+  on the new one, and on `examples/hello-ext`, `fuzz` and `book/doctest` with
+  `deny.ci-crates.toml`; a query of every `crates.io` package in all five
+  committed lockfiles (243 distinct name and version pairs) against the OSV API
+  returns no vulnerability.
+
+### CI / tooling
+
+- **`scripts/fetch-duckdb.sh` retries a transient download failure.** Four jobs of
+  the scheduled run of 2026-11-09 (`Test bundled-test-prebuilt`, `Test against
+  DuckDB v2.0.0`, `AddressSanitizer`, `LeakSanitizer`) failed on one HTTP 504 from
+  the DuckDB release download. Both `curl` calls now pass `--retry 5`, which backs
+  off and retries a timeout or an HTTP 408, 429, 500, 502, 503 or 504, and not a
+  404. VALIDATED against a local server that answers 504 twice and then 200: the
+  call without `--retry` exits 22, the call with it is answered with a 504, retries
+  once and exits 0, and a 404 is requested once.
+
 ## [0.20.0] - 2026-10-30
 
 This release comes out of an eighth review (`AUDIT.md` section 14): twelve parallel
