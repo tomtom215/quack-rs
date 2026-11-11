@@ -41,7 +41,7 @@ mod scalars;
 mod temporal;
 pub(crate) mod temporal_checks;
 
-pub(crate) use checks::validate_decimal;
+pub(crate) use checks::{validate_decimal, validate_unscaled_decimal};
 
 // Re-exported unqualified so the eight call sites across this module and
 // `query` keep their existing `crate::value::hugeint_from_i128` paths.

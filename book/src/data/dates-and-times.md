@@ -158,11 +158,21 @@ let width = unsafe { logical.decimal_width() };
 let scale = unsafe { logical.decimal_scale() };
 
 let unscaled = unsafe { reader.read_decimal(row, width) };
-// The represented number is unscaled / 10^scale. The doubled value must
-// still fit in `width` digits; write_decimal does not check.
-unsafe { writer.write_decimal(row, width, unscaled * 2) };
+// The represented number is unscaled / 10^scale. The doubled value may no
+// longer fit in `width` digits, and `write_decimal` would store it wrong
+// without an error: `70000` in a `DECIMAL(4, 0)` comes back as `4464`.
+// `try_write_decimal` refuses it, and then it is yours to report or NULL.
+if unsafe { writer.try_write_decimal(row, width, unscaled * 2) }.is_err() {
+    unsafe { writer.set_null(row) };
+}
 # }
 ```
+
+Use `write_decimal` only for a value that cannot exceed the width, such as one
+read back from a column of the same width. For anything computed (a sum, a
+product, a conversion) use `try_write_decimal`: it costs one comparison per
+value, and a scalar function can report its error with
+`ScalarFunctionInfo::set_error`.
 
 `datetime::f64_to_decimal` and `datetime::decimal_to_f64` convert through
 DuckDB's own routines when a floating-point view is what you want.

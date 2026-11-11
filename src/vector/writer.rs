@@ -35,6 +35,7 @@ use libduckdb_sys::{
 use super::nested_null::{self, NullTarget};
 use super::string::check_string_len;
 use crate::error::ExtensionError;
+use crate::value::validate_unscaled_decimal;
 
 /// A typed writer for a `DuckDB` output vector in a `finalize` callback.
 ///
@@ -638,10 +639,24 @@ impl VectorWriter {
     /// `i128` beyond — so the width must match the column's type. Get it from
     /// [`LogicalType::decimal_width`][crate::types::LogicalType::decimal_width].
     ///
+    /// # The value is not checked
+    ///
+    /// `unscaled` is narrowed to the physical integer with `as`, so a value
+    /// the width cannot hold is stored wrong without any error: `70000` in a
+    /// `DECIMAL(4, 0)` is stored as `4464`, and `10000`, which fits an `i16`, is
+    /// stored as it is, one digit wider than the type allows. `DuckDB` does not
+    /// validate either on read. Use [`try_write_decimal`][Self::try_write_decimal]
+    /// for a value computed from other data (a sum, a product, a conversion),
+    /// and this method only for a value already known to satisfy
+    /// `|unscaled| < 10^width`, such as one read back from a column of the same
+    /// width.
+    ///
     /// # Safety
     ///
     /// - `idx` must be within the vector's capacity.
     /// - The vector must have `DECIMAL` type with exactly this `width`.
+    /// - `|unscaled|` must be below `10^width`. Breaking this is not memory
+    ///   unsafe, but it silently corrupts the result.
     #[inline]
     pub const unsafe fn write_decimal(&mut self, idx: usize, width: u8, unscaled: i128) {
         // SAFETY: the caller guarantees `width` matches the column's declared
@@ -658,6 +673,43 @@ impl VectorWriter {
                 self.write_i128(idx, unscaled);
             }
         }
+    }
+
+    /// Writes a `DECIMAL` value at row `idx`, refusing an unscaled value that
+    /// has more digits than `width` allows.
+    ///
+    /// The checked counterpart of [`write_decimal`][Self::write_decimal], for a
+    /// value computed from other data. It tests `|unscaled| < 10^width` with one
+    /// comparison against a constant table, then writes exactly as
+    /// `write_decimal` does. On `Err` nothing is written and row `idx` keeps
+    /// whatever it held; report the error (for a scalar function,
+    /// [`ScalarFunctionInfo::set_error`][crate::scalar::ScalarFunctionInfo::set_error])
+    /// or write a NULL, as the function's contract says.
+    ///
+    /// The scale is not an argument: it does not change which unscaled integers
+    /// a width holds. A result whose scale differs from the column's must be
+    /// rescaled before the call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `width` is not in `1..=38`, or if `|unscaled|` is
+    /// `10^width` or more.
+    ///
+    /// # Safety
+    ///
+    /// - `idx` must be within the vector's capacity.
+    /// - The vector must have `DECIMAL` type with exactly this `width`.
+    pub unsafe fn try_write_decimal(
+        &mut self,
+        idx: usize,
+        width: u8,
+        unscaled: i128,
+    ) -> Result<(), ExtensionError> {
+        validate_unscaled_decimal(width, unscaled)?;
+        // SAFETY: the caller guarantees `idx` and the vector's `DECIMAL` width;
+        // the check above guarantees `unscaled` fits that width.
+        unsafe { self.write_decimal(idx, width, unscaled) };
+        Ok(())
     }
 
     /// Marks row `idx` as NULL in the output vector.

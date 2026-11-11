@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`VectorWriter::try_write_decimal(idx, width, unscaled)`, a checked
+  `write_decimal`.** `write_decimal` narrows the unscaled integer to `i16`, `i32`
+  or `i64` with `as`, so a value the width cannot hold is stored wrong with no
+  error. The independent review of 0.20.0 pointed at the cast; against a live
+  engine it is a plausible, wrong number: `70000` written to a `DECIMAL(4, 0)`
+  reads back as `4464`, `2^32 + 5` to a `DECIMAL(9, 0)` as `5`, and `2^64 + 7` to a
+  `DECIMAL(18, 0)` as `7`; and `10000`, which fits an `i16`, is stored as it is,
+  one digit wider than the type allows. `try_write_decimal` refuses a value with
+  `|unscaled| >= 10^width` (one comparison against a compile-time table, no
+  `pow`), writes nothing on `Err`, and otherwise writes exactly as
+  `write_decimal` does. `write_decimal` itself is unchanged: its documentation
+  now states the range requirement, and the book's example uses the checked
+  method. A scale is not an argument, since it does not change which unscaled
+  integers a width holds.
+  VALIDATED against libduckdb 1.5.6: `tests/ffi_roundtrip/decimal_write.rs`
+  writes both sides of every storage boundary (widths 1, 4, 5, 9, 10, 18, 19,
+  38) and the wrapped values above, and all three of its tests fail with the check
+  removed. The pure-Rust check has unit tests for every width from 1 to 38.
+
 ### Security
 
 - **Two RustSec advisories against locked dependencies; the scheduled CI run of

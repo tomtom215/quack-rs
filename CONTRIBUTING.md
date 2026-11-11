@@ -758,6 +758,7 @@ quack-rs/
 │       ├── copy_info_errors.rs        # `set_error` from all four COPY phases, and the state passed between them (`duckdb-1-5`)
 │       ├── copy_typed_state.rs        # Typed `COPY TO` state, a `FileHandle` kept across callbacks, `Send` handles (`duckdb-1-5`)
 │       ├── data_chunk_helpers.rs      # `DataChunk::any_null`, `struct_writer`, `into_chunk_writer` and `ChunkWriter::is_full`
+│       ├── decimal_write.rs           # `VectorWriter::try_write_decimal` refuses what `write_decimal` wraps, at every storage width
 │       ├── entry_point_inprocess.rs   # `init_extension*` and the entry-point macros run in process against a fake extension access
 │       ├── entry_point_txn.rs         # A failed `LOAD` rolls back and can be retried; a `LOAD` inside the host's transaction
 │       ├── file_errors.rs             # `FileHandle` reports write, sync and seek failures, and refuses a seek past `i64::MAX`
