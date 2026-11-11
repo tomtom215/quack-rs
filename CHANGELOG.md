@@ -39,7 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.5.1 (545 slots) one pointer: a read outside the object `get_api` returned,
   undefined behaviour even though the memory after it is mapped and no crash was
   ever observed. The independent review of 0.20.0 raised it; `src/abi.rs` had
-  documented it and said only `libduckdb-sys` could fix it.
+  documented it as the behaviour, and said quack-rs could avoid it only by calling
+  `get_api` itself first.
   `entry_point/api_init.rs` fixes it in quack-rs: the entry points wrap `access` so
   the bindings' `get_api` returns a **zero-padded copy** of the engine's table, as
   long as the bindings' struct, holding the slots the engine has. The count comes
