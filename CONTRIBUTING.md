@@ -515,6 +515,7 @@ quack-rs/
 │   ├── debug_repr.rs                  # Internal helpers for the crate's `Debug` implementations
 │   ├── entry_point.rs                 # Extension entry point helper
 │   ├── entry_point/
+│   │   ├── api_init.rs                # Fills the bindings' dispatch table from a zero-padded copy of the engine's, so no read leaves the engine's own table
 │   │   └── registration.rs            # Runs the registration closure in one transaction, or with autocommit
 │   ├── error.rs                       # Error types for `DuckDB` extension FFI error propagation
 │   ├── error_data.rs                  # Structured error data (`DuckDB` 1.5.0+)

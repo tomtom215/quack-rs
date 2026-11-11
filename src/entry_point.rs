@@ -137,13 +137,14 @@ use std::io::Write as _;
 
 use libduckdb_sys::{
     duckdb_connect, duckdb_connection, duckdb_disconnect, duckdb_extension_access,
-    duckdb_extension_info, duckdb_rs_extension_api_init, DuckDBSuccess,
+    duckdb_extension_info, DuckDBSuccess,
 };
 
 use crate::abi::AbiPolicy;
 use crate::connection::Connection;
 use crate::error::ExtensionError;
 
+mod api_init;
 mod registration;
 
 #[cfg(feature = "duckdb-1-5")]
@@ -630,9 +631,13 @@ where
     // SAFETY: `access` is the pointer DuckDB passed; the helper only reads it.
     unsafe { check_access(access)? };
 
-    // SAFETY: info and access are valid pointers provided by DuckDB.
+    // SAFETY: info and access are valid pointers provided by DuckDB; `check_access`
+    // above found `access` non-null with `get_api` set, and `api_version` has no
+    // interior NUL (checked at the top). `init_dispatch_table` rather than the
+    // bindings' own initialiser, which reads past the end of an older engine's
+    // table: see `api_init`.
     let have_api = unsafe {
-        duckdb_rs_extension_api_init(info, access, api_version)
+        api_init::init_dispatch_table(info, access, api_version, options.get_abi_policy())
             .map_err(|e| crate::error::ExtensionError::new(e.to_string()))?
     };
 
@@ -716,9 +721,13 @@ where
     // SAFETY: `access` is the pointer DuckDB passed; the helper only reads it.
     unsafe { check_access(access)? };
 
-    // SAFETY: info and access are valid pointers provided by DuckDB.
+    // SAFETY: info and access are valid pointers provided by DuckDB; `check_access`
+    // above found `access` non-null with `get_api` set, and `api_version` has no
+    // interior NUL (checked at the top). `init_dispatch_table` rather than the
+    // bindings' own initialiser, which reads past the end of an older engine's
+    // table: see `api_init`.
     let have_api = unsafe {
-        duckdb_rs_extension_api_init(info, access, api_version)
+        api_init::init_dispatch_table(info, access, api_version, options.get_abi_policy())
             .map_err(|e| ExtensionError::new(e.to_string()))?
     };
 
