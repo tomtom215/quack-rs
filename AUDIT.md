@@ -2,11 +2,12 @@
 
 # quack-rs — audit log, August – November 2026
 
-Sections 1–6 are the first audit, below. Sections 7–15 are the later ones, newest
+Sections 1–6 are the first audit, below. Sections 7–16 are the later ones, newest
 last: 7 (second audit, 0.17.0 → 0.18.0), 8–10 (third to fifth, before 0.18.0),
 11 (sixth review, after 0.18.0), 12 (the DuckDB 2.0.0 review), 13 (the seventh
 review, after 0.19.0), 14 (the eighth review, released as 0.20.0) and 15 (an
-independent production-readiness review of 0.20.0, triaged and acted on). Each ends
+independent production-readiness review of 0.20.0, triaged and acted on) and 16 (the
+maintainer review of 2026-11-25, thirty findings, triaged and acted on). Each ends
 with how it was verified, and later sections correct earlier ones where they were
 wrong (13.4, 14.9 and 15.6 list the corrections).
 
@@ -3797,3 +3798,121 @@ branch's `required_status_checks` enforcement is "off" with no contexts (read on
 although the workflow README and the `ci-ok` comment call `CI passed` the required check. Until
 it is required, a pull request can be merged with CI red.
 
+---
+
+## 16. Maintainer review, November 2026 (thirty findings, `main` at `2329af0`)
+
+An outside reviewer sent a packet dated 2026-11-25 (`quack-rs-maintainer-review-2026-11-25`,
+21 files, every one matching its own `SHA256SUMS`): thirty findings, QRS-001 to QRS-030, six
+rated P0, twenty-one P1 and three P2, against `main` at `2329af03bb6e` and the published
+`v0.20.0`. Like the report of section 15 it was written without a compiler, a DuckDB or a
+checkout; the packet says so. Every row was re-checked here against the code at `2329af0`,
+DuckDB's source at the `v2.0.1` tag, the released v2.0.1 and v1.5.6 libraries (fetched by
+`scripts/fetch-duckdb.sh`, which verified each against `scripts/duckdb-sha256.txt`),
+crates.io and the GitHub API.
+
+### 16.1 Triage
+
+Each row has one status. Evidence marks: **V**, a command or program run here, with its
+result; **S**, read here in the source named; **A**, read by a delegated reading pass and not
+re-run here, except where the row says it was spot-checked. Severity is the report's, except
+QRS-008, raised to P0 because a safe call corrupts memory.
+
+| ID | Sev | Status | Evidence | Action |
+|---|---|---|---|---|
+| QRS-001 | P0 | already fixed | V: 72d2b3f bounds the read (api_init.rs, 12 tests incl. 459/545/546/548-slot mock tables); no tag contains 72d2b3f, so published 0.20.0 still over-reads | release (owner); duckdb-rs report (owner) |
+| QRS-002 | P0 | confirmed | V: report #10 C repro on 2.0.1: destroy sees 4096 states, 1096 never initialised; new window C repro on 2.0.1: unwritten pointer entry is NULL → SIGSEGV in destroy; S: window_aggregate_states.cpp sets count before init loop | upstream defect, SDK mitigation accepted (INDEP-B); add NULL-pointer skip in destroy_callback (V: lets the C repro survive on 1.5.6 and 2.0.1 for fail points 0,1,3,7,50); docs to 2.0.1 |
+| QRS-003 | P0 | duplicate | docs/upstream-duckdb-reports.md item 36; A+S: prepared-c.cpp:85-95 unchanged in 2.0.1 | add 2.0.1 to item 36 |
+| QRS-004 | P0 | needs a decision | S: write_decimal is `unsafe fn` (writer.rs:661); try_write_decimal (72d2b3f) checks magnitude against caller width, not the vector's type | recommend additive type-derived checked writer |
+| QRS-005 | P0 | confirmed | A: no ci.yml job uses 1.20001.0 or runs the live suite on libduckdb 2.0.1; Cargo.lock pins 1.10506.1 | add test-duckdb-2-0-1 job |
+| QRS-006 | P0 | confirmed | V: ruleset 13610785 rules = deletion, non_fast_forward, pull_request(0 approvals); no status-check rule. GOVERNANCE.md:35-37, RELEASING.md:19, ci.yml:670 say CI passed is required | require check (owner); correct docs |
+| QRS-007 | P1 | confirmed | S: api_init.rs:281-283 takes the whole compiled struct when an unlisted engine equals the declared version; a false declaration restores the over-read | bound the read to the C API version's guaranteed slots |
+| QRS-008 | ↑P0 | confirmed | V: safe append_default_to_chunk(&chunk, 0, row) on a VARCHAR column, libduckdb 2.0.1: row 2048 → Ok (unchecked write past the buffer), row 2^40 and u64::MAX → SIGSEGV; 1.5.6 refuses all | bounds-check col and row in the wrapper; regression test |
+| QRS-009 | P1 | not a defect | A: counter private, messages say "up to" (appender.rs:307,318) | doc wording: appender.rs:65, lifecycle.rs:47, book appender.md:199 say "how many" |
+| QRS-010 | P1 | not a defect | A: every reader/writer/child constructor and every read/write is `unsafe fn`; no safe path to a dangling view | doc: mention reset in DataChunk::reader/writer Safety |
+| QRS-011 | P1 | confirmed | S: next_row is safe (chunk_writer.rs:163), Drop publishes row_count (:312-318); the write-every-claimed-row obligation is in no `# Safety` section | add the obligation to Safety of new/with_capacity/into_chunk_writer; correct L21 + module docs for VARCHAR/BLOB |
+| QRS-012 | P1 | needs a decision | A: get_entry_checked exists (complex.rs:297); ListBuilder overflow writes NULL, finish() returns () | recommend additive try_finish |
+| QRS-013 | P1 | duplicate | AUDIT 15.1 INDEP-C; A: raw setters are safe fns taking `unsafe extern "C" fn`; documented SECURITY.md:89 | sealing raw setters = breaking design change, defer |
+| QRS-014 | P1 | duplicate | AUDIT 15.1 INDEP-F; A+S: cast/config/replacement scan bypass catalog in 2.0.1 | narrow the heading "Registration is transactional" |
+| QRS-015 | P1 | not a defect | A: all raw-pointer Arrow entry points are `unsafe fn`; release-once traced through arrow-c.cpp:149-174 | — |
+| QRS-016 | P1 | needs a decision | A: query docs accurate; known-limitations.md:471-483 records 2.0.0 behaviour only | recommend additive single-statement API + 2.0.1 doc |
+| QRS-017 | P1 | needs a decision | A: P17 and known-limitations cover it; SECURITY.md has no trust-model statement | recommend a trust-model paragraph in SECURITY.md |
+| QRS-018 | P1 | already fixed | A: deny all-features, 5 lockfiles OSV-scanned, chrono ignore bound by a CI reachability proof (ci.yml:1742-1767) | stale doc deny.toml:12-15 (cites removed RUSTSEC-2026-0235); SBOM is a feature request |
+| QRS-019 | P1 | confirmed | A: an unlisted `latest` is only warned (fetch-duckdb.sh:84-91) and feeds blocking jobs and the release gate | make unverified latest non-blocking or fail-closed in release |
+| QRS-020 | P1 | needs a decision | A: ASan runs on prebuilt jemalloc libduckdb (documented blind spot); no UBSan/TSan/fault injection | recommend scheduled ASan job on a from-source DuckDB |
+| QRS-021 | P1 | needs a decision | A: scanner is lexical; V(agent): crashes with ValueError on a non-v1 header | fix crash; rename "wrapped" to "referenced" |
+| QRS-022 | P1 | not a defect | A: documented scope (known-limitations.md:389-428); entry_point_v2! is C API v1 and nothing says so at the macro | doc at macro; v2 backend is roadmap work |
+| QRS-023 | P1 | not a defect | A+S: LoadStaticCAPIExtension passes get_api = nullptr (extension_load.cpp:208), documented known-limitations.md:430-442 | cite 2.0.1 |
+| QRS-024 | P1 | needs a decision | A: no truncating `as` on a safe path; numeric contract page absent; book dates-and-times.md:163 `unscaled * 2` can overflow | fix book example; numeric-contract page |
+| QRS-025 | P1 | needs a decision | A: engine behaviour, mostly outside SDK scope | covered by QRS-005 job |
+| QRS-026 | P1 | not a defect | A: set_max_threads(1) and projection refusal documented and tested | — |
+| QRS-027 | P2 | confirmed | V: crates.io 0.3.0–0.16.0 yanked (records updated 2026-10-31 10:05); SECURITY.md:37-38 says none yanked; main holds an unreleased Security fix | correct SECURITY.md and AUDIT 15.4; release/advisory (owner) |
+| QRS-028 | P2 | needs a decision | A: micro and in-engine A/B benchmarks exist; no budgets | document native memory outside memory_limit |
+| QRS-029 | P1 | needs a decision | A: bindings' 546 process-wide AtomicPtrs overwritten by every load, including a load Strict then refuses (entry_point.rs:640 before :652); not run | recommend pinning the first engine + doc |
+| QRS-030 | P2 | needs a decision | A: 19 compile_fail doctests exist (reviewer implies none); prelude re-exports raw builders | additive prelude::safe, defer |
+
+Thirty rows, counted from the table with `table_counts.py`: eleven need a decision, eight
+confirmed, six not a defect, three duplicates of items already recorded, two already fixed.
+By the report's severity: of the seven P0 rows (six, and QRS-008 raised), four are confirmed,
+one already fixed, one a duplicate and one needs a decision.
+
+Two baselines were taken before any change: `cargo test --all-targets --no-fail-fast` with
+default features, 1,169 passed and 0 failed; with `bundled-test-prebuilt,duckdb-1-5-4`
+against libduckdb v1.5.6, 1,853 passed and 0 failed. The report's API inventory
+(`validation/api_inventory.py`, run with `-I` on a copy) passes against the v2.0.1 tag: 548
+v1 slots, 641 v2 slots, and its 641-name snapshot equal to the header's.
+
+Where the report is wrong:
+
+- **QRS-027.** "Earlier unsound versions still unyanked" is not so. crates.io lists 0.3.0
+  to 0.16.0 as yanked, each record last updated on 2026-10-31 between 10:05:21 and 10:05:33
+  (the yank, by inference). This repository says the opposite in `SECURITY.md` and in 15.4,
+  which recorded a decision on 2026-11-11 not to yank: both were already stale when written.
+- **QRS-008** understates. The report calls the default-to-chunk path a candidate with no
+  demonstrated undefined behaviour; on DuckDB 2.0.1 a safe call writes past a vector's buffer
+  and returns `Ok`, and with a larger row the process segfaults (16.2).
+- **QRS-030** implies the crate has no compile-fail contract examples; it has 19.
+- **QRS-019** understates: an unlisted `latest` DuckDB is only warned about, and it feeds
+  blocking jobs, and so the release gate.
+- **QRS-007**: "known releases cross-check slot count, not full runtime signatures" misses that
+  `scripts/check-abi-table.py` compares every listed release's full declarations; the
+  same-count reordering risk exists only for an unlisted, declared release.
+
+### 16.2 The new reproductions
+
+- **QRS-008, V.** A throwaway test binary built on `libduckdb-sys` 1.10506.1 calls
+  `appender.append_default_to_chunk(&chunk, col, row)`, safe code after setup, on a
+  `(s VARCHAR, i INTEGER)` table and a two-column `OwnedDataChunk`. Against libduckdb v1.5.6
+  every out-of-range call is refused ("Too many rows for chunk!" for any row, "Attempted to
+  access index 999" for `col = 999`). Against libduckdb v2.0.1 (the same binary, the library
+  swapped by `LD_LIBRARY_PATH`; `ldd` shows it): row 2047, `Ok`; `col = 999`, refused; the
+  INTEGER column at row 2048, refused ("Vector::SetValue index 2048 is out of range");
+  **the VARCHAR column at row 2048, `Ok`**; at row 2^40 and at `u64::MAX`, **SIGSEGV** (exit
+  139). In the v2.0.1 source `VectorStringBuffer::SetValue` indexes without a check and
+  `ValidityMask::SetValid` / `SetInvalid` check the row only under `#ifdef DEBUG`
+  (`validity_mask.hpp`).
+- **QRS-002, V.** Item 10 of `docs/upstream-duckdb-reports.md`, compiled unchanged against
+  v1.5.6 and v2.0.1: on both, `init` fails on its 3,001st call and `destroy` is handed 4,096
+  states, 1,096 never initialised. A window variant written here (the same plain C aggregate,
+  `csum(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING)` over `range(100)`,
+  `init` failing on its fourth call) dies with SIGSEGV on both: `destroy` receives the three
+  initialised states, the failed slot, and an entry `WindowAggregateStates::Initialize` never
+  wrote, which reads as NULL here. With `if (!p) continue;` in the destructor the same program
+  exits cleanly on both releases for failure on the 1st, 2nd, 4th, 8th and 51st `init`. That
+  is this query shape only: the measurements in `known-limitations.md` (55 of 68 and 65 of 68
+  pointers garbage) came from another, where the unwritten entries were not NULL.
+
+### 16.3 Decisions
+
+The owner chose, on 2026-11-25: fix every confirmed row and every stale document, add the
+recommended additive APIs for the decision rows, and write a design and slot inventory for a
+C API v2 and static backend (QRS-022, QRS-023) without implementing them; breaking changes
+are allowed, so the next release is 0.21.0.
+
+One breaking change the report suggests is not made: turning the raw callback setters into
+`unsafe fn` (QRS-013). An unguarded callback that panics aborts the process (Rust 1.81 and
+later turn an unwind out of `extern "C"` into an abort); it is not undefined behaviour, and
+`unsafe` marks undefined behaviour. Spending it on an abort would make every `unsafe` block
+in an extension less informative. The setters stay safe, as INDEP-C (15.1) decided.
+
+Owner-only actions are listed in 16.5 as the work lands.
