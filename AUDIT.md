@@ -3769,24 +3769,24 @@ pull request, stacked on the one for 15.1–15.8:
 Correction to the review: `check-abi-table.py` and `check-autoload-entries.py` already retried;
 the single-attempt fetches were in four other scripts and the mdBook download.
 
-**Open, for the owner** (not changed):
-- Replace `test-bundled`'s 10-minute `Doc --all-features` step, which mirrors a `release.yml`
-  job that no longer exists, with `cargo doc --features _duckdb-testing,duckdb-1-5-4` in `doc`;
-  drop the `check` job and three `cargo check` steps that `clippy` and `test` cover. This
-  reverses 13.3's decision to leave the step.
-- A SHA-256 table for the pinned DuckDB downloads (about 26 per run, of about 10 distinct
-  files), verified by `fetch-duckdb.sh`, optionally with a `main`-written download cache. This
-  reverses 11.3, which declined checksums because the token is read-only; `ci.yml` is also
-  `release.yml`'s gate.
-- A `paths:` filter on `coverage.yml`, only once Coverage is confirmed not to be a required
-  check; folding `leak-check` into `asan`.
-- The duplicate push and pull-request runs on `claude/**` (14.5, CI-10): drop one trigger,
-  skip the pull-request run for `claude/` branches, or accept about 170–310 runner-minutes per
-  push. Making the concurrency groups equal is not an option: the second run would cancel the
-  first and can leave the pull request showing a cancelled required check.
+**Decided by the owner on 2026-11-25 and done in the same pull request** (the owner asked for
+the best-supported choice on each; the reasoning is in each commit message):
 
-**Found while testing, not changed:** `scripts/check-extension-names.py` fails against
-upstream (DuckDB `main` and the 2.0 docs add a core extension `glue`, which
-`DUCKDB_CORE_EXTENSION_NAMES` lacks), and no workflow runs the script, although
-`src/validate/extension_name.rs` says CI does.
+| Item | Decision | Commit |
+|---|---|---|
+| `glue` and the unused extension-name check | `glue` reserved (35 core, 45 reserved names); `extension-names` job runs `check-extension-names.py` through `upstream-guard.sh` | `d6b2fec` |
+| DuckDB download integrity (reverses 11.3) | `scripts/duckdb-sha256.txt` for 22 assets (v1.4.4 – v2.0.1, CLI and library), verified by `fetch-duckdb.sh`: a mismatch or an unlisted pinned tag fails, an unlisted `latest` warns. Trust on first use (two matching downloads each); GitHub's per-asset digest was not reachable here. No download cache: integrity, not 0.1 minute, was the point | `e6343fc` |
+| `Doc --all-features` and `check` (reverses 13.3) | the 10-minute step is replaced by `cargo doc --features _duckdb-testing,duckdb-1-5-4` in `doc` (16 s locally, `InMemoryDb` documented), guarded by a step that fails on any `bundled-test*` cfg in `src/`; `check` removed as a subset of `clippy` | `f04e246` |
+| Coverage on pull requests | a fail-safe `changes` job; the coverage job is skipped only when detection succeeded and found nothing coverage builds or measures; per job, not a workflow `paths:` filter, so a skipped run passes if Coverage is ever required | `85d5de7` |
+| Duplicate `claude/**` runs (14.5, CI-10) | `push` on `main` only; `pull_request` into `main` and into `claude/**` (stacked pull requests). One run per push, testing the merge result; a branch with no pull request is tested by `workflow_dispatch` or a draft pull request | `4bba183` |
+
+Still open: folding `leak-check` into `asan` (needs care: `asan` sets `detect_leaks=0`, and
+`leak-check`'s probe must survive), and the three redundant `cargo check` steps in
+`test-duckdb-1-5`.
+
+**For the owner (a repository setting; nothing was changed):** no status check is required on
+`main`. Its ruleset requires a pull request and forbids deletion and force pushes, but the
+branch's `required_status_checks` enforcement is "off" with no contexts (read on 2026-11-25),
+although the workflow README and the `ci-ok` comment call `CI passed` the required check. Until
+it is required, a pull request can be merged with CI red.
 
