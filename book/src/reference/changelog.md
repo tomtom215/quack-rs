@@ -60,7 +60,9 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from slot 7 (`duckdb_library_version`, in the stable prefix every engine
   provides) and the layout table, or from `QUACK_RS_BUILT_AGAINST_DUCKDB` for a
   release the table lacks; for a release neither knows, `AbiPolicy::Strict` takes
-  the stable prefix and every other policy the whole compiled struct, as before,
+  what DuckDB guarantees for the C API version the extension asked for (the 546
+  slots of C API v1.5.6 for v1.5.6 or later, the 357-slot stable prefix before
+  it) and every other policy the whole compiled struct, as before,
   so `Trust` with a `C_STRUCT_UNSTABLE` binary and `AllowUnknownEngine` keep
   working on releases quack-rs has not catalogued. A slot the engine does not have
   is NULL, so a wrapper that needs it panics (a caught panic, an SQL error) rather

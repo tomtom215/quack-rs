@@ -201,8 +201,10 @@ and holding only the slots the engine has. The count comes from slot 7
 (`duckdb_library_version`, in the stable prefix every engine provides, so safe to read first)
 and the layout table; for a release the table does not list, from the build's
 `QUACK_RS_BUILT_AGAINST_DUCKDB` declaration if it names that release, and otherwise `Strict`
-takes only the stable prefix (it refuses such an engine anyway, or the build never goes past
-the prefix) while every other policy takes the whole compiled struct, as the bindings always
+takes what DuckDB guarantees for the C API version the extension asked for: the 546 slots of
+C API v1.5.6 (declared under `DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`) for v1.5.6 or later,
+the 357-slot stable prefix before it. `Strict` refuses such an engine anyway, or the build
+never goes past that, while every other policy takes the whole compiled struct, as the bindings always
 did, because those policies exist to run on releases the table lacks. A slot the engine does
 not have is NULL: the bindings skip it, and a wrapper that needs it panics (a caught panic,
 an ordinary SQL error) instead of calling whatever followed the engine's table.

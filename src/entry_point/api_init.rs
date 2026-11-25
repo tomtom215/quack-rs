@@ -38,9 +38,14 @@
 //! 2. The build declared it was made against exactly this release
 //!    ([`abi::built_against_version`], `QUACK_RS_BUILT_AGAINST_DUCKDB`): the
 //!    compiled struct is the engine's, so all of it.
-//! 3. Neither, an unknown release. Under [`AbiPolicy::Strict`] the stable prefix
-//!    only, because a build that calls beyond it is refused on an unknown engine
-//!    anyway and one that does not never reads beyond it. Under any other policy
+//! 3. Neither, an unknown release. Under [`AbiPolicy::Strict`], what `DuckDB`
+//!    guarantees for the C API version the extension asked `get_api` for: the
+//!    546 slots of C API v1.5.6 for v1.5.6 or later (its header declares slots
+//!    404 – 545 under `DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`, and `get_api` hands
+//!    a struct out for that version only on an engine that has them), and the
+//!    357-slot stable prefix for anything older. A build that calls beyond that is
+//!    refused on an unknown engine anyway, and one that does not never reads
+//!    beyond it. Under any other policy
 //!    the whole compiled struct, which is what the bindings always did: those
 //!    policies exist so an extension can run on a release quack-rs has not
 //!    catalogued (`Trust` with a `C_STRUCT_UNSTABLE` binary, `AllowUnknownEngine`),
@@ -76,6 +81,22 @@ type Slot = Option<unsafe extern "C" fn()>;
 /// The slot of `duckdb_library_version`: eighth of the stable prefix, in every
 /// release from v1.2.0.
 const LIBRARY_VERSION_SLOT: usize = 7;
+
+/// The slots `DuckDB` promises an extension that asks for C API v1.5.6 or later:
+/// all of `duckdb_ext_api_v1` as v1.5.6 declares it (slots 404 – 545 are under
+/// `DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)` in v1.5.6's, v2.0.0's and v2.0.1's
+/// `duckdb_extension.h`; v2.0.x appends two more under the same guard).
+const C_API_1_5_6_SLOT_COUNT: usize = 546;
+
+/// What an engine whose release quack-rs does not know is guaranteed to hand an
+/// extension that asked for C API `api_version`, the fallback under
+/// [`AbiPolicy::Strict`]. An unparseable version falls back to the v1.2.0 prefix.
+fn guaranteed_slots_for(api_version: &str) -> usize {
+    match abi::parse_version(api_version) {
+        Some(version) if version >= (1, 5, 6) => C_API_1_5_6_SLOT_COUNT,
+        _ => STABLE_API_SLOT_COUNT,
+    }
+}
 
 // The bindings are one slot-sized field after another, and the version function
 // is where this module believes it is. A bindings release that broke either would
@@ -144,7 +165,7 @@ pub(super) unsafe fn init_dispatch_table(
     policy: AbiPolicy,
 ) -> Result<bool, &'static str> {
     let unknown_slots = if policy == AbiPolicy::Strict {
-        STABLE_API_SLOT_COUNT
+        guaranteed_slots_for(api_version)
     } else {
         abi::compiled_slot_count()
     };
@@ -334,6 +355,26 @@ mod tests {
         assert_eq!(engine_table_slots(None, None, COMPILED), COMPILED);
     }
 
+    #[test]
+    fn strict_takes_what_the_requested_c_api_version_guarantees() {
+        assert_eq!(guaranteed_slots_for("v1.2.0"), STABLE_API_SLOT_COUNT);
+        assert_eq!(guaranteed_slots_for("v1.5.5"), STABLE_API_SLOT_COUNT);
+        assert_eq!(guaranteed_slots_for("v1.5.6"), C_API_1_5_6_SLOT_COUNT);
+        assert_eq!(guaranteed_slots_for("1.5.6"), C_API_1_5_6_SLOT_COUNT);
+        assert_eq!(guaranteed_slots_for("v1.6.0"), C_API_1_5_6_SLOT_COUNT);
+        assert_eq!(guaranteed_slots_for("v2.0.0"), C_API_1_5_6_SLOT_COUNT);
+        // Not a version the bindings could have asked for: the safe floor.
+        assert_eq!(guaranteed_slots_for("v1"), STABLE_API_SLOT_COUNT);
+        assert_eq!(guaranteed_slots_for("v1.5.6-dev1"), STABLE_API_SLOT_COUNT);
+        // The constants agree with the layout table: C API v1.5.6 is the whole
+        // v1.5.6 struct, and the v1.2.0 prefix fits inside every known layout.
+        assert_eq!(
+            abi::expected_slot_count("v1.5.6"),
+            Some(C_API_1_5_6_SLOT_COUNT)
+        );
+        assert!(abi::expected_slot_count("v1.2.0").is_some_and(|s| s >= STABLE_API_SLOT_COUNT));
+    }
+
     // ── bounded_get_api against a mock engine ────────────────────────────────
     //
     // The mock table is allocated at exactly the engine's slot count, so Miri
@@ -441,6 +482,18 @@ mod tests {
         // with that one slot a hole in what was copied.
         let slots = handed_back(STABLE_API_SLOT_COUNT, None, STABLE_API_SLOT_COUNT);
         assert_copied(&slots, STABLE_API_SLOT_COUNT, Some(LIBRARY_VERSION_SLOT));
+    }
+
+    #[test]
+    fn an_unknown_release_asked_for_c_api_1_5_6_under_strict_gets_the_whole_1_5_6_struct() {
+        // Exactly the 546 slots C API v1.5.6 guarantees, from an engine with
+        // no more than that: Miri reports a read of even one slot more.
+        let slots = handed_back(
+            C_API_1_5_6_SLOT_COUNT,
+            Some(c"v9.9.9"),
+            guaranteed_slots_for("v1.5.6"),
+        );
+        assert_copied(&slots, C_API_1_5_6_SLOT_COUNT.min(COMPILED), None);
     }
 
     #[test]
