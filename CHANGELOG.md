@@ -103,6 +103,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **RUSTSEC-2026-0543 (`chrono` unmaintained) is suppressed, with a reason CI re-proves.**
+  The advisory covers every `chrono` version, so there is no release to move to, and it
+  failed `cargo-deny` and the OSV scan from 2026-11-23. `chrono` enters only as
+  quack-rs → `duckdb` → `arrow-*` → `chrono`, and `duckdb` is the optional dependency of
+  the test features `bundled-test` / `bundled-test-prebuilt`: with the default or any
+  `duckdb-1-5*` feature it is not in the graph, so no extension built with quack-rs links
+  it. The entry is in `deny.toml`, `deny.ci-crates.toml` (the fuzz and book-doctest
+  crates) and `osv-scanner.toml`, each with its reason, and the `osv-scan` job's new step
+  `Confirm the suppressed advisories are still test-only` fails if `chrono` enters the
+  production graph (normal and build edges, every target, `duckdb-1-5-4`; anchored on
+  `libduckdb-sys` being present) or stops being reached through `duckdb`, so the entry
+  cannot outlive its reason (the rule `osv-scanner.toml` already stated). VALIDATED
+  locally: the step passes on the real tree and fails with its message in both negative
+  controls; `cargo deny check` passes on the root and the three CI crates. Not run here:
+  `osv-scanner` itself with the new entry.
+- **Beta clippy's `doc_markdown` finding** in `tests/property_inputs.rs` (`DuckDB` without
+  backticks), which failed the informational `clippy-beta` job; `cargo +beta clippy`
+  (1.101.0-beta.3) with the job's features is clean.
 - **`scripts/fetch-duckdb.sh` retries a transient download failure.** Four jobs of
   the scheduled run of 2026-11-09 (`Test bundled-test-prebuilt`, `Test against
   DuckDB v2.0.0`, `AddressSanitizer`, `LeakSanitizer`) failed on one HTTP 504 from

@@ -1629,6 +1629,41 @@ jobs:
             "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
           echo "${SHA}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
+      # osv-scanner.toml (and deny.toml) suppress RUSTSEC-2026-0543, `chrono`
+      # unmaintained, on the grounds that only the test-only `duckdb` dependency
+      # reaches it. Re-prove that before the scan, so the suppression cannot
+      # outlive its reason. The production graph (normal + build edges, every
+      # target, every non-test feature) must not contain chrono, and must
+      # contain libduckdb-sys, so an empty or failed tree proves nothing. The
+      # test graph must still reach chrono through duckdb; if it stops, the
+      # entry is stale and has to be removed. `cargo tree` prints nothing for a
+      # package outside the graph, so presence is checked by text, not status.
+      - name: Confirm the suppressed advisories are still test-only
+        run: |
+          set -euo pipefail
+          prod=$(cargo tree --locked --target all -e normal,build --features duckdb-1-5-4)
+          if ! grep -qE '(^|[^a-z_-])libduckdb-sys v[0-9]' <<<"$prod"; then
+            echo "::error::libduckdb-sys is absent from the production tree; chrono reachability is unverified"
+            exit 1
+          fi
+          if grep -qE '(^|[^a-z_-])chrono v[0-9]' <<<"$prod"; then
+            echo "::error::chrono is in the production dependency graph. Remove the RUSTSEC-2026-0543"
+            echo "::error::entries from osv-scanner.toml, deny.toml and deny.ci-crates.toml and address it."
+            exit 1
+          fi
+          # `-i chrono` fails outright when chrono is not in the graph at all.
+          if ! test_tree=$(cargo tree --locked --target all -e normal --features bundled-test-prebuilt -i chrono 2>&1); then
+            echo "::error::chrono is not in the test dependency graph (cargo tree output below)."
+            echo "::error::If that is so, remove the RUSTSEC-2026-0543 entries from osv-scanner.toml, deny.toml and deny.ci-crates.toml."
+            echo "$test_tree"
+            exit 1
+          fi
+          if ! grep -qE '(^|[^a-z_-])duckdb v[0-9]' <<<"$test_tree"; then
+            echo "::error::chrono is no longer reached through the duckdb test dependency."
+            echo "::error::Remove the RUSTSEC-2026-0543 entries from osv-scanner.toml, deny.toml and deny.ci-crates.toml."
+            exit 1
+          fi
+          echo "chrono: absent from the production graph, reached only through the duckdb test dependency"
       - name: Scan every committed lockfile against OSV
         run: |
           set -euo pipefail
