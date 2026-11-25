@@ -44,7 +44,10 @@ DuckDB version", 2.0.0 itself put two slots (`duckdb_create_timestamp_tz_ns` and
 release inserted a slot in the middle of the struct. What to do when a new release appears:
 check the release's `duckdb_extension.h` against the one you built with, then rebuild with
 `QUACK_RS_TARGET_DUCKDB_VERSION` set to it, or move to a quack-rs release that lists it; or stay
-on the default features, which only use the stable prefix and are not affected. See [ABI
+on the default features, which only use the stable prefix and are not affected. A declared
+build reads only the 546 slots DuckDB guarantees for C API v1.5.6 from an unlisted release;
+calling a slot past them (on 2.0, `duckdb_create_timestamp_tz_ns` and
+`duckdb_get_timestamp_tz_ns`) fails as an SQL error there until quack-rs lists the release. See [ABI
 Compatibility](../concepts/abi.md#unknown-duckdb-versions).
 
 ### A function that reads a setting must be marked volatile
@@ -235,12 +238,19 @@ window function with a `ROWS` or `RANGE` frame, DuckDB's
 `WindowAggregateStates` destroys its whole table of state pointers, including
 entries it never wrote. The destructor is handed garbage pointers. A plain C
 aggregate shows it, with no Rust involved: on DuckDB 1.5.6 55 of 68 pointers
-passed to the destructor were garbage, and on 2.0.0 65 of 68. quack-rs's
-`FfiState` reports a panic in `T::default()` as a SQL error, which is exactly this
-trigger; its tag check cannot help, since there is no slot to read. Ungrouped,
-grouped, `DISTINCT` and `FILTER` aggregates report a clean error; a window shape
-kills the process (`SIGSEGV` or `SIGBUS`). **`T::default()` must not panic** for an
-aggregate that can run as a window function.
+passed to the destructor were garbage, and on 2.0.0 65 of 68. DuckDB 2.0.1 is
+unchanged (`WindowAggregateStates::Initialize` still sets the count before its
+init loop): in a five-row frame over `range(100)` whose fourth `init` fails, a
+plain C destructor is handed the three states, the failed slot and a NULL entry,
+and dies with `SIGSEGV` on 1.5.6 and 2.0.1. quack-rs's `FfiState` reports a panic
+in `T::default()` as a SQL error, which is exactly this trigger. Since the
+maintainer review of 2026-11-25 its destructor skips a NULL entry (the C
+destructor doing the same survives on both releases), but a non-null garbage
+entry, as in the 68-pointer case, cannot be told from a state, and its tag check
+cannot help, since there is no slot to read. Ungrouped, grouped, `DISTINCT` and
+`FILTER` aggregates report a clean error; a window shape can kill the process
+(`SIGSEGV` or `SIGBUS`). **`T::default()` must not panic** for an aggregate that
+can run as a window function.
 
 ### An abandoned stream keeps its table-function state (DuckDB 1.x behaviour)
 

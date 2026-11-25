@@ -56,8 +56,28 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `duckdb_data_chunk_from_arrow` does not (see Fixed), and quack-rs no longer
   wraps it with `from_raw`.
 
+- **The rule for rows a `ChunkWriter` claims is part of its `# Safety` contract
+  (QRS-011).** `ChunkWriter::new`, `with_capacity` and
+  `DataChunk::into_chunk_writer` now require every claimed row that is not given
+  back to be written in every column before the writer drops; it was stated only
+  in prose on the safe `next_row`. The docs also no longer call the result only a
+  wrong answer: DuckDB resets the output chunk before every scan call and drops a
+  `VARCHAR`/`BLOB` vector's string heap with it, so an unwritten row of such a
+  column can hold an earlier call's string record pointing into memory the vector
+  no longer holds (read in the v2.0.1 source; LESSONS L21).
+
 ### Fixed
 
+- **`FfiState::destroy_callback` skips a NULL state pointer (QRS-002).** DuckDB's
+  window path hands an aggregate's destructor entries of its state-pointer table
+  that it never wrote when an `init` fails, still on 2.0.1. In a five-row frame
+  they read as NULL on 1.5.6 and 2.0.1, and a plain C destructor dies with
+  SIGSEGV; the same destructor with a NULL check survives (VALIDATED, `AUDIT.md`
+  section 16). `FfiState` reports a panic in `T::default()` as that `init`
+  failure. A non-null garbage entry still cannot be detected, so
+  `T::default()` must still not panic in an aggregate a window can run.
+  `destroy_skips_a_null_inline_state_pointer` and its boxed twin fail under Miri
+  without the check ("got null pointer").
 - **`OwnedDataChunk::capacity` is right for a chunk imported from Arrow.** It
   returned `duckdb_vector_size()` for every chunk, but
   `duckdb_data_chunk_from_arrow` sizes the chunk's vectors by the Arrow array's
@@ -69,6 +89,16 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **A `QUACK_RS_TARGET_DUCKDB_VERSION` declaration no longer widens what `LOAD`
+  reads from the engine's table (QRS-007).** For a release the layout table does
+  not list, a declaration naming that release made `AbiPolicy::Strict` take the
+  whole compiled struct, so a wrong declaration (a build relocked to other
+  bindings, a mistyped version) brought back the over-read the entry above fixes.
+  The declaration still lets `Strict` load on that release; the copy is now always
+  what DuckDB guarantees for the C API version asked for (546 slots for C API
+  v1.5.6 or later). A declared build that calls a slot past that gets an SQL error
+  for the call. Unit tests in `entry_point/api_init.rs` pin the fallback for
+  unlisted releases, `v2.0.2` among them.
 - **`Appender::append_default_to_chunk` no longer lets safe code write past a
   vector (QRS-008).** It handed `col` and `row` to `duckdb_append_default_to_chunk`
   unchecked, and DuckDB 2.0 does not check the row for every column type in a
@@ -101,8 +131,8 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the bindings' `get_api` returns a **zero-padded copy** of the engine's table, as
   long as the bindings' struct, holding the slots the engine has. The count comes
   from slot 7 (`duckdb_library_version`, in the stable prefix every engine
-  provides) and the layout table, or from `QUACK_RS_BUILT_AGAINST_DUCKDB` for a
-  release the table lacks; for a release neither knows, `AbiPolicy::Strict` takes
+  provides) and the layout table; for a release the table lacks (declared by
+  `QUACK_RS_TARGET_DUCKDB_VERSION` or not; see the QRS-007 entry above), `AbiPolicy::Strict` takes
   what DuckDB guarantees for the C API version the extension asked for (the 546
   slots of C API v1.5.6 for v1.5.6 or later, the 357-slot stable prefix before
   it) and every other policy the whole compiled struct, as before,

@@ -343,8 +343,12 @@ impl DataChunk {
     ///
     /// # Safety
     ///
-    /// This chunk must be a valid, writable output chunk from a table function
-    /// scan callback.
+    /// - This chunk must be a valid, writable output chunk from a table
+    ///   function scan callback.
+    /// - Every row the writer claims and does not give back must be written in
+    ///   every column before it drops, as [`ChunkWriter::new`] requires: an
+    ///   unwritten `VARCHAR` or `BLOB` row can point into string memory `DuckDB`
+    ///   has released.
     pub unsafe fn into_chunk_writer(self) -> ChunkWriter {
         // SAFETY: self.raw is valid per constructor's contract.
         unsafe { ChunkWriter::new(self.raw) }

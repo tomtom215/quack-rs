@@ -35,17 +35,21 @@
 //!
 //! 1. The verified layout table ([`abi::expected_slot_count`]) knows the engine's
 //!    release: that count.
-//! 2. The build declared it was made against exactly this release
-//!    ([`abi::built_against_version`], `QUACK_RS_BUILT_AGAINST_DUCKDB`): the
-//!    compiled struct is the engine's, so all of it.
-//! 3. Neither, an unknown release. Under [`AbiPolicy::Strict`], what `DuckDB`
+//! 2. Otherwise, an unknown release. Under [`AbiPolicy::Strict`], what `DuckDB`
 //!    guarantees for the C API version the extension asked `get_api` for: the
 //!    546 slots of C API v1.5.6 for v1.5.6 or later (its header declares slots
 //!    404 – 545 under `DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`, and `get_api` hands
 //!    a struct out for that version only on an engine that has them), and the
-//!    357-slot stable prefix for anything older. A build that calls beyond that is
-//!    refused on an unknown engine anyway, and one that does not never reads
-//!    beyond it. Under any other policy
+//!    357-slot stable prefix for anything older. This holds even when the build
+//!    declared it was made against exactly this release
+//!    ([`abi::built_against_version`], `QUACK_RS_BUILT_AGAINST_DUCKDB`): the
+//!    declaration lets `Strict` load on the engine, but it is the build's
+//!    assertion, not something checked, and a wrong one would otherwise make
+//!    the bindings read the whole compiled struct out of a shorter table (the
+//!    maintainer review of 2026-11-25, QRS-007). A declared build that calls a
+//!    slot past the guarantee gets that slot's caught "not initialised" panic
+//!    instead; `Trust` or `AllowUnknownEngine` take the whole struct. Under any
+//!    other policy
 //!    the whole compiled struct, which is what the bindings always did: those
 //!    policies exist so an extension can run on a release quack-rs has not
 //!    catalogued (`Trust` with a `C_STRUCT_UNSTABLE` binary, `AllowUnknownEngine`),
@@ -262,26 +266,16 @@ unsafe fn engine_table_slots_at(table: *const Slot, unknown_slots: usize) -> usi
         // SAFETY: non-null, NUL-terminated, static (as above).
         unsafe { CStr::from_ptr(text) }.to_str().ok()
     });
-    engine_table_slots(version, abi::built_against_version(), unknown_slots)
+    engine_table_slots(version, unknown_slots)
 }
 
 /// The slot count to take from an engine, from what is known about it. Pure, so
 /// every branch is testable without an engine.
-fn engine_table_slots(
-    engine_version: Option<&str>,
-    declared: Option<&str>,
-    unknown_slots: usize,
-) -> usize {
+fn engine_table_slots(engine_version: Option<&str>, unknown_slots: usize) -> usize {
     let Some(version) = engine_version else {
         return unknown_slots;
     };
-    if let Some(slots) = abi::expected_slot_count(version) {
-        return slots;
-    }
-    if declared.is_some_and(|d| abi::parse_version(d) == abi::parse_version(version)) {
-        return abi::compiled_slot_count();
-    }
-    unknown_slots
+    abi::expected_slot_count(version).unwrap_or(unknown_slots)
 }
 
 #[cfg(test)]
@@ -300,59 +294,45 @@ mod tests {
             ("v1.5.1", 545),
             ("v1.5.6", 546),
             ("v2.0.0", 548),
+            ("v2.0.1", 548),
         ] {
-            // Whatever the build declares or the policy allows.
-            for declared in [None, Some("v9.9.9"), Some(version)] {
-                for unknown in [STABLE_API_SLOT_COUNT, COMPILED] {
-                    assert_eq!(
-                        engine_table_slots(Some(version), declared, unknown),
-                        slots,
-                        "{version}, declared {declared:?}, unknown {unknown}"
-                    );
-                }
+            // Whatever the policy allows.
+            for unknown in [STABLE_API_SLOT_COUNT, C_API_1_5_6_SLOT_COUNT, COMPILED] {
+                assert_eq!(
+                    engine_table_slots(Some(version), unknown),
+                    slots,
+                    "{version}, unknown {unknown}"
+                );
+            }
+        }
+    }
+
+    /// QRS-007 (`AUDIT.md` section 16): an unknown release gets its policy's
+    /// fallback even when the build declared it was made against that release.
+    /// The declaration used to lift `Strict`'s bound to the whole compiled
+    /// struct, so a wrong declaration brought back the over-read the bound
+    /// exists to prevent. `engine_table_slots` no longer takes the declaration
+    /// at all; this pins what it returns instead.
+    #[test]
+    fn an_unknown_release_gets_the_fallback_for_its_policy() {
+        for engine in ["v9.9.9", "9.9.9", "v2.0.2", "v1.6.0-dev42"] {
+            for unknown in [STABLE_API_SLOT_COUNT, C_API_1_5_6_SLOT_COUNT, COMPILED] {
+                assert_eq!(
+                    engine_table_slots(Some(engine), unknown),
+                    unknown,
+                    "{engine}, unknown {unknown}"
+                );
             }
         }
     }
 
     #[test]
-    fn an_unknown_release_the_build_declared_gets_the_whole_compiled_struct() {
-        assert_eq!(
-            engine_table_slots(Some("v9.9.9"), Some("v9.9.9"), STABLE_API_SLOT_COUNT),
-            COMPILED
-        );
-        // The same release written with or without the `v`.
-        assert_eq!(
-            engine_table_slots(Some("9.9.9"), Some("v9.9.9"), STABLE_API_SLOT_COUNT),
-            COMPILED
-        );
-    }
-
-    #[test]
-    fn an_unknown_release_nobody_declared_gets_the_fallback_for_its_policy() {
-        for declared in [None, Some("v9.9.8")] {
-            assert_eq!(
-                engine_table_slots(Some("v9.9.9"), declared, STABLE_API_SLOT_COUNT),
-                STABLE_API_SLOT_COUNT
-            );
-            assert_eq!(
-                engine_table_slots(Some("v9.9.9"), declared, COMPILED),
-                COMPILED
-            );
-        }
-        // A development build has no version a table or a declaration can name.
-        assert_eq!(
-            engine_table_slots(Some("v1.6.0-dev42"), None, STABLE_API_SLOT_COUNT),
-            STABLE_API_SLOT_COUNT
-        );
-    }
-
-    #[test]
     fn an_engine_that_reports_no_version_gets_the_fallback_for_its_policy() {
         assert_eq!(
-            engine_table_slots(None, Some("v1.5.6"), STABLE_API_SLOT_COUNT),
+            engine_table_slots(None, STABLE_API_SLOT_COUNT),
             STABLE_API_SLOT_COUNT
         );
-        assert_eq!(engine_table_slots(None, None, COMPILED), COMPILED);
+        assert_eq!(engine_table_slots(None, COMPILED), COMPILED);
     }
 
     #[test]

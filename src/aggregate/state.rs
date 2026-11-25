@@ -360,6 +360,10 @@ impl<T: AggregateState> FfiState<T> {
     /// there is no slot to read a tag from. Reproduced with a plain C
     /// aggregate, no Rust involved, on `DuckDB` 1.5.6 (55 of 68 pointers
     /// garbage) and 2.0.0 (65 of 68); the host dies with `SIGSEGV` or `SIGBUS`.
+    /// On 1.5.6 and 2.0.1, in a five-row frame over `range(100)`, the unwritten
+    /// entries read as NULL, and [`destroy_callback`][Self::destroy_callback]
+    /// skips a NULL entry, which a plain C destructor doing the same survives;
+    /// a non-null garbage entry, as in the 68-pointer case, still crashes.
     /// Ungrouped, grouped, `DISTINCT` and `FILTER` aggregates report a clean
     /// error. So: **`T::default()` must not panic** for an aggregate that can
     /// be used in a window.
@@ -462,6 +466,15 @@ impl<T: AggregateState> FfiState<T> {
         for i in 0..usize::try_from(count).unwrap_or(0) {
             // SAFETY: `states` is a valid array of `count` pointers.
             let state = unsafe { *states.add(i) };
+            // `DuckDB`'s window path passes entries of its state-pointer table
+            // it never wrote (see "A failing initialiser in a window frame" on
+            // `init_callback`). On 1.5.6 and 2.0.1 they read as NULL in the
+            // shape measured, and no state is ever at address zero, so skip
+            // them rather than read through a null pointer. A non-null garbage
+            // entry cannot be detected.
+            if state.is_null() {
+                continue;
+            }
             let payload = Self::payload(state);
             // SAFETY: the slot is `size()` bytes DuckDB allocated for this
             // aggregate, aligned to `usize`, so the tag word (and a boxed
@@ -940,6 +953,38 @@ mod tests {
             // SAFETY: the slot is allocated; a mismatched tag reads as no `T`.
             assert!(unsafe { FfiState::<T>::value(states[0]) }.is_none());
         }
+    }
+
+    /// QRS-002 (`AUDIT.md` section 16): `DuckDB`'s window path hands the
+    /// destructor entries of its pointer table it never wrote, NULL in the
+    /// shape measured on 1.5.6 and 2.0.1. A NULL entry is skipped and the
+    /// states around it are still dropped.
+    fn skips_a_null_state_pointer<T: AggregateState>() {
+        let _serial = tracked();
+        let live = TRACKED_LIVE.load(Ordering::SeqCst);
+        let mut words = slots::<T>(2, 0);
+        let base = words.as_mut_ptr();
+        let (first, second) = (state_at::<T>(base, 0), state_at::<T>(base, 1));
+        init::<T>(first);
+        init::<T>(second);
+        assert_eq!(TRACKED_LIVE.load(Ordering::SeqCst), live + 2);
+        let mut states = [first, core::ptr::null_mut(), second, core::ptr::null_mut()];
+        destroy::<T>(&mut states);
+        assert_eq!(
+            TRACKED_LIVE.load(Ordering::SeqCst),
+            live,
+            "both states dropped"
+        );
+    }
+
+    #[test]
+    fn destroy_skips_a_null_inline_state_pointer() {
+        skips_a_null_state_pointer::<Tracked>();
+    }
+
+    #[test]
+    fn destroy_skips_a_null_boxed_state_pointer() {
+        skips_a_null_state_pointer::<TrackedBig>();
     }
 
     #[test]

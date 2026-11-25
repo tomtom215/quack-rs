@@ -199,12 +199,14 @@ The entry points no longer hand it over. They wrap the `access` struct so that t
 `get_api` returns a **zero-padded copy** of the engine's table, as long as the bindings' struct
 and holding only the slots the engine has. The count comes from slot 7
 (`duckdb_library_version`, in the stable prefix every engine provides, so safe to read first)
-and the layout table; for a release the table does not list, from the build's
-`QUACK_RS_BUILT_AGAINST_DUCKDB` declaration if it names that release, and otherwise `Strict`
-takes what DuckDB guarantees for the C API version the extension asked for: the 546 slots of
-C API v1.5.6 (declared under `DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`) for v1.5.6 or later,
-the 357-slot stable prefix before it. `Strict` refuses such an engine anyway, or the build
-never goes past that, while every other policy takes the whole compiled struct, as the bindings always
+and the layout table; for a release the table does not list, `Strict` takes what DuckDB
+guarantees for the C API version the extension asked for: the 546 slots of C API v1.5.6
+(declared under `DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`) for v1.5.6 or later, the 357-slot
+stable prefix before it. That holds even when the build declares the release with
+`QUACK_RS_TARGET_DUCKDB_VERSION`: the declaration lets `Strict` load there, but it is the
+build's word, not something checked, and a wrong one must not make the bindings read past the
+engine's table. A declared build that calls a slot past the guarantee gets an error for that
+call (the slot is NULL). Every other policy takes the whole compiled struct, as the bindings always
 did, because those policies exist to run on releases the table lacks. A slot the engine does
 not have is NULL: the bindings skip it, and a wrapper that needs it panics (a caught panic,
 an ordinary SQL error) instead of calling whatever followed the engine's table.

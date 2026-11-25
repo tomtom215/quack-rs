@@ -688,9 +688,16 @@ nothing to write (its source ended) still returns that row to DuckDB, holding wh
 reused output buffer held last. Measured in the eighth review on DuckDB 1.5.6: a scan that
 wrote 2 rows returned 3, and the third was the `7` an earlier chunk had left in that
 position. For a fixed-width column that is a wrong answer, not undefined behaviour
-(valgrind-clean). For a `LIST` or `MAP` column written by hand, a row never written keeps the
-`{offset, length}` entry of an earlier chunk, which can point past the child data this chunk
-filled (CONJECTURED, not reproduced).
+(valgrind-clean). For a `VARCHAR` or `BLOB` column it is worse: DuckDB resets the output chunk
+before every scan call (`source_chunk.Reset()` in `pipeline_executor.cpp`), and the reset drops
+the vector's string heap (`VectorStringBuffer::ClearAuxiliaryData` sets `heap = nullptr`), so an
+unwritten row keeps a string record of an earlier call that points into released memory, which
+DuckDB then reads (read in the v2.0.1 source, not reproduced: the heap comes from DuckDB's
+jemalloc, which the sanitizers cannot see). For a `LIST` or `MAP` column written by hand, a row
+never written keeps the `{offset, length}` entry of an earlier chunk, which can point past the
+child data this chunk filled (CONJECTURED, not reproduced). Since the maintainer review of
+2026-11-25 (QRS-011) the rule is part of the `# Safety` contract of `ChunkWriter::new`,
+`ChunkWriter::with_capacity` and `DataChunk::into_chunk_writer`.
 
 **Root cause**: the writer counts the rows you *claimed* and sets the chunk's size from that
 count when it is dropped. DuckDB reuses output vectors across chunks, so a claimed row you
