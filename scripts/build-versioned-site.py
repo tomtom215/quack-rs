@@ -56,9 +56,31 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def read_with_retry(url: str, timeout: int, attempts: int = 3) -> bytes:
+    """The body at `url`. A connection error, a timeout, HTTP 429 or a 5xx is
+    retried (after 5 s, then 10 s): none of them says anything about the file,
+    and on the weekly schedule one of them would fail the run. Any other HTTP
+    error is raised at once, for the caller to classify as before."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if (400 <= error.code < 500 and error.code != 429) or attempt == attempts:
+                raise
+        except (urllib.error.URLError, OSError):
+            if attempt == attempts:
+                raise
+        time.sleep(5 * attempt)
+    raise AssertionError("unreachable")
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SITE_URL = "https://quack-rs.com"
@@ -146,8 +168,7 @@ def mdbook_for(version: str, tools: Path) -> Path:
         f"mdbook-v{version}-x86_64-unknown-linux-gnu.tar.gz"
     )
     print(f"downloading mdBook {version}")
-    with urllib.request.urlopen(url, timeout=120) as resp:
-        data = resp.read()
+    data = read_with_retry(url, 120)
     digest = hashlib.sha256(data).hexdigest()
     if digest != MDBOOK_SHA256[version]:
         raise SystemExit(f"error: {url}: sha256 {digest}, expected {MDBOOK_SHA256[version]}")

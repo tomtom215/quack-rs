@@ -35,7 +35,7 @@ if [ "$tag" = "latest" ]; then
   # which some proxies refuse. Try the 2.x name first, then the 1.x one.
   tag=
   for probe in duckdb-cli-linux-amd64.tar.gz duckdb_cli-linux-amd64.zip; do
-    url=$(curl -sS --retry 5 -o /dev/null -w '%{redirect_url}' "$repo/releases/latest/download/$probe")
+    url=$(curl -sS --retry 5 --retry-connrefused --connect-timeout 20 --max-time 120 -o /dev/null -w '%{redirect_url}' "$repo/releases/latest/download/$probe")
     if [[ "$url" =~ /releases/download/(v[0-9]+\.[0-9]+\.[0-9]+)/ ]]; then
       tag=${BASH_REMATCH[1]}
       break
@@ -62,11 +62,13 @@ esac
 
 mkdir -p "$dest"
 archive="$dest/$asset"
-# `--retry` backs off and retries a transient failure: a timeout, or HTTP 408,
-# 429, 500, 502, 503 or 504. The scheduled run of 2026-11-09 lost four jobs to a
-# 504 from this URL; a 404 (a wrong asset name) is not transient and still
-# fails at once.
-curl -fsSL --retry 5 "$repo/releases/download/$tag/$asset" -o "$archive"
+# `--retry` backs off and retries a transient failure: a timeout, a refused
+# connection (`--retry-connrefused`), or HTTP 408, 429, 500, 502, 503 or 504.
+# The scheduled run of 2026-11-09 lost four jobs to a 504 from this URL; a 404
+# (a wrong asset name) is not transient and still fails at once. The time limits
+# turn a stalled transfer into a retry instead of a hang until the job's timeout.
+curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 \
+  "$repo/releases/download/$tag/$asset" -o "$archive"
 case "$asset" in
   *.zip) unzip -o -q "$archive" -d "$dest" ;;
   *.tar.gz) tar -xzf "$archive" -C "$dest" ;;

@@ -108,6 +108,17 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### CI / tooling
 
+- **Network calls in CI retry transient failures and cannot hang.** Every `curl` in `ci.yml`
+  and `scripts/fetch-duckdb.sh` passes `--retry 5 --retry-connrefused --connect-timeout 20
+  --max-time …` (the `osv-scan` download had no retry at all); a 404 still fails at once. The
+  emsdk clone and install and the scaffold job's `rustup toolchain install` get three attempts.
+  `check-msrv-vs-duckdb-ci.py`, `check-platform-table.py`, `check-spdx-list.py`,
+  `check-extension-names.py` and the mdBook download in `build-versioned-site.py` made one
+  request each; they now retry a connection error, a timeout, HTTP 429 or a 5xx twice and
+  raise any other HTTP error at once, so their exit codes mean what they did
+  (`upstream-guard.sh --self-test` passes). `coverage.yml`, `mutants.yml`, `benchmarks.yml`
+  and `docs.yml` get the `CARGO_NET_RETRY` / `CARGO_HTTP_MULTIPLEXING` settings `ci.yml` and
+  `release.yml` already had.
 - **The incremental mutation gate fails closed, and decides once whether there is anything to
   test.** Its change detection ran `git diff` inside a pipeline ending in `|| true`, without
   `pipefail`: when `git diff` failed (a missing base ref, say), the list came back empty, the

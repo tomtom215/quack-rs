@@ -483,10 +483,22 @@ jobs:
       - name: Install emsdk 6.0.10
         run: |
           set -euo pipefail
-          git clone --quiet https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          # Three attempts each for the clone and the install, both network
+          # fetches; a partial clone is removed before the next attempt. The
+          # commit check below still pins exactly what is used.
+          for attempt in 1 2 3; do
+            rm -rf "$RUNNER_TEMP/emsdk"
+            git clone --quiet https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk" && break
+            [ "$attempt" -lt 3 ] || { echo "::error::git clone of emsdk failed three times"; exit 1; }
+            sleep $((attempt * 10))
+          done
           cd "$RUNNER_TEMP/emsdk"
           git checkout --quiet a2b92777574c2feda07994cd4f1079a3dfc151f8
-          ./emsdk install 6.0.10
+          for attempt in 1 2 3; do
+            ./emsdk install 6.0.10 && break
+            [ "$attempt" -lt 3 ] || { echo "::error::emsdk install 6.0.10 failed three times"; exit 1; }
+            sleep $((attempt * 10))
+          done
           ./emsdk activate 6.0.10
       - name: Unit tests on wasm32 (node)
         env:
@@ -1174,7 +1186,12 @@ jobs:
           # it writes is what the stable builds below reuse.
           msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' /tmp/scaffolded/Cargo.toml)
           test -n "$msrv"
-          rustup toolchain install "$msrv" --profile minimal
+          # Idempotent, so a failed download is simply retried.
+          for attempt in 1 2 3; do
+            rustup toolchain install "$msrv" --profile minimal && break
+            [ "$attempt" -lt 3 ] || { echo "::error::rustup could not install $msrv three times"; exit 1; }
+            sleep $((attempt * 10))
+          done
           (cd /tmp/scaffolded && cargo "+$msrv" generate-lockfile && cargo "+$msrv" build --release)
           (cd /tmp/scaffolded && cargo build --release)
           # crate-type = ["cdylib", "rlib"] must still produce the cdylib.
@@ -1676,7 +1693,7 @@ jobs:
           VER=2.7.0
           # From the release's osv-scanner_SHA256SUMS (linux_amd64).
           SHA=160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
-          curl -fsSL -o osv-scanner \
+          curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 -o osv-scanner \
             "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
           echo "${SHA}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
@@ -1752,7 +1769,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
           fetch() { # <url> <sha256> <file>
-            curl -fsSL --retry 5 -o "$3" "$1"
+            curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 -o "$3" "$1"
             echo "$2  $3" | sha256sum -c -
           }
           cd "$RUNNER_TEMP"
@@ -2229,7 +2246,7 @@ jobs:
           VER=1.7.12
           # From the release's actionlint_${VER}_checksums.txt (linux_amd64).
           SHA=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-          curl -fsSL --retry 5 -o actionlint.tar.gz \
+          curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 -o actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v${VER}/actionlint_${VER}_linux_amd64.tar.gz"
           echo "${SHA}  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz actionlint

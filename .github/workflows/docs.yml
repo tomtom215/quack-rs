@@ -32,6 +32,13 @@ concurrency:
   group: "pages"
   cancel-in-progress: false
 
+env:
+  # As in ci.yml and release.yml: retry cargo's network operations and use
+  # HTTP/1.1, which sidesteps the "[16] Error in the HTTP2 framing layer"
+  # failures seen fetching the duckdb+arrow tree.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+
 jobs:
   build:
     name: Build versioned site
