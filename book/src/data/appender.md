@@ -196,7 +196,11 @@ written by such a flush are safe.)
 
 quack-rs does not let that pass silently. The appender becomes *poisoned*:
 every later `row`, append, `end_row`, `flush` and `close` returns an error
-saying how many buffered rows were not written. With `duckdb-1-5`, `clear()`
+giving an upper bound on how many buffered rows were not written ("up to N").
+The count is of rows appended since the appender last flushed successfully, and DuckDB's own
+automatic flushes do not reset it, so it is a diagnostic, not a record of which
+rows were committed; for that, append inside an explicit transaction and count
+in the table. With `duckdb-1-5`, `clear()`
 discards them and makes the appender usable again; without it, create a new
 appender. `close()` with a row that was started but not ended is an error
 too (finish the row and close again).

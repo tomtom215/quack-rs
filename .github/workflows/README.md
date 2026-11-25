@@ -67,7 +67,9 @@ replaced had drifted to fewer than half the jobs.
 | `ci-ok` | CI passed | blocking (aggregate) |
 
 **Branch protection should require exactly one check: `CI passed`** (the
-`ci-ok` job). It `needs:` every blocking job and runs with `if: always()`, so
+`ci-ok` job). As of 2026-11-25 it does not: the `main` ruleset requires a pull
+request but no status check (`AUDIT.md` section 16), so this is a setting for
+the repository owner to add. It `needs:` every blocking job and runs with `if: always()`, so
 it fails when any of them fails or is cancelled.
 `scripts/check-ci-aggregate.py` (run by the `doc` job) fails when a blocking
 job is missing from its `needs`, so a new job cannot drop out of the required

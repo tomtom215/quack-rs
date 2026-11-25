@@ -211,6 +211,40 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   committed lockfiles (243 distinct name and version pairs) against the OSV API
   returns no vulnerability.
 
+### Documentation
+
+Corrections and additions from the maintainer review of 2026-11-25 (`AUDIT.md`
+section 16); each was checked against the code, the DuckDB source, crates.io or a
+run before it was written:
+
+- **`SECURITY.md`** said releases before 0.16.0 were never yanked; crates.io lists
+  0.3.0 – 0.16.0 as yanked (2026-10-31). It now lists the defects fixed on `main`
+  that affect the supported 0.19.x and 0.20.x lines, and states the trust model:
+  an extension runs with the process's privileges, and `std::fs` or its own network
+  client bypasses DuckDB's access settings.
+- **`GOVERNANCE.md`, `RELEASING.md`, the workflows README and a `ci.yml` comment**
+  said or implied that `CI passed` is a required check on `main`. The ruleset
+  requires a pull request with zero approvals and no status check; each now says
+  so, and that adding the rule is the owner's.
+- **New book page, "Numbers: What Is Checked"** (QRS-024): which conversions are
+  checked, which are unchecked on purpose, and what is left to the extension
+  (rounding, overflow, floating-point order, NaN). The `DECIMAL` example in "Dates,
+  Times and Timestamps" uses `checked_mul`, so a `DECIMAL(38)` input no longer
+  overflows `i128` in it.
+- **Known Limitations:** one DuckDB engine per process (the bindings' function table
+  is process-wide; QRS-029); `memory_limit` does not cover what the extension
+  allocates (QRS-028); DuckDB 2.0.1 also runs the statements before a parse error,
+  measured, and `prepare` is the single-statement path, measured on 1.5.6, 2.0.0
+  and 2.0.1 (QRS-016, also in the `query` rustdoc); the window-frame crash and the
+  static-link entry re-checked against 2.0.1.
+- **Entry point:** "Registration is transactional" is now "Catalog registration is
+  transactional", with a table of what a failed `LOAD` rolls back (QRS-014);
+  `entry_point_v2!` says it is a C API v1 entry point (QRS-022).
+- **Smaller corrections:** the appender's lost-row count is an upper bound, not an
+  exact count (QRS-009); a chunk's readers and writers must not outlive
+  `OwnedDataChunk::reset` (QRS-010); `deny.toml` no longer cites a removed
+  suppression (QRS-018); upstream reports 6, 10 and 36 are brought to 2.0.1.
+
 ### CI / tooling
 
 - **The live suite runs against DuckDB v2.0.1 on its own bindings (QRS-005).**
@@ -302,7 +336,7 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The incremental mutation gate fails closed, and decides once whether there is anything to
   test.** Its change detection ran `git diff` inside a pipeline ending in `|| true`, without
   `pipefail`: when `git diff` failed (a missing base ref, say), the list came back empty, the
-  shards reported "nothing changed" and the required check `Mutation Testing (incremental)`
+  shards reported "nothing changed" and the check `Mutation Testing (incremental)`
   passed having tested nothing (reproduced on a scratch repository: exit 0, `skip=true`).
   Detection is now one `mutants-changes` job under `set -euo pipefail` (a `git diff` failure
   fails it), the eight shards start only when it found Rust under `src/`, and the gate passes

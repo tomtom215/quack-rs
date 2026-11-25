@@ -683,7 +683,8 @@ jobs:
       # `run:` block as an opaque string. See scripts/check-workflow-expressions.py.
       - name: Workflow files contain no invalid expressions
         run: scripts/check-workflow-expressions.py
-      # `ci-ok` is the one required check; it is only as good as its `needs`.
+      # `ci-ok` is the one check branch protection should require (not yet
+      # required on `main`; AUDIT.md section 16); it is only as good as its `needs`.
       - name: The ci-ok job waits on every blocking job
         run: scripts/check-ci-aggregate.py
       # The six upstream-comparison steps run through this wrapper; a mapping

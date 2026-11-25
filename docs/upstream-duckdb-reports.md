@@ -789,8 +789,13 @@ init calls=3001 (successful 3000), destroy saw 4096 states, 1096 never initialis
 uninitialised memory happened to hold it would be miscounted, which does not
 change the finding. Expected: `destroy` only for states `init` completed, or
 a documented contract that says otherwise. quack-rs mitigation: each state's
-wrapper carries a tag derived from its address that `init` writes and
-`destroy` checks, so a never-initialised state is skipped.
+wrapper carries a tag that `init` writes and `destroy` checks, so a
+never-initialised state is skipped. (The tag is derived from the slot's
+contents, not its address: an address tag made the destructor skip every
+state DuckDB had moved, `FfiState` in `src/aggregate/state.rs`.) Re-run
+unchanged against v1.5.6 and v2.0.1 on 2026-11-25: the same output on both.
+The window path has the same defect with worse consequences: there `destroy`
+also receives pointer entries `init` never wrote (`AUDIT.md` section 16).
 
 ---
 
@@ -3921,6 +3926,8 @@ memory, and the documented error path (`duckdb_prepare_error`, then
 `duckdb_destroy_prepare`) reads it and frees it again.
 `duckdb_prepare_extracted_statement` has the same shape. Only a failed
 allocation reaches this; nothing else in the map's construction throws.
+Unchanged in v2.0.1 (`src/main/capi/v1/prepared-c.cpp` lines 85 – 95 at the
+tag, read on 2026-11-25; the fault injection below was not re-run there).
 
 Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5, x86_64
 Linux, glibc. Build: `gcc -rdynamic -I<libduckdb dir> item36.c -L<libduckdb

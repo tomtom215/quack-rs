@@ -3521,7 +3521,7 @@ any squash. Where the report and the code disagreed, the code was taken as autho
 | INDEP-G | Secrets, TLS and SQL-macro limits (`secrets.rs`, `tls.rs`, `sql_macro.rs`) | not a defect | Documented in each module's header. No change. |
 | INDEP-H | Main CI is green: 59 of 59 jobs on 2026-11-02 | stale, fixed | True of run 41400911517. The scheduled run of 2026-11-09 on the same commit (42574068523) failed 7 of 59 jobs: two security gates on RUSTSEC-2026-0442, four DuckDB downloads on an HTTP 504, and the aggregate `CI passed`. Fixed in `cd0ae8c` (15.2). |
 | INDEP-I | PR #152 failed its book and README doctest job | confirmed, open | The job is `Test bundled-test-prebuilt (prebuilt libduckdb)`: 26 of 255 book doctests fail with the 1.20000.0 bindings. The one backtrace read goes through `InMemoryDb::open` and `init_dispatch_table_once` (`src/testing/in_memory_db.rs:181`); the other 25 were not read. Cause not diagnosed. The PR is open and unmerged. |
-| INDEP-J | `SECURITY.md` supports only 0.20.x and 0.19.x; older releases are unyanked; advisories and Trusted Publishing are unconfirmed | confirmed, deferred | All true; 14.5 had listed them. The owner's decisions are in 15.4. |
+| INDEP-J | `SECURITY.md` supports only 0.20.x and 0.19.x; older releases are unyanked; advisories and Trusted Publishing are unconfirmed | confirmed, deferred | All true except the yanks (corrected in 16.1: 0.3.0 – 0.16.0 were yanked on 2026-10-31, before this report); 14.5 had listed them. The owner's decisions are in 15.4. |
 
 Ten rows, counted from the table with `table_counts.py`: four not a defect, two confirmed
 and fixed, one stale and fixed, one confirmed and accepted, one confirmed and open, one
@@ -3630,7 +3630,9 @@ word: "572 tree entries" counts directories, and there are 496 files.
   commits of 15.8.**
 - **Yank 0.3.0–0.15.x: decided on 2026-11-11 not to yank now.** The owner will yank by hand
   when a production-ready, public release is tagged. `SECURITY.md` stays accurate until
-  then: it says the releases are unyanked and must not be used.
+  then: it says the releases are unyanked and must not be used. *Corrected in 16.1:* crates.io
+  already listed 0.3.0 – 0.16.0 as yanked, each record last updated on 2026-10-31, so this
+  item and `SECURITY.md` were stale when written; `SECURITY.md` now says they are yanked.
 - **A RustSec advisory for 0.3.0–0.15.x** (14.5, HARDEN-10): not decided. It is separate
   from the yank: an advisory warns current users through `cargo audit` and removes nothing.
 - **Trusted Publishing and the crates.io token** (14.5, HARDEN-9; `RELEASING.md` has the

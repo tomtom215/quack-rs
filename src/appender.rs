@@ -62,8 +62,11 @@
 //! quack-rs tracks the row itself so that this is never silent:
 //!
 //! - the appender becomes *poisoned*: every later append, `row`, `end_row`,
-//!   `flush` and `close` returns an error that says how many buffered rows
-//!   were not written;
+//!   `flush` and `close` returns an error that gives an upper bound on how
+//!   many buffered rows were not written ("up to N": the count is of rows
+//!   appended since the appender last flushed successfully, and `DuckDB`'s own
+//!   automatic flushes do not reset it, so it is not a record of what was
+//!   committed);
 //! - `close` with a row started but not ended (by `row` or by hand) is an
 //!   error rather than a silent no-op;
 //! - with `duckdb-1-5`, `clear` discards the buffered rows and the half row
