@@ -108,6 +108,16 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### CI / tooling
 
+- **Only `main` writes the Rust build cache.** Every `Swatinem/rust-cache` step in `ci.yml`,
+  `coverage.yml` and `benchmarks.yml` saves only when `github.ref` is `refs/heads/main`; pull
+  requests, `claude/**` pushes and release-tag runs restore `main`'s entries and write none.
+  Every event used to save, about 44 entries per branch or PR, one of them 2.06 GB, under a
+  10 GB repository quota: on the scheduled run of 2026-11-23 `test-bundled` on Linux took 13.2
+  minutes against 2.0 warm, and `semver` found no cache at all. The nightly-toolchain jobs
+  (`nightly`, `leak-check`, `asan`, `fuzz`, and Miri) cache only the registry, since a target
+  cache keyed on one day's nightly is never restored, and `test-older-engines` keys each leg
+  by its engine instead of sharing one entry. `mutants.yml` never runs on `main`, so it keeps
+  saving.
 - **Miri runs its native and big-endian s390x legs in parallel**, as a two-leg matrix with a
   60-minute limit each. Run back to back in one job they took 62.9 to 77.8 minutes against a
   90-minute limit and were the critical path of every CI run; each leg took 29 to 39.5

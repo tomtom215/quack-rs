@@ -105,6 +105,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --all-targets
 
   test:
@@ -123,6 +125,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The scaffold's tests cross-check the files it generates with PyYAML (the
       # parser the community build reads description.yml with), make and git,
       # and skip when one is missing; `cargo test` hides the note, so a runner
@@ -172,6 +176,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # --no-fail-fast: cargo otherwise stops at the first failing test
       # binary, hiding failures in the ones after it.
       - run: cargo test --all-targets --features bundled-test --no-fail-fast
@@ -209,6 +215,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Download pre-built libduckdb
         # The version is DERIVED from Cargo.lock, not written here. It used to
         # be hard-coded with a comment asking the next person to keep it in
@@ -304,6 +312,11 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # The legs relock different bindings; without this they share one
+          # entry and whichever finishes first decides what is cached.
+          key: ${{ matrix.engine }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Pin the bindings to the engine and download its library
         # The test shim refuses a library whose duckdb_ext_api_v1 size differs
         # from the bindings', so both must be the same release.
@@ -350,6 +363,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Pin the DuckDB 2.0 bindings and download libduckdb v2.0.0
         run: |
           set -euo pipefail
@@ -402,6 +417,7 @@ jobs:
           # duckdb.hpp is there". Only the registry is cached, so this builds DuckDB
           # from scratch each time.
           cache-targets: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Pin the DuckDB 2.0 bindings
         run: |
           set -euo pipefail
@@ -423,6 +439,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --all-targets --features duckdb-1-5
       - run: cargo test --all-targets --features duckdb-1-5
       - run: cargo clippy --all-targets --features duckdb-1-5 -- -D warnings
@@ -446,6 +464,8 @@ jobs:
           toolchain: 1.99.1
           targets: wasm32-unknown-emscripten
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # DuckDB-WASM target. quack-rs's own lib must compile for wasm32; in
       # loadable-extension mode libduckdb-sys is headers-only, so `cargo check`
       # needs no emscripten toolchain. `--all-targets` is intentionally avoided —
@@ -494,6 +514,8 @@ jobs:
           toolchain: 1.99.1
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets -- -D warnings
 
   # Informational early-warning for clippy lints graduating to stable.
@@ -513,6 +535,8 @@ jobs:
           toolchain: beta
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `+beta` for the same reason as the MSRV job above: without it this ran
       # stable clippy and duplicated the `clippy` job.
       - run: cargo +beta clippy --all-targets --features duckdb-1-5-4 -- -D warnings
@@ -557,6 +581,8 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: The stable release this run checks
         run: rustc +stable --version
       - run: cargo +stable fmt -- --check
@@ -591,6 +617,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
       # duckdb-1-5) rather than --all-features, which would compile DuckDB
       # from source here; `test-bundled` documents --all-features on Linux,
@@ -660,6 +688,8 @@ jobs:
         with:
           toolchain: "1.86.0"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `+1.86.0` is not optional, for the same reason the `nightly` and `miri`
       # jobs below use `+nightly`: `rust-toolchain.toml` pins the toolchain
       # (`channel`), and a rustup toolchain file overrides the default this
@@ -706,6 +736,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Resolve the declared floor
         run: |
           set -euo pipefail
@@ -726,6 +758,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo bench --no-run
       # The engine-level benchmark extension (benches/engine) is a separate crate;
       # keep it compiling, and its driver parsing.
@@ -754,6 +788,7 @@ jobs:
           workspaces: |
             . -> target
             examples/hello-ext -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --manifest-path examples/hello-ext/Cargo.toml --all-targets
       - name: Clippy (Linux only)
         if: runner.os == 'Linux'
@@ -772,6 +807,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `--test integration_test` builds the one test binary that holds the test
       # (the unfiltered form compiled nine, and eight of them ran nothing).
       # `--exact` plus the grep: `cargo test <filter>` exits 0 when the filter
@@ -805,6 +842,7 @@ jobs:
           workspaces: |
             . -> target
             examples/hello-ext -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Verify extension entry point symbol (Linux)
@@ -1004,6 +1042,7 @@ jobs:
           workspaces: |
             . -> target
             examples/hello-ext -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Build append_metadata
@@ -1084,6 +1123,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
@@ -1287,6 +1328,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
@@ -1421,6 +1464,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build and stamp a duckdb-1-5 demo against the pinned bindings
         run: |
           set -euo pipefail
@@ -1559,6 +1604,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `--locked`, as release.yml's `package` and `publish` jobs run it: without
       # it a Cargo.toml version bump that left Cargo.lock behind passed here
       # (cargo quietly rewrote the lock file) and failed only at release time.
@@ -1583,6 +1630,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-deny
         env:
           # Do not build third-party tools with warnings-as-errors:
@@ -1738,6 +1786,11 @@ jobs:
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Nightly toolchain: its commit is in the key, so a target cache from
+          # another day is never restored. Cache the registry only.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `+nightly` is not optional: `rust-toolchain.toml` pins a stable release
       # (`channel`), and a rustup toolchain file overrides the default this
       # action sets, so a bare `cargo` here runs that release and this job
@@ -1839,6 +1892,11 @@ jobs:
           toolchain: nightly
           components: rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Nightly toolchain: its commit is in the key, so a target cache from
+          # another day is never restored. Cache the registry only.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Half of quack-rs's value proposition is RAII over DuckDB handles:
       # LogicalType, Value, QueryResult, OwnedDataChunk, FileHandle,
       # PreparedStatement, ErrorData, Appender. A missing destructor is not a
@@ -1945,6 +2003,11 @@ jobs:
           toolchain: nightly
           components: rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Nightly toolchain: its commit is in the key, so a target cache from
+          # another day is never restored. Cache the registry only.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Fetch a prebuilt libduckdb
         # Version derived from Cargo.lock -- see `test-bundled-prebuilt`.
         run: |
@@ -1979,6 +2042,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # quack-rs is an SDK: its public API *is* the product, and a downstream
       # extension that stops compiling on a patch release is a worse outcome
       # than a missing feature. This compares the working tree against the
@@ -2056,6 +2121,11 @@ jobs:
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Nightly toolchain: its commit is in the key, so a target cache from
+          # another day is never restored. Cache the registry only.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The description.yml parser is hand-rolled and reads a file from an
       # arbitrary GitHub repository; the duckdb_string_t decoder reads 16 bytes
       # whose meaning depends on a length field inside them. Both are exactly
