@@ -3,15 +3,15 @@
 #
 # Continuous integration — enforces all quality gates.
 #
-# Jobs: check, test, test-bundled, test-bundled-prebuilt, test-older-engines,
+# Jobs: test, test-bundled, test-bundled-prebuilt, test-older-engines,
 #       test-duckdb-2-0, test-bundled-duckdb-2-0, test-duckdb-1-5,
 #       wasm, clippy, clippy-beta, latest-stable, fmt, doc, msrv,
 #       dependency-floor, bench-compile, example-check, scaffold-compile,
 #       symbol-check, abi-table, platform-table, spdx-list, autoload-entries,
-#       book, msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
-#       abi-guard-layout, publish-dry-run, security, osv-scan, hygiene, nightly,
-#       miri, leak-check, asan, semver, fuzz, workflow-lint, ci-ok (the
-#       aggregate required check).
+#       extension-names, book, msrv-vs-duckdb-ci, extension-load, scaffold-e2e,
+#       abi-guard, abi-guard-layout, publish-dry-run, security, osv-scan,
+#       hygiene, nightly, miri, asan, semver, fuzz, workflow-lint, ci-ok (the
+#       aggregate gate).
 #
 # `dtolnay/rust-toolchain` is pinned, in every workflow, to one commit on the
 # action's `master` branch (commented `# master`: the branch publishes no
@@ -1929,10 +1929,52 @@ jobs:
         # The native leg passes no `--target`, exactly as before the split.
         run: cargo +nightly miri test ${{ matrix.target-args }} --lib --features duckdb-1-5-4
 
-  leak-check:
-    name: LeakSanitizer (RAII wrappers vs a real DuckDB)
+  # AddressSanitizer, with its built-in LeakSanitizer on. Two questions, one
+  # instrumented build and one pass over the end-to-end suite:
+  #
+  # - Memory errors: did we write outside an allocation, or use one after it
+  #   was freed -- the class that produced the two heap-corruption defects
+  #   fixed in v0.16.0, and the one a crate doing raw pointer arithmetic into
+  #   DuckDB's memory is most exposed to. Miri cannot reach it: these paths
+  #   call foreign functions.
+  # - Leaks: did we forget a destructor. Half of quack-rs's value proposition
+  #   is RAII over DuckDB handles (LogicalType, Value, QueryResult,
+  #   OwnedDataChunk, FileHandle, PreparedStatement, ErrorData, Appender). A
+  #   missing destructor is not a test failure -- everything still returns the
+  #   right answer -- so the only way to catch one is to look at the heap
+  #   afterwards. ASan's leak check is LeakSanitizer itself, run at exit, and
+  #   reads LSAN_OPTIONS; the probe step below proves it still fails the run.
+  #
+  # The sanitizers intercept malloc globally, so they see DuckDB's C++
+  # allocations even though libduckdb itself is not instrumented. Their blind
+  # spot: this links the release libduckdb, which takes vector data buffers and
+  # LIST entry arrays from its own jemalloc, and neither sanitizer tracks those
+  # blocks, so a leak of, or an out-of-bounds or stale write into, one of them
+  # is not reported here; Rust-heap and validity-mask errors are
+  # (CONTRIBUTING.md, "What the sanitizer and valgrind runs can and cannot see").
+  #
+  # This job replaced a separate `leak-check` job (-Zsanitizer=leak) in
+  # November 2026: the two built the same suite with -Zbuild-std twice, and
+  # ASan subsumes LSan. Blocking since September 2026, with no suppressions.
+  # Add an asan-suppressions.txt only if DuckDB's own frames turn up.
+  asan:
+    name: AddressSanitizer + LeakSanitizer (end-to-end suite vs a real DuckDB)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      RUSTFLAGS: "-Zsanitizer=address"
+      ASAN_OPTIONS: "detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1"
+      # DuckDB's own one-time allocations (extension registry, the default
+      # allocator's arenas, static initialisers) are still reachable at exit,
+      # which LeakSanitizer does not report, so nothing needs suppressing.
+      # lsan-suppressions.txt holds no rules on purpose: a rule for
+      # libduckdb.so is tested against every frame of an allocation, and every
+      # handle DuckDB allocates has such a frame, so it silenced exactly the
+      # leaks this job is for (the probe step leaks a handle on purpose and
+      # requires the job to notice). A two-frame stack is useless for
+      # attributing a leak to a missing destructor; 30 is enough to name the
+      # quack-rs frame.
+      LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1947,17 +1989,6 @@ jobs:
           # another day is never restored. Cache the registry only.
           cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # Half of quack-rs's value proposition is RAII over DuckDB handles:
-      # LogicalType, Value, QueryResult, OwnedDataChunk, FileHandle,
-      # PreparedStatement, ErrorData, Appender. A missing destructor is not a
-      # test failure -- everything still returns the right answer -- so the only
-      # way to catch one is to look at the heap afterwards.
-      #
-      # LeakSanitizer intercepts malloc globally, so it sees DuckDB's C++
-      # allocations even though libduckdb itself is not instrumented -- but
-      # not the vector data buffers and LIST entry arrays the release
-      # libduckdb takes from its own jemalloc (CONTRIBUTING.md, "What the
-      # sanitizer and valgrind runs can and cannot see").
       - name: Fetch a prebuilt libduckdb
         # Version derived from Cargo.lock -- see the note in
         # `test-bundled-prebuilt`. Linking a libduckdb that does not match the
@@ -1971,20 +2002,7 @@ jobs:
           echo "DUCKDB_LIB_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
           echo "DUCKDB_INCLUDE_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
-      - name: Run the end-to-end suite under LeakSanitizer
-        env:
-          RUSTFLAGS: "-Zsanitizer=leak"
-          # DuckDB's own one-time allocations (extension registry, the default
-          # allocator's arenas, static initialisers) are still reachable at
-          # exit, which LeakSanitizer does not report, so nothing needs
-          # suppressing. lsan-suppressions.txt holds no rules on purpose: a
-          # rule for libduckdb.so is tested against every frame of an
-          # allocation, and every handle DuckDB allocates has such a frame, so
-          # it silenced exactly the leaks this job is for (the step below
-          # leaks a handle on purpose and requires the job to notice).
-          # A two-frame stack is useless for attributing a leak to a missing
-          # destructor; 30 is enough to name the quack-rs frame.
-          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
+      - name: Run the end-to-end suite under AddressSanitizer and LeakSanitizer
         run: |
           # `+nightly` is not optional -- see the note in the `nightly` job.
           cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
@@ -1992,12 +2010,11 @@ jobs:
       # A leak check is only as good as its ability to fail. tests/lsan_probe.rs
       # leaks, on request, a Rust allocation (the control), a LogicalType and a
       # Value, and the run must fail with a leak report each time; with nothing
-      # leaked it must pass. The first version of this job passed over the
-      # LogicalType and the Value because of a suppression.
+      # leaked it must pass. The first version of the leak job passed over the
+      # LogicalType and the Value because of a suppression. Same RUSTFLAGS as
+      # the suite, so the instrumented standard library and dependencies are
+      # reused rather than rebuilt.
       - name: A handle leaked on purpose must fail LeakSanitizer
-        env:
-          RUSTFLAGS: "-Zsanitizer=leak"
-          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
         run: |
           set -u
           probe() {
@@ -2020,64 +2037,6 @@ jobs:
               exit 1
             fi
           done
-
-  # AddressSanitizer. LeakSanitizer above answers "did we forget a destructor";
-  # ASAN answers "did we write outside an allocation, or use one after it was
-  # freed" -- the class that produced the two heap-corruption defects fixed in
-  # v0.16.0, and the one a crate doing raw pointer arithmetic into DuckDB's
-  # memory is most exposed to. Miri cannot reach it: these paths call foreign
-  # functions. Its blind spot: this links the release libduckdb, which takes
-  # vector data buffers and LIST entry arrays from its own jemalloc, and ASAN
-  # does not track those blocks, so an out-of-bounds or stale write into them
-  # is not reported here; Rust-heap and validity-mask errors are
-  # (CONTRIBUTING.md, "What the sanitizer and valgrind runs can and cannot see").
-  #
-  # Blocking since September 2026. It was `continue-on-error` until it had a
-  # green run on main, because libduckdb itself is not instrumented and the
-  # first runs might have needed suppressions. It then passed on main (84
-  # tests, 6455238) and locally over the 125-test suite with no reports and no
-  # suppressions. Add an asan-suppressions.txt only if DuckDB's own frames
-  # turn up.
-  #
-  # ASAN subsumes LSAN, so once this is blocking, `leak-check` can fold into it.
-  asan:
-    name: AddressSanitizer
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: nightly
-          components: rust-src
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # Nightly toolchain: its commit is in the key, so a target cache from
-          # another day is never restored. Cache the registry only.
-          cache-targets: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Fetch a prebuilt libduckdb
-        # Version derived from Cargo.lock -- see `test-bundled-prebuilt`.
-        run: |
-          set -euo pipefail
-          DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
-          echo "libduckdb-sys in Cargo.lock corresponds to DuckDB ${DUCKDB_TAG}"
-          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "$RUNNER_TEMP/libduckdb"
-          echo "DUCKDB_LIB_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
-          echo "DUCKDB_INCLUDE_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
-      - name: Run the end-to-end suite under AddressSanitizer
-        env:
-          RUSTFLAGS: "-Zsanitizer=address"
-          # detect_leaks=0: leaks are `leak-check`'s job, with its own
-          # suppression file. This run is about memory errors only.
-          ASAN_OPTIONS: "detect_leaks=0:detect_stack_use_after_return=1:strict_string_checks=1"
-        run: |
-          # `+nightly` is not optional -- see the note in the `nightly` job.
-          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
-            --features bundled-test-prebuilt,duckdb-1-5-4 --test ffi_roundtrip
 
   semver:
     name: Public API (semver-checks)
@@ -2334,7 +2293,6 @@ jobs:
       - osv-scan
       - hygiene
       - miri
-      - leak-check
       - asan
       - semver
       - fuzz

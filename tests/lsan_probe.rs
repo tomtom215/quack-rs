@@ -3,13 +3,14 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! The canary for the `leak-check` CI job: a leaked `DuckDB` handle must make
-//! `LeakSanitizer` fail, or the job cannot catch a missing `duckdb_destroy_*`.
+//! The canary for the leak check in the `asan` CI job: a leaked `DuckDB` handle
+//! must make `LeakSanitizer` fail, or the job cannot catch a missing
+//! `duckdb_destroy_*`.
 //!
 //! Run plainly this test passes and leaks nothing. The CI job runs it again
-//! under `LeakSanitizer` with `PROBE=logical_type` (and `PROBE=value`) and
-//! requires the run to fail with a leak report, and with `PROBE=rust` as the
-//! control. A suppression of `libduckdb.so` made the first two exit 0, because
+//! under `AddressSanitizer` (leak check on) with `PROBE=logical_type` (and
+//! `PROBE=value`) and requires the run to fail with a leak report, and with
+//! `PROBE=rust` as the control. A suppression of `libduckdb.so` made the first two exit 0, because
 //! `LeakSanitizer` tests a suppression against every frame of an allocation, and
 //! every handle `DuckDB` allocates has a `libduckdb.so` frame (`TESTS-1`).
 

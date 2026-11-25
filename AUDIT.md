@@ -3780,9 +3780,16 @@ the best-supported choice on each; the reasoning is in each commit message):
 | Coverage on pull requests | a fail-safe `changes` job; the coverage job is skipped only when detection succeeded and found nothing coverage builds or measures; per job, not a workflow `paths:` filter, so a skipped run passes if Coverage is ever required | `85d5de7` |
 | Duplicate `claude/**` runs (14.5, CI-10) | `push` on `main` only; `pull_request` into `main` and into `claude/**` (stacked pull requests). One run per push, testing the merge result; a branch with no pull request is tested by `workflow_dispatch` or a draft pull request | `4bba183` |
 
-Still open: folding `leak-check` into `asan` (needs care: `asan` sets `detect_leaks=0`, and
-`leak-check`'s probe must survive), and the three redundant `cargo check` steps in
-`test-duckdb-1-5`.
+The two items this left open were done afterwards at the owner's request. `leak-check` is
+folded into `asan`, which now runs with `detect_leaks=1` and `leak-check`'s `LSAN_OPTIONS` and
+runs its probe step unchanged. The three `cargo check --all-targets` steps in `test-duckdb-1-5`
+are gone, because each was followed by a `cargo clippy --all-targets` with the same features.
+VALIDATED locally (nightly, libduckdb v1.5.6, the job's commands and environment): the
+`ffi_roundtrip` suite passes under the combined sanitizer (463 tests, exit 0, no report). The
+probe passes with nothing leaked and fails with a LeakSanitizer report for each of `rust`
+(4096 bytes), `logical_type` (24) and `value` (64). `ci-ok` waits on 36 blocking jobs. The
+`ci.yml` header's job list, which still named `check` and lacked `extension-names`, now
+matches the job IDs. NOT VALIDATED: the time saved per run, until CI reports it.
 
 **For the owner (a repository setting; nothing was changed):** no status check is required on
 `main`. Its ruleset requires a pull request and forbids deletion and force pushes, but the

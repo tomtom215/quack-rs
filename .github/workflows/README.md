@@ -60,8 +60,7 @@ replaced had drifted to fewer than half the jobs.
 | `hygiene` | Hygiene (typos, taplo, machete) | blocking |
 | `nightly` | Nightly (informational) | informational |
 | `miri` | Miri (undefined behaviour, ${{ matrix.leg }}) | blocking |
-| `leak-check` | LeakSanitizer (RAII wrappers vs a real DuckDB) | blocking |
-| `asan` | AddressSanitizer | blocking |
+| `asan` | AddressSanitizer + LeakSanitizer (end-to-end suite vs a real DuckDB) | blocking |
 | `semver` | Public API (semver-checks) | blocking |
 | `fuzz` | Fuzz (smoke) | blocking |
 | `workflow-lint` | Workflow lint (actionlint) | blocking |

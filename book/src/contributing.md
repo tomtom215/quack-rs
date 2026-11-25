@@ -358,7 +358,7 @@ quack-rs/
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
-│   ├── lsan_probe.rs                  # The `leak-check` job's canary: a handle leaked on request must fail LeakSanitizer
+│   ├── lsan_probe.rs                  # The `asan` job's leak canary: a handle leaked on request must fail LeakSanitizer
 │   ├── property_inputs.rs             # Property tests for `parse_version`, SPDX, `description.yml` and the scaffold's escaping
 │   ├── quack_scaffold_cli.rs          # The `quack_scaffold` binary run as a user runs it: exit status, output and the files it writes
 │   ├── secret_memory_scan.rs          # `SecretEntry`'s zeroize, checked by scanning the process's own memory (Linux)

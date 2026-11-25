@@ -130,6 +130,16 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   item is ever gated on `bundled-test*`, which that command leaves out. `check`
   (`cargo check --all-targets`) was a strict subset of `clippy`, which uses the same toolchain,
   features and flags.
+- **One sanitizer job instead of two: `asan` now also checks for leaks, and `leak-check` is
+  gone.** The two jobs built the same `-Zbuild-std` suite twice, once per sanitizer, and
+  AddressSanitizer's leak check is LeakSanitizer itself. `asan` now runs with
+  `detect_leaks=1` and `leak-check`'s `LSAN_OPTIONS` (the empty suppression file, 30-frame
+  stacks), and runs `leak-check`'s probe step unchanged. VALIDATED locally, with the job's
+  commands and environment and libduckdb v1.5.6: the end-to-end suite passes (463 tests, no
+  report), and the probe passes when it leaks nothing and fails with a LeakSanitizer report
+  for a leaked Rust allocation, `LogicalType` and `Value`. `test-duckdb-1-5` drops its three
+  `cargo check --all-targets` steps: each was followed by a `cargo clippy --all-targets` with
+  the same features, which checks the same targets and adds the lints.
 - **DuckDB downloads are checked against pinned SHA-256 hashes.** `scripts/fetch-duckdb.sh`,
   which CI uses about 26 times per run, verifies every archive against
   `scripts/duckdb-sha256.txt` before unpacking it: a mismatch fails, a pinned tag with no
@@ -175,7 +185,7 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Every event used to save, about 44 entries per branch or PR, one of them 2.06 GB, under a
   10 GB repository quota: on the scheduled run of 2026-11-23 `test-bundled` on Linux took 13.2
   minutes against 2.0 warm, and `semver` found no cache at all. The nightly-toolchain jobs
-  (`nightly`, `leak-check`, `asan`, `fuzz`, and Miri) cache only the registry, since a target
+  (`nightly`, `asan`, `fuzz`, and Miri) cache only the registry, since a target
   cache keyed on one day's nightly is never restored, and `test-older-engines` keys each leg
   by its engine instead of sharing one entry. `mutants.yml` never runs on `main`, so it keeps
   saving.

@@ -9,8 +9,8 @@
 //! - the `extra_info` destructors of the closure-based builders,
 //!   `TypedScalar::destroy` and the typed table function's `destroy_extra`
 //!   (replaced by `()`, every test passed: the leaked closure and everything
-//!   it captured would only show to a leak checker, and the leak-check CI job
-//!   suppresses every allocation that passes through `libduckdb.so`).
+//!   it captured would only show to a leak checker, and CI's leak check then
+//!   suppressed every allocation that passed through `libduckdb.so`).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
