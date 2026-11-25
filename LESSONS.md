@@ -1038,7 +1038,7 @@ Aborted (core dumped)
    metadata already makes DuckDB refuse the wrong release. quack-rs 0.18.0 refused
    a `duckdb-1-5` build on DuckDB 2.0.0 ("layout cannot be verified"); since the
    DuckDB 2.0 update the guard accepts a 546-slot build on v2.0.0, still refuses a
-   545-slot (1.5.0/1.5.1) build there, and treats v2.0.1 and v2.1.0 as unknown.
+   545-slot (1.5.0/1.5.1) build there, and accepts v2.0.1 (the same layout), and treats v2.0.2 and v2.1.0 as unknown.
 3. If you stay off those features, nothing changes: the stable prefix is frozen, so
    `C_STRUCT` + `v1.2.0` remains portable across every DuckDB from v1.2.0 through
    v2.0.0.
@@ -1376,7 +1376,7 @@ the ABI type stamped in their metadata footer:
   release from 1.4.4 through 2.0.x, for quack-rs's stable-API surface. One
   binary serves them all. An extension using the `duckdb-1-5` features is stamped
   C API `v1.5.6` and loads into 1.5.6 and 2.0.0 (the default `Strict` guard refuses a
-  release quack-rs has not listed, such as 2.0.1).
+  release quack-rs has not listed, such as 2.0.2).
 - A `C_STRUCT_UNSTABLE` or `CPP` extension declares an exact DuckDB release and
   loads only into that release, so it is rebuilt for each one. DuckDB 2.0 loads a
   `C_STRUCT_UNSTABLE` binary only through the C API v2 entry point, which quack-rs

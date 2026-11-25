@@ -66,10 +66,13 @@ use libduckdb_sys::{
 
 use crate::error::ExtensionError;
 
-/// Type names that make `DuckDB` 1.5.5 autoload an extension when a lookup
-/// does not find them in the catalog (`EXTENSION_TYPES` in
-/// `src/include/duckdb/main/extension_entries.hpp`).
-const AUTOLOADING_TYPE_NAMES: &[&str] = &["json", "inet"];
+/// Type names that make `DuckDB` autoload an extension when a lookup does not
+/// find them in the catalog (`EXTENSION_TYPES` in
+/// `src/include/duckdb/main/extension_entries.hpp`): the union over every
+/// supported release. `parquet_variant` (the `parquet` extension) is new in
+/// v2.0.1; `scripts/check-autoload-entries.py` compares the list with each
+/// release's header.
+const AUTOLOADING_TYPE_NAMES: &[&str] = &["json", "inet", "parquet_variant"];
 
 /// Collation names that make `DuckDB` 1.5.5 autoload the `icu` extension when
 /// a lookup does not find them in the catalog (`EXTENSION_COLLATIONS` in
@@ -510,6 +513,7 @@ mod tests {
     fn autoloading_names_match_duckdb_case_insensitively() {
         assert!(CatalogEntryType::Type.may_autoload_extension("inet"));
         assert!(CatalogEntryType::Type.may_autoload_extension("JSON"));
+        assert!(CatalogEntryType::Type.may_autoload_extension("Parquet_Variant"));
         assert!(CatalogEntryType::Collation.may_autoload_extension("de"));
         assert!(CatalogEntryType::Collation.may_autoload_extension("EN_US"));
         assert!(CatalogEntryType::Collation.may_autoload_extension("zu"));

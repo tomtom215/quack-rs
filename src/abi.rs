@@ -45,7 +45,7 @@
 //! | v1.4.0 – v1.4.5 | 459 | `duckdb_create_varint` → `duckdb_create_bignum`, appended |
 //! | v1.5.0 – v1.5.1 | 545 | `duckdb_appender_clear` **inserted** at slot 410 |
 //! | v1.5.2 – v1.5.6 | 546 | `duckdb_geometry_type_get_crs` **inserted** at slot 493 |
-//! | v2.0.0 | 548 | `duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns` appended |
+//! | v2.0.0 – v2.0.1 | 548 | `duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns` appended in v2.0.0 |
 //!
 //! `DuckDB` v1.5.6 **stabilised** the whole struct: its header declares all 546
 //! slots stable for an extension that targets C API v1.5.6, where earlier
@@ -138,11 +138,12 @@
 //! # A `DuckDB` release the table has not seen
 //!
 //! [`check`] does not extrapolate: a `duckdb-1-5` build under
-//! [`AbiPolicy::Strict`] refuses `DuckDB` v2.0.1 (or any release missing from the
+//! [`AbiPolicy::Strict`] refuses `DuckDB` v2.0.2 (or any release missing from the
 //! table) as [`AbiCheck::UnknownEngineVersion`] until quack-rs lists it, or until
 //! the build declares the engine with `QUACK_RS_TARGET_DUCKDB_VERSION`. A
 //! default-feature build is [`AbiCheck::StableOnly`] and loads there. The layout
-//! is not assumed to carry over to a 2.0.x patch release: `DuckDB` v2.0.0's
+//! is not assumed to carry over to a 2.0.x patch release (v2.0.1 kept it, which
+//! `scripts/check-abi-table.py` verified from its header before it was listed): `DuckDB` v2.0.0's
 //! `duckdb_extension.h` opens with
 //! `// WARNING: this API is not yet stable, meaning it is only guaranteed to work for this specific DuckDB version.`,
 //! v2.0.0 itself added two slots to the band v1.5.6 had declared stable, and a
@@ -206,7 +207,7 @@ const KNOWN_LAYOUTS: &[LayoutEntry] = &[
     (1, 4, 0, 5, 459),
     (1, 5, 0, 1, 545),
     (1, 5, 2, 6, 546),
-    (2, 0, 0, 0, 548),
+    (2, 0, 0, 1, 548),
 ];
 
 /// Pairs of layouts, by slot count, where the first is an exact prefix of the
@@ -826,6 +827,7 @@ mod tests {
             ("v1.5.5", 546),
             ("v1.5.6", 546),
             ("v2.0.0", 548),
+            ("v2.0.1", 548),
         ] {
             assert_eq!(expected_slot_count(version), Some(slots), "for {version}");
         }
@@ -866,7 +868,7 @@ mod tests {
         assert_eq!(expected_slot_count("v1.4.6"), None);
         assert_eq!(expected_slot_count("v1.5.7"), None);
         assert_eq!(expected_slot_count("v1.6.0"), None);
-        assert_eq!(expected_slot_count("v2.0.1"), None);
+        assert_eq!(expected_slot_count("v2.0.2"), None);
         assert_eq!(expected_slot_count("v2.1.0"), None);
     }
 
@@ -1034,48 +1036,67 @@ mod tests {
         ));
         // Not extrapolated to an unverified patch release.
         assert!(matches!(
-            decide(546, None, Some("v2.0.1")),
+            decide(546, None, Some("v2.0.2")),
             AbiCheck::UnknownEngineVersion { .. }
         ));
     }
 
-    /// `DuckDB` v2.0.1 (due 2026-11-18) is not in the table, and nothing in
-    /// `DuckDB`'s own header promises a 2.0.x patch release keeps v2.0.0's
-    /// layout (see "A `DuckDB` release the table has not seen" in the module
-    /// docs). So until it is verified and listed, a `duckdb-1-5` build — on the
-    /// 1.5.6 or the 2.0.0 bindings — reports it as unknown, which
-    /// `AbiPolicy::Strict` refuses with a message naming the remedies, and a
-    /// build that declares v2.0.1 itself is accepted.
+    /// `DuckDB` v2.0.1 keeps v2.0.0's 548-slot layout (verified from its header
+    /// by `scripts/check-abi-table.py` before it was listed), so it is checked
+    /// exactly like v2.0.0. v2.0.2 is not in the table, and nothing in
+    /// `DuckDB`'s own header promises a 2.0.x patch release keeps the layout
+    /// (see "A `DuckDB` release the table has not seen" in the module docs): a
+    /// `duckdb-1-5` build reports it as unknown, which `AbiPolicy::Strict`
+    /// refuses with a message naming the remedies, and a build that declares
+    /// v2.0.2 itself is accepted.
     #[test]
-    fn duckdb_2_0_1_is_unknown_until_the_table_lists_it() {
-        assert_eq!(expected_slot_count("v2.0.1"), None);
+    fn duckdb_2_0_1_is_listed_and_an_unlisted_patch_release_is_unknown() {
+        assert_eq!(expected_slot_count("v2.0.1"), Some(548));
+        assert!(matches!(
+            decide(548, None, Some("v2.0.1")),
+            AbiCheck::Compatible { slots: 548, .. }
+        ));
+        assert!(matches!(
+            decide(546, None, Some("v2.0.1")),
+            AbiCheck::Compatible { slots: 546, .. }
+        ));
+        assert!(matches!(
+            decide(545, None, Some("v2.0.1")),
+            AbiCheck::LayoutMismatch {
+                engine_slots: 548,
+                compiled_slots: 545,
+                ..
+            }
+        ));
+
+        assert_eq!(expected_slot_count("v2.0.2"), None);
         for compiled in [546, 548] {
-            let check = decide(compiled, None, Some("v2.0.1"));
+            let check = decide(compiled, None, Some("v2.0.2"));
             assert_eq!(
                 check,
                 AbiCheck::UnknownEngineVersion {
-                    engine_version: "v2.0.1".into(),
+                    engine_version: "v2.0.2".into(),
                     compiled_slots: compiled,
                 },
                 "{compiled}-slot build"
             );
             let msg = check.error_message().expect("a refusal has a message");
             assert!(
-                msg.contains("set QUACK_RS_TARGET_DUCKDB_VERSION=v2.0.1"),
+                msg.contains("set QUACK_RS_TARGET_DUCKDB_VERSION=v2.0.2"),
                 "{msg}"
             );
             assert!(msg.contains("upgrade quack-rs"), "{msg}");
             assert!(
                 matches!(
-                    decide(compiled, Some("v2.0.1"), Some("v2.0.1")),
+                    decide(compiled, Some("v2.0.2"), Some("v2.0.2")),
                     AbiCheck::Compatible { .. }
                 ),
-                "{compiled}-slot build declaring v2.0.1"
+                "{compiled}-slot build declaring v2.0.2"
             );
         }
-        // Declaring v2.0.0 does not vouch for v2.0.1 either.
+        // Declaring v2.0.1 does not vouch for v2.0.2 either.
         assert!(matches!(
-            decide(548, Some("v2.0.0"), Some("v2.0.1")),
+            decide(548, Some("v2.0.1"), Some("v2.0.2")),
             AbiCheck::UnknownEngineVersion { .. }
         ));
     }

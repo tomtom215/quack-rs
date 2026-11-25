@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DuckDB v2.0.1 is listed in the C API layout table and the autoload tables.** Its
+  `duckdb_ext_api_v1` is v2.0.0's (548 slots, same declarations), so a `duckdb-1-5*`
+  build that loads into 2.0.0 now loads into 2.0.1 under `AbiPolicy::Strict` instead of
+  being refused as an unknown release; and `CatalogEntryType::Type` reports that
+  `parquet_variant` can autoload the `parquet` extension, an entry v2.0.1 added to
+  `EXTENSION_TYPES`. Both were derived from v2.0.1's headers:
+  `scripts/check-abi-table.py` and `scripts/check-autoload-entries.py`, which the
+  scheduled CI runs of 2026-11-16 and 2026-11-23 failed on, now pass, and so would the
+  `scaffold-e2e` job, whose generated extension was refused by v2.0.1. Docs that used
+  v2.0.1 as the example of an unlisted release now use v2.0.2.
 - **`VectorWriter::try_write_decimal(idx, width, unscaled)`, a checked
   `write_decimal`.** `write_decimal` narrows the unscaled integer to `i16`, `i32`
   or `i64` with `as`, so a value the width cannot hold is stored wrong with no

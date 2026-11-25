@@ -1266,19 +1266,19 @@ mod tests {
         assert!(mismatch.error_message().is_some());
     }
 
-    /// `DuckDB` v2.0.1 is not in the layout table yet (see `abi`'s module
+    /// `DuckDB` v2.0.2 is not in the layout table (see `abi`'s module
     /// docs): the default policy refuses a `duckdb-1-5` build on it, and only
     /// the opt-out loads it.
     #[test]
-    fn duckdb_2_0_1_is_refused_by_default_and_loaded_only_by_the_opt_out() {
+    fn an_unlisted_2_0_x_is_refused_by_default_and_loaded_only_by_the_opt_out() {
         use crate::abi::AbiCheck;
         let check = AbiCheck::UnknownEngineVersion {
-            engine_version: "v2.0.1".into(),
+            engine_version: "v2.0.2".into(),
             compiled_slots: 548,
         };
         assert!(matches!(
             policy_verdict(AbiPolicy::default(), &check),
-            AbiVerdict::Refuse(message) if message.contains("'v2.0.1'")
+            AbiVerdict::Refuse(message) if message.contains("'v2.0.2'")
         ));
         assert_eq!(
             policy_verdict(AbiPolicy::AllowUnknownEngine, &check),
