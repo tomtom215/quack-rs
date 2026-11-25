@@ -3501,9 +3501,11 @@ published a report dated 2026-11-09. The reviewer worked through the GitHub inte
 only and says so: it could not obtain a checkout, so nothing in the report was compiled,
 run, sanitised or fuzzed by them. Its four named findings and its supporting claims were
 re-checked here, against the code and the CI runs it cited, and acted on in three commits
-on branch `claude/dazzling-lamport-l7kodg`: `cd0ae8c`, `21334df` and `3390a3d` (CI run
-43081324797 was queued when this was written; the hashes are those of the branch, before
-any squash). Where the report and the code disagreed, the code was taken as authoritative.
+on branch `claude/dazzling-lamport-l7kodg`: `cd0ae8c`, `21334df` and `3390a3d`. CI run
+43081324797 on `3390a3d` was cancelled by the next push; run 43091315545 on that push (the commit that
+added this section) passed 58 of 59 jobs, and the one failure was the non-blocking `Clippy (beta,
+informational)` (a doc lint, fixed in 15.8). The hashes are those of the branch, before
+any squash. Where the report and the code disagreed, the code was taken as authoritative.
 
 ### 15.1 Findings and what became of them
 
@@ -3538,8 +3540,10 @@ word: "572 tree entries" counts directories, and there are 496 files.
   table, as long as the bindings' struct, holding only the slots the engine has. The count
   comes from slot 7 (`duckdb_library_version`, in the stable prefix every engine provides)
   and the layout table; from `QUACK_RS_BUILT_AGAINST_DUCKDB` for a release the table lacks;
-  and for a release neither knows, `AbiPolicy::Strict` takes the stable prefix and every
-  other policy takes the whole compiled struct, as before. Alternatives rejected: leaving it
+  and for a release neither knows, `AbiPolicy::Strict` takes what DuckDB guarantees for the
+  C API version the extension asked for (546 slots for C API v1.5.6 or later, the 357-slot
+  stable prefix before it; refined in `8564d17`, 15.8) and every other policy takes the
+  whole compiled struct, as before. Alternatives rejected: leaving it
   documented (undefined behaviour on every `LOAD` into 1.4.x to 1.5.1, which a reviewer will
   flag again); the stable prefix for every policy (it would break `Trust` with a
   `C_STRUCT_UNSTABLE` binary and `AllowUnknownEngine` on releases the table lacks); and an
@@ -3618,6 +3622,11 @@ word: "572 tree entries" counts directories, and there are 496 files.
 
 ### 15.4 For the owner (outward-facing; nothing here was done)
 
+- **RUSTSEC-2026-0543 (`chrono` unmaintained): decided on 2026-11-25 to ignore it** in
+  `deny.toml`, `deny.ci-crates.toml` and `osv-scanner.toml` with a written reason (test-only,
+  no fix exists), re-proved by CI (15.8).
+- **A pull request to `main`: decided on 2026-11-25 to open one only after the follow-up
+  commits of 15.8.**
 - **Yank 0.3.0–0.15.x: decided on 2026-11-11 not to yank now.** The owner will yank by hand
   when a production-ready, public release is tagged. `SECURITY.md` stays accurate until
   then: it says the releases are unyanked and must not be used.
@@ -3638,9 +3647,10 @@ word: "572 tree entries" counts directories, and there are 496 files.
 
 ### 15.5 Not verified
 
-GitHub Actions on the three commits (run 43081324797 queued): macOS, Windows, WebAssembly,
-`asan`, `leak-check`, `semver-checks`, `taplo`, `actionlint`, `cargo machete` and the book
-link check (`mdbook build` was not run) were not run here. The over-read itself on a real
+Locally: macOS, Windows, WebAssembly, `asan`, `leak-check`, `semver-checks`, `taplo`,
+`actionlint` and `cargo machete` were not run here. CI ran all of them on the branch (run
+43091315545, 58 of 59 jobs green, the failure non-blocking; see the section's opening);
+`docs.yml`'s book link check was not run anywhere. The over-read itself on a real
 engine: its table is a member of the loader's state in mapped memory, so the bound is
 validated on exactly sized mock tables and the real engines show no regression, not the
 absence of the read. The padding against engines other than 1.4.4, 1.5.0, 1.5.6 and 2.0.0,
@@ -3683,3 +3693,54 @@ changed after the 0.19.0 release log (INDEP-J).
   new test, before committing.
 - Before writing that an advisory explains a CI result, read both gates' logs: the
   `cargo-deny` log of 2026-11-09 was 104,000 characters and named one advisory, not two.
+
+### 15.8 Follow-up, 2026-11-25
+
+Fourteen days after 15.1–15.7, nothing had been merged and `main` (still `9ae1201`) had failed
+its scheduled runs of 2026-11-16 and 2026-11-23, 7 of 59 jobs each; the three open
+Dependabot pull requests (#153, #154, #155) failed the same 7. The causes, read from the job
+logs of run 45125522009:
+
+| Failing job | Cause | Fixed in |
+|---|---|---|
+| `Security (cargo-deny)`, `Security (OSV / GHSA)` | RUSTSEC-2026-0442 and -0486 on `main`'s locks (fixed on the branch in `cd0ae8c`), and RUSTSEC-2026-0543, new: `chrono` unmaintained, every version | `6ac3585` |
+| `ABI layout table` | DuckDB v2.0.1 not in `KNOWN_LAYOUTS` | `5fb32b7` |
+| `Catalog autoload names` | v2.0.1 added `parquet_variant` (the `parquet` extension) to `EXTENSION_TYPES` | `5fb32b7` |
+| `Scaffold end-to-end` | the generated `duckdb-1-5` extension was refused by v2.0.1 as an unknown release under `Strict`: the guard working | `5fb32b7` |
+| `Clippy (beta, informational)` | `doc_markdown`: `DuckDB` without backticks in `tests/property_inputs.rs` | `5814160` |
+| `CI passed` | the aggregate of the above | — |
+
+- **DuckDB v2.0.1** has v2.0.0's layout: 548 slots and the same declarations fingerprint,
+  derived by `scripts/check-abi-table.py` from its header, which then reports "OK: src/abi.rs
+  matches upstream"; `scripts/check-autoload-entries.py` reports the catalog covers v2.0.1.
+  Docs and tests that used v2.0.1 as the example of an unlisted release now use v2.0.2.
+- **`libduckdb-sys` and `duckdb` 1.20001.0** (2026-11-20) are inside `>=1.4.4, <1.20100`, so
+  downstream builds resolve to them. In a copy of the tree relocked to 1.20001.0 (with
+  `arrow` 60.2.0), `cargo check --all-targets` with `-D warnings` passes with and without
+  `duckdb-1-5-4` and the 1,136 library tests pass. Not run: the live suite against libduckdb
+  v2.0.1, and the committed locks still pin 1.10506.1.
+- **`chrono`** (owner's decision, 15.4): ignored with its reason in the three files, and the
+  `osv-scan` job's restored step `Confirm the suppressed advisories are still test-only`
+  re-proves it before the scan. The production tree (normal and build edges, every target,
+  `duckdb-1-5-4`) must contain `libduckdb-sys` and must not contain `chrono`; the test tree
+  must still reach `chrono` through `duckdb`. VALIDATED: the step's script, taken from
+  `ci.yml`, passes on the real tree and fails with its message in two negative controls;
+  `cargo deny check` passes on the root and the three CI crates. Not run here: `osv-scanner`
+  with the new entry.
+- **Review of 15.1–15.7's code, by a second model**, found one gap, fixed in `8564d17`: under
+  `Strict`, the bound took only the 357-slot v1.2.0 prefix from an unlisted engine, but an
+  extension that asks `get_api` for C API v1.5.6 is promised all 546 slots of the v1.5.6
+  struct (`DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)` guards slots 404–545 in the v1.5.6, v2.0.0
+  and v2.0.1 headers), so its direct `libduckdb_sys` calls past slot 357 would have
+  panicked on such an engine. quack-rs's own default-feature code never calls past 357: the
+  two calls in 357–403 (`duckdb_execute_prepared_streaming`, `duckdb_result_is_streaming`)
+  are behind `duckdb-1-5`. On a real v2.0.1, before it was listed, the default-feature
+  example passed all 32 checks and the `duckdb-1-5` demo was refused with the
+  layout-cannot-be-verified message. After the fix: 12 `api_init` tests pass natively and
+  under Miri, and `cargo-mutants` caught 9 of 9 mutants.
+- Not changed by the review: the `try_write_decimal` check, the lockfile bumps, the retry in
+  `scripts/fetch-duckdb.sh` and the rest of the bound were re-read and hold.
+- **Corrections:** this section's opening and 15.5 said run 43081324797 was queued; it was
+  cancelled, and 43091315545 is the run that covers the branch. The earlier summary given to
+  the owner said that run passed every job; it passed 58 of 59, the failure non-blocking.
+  15.2's description of the `Strict` fallback is updated in place.
