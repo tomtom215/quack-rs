@@ -53,7 +53,7 @@ proptest! {
 
     /// The same, aimed at the three-part shape so that near-misses are common:
     /// each part may carry a sign or be empty (`u64::from_str` accepts a
-    /// leading `+`, which no DuckDB version string has).
+    /// leading `+`, which no `DuckDB` version string has).
     #[test]
     fn parse_version_refuses_a_part_that_is_not_plain_decimal(
         v: bool,

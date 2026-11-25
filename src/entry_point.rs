@@ -137,13 +137,14 @@ use std::io::Write as _;
 
 use libduckdb_sys::{
     duckdb_connect, duckdb_connection, duckdb_disconnect, duckdb_extension_access,
-    duckdb_extension_info, duckdb_rs_extension_api_init, DuckDBSuccess,
+    duckdb_extension_info, DuckDBSuccess,
 };
 
 use crate::abi::AbiPolicy;
 use crate::connection::Connection;
 use crate::error::ExtensionError;
 
+mod api_init;
 mod registration;
 
 #[cfg(feature = "duckdb-1-5")]
@@ -630,9 +631,13 @@ where
     // SAFETY: `access` is the pointer DuckDB passed; the helper only reads it.
     unsafe { check_access(access)? };
 
-    // SAFETY: info and access are valid pointers provided by DuckDB.
+    // SAFETY: info and access are valid pointers provided by DuckDB; `check_access`
+    // above found `access` non-null with `get_api` set, and `api_version` has no
+    // interior NUL (checked at the top). `init_dispatch_table` rather than the
+    // bindings' own initialiser, which reads past the end of an older engine's
+    // table: see `api_init`.
     let have_api = unsafe {
-        duckdb_rs_extension_api_init(info, access, api_version)
+        api_init::init_dispatch_table(info, access, api_version, options.get_abi_policy())
             .map_err(|e| crate::error::ExtensionError::new(e.to_string()))?
     };
 
@@ -716,9 +721,13 @@ where
     // SAFETY: `access` is the pointer DuckDB passed; the helper only reads it.
     unsafe { check_access(access)? };
 
-    // SAFETY: info and access are valid pointers provided by DuckDB.
+    // SAFETY: info and access are valid pointers provided by DuckDB; `check_access`
+    // above found `access` non-null with `get_api` set, and `api_version` has no
+    // interior NUL (checked at the top). `init_dispatch_table` rather than the
+    // bindings' own initialiser, which reads past the end of an older engine's
+    // table: see `api_init`.
     let have_api = unsafe {
-        duckdb_rs_extension_api_init(info, access, api_version)
+        api_init::init_dispatch_table(info, access, api_version, options.get_abi_policy())
             .map_err(|e| ExtensionError::new(e.to_string()))?
     };
 
@@ -1257,19 +1266,19 @@ mod tests {
         assert!(mismatch.error_message().is_some());
     }
 
-    /// `DuckDB` v2.0.1 is not in the layout table yet (see `abi`'s module
+    /// `DuckDB` v2.0.2 is not in the layout table (see `abi`'s module
     /// docs): the default policy refuses a `duckdb-1-5` build on it, and only
     /// the opt-out loads it.
     #[test]
-    fn duckdb_2_0_1_is_refused_by_default_and_loaded_only_by_the_opt_out() {
+    fn an_unlisted_2_0_x_is_refused_by_default_and_loaded_only_by_the_opt_out() {
         use crate::abi::AbiCheck;
         let check = AbiCheck::UnknownEngineVersion {
-            engine_version: "v2.0.1".into(),
+            engine_version: "v2.0.2".into(),
             compiled_slots: 548,
         };
         assert!(matches!(
             policy_verdict(AbiPolicy::default(), &check),
-            AbiVerdict::Refuse(message) if message.contains("'v2.0.1'")
+            AbiVerdict::Refuse(message) if message.contains("'v2.0.2'")
         ));
         assert_eq!(
             policy_verdict(AbiPolicy::AllowUnknownEngine, &check),

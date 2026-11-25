@@ -1,13 +1,14 @@
 <!-- SPDX-License-Identifier: MIT -->
 
-# quack-rs — audit log, August – October 2026
+# quack-rs — audit log, August – November 2026
 
-Sections 1–6 are the first audit, below. Sections 7–14 are the later ones, newest
+Sections 1–6 are the first audit, below. Sections 7–15 are the later ones, newest
 last: 7 (second audit, 0.17.0 → 0.18.0), 8–10 (third to fifth, before 0.18.0),
 11 (sixth review, after 0.18.0), 12 (the DuckDB 2.0.0 review), 13 (the seventh
-review, after 0.19.0) and 14 (the eighth review, released as 0.20.0). Each ends with
-how it was verified, and later sections correct earlier ones where they were wrong
-(13.4 and 14.9 list the corrections).
+review, after 0.19.0), 14 (the eighth review, released as 0.20.0) and 15 (an
+independent production-readiness review of 0.20.0, triaged and acted on). Each ends
+with how it was verified, and later sections correct earlier ones where they were
+wrong (13.4, 14.9 and 15.6 list the corrections).
 
 The first audit (sections 1–6) reviewed `v0.16.0`, against **DuckDB 1.5.4**
 (prebuilt `libduckdb`, x86-64 Linux) with `libduckdb-sys 1.10504.0`.
@@ -3492,3 +3493,254 @@ printed 0 is listed with the exit code):
   each push restarts every job, so fixes should be batched.
 - A decision made for lack of verification can be wrong: I declined the runner pins
   because I could not confirm the labels offline, and `infra` confirmed them.
+
+## 15. Independent production-readiness review, November 2026 (0.20.0, after the eighth review)
+
+An outside reviewer assessed `v0.20.0` at `9ae12018da4d`, the head of `main` that day, and
+published a report dated 2026-11-09. The reviewer worked through the GitHub integration
+only and says so: it could not obtain a checkout, so nothing in the report was compiled,
+run, sanitised or fuzzed by them. Its four named findings and its supporting claims were
+re-checked here, against the code and the CI runs it cited, and acted on in three commits
+on branch `claude/dazzling-lamport-l7kodg`: `cd0ae8c`, `21334df` and `3390a3d`. CI run
+43081324797 on `3390a3d` was cancelled by the next push; run 43091315545 on that push (the commit that
+added this section) passed 58 of 59 jobs, and the one failure was the non-blocking `Clippy (beta,
+informational)` (a doc lint, fixed in 15.8). The hashes are those of the branch, before
+any squash. Where the report and the code disagreed, the code was taken as authoritative.
+
+### 15.1 Findings and what became of them
+
+| ID | The report's claim | Status | Evidence and resolution |
+|---|---|---|---|
+| INDEP-A | `duckdb_rs_extension_api_init` reads every compiled slot of `duckdb_ext_api_v1` before the ABI guard runs: out of bounds on an older engine (`abi.rs` 97–122, `entry_point.rs` 616–647) | confirmed, fixed | VALIDATED under Miri: a mock engine table of exactly 459 slots (3,672 bytes) makes the bindings' initialiser read slot 459, 8 bytes past the end; a 546-slot control passes. The generated code is the same in `libduckdb-sys` 1.10506.1 and 1.20000.1, so neither fixes it. Fixed in `3390a3d` (15.2). |
+| INDEP-B | `FfiState::destroy_callback` volatile-reads state bytes DuckDB may never have initialised (`state.rs` 461–483) | confirmed, accepted | VALIDATED under Miri: a genuinely uninitialised slot is Undefined Behavior at the tag read, `state.rs:472`; zero-filled and `0xA5…`-filled slots pass. The repository's own tests use the `0xA5…` fill, so Miri could not see it. Accepted, with the residual recorded in 15.2. |
+| INDEP-C | The panic boundary is guarded but not process-failure-proof: raw callbacks, `panic = "abort"`, double panics, out-of-memory | not a defect | Documented design limits: `callback.rs` 40–48, `book/src/functions/panic-safe-callbacks.md`, `entry_point.rs` 72–79. No change. |
+| INDEP-D | `VectorWriter::write_decimal` narrows with `as` and checks nothing (`writer.rs` 635–661) | confirmed, fixed | VALIDATED on libduckdb 1.5.6: 70000 in a `DECIMAL(4, 0)` reads back as 4464, 2^32 + 5 in a `DECIMAL(9, 0)` as 5, 2^64 + 7 in a `DECIMAL(18, 0)` as 7, and 10000 is stored as 10000 in a `DECIMAL(4, 0)`. The rustdoc said nothing about the range; only a book comment did. Fixed in `21334df` (15.2). |
+| INDEP-E | The Arrow import cannot check every buffer against its schema (`arrow.rs` 61–109) | not a defect | Documented in the module ("What it still cannot check"). No change. |
+| INDEP-F | Registration is transactional for catalog objects only; casts, replacement scans, configuration options and external side effects are not rolled back (`entry_point.rs` 28–70) | not a defect | Documented there. No change. |
+| INDEP-G | Secrets, TLS and SQL-macro limits (`secrets.rs`, `tls.rs`, `sql_macro.rs`) | not a defect | Documented in each module's header. No change. |
+| INDEP-H | Main CI is green: 59 of 59 jobs on 2026-11-02 | stale, fixed | True of run 41400911517. The scheduled run of 2026-11-09 on the same commit (42574068523) failed 7 of 59 jobs: two security gates on RUSTSEC-2026-0442, four DuckDB downloads on an HTTP 504, and the aggregate `CI passed`. Fixed in `cd0ae8c` (15.2). |
+| INDEP-I | PR #152 failed its book and README doctest job | confirmed, open | The job is `Test bundled-test-prebuilt (prebuilt libduckdb)`: 26 of 255 book doctests fail with the 1.20000.0 bindings. The one backtrace read goes through `InMemoryDb::open` and `init_dispatch_table_once` (`src/testing/in_memory_db.rs:181`); the other 25 were not read. Cause not diagnosed. The PR is open and unmerged. |
+| INDEP-J | `SECURITY.md` supports only 0.20.x and 0.19.x; older releases are unyanked; advisories and Trusted Publishing are unconfirmed | confirmed, deferred | All true; 14.5 had listed them. The owner's decisions are in 15.4. |
+
+Ten rows, counted from the table with `table_counts.py`: four not a defect, two confirmed
+and fixed, one stale and fixed, one confirmed and accepted, one confirmed and open, one
+confirmed and deferred.
+
+Figures in the report that reproduced: 457 of 546 slots wrapped and 89 unused; 5,127 of
+22,898 non-test lines inside `unsafe fn` (22.4%); eight fuzz targets; MSRV 1.86.0 and
+toolchain 1.99.1; the benchmark medians of 14.7; the `v0.20.0` tag signature
+(`verified: valid`), release run and release assets; 142 of 142 workflow `uses:` lines
+pinned to a commit hash; and every `file:line` citation that was opened. One figure needs a
+word: "572 tree entries" counts directories, and there are 496 files.
+
+### 15.2 What changed, and why this and not the alternatives
+
+- **INDEP-A, `3390a3d`: bound the read in quack-rs.** `entry_point/api_init.rs` wraps the
+  `access` struct so that the bindings' `get_api` returns a zero-padded copy of the engine's
+  table, as long as the bindings' struct, holding only the slots the engine has. The count
+  comes from slot 7 (`duckdb_library_version`, in the stable prefix every engine provides)
+  and the layout table; from `QUACK_RS_BUILT_AGAINST_DUCKDB` for a release the table lacks;
+  and for a release neither knows, `AbiPolicy::Strict` takes what DuckDB guarantees for the
+  C API version the extension asked for (546 slots for C API v1.5.6 or later, the 357-slot
+  stable prefix before it; refined in `8564d17`, 15.8) and every other policy takes the
+  whole compiled struct, as before. Alternatives rejected: leaving it
+  documented (undefined behaviour on every `LOAD` into 1.4.x to 1.5.1, which a reviewer will
+  flag again); the stable prefix for every policy (it would break `Trust` with a
+  `C_STRUCT_UNSTABLE` binary and `AllowUnknownEngine` on releases the table lacks); and an
+  upstream fix alone (not ours to schedule, and 1.20000.1 still has the loop). Residual:
+  `Warn` and `Trust` stay undefined behaviour on a layout that inserts a slot (1.5.0 and
+  1.5.1 against 1.5.2 and later); the fix bounds the read, not the dispatch. A slot the
+  engine does not have is now NULL, so a wrapper that needs it panics (caught) instead of
+  calling the memory after the table.
+- **INDEP-B, no commit: accepted.** This agrees with UNSOUND-2 (14.4, "the documented
+  mitigation stands") and adds the Miri evidence. No sound alternative was found: a version
+  gate is not available, because DuckDB 2.0.0 still hands destructors garbage state
+  (`book/src/reference/known-limitations.md`: 65 of 68 pointers in the window case, from a
+  plain C aggregate; `docs/upstream-duckdb-reports.md` reports 1,096 of 4,096 destroyed
+  states never initialised); a registry of live states by address fails because DuckDB
+  moves states by copying their bytes (the fourth audit's tag); infallible or lazy
+  initialisation does not remove the case where another aggregate's `state_init` fails
+  first; and an `asm!` freeze is architecture-specific and invisible to Miri. The read is
+  reached only after a failed `state_init` on an affected engine, an error path. Residual:
+  undefined behaviour in Rust's abstract machine under an engine defect, never observed;
+  ASSUMED, deductive proof not attempted, owner DuckDB upstream. Revisit when a DuckDB
+  release fixes the destroy of uninitialised states: add a version gate then.
+- **INDEP-D, `21334df`: add `VectorWriter::try_write_decimal`.** It refuses
+  `|unscaled| >= 10^width` with one comparison against a compile-time table and writes
+  nothing on error. `write_decimal` is unchanged except its documentation, which now states
+  the range requirement. Rejected: making `write_decimal` return a `Result` (breaking, and
+  on the hot path) and a `debug_assert` (absent in the release builds where it matters).
+  The digit test is shared with `validate_decimal`, so the two cannot disagree.
+- **INDEP-H, `cd0ae8c`: make the scheduled run green again.** `arrow-data` 58.4.0 to 58.4.1
+  (with `arrow-buffer` and `arrow-schema`) in three lockfiles for RUSTSEC-2026-0442;
+  `rustix` 1.1.5 to 1.1.6 in four for RUSTSEC-2026-0486; `curl --retry 5` in
+  `scripts/fetch-duckdb.sh`. `arrow-data` is reached only through the optional `duckdb`
+  dependency of the `bundled-test*` features, and `rustix` only as a dev-dependency
+  (`proptest` to `tempfile`). The second advisory was found by querying every lockfile
+  against OSV, not from the failed run: the full 2026-11-09 `cargo-deny` log names only
+  RUSTSEC-2026-0442, and the OSV job listed only that one; the advisory (published
+  2026-10-27) was last modified in OSV on 2026-11-11.
+
+### 15.3 How this pass was verified
+
+- **Reproductions** (a scratch crate outside the repository, `libduckdb-sys` 1.10506.1,
+  nightly 1.102.0 of 2026-11-10, x86-64 Linux, Miri): INDEP-A and INDEP-B as in 15.1, each
+  with an in-bounds or initialised control that passes.
+- **After the fix, INDEP-A:** ten new unit tests, six of which run the padding function
+  against mock tables of exactly 459, 545, 546, 548, 357 and the bindings' own slot count,
+  and four of which cover every policy and declaration branch of the pure slot-count
+  function. They pass natively, under Miri on x86-64 and under Miri on big-endian s390x,
+  the two targets CI uses. With the copy length changed to the whole compiled struct, Miri
+  reports the over-read in those tests. All 33 `entry_point` tests pass under Miri, and so
+  does the whole library suite under Miri on x86-64 with CI's flags (1,129 passed, 0 failed,
+  7 ignored, 2,164 s; run before the last test edit below, which touches pure code only).
+  The whole suite was not run on s390x.
+- **Real engines:** an example extension built on the 548-slot bindings passes all 32
+  `scripts/check-hello-ext.py` checks on DuckDB 1.4.4 (459 slots), 1.5.0 (545), 1.5.6 (546)
+  and 2.0.0 (548). The CI ABI-guard scenario holds: a `duckdb-1-5` extension that calls an
+  unstable slot is refused with the layout-mismatch message by 1.5.0 and 1.4.4 and loads on
+  1.5.6, and the same build stamped for C API v1.5.6 loads on 1.5.6 and 2.0.0.
+- **After the fix, INDEP-D:** three live tests (widths 1, 4, 5, 9, 10, 18, 19 and 38, both
+  sides of every storage boundary, and the wrapped values above); all three fail with the
+  validation call removed. Unit tests cover widths 1 to 38 and the invalid widths.
+- **Suites, on the final tree before the last test edit:** `cargo test --all-targets
+  --no-fail-fast` with default features 1,167 passed, with `duckdb-1-5-4` 1,308, and with
+  `bundled-test-prebuilt,duckdb-1-5-4` against libduckdb v1.5.6 1,851; doctests 235; the
+  book's doctests 255; the example's own tests 43; no failures. Clippy with `-D warnings`
+  in four configurations, rustdoc with `-D warnings` in two, `cargo fmt --check`, `typos`
+  1.46.0, the changelog mirror check, and MSRV (Rust 1.86.0 on a re-resolved copy, with and
+  without `duckdb-1-5-4`).
+- **Mutation testing** (`cargo-mutants` 27.1.0, the flags of the incremental job): 45 mutants
+  in the two changed files, one survivor: `||` to `&&` in `validate_decimal`'s width check,
+  which my refactor had left reachable only through the shared digit test. The width test
+  now asserts the message; `src/value/checks.rs` then ran 41 mutants, 33 caught, 8 unviable,
+  0 missed. `api_init.rs` had no survivor.
+- **Supply chain:** `cargo-deny` 0.20.2 (the CI version) reports both advisories on the
+  previous `Cargo.lock` and passes on the new one and on the three CI crates; all 243
+  distinct `crates.io` name and version pairs in the five committed lockfiles return no OSV
+  vulnerability. `curl --retry 5` retried a local 504 and did not retry a 404.
+
+### 15.4 For the owner (outward-facing; nothing here was done)
+
+- **RUSTSEC-2026-0543 (`chrono` unmaintained): decided on 2026-11-25 to ignore it** in
+  `deny.toml`, `deny.ci-crates.toml` and `osv-scanner.toml` with a written reason (test-only,
+  no fix exists), re-proved by CI (15.8).
+- **A pull request to `main`: decided on 2026-11-25 to open one only after the follow-up
+  commits of 15.8.**
+- **Yank 0.3.0–0.15.x: decided on 2026-11-11 not to yank now.** The owner will yank by hand
+  when a production-ready, public release is tagged. `SECURITY.md` stays accurate until
+  then: it says the releases are unyanked and must not be used.
+- **A RustSec advisory for 0.3.0–0.15.x** (14.5, HARDEN-10): not decided. It is separate
+  from the yank: an advisory warns current users through `cargo audit` and removes nothing.
+- **Trusted Publishing and the crates.io token** (14.5, HARDEN-9; `RELEASING.md` has the
+  order): decided on 2026-11-11 to handle later.
+- **A report to duckdb-rs: open, awaiting the owner.** `libduckdb-sys` generates
+  `duckdb_rs_extension_api_init` (in `build.rs` in 1.10506.1, `buildtime_bindgen.rs` in
+  1.20000.1) so that it dereferences every slot of the struct it was compiled against,
+  unbounded, through the pointer from `get_api` (INDEP-A). After `3390a3d` quack-rs no longer
+  needs the report; its value is to other users of the bindings, and which of them are
+  affected was not checked (the `duckdb-loadable-macros` crate was not read). Filing means a
+  public issue on another project under the owner's identity, so it is the owner's call; it
+  would be drafted for review first.
+- **PR #152** (INDEP-I): diagnose the `InMemoryDb` dispatch-table panic with the 1.20000.0
+  bindings before the bump can merge.
+
+### 15.5 Not verified
+
+Locally: macOS, Windows, WebAssembly, `asan`, `leak-check`, `semver-checks`, `taplo`,
+`actionlint` and `cargo machete` were not run here. CI ran all of them on the branch (run
+43091315545, 58 of 59 jobs green, the failure non-blocking; see the section's opening);
+`docs.yml`'s book link check was not run anywhere. The over-read itself on a real
+engine: its table is a member of the loader's state in mapped memory, so the bound is
+validated on exactly sized mock tables and the real engines show no regression, not the
+absence of the read. The padding against engines other than 1.4.4, 1.5.0, 1.5.6 and 2.0.0,
+and the `Warn`, `Trust` and `AllowUnknownEngine` branches on a real engine (unit-tested
+only). The report's claims about DuckDB and third parties: upstream issue #26109 and pull
+request #26455 and their dates, DuckDB's release calendar, the `duckdb-neo` and
+`extension-template-rs` comparison, GitHub's star and fork counts, `registration.rs`
+121–165, and the Rust reference's wording on `read_volatile`. Exploitability: neither INDEP-A
+nor INDEP-B was assessed beyond reading the code and the Miri runs; A reads pointers and
+writes nothing, B reads one word of a state slot. Whether Trusted Publishing or an advisory
+changed after the 0.19.0 release log (INDEP-J).
+
+### 15.6 Corrections
+
+- **To the report:** the "last verified main CI, 59 of 59" is stale (INDEP-H); the "572 tree
+  entries" are 496 files and 76 directories; its description of PR #152's failure is right
+  (a book doctest job), and the one backtrace read points at `InMemoryDb`.
+- **To this repository's own text:** `src/abi.rs` and `book/src/concepts/abi.md` documented
+  the over-read as the behaviour and said quack-rs could avoid it only by calling `get_api`
+  itself and reading slot 7 first. Both are rewritten in `3390a3d` to say it is bounded.
+  No earlier section of this file made the claim.
+- **To my own text:** the `CHANGELOG.md` entry and the commit message of `3390a3d` said that
+  `src/abi.rs` "said only `libduckdb-sys` could fix it". It said the opposite: that quack-rs
+  could avoid it. The changelog is corrected in the commit that adds this section; the
+  pushed commit message keeps the wrong sentence.
+
+### 15.7 Process lessons (mine)
+
+- `cargo test --all-targets` stops at the first failing test binary. The first full run
+  printed one failure, and the binaries after `integration_test` had not run; re-run with
+  `--no-fail-fast` before calling a suite green.
+- The first failure of a new test was its helper, not the code under test: a hole in the
+  copied prefix (an engine whose slot 7 is empty) broke a "prefix, then padding" assertion.
+  Read the panic message before touching the code, and assert slot by slot.
+- A refactor that makes a check total can make the check before it redundant, and a test that
+  only asserts `is_err()` cannot tell the two errors apart. The mutation run found it; assert
+  the message.
+- A new test file has to be listed in the two documented source trees
+  (`tests/integration_test.rs` fails otherwise); run the default-feature suite, not only the
+  new test, before committing.
+- Before writing that an advisory explains a CI result, read both gates' logs: the
+  `cargo-deny` log of 2026-11-09 was 104,000 characters and named one advisory, not two.
+
+### 15.8 Follow-up, 2026-11-25
+
+Fourteen days after 15.1–15.7, nothing had been merged and `main` (still `9ae1201`) had failed
+its scheduled runs of 2026-11-16 and 2026-11-23, 7 of 59 jobs each; the three open
+Dependabot pull requests (#153, #154, #155) failed the same 7. The causes, read from the job
+logs of run 45125522009:
+
+| Failing job | Cause | Fixed in |
+|---|---|---|
+| `Security (cargo-deny)`, `Security (OSV / GHSA)` | RUSTSEC-2026-0442 and -0486 on `main`'s locks (fixed on the branch in `cd0ae8c`), and RUSTSEC-2026-0543, new: `chrono` unmaintained, every version | `6ac3585` |
+| `ABI layout table` | DuckDB v2.0.1 not in `KNOWN_LAYOUTS` | `5fb32b7` |
+| `Catalog autoload names` | v2.0.1 added `parquet_variant` (the `parquet` extension) to `EXTENSION_TYPES` | `5fb32b7` |
+| `Scaffold end-to-end` | the generated `duckdb-1-5` extension was refused by v2.0.1 as an unknown release under `Strict`: the guard working | `5fb32b7` |
+| `Clippy (beta, informational)` | `doc_markdown`: `DuckDB` without backticks in `tests/property_inputs.rs` | `5814160` |
+| `CI passed` | the aggregate of the above | — |
+
+- **DuckDB v2.0.1** has v2.0.0's layout: 548 slots and the same declarations fingerprint,
+  derived by `scripts/check-abi-table.py` from its header, which then reports "OK: src/abi.rs
+  matches upstream"; `scripts/check-autoload-entries.py` reports the catalog covers v2.0.1.
+  Docs and tests that used v2.0.1 as the example of an unlisted release now use v2.0.2.
+- **`libduckdb-sys` and `duckdb` 1.20001.0** (2026-11-20) are inside `>=1.4.4, <1.20100`, so
+  downstream builds resolve to them. In a copy of the tree relocked to 1.20001.0 (with
+  `arrow` 60.2.0), `cargo check --all-targets` with `-D warnings` passes with and without
+  `duckdb-1-5-4` and the 1,136 library tests pass. Not run: the live suite against libduckdb
+  v2.0.1, and the committed locks still pin 1.10506.1.
+- **`chrono`** (owner's decision, 15.4): ignored with its reason in the three files, and the
+  `osv-scan` job's restored step `Confirm the suppressed advisories are still test-only`
+  re-proves it before the scan. The production tree (normal and build edges, every target,
+  `duckdb-1-5-4`) must contain `libduckdb-sys` and must not contain `chrono`; the test tree
+  must still reach `chrono` through `duckdb`. VALIDATED: the step's script, taken from
+  `ci.yml`, passes on the real tree and fails with its message in two negative controls;
+  `cargo deny check` passes on the root and the three CI crates. Not run here: `osv-scanner`
+  with the new entry.
+- **Review of 15.1–15.7's code, by a second model**, found one gap, fixed in `8564d17`: under
+  `Strict`, the bound took only the 357-slot v1.2.0 prefix from an unlisted engine, but an
+  extension that asks `get_api` for C API v1.5.6 is promised all 546 slots of the v1.5.6
+  struct (`DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)` guards slots 404–545 in the v1.5.6, v2.0.0
+  and v2.0.1 headers), so its direct `libduckdb_sys` calls past slot 357 would have
+  panicked on such an engine. quack-rs's own default-feature code never calls past 357: the
+  two calls in 357–403 (`duckdb_execute_prepared_streaming`, `duckdb_result_is_streaming`)
+  are behind `duckdb-1-5`. On a real v2.0.1, before it was listed, the default-feature
+  example passed all 32 checks and the `duckdb-1-5` demo was refused with the
+  layout-cannot-be-verified message. After the fix: 12 `api_init` tests pass natively and
+  under Miri, and `cargo-mutants` caught 9 of 9 mutants.
+- Not changed by the review: the `try_write_decimal` check, the lockfile bumps, the retry in
+  `scripts/fetch-duckdb.sh` and the rest of the bound were re-read and hold.
+- **Corrections:** this section's opening and 15.5 said run 43081324797 was queued; it was
+  cancelled, and 43091315545 is the run that covers the branch. The earlier summary given to
+  the owner said that run passed every job; it passed 58 of 59, the failure non-blocking.
+  15.2's description of the `Strict` fallback is updated in place.

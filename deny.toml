@@ -55,9 +55,20 @@ yanked = "deny"
 unmaintained = "all"
 unsound = "all"
 
-# IDs of advisories to explicitly ignore (document reason in comment).
-# Example: ignore = ["RUSTSEC-2023-0001"]  # false positive for our usage pattern
-ignore = []
+# Advisories to ignore. Each needs a reason, and the `osv-scan` CI job re-proves
+# the reason before its scan (`Confirm the suppressed advisories are still test-only`),
+# so a suppression cannot outlive it. Keep this list, deny.ci-crates.toml and
+# osv-scanner.toml in step.
+#
+# RUSTSEC-2026-0543 (2026-11): `chrono` is unmaintained, every version, so there is no
+# release to move to. It enters only as quack-rs -> duckdb -> arrow-* -> chrono, and
+# `duckdb` is an optional dependency enabled only by the test features
+# `bundled-test` / `bundled-test-prebuilt` (`_duckdb-testing`). With the default or
+# any `duckdb-1-5*` feature it is not in the graph, so no extension built with
+# quack-rs links it. `arrow` itself depends on chrono, so no version bump removes it.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained (no fixed release); reached only through the optional test-only duckdb -> arrow dependency (bundled-test* features), never the library's own graph; re-proved by the osv-scan job" },
+]
 
 # ── Dependency bans ───────────────────────────────────────────────────────────
 [bans]

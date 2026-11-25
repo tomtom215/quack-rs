@@ -43,7 +43,12 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 unmaintained = "all"
 unsound = "all"
-ignore = []
+# RUSTSEC-2026-0543: `chrono` is unmaintained (every version; no fix exists). These
+# crates are CI-only (fuzz harness, book doctests) and reach it only through the
+# `duckdb` -> `arrow` test dependency; see deny.toml for the full reason.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "CI-only crate; chrono reached only via the duckdb -> arrow test dependency; unmaintained, no fixed release (see deny.toml)" },
+]
 
 [bans]
 multiple-versions = "allow"

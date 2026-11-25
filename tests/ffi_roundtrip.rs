@@ -6167,6 +6167,9 @@ mod signature_hazards;
 #[path = "ffi_roundtrip/appender_rows.rs"]
 mod appender_rows;
 
+#[path = "ffi_roundtrip/decimal_write.rs"]
+mod decimal_write;
+
 #[cfg(feature = "duckdb-1-5")]
 #[path = "ffi_roundtrip/bind_expressions.rs"]
 mod bind_expressions;

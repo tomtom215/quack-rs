@@ -111,9 +111,9 @@ them loads extensions built for **C API version `v1.2.0`**
 DuckDB 1.5.6 and 2.0.x declare C API version `v1.5.6` and still accept `v1.2.0` extensions. CI runs
 the test suite against DuckDB 1.4.4, 1.4.5, 1.5.0, 1.5.3, 1.5.4, 1.5.5, 1.5.6 and 2.0.0, and loads the example
 extension into 1.4.4, 1.5.0, 1.5.5, 1.5.6, 2.0.0 and the latest release. An extension that uses a
-`duckdb-1-5*` feature is narrower: it loads into DuckDB 1.5.6 and 2.0.0, the releases whose layout
+`duckdb-1-5*` feature is narrower: it loads into DuckDB 1.5.6, 2.0.0 and 2.0.1, the releases whose layout
 quack-rs has verified, and under the default `Strict` policy it refuses any other release (such as a
-future 2.0.1) until quack-rs lists it or you build with `QUACK_RS_TARGET_DUCKDB_VERSION` set to it
+future 2.0.2) until quack-rs lists it or you build with `QUACK_RS_TARGET_DUCKDB_VERSION` set to it
 ([ABI Compatibility](abi.md#unknown-duckdb-versions)).
 Using a range rather than an exact pin means:
 

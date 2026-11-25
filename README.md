@@ -222,7 +222,7 @@ release you support.
 - **DuckDB:** with the default features, 1.4.4 through 2.0.x (the tests ran
   against 2.0.0, the newest release when 0.20.0 was published). With a
   `duckdb-1-5*` feature, only the releases whose C API layout quack-rs has
-  verified: 1.5.6 and 2.0.0. Any other release, a future 2.0.1 included, is
+  verified: 1.5.6, 2.0.0 and 2.0.1. Any other release, a future 2.0.2 included, is
   refused at `LOAD` (see below).
 - **`libduckdb-sys`:** `>=1.4.4, <1.20100`. That covers the bindings for every
   DuckDB release above, 1.4.4 through 1.20000.x (the DuckDB 2.0 bindings, first
@@ -244,12 +244,12 @@ and still load `v1.2.0` extensions. The `duckdb-1-5*` features use the part of
 DuckDB's C API whose layout changed between releases up to 1.5.5 (DuckDB
 labels C API v1.5.6 stable, with the caveat below). Build such an extension against the 1.5.6
 bindings and stamp it `C_STRUCT` with C API `v1.5.6`; it then loads into DuckDB
-1.5.6 and 2.0.0. quack-rs has verified that layout for DuckDB 1.5.2 to 1.5.6 and
-2.0.0 only, and DuckDB's 2.0.0 header says the API is guaranteed for that exact
+1.5.6, 2.0.0 and 2.0.1. quack-rs has verified that layout for DuckDB 1.5.2 to 1.5.6,
+2.0.0 and 2.0.1 only, and DuckDB's 2.0.0 header says the API is guaranteed for that exact
 release (2.0.0 added two slots to the range that 1.5.6 declared stable). So under
 the default `Strict` policy such an extension refuses to load into a release
 quack-rs has not listed, with an error that says how to fix it. When one appears
-(DuckDB 2.0.1, for example), either rebuild with
+(DuckDB 2.0.2, for example), either rebuild with
 `QUACK_RS_TARGET_DUCKDB_VERSION` set to that release, once you have checked it,
 or move to a quack-rs release that lists it; or stay on the default features,
 which are not affected. See

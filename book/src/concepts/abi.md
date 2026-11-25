@@ -180,37 +180,51 @@ For an engine older than v1.5.0 the advice changes: such an engine cannot run a
 `duckdb-1-5` build at all, so the message says to build a variant without those
 features or to upgrade DuckDB.
 
-## The bindings read the whole struct before the guard runs
+## The bindings read the whole struct, so quack-rs bounds what they can reach
 
 `libduckdb-sys` generates its `duckdb_ext_api_v1` with every slot of the release it was
 generated from (546 for the 1.5.x bindings, 548 for 2.0), whatever quack-rs features are on.
 Its `duckdb_rs_extension_api_init` asks DuckDB for the struct and reads **every one of those
 slots** through the returned pointer before `abi::check` can run, because the check itself
 reaches `duckdb_library_version` through that table. DuckDB's struct has only the engine's own
-number of slots, so loading a build against the 546-slot bindings into DuckDB 1.4.x (459
-slots) reads 87 pointers (696 bytes on a 64-bit target) past the end of it, and into
-1.5.0 or 1.5.1 (545 slots) one pointer. This happens on every such `LOAD`, also for a
-default-feature build that the check then lets load as `StableOnly`. The memory is mapped
-and no crash has been observed or is expected; the values read are stored, and are never
-called by code that stays in the stable prefix or when the check refuses the load. They are
-what an unstable-region wrapper would call after `Warn` or `Trust` let a mismatched layout
-load, one more reason those policies are undefined behaviour on a mismatch. This was read
-in `libduckdb-sys` and in DuckDB's `extension_load.cpp`, not measured; quack-rs could avoid
-it only by calling `get_api` and reading slot 7 itself before handing the struct to the
-bindings.
+number of slots, so the pointer, handed over as it is, makes a build against the 546-slot
+bindings loaded into DuckDB 1.4.x (459 slots) read 87 pointers (696 bytes on a 64-bit target)
+past the end of it, and into 1.5.0 or 1.5.1 (545 slots) one pointer. That is a read outside the
+object DuckDB returned, undefined behaviour whether or not the memory after it is mapped.
+quack-rs up to 0.20.0 did this on every such `LOAD`, also for a default-feature build that
+the check then lets load as `StableOnly`, and relied on the memory being mapped; no crash was
+ever observed. Miri reports the read on any exactly sized table.
+
+The entry points no longer hand it over. They wrap the `access` struct so that the bindings'
+`get_api` returns a **zero-padded copy** of the engine's table, as long as the bindings' struct
+and holding only the slots the engine has. The count comes from slot 7
+(`duckdb_library_version`, in the stable prefix every engine provides, so safe to read first)
+and the layout table; for a release the table does not list, from the build's
+`QUACK_RS_BUILT_AGAINST_DUCKDB` declaration if it names that release, and otherwise `Strict`
+takes what DuckDB guarantees for the C API version the extension asked for: the 546 slots of
+C API v1.5.6 (declared under `DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`) for v1.5.6 or later,
+the 357-slot stable prefix before it. `Strict` refuses such an engine anyway, or the build
+never goes past that, while every other policy takes the whole compiled struct, as the bindings always
+did, because those policies exist to run on releases the table lacks. A slot the engine does
+not have is NULL: the bindings skip it, and a wrapper that needs it panics (a caught panic,
+an ordinary SQL error) instead of calling whatever followed the engine's table.
+
+This bounds the *read*. It does not make `Warn` or `Trust` safe on a mismatched layout: a
+layout that **inserts** a slot (1.5.0 and 1.5.1 against 1.5.2 and later) still dispatches to
+the wrong function, padded or not, which is what the layout check refuses.
 
 ## Unknown DuckDB versions
 
 `Strict` also refuses a DuckDB release quack-rs has no verified layout for — a
-newer release (such as v2.0.1 or v2.1.0), or a `-dev` build. That is deliberate:
+newer release (such as v2.0.2 or v2.1.0), or a `-dev` build. That is deliberate:
 DuckDB changed the unstable region in every minor release from 1.3.0 to 2.0.0, and
 in the 1.5.2 patch release, so "unknown" is not evidence of "compatible". DuckDB's
 own header says the same: DuckDB v2.0.0's `duckdb_extension.h` opens with "this API
 is not yet stable, meaning it is only guaranteed to work for this specific DuckDB
 version", and v2.0.0 itself added two slots to the band that v1.5.6 had declared
-stable. So a `duckdb-1-5*` extension that loads into 1.5.6 and 2.0.0 is refused by
-2.0.1 until a quack-rs release lists it or you rebuild with
-`QUACK_RS_TARGET_DUCKDB_VERSION=v2.0.1`; an extension built with the default
+stable. So a `duckdb-1-5*` extension that loads into 1.5.6, 2.0.0 and 2.0.1 is refused by
+a later release until a quack-rs release lists it or you rebuild with
+`QUACK_RS_TARGET_DUCKDB_VERSION` set to it; an extension built with the default
 features reports `StableOnly` and loads there. A build
 against the v1.5.2 – v1.5.6 bindings is accepted on v2.0.0, whose layout only
 appends to it; a build against 1.5.0/1.5.1 (545 slots) is still refused there.

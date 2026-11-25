@@ -33,11 +33,11 @@ and [Pitfall P17](pitfalls.md#p17).
 
 With the default features, one binary loads into every DuckDB from 1.4.4 through 2.0.x. An
 extension that enables a `duckdb-1-5*` feature calls the part of the C API that DuckDB
-declares unstable, and quack-rs has verified that layout for DuckDB 1.5.2 to 1.5.6 and 2.0.0
+declares unstable, and quack-rs has verified that layout for DuckDB 1.5.2 to 1.5.6, 2.0.0 and 2.0.1
 only: built against the 1.5.6 bindings and stamped `C_STRUCT` with C API `v1.5.6`, it
-loads into 1.5.6 and 2.0.0. Under the default `AbiPolicy::Strict` it refuses to load into any
-other release with an error that names the fixes, and DuckDB 2.0.1 will be one until a quack-rs
-release lists it. The layout cannot be extrapolated: DuckDB 2.0.0's `duckdb_extension.h` opens
+loads into 1.5.6, 2.0.0 and 2.0.1. Under the default `AbiPolicy::Strict` it refuses to load into any
+other release with an error that names the fixes, and a release after 2.0.1 will be one until a
+quack-rs release lists it. The layout cannot be extrapolated: DuckDB 2.0.0's `duckdb_extension.h` opens
 with "this API is not yet stable, meaning it is only guaranteed to work for this specific
 DuckDB version", 2.0.0 itself put two slots (`duckdb_create_timestamp_tz_ns` and
 `duckdb_get_timestamp_tz_ns`) into the range that 1.5.6 declared stable, and the 1.5.2 patch

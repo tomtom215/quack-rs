@@ -186,7 +186,7 @@ variants as follows:
 | `TimestampMs` | `read_timestamp_ms` | `write_timestamp_ms` | `i64` (ms since epoch) |
 | `TimestampNs` | `read_timestamp_ns` | `write_timestamp_ns` | `i64` (ns since epoch) |
 | `TimestampTzNs` | `read_timestamp_tz_ns` | `write_timestamp_tz_ns` | `i64` (ns since epoch; DuckDB 2.0.0+) |
-| `Decimal` | `read_decimal(row, width)` | `write_decimal(row, width, v)` | `i128` (unscaled) |
+| `Decimal` | `read_decimal(row, width)` | `try_write_decimal(row, width, v)` (checked), `write_decimal(row, width, v)` (unchecked) | `i128` (unscaled) |
 
 `List`, `Map`, `Struct` and `Array` are nested vectors: use the helpers in
 [Complex Types](../data/complex-types.md) (`ListVector`, `MapVector`,

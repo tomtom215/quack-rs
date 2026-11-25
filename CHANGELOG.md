@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **DuckDB v2.0.1 is listed in the C API layout table and the autoload tables.** Its
+  `duckdb_ext_api_v1` is v2.0.0's (548 slots, same declarations), so a `duckdb-1-5*`
+  build that loads into 2.0.0 now loads into 2.0.1 under `AbiPolicy::Strict` instead of
+  being refused as an unknown release; and `CatalogEntryType::Type` reports that
+  `parquet_variant` can autoload the `parquet` extension, an entry v2.0.1 added to
+  `EXTENSION_TYPES`. Both were derived from v2.0.1's headers:
+  `scripts/check-abi-table.py` and `scripts/check-autoload-entries.py`, which the
+  scheduled CI runs of 2026-11-16 and 2026-11-23 failed on, now pass, and so would the
+  `scaffold-e2e` job, whose generated extension was refused by v2.0.1. Docs that used
+  v2.0.1 as the example of an unlisted release now use v2.0.2.
+- **`VectorWriter::try_write_decimal(idx, width, unscaled)`, a checked
+  `write_decimal`.** `write_decimal` narrows the unscaled integer to `i16`, `i32`
+  or `i64` with `as`, so a value the width cannot hold is stored wrong with no
+  error. The independent review of 0.20.0 pointed at the cast; against a live
+  engine it is a plausible, wrong number: `70000` written to a `DECIMAL(4, 0)`
+  reads back as `4464`, `2^32 + 5` to a `DECIMAL(9, 0)` as `5`, and `2^64 + 7` to a
+  `DECIMAL(18, 0)` as `7`; and `10000`, which fits an `i16`, is stored as it is,
+  one digit wider than the type allows. `try_write_decimal` refuses a value with
+  `|unscaled| >= 10^width` (one comparison against a compile-time table, no
+  `pow`), writes nothing on `Err`, and otherwise writes exactly as
+  `write_decimal` does. `write_decimal` itself is unchanged: its documentation
+  now states the range requirement, and the book's example uses the checked
+  method. A scale is not an argument, since it does not change which unscaled
+  integers a width holds.
+  VALIDATED against libduckdb 1.5.6: `tests/ffi_roundtrip/decimal_write.rs`
+  writes both sides of every storage boundary (widths 1, 4, 5, 9, 10, 18, 19,
+  38) and the wrapped values above, and all three of its tests fail with the check
+  removed. The pure-Rust check has unit tests for every width from 1 to 38.
+
+### Security
+
+- **`LOAD` no longer reads past the end of the engine's C API table.** Up to 0.20.0
+  the entry points gave `libduckdb-sys`'s `duckdb_rs_extension_api_init` the pointer
+  from DuckDB's `get_api` as it was. That function reads **every slot of the struct
+  it was compiled against** through the pointer, and DuckDB sizes the struct by its
+  own release, so a build against the 546-slot bindings loaded into DuckDB 1.4.x
+  (459 slots) read 87 pointers, 696 bytes, past the end of it, and into 1.5.0 or
+  1.5.1 (545 slots) one pointer: a read outside the object `get_api` returned,
+  undefined behaviour even though the memory after it is mapped and no crash was
+  ever observed. The independent review of 0.20.0 raised it; `src/abi.rs` had
+  documented it as the behaviour, and said quack-rs could avoid it only by calling
+  `get_api` itself first.
+  `entry_point/api_init.rs` fixes it in quack-rs: the entry points wrap `access` so
+  the bindings' `get_api` returns a **zero-padded copy** of the engine's table, as
+  long as the bindings' struct, holding the slots the engine has. The count comes
+  from slot 7 (`duckdb_library_version`, in the stable prefix every engine
+  provides) and the layout table, or from `QUACK_RS_BUILT_AGAINST_DUCKDB` for a
+  release the table lacks; for a release neither knows, `AbiPolicy::Strict` takes
+  what DuckDB guarantees for the C API version the extension asked for (the 546
+  slots of C API v1.5.6 for v1.5.6 or later, the 357-slot stable prefix before
+  it) and every other policy the whole compiled struct, as before,
+  so `Trust` with a `C_STRUCT_UNSTABLE` binary and `AllowUnknownEngine` keep
+  working on releases quack-rs has not catalogued. A slot the engine does not have
+  is NULL, so a wrapper that needs it panics (a caught panic, an SQL error) rather
+  than calling the memory after the table. `Warn` and `Trust` remain undefined
+  behaviour on a layout that inserts a slot (1.5.0 and 1.5.1 against 1.5.2 and
+  later), padded or not.
+  VALIDATED: with a mock engine table of exactly 459 slots, the bindings'
+  initialiser alone makes Miri report the read of slot 459, 8 bytes past the end
+  (a scratch harness, not committed), and the new tests, which run `bounded_get_api`
+  against exactly sized mock tables of 459, 545, 546, 548 and 357 slots, pass under
+  Miri on x86-64 and on big-endian s390x (the CI `miri` job runs library tests on
+  both); with the copy length changed to the whole compiled struct, Miri reports
+  the over-read in those tests. Against real engines, an example extension built on
+  the 548-slot bindings passes all 32 `check-hello-ext.py` checks on DuckDB 1.4.4
+  (459 slots), 1.5.0 (545), 1.5.6 (546) and 2.0.0 (548), and the CI ABI-guard
+  scenario holds: a duckdb-1-5 extension that calls an unstable slot is refused
+  with the layout-mismatch message by 1.5.0 and 1.4.4 and loads on 1.5.6, and the
+  same build stamped for C API v1.5.6 loads on 1.5.6 and 2.0.0. The over-read
+  itself cannot be seen against a real engine, whose table is a member of the
+  loader's state; the bound is validated on the mock tables.
+- **Two RustSec advisories against locked dependencies; the scheduled CI run of
+  2026-11-09 failed on the first.** `cargo update --precise` in each affected
+  lockfile, and nothing else:
+  - RUSTSEC-2026-0442 (`arrow-data` 58.4.0, out-of-bounds read in
+    `RunEndEncoded` validation; fixed in 58.4.1, which also moves `arrow-buffer`
+    and `arrow-schema`) in `Cargo.lock`, `book/doctest/Cargo.lock` and
+    `fuzz/Cargo.lock`. The crate is reached only through the optional `duckdb`
+    dependency behind the `bundled-test*` features: it is not in the default
+    feature graph, and quack-rs's own `arrow` module does not use arrow-rs.
+  - RUSTSEC-2026-0486 (`rustix` 1.1.5, `xattr` functions mark unwritten bytes
+    initialised; fixed in 1.1.6) in `Cargo.lock`, `book/doctest/Cargo.lock`,
+    `examples/hello-ext/Cargo.lock` and `fuzz/Cargo.lock`. It is a
+    dev-dependency (`proptest` → `tempfile`) of the library. OSV listed it only
+    after the 2026-11-09 run, so the next scheduled run would have failed on it
+    as well.
+
+  VALIDATED: `cargo deny check` (0.20.2, the CI version) reports both advisories
+  on the previous `Cargo.lock` and `advisories ok, bans ok, licenses ok, sources ok`
+  on the new one, and on `examples/hello-ext`, `fuzz` and `book/doctest` with
+  `deny.ci-crates.toml`; a query of every `crates.io` package in all five
+  committed lockfiles (243 distinct name and version pairs) against the OSV API
+  returns no vulnerability.
+
+### CI / tooling
+
+- **RUSTSEC-2026-0543 (`chrono` unmaintained) is suppressed, with a reason CI re-proves.**
+  The advisory covers every `chrono` version, so there is no release to move to, and it
+  failed `cargo-deny` and the OSV scan from 2026-11-23. `chrono` enters only as
+  quack-rs → `duckdb` → `arrow-*` → `chrono`, and `duckdb` is the optional dependency of
+  the test features `bundled-test` / `bundled-test-prebuilt`: with the default or any
+  `duckdb-1-5*` feature it is not in the graph, so no extension built with quack-rs links
+  it. The entry is in `deny.toml`, `deny.ci-crates.toml` (the fuzz and book-doctest
+  crates) and `osv-scanner.toml`, each with its reason, and the `osv-scan` job's new step
+  `Confirm the suppressed advisories are still test-only` fails if `chrono` enters the
+  production graph (normal and build edges, every target, `duckdb-1-5-4`; anchored on
+  `libduckdb-sys` being present) or stops being reached through `duckdb`, so the entry
+  cannot outlive its reason (the rule `osv-scanner.toml` already stated). VALIDATED
+  locally: the step passes on the real tree and fails with its message in both negative
+  controls; `cargo deny check` passes on the root and the three CI crates. Not run here:
+  `osv-scanner` itself with the new entry.
+- **Beta clippy's `doc_markdown` finding** in `tests/property_inputs.rs` (`DuckDB` without
+  backticks), which failed the informational `clippy-beta` job; `cargo +beta clippy`
+  (1.101.0-beta.3) with the job's features is clean.
+- **`scripts/fetch-duckdb.sh` retries a transient download failure.** Four jobs of
+  the scheduled run of 2026-11-09 (`Test bundled-test-prebuilt`, `Test against
+  DuckDB v2.0.0`, `AddressSanitizer`, `LeakSanitizer`) failed on one HTTP 504 from
+  the DuckDB release download. Both `curl` calls now pass `--retry 5`, which backs
+  off and retries a timeout or an HTTP 408, 429, 500, 502, 503 or 504, and not a
+  404. VALIDATED against a local server that answers 504 twice and then 200: the
+  call without `--retry` exits 22, the call with it is answered with a 504, retries
+  once and exits 0, and a 404 is requested once.
+
 ## [0.20.0] - 2026-10-30
 
 This release comes out of an eighth review (`AUDIT.md` section 14): twelve parallel
