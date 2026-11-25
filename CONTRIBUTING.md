@@ -255,8 +255,8 @@ cargo mutants --file <changed-files>
 ```
 
 CI sets `RUSTFLAGS="-D warnings"` for every job, so a compiler warning anywhere
-fails the build. CI runs these checks on every pull request to `main`, on pushes to
-`main` and `claude/**`, weekly, and as the release's gate, together with jobs that
+fails the build. CI runs these checks on every pull request to `main` (and to a `claude/**`
+branch, for stacked pull requests), on pushes to `main`, weekly, and as the release's gate, together with jobs that
 have no single local command: the other test operating systems, older DuckDB
 engines (`test-older-engines`), WASM, Miri, sanitizers, semver checks, the
 scaffold and ABI-guard end-to-end tests, the book build and its link check,
@@ -324,15 +324,15 @@ These do not call `duckdb_*` functions.
 Every test here opens a real in-memory DuckDB through `InMemoryDb`, registers a
 function built with quack-rs, runs SQL and checks the answer. Requires
 `--features bundled-test-prebuilt,duckdb-1-5-4` (with `DUCKDB_LIB_DIR` or
-`DUCKDB_DOWNLOAD_LIB=1`) or `bundled-test`. CI's LeakSanitizer and
-AddressSanitizer jobs run exactly this target (`--test ffi_roundtrip`), so new
+`DUCKDB_DOWNLOAD_LIB=1`) or `bundled-test`. CI's `asan` job (AddressSanitizer
+with its LeakSanitizer on) runs exactly this target (`--test ffi_roundtrip`), so new
 end-to-end tests belong in it — as a submodule declared with
 `#[path = "ffi_roundtrip/<name>.rs"] mod <name>;` when the root file would
 otherwise grow further. Know what those runs cannot see (next section).
 
 ### What the sanitizer and valgrind runs can and cannot see
 
-CI's `leak-check` (LeakSanitizer) and `asan` (AddressSanitizer) jobs, like a
+CI's `asan` job (AddressSanitizer, with its LeakSanitizer on), like a
 local valgrind run of the end-to-end suite, use the **release** libduckdb: the
 same prebuilt library `test-bundled-prebuilt` links. That library carries its
 own copy of jemalloc (it exports 769 `duckdb_je_*` symbols at v1.5.6 and 768
@@ -734,7 +734,7 @@ quack-rs/
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)
 │   ├── integration_test.rs            # Integration tests for `quack-rs`
-│   ├── lsan_probe.rs                  # The `leak-check` job's canary: a handle leaked on request must fail LeakSanitizer
+│   ├── lsan_probe.rs                  # The `asan` job's leak canary: a handle leaked on request must fail LeakSanitizer
 │   ├── property_inputs.rs             # Property tests for `parse_version`, SPDX, `description.yml` and the scaffold's escaping
 │   ├── quack_scaffold_cli.rs          # The `quack_scaffold` binary run as a user runs it: exit status, output and the files it writes
 │   ├── secret_memory_scan.rs          # `SecretEntry`'s zeroize, checked by scanning the process's own memory (Linux)

@@ -295,12 +295,12 @@ extension "httpfs" at URL ".../v2.0.0/linux_amd64/httpfs.duckdb_extension.gz" (H
 | Kind | Names |
 |------|-------|
 | Aliases (`name` → what DuckDB looks up) | `http`, `https`, `s3` → `httpfs`; `md` → `motherduck`; `mysql` → `mysql_scanner`; `odbc` → `odbc_scanner`; `postgres` → `postgres_scanner`; `sqlite`, `sqlite3` → `sqlite_scanner`; `uc_catalog` → `unity_catalog` |
-| The 34 core extensions (the union of what DuckDB 1.4.4, 1.5.6 and 2.0.0 build in or autoload, and the DuckDB 2.0 documentation's list) | `autocomplete`, `avro`, `aws`, `azure`, `core_functions`, `delta`, `ducklake`, `encodings`, `excel`, `fts`, `httpfs`, `iceberg`, `icu`, `inet`, `jemalloc`, `json`, `lance`, `legacy_parser`, `motherduck`, `mysql_scanner`, `odbc_scanner`, `parquet`, `postgres_scanner`, `quack`, `sirius`, `spatial`, `sqlite_scanner`, `sqlsmith`, `tpcds`, `tpch`, `ui`, `unity_catalog`, `vortex`, `vss` |
+| The 35 core extensions (the union of what DuckDB 1.4.4, 1.5.6 and 2.0.0 build in or autoload, and the DuckDB 2.0 documentation's list) | `autocomplete`, `avro`, `aws`, `azure`, `core_functions`, `delta`, `ducklake`, `encodings`, `excel`, `fts`, `glue`, `httpfs`, `iceberg`, `icu`, `inet`, `jemalloc`, `json`, `lance`, `legacy_parser`, `motherduck`, `mysql_scanner`, `odbc_scanner`, `parquet`, `postgres_scanner`, `quack`, `sirius`, `spatial`, `sqlite_scanner`, `sqlsmith`, `tpcds`, `tpch`, `ui`, `unity_catalog`, `vortex`, `vss` |
 
 The community-extensions FAQ says a community extension whose name matches a core
 extension "has to be renamed". Since 0.20.0 `generate_scaffold`, `parse_description_yml`
-and `quack_rs::validate::validate_community_extension_name` refuse all 44 names (the ten
-aliases and the 34 core names) and say which extension an alias stands for;
+and `quack_rs::validate::validate_community_extension_name` refuse all 45 names (the ten
+aliases and the 35 core names) and say which extension an alias stands for;
 `validate_extension_name` stays the syntax check, which accepts DuckDB's own names.
 Whether another *community* extension already has your name is still yours to look up
 (`extensions/` in `duckdb/community-extensions`).

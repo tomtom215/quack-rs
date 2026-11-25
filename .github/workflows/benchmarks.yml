@@ -25,6 +25,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # As in ci.yml and release.yml: retry cargo's network operations and use
+  # HTTP/1.1, which sidesteps the "[16] Error in the HTTP2 framing layer"
+  # failures seen fetching the duckdb+arrow tree.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 permissions:
   contents: read
@@ -43,6 +48,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build benchmarks
         run: cargo bench --no-run

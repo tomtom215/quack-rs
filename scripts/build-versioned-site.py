@@ -56,9 +56,31 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def read_with_retry(url: str, timeout: int, attempts: int = 3) -> bytes:
+    """The body at `url`. A connection error, a timeout, HTTP 429 or a 5xx is
+    retried (after 5 s, then 10 s): none of them says anything about the file,
+    and on the weekly schedule one of them would fail the run. Any other HTTP
+    error is raised at once, for the caller to classify as before."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if (400 <= error.code < 500 and error.code != 429) or attempt == attempts:
+                raise
+        except (urllib.error.URLError, OSError):
+            if attempt == attempts:
+                raise
+        time.sleep(5 * attempt)
+    raise AssertionError("unreachable")
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SITE_URL = "https://quack-rs.com"
@@ -145,9 +167,9 @@ def mdbook_for(version: str, tools: Path) -> Path:
         f"https://github.com/rust-lang/mdBook/releases/download/v{version}/"
         f"mdbook-v{version}-x86_64-unknown-linux-gnu.tar.gz"
     )
-    print(f"downloading mdBook {version}")
-    with urllib.request.urlopen(url, timeout=120) as resp:
-        data = resp.read()
+    # stderr: --print-mdbook prints only the path on stdout.
+    print(f"downloading mdBook {version}", file=sys.stderr)
+    data = read_with_retry(url, 120)
     digest = hashlib.sha256(data).hexdigest()
     if digest != MDBOOK_SHA256[version]:
         raise SystemExit(f"error: {url}: sha256 {digest}, expected {MDBOOK_SHA256[version]}")
@@ -332,8 +354,14 @@ def check(site: Path, builds: list[Build], latest: str) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--out", type=Path, required=True, help="output directory (replaced)")
+    parser.add_argument("--out", type=Path, help="output directory (replaced); required to build")
     parser.add_argument("--tools", type=Path, default=REPO_ROOT / "target" / "mdbook-tools")
+    parser.add_argument(
+        "--print-mdbook",
+        action="store_true",
+        help="only fetch the mdBook that book/mdbook-version pins (sha256-checked) into "
+        "--tools, print its path, and exit; ci.yml's book job puts it on PATH",
+    )
     parser.add_argument(
         "--dev-api",
         type=Path,
@@ -341,6 +369,13 @@ def main() -> int:
     )
     parser.add_argument("--no-dev", action="store_true", help="skip the /dev/ build")
     args = parser.parse_args()
+
+    if args.print_mdbook:
+        version = (REPO_ROOT / "book" / "mdbook-version").read_text(encoding="utf-8").strip()
+        print(mdbook_for(version, args.tools.resolve()))
+        return 0
+    if args.out is None:
+        parser.error("--out is required to build the site")
 
     tags = run(["git", "tag", "--list", "v*"], cwd=REPO_ROOT).split()
     lines = release_lines(tags)

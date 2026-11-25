@@ -105,6 +105,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **CI runs once per push.** `ci.yml`'s `push` trigger covers `main` only; branches are tested
+  through their pull requests (into `main`, or into a `claude/**` branch for a stacked pull
+  request), whose run checks the merge result. Pushing to a `claude/**` branch with an open
+  pull request used to run all of CI twice, under two concurrency groups (about 170–310
+  runner-minutes each time). A branch without a pull request is tested with
+  `workflow_dispatch` or a draft pull request. The concurrency comment that said every `main`
+  build completes is corrected: GitHub keeps one pending run per group.
+- **Coverage runs on a pull request only when it changes something coverage builds or
+  measures** (`src/`, `tests/`, `benches/`, the crate's own `examples/*.rs`, the manifest,
+  lockfile, toolchain and Cargo config, `codecov.yml` and the workflow itself), and always on
+  `main`. It used to compile DuckDB from C++ on every pull request, including one that only
+  bumped hello-ext's lockfile. The skip is per job, decided by a small `changes` job, so a
+  skipped run counts as passing if Coverage is ever made a required check; if detection fails,
+  coverage runs anyway.
+- **`test-bundled` no longer compiles DuckDB a second time just for rustdoc, and the `check`
+  job is gone.** Its `cargo doc --all-features` step (9.8 to 10.3 minutes cold) documented the
+  `_duckdb-testing` items for a `release.yml` job that no longer exists. The `doc` job now runs
+  `cargo doc --features _duckdb-testing,duckdb-1-5-4`, which gives quack-rs the same cfg set
+  without DuckDB (16 seconds locally, `InMemoryDb` documented), and a new step fails if a `src/`
+  item is ever gated on `bundled-test*`, which that command leaves out. `check`
+  (`cargo check --all-targets`) was a strict subset of `clippy`, which uses the same toolchain,
+  features and flags.
+- **One sanitizer job instead of two: `asan` now also checks for leaks, and `leak-check` is
+  gone.** The two jobs built the same `-Zbuild-std` suite twice, once per sanitizer, and
+  AddressSanitizer's leak check is LeakSanitizer itself. `asan` now runs with
+  `detect_leaks=1` and `leak-check`'s `LSAN_OPTIONS` (the empty suppression file, 30-frame
+  stacks), and runs `leak-check`'s probe step unchanged. VALIDATED locally, with the job's
+  commands and environment and libduckdb v1.5.6: the end-to-end suite passes (463 tests, no
+  report), and the probe passes when it leaks nothing and fails with a LeakSanitizer report
+  for a leaked Rust allocation, `LogicalType` and `Value`. `test-duckdb-1-5` drops its three
+  `cargo check --all-targets` steps: each was followed by a `cargo clippy --all-targets` with
+  the same features, which checks the same targets and adds the lints.
+- **DuckDB downloads are checked against pinned SHA-256 hashes.** `scripts/fetch-duckdb.sh`,
+  which CI uses about 26 times per run, verifies every archive against
+  `scripts/duckdb-sha256.txt` before unpacking it: a mismatch fails, a pinned tag with no
+  entry fails, and `latest` (the canary for new releases) is verified when listed and warned
+  about otherwise. `ci.yml` is also `release.yml`'s gate, so a replaced library or CLI could
+  otherwise make that gate pass or fail falsely. The table covers the CLI and library of every
+  release from v1.4.4 to v2.0.1 (22 assets); each was downloaded twice on 2026-11-25 and hashed
+  the same both times. That is trust on first use, which the file states.
+- **`glue` is a reserved extension name, and CI now checks the list against upstream.**
+  DuckDB's `main` and its 2.0 documentation list a core extension `glue`, which
+  `DUCKDB_CORE_EXTENSION_NAMES` lacked, so `generate_scaffold`, `parse_description_yml` and
+  `validate_community_extension_name` accepted it although the community repository would not.
+  `scripts/check-extension-names.py` would have caught it, but no workflow ran it (the module
+  documentation said CI did); the new `extension-names` job does, through `upstream-guard.sh`.
+  The lists now hold 35 core names and 45 reserved names.
+- **The `book` job uses the sha256-pinned mdBook release binary** that
+  `scripts/build-versioned-site.py` already downloads and checks (new `--print-mdbook`),
+  instead of compiling the same version with `cargo install` (about a minute cold), so it and
+  `docs.yml` build with the same binary.
+- **Network calls in CI retry transient failures and cannot hang.** Every `curl` in `ci.yml`
+  and `scripts/fetch-duckdb.sh` passes `--retry 5 --retry-connrefused --connect-timeout 20
+  --max-time …` (the `osv-scan` download had no retry at all); a 404 still fails at once. The
+  emsdk clone and install and the scaffold job's `rustup toolchain install` get three attempts.
+  `check-msrv-vs-duckdb-ci.py`, `check-platform-table.py`, `check-spdx-list.py`,
+  `check-extension-names.py` and the mdBook download in `build-versioned-site.py` made one
+  request each; they now retry a connection error, a timeout, HTTP 429 or a 5xx twice and
+  raise any other HTTP error at once, so their exit codes mean what they did
+  (`upstream-guard.sh --self-test` passes). `coverage.yml`, `mutants.yml`, `benchmarks.yml`
+  and `docs.yml` get the `CARGO_NET_RETRY` / `CARGO_HTTP_MULTIPLEXING` settings `ci.yml` and
+  `release.yml` already had.
+- **The incremental mutation gate fails closed, and decides once whether there is anything to
+  test.** Its change detection ran `git diff` inside a pipeline ending in `|| true`, without
+  `pipefail`: when `git diff` failed (a missing base ref, say), the list came back empty, the
+  shards reported "nothing changed" and the required check `Mutation Testing (incremental)`
+  passed having tested nothing (reproduced on a scratch repository: exit 0, `skip=true`).
+  Detection is now one `mutants-changes` job under `set -euo pipefail` (a `git diff` failure
+  fails it), the eight shards start only when it found Rust under `src/`, and the gate passes
+  skipped shards only when detection succeeded and said so. A pull request with no `src/`
+  change no longer starts eight runners that each compile cargo-mutants.
+- **Only `main` writes the Rust build cache.** Every `Swatinem/rust-cache` step in `ci.yml`,
+  `coverage.yml` and `benchmarks.yml` saves only when `github.ref` is `refs/heads/main`; pull
+  requests, `claude/**` pushes and release-tag runs restore `main`'s entries and write none.
+  Every event used to save, about 44 entries per branch or PR, one of them 2.06 GB, under a
+  10 GB repository quota: on the scheduled run of 2026-11-23 `test-bundled` on Linux took 13.2
+  minutes against 2.0 warm, and `semver` found no cache at all. The nightly-toolchain jobs
+  (`nightly`, `asan`, `fuzz`, and Miri) cache only the registry, since a target
+  cache keyed on one day's nightly is never restored, and `test-older-engines` keys each leg
+  by its engine instead of sharing one entry. `mutants.yml` never runs on `main`, so it keeps
+  saving.
+- **Miri runs its native and big-endian s390x legs in parallel**, as a two-leg matrix with a
+  60-minute limit each. Run back to back in one job they took 62.9 to 77.8 minutes against a
+  90-minute limit and were the critical path of every CI run; each leg took 29 to 39.5
+  minutes. The scheduled fuzz campaign (8 targets × 10 minutes, 85.5 of its 90 minutes on
+  2026-11-23) gets a 150-minute limit on the schedule only.
+- **The weekly scheduled CI run moves from Monday 06:17 to Thursday 03:17 UTC, and
+  Dependabot's update days are staggered (Monday to Wednesday).** On Monday 2026-11-23 the
+  scheduled run and every Dependabot PR started within twenty minutes of each other, and the
+  scheduled run's jobs queued for up to 356 minutes (06:39 to 15:38), against about 69 minutes
+  for the same workflow without contention. Dependabot also now updates
+  `benches/engine/Cargo.lock`, which both security gates scan but nothing updated; it keeps the
+  root's rule of not bumping the DuckDB bindings there.
 - **RUSTSEC-2026-0543 (`chrono` unmaintained) is suppressed, with a reason CI re-proves.**
   The advisory covers every `chrono` version, so there is no release to move to, and it
   failed `cargo-deny` and the OSV scan from 2026-11-23. `chrono` enters only as

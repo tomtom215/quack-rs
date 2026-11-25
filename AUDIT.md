@@ -3744,3 +3744,56 @@ logs of run 45125522009:
   cancelled, and 43091315545 is the run that covers the branch. The earlier summary given to
   the owner said that run passed every job; it passed 58 of 59, the failure non-blocking.
   15.2's description of the `Strict` fallback is updated in place.
+
+### 15.9 CI efficiency review, 2026-11-25
+
+A separate read-only review of the workflows (`ci.yml`, `coverage.yml`, `docs.yml`,
+`mutants.yml`, `release.yml`, `benchmarks.yml`, `dependabot.yml`), using job timings from three
+real runs (43091315545, a warm `claude/**` push; 45125522009, the 2026-11-23 schedule;
+45140854279, a Dependabot pull request) and rust-cache's source at the pinned commit.
+Poisoning was not the problem: only `main` writes the cache scope that `main` and releases
+read, every action is pinned by commit, permissions are minimal, and nothing interpolates
+untrusted input into a script. The problems were contention, a near-timeout critical path,
+cache churn and two fail-open spots. The owner had the changes rated safe made in a separate
+pull request, stacked on the one for 15.1–15.8:
+
+| Change | Evidence | Commit |
+|---|---|---|
+| Weekly run moved to Thursday 03:17; Dependabot staggered Monday–Wednesday; `/benches/engine` covered | scheduled-run jobs queued up to 356 min behind Dependabot on 2026-11-23 | `e797c38` |
+| Miri as two parallel legs (60 min each); scheduled fuzz limit 150 min | Miri 62.9–77.8 min of 90; fuzz 85.5 of 90 | `7f29b76` |
+| rust-cache saves only on `main`; nightly jobs cache the registry only; per-engine key on `test-older-engines` | a 2.06 GB entry; `No cache found` on `main`; `test-bundled` 13.2 min cold, 2.0 warm | `c4aea81` |
+| Mutation change detection fails closed, runs once before the shards; the gate accepts a skip only after a successful detection | the old step, given a missing base ref, exited 0 with `skip=true` | `5c3dfc5` |
+| Retries and time limits on every `curl`, the emsdk and rustup installs, and the five single-attempt Python fetches; `CARGO_NET_*` in four more workflows | four of seven failures on 2026-11-09 were one 504 | `98eb4bb` |
+| The `book` job uses the sha256-pinned mdBook binary | `cargo install mdbook` cost 1.1 min cold | `8c95f6d` |
+
+Correction to the review: `check-abi-table.py` and `check-autoload-entries.py` already retried;
+the single-attempt fetches were in four other scripts and the mdBook download.
+
+**Decided by the owner on 2026-11-25 and done in the same pull request** (the owner asked for
+the best-supported choice on each; the reasoning is in each commit message):
+
+| Item | Decision | Commit |
+|---|---|---|
+| `glue` and the unused extension-name check | `glue` reserved (35 core, 45 reserved names); `extension-names` job runs `check-extension-names.py` through `upstream-guard.sh` | `d6b2fec` |
+| DuckDB download integrity (reverses 11.3) | `scripts/duckdb-sha256.txt` for 22 assets (v1.4.4 – v2.0.1, CLI and library), verified by `fetch-duckdb.sh`: a mismatch or an unlisted pinned tag fails, an unlisted `latest` warns. Trust on first use (two matching downloads each); GitHub's per-asset digest was not reachable here. No download cache: integrity, not 0.1 minute, was the point | `e6343fc` |
+| `Doc --all-features` and `check` (reverses 13.3) | the 10-minute step is replaced by `cargo doc --features _duckdb-testing,duckdb-1-5-4` in `doc` (16 s locally, `InMemoryDb` documented), guarded by a step that fails on any `bundled-test*` cfg in `src/`; `check` removed as a subset of `clippy` | `f04e246` |
+| Coverage on pull requests | a fail-safe `changes` job; the coverage job is skipped only when detection succeeded and found nothing coverage builds or measures; per job, not a workflow `paths:` filter, so a skipped run passes if Coverage is ever required | `85d5de7` |
+| Duplicate `claude/**` runs (14.5, CI-10) | `push` on `main` only; `pull_request` into `main` and into `claude/**` (stacked pull requests). One run per push, testing the merge result; a branch with no pull request is tested by `workflow_dispatch` or a draft pull request | `4bba183` |
+
+The two items this left open were done afterwards at the owner's request. `leak-check` is
+folded into `asan`, which now runs with `detect_leaks=1` and `leak-check`'s `LSAN_OPTIONS` and
+runs its probe step unchanged. The three `cargo check --all-targets` steps in `test-duckdb-1-5`
+are gone, because each was followed by a `cargo clippy --all-targets` with the same features.
+VALIDATED locally (nightly, libduckdb v1.5.6, the job's commands and environment): the
+`ffi_roundtrip` suite passes under the combined sanitizer (463 tests, exit 0, no report). The
+probe passes with nothing leaked and fails with a LeakSanitizer report for each of `rust`
+(4096 bytes), `logical_type` (24) and `value` (64). `ci-ok` waits on 36 blocking jobs. The
+`ci.yml` header's job list, which still named `check` and lacked `extension-names`, now
+matches the job IDs. NOT VALIDATED: the time saved per run, until CI reports it.
+
+**For the owner (a repository setting; nothing was changed):** no status check is required on
+`main`. Its ruleset requires a pull request and forbids deletion and force pushes, but the
+branch's `required_status_checks` enforcement is "off" with no contexts (read on 2026-11-25),
+although the workflow README and the `ci-ok` comment call `CI passed` the required check. Until
+it is required, a pull request can be merged with CI red.
+

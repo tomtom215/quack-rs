@@ -2,6 +2,8 @@
 version: 2
 
 updates:
+  # Days are staggered (Monday to Wednesday) so the PRs' CI runs do not all queue
+  # at once, and none is on Thursday, when ci.yml's weekly scheduled run starts.
   # ── Cargo dependencies ───────────────────────────────────────────────────────
   - package-ecosystem: cargo
     directory: "/"
@@ -48,7 +50,7 @@ updates:
     directory: "/examples/hello-ext"
     schedule:
       interval: weekly
-      day: monday
+      day: tuesday
       time: "06:00"
       timezone: "UTC"
     open-pull-requests-limit: 3
@@ -69,7 +71,7 @@ updates:
       - "/book/doctest"
     schedule:
       interval: weekly
-      day: monday
+      day: wednesday
       time: "06:00"
       timezone: "UTC"
     open-pull-requests-limit: 3
@@ -84,12 +86,41 @@ updates:
         patterns:
           - "*"
 
+  # ── Cargo dependencies of the engine benchmark extension ────────────────────
+  # benches/engine/Cargo.lock is committed and scanned by osv-scan and security,
+  # so an advisory there needs an update PR too. Like the root, it stays on the
+  # DuckDB 1.5.6 bindings (its rust-version is the 1.86 MSRV), so the same
+  # duckdb / libduckdb-sys ignore applies.
+  - package-ecosystem: cargo
+    directory: "/benches/engine"
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps/bench)"
+    ignore:
+      - dependency-name: "duckdb"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "libduckdb-sys"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+    groups:
+      bench-crates:
+        patterns:
+          - "*"
+
   # ── GitHub Actions ────────────────────────────────────────────────────────────
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
-      day: monday
+      day: tuesday
       time: "06:00"
       timezone: "UTC"
     open-pull-requests-limit: 5

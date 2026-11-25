@@ -25,6 +25,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # As in ci.yml and release.yml: retry cargo's network operations and use
+  # HTTP/1.1, which sidesteps the "[16] Error in the HTTP2 framing layer"
+  # failures seen fetching the duckdb+arrow tree.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
   # ── Full mutation sweep (on-demand) ──────────────────────────────────────
@@ -101,9 +106,69 @@ jobs:
   # of a 102-file, 1,639-mutant pull request (0.20.0) and was stopped by its
   # runner after 33 and 55 minutes, long before it was done. `mutants-incremental-gate`
   # below is the single check to require: it keeps the name this check always had.
+  #
+  # Which files changed is decided once, by `mutants-changes`, before any shard
+  # starts: a pull request that touches no Rust under `src/` (documentation, a
+  # lockfile, CI, the book, hello-ext) used to start all eight shards, each of
+  # which checked out, restored the cache and compiled cargo-mutants before
+  # finding nothing to do.
+  mutants-changes:
+    name: "Mutation Testing (changed files)"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.changed.outputs.skip }}
+      files: ${{ steps.changed.outputs.files }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Determine changed files
+        id: changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # Fail closed: `git diff` runs on its own, so a failure (no merge base,
+          # a missing origin/<base>, a shallow checkout) fails this step and the
+          # gate below, instead of producing an empty list that reads as "no
+          # change" and passes the gate having tested nothing. Until November
+          # 2026 it ran inside the pipeline below, where `|| true` swallowed it.
+          ALL=$(git diff --name-only "origin/${BASE_REF}...HEAD" -- 'src/')
+          # Filter to .rs in the shell rather than with a `src/**/*.rs`
+          # pathspec: git's default wildmatch lets `*` cross `/`, so that
+          # pattern requires at least one directory component after `src/` and
+          # silently matches NO top-level file. `src/value.rs`, `src/query.rs`,
+          # `src/arrow.rs` and every other module directly under `src/` were
+          # skipped entirely, with the job still reporting success.
+          # `|| true` covers only `grep`, which exits 1 on no match: a pull
+          # request that touches no Rust file must reach the `skip=true` branch.
+          FILES=$(printf '%s\n' "$ALL" | grep '\.rs$' | sort -u || true)
+          FILE_COUNT=$(printf '%s\n' "$FILES" | grep -c . || true)
+
+          if [ -z "$FILES" ] || [ "$FILE_COUNT" -eq 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No Rust source files changed in src/ — mutation testing will be skipped."
+            {
+              echo "# Mutation Testing — Skipped"
+              echo ""
+              echo "No Rust source files changed in \`src/\` — nothing to mutate."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "files=$(printf '%s\n' "$FILES" | tr '\n' ',')" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "Changed files (${FILE_COUNT}):"
+            printf '%s\n' "$FILES" | sed 's/^/  /'
+          fi
+
   mutants-incremental:
     name: "Mutation Testing (incremental) shard ${{ matrix.shard }}"
-    if: github.event_name == 'pull_request'
+    needs: mutants-changes
+    if: github.event_name == 'pull_request' && needs.mutants-changes.outputs.skip == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -130,40 +195,10 @@ jobs:
           RUSTFLAGS: ""
         run: cargo install cargo-mutants --locked --version "27.1.0"
 
-      - name: Determine changed files
-        id: changed
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          # Filter to .rs in the shell rather than with a `src/**/*.rs`
-          # pathspec: git's default wildmatch lets `*` cross `/`, so that
-          # pattern requires at least one directory component after `src/` and
-          # silently matches NO top-level file. `src/value.rs`, `src/query.rs`,
-          # `src/arrow.rs` and every other module directly under `src/` were
-          # skipped entirely, with the job still reporting success.
-          # `|| true` because `grep` exits 1 on no match, and this step runs
-          # under `bash -e`: a PR that touches no Rust file must reach the
-          # `skip=true` branch below, not abort here.
-          FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD" -- 'src/' \
-            | grep '\.rs$' | sort -u || true)
-          FILE_COUNT=$(printf '%s\n' "$FILES" | grep -c . || true)
-
-          if [ -z "$FILES" ] || [ "$FILE_COUNT" -eq 0 ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "No Rust source files changed in src/ — mutation testing will be skipped."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "files=$(printf '%s\n' "$FILES" | tr '\n' ',')" >> "$GITHUB_OUTPUT"
-            echo ""
-            echo "Changed files (${FILE_COUNT}):"
-            printf '%s\n' "$FILES" | sed 's/^/  /'
-          fi
-
       - name: Run mutation tests on changed files
         id: mutants
-        if: steps.changed.outputs.skip == 'false'
         env:
-          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          CHANGED_FILES: ${{ needs.mutants-changes.outputs.files }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
         run: |
@@ -242,15 +277,8 @@ jobs:
           echo "::endgroup::"
           echo "exit_code=${MUTANTS_EXIT}" >> "$GITHUB_OUTPUT"
 
-      - name: No source changes to mutate
-        if: steps.changed.outputs.skip == 'true'
-        run: |
-          echo "# Mutation Testing — Skipped" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "No Rust source files changed in \`src/\` — nothing to mutate." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Generate mutation report
-        if: always() && steps.changed.outputs.skip == 'false'
+        if: always()
         env:
           # See the full-sweep job: exit codes other than 0/2/3, and a run that
           # generated mutants but tested none, fail the gate.
@@ -258,7 +286,7 @@ jobs:
         run: scripts/mutants-report.sh incremental mutants.out
 
       - name: Upload mutation report
-        if: always() && steps.changed.outputs.skip == 'false'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-report-incremental-${{ matrix.shard }}
@@ -271,20 +299,37 @@ jobs:
   # job it replaces, "Mutation Testing (incremental)", so a branch-protection
   # rule that requires that name still means the same thing. `always()` because
   # a failed shard must turn this red rather than skip it, and a skipped
-  # required check counts as passed.
+  # required check counts as passed. Skipped shards pass only when change
+  # detection itself succeeded and said there was nothing to test: a failed or
+  # cancelled detection is red, never "nothing changed".
   mutants-incremental-gate:
     name: "Mutation Testing (incremental)"
     if: always() && github.event_name == 'pull_request'
-    needs: mutants-incremental
+    needs: [mutants-changes, mutants-incremental]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Every shard passed
+      - name: Change detection succeeded, and every shard passed or nothing changed
         env:
-          RESULT: ${{ needs.mutants-incremental.result }}
+          CHANGES: ${{ needs.mutants-changes.result }}
+          SKIP: ${{ needs.mutants-changes.outputs.skip }}
+          SHARDS: ${{ needs.mutants-incremental.result }}
         run: |
-          if [ "$RESULT" != success ]; then
-            echo "::error::the mutation shards finished as '${RESULT}', not 'success': see the shard jobs"
+          set -euo pipefail
+          if [ "$CHANGES" != success ]; then
+            echo "::error::change detection finished as '${CHANGES}', not 'success': see the mutants-changes job"
+            exit 1
+          fi
+          if [ "$SKIP" = true ] && [ "$SHARDS" = skipped ]; then
+            echo "No Rust source file changed under src/: nothing to mutate."
+            exit 0
+          fi
+          if [ "$SKIP" != false ]; then
+            echo "::error::change detection reported skip='${SKIP}', expected 'true' or 'false'"
+            exit 1
+          fi
+          if [ "$SHARDS" != success ]; then
+            echo "::error::the mutation shards finished as '${SHARDS}', not 'success': see the shard jobs"
             exit 1
           fi
           echo "All mutation shards passed."

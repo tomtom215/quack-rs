@@ -9,7 +9,7 @@ This directory contains all GitHub Actions workflows for the quack-rs project.
 
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
-| **CI** | `ci.yml` | Push to `main`/`claude/**`, PRs to `main`, weekly schedule, manual, called by `release.yml` | Every quality gate (table below), summarised by the `ci-ok` job |
+| **CI** | `ci.yml` | Push to `main`, PRs to `main` or `claude/**`, weekly schedule, manual, called by `release.yml` | Every quality gate (table below), summarised by the `ci-ok` job |
 | **Release** | `release.yml` | Semver tags (`vX.Y.Z`, and `vX.Y.Z-pre` prereleases) | Full release pipeline: validate the tag and the release metadata, run all of `ci.yml`, package with SLSA attestation, publish to crates.io (approval required; the `.crate` is re-packaged and compared with the attested hash before the upload), check crates.io serves the attested `.crate`, GitHub release, versioned-book deploy |
 | **Documentation** | `docs.yml` | Push to `main`, manual, dispatched by `release.yml` after a release | Build the versioned book (latest release at `/`, each release line at `/vX.Y/`, `main` at `/dev/`) and deploy to GitHub Pages |
 | **Coverage** | `coverage.yml` | Push to `main`, PRs to `main` | Generate LCOV coverage report and upload to Codecov |
@@ -24,7 +24,6 @@ replaced had drifted to fewer than half the jobs.
 
 | Job ID | Name | |
 |---|---|---|
-| `check` | Check | blocking |
 | `test` | Test (${{ matrix.os }}) | blocking |
 | `test-bundled` | Test bundled-test (${{ matrix.os }}) | blocking |
 | `test-bundled-prebuilt` | Test bundled-test-prebuilt (prebuilt libduckdb) | blocking |
@@ -48,6 +47,7 @@ replaced had drifted to fewer than half the jobs.
 | `platform-table` | Platform list (vs upstream distribution matrix) | blocking |
 | `spdx-list` | SPDX shortlist (vs official registry) | blocking |
 | `autoload-entries` | Catalog autoload names (vs every supported DuckDB) | blocking |
+| `extension-names` | Reserved extension names (vs DuckDB and the community repository) | blocking |
 | `book` | Book builds (mdBook) | blocking |
 | `msrv-vs-duckdb-ci` | MSRV vs DuckDB's extension CI | blocking |
 | `extension-load` | Extension load test (DuckDB ${{ matrix.duckdb }}) | blocking |
@@ -59,9 +59,8 @@ replaced had drifted to fewer than half the jobs.
 | `osv-scan` | Security (OSV / GHSA) | blocking |
 | `hygiene` | Hygiene (typos, taplo, machete) | blocking |
 | `nightly` | Nightly (informational) | informational |
-| `miri` | Miri (undefined behaviour) | blocking |
-| `leak-check` | LeakSanitizer (RAII wrappers vs a real DuckDB) | blocking |
-| `asan` | AddressSanitizer | blocking |
+| `miri` | Miri (undefined behaviour, ${{ matrix.leg }}) | blocking |
+| `asan` | AddressSanitizer + LeakSanitizer (end-to-end suite vs a real DuckDB) | blocking |
 | `semver` | Public API (semver-checks) | blocking |
 | `fuzz` | Fuzz (smoke) | blocking |
 | `workflow-lint` | Workflow lint (actionlint) | blocking |

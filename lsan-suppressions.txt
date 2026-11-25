@@ -1,4 +1,5 @@
-# LeakSanitizer suppressions for the `leak-check` CI job.
+# LeakSanitizer suppressions for the leak check in the `asan` CI job (read through
+# LSAN_OPTIONS; ASan's leak check is LeakSanitizer).
 #
 # There are none, on purpose. This file used to hold `leak:libduckdb.so`, with a
 # comment saying it covered only DuckDB's process-lifetime allocations. LeakSanitizer

@@ -37,9 +37,30 @@ import argparse
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+def read_with_retry(url: str, timeout: int, attempts: int = 3) -> bytes:
+    """The body at `url`. A connection error, a timeout, HTTP 429 or a 5xx is
+    retried (after 5 s, then 10 s): none of them says anything about the file,
+    and on the weekly schedule one of them would fail the run. Any other HTTP
+    error is raised at once, for the caller to classify as before."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if (400 <= error.code < 500 and error.code != 429) or attempt == attempts:
+                raise
+        except (urllib.error.URLError, OSError):
+            if attempt == attempts:
+                raise
+        time.sleep(5 * attempt)
+    raise AssertionError("unreachable")
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLATFORM_RS = REPO_ROOT / "src" / "validate" / "platform.rs"
@@ -83,8 +104,7 @@ def main() -> int:
 
     url = MATRIX_URL.format(ref=args.ref)
     try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            matrix = json.loads(response.read().decode("utf-8"))
+        matrix = json.loads(read_with_retry(url, 60).decode("utf-8"))
     except urllib.error.HTTPError as error:
         if 400 <= error.code < 500 and error.code != 429:
             print(

@@ -3,15 +3,15 @@
 #
 # Continuous integration — enforces all quality gates.
 #
-# Jobs: check, test, test-bundled, test-bundled-prebuilt, test-older-engines,
+# Jobs: test, test-bundled, test-bundled-prebuilt, test-older-engines,
 #       test-duckdb-2-0, test-bundled-duckdb-2-0, test-duckdb-1-5,
 #       wasm, clippy, clippy-beta, latest-stable, fmt, doc, msrv,
 #       dependency-floor, bench-compile, example-check, scaffold-compile,
 #       symbol-check, abi-table, platform-table, spdx-list, autoload-entries,
-#       book, msrv-vs-duckdb-ci, extension-load, scaffold-e2e, abi-guard,
-#       abi-guard-layout, publish-dry-run, security, osv-scan, hygiene, nightly,
-#       miri, leak-check, asan, semver, fuzz, workflow-lint, ci-ok (the
-#       aggregate required check).
+#       extension-names, book, msrv-vs-duckdb-ci, extension-load, scaffold-e2e,
+#       abi-guard, abi-guard-layout, publish-dry-run, security, osv-scan,
+#       hygiene, nightly, miri, asan, semver, fuzz, workflow-lint, ci-ok (the
+#       aggregate gate).
 #
 # `dtolnay/rust-toolchain` is pinned, in every workflow, to one commit on the
 # action's `master` branch (commented `# master`: the branch publishes no
@@ -40,16 +40,29 @@
 name: CI
 
 on:
+  # One run per push. `push` covers main only; a branch is tested through its
+  # pull request, whose run checks the merge result, i.e. what main would
+  # become. Pull requests into `claude/**` are included so a stacked pull
+  # request (one built on another's branch) is tested too. Until November 2026
+  # `push` also listed `claude/**`, so every push to a branch with an open pull
+  # request ran all of this twice (about 170 – 310 runner-minutes), under two
+  # concurrency groups. Making the groups equal would not have fixed it: the
+  # second run would cancel the first and could leave the pull request showing
+  # a cancelled `CI passed`. A branch without a pull request is tested with
+  # workflow_dispatch, or by opening a draft pull request.
   push:
-    branches: [main, "claude/**"]
-  pull_request:
     branches: [main]
+  pull_request:
+    branches: [main, "claude/**"]
   # Weekly, on the default branch: the abi-table, platform-table, spdx-list and
   # autoload-entries jobs compare the checked-in tables with upstream, which
   # changes without any commit here (a new DuckDB release, a new SPDX list),
-  # and clippy-beta / nightly track moving toolchains.
+  # and clippy-beta / nightly track moving toolchains. Thursday 03:17 UTC, well
+  # away from Dependabot (Monday to Wednesday, .github/dependabot.yml): on Monday
+  # 2026-11-23, when both started at 06:00 – 06:17, this run's jobs queued for up
+  # to six hours behind the Dependabot PRs' 59-job runs.
   schedule:
-    - cron: "17 6 * * 1"
+    - cron: "17 3 * * 4"
   workflow_dispatch:
   # release.yml runs this whole workflow as its CI gate, so a release passes
   # exactly the checks a pull request does.
@@ -62,8 +75,10 @@ permissions:
   contents: read
 
 # Cancel in-progress runs for the same branch/PR — saves CI minutes when
-# multiple commits are pushed in quick succession.  Main-branch pushes
-# are NOT cancelled so merge builds always complete.
+# multiple commits are pushed in quick succession. A run on main is not
+# cancelled once it has started; but GitHub keeps at most one *pending* run per
+# group, so when several merges land while one runs, only the newest of the
+# waiting ones runs after it.
 #
 # The group starts with a literal `ci-`, not `github.workflow`: when
 # release.yml calls this workflow, `github.workflow` is "Release", and
@@ -90,20 +105,6 @@ env:
   CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: 1.99.1
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo check --all-targets
-
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -120,6 +121,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The scaffold's tests cross-check the files it generates with PyYAML (the
       # parser the community build reads description.yml with), make and git,
       # and skip when one is missing; `cargo test` hides the note, so a runner
@@ -169,25 +172,21 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # --no-fail-fast: cargo otherwise stops at the first failing test
       # binary, hiding failures in the ones after it.
       - run: cargo test --all-targets --features bundled-test --no-fail-fast
-      # The release workflow's `test · <OS>` command. Without it, nothing ran
+      # Formerly release.yml's `test · <OS>` command (release.yml now runs this
+      # whole workflow as its gate instead). Without it, nothing ran
       # the `duckdb-1-5*` tests against a real DuckDB on macOS or Windows
       # before a tag, and v0.18.0's first tag failed on Windows while main was
       # green (LESSONS.md, "Why macOS looked different", is the first time this
       # happened). The extra quack-rs features leave the duckdb/libduckdb-sys
       # features unchanged, so the DuckDB built by the step above is reused.
-      - name: Test --all-features (as release.yml does)
+      - name: Test --all-features
         if: ${{ !cancelled() }}
         run: cargo test --all-targets --all-features --no-fail-fast
-      # The release workflow's `doc` job: the only rustdoc pass over the
-      # `_duckdb-testing` items (`testing::InMemoryDb`).
-      - name: Doc --all-features (as release.yml does)
-        if: ${{ !cancelled() && runner.os == 'Linux' }}
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: "-D warnings"
 
   # Exercises the `bundled-test-prebuilt` path: link a pre-built libduckdb
   # instead of compiling DuckDB from C++ source. Combined with duckdb-1-5-4 this
@@ -206,6 +205,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Download pre-built libduckdb
         # The version is DERIVED from Cargo.lock, not written here. It used to
         # be hard-coded with a comment asking the next person to keep it in
@@ -301,6 +302,11 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # The legs relock different bindings; without this they share one
+          # entry and whichever finishes first decides what is cached.
+          key: ${{ matrix.engine }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Pin the bindings to the engine and download its library
         # The test shim refuses a library whose duckdb_ext_api_v1 size differs
         # from the bindings', so both must be the same release.
@@ -347,6 +353,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Pin the DuckDB 2.0 bindings and download libduckdb v2.0.0
         run: |
           set -euo pipefail
@@ -399,6 +407,7 @@ jobs:
           # duckdb.hpp is there". Only the registry is cached, so this builds DuckDB
           # from scratch each time.
           cache-targets: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Pin the DuckDB 2.0 bindings
         run: |
           set -euo pipefail
@@ -420,13 +429,12 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo check --all-targets --features duckdb-1-5
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --all-targets --features duckdb-1-5
       - run: cargo clippy --all-targets --features duckdb-1-5 -- -D warnings
-      - run: cargo check --all-targets --features duckdb-1-5-3
       - run: cargo test --all-targets --features duckdb-1-5-3
       - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
-      - run: cargo check --all-targets --features duckdb-1-5-4
       - run: cargo test --all-targets --features duckdb-1-5-4
       - run: cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings
 
@@ -443,6 +451,8 @@ jobs:
           toolchain: 1.99.1
           targets: wasm32-unknown-emscripten
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # DuckDB-WASM target. quack-rs's own lib must compile for wasm32; in
       # loadable-extension mode libduckdb-sys is headers-only, so `cargo check`
       # needs no emscripten toolchain. `--all-targets` is intentionally avoided —
@@ -460,10 +470,22 @@ jobs:
       - name: Install emsdk 6.0.10
         run: |
           set -euo pipefail
-          git clone --quiet https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          # Three attempts each for the clone and the install, both network
+          # fetches; a partial clone is removed before the next attempt. The
+          # commit check below still pins exactly what is used.
+          for attempt in 1 2 3; do
+            rm -rf "$RUNNER_TEMP/emsdk"
+            git clone --quiet https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk" && break
+            [ "$attempt" -lt 3 ] || { echo "::error::git clone of emsdk failed three times"; exit 1; }
+            sleep $((attempt * 10))
+          done
           cd "$RUNNER_TEMP/emsdk"
           git checkout --quiet a2b92777574c2feda07994cd4f1079a3dfc151f8
-          ./emsdk install 6.0.10
+          for attempt in 1 2 3; do
+            ./emsdk install 6.0.10 && break
+            [ "$attempt" -lt 3 ] || { echo "::error::emsdk install 6.0.10 failed three times"; exit 1; }
+            sleep $((attempt * 10))
+          done
           ./emsdk activate 6.0.10
       - name: Unit tests on wasm32 (node)
         env:
@@ -491,6 +513,8 @@ jobs:
           toolchain: 1.99.1
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets -- -D warnings
 
   # Informational early-warning for clippy lints graduating to stable.
@@ -510,6 +534,8 @@ jobs:
           toolchain: beta
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `+beta` for the same reason as the MSRV job above: without it this ran
       # stable clippy and duplicated the `clippy` job.
       - run: cargo +beta clippy --all-targets --features duckdb-1-5-4 -- -D warnings
@@ -554,6 +580,8 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: The stable release this run checks
         run: rustc +stable --version
       - run: cargo +stable fmt -- --check
@@ -588,13 +616,34 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
       # duckdb-1-5) rather than --all-features, which would compile DuckDB
-      # from source here; `test-bundled` documents --all-features on Linux,
-      # where that build is already cached.
+      # from source.
       - run: cargo doc --no-deps --features duckdb-1-5-4
         env:
           RUSTDOCFLAGS: "-D warnings"
+      # The `_duckdb-testing` items (`testing::InMemoryDb`), which nothing else
+      # documents. This gives quack-rs the same cfg set as --all-features
+      # without compiling DuckDB (the step below proves no `src/` item depends
+      # on `bundled-test*`, the only features it leaves out). Until November
+      # 2026 `test-bundled` ran `cargo doc --all-features` for this, about ten
+      # minutes of compiling DuckDB's C++ on every cold run.
+      - name: Rustdoc of the testing helpers (the --all-features cfg set, without DuckDB)
+        run: cargo doc --no-deps --features _duckdb-testing,duckdb-1-5-4
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+      - name: No src/ item is gated on the bundled-test features
+        run: |
+          set -euo pipefail
+          # grep exits 1 on no match, which is the passing case here.
+          if hits=$(grep -rnE 'feature *= *"bundled-test' src); then
+            echo "::error::src/ has items gated on bundled-test*, which the rustdoc step above does not enable:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "no src/ item is gated on bundled-test or bundled-test-prebuilt"
       # A dependent crate documents quack-rs with *its* feature set, usually
       # the default one, where a link to a feature-gated item is broken.
       - run: cargo doc --no-deps
@@ -657,6 +706,8 @@ jobs:
         with:
           toolchain: "1.86.0"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `+1.86.0` is not optional, for the same reason the `nightly` and `miri`
       # jobs below use `+nightly`: `rust-toolchain.toml` pins the toolchain
       # (`channel`), and a rustup toolchain file overrides the default this
@@ -703,6 +754,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Resolve the declared floor
         run: |
           set -euo pipefail
@@ -723,6 +776,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo bench --no-run
       # The engine-level benchmark extension (benches/engine) is a separate crate;
       # keep it compiling, and its driver parsing.
@@ -751,6 +806,7 @@ jobs:
           workspaces: |
             . -> target
             examples/hello-ext -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --manifest-path examples/hello-ext/Cargo.toml --all-targets
       - name: Clippy (Linux only)
         if: runner.os == 'Linux'
@@ -769,6 +825,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `--test integration_test` builds the one test binary that holds the test
       # (the unfiltered form compiled nine, and eight of them ran nothing).
       # `--exact` plus the grep: `cargo test <filter>` exits 0 when the filter
@@ -802,6 +860,7 @@ jobs:
           workspaces: |
             . -> target
             examples/hello-ext -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Verify extension entry point symbol (Linux)
@@ -909,6 +968,25 @@ jobs:
         # unreachable) and must not be read as drift.
         run: scripts/upstream-guard.sh scripts/check-autoload-entries.py
 
+  extension-names:
+    name: Reserved extension names (vs DuckDB and the community repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # `generate_scaffold`, `parse_description_yml` and
+      # `validate_community_extension_name` refuse DuckDB's aliases and core
+      # extension names, which a community extension may not take. The lists
+      # are copied from DuckDB's sources and documentation; this fails when
+      # upstream adds one the lists lack. No workflow ran it before November
+      # 2026, so the core extension `glue` went unnoticed until then.
+      - name: Verify src/validate/extension_name.rs matches upstream
+        # Exit 2 is the documented "could not check" code (upstream
+        # unreachable) and must not be read as drift.
+        run: scripts/upstream-guard.sh scripts/check-extension-names.py
+
   book:
     name: Book builds (mdBook)
     runs-on: ubuntu-24.04
@@ -925,11 +1003,19 @@ jobs:
           toolchain: 1.99.1
       # docs.yml builds the book only when main is pushed, so a broken page
       # was found after merge. The version is the one book/mdbook-version pins,
-      # which docs.yml's build script also reads.
-      - name: Install mdBook
-        env:
-          RUSTFLAGS: ""
-        run: cargo install mdbook --locked --version "$(cat book/mdbook-version)"
+      # which docs.yml's build script also reads. The binary is the release
+      # build that script already downloads and checks against MDBOOK_SHA256
+      # (it used to be compiled here with `cargo install`, about a minute
+      # cold), so this job and docs.yml now use the same mdBook binary; the
+      # versioned-site step below finds it in target/mdbook-tools again.
+      - name: Install mdBook (the sha256-pinned release binary)
+        run: |
+          set -euo pipefail
+          mdbook=$(python3 scripts/build-versioned-site.py --print-mdbook)
+          mkdir -p "$RUNNER_TEMP/mdbook-bin"
+          ln -sf "$mdbook" "$RUNNER_TEMP/mdbook-bin/mdbook"
+          "$RUNNER_TEMP/mdbook-bin/mdbook" --version
+          echo "$RUNNER_TEMP/mdbook-bin" >> "$GITHUB_PATH"
       - run: mdbook build
       # Per-page description, canonical and og: tags, as docs.yml deploys
       # them; fails on a missing or duplicate description or title, or a
@@ -1001,6 +1087,7 @@ jobs:
           workspaces: |
             . -> target
             examples/hello-ext -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build hello-ext as cdylib
         run: cargo build --manifest-path examples/hello-ext/Cargo.toml --release
       - name: Build append_metadata
@@ -1081,6 +1168,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
@@ -1130,7 +1219,12 @@ jobs:
           # it writes is what the stable builds below reuse.
           msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' /tmp/scaffolded/Cargo.toml)
           test -n "$msrv"
-          rustup toolchain install "$msrv" --profile minimal
+          # Idempotent, so a failed download is simply retried.
+          for attempt in 1 2 3; do
+            rustup toolchain install "$msrv" --profile minimal && break
+            [ "$attempt" -lt 3 ] || { echo "::error::rustup could not install $msrv three times"; exit 1; }
+            sleep $((attempt * 10))
+          done
           (cd /tmp/scaffolded && cargo "+$msrv" generate-lockfile && cargo "+$msrv" build --release)
           (cd /tmp/scaffolded && cargo build --release)
           # crate-type = ["cdylib", "rlib"] must still produce the cdylib.
@@ -1284,6 +1378,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install DuckDB CLI
         run: |
           set -euo pipefail
@@ -1418,6 +1514,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build and stamp a duckdb-1-5 demo against the pinned bindings
         run: |
           set -euo pipefail
@@ -1556,6 +1654,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `--locked`, as release.yml's `package` and `publish` jobs run it: without
       # it a Cargo.toml version bump that left Cargo.lock behind passed here
       # (cargo quietly rewrote the lock file) and failed only at release time.
@@ -1580,6 +1680,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-deny
         env:
           # Do not build third-party tools with warnings-as-errors:
@@ -1625,7 +1726,7 @@ jobs:
           VER=2.7.0
           # From the release's osv-scanner_SHA256SUMS (linux_amd64).
           SHA=160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
-          curl -fsSL -o osv-scanner \
+          curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 -o osv-scanner \
             "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
           echo "${SHA}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
@@ -1701,7 +1802,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
           fetch() { # <url> <sha256> <file>
-            curl -fsSL --retry 5 -o "$3" "$1"
+            curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 -o "$3" "$1"
             echo "$2  $3" | sha256sum -c -
           }
           cd "$RUNNER_TEMP"
@@ -1735,6 +1836,11 @@ jobs:
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Nightly toolchain: its commit is in the key, so a target cache from
+          # another day is never restored. Cache the registry only.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `+nightly` is not optional: `rust-toolchain.toml` pins a stable release
       # (`channel`), and a rustup toolchain file overrides the default this
       # action sets, so a bare `cargo` here runs that release and this job
@@ -1743,14 +1849,25 @@ jobs:
         run: cargo +nightly test --all-targets
 
   miri:
-    name: Miri (undefined behaviour)
+    name: Miri (undefined behaviour, ${{ matrix.leg }})
     runs-on: ubuntu-24.04
-    # Two sequential runs of the library tests (native, then s390x). On the 0.20.0
-    # pull request the native run alone took 41.6 minutes, 18 of them one parser
-    # test on 100,000-level inputs and 3 more an SPDX test (both shrink under
-    # Miri now), and the s390x run was cancelled at the 60-minute limit with the
-    # aggregate check red. The limit is for the two runs together.
-    timeout-minutes: 90
+    # The library tests under Miri, natively and on big-endian s390x, as two
+    # parallel legs. They ran back to back in one job until November 2026, when
+    # the job took 62.9 to 77.8 minutes (87% of its 90-minute limit) and was the
+    # whole critical path of every run; each leg took 29 to 39.5 minutes.
+    # (On the 0.20.0 pull request the native run alone took 41.6 minutes, 18 of
+    # them one parser test on 100,000-level inputs and 3 more an SPDX test, both
+    # since shrunk under Miri.) `fail-fast: false` so one leg's failure never
+    # hides the other's; `ci-ok` needs `miri`, which fails if either leg does.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: native
+            target-args: ""
+          - leg: big-endian s390x
+            target-args: "--target s390x-unknown-linux-gnu"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1759,7 +1876,13 @@ jobs:
         with:
           toolchain: nightly
           components: miri, rust-src
+      # The nightly commit is in rust-cache's key, so a target cache from another
+      # day can never be restored: cache only the registry, and write it only on
+      # main (a pull request restores main's, and cannot write what main reads).
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # This crate is ~40% unsafe by surface area, and the parts that are *not*
       # FFI -- the duckdb_string_t decoder, the validity bitmap arithmetic, the
       # UUID bit flip, the interval maths, the secret zeroizer -- are exactly
@@ -1774,7 +1897,16 @@ jobs:
       #
       # `-Zmiri-disable-isolation` is needed because proptest reads the current
       # directory to place its regression files.
-      - name: Run the library unit tests under Miri
+      #
+      # The big-endian leg exists because `duckdb_string_t`, HUGEINT and Arrow
+      # buffers are native-endian, and the string decoder read them as
+      # little-endian until the fifth audit: every test passed on x86-64 while
+      # the decoder followed an inline string's bytes as a pointer on s390x.
+      # Miri interprets the target, so no s390x runner is needed. criterion's
+      # `alloca` dependency compiles a C shim in its build script; Miri never
+      # executes it, so the host compiler stands in for the cross compiler (the
+      # two variables are harmless on the native leg).
+      - name: Run the library unit tests under Miri (${{ matrix.leg }})
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
           # Miri interprets, so the "-D warnings" the rest of CI uses would also
@@ -1784,6 +1916,8 @@ jobs:
           # interpreter for no extra coverage of the *unsafe* code, which is
           # what this job is for. `cargo test` still runs the full 256.
           PROPTEST_CASES: "8"
+          CC_s390x_unknown_linux_gnu: gcc
+          AR_s390x_unknown_linux_gnu: ar
         # `+nightly` is not optional -- see the note in the `nightly` job:
         # `rust-toolchain.toml` pins a stable release and overrides this action's
         # default, so a bare `cargo miri` resolves to that release, where the
@@ -1792,27 +1926,55 @@ jobs:
         # module is cfg'd out, including `src/arrow.rs` -- the largest block of
         # pure-Rust `unsafe` in the crate, and exactly what Miri is here for.
         # `.cargo/mutants.toml` already sets the same features for the same reason.
-        run: cargo +nightly miri test --lib --features duckdb-1-5-4
-      # The same tests on a big-endian target. `duckdb_string_t`, HUGEINT and
-      # Arrow buffers are native-endian, and the string decoder read them as
-      # little-endian until the fifth audit: every test passed on x86-64 while
-      # the decoder followed an inline string's bytes as a pointer on s390x.
-      # Miri interprets the target, so no s390x runner is needed. criterion's
-      # `alloca` dependency compiles a C shim in its build script; Miri never
-      # executes it, so the host compiler stands in for the cross compiler.
-      - name: Run the library unit tests under Miri, big-endian (s390x)
-        env:
-          MIRIFLAGS: "-Zmiri-disable-isolation"
-          RUSTFLAGS: ""
-          PROPTEST_CASES: "8"
-          CC_s390x_unknown_linux_gnu: gcc
-          AR_s390x_unknown_linux_gnu: ar
-        run: cargo +nightly miri test --target s390x-unknown-linux-gnu --lib --features duckdb-1-5-4
+        # The native leg passes no `--target`, exactly as before the split.
+        run: cargo +nightly miri test ${{ matrix.target-args }} --lib --features duckdb-1-5-4
 
-  leak-check:
-    name: LeakSanitizer (RAII wrappers vs a real DuckDB)
+  # AddressSanitizer, with its built-in LeakSanitizer on. Two questions, one
+  # instrumented build and one pass over the end-to-end suite:
+  #
+  # - Memory errors: did we write outside an allocation, or use one after it
+  #   was freed -- the class that produced the two heap-corruption defects
+  #   fixed in v0.16.0, and the one a crate doing raw pointer arithmetic into
+  #   DuckDB's memory is most exposed to. Miri cannot reach it: these paths
+  #   call foreign functions.
+  # - Leaks: did we forget a destructor. Half of quack-rs's value proposition
+  #   is RAII over DuckDB handles (LogicalType, Value, QueryResult,
+  #   OwnedDataChunk, FileHandle, PreparedStatement, ErrorData, Appender). A
+  #   missing destructor is not a test failure -- everything still returns the
+  #   right answer -- so the only way to catch one is to look at the heap
+  #   afterwards. ASan's leak check is LeakSanitizer itself, run at exit, and
+  #   reads LSAN_OPTIONS; the probe step below proves it still fails the run.
+  #
+  # The sanitizers intercept malloc globally, so they see DuckDB's C++
+  # allocations even though libduckdb itself is not instrumented. Their blind
+  # spot: this links the release libduckdb, which takes vector data buffers and
+  # LIST entry arrays from its own jemalloc, and neither sanitizer tracks those
+  # blocks, so a leak of, or an out-of-bounds or stale write into, one of them
+  # is not reported here; Rust-heap and validity-mask errors are
+  # (CONTRIBUTING.md, "What the sanitizer and valgrind runs can and cannot see").
+  #
+  # This job replaced a separate `leak-check` job (-Zsanitizer=leak) in
+  # November 2026: the two built the same suite with -Zbuild-std twice, and
+  # ASan subsumes LSan. Blocking since September 2026, with no suppressions.
+  # Add an asan-suppressions.txt only if DuckDB's own frames turn up.
+  asan:
+    name: AddressSanitizer + LeakSanitizer (end-to-end suite vs a real DuckDB)
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      RUSTFLAGS: "-Zsanitizer=address"
+      ASAN_OPTIONS: "detect_leaks=1:detect_stack_use_after_return=1:strict_string_checks=1"
+      # DuckDB's own one-time allocations (extension registry, the default
+      # allocator's arenas, static initialisers) are still reachable at exit,
+      # which LeakSanitizer does not report, so nothing needs suppressing.
+      # lsan-suppressions.txt holds no rules on purpose: a rule for
+      # libduckdb.so is tested against every frame of an allocation, and every
+      # handle DuckDB allocates has such a frame, so it silenced exactly the
+      # leaks this job is for (the probe step leaks a handle on purpose and
+      # requires the job to notice). A two-frame stack is useless for
+      # attributing a leak to a missing destructor; 30 is enough to name the
+      # quack-rs frame.
+      LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1822,17 +1984,11 @@ jobs:
           toolchain: nightly
           components: rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # Half of quack-rs's value proposition is RAII over DuckDB handles:
-      # LogicalType, Value, QueryResult, OwnedDataChunk, FileHandle,
-      # PreparedStatement, ErrorData, Appender. A missing destructor is not a
-      # test failure -- everything still returns the right answer -- so the only
-      # way to catch one is to look at the heap afterwards.
-      #
-      # LeakSanitizer intercepts malloc globally, so it sees DuckDB's C++
-      # allocations even though libduckdb itself is not instrumented -- but
-      # not the vector data buffers and LIST entry arrays the release
-      # libduckdb takes from its own jemalloc (CONTRIBUTING.md, "What the
-      # sanitizer and valgrind runs can and cannot see").
+        with:
+          # Nightly toolchain: its commit is in the key, so a target cache from
+          # another day is never restored. Cache the registry only.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Fetch a prebuilt libduckdb
         # Version derived from Cargo.lock -- see the note in
         # `test-bundled-prebuilt`. Linking a libduckdb that does not match the
@@ -1846,20 +2002,7 @@ jobs:
           echo "DUCKDB_LIB_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
           echo "DUCKDB_INCLUDE_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
-      - name: Run the end-to-end suite under LeakSanitizer
-        env:
-          RUSTFLAGS: "-Zsanitizer=leak"
-          # DuckDB's own one-time allocations (extension registry, the default
-          # allocator's arenas, static initialisers) are still reachable at
-          # exit, which LeakSanitizer does not report, so nothing needs
-          # suppressing. lsan-suppressions.txt holds no rules on purpose: a
-          # rule for libduckdb.so is tested against every frame of an
-          # allocation, and every handle DuckDB allocates has such a frame, so
-          # it silenced exactly the leaks this job is for (the step below
-          # leaks a handle on purpose and requires the job to notice).
-          # A two-frame stack is useless for attributing a leak to a missing
-          # destructor; 30 is enough to name the quack-rs frame.
-          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
+      - name: Run the end-to-end suite under AddressSanitizer and LeakSanitizer
         run: |
           # `+nightly` is not optional -- see the note in the `nightly` job.
           cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
@@ -1867,12 +2010,11 @@ jobs:
       # A leak check is only as good as its ability to fail. tests/lsan_probe.rs
       # leaks, on request, a Rust allocation (the control), a LogicalType and a
       # Value, and the run must fail with a leak report each time; with nothing
-      # leaked it must pass. The first version of this job passed over the
-      # LogicalType and the Value because of a suppression.
+      # leaked it must pass. The first version of the leak job passed over the
+      # LogicalType and the Value because of a suppression. Same RUSTFLAGS as
+      # the suite, so the instrumented standard library and dependencies are
+      # reused rather than rebuilt.
       - name: A handle leaked on purpose must fail LeakSanitizer
-        env:
-          RUSTFLAGS: "-Zsanitizer=leak"
-          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt:print_suppressions=0:malloc_context_size=30"
         run: |
           set -u
           probe() {
@@ -1896,59 +2038,6 @@ jobs:
             fi
           done
 
-  # AddressSanitizer. LeakSanitizer above answers "did we forget a destructor";
-  # ASAN answers "did we write outside an allocation, or use one after it was
-  # freed" -- the class that produced the two heap-corruption defects fixed in
-  # v0.16.0, and the one a crate doing raw pointer arithmetic into DuckDB's
-  # memory is most exposed to. Miri cannot reach it: these paths call foreign
-  # functions. Its blind spot: this links the release libduckdb, which takes
-  # vector data buffers and LIST entry arrays from its own jemalloc, and ASAN
-  # does not track those blocks, so an out-of-bounds or stale write into them
-  # is not reported here; Rust-heap and validity-mask errors are
-  # (CONTRIBUTING.md, "What the sanitizer and valgrind runs can and cannot see").
-  #
-  # Blocking since September 2026. It was `continue-on-error` until it had a
-  # green run on main, because libduckdb itself is not instrumented and the
-  # first runs might have needed suppressions. It then passed on main (84
-  # tests, 6455238) and locally over the 125-test suite with no reports and no
-  # suppressions. Add an asan-suppressions.txt only if DuckDB's own frames
-  # turn up.
-  #
-  # ASAN subsumes LSAN, so once this is blocking, `leak-check` can fold into it.
-  asan:
-    name: AddressSanitizer
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: nightly
-          components: rust-src
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Fetch a prebuilt libduckdb
-        # Version derived from Cargo.lock -- see `test-bundled-prebuilt`.
-        run: |
-          set -euo pipefail
-          DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
-          echo "libduckdb-sys in Cargo.lock corresponds to DuckDB ${DUCKDB_TAG}"
-          scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "$RUNNER_TEMP/libduckdb"
-          echo "DUCKDB_LIB_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
-          echo "DUCKDB_INCLUDE_DIR=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/libduckdb" >> "$GITHUB_ENV"
-      - name: Run the end-to-end suite under AddressSanitizer
-        env:
-          RUSTFLAGS: "-Zsanitizer=address"
-          # detect_leaks=0: leaks are `leak-check`'s job, with its own
-          # suppression file. This run is about memory errors only.
-          ASAN_OPTIONS: "detect_leaks=0:detect_stack_use_after_return=1:strict_string_checks=1"
-        run: |
-          # `+nightly` is not optional -- see the note in the `nightly` job.
-          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
-            --features bundled-test-prebuilt,duckdb-1-5-4 --test ffi_roundtrip
-
   semver:
     name: Public API (semver-checks)
     runs-on: ubuntu-24.04
@@ -1962,6 +2051,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # quack-rs is an SDK: its public API *is* the product, and a downstream
       # extension that stops compiling on a patch release is a worse outcome
       # than a missing feature. This compares the working tree against the
@@ -2024,7 +2115,11 @@ jobs:
     runs-on: ubuntu-24.04
     # 60 s per target on a push or pull request; 10 minutes per target on the
     # weekly schedule, which is long enough to grow the corpus meaningfully.
-    timeout-minutes: 90
+    # The schedule's limit scales with that: 8 targets x 10 minutes, run one
+    # after another, took 85.5 of the old 90 minutes on 2026-11-23, so a ninth
+    # target would have turned main red with no defect. 150 leaves room for
+    # about five more; a push or pull request keeps the old 90.
+    timeout-minutes: ${{ github.event_name == 'schedule' && 150 || 90 }}
     env:
       FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '600' || '60' }}
     steps:
@@ -2035,6 +2130,11 @@ jobs:
         with:
           toolchain: nightly
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Nightly toolchain: its commit is in the key, so a target cache from
+          # another day is never restored. Cache the registry only.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The description.yml parser is hand-rolled and reads a file from an
       # arbitrary GitHub repository; the duckdb_string_t decoder reads 16 bytes
       # whose meaning depends on a length field inside them. Both are exactly
@@ -2138,7 +2238,7 @@ jobs:
           VER=1.7.12
           # From the release's actionlint_${VER}_checksums.txt (linux_amd64).
           SHA=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-          curl -fsSL --retry 5 -o actionlint.tar.gz \
+          curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 -o actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v${VER}/actionlint_${VER}_linux_amd64.tar.gz"
           echo "${SHA}  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz actionlint
@@ -2161,7 +2261,6 @@ jobs:
     name: CI passed
     if: always()
     needs:
-      - check
       - test
       - test-bundled
       - test-bundled-prebuilt
@@ -2182,6 +2281,7 @@ jobs:
       - platform-table
       - spdx-list
       - autoload-entries
+      - extension-names
       - book
       - msrv-vs-duckdb-ci
       - extension-load
@@ -2193,7 +2293,6 @@ jobs:
       - osv-scan
       - hygiene
       - miri
-      - leak-check
       - asan
       - semver
       - fuzz
