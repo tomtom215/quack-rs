@@ -108,6 +108,11 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### CI / tooling
 
+- **Miri runs its native and big-endian s390x legs in parallel**, as a two-leg matrix with a
+  60-minute limit each. Run back to back in one job they took 62.9 to 77.8 minutes against a
+  90-minute limit and were the critical path of every CI run; each leg took 29 to 39.5
+  minutes. The scheduled fuzz campaign (8 targets × 10 minutes, 85.5 of its 90 minutes on
+  2026-11-23) gets a 150-minute limit on the schedule only.
 - **The weekly scheduled CI run moves from Monday 06:17 to Thursday 03:17 UTC, and
   Dependabot's update days are staggered (Monday to Wednesday).** On Monday 2026-11-23 the
   scheduled run and every Dependabot PR started within twenty minutes of each other, and the

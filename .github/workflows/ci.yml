@@ -1746,14 +1746,25 @@ jobs:
         run: cargo +nightly test --all-targets
 
   miri:
-    name: Miri (undefined behaviour)
+    name: Miri (undefined behaviour, ${{ matrix.leg }})
     runs-on: ubuntu-24.04
-    # Two sequential runs of the library tests (native, then s390x). On the 0.20.0
-    # pull request the native run alone took 41.6 minutes, 18 of them one parser
-    # test on 100,000-level inputs and 3 more an SPDX test (both shrink under
-    # Miri now), and the s390x run was cancelled at the 60-minute limit with the
-    # aggregate check red. The limit is for the two runs together.
-    timeout-minutes: 90
+    # The library tests under Miri, natively and on big-endian s390x, as two
+    # parallel legs. They ran back to back in one job until November 2026, when
+    # the job took 62.9 to 77.8 minutes (87% of its 90-minute limit) and was the
+    # whole critical path of every run; each leg took 29 to 39.5 minutes.
+    # (On the 0.20.0 pull request the native run alone took 41.6 minutes, 18 of
+    # them one parser test on 100,000-level inputs and 3 more an SPDX test, both
+    # since shrunk under Miri.) `fail-fast: false` so one leg's failure never
+    # hides the other's; `ci-ok` needs `miri`, which fails if either leg does.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: native
+            target-args: ""
+          - leg: big-endian s390x
+            target-args: "--target s390x-unknown-linux-gnu"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1762,7 +1773,13 @@ jobs:
         with:
           toolchain: nightly
           components: miri, rust-src
+      # The nightly commit is in rust-cache's key, so a target cache from another
+      # day can never be restored: cache only the registry, and write it only on
+      # main (a pull request restores main's, and cannot write what main reads).
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # This crate is ~40% unsafe by surface area, and the parts that are *not*
       # FFI -- the duckdb_string_t decoder, the validity bitmap arithmetic, the
       # UUID bit flip, the interval maths, the secret zeroizer -- are exactly
@@ -1777,7 +1794,16 @@ jobs:
       #
       # `-Zmiri-disable-isolation` is needed because proptest reads the current
       # directory to place its regression files.
-      - name: Run the library unit tests under Miri
+      #
+      # The big-endian leg exists because `duckdb_string_t`, HUGEINT and Arrow
+      # buffers are native-endian, and the string decoder read them as
+      # little-endian until the fifth audit: every test passed on x86-64 while
+      # the decoder followed an inline string's bytes as a pointer on s390x.
+      # Miri interprets the target, so no s390x runner is needed. criterion's
+      # `alloca` dependency compiles a C shim in its build script; Miri never
+      # executes it, so the host compiler stands in for the cross compiler (the
+      # two variables are harmless on the native leg).
+      - name: Run the library unit tests under Miri (${{ matrix.leg }})
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
           # Miri interprets, so the "-D warnings" the rest of CI uses would also
@@ -1787,6 +1813,8 @@ jobs:
           # interpreter for no extra coverage of the *unsafe* code, which is
           # what this job is for. `cargo test` still runs the full 256.
           PROPTEST_CASES: "8"
+          CC_s390x_unknown_linux_gnu: gcc
+          AR_s390x_unknown_linux_gnu: ar
         # `+nightly` is not optional -- see the note in the `nightly` job:
         # `rust-toolchain.toml` pins a stable release and overrides this action's
         # default, so a bare `cargo miri` resolves to that release, where the
@@ -1795,22 +1823,8 @@ jobs:
         # module is cfg'd out, including `src/arrow.rs` -- the largest block of
         # pure-Rust `unsafe` in the crate, and exactly what Miri is here for.
         # `.cargo/mutants.toml` already sets the same features for the same reason.
-        run: cargo +nightly miri test --lib --features duckdb-1-5-4
-      # The same tests on a big-endian target. `duckdb_string_t`, HUGEINT and
-      # Arrow buffers are native-endian, and the string decoder read them as
-      # little-endian until the fifth audit: every test passed on x86-64 while
-      # the decoder followed an inline string's bytes as a pointer on s390x.
-      # Miri interprets the target, so no s390x runner is needed. criterion's
-      # `alloca` dependency compiles a C shim in its build script; Miri never
-      # executes it, so the host compiler stands in for the cross compiler.
-      - name: Run the library unit tests under Miri, big-endian (s390x)
-        env:
-          MIRIFLAGS: "-Zmiri-disable-isolation"
-          RUSTFLAGS: ""
-          PROPTEST_CASES: "8"
-          CC_s390x_unknown_linux_gnu: gcc
-          AR_s390x_unknown_linux_gnu: ar
-        run: cargo +nightly miri test --target s390x-unknown-linux-gnu --lib --features duckdb-1-5-4
+        # The native leg passes no `--target`, exactly as before the split.
+        run: cargo +nightly miri test ${{ matrix.target-args }} --lib --features duckdb-1-5-4
 
   leak-check:
     name: LeakSanitizer (RAII wrappers vs a real DuckDB)
@@ -2027,7 +2041,11 @@ jobs:
     runs-on: ubuntu-24.04
     # 60 s per target on a push or pull request; 10 minutes per target on the
     # weekly schedule, which is long enough to grow the corpus meaningfully.
-    timeout-minutes: 90
+    # The schedule's limit scales with that: 8 targets x 10 minutes, run one
+    # after another, took 85.5 of the old 90 minutes on 2026-11-23, so a ninth
+    # target would have turned main red with no defect. 150 leaves room for
+    # about five more; a push or pull request keeps the old 90.
+    timeout-minutes: ${{ github.event_name == 'schedule' && 150 || 90 }}
     env:
       FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '600' || '60' }}
     steps:
