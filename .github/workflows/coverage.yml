@@ -3,8 +3,10 @@
 #
 # Test coverage — generates an LCOV report and uploads to Codecov.
 #
-# Runs on pushes to main and PRs. Uses cargo-llvm-cov for accurate
-# source-based coverage instrumentation (no sampling, no heuristics).
+# Runs on every push to main, and on a pull request that changes something the
+# coverage run builds or measures (`changes` below decides). Uses cargo-llvm-cov
+# for accurate source-based coverage instrumentation (no sampling, no
+# heuristics).
 
 name: Coverage
 
@@ -31,8 +33,54 @@ env:
   CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
+  # Whether a pull request touches anything `cargo llvm-cov --all-targets
+  # --all-features` builds or measures. A pull request that changes only the
+  # book, other workflows, scripts or hello-ext compiled DuckDB from C++ here
+  # for a report that could not differ from main's. The skip is per job, not a
+  # workflow `paths:` filter: a skipped job counts as passing if this check is
+  # ever made required, where a workflow that never starts leaves a required
+  # check "expected" forever. Fail-safe: if this job fails, coverage runs anyway.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.diff.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Did the pull request change a file coverage depends on?
+        id: diff
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          # `git diff` on its own line, so its failure fails this step (and
+          # coverage then runs regardless) instead of reading as "no change".
+          # `:(glob)` so `*` does not cross `/`: only the crate's own
+          # examples/*.rs, not examples/hello-ext (a separate workspace).
+          changed=$(git diff --name-only "origin/${BASE_REF}...HEAD" -- \
+            src tests benches ':(glob)examples/*.rs' build.rs Cargo.toml Cargo.lock \
+            .cargo rust-toolchain.toml codecov.yml .github/workflows/coverage.yml)
+          if [ -n "$changed" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            printf 'Coverage runs; changed:\n%s\n' "$changed"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing coverage builds or measures changed; the coverage job is skipped."
+          fi
+
   coverage:
     name: Test coverage
+    needs: changes
+    # Pushes to main always run (changes is skipped there). On a pull request,
+    # skip only when change detection succeeded and found nothing relevant.
+    if: >-
+      ${{ !cancelled() && (github.event_name != 'pull_request'
+      || needs.changes.result != 'success'
+      || needs.changes.outputs.relevant == 'true') }}
     runs-on: ubuntu-24.04
     # `--all-features` compiles DuckDB from C++; the default limit is 360 minutes.
     timeout-minutes: 90

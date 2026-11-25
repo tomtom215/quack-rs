@@ -105,6 +105,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **Coverage runs on a pull request only when it changes something coverage builds or
+  measures** (`src/`, `tests/`, `benches/`, the crate's own `examples/*.rs`, the manifest,
+  lockfile, toolchain and Cargo config, `codecov.yml` and the workflow itself), and always on
+  `main`. It used to compile DuckDB from C++ on every pull request, including one that only
+  bumped hello-ext's lockfile. The skip is per job, decided by a small `changes` job, so a
+  skipped run counts as passing if Coverage is ever made a required check; if detection fails,
+  coverage runs anyway.
 - **`test-bundled` no longer compiles DuckDB a second time just for rustdoc, and the `check`
   job is gone.** Its `cargo doc --all-features` step (9.8 to 10.3 minutes cold) documented the
   `_duckdb-testing` items for a `release.yml` job that no longer exists. The `doc` job now runs
