@@ -48,6 +48,7 @@ replaced had drifted to fewer than half the jobs.
 | `platform-table` | Platform list (vs upstream distribution matrix) | blocking |
 | `spdx-list` | SPDX shortlist (vs official registry) | blocking |
 | `autoload-entries` | Catalog autoload names (vs every supported DuckDB) | blocking |
+| `extension-names` | Reserved extension names (vs DuckDB and the community repository) | blocking |
 | `book` | Book builds (mdBook) | blocking |
 | `msrv-vs-duckdb-ci` | MSRV vs DuckDB's extension CI | blocking |
 | `extension-load` | Extension load test (DuckDB ${{ matrix.duckdb }}) | blocking |

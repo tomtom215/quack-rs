@@ -962,6 +962,25 @@ jobs:
         # unreachable) and must not be read as drift.
         run: scripts/upstream-guard.sh scripts/check-autoload-entries.py
 
+  extension-names:
+    name: Reserved extension names (vs DuckDB and the community repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # `generate_scaffold`, `parse_description_yml` and
+      # `validate_community_extension_name` refuse DuckDB's aliases and core
+      # extension names, which a community extension may not take. The lists
+      # are copied from DuckDB's sources and documentation; this fails when
+      # upstream adds one the lists lack. No workflow ran it before November
+      # 2026, so the core extension `glue` went unnoticed until then.
+      - name: Verify src/validate/extension_name.rs matches upstream
+        # Exit 2 is the documented "could not check" code (upstream
+        # unreachable) and must not be read as drift.
+        run: scripts/upstream-guard.sh scripts/check-extension-names.py
+
   book:
     name: Book builds (mdBook)
     runs-on: ubuntu-24.04
@@ -2298,6 +2317,7 @@ jobs:
       - platform-table
       - spdx-list
       - autoload-entries
+      - extension-names
       - book
       - msrv-vs-duckdb-ci
       - extension-load

@@ -105,6 +105,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **`glue` is a reserved extension name, and CI now checks the list against upstream.**
+  DuckDB's `main` and its 2.0 documentation list a core extension `glue`, which
+  `DUCKDB_CORE_EXTENSION_NAMES` lacked, so `generate_scaffold`, `parse_description_yml` and
+  `validate_community_extension_name` accepted it although the community repository would not.
+  `scripts/check-extension-names.py` would have caught it, but no workflow ran it (the module
+  documentation said CI did); the new `extension-names` job does, through `upstream-guard.sh`.
+  The lists now hold 35 core names and 45 reserved names.
 - **The `book` job uses the sha256-pinned mdBook release binary** that
   `scripts/build-versioned-site.py` already downloads and checks (new `--print-mdbook`),
   instead of compiling the same version with `cargo install` (about a minute cold), so it and

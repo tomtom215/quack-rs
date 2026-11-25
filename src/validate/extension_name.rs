@@ -39,10 +39,12 @@
 //! `AUTOLOADABLE_EXTENSIONS` in `src/include/duckdb/main/extension_entries.hpp`
 //! at `DuckDB` v1.4.4, v1.5.6 and v2.0.0 (`main` had the same aliases), and the
 //! core-extension table of `docs/2.0/core_extensions/overview.md` in
-//! `duckdb/duckdb-web`. `scripts/check-extension-names.py` fetches them again
-//! in CI and fails when they and these lists disagree. None of the 395
-//! community extensions in `duckdb/community-extensions` (`845779e`) has a name
-//! listed here.
+//! `duckdb/duckdb-web`. `glue` was added on 2026-11-25, when `main`'s lists and
+//! the 2.0 documentation's table named it. `scripts/check-extension-names.py`
+//! fetches them again in CI (`ci.yml`'s `extension-names` job, from 2026-11-25;
+//! before that no workflow ran it, and `glue` went unnoticed) and fails when
+//! they and these lists disagree. None of the 395 community extensions in
+//! `duckdb/community-extensions` (`845779e`) has a name listed here.
 //!
 //! Uniqueness among community extensions is not checked: that is the
 //! author's to look up (`extensions/` in `duckdb/community-extensions`).
@@ -96,6 +98,7 @@ pub const DUCKDB_CORE_EXTENSION_NAMES: &[&str] = &[
     "encodings",
     "excel",
     "fts",
+    "glue",
     "httpfs",
     "iceberg",
     "icu",
@@ -136,6 +139,7 @@ pub const DUCKDB_RESERVED_EXTENSION_NAMES: &[&str] = &[
     "encodings",
     "excel",
     "fts",
+    "glue",
     "http",
     "httpfs",
     "https",
