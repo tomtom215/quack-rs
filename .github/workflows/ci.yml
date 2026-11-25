@@ -328,10 +328,12 @@ jobs:
         run: cargo test --all-targets --features "$FEATURES"
 
   test-duckdb-2-0:
-    # The whole live suite against DuckDB v2.0.0, with the DuckDB 2.0 bindings
-    # (`libduckdb-sys` / `duckdb` 1.20000.1; their bundled C API headers are
-    # byte-identical to the v2.0.0 tag's). Separate from `test-older-engines`
-    # only because Cargo.lock stays on the 1.5.6 bindings: the 2.0 bindings need
+    # The whole live suite against each DuckDB 2.0 release, with that release's
+    # own bindings: v2.0.0 with `libduckdb-sys` / `duckdb` 1.20000.1 (their
+    # bundled C API headers are byte-identical to the v2.0.0 tag's), and v2.0.1
+    # with 1.20001.0, the exact pair a fresh `cargo update` resolves today
+    # (QRS-005, AUDIT.md section 16). Separate from `test-older-engines` only
+    # because Cargo.lock stays on the 1.5.6 bindings: the 2.0 bindings need
     # Rust 1.88.
     #
     # 1.20000.1, not 1.20000.0: the .0 release's bundled engine reports itself
@@ -342,9 +344,17 @@ jobs:
     # Besides the live suite this runs what the other jobs run on the 1.5.6
     # bindings and nothing else covers on the 2.0 ones: clippy, rustdoc and the
     # doctests. (`test-bundled-duckdb-2-0` covers the source-build path.)
-    name: Test against DuckDB v2.0.0
+    name: Test against DuckDB ${{ matrix.duckdb }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - duckdb: v2.0.0
+            bindings: 1.20000.1
+          - duckdb: v2.0.1
+            bindings: 1.20001.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -354,14 +364,20 @@ jobs:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # One entry per leg: the key is taken before `cargo update` relocks,
+          # so without this both legs would share (and race for) one.
+          key: ${{ matrix.duckdb }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Pin the DuckDB 2.0 bindings and download libduckdb v2.0.0
+      - name: Pin the DuckDB ${{ matrix.duckdb }} bindings and download its libduckdb
+        env:
+          BINDINGS: ${{ matrix.bindings }}
+          EXPECTED: ${{ matrix.duckdb }}
         run: |
           set -euo pipefail
           # `duckdb` pins `libduckdb-sys` exactly, so this moves both.
-          cargo update -p duckdb --precise 1.20000.1
+          cargo update -p duckdb --precise "$BINDINGS"
           DUCKDB_TAG=$(scripts/duckdb-version-from-lock.sh)
-          test "$DUCKDB_TAG" = "v2.0.0" || { echo "::error::bindings are ${DUCKDB_TAG}, not v2.0.0"; exit 1; }
+          test "$DUCKDB_TAG" = "$EXPECTED" || { echo "::error::bindings are ${DUCKDB_TAG}, not ${EXPECTED}"; exit 1; }
           scripts/fetch-duckdb.sh "${DUCKDB_TAG}" lib "${{ runner.temp }}/libduckdb"
       - name: Test
         env:
@@ -1070,9 +1086,11 @@ jobs:
       # still loads there (its loader: `IsSupportedCAPIVersion`).
       #
       # `latest` stays in the matrix as the early-warning signal for a DuckDB
-      # that has not been pinned here yet.
+      # that has not been pinned here yet; fetch-duckdb.sh refuses it until its
+      # hashes are listed, so no leg runs an unverified binary. v2.0.1 is pinned
+      # as well, so it stays covered once `latest` moves on.
       matrix:
-        duckdb: ["v1.4.4", "v1.5.0", "v1.5.5", "v1.5.6", "v2.0.0", "latest"]
+        duckdb: ["v1.4.4", "v1.5.0", "v1.5.5", "v1.5.6", "v2.0.0", "v2.0.1", "latest"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

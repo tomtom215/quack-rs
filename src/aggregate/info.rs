@@ -89,8 +89,9 @@ impl AggregateFunctionInfo {
     /// holds for a grouped aggregate on every release up to 2.0.0, and for an
     /// ungrouped one before 2.0.0, which plans a C API aggregate as a hash
     /// aggregate; 2.0.0 runs an ungrouped aggregate in
-    /// `PhysicalUngroupedAggregate`, which destroys its states. See Known
-    /// Limitations in the book.
+    /// `PhysicalUngroupedAggregate`, which destroys its states, and 2.0.1
+    /// destroys a grouped aggregate's states too. See Known Limitations in the
+    /// book.
     #[cfg_attr(test, mutants::skip)]
     pub fn set_error(&self, message: &str) {
         let c_msg = crate::table::cstr::error_cstring(message, EMPTY_ERROR_PLACEHOLDER);

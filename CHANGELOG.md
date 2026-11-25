@@ -91,6 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`datetime::try_f64_to_hugeint(-2^127)` returns `Some(i128::MIN)`.** -2^127 is
+  exactly `i128::MIN`, and DuckDB 2.0.1 converts it (`ConvertFloatingToBigint`
+  now accepts `[-2^127, 2^127)`), but the check refused it, as releases before
+  2.0.1 return 0 for it. It is now answered in Rust, without calling DuckDB, so
+  the result does not depend on the engine. Found by the first run of the live
+  suite against libduckdb v2.0.1 (QRS-005).
 - **`FfiState::destroy_callback` skips a NULL state pointer (QRS-002).** DuckDB's
   window path hands an aggregate's destructor entries of its state-pointer table
   that it never wrote when an `init` fails, still on 2.0.1. In a five-row frame
@@ -204,6 +210,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **The live suite runs against DuckDB v2.0.1 on its own bindings (QRS-005).**
+  `test-duckdb-2-0` is a two-leg matrix: v2.0.0 on `libduckdb-sys` 1.20000.1, and
+  v2.0.1 on 1.20001.0, the pair a fresh `cargo update` resolves; each leg runs the
+  live suite, doctests, clippy and rustdoc, with its own cache entry.
+  `extension-load` gains a pinned v2.0.1 leg. VALIDATED locally with the job's
+  commands on a relocked copy: the first run against 2.0.1 failed two tests that
+  pin engine behaviour 2.0.1 changed (-2^127 to `HUGEINT`, above; every state of
+  a grouped aggregate is now destroyed after a failed `finalize`, so that Known
+  Limitations entry is now "before 2.0.1"); after the fixes the whole suite
+  passes there.
+- **`scripts/fetch-duckdb.sh` refuses an unlisted `latest` DuckDB (QRS-019).** It
+  warned and used the binary unverified, and `latest` feeds blocking jobs
+  (`extension-load`, `scaffold-e2e`, `abi-guard`) and so the release gate. A new
+  DuckDB release now fails those jobs until its hashes are added to
+  `scripts/duckdb-sha256.txt`, as the `abi-table` job already does from its
+  header. VALIDATED: with v2.0.1's CLI line removed from a copy of the table,
+  `fetch-duckdb.sh latest cli` exits 1 and unpacks nothing. The table's header
+  now gives the `gh api` command that would check its hashes against GitHub's
+  per-asset digests, which were not reachable from here.
 - **`scripts/check-api-coverage.py` exits 2 ("could not check") on a header with
   no `duckdb_ext_api_v1`,** such as DuckDB's C API v2 header, instead of failing
   with a Python `ValueError` and exit 1, which reads as "the classification is

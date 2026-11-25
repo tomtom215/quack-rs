@@ -16,7 +16,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 3 | `duckdb_config_option_set_default_value` lets a cast exception escape | C program, below | default converted by SQL before the call |
 | 4 | `duckdb_data_chunk_from_arrow` converts before its `try` | C program, below | negative length refused; a very large length cannot be checked and is documented |
 | 5 | Scalar bind data does not take part in expression equality | quack-rs test | documented on `ScalarBindData` |
-| 6 | Aggregate states not all destroyed after a failed `finalize` | quack-rs test | documented under Known Limitations |
+| 6 | Aggregate states not all destroyed after a failed `finalize` (fixed in 2.0.1) | quack-rs test | documented under Known Limitations |
 | 7 | C API aggregate in a streaming window re-reads the first row | C program, below | every aggregate registers a destructor |
 | 8 | Arrow import returns dictionary and constant vectors the C API cannot read | C program, below | columns flattened after import |
 | 9 | Arrow dictionary import with NULLs and >2048 entries writes past a heap buffer | C program, below (valgrind) | such arrays refused before import |
@@ -359,6 +359,11 @@ reports the leaked Rust allocation. Not yet reduced to a plain-C reproducer,
 and where DuckDB drops the states has not been located: `CAPIAggregateFinalize`
 throws `InvalidInputException` after the callback, and
 `~UngroupedAggregateState` would destroy the global state if it ran.
+
+Update, 2026-11-25: DuckDB 2.0.0 destroys every state of the ungrouped query,
+and 2.0.1 every state of the grouped one too (16 initialised, 16 destroyed),
+so this is fixed for a supported release; file it, if at all, against 1.5.x
+only. The test now pins each release's behaviour.
 
 ---
 

@@ -173,16 +173,18 @@ reported upstream as
 older releases, tell your users not to use your aggregates in those shapes. See
 [Pitfall L11](pitfalls.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
 
-### Aggregate states leak when `finalize` reports an error (DuckDB behaviour)
+### Aggregate states leak when `finalize` reports an error (DuckDB before 2.0.1)
 
 When an aggregate's `finalize` callback reports an error
-(`AggregateFunctionInfo::set_error`), DuckDB does not call the destructor
-for every state a grouped query created (4 initialised and 2 destroyed on
-1.5.5; still fewer destroyed than initialised on 2.0.0). Before 2.0.0 an
-ungrouped query is affected too (2 initialised, 1 destroyed), because a C API
-aggregate is planned as a hash aggregate there; 2.0.0 runs it as an ungrouped
-aggregate, which destroys every state after the failure. When `finalize`
-succeeds, every state is destroyed. The extension cannot tell which states were abandoned, so whatever
+(`AggregateFunctionInfo::set_error`), DuckDB before 2.0.1 does not call the
+destructor for every state a grouped query created (4 initialised and 2
+destroyed on 1.5.5; still fewer destroyed than initialised on 2.0.0). Before
+2.0.0 an ungrouped query is affected too (2 initialised, 1 destroyed), because
+a C API aggregate is planned as a hash aggregate there; 2.0.0 runs it as an
+ungrouped aggregate, which destroys every state after the failure. DuckDB 2.0.1
+destroys every state of the grouped query as well (16 initialised, 16
+destroyed; found by the first run of the live suite against 2.0.1, `AUDIT.md`
+section 16). When `finalize` succeeds, every state is destroyed. The extension cannot tell which states were abandoned, so whatever
 they own is leaked: with `FfiState<T>`, whatever `T` owns on the heap, and the
 box of a `T` too large to store inline (see the next section). The query still
 fails with your message. If that leak matters (a long-lived process whose

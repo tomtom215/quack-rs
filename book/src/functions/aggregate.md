@@ -378,8 +378,8 @@ to every aggregate callback except the destructor. It exposes:
 
 - `get_extra_info() -> *mut c_void`: the extra-info pointer set at registration.
 - `set_error(message)`: fails the current query with `message`. Called from
-  `finalize`, it also leaves some states undestroyed; see
-  [Known Limitations](../reference/known-limitations.md#aggregate-states-leak-when-finalize-reports-an-error-duckdb-behaviour).
+  `finalize`, it also leaves some states undestroyed before DuckDB 2.0.1; see
+  [Known Limitations](../reference/known-limitations.md#aggregate-states-leak-when-finalize-reports-an-error-duckdb-before-201).
 
 ```rust
 # use libduckdb_sys::{duckdb_aggregate_state, duckdb_bind_info, duckdb_connection,

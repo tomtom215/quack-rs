@@ -950,23 +950,26 @@ mod raw_state {
 /// `PhysicalUngroupedAggregate` (the same file 278-283), whose
 /// `~UngroupedAggregateState` destroys its state when the failed query's plan
 /// is torn down (`physical_ungrouped_aggregate.cpp` 84-98), so there every
-/// state is destroyed. When `finalize` succeeds every state is destroyed on
-/// every release. An extension cannot tell which states were abandoned, so
-/// anything a state owns leaks (an `FfiState<T>` box, for one). Pins the
-/// behaviour documented under Known Limitations: if `DuckDB` starts
-/// destroying them, an assertion fails.
+/// state is destroyed. v2.0.1 destroys every state of the grouped query too
+/// (16 initialised, 16 destroyed; found by the first live run against 2.0.1,
+/// `AUDIT.md` section 16), so the leak is a pre-2.0.1 one. When `finalize`
+/// succeeds every state is destroyed on every release. An extension cannot
+/// tell which states were abandoned, so anything a state owns leaks (an
+/// `FfiState<T>` box, for one). Pins the behaviour documented under Known
+/// Limitations, release by release: if it changes again, an assertion fails.
 #[test]
 fn aggregate_states_are_not_all_destroyed_when_finalize_fails() {
     use std::sync::atomic::Ordering;
 
-    let ungrouped_destroyed = {
+    let engine = {
         let _fx = Fixture::open();
         // SAFETY: the fixture initialised the dispatch table.
         unsafe { quack_rs::abi::engine_version() }
             .as_deref()
             .and_then(quack_rs::abi::parse_version)
-            .is_some_and(|v| v >= (2, 0, 0))
     };
+    let ungrouped_destroyed = engine.is_some_and(|v| v >= (2, 0, 0));
+    let grouped_destroyed = engine.is_some_and(|v| v >= (2, 0, 1));
 
     let counts = |finalize: quack_rs::aggregate::FinalizeFn, sql: &str| {
         let _serial = raw_state::serial();
@@ -1003,14 +1006,14 @@ fn aggregate_states_are_not_all_destroyed_when_finalize_fails() {
         ),
         (
             "SELECT i % 2, counted_agg(i::BIGINT) FROM range(3) t(i) GROUP BY 1",
-            false,
+            grouped_destroyed,
         ),
     ] {
         let (inits, destroyed) = counts(raw_state::finalize_fails, sql);
         if all_destroyed {
             assert_eq!(
                 inits, destroyed,
-                "{sql}: DuckDB 2.0 destroys every ungrouped state after a failed finalize"
+                "{sql}: this DuckDB destroys every state of this query after a failed finalize"
             );
         } else {
             assert!(

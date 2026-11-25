@@ -457,9 +457,10 @@ pub unsafe fn hugeint_to_f64(value: i128) -> f64 {
 /// zero.
 ///
 /// A value `DuckDB` cannot convert — NaN, an infinity, or a value outside
-/// `(-2^127, 2^127)` — comes back as `0`, indistinguishable from a real zero
-/// (SQL's `CAST` raises an error instead). Use
-/// [`try_f64_to_hugeint`] to tell the two apart.
+/// `(-2^127, 2^127)` (`[-2^127, 2^127)` from `DuckDB` 2.0.1, which converts
+/// -2^127 to `i128::MIN`; earlier releases return `0` for it) — comes back as
+/// `0`, indistinguishable from a real zero (SQL's `CAST` raises an error
+/// instead). Use [`try_f64_to_hugeint`] to tell the two apart.
 ///
 /// # Safety
 ///
@@ -472,11 +473,13 @@ pub unsafe fn f64_to_hugeint(value: f64) -> i128 {
 }
 
 /// Converts an `f64` to `HUGEINT` like [`f64_to_hugeint`], or `None` when
-/// `DuckDB` cannot convert it: NaN, an infinity, or a value outside
-/// `(-2^127, 2^127)`.
+/// the value has no `HUGEINT`: NaN, an infinity, or a value outside
+/// `[-2^127, 2^127)`.
 ///
-/// The bounds are the ones `DuckDB`'s `ConvertFloatingToBigint` applies
-/// (`hugeint.cpp`), checked here before the call.
+/// The bounds are the ones `DuckDB` 2.0.1's `ConvertFloatingToBigint` applies
+/// (`hugeint.cpp`), checked here before the call. -2^127 itself is answered
+/// here, as `i128::MIN`, without calling `DuckDB`: releases before 2.0.1
+/// returned `0` for it, so the answer does not depend on the engine.
 ///
 /// # Safety
 ///
@@ -486,7 +489,10 @@ pub unsafe fn try_f64_to_hugeint(value: f64) -> Option<i128> {
     // 2^127 is exactly representable; DuckDB compares against it (its
     // `2^127 - 1` literal rounds to the same double).
     const LIMIT: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
-    if !value.is_finite() || value <= -LIMIT || value >= LIMIT {
+    if value == -LIMIT {
+        return Some(i128::MIN);
+    }
+    if !value.is_finite() || value < -LIMIT || value >= LIMIT {
         return None;
     }
     // SAFETY: forwarded from this function's own contract.

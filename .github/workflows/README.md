@@ -28,7 +28,7 @@ replaced had drifted to fewer than half the jobs.
 | `test-bundled` | Test bundled-test (${{ matrix.os }}) | blocking |
 | `test-bundled-prebuilt` | Test bundled-test-prebuilt (prebuilt libduckdb) | blocking |
 | `test-older-engines` | Test against DuckDB ${{ matrix.engine }} (${{ matrix.features }}) | blocking |
-| `test-duckdb-2-0` | Test against DuckDB v2.0.0 | blocking |
+| `test-duckdb-2-0` | Test against DuckDB ${{ matrix.duckdb }} (v2.0.0 on 1.20000.1, v2.0.1 on 1.20001.0) | blocking |
 | `test-bundled-duckdb-2-0` | Test bundled-test on the DuckDB 2.0 bindings (informational) | informational |
 | `test-duckdb-1-5` | Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features | blocking |
 | `wasm` | WASM (wasm32-unknown-emscripten) | blocking |
