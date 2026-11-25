@@ -431,13 +431,10 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --all-targets --features duckdb-1-5
       - run: cargo test --all-targets --features duckdb-1-5
       - run: cargo clippy --all-targets --features duckdb-1-5 -- -D warnings
-      - run: cargo check --all-targets --features duckdb-1-5-3
       - run: cargo test --all-targets --features duckdb-1-5-3
       - run: cargo clippy --all-targets --features duckdb-1-5-3 -- -D warnings
-      - run: cargo check --all-targets --features duckdb-1-5-4
       - run: cargo test --all-targets --features duckdb-1-5-4
       - run: cargo clippy --all-targets --features duckdb-1-5-4 -- -D warnings
 
