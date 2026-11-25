@@ -978,11 +978,19 @@ jobs:
           toolchain: 1.99.1
       # docs.yml builds the book only when main is pushed, so a broken page
       # was found after merge. The version is the one book/mdbook-version pins,
-      # which docs.yml's build script also reads.
-      - name: Install mdBook
-        env:
-          RUSTFLAGS: ""
-        run: cargo install mdbook --locked --version "$(cat book/mdbook-version)"
+      # which docs.yml's build script also reads. The binary is the release
+      # build that script already downloads and checks against MDBOOK_SHA256
+      # (it used to be compiled here with `cargo install`, about a minute
+      # cold), so this job and docs.yml now use the same mdBook binary; the
+      # versioned-site step below finds it in target/mdbook-tools again.
+      - name: Install mdBook (the sha256-pinned release binary)
+        run: |
+          set -euo pipefail
+          mdbook=$(python3 scripts/build-versioned-site.py --print-mdbook)
+          mkdir -p "$RUNNER_TEMP/mdbook-bin"
+          ln -sf "$mdbook" "$RUNNER_TEMP/mdbook-bin/mdbook"
+          "$RUNNER_TEMP/mdbook-bin/mdbook" --version
+          echo "$RUNNER_TEMP/mdbook-bin" >> "$GITHUB_PATH"
       - run: mdbook build
       # Per-page description, canonical and og: tags, as docs.yml deploys
       # them; fails on a missing or duplicate description or title, or a

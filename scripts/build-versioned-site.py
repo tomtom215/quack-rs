@@ -167,7 +167,8 @@ def mdbook_for(version: str, tools: Path) -> Path:
         f"https://github.com/rust-lang/mdBook/releases/download/v{version}/"
         f"mdbook-v{version}-x86_64-unknown-linux-gnu.tar.gz"
     )
-    print(f"downloading mdBook {version}")
+    # stderr: --print-mdbook prints only the path on stdout.
+    print(f"downloading mdBook {version}", file=sys.stderr)
     data = read_with_retry(url, 120)
     digest = hashlib.sha256(data).hexdigest()
     if digest != MDBOOK_SHA256[version]:
@@ -353,8 +354,14 @@ def check(site: Path, builds: list[Build], latest: str) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--out", type=Path, required=True, help="output directory (replaced)")
+    parser.add_argument("--out", type=Path, help="output directory (replaced); required to build")
     parser.add_argument("--tools", type=Path, default=REPO_ROOT / "target" / "mdbook-tools")
+    parser.add_argument(
+        "--print-mdbook",
+        action="store_true",
+        help="only fetch the mdBook that book/mdbook-version pins (sha256-checked) into "
+        "--tools, print its path, and exit; ci.yml's book job puts it on PATH",
+    )
     parser.add_argument(
         "--dev-api",
         type=Path,
@@ -362,6 +369,13 @@ def main() -> int:
     )
     parser.add_argument("--no-dev", action="store_true", help="skip the /dev/ build")
     args = parser.parse_args()
+
+    if args.print_mdbook:
+        version = (REPO_ROOT / "book" / "mdbook-version").read_text(encoding="utf-8").strip()
+        print(mdbook_for(version, args.tools.resolve()))
+        return 0
+    if args.out is None:
+        parser.error("--out is required to build the site")
 
     tags = run(["git", "tag", "--list", "v*"], cwd=REPO_ROOT).split()
     lines = release_lines(tags)

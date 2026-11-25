@@ -108,6 +108,10 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### CI / tooling
 
+- **The `book` job uses the sha256-pinned mdBook release binary** that
+  `scripts/build-versioned-site.py` already downloads and checks (new `--print-mdbook`),
+  instead of compiling the same version with `cargo install` (about a minute cold), so it and
+  `docs.yml` build with the same binary.
 - **Network calls in CI retry transient failures and cannot hang.** Every `curl` in `ci.yml`
   and `scripts/fetch-duckdb.sh` passes `--retry 5 --retry-connrefused --connect-timeout 20
   --max-time …` (the `osv-scan` download had no retry at all); a 404 still fails at once. The
