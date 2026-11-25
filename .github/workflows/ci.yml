@@ -47,9 +47,12 @@ on:
   # Weekly, on the default branch: the abi-table, platform-table, spdx-list and
   # autoload-entries jobs compare the checked-in tables with upstream, which
   # changes without any commit here (a new DuckDB release, a new SPDX list),
-  # and clippy-beta / nightly track moving toolchains.
+  # and clippy-beta / nightly track moving toolchains. Thursday 03:17 UTC, well
+  # away from Dependabot (Monday to Wednesday, .github/dependabot.yml): on Monday
+  # 2026-11-23, when both started at 06:00 – 06:17, this run's jobs queued for up
+  # to six hours behind the Dependabot PRs' 59-job runs.
   schedule:
-    - cron: "17 6 * * 1"
+    - cron: "17 3 * * 4"
   workflow_dispatch:
   # release.yml runs this whole workflow as its CI gate, so a release passes
   # exactly the checks a pull request does.

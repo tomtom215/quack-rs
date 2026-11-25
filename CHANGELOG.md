@@ -105,6 +105,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **The weekly scheduled CI run moves from Monday 06:17 to Thursday 03:17 UTC, and
+  Dependabot's update days are staggered (Monday to Wednesday).** On Monday 2026-11-23 the
+  scheduled run and every Dependabot PR started within twenty minutes of each other, and the
+  scheduled run's jobs queued for up to 356 minutes (06:39 to 15:38), against about 69 minutes
+  for the same workflow without contention. Dependabot also now updates
+  `benches/engine/Cargo.lock`, which both security gates scan but nothing updated; it keeps the
+  root's rule of not bumping the DuckDB bindings there.
 - **RUSTSEC-2026-0543 (`chrono` unmaintained) is suppressed, with a reason CI re-proves.**
   The advisory covers every `chrono` version, so there is no release to move to, and it
   failed `cargo-deny` and the OSV scan from 2026-11-23. `chrono` enters only as
