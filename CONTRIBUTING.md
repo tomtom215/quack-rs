@@ -255,8 +255,8 @@ cargo mutants --file <changed-files>
 ```
 
 CI sets `RUSTFLAGS="-D warnings"` for every job, so a compiler warning anywhere
-fails the build. CI runs these checks on every pull request to `main`, on pushes to
-`main` and `claude/**`, weekly, and as the release's gate, together with jobs that
+fails the build. CI runs these checks on every pull request to `main` (and to a `claude/**`
+branch, for stacked pull requests), on pushes to `main`, weekly, and as the release's gate, together with jobs that
 have no single local command: the other test operating systems, older DuckDB
 engines (`test-older-engines`), WASM, Miri, sanitizers, semver checks, the
 scaffold and ABI-guard end-to-end tests, the book build and its link check,

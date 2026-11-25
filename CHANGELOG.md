@@ -105,6 +105,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **CI runs once per push.** `ci.yml`'s `push` trigger covers `main` only; branches are tested
+  through their pull requests (into `main`, or into a `claude/**` branch for a stacked pull
+  request), whose run checks the merge result. Pushing to a `claude/**` branch with an open
+  pull request used to run all of CI twice, under two concurrency groups (about 170–310
+  runner-minutes each time). A branch without a pull request is tested with
+  `workflow_dispatch` or a draft pull request. The concurrency comment that said every `main`
+  build completes is corrected: GitHub keeps one pending run per group.
 - **Coverage runs on a pull request only when it changes something coverage builds or
   measures** (`src/`, `tests/`, `benches/`, the crate's own `examples/*.rs`, the manifest,
   lockfile, toolchain and Cargo config, `codecov.yml` and the workflow itself), and always on

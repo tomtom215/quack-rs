@@ -9,7 +9,7 @@ This directory contains all GitHub Actions workflows for the quack-rs project.
 
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
-| **CI** | `ci.yml` | Push to `main`/`claude/**`, PRs to `main`, weekly schedule, manual, called by `release.yml` | Every quality gate (table below), summarised by the `ci-ok` job |
+| **CI** | `ci.yml` | Push to `main`, PRs to `main` or `claude/**`, weekly schedule, manual, called by `release.yml` | Every quality gate (table below), summarised by the `ci-ok` job |
 | **Release** | `release.yml` | Semver tags (`vX.Y.Z`, and `vX.Y.Z-pre` prereleases) | Full release pipeline: validate the tag and the release metadata, run all of `ci.yml`, package with SLSA attestation, publish to crates.io (approval required; the `.crate` is re-packaged and compared with the attested hash before the upload), check crates.io serves the attested `.crate`, GitHub release, versioned-book deploy |
 | **Documentation** | `docs.yml` | Push to `main`, manual, dispatched by `release.yml` after a release | Build the versioned book (latest release at `/`, each release line at `/vX.Y/`, `main` at `/dev/`) and deploy to GitHub Pages |
 | **Coverage** | `coverage.yml` | Push to `main`, PRs to `main` | Generate LCOV coverage report and upload to Codecov |

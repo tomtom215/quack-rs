@@ -40,10 +40,20 @@
 name: CI
 
 on:
+  # One run per push. `push` covers main only; a branch is tested through its
+  # pull request, whose run checks the merge result, i.e. what main would
+  # become. Pull requests into `claude/**` are included so a stacked pull
+  # request (one built on another's branch) is tested too. Until November 2026
+  # `push` also listed `claude/**`, so every push to a branch with an open pull
+  # request ran all of this twice (about 170 – 310 runner-minutes), under two
+  # concurrency groups. Making the groups equal would not have fixed it: the
+  # second run would cancel the first and could leave the pull request showing
+  # a cancelled `CI passed`. A branch without a pull request is tested with
+  # workflow_dispatch, or by opening a draft pull request.
   push:
-    branches: [main, "claude/**"]
-  pull_request:
     branches: [main]
+  pull_request:
+    branches: [main, "claude/**"]
   # Weekly, on the default branch: the abi-table, platform-table, spdx-list and
   # autoload-entries jobs compare the checked-in tables with upstream, which
   # changes without any commit here (a new DuckDB release, a new SPDX list),
@@ -65,8 +75,10 @@ permissions:
   contents: read
 
 # Cancel in-progress runs for the same branch/PR — saves CI minutes when
-# multiple commits are pushed in quick succession.  Main-branch pushes
-# are NOT cancelled so merge builds always complete.
+# multiple commits are pushed in quick succession. A run on main is not
+# cancelled once it has started; but GitHub keeps at most one *pending* run per
+# group, so when several merges land while one runs, only the newest of the
+# waiting ones runs after it.
 #
 # The group starts with a literal `ci-`, not `github.workflow`: when
 # release.yml calls this workflow, `github.workflow` is "Release", and
