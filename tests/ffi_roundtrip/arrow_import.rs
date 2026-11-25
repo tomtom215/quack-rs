@@ -273,6 +273,28 @@ fn export_import(con: &OwnedConnection, sql: &str) -> quack_rs::query::OwnedData
     unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }.expect("import")
 }
 
+/// `DuckDB` initialises an imported chunk's vectors with the Arrow array's
+/// length as their capacity (`dchunk->Initialize(alloc, types, length)` in
+/// `duckdb_data_chunk_from_arrow`), so a three-row import has room for three
+/// rows, not 2048. `OwnedDataChunk::capacity` reported `duckdb_vector_size()`
+/// for every chunk until the QRS-008 fix (`AUDIT.md` section 16), and a safe
+/// method that trusted it would have written past an imported vector.
+#[test]
+fn an_imported_chunk_reports_the_arrays_length_as_its_capacity() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let back = export_import(&con, "SELECT i::VARCHAR AS v FROM range(3) t(i)");
+    assert_eq!(back.size(), 3);
+    assert_eq!(back.capacity(), 3);
+    let made =
+        quack_rs::query::OwnedDataChunk::new(&[LogicalType::new(TypeId::Varchar)]).expect("chunk");
+    assert_eq!(
+        made.capacity(),
+        usize::try_from(quack_rs::vector::vector_size()).expect("fits")
+    );
+}
+
 /// What the ENUM queries below hold at `row`: `None` every seventh row, else
 /// alternately a string longer than the 12-byte inline limit and a short one.
 const fn enum_expected(row: usize) -> Option<&'static str> {

@@ -399,6 +399,9 @@ pub unsafe fn data_chunk_from_arrow(
         ));
     }
 
+    // DuckDB sizes the chunk's vectors by the array's length (see the refusal
+    // above); read it before the import takes the array.
+    let capacity = array.len();
     let mut out: duckdb_data_chunk = ptr::null_mut();
     // SAFETY: `connection` is live per this function's contract, `array` points
     // at a live record with as many children as `converted` has columns, and
@@ -424,8 +427,10 @@ pub unsafe fn data_chunk_from_arrow(
             "duckdb_data_chunk_from_arrow reported success but produced no data chunk",
         ));
     }
-    // SAFETY: `out` is a fresh chunk this value now owns.
-    let chunk = unsafe { OwnedDataChunk::from_raw(out) };
+    // SAFETY: `out` is a fresh chunk this value now owns, and `DuckDB`
+    // initialised its vectors with room for `capacity` rows
+    // (`dchunk->Initialize(alloc, types, arrow_array->length)`).
+    let chunk = unsafe { OwnedDataChunk::from_raw_with_capacity(out, capacity) };
     for (column, &dictionary) in dictionary_columns.iter().enumerate() {
         // SAFETY: `column` is below the chunk's column count, which is
         // `converted`'s, which matched the array's child count above.

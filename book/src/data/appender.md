@@ -238,7 +238,7 @@ After a successful `close()` the appender refuses all further work.
 | `append_chunk(&chunk)` | Append an entire [`DataChunk`] |
 | `flush()` / `close()` | Flush buffered rows / flush and close |
 | `error_message()` | Message from the last failed operation (`Option<String>`) |
-| `append_default_to_chunk(&chunk, col, row)` ¹ | Write a column's `DEFAULT` into a chunk cell |
+| `append_default_to_chunk(&chunk, col, row)` ¹ | Write a column's `DEFAULT` into a cell of an `OwnedDataChunk`; `col` and `row` are checked against the chunk |
 | `clear()` ¹ | Discard buffered, unflushed rows (and un-poison the appender) |
 | `error_data()` ¹ | Structured [`ErrorData`] from the last failed operation |
 

@@ -38,8 +38,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   38) and the wrapped values above, and all three of its tests fail with the check
   removed. The pure-Rust check has unit tests for every width from 1 to 38.
 
+### Changed
+
+- **Breaking:** `Appender::append_default_to_chunk` takes `&OwnedDataChunk`
+  instead of `&DataChunk` (QRS-008, above). The row is checked against the chunk's
+  capacity, which an `OwnedDataChunk` knows and a `DataChunk` borrowed from a
+  callback does not report. A chunk built for appending is an `OwnedDataChunk`
+  already (`OwnedDataChunk::new`); an `&OwnedDataChunk` still derefs to
+  `&DataChunk` for everything else.
+- **Breaking:** `OwnedDataChunk::from_raw` is no longer a `const fn`, and its
+  `# Safety` section adds a clause: every vector of the chunk must have room for
+  `capacity()` rows (the C API's vector size). A chunk from
+  `duckdb_create_data_chunk` or `duckdb_fetch_chunk` does; one from
+  `duckdb_data_chunk_from_arrow` does not (see Fixed), and quack-rs no longer
+  wraps it with `from_raw`.
+
+### Fixed
+
+- **`OwnedDataChunk::capacity` is right for a chunk imported from Arrow.** It
+  returned `duckdb_vector_size()` for every chunk, but
+  `duckdb_data_chunk_from_arrow` sizes the chunk's vectors by the Arrow array's
+  length (`dchunk->Initialize(alloc, types, length)`), so a three-row import has
+  room for three rows, not 2048; code that wrote up to `capacity()` would have
+  written past the vectors. The capacity is now stored when the chunk is made.
+  VALIDATED: `an_imported_chunk_reports_the_arrays_length_as_its_capacity` in
+  `tests/ffi_roundtrip/arrow_import.rs`.
+
 ### Security
 
+- **`Appender::append_default_to_chunk` no longer lets safe code write past a
+  vector (QRS-008).** It handed `col` and `row` to `duckdb_append_default_to_chunk`
+  unchecked, and DuckDB 2.0 does not check the row for every column type in a
+  release build: `VectorStringBuffer::SetValue` indexes a `VARCHAR` vector without
+  a bounds check, and `ValidityMask::SetValid` / `SetInvalid` check only under
+  `#ifdef DEBUG`. VALIDATED against the prebuilt libraries: on a `VARCHAR` column,
+  row 2048 of a 2048-row chunk returned `Ok` on DuckDB 2.0.0 and 2.0.1 (a write
+  past the vector), and row 2^40 and `u64::MAX` crashed the process with SIGSEGV on
+  2.0.1; DuckDB 1.5.6 refuses all of them ("Too many rows for chunk!"). Affected:
+  the `duckdb-1-5` feature from 0.13.0, on a DuckDB 2.0 engine, so the supported
+  lines 0.19.x and 0.20.x. Both indices are now checked against the chunk first
+  and a refused call writes nothing; see **Breaking** under Changed for the
+  signature. `tests/ffi_roundtrip/appender_api.rs` fails on DuckDB 2.0.1 with the
+  two checks removed ("col 0, row 2048 must be refused") and passes with them, on
+  1.5.6 and 2.0.1. Found by the maintainer review of 2026-11-25 (`AUDIT.md`
+  section 16), which had rated it a candidate with no demonstrated undefined
+  behaviour.
 - **`LOAD` no longer reads past the end of the engine's C API table.** Up to 0.20.0
   the entry points gave `libduckdb-sys`'s `duckdb_rs_extension_api_init` the pointer
   from DuckDB's `get_api` as it was. That function reads **every slot of the struct

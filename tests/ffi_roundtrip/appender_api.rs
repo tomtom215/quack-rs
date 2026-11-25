@@ -70,3 +70,63 @@ fn append_default_to_chunk_writes_the_columns_default() {
     assert_eq!(unsafe { chunk.reader(0).read_i32(0) }, 42);
     appender.close().expect("close");
 }
+
+/// QRS-008 (`AUDIT.md` section 16): `DuckDB` 2.0.1 writes a `VARCHAR` default
+/// into the chunk without checking the row in a release build, so row 2048 of
+/// a 2048-row chunk wrote past the vector and returned success, and row 2^40
+/// crashed the process. Both indices are now checked against the chunk before
+/// `DuckDB` sees them, and a refused call writes nothing.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn append_default_to_chunk_refuses_a_column_or_row_outside_the_chunk() {
+    use quack_rs::query::OwnedDataChunk;
+    use quack_rs::types::LogicalType;
+
+    let fx = Fixture::open();
+    fx.query("CREATE TABLE defs_s (s VARCHAR DEFAULT 'dflt', i INTEGER DEFAULT 7)");
+    // SAFETY: `con` is open and the table exists.
+    let appender = unsafe { Appender::new(fx.con(), None, c"defs_s") }.expect("create");
+    let chunk = OwnedDataChunk::new(&[
+        LogicalType::new(TypeId::Varchar),
+        LogicalType::new(TypeId::Integer),
+    ])
+    .expect("chunk");
+    let capacity = u64::try_from(chunk.capacity()).expect("fits");
+    let last = capacity - 1;
+
+    for (col, row) in [
+        (0, capacity),
+        (0, capacity + 1),
+        (0, 1 << 40),
+        (0, u64::MAX),
+        (1, capacity),
+        (2, 0),
+        (999, 0),
+        (u64::MAX, 0),
+    ] {
+        let err = appender
+            .append_default_to_chunk(&chunk, col, row)
+            .expect_err(&format!("col {col}, row {row} must be refused"));
+        let text = err.to_string();
+        let what = if col >= 2 { "column" } else { "row" };
+        assert!(
+            text.contains(&format!("{what} {}", if col >= 2 { col } else { row })),
+            "col {col}, row {row}: {text}"
+        );
+    }
+
+    // The last row of each column is still written.
+    appender
+        .append_default_to_chunk(&chunk, 0, last)
+        .expect("VARCHAR default in the last row");
+    appender
+        .append_default_to_chunk(&chunk, 1, last)
+        .expect("INTEGER default in the last row");
+    let last = usize::try_from(last).expect("fits");
+    // SAFETY: `last` is below the chunk's capacity; both columns were written.
+    unsafe {
+        assert_eq!(chunk.reader(0).read_str(last), "dflt");
+        assert_eq!(chunk.reader(1).read_i32(last), 7);
+    }
+    appender.close().expect("close");
+}
