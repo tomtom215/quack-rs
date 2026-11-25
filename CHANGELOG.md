@@ -105,6 +105,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **The incremental mutation gate fails closed, and decides once whether there is anything to
+  test.** Its change detection ran `git diff` inside a pipeline ending in `|| true`, without
+  `pipefail`: when `git diff` failed (a missing base ref, say), the list came back empty, the
+  shards reported "nothing changed" and the required check `Mutation Testing (incremental)`
+  passed having tested nothing (reproduced on a scratch repository: exit 0, `skip=true`).
+  Detection is now one `mutants-changes` job under `set -euo pipefail` (a `git diff` failure
+  fails it), the eight shards start only when it found Rust under `src/`, and the gate passes
+  skipped shards only when detection succeeded and said so. A pull request with no `src/`
+  change no longer starts eight runners that each compile cargo-mutants.
 - **Only `main` writes the Rust build cache.** Every `Swatinem/rust-cache` step in `ci.yml`,
   `coverage.yml` and `benchmarks.yml` saves only when `github.ref` is `refs/heads/main`; pull
   requests, `claude/**` pushes and release-tag runs restore `main`'s entries and write none.
