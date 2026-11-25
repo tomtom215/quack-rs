@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: MIT
+#
+# SHA-256 of the DuckDB release assets scripts/fetch-duckdb.sh downloads, one
+# line per asset: <tag> <asset> <sha256>. fetch-duckdb.sh verifies every
+# download against this table and fails on a mismatch, and on a pinned tag that
+# has no line here; `latest` (the canary for new DuckDB releases) is verified
+# when its tag is listed and only warned about when it is not.
+#
+# Provenance: each asset was downloaded twice from
+# https://github.com/duckdb/duckdb/releases/download/<tag>/<asset> on
+# 2026-11-25 and both downloads hashed identically. That is trust on first use:
+# it detects an asset replaced or corrupted after that date (and a bad
+# transfer), not one that was already wrong then. GitHub's API publishes a
+# per-asset digest that would be an independent check; it was not reachable
+# from the environment these were taken in.
+#
+# To add a release: download each asset twice (ideally from two networks),
+# compare, and add a line per asset, e.g.
+#   curl -fsSL https://github.com/duckdb/duckdb/releases/download/vX.Y.Z/<asset> | sha256sum
+
+v1.4.4 duckdb_cli-linux-amd64.zip ea79eae4233f1aba9a020c8a61877de38a789bc62cdd37485d3589cd77dc0d3e
+v1.4.4 libduckdb-linux-amd64.zip 09cc288295964d897b47665d1898e16e8ef176cae9ea615797fc136eae15bd5d
+v1.4.5 duckdb_cli-linux-amd64.zip ff4ef9ec59fe3e1a1f3dd1004c6218d1fd59c0533c185c968c4403fd0240d02b
+v1.4.5 libduckdb-linux-amd64.zip 291efb2e127492ec5b652fb728a29587837763dac1d96bf211dc6429f10149b5
+v1.5.0 duckdb_cli-linux-amd64.zip 179a481edf048dd1fef0f097d66933b4b5f5a5737d4034c645e415ec722c0292
+v1.5.0 libduckdb-linux-amd64.zip e9b2adb9dc5348da57eee9562782e0e7f543e74ff26d634bc7c208a5b6c59a1c
+v1.5.1 duckdb_cli-linux-amd64.zip 7414b29d4e77ae833ff170a489a59b74331f96d3fde72aa3bb8437dedbcea180
+v1.5.1 libduckdb-linux-amd64.zip 21aec66a60eae1696270ba715a481ab066a88d99a62718d0577579ac1a7a4834
+v1.5.2 duckdb_cli-linux-amd64.zip fc9145affabca627431e73ddaf6b8117e5c192692480c13886f227be202d5d15
+v1.5.2 libduckdb-linux-amd64.zip 4711438f0fdb04f0441803409bec5430b763d4f2ac3482c1f97cfa6b5ecb4c15
+v1.5.3 duckdb_cli-linux-amd64.zip 35caef1fecbc8d7e2c07de4fd2cdefc5189ec9ba9e1cca228fb1a1c48cc52a8a
+v1.5.3 libduckdb-linux-amd64.zip 0a926eba5bce0abc0010f4b9109133e4440cb74e97bd10fd2d0fc2a721621b05
+v1.5.4 duckdb_cli-linux-amd64.zip 1f2fa724fb054b3dbe1a9cbd13de5b76997d850e7087ec762ba88db04e0180cf
+v1.5.4 libduckdb-linux-amd64.zip 838d98a85e697bab9935010c88a8c67d3312ccedcab4cb4a0ba01da65113bb70
+v1.5.5 duckdb_cli-linux-amd64.zip 08c0ca117111fcede14239d0093792352befdc174218c344d232c13279643d05
+v1.5.5 libduckdb-linux-amd64.zip 1fb8ce388157d84a25abe685a8a2520bf00c00321821968e4bb398fd766e7abb
+v1.5.6 duckdb_cli-linux-amd64.zip 6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f
+v1.5.6 libduckdb-linux-amd64.zip b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b
+v2.0.0 duckdb-cli-linux-amd64.tar.gz c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc
+v2.0.0 duckdb-shared-libs-linux-amd64.tar.gz 993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1
+v2.0.1 duckdb-cli-linux-amd64.tar.gz b676268be4d39e4e41a904442c9796c9914e645cc085c7505f048f2c992b5eca
+v2.0.1 duckdb-shared-libs-linux-amd64.tar.gz e25502612fed533a243b61f23a2a574daad030e7e88906222a5f0ab30d06769e

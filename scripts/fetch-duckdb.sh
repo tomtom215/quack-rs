@@ -26,7 +26,9 @@ if [ $# -ne 3 ]; then
   exit 2
 fi
 tag=$1 kind=$2 dest=$3
+requested=$tag
 repo=https://github.com/duckdb/duckdb
+sums="$(cd "$(dirname "$0")" && pwd)/duckdb-sha256.txt"
 
 if [ "$tag" = "latest" ]; then
   # `releases/latest/download/<asset>` redirects to
@@ -69,6 +71,27 @@ archive="$dest/$asset"
 # turn a stalled transfer into a retry instead of a hang until the job's timeout.
 curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 \
   "$repo/releases/download/$tag/$asset" -o "$archive"
+
+# Verify against scripts/duckdb-sha256.txt before anything is unpacked. ci.yml
+# is also release.yml's gate, so a replaced library or CLI must not be able to
+# make that gate pass or fail falsely. A pinned tag without a line fails: add
+# one (the table says how). `latest` is the canary that a new DuckDB release
+# exists, so an unlisted latest tag is reported and used unverified.
+actual=$(sha256sum "$archive" | cut -d' ' -f1)
+expected=$(awk -v t="$tag" -v a="$asset" '$1 == t && $2 == a { print $3 }' "$sums")
+if [ -n "$expected" ]; then
+  if [ "$actual" != "$expected" ]; then
+    rm -f "$archive"
+    echo "error: DuckDB $tag $asset has sha256 $actual, but $sums lists $expected" >&2
+    exit 1
+  fi
+elif [ "$requested" = "latest" ]; then
+  echo "warning: DuckDB $tag (latest) is not in $sums, so $asset is unverified (sha256 $actual)" >&2
+else
+  rm -f "$archive"
+  echo "error: DuckDB $tag $asset has no sha256 in $sums; add one (its header says how)" >&2
+  exit 1
+fi
 case "$asset" in
   *.zip) unzip -o -q "$archive" -d "$dest" ;;
   *.tar.gz) tar -xzf "$archive" -C "$dest" ;;
@@ -77,5 +100,5 @@ rm -f "$archive"
 if [ "$kind" = "cli" ]; then
   chmod +x "$dest/duckdb"
 fi
-echo "fetched DuckDB $tag $kind ($asset) into $dest" >&2
+echo "fetched DuckDB $tag $kind ($asset, sha256 ${actual}) into $dest" >&2
 echo "$tag"

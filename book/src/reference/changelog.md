@@ -108,6 +108,14 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### CI / tooling
 
+- **DuckDB downloads are checked against pinned SHA-256 hashes.** `scripts/fetch-duckdb.sh`,
+  which CI uses about 26 times per run, verifies every archive against
+  `scripts/duckdb-sha256.txt` before unpacking it: a mismatch fails, a pinned tag with no
+  entry fails, and `latest` (the canary for new releases) is verified when listed and warned
+  about otherwise. `ci.yml` is also `release.yml`'s gate, so a replaced library or CLI could
+  otherwise make that gate pass or fail falsely. The table covers the CLI and library of every
+  release from v1.4.4 to v2.0.1 (22 assets); each was downloaded twice on 2026-11-25 and hashed
+  the same both times. That is trust on first use, which the file states.
 - **`glue` is a reserved extension name, and CI now checks the list against upstream.**
   DuckDB's `main` and its 2.0 documentation list a core extension `glue`, which
   `DUCKDB_CORE_EXTENSION_NAMES` lacked, so `generate_scaffold`, `parse_description_yml` and
