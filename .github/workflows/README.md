@@ -24,7 +24,6 @@ replaced had drifted to fewer than half the jobs.
 
 | Job ID | Name | |
 |---|---|---|
-| `check` | Check | blocking |
 | `test` | Test (${{ matrix.os }}) | blocking |
 | `test-bundled` | Test bundled-test (${{ matrix.os }}) | blocking |
 | `test-bundled-prebuilt` | Test bundled-test-prebuilt (prebuilt libduckdb) | blocking |

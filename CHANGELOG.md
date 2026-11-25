@@ -105,6 +105,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **`test-bundled` no longer compiles DuckDB a second time just for rustdoc, and the `check`
+  job is gone.** Its `cargo doc --all-features` step (9.8 to 10.3 minutes cold) documented the
+  `_duckdb-testing` items for a `release.yml` job that no longer exists. The `doc` job now runs
+  `cargo doc --features _duckdb-testing,duckdb-1-5-4`, which gives quack-rs the same cfg set
+  without DuckDB (16 seconds locally, `InMemoryDb` documented), and a new step fails if a `src/`
+  item is ever gated on `bundled-test*`, which that command leaves out. `check`
+  (`cargo check --all-targets`) was a strict subset of `clippy`, which uses the same toolchain,
+  features and flags.
 - **DuckDB downloads are checked against pinned SHA-256 hashes.** `scripts/fetch-duckdb.sh`,
   which CI uses about 26 times per run, verifies every archive against
   `scripts/duckdb-sha256.txt` before unpacking it: a mismatch fails, a pinned tag with no

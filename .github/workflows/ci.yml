@@ -93,22 +93,6 @@ env:
   CARGO_HTTP_MULTIPLEXING: "false"
 
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: 1.99.1
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --all-targets
-
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -181,22 +165,16 @@ jobs:
       # --no-fail-fast: cargo otherwise stops at the first failing test
       # binary, hiding failures in the ones after it.
       - run: cargo test --all-targets --features bundled-test --no-fail-fast
-      # The release workflow's `test · <OS>` command. Without it, nothing ran
+      # Formerly release.yml's `test · <OS>` command (release.yml now runs this
+      # whole workflow as its gate instead). Without it, nothing ran
       # the `duckdb-1-5*` tests against a real DuckDB on macOS or Windows
       # before a tag, and v0.18.0's first tag failed on Windows while main was
       # green (LESSONS.md, "Why macOS looked different", is the first time this
       # happened). The extra quack-rs features leave the duckdb/libduckdb-sys
       # features unchanged, so the DuckDB built by the step above is reused.
-      - name: Test --all-features (as release.yml does)
+      - name: Test --all-features
         if: ${{ !cancelled() }}
         run: cargo test --all-targets --all-features --no-fail-fast
-      # The release workflow's `doc` job: the only rustdoc pass over the
-      # `_duckdb-testing` items (`testing::InMemoryDb`).
-      - name: Doc --all-features (as release.yml does)
-        if: ${{ !cancelled() && runner.os == 'Linux' }}
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: "-D warnings"
 
   # Exercises the `bundled-test-prebuilt` path: link a pre-built libduckdb
   # instead of compiling DuckDB from C++ source. Combined with duckdb-1-5-4 this
@@ -633,11 +611,30 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # --features duckdb-1-5-4 (implies duckdb-1-5-3, which implies
       # duckdb-1-5) rather than --all-features, which would compile DuckDB
-      # from source here; `test-bundled` documents --all-features on Linux,
-      # where that build is already cached.
+      # from source.
       - run: cargo doc --no-deps --features duckdb-1-5-4
         env:
           RUSTDOCFLAGS: "-D warnings"
+      # The `_duckdb-testing` items (`testing::InMemoryDb`), which nothing else
+      # documents. This gives quack-rs the same cfg set as --all-features
+      # without compiling DuckDB (the step below proves no `src/` item depends
+      # on `bundled-test*`, the only features it leaves out). Until November
+      # 2026 `test-bundled` ran `cargo doc --all-features` for this, about ten
+      # minutes of compiling DuckDB's C++ on every cold run.
+      - name: Rustdoc of the testing helpers (the --all-features cfg set, without DuckDB)
+        run: cargo doc --no-deps --features _duckdb-testing,duckdb-1-5-4
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+      - name: No src/ item is gated on the bundled-test features
+        run: |
+          set -euo pipefail
+          # grep exits 1 on no match, which is the passing case here.
+          if hits=$(grep -rnE 'feature *= *"bundled-test' src); then
+            echo "::error::src/ has items gated on bundled-test*, which the rustdoc step above does not enable:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "no src/ item is gated on bundled-test or bundled-test-prebuilt"
       # A dependent crate documents quack-rs with *its* feature set, usually
       # the default one, where a link to a feature-gated item is broken.
       - run: cargo doc --no-deps
@@ -2296,7 +2293,6 @@ jobs:
     name: CI passed
     if: always()
     needs:
-      - check
       - test
       - test-bundled
       - test-bundled-prebuilt
