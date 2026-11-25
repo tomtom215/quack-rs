@@ -72,6 +72,7 @@ use libduckdb_sys::{
     duckdb_list_entry, duckdb_logical_type, duckdb_vector, duckdb_vector_get_data,
 };
 
+use crate::error::ExtensionError;
 use crate::types::{LogicalType, TypeId};
 use crate::vector::complex::{ListVector, MapVector, StructVector};
 use crate::vector::VectorWriter;
@@ -414,9 +415,10 @@ impl ListBuilder {
     /// From that row on, the builder writes nothing into the child: that row
     /// and every later [`push_row`][Self::push_row] /
     /// [`push_map_row`][Self::push_map_row] row is set to NULL, with an empty
-    /// list entry. Rows written before it stay valid. Check this before
-    /// [`finish`][Self::finish] if the row lengths come from untrusted input,
-    /// and report an error if a NULL is not an acceptable answer.
+    /// list entry. Rows written before it stay valid. Finish with
+    /// [`try_finish`][Self::try_finish] when a NULL is not an acceptable
+    /// answer: it returns an error in exactly this case, so the overflow
+    /// cannot go unnoticed.
     #[must_use]
     #[inline]
     pub const fn overflowed(&self) -> bool {
@@ -625,6 +627,39 @@ impl ListBuilder {
         // SAFETY: `self.vector` is valid per the constructor's contract, and
         // `self.written` counts exactly the elements the caller wrote.
         unsafe { ListVector::set_size(self.vector, self.written) };
+    }
+
+    /// [`finish`][Self::finish], then an error if any row was refused for the
+    /// element limit ([`overflowed`][Self::overflowed]).
+    ///
+    /// The vector is completed either way: a refused row is already a NULL
+    /// with an empty entry, so the output is consistent and the error only
+    /// says that some rows are NULL because of the limit, not because of the
+    /// input. Report it (for a scalar function,
+    /// [`ScalarFunctionInfo::set_error`][crate::scalar::ScalarFunctionInfo::set_error])
+    /// unless a NULL is an acceptable answer, in which case
+    /// [`finish`][Self::finish] says the same thing without the check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the element limit if a row would have taken
+    /// the child vector past it.
+    ///
+    /// # Safety
+    ///
+    /// As [`finish`][Self::finish].
+    pub unsafe fn try_finish(self) -> Result<(), ExtensionError> {
+        let overflowed = self.overflowed;
+        let limit = self.limit;
+        // SAFETY: forwarded; the same contract.
+        unsafe { self.finish() };
+        if overflowed {
+            return Err(ExtensionError::new(format!(
+                "ListBuilder: a row would have taken the child vector past its limit of \
+                 {limit} element(s); that row and every row after it were written as NULL"
+            )));
+        }
+        Ok(())
     }
 }
 

@@ -336,6 +336,7 @@ quack-rs/
 │   │   └── temporal_checks.rs         # Pure-Rust range checks for the temporal types, derived from `DuckDB`'s source
 │   └── vector/
 │       ├── complex.rs                 # Complex type vector operations: STRUCT fields, LIST elements, MAP entries
+│       ├── decimal.rs                 # [`DecimalWriter`]: `DECIMAL` output whose width and storage come from the vector's own type
 │       ├── list_builder.rs            # Safe construction of `LIST` and `MAP` output vectors
 │       ├── mod.rs                     # Safe helpers for reading from and writing to `DuckDB` data vectors
 │       ├── nested_null.rs             # The child validity masks a NULL in a nested vector must also clear
@@ -383,7 +384,7 @@ quack-rs/
 │       ├── copy_info_errors.rs        # `set_error` from all four COPY phases, and the state passed between them (`duckdb-1-5`)
 │       ├── copy_typed_state.rs        # Typed `COPY TO` state, a `FileHandle` kept across callbacks, `Send` handles (`duckdb-1-5`)
 │       ├── data_chunk_helpers.rs      # `DataChunk::any_null`, `struct_writer`, `into_chunk_writer` and `ChunkWriter::is_full`
-│       ├── decimal_write.rs           # `VectorWriter::try_write_decimal` refuses what `write_decimal` wraps, at every storage width
+│       ├── decimal_write.rs           # `VectorWriter::decimal` (`DecimalWriter`) refuses what `write_decimal` wraps, at every storage width
 │       ├── entry_point_inprocess.rs   # `init_extension*` and the entry-point macros run in process against a fake extension access
 │       ├── entry_point_txn.rs         # A failed `LOAD` rolls back and can be retried; a `LOAD` inside the host's transaction
 │       ├── file_errors.rs             # `FileHandle` reports write, sync and seek failures, and refuses a seek past `i64::MAX`

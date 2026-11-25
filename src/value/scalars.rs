@@ -59,16 +59,40 @@ impl Value {
     /// `DuckDB` stores every byte — but note that [`as_str`][Self::as_str] reads
     /// back through a NUL-terminated C string and will truncate at an interior
     /// NUL.
+    ///
+    /// # Panics
+    ///
+    /// If `value` is longer than [`MAX_STRING_LEN`](crate::vector::string::MAX_STRING_LEN)
+    /// bytes (`u32::MAX`); [`try_varchar`][Self::try_varchar] returns the error
+    /// instead.
     #[must_use]
     pub fn varchar(value: &str) -> Self {
-        // SAFETY: `value` is valid for the duration of the call; DuckDB copies it.
+        Self::try_varchar(value).unwrap_or_else(|e| panic!("Value::varchar: {e}"))
+    }
+
+    /// Creates a `VARCHAR` value, refusing one longer than `DuckDB` can store.
+    ///
+    /// `DuckDB` keeps a string's length in 32 bits: a longer value was accepted
+    /// and later stored with its length modulo 2<sup>32</sup> (a 4 GiB + 3 byte
+    /// `BLOB` bound with `bind_value` read back as 3 bytes on 1.5.6 and 2.0.1),
+    /// which [`PreparedStatement::bind_str`](crate::query::PreparedStatement::bind_str)
+    /// and the appender already refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `value` is longer than
+    /// [`MAX_STRING_LEN`](crate::vector::string::MAX_STRING_LEN) bytes.
+    pub fn try_varchar(value: &str) -> Result<Self, ExtensionError> {
+        crate::vector::string::check_string_len(value.len())?;
+        // SAFETY: `value` is valid for the duration of the call; DuckDB copies
+        // it. The length fits a `u32`, checked above, so it fits an `idx_t`.
         let raw = unsafe {
             libduckdb_sys::duckdb_create_varchar_length(
                 value.as_ptr().cast::<c_char>(),
                 libduckdb_sys::idx_t::try_from(value.len()).unwrap_or(libduckdb_sys::idx_t::MAX),
             )
         };
-        Self { raw }
+        Ok(Self { raw })
     }
 
     /// Creates a `UUID` value from its **textual** 128 bits, matching
@@ -212,16 +236,35 @@ impl Value {
     ///
     /// Unlike [`varchar`][Self::varchar] this is byte-exact in both directions:
     /// [`as_blob`][Self::as_blob] returns what went in, NUL bytes and all.
+    ///
+    /// # Panics
+    ///
+    /// If `bytes` is longer than [`MAX_STRING_LEN`](crate::vector::string::MAX_STRING_LEN)
+    /// bytes (`u32::MAX`); [`try_blob`][Self::try_blob] returns the error
+    /// instead.
     #[must_use]
     pub fn blob(bytes: &[u8]) -> Self {
-        // SAFETY: `bytes` is valid for the duration of the call; DuckDB copies it.
+        Self::try_blob(bytes).unwrap_or_else(|e| panic!("Value::blob: {e}"))
+    }
+
+    /// Creates a `BLOB` value, refusing one longer than `DuckDB` can store (see
+    /// [`try_varchar`][Self::try_varchar]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` is longer than
+    /// [`MAX_STRING_LEN`](crate::vector::string::MAX_STRING_LEN) bytes.
+    pub fn try_blob(bytes: &[u8]) -> Result<Self, ExtensionError> {
+        crate::vector::string::check_string_len(bytes.len())?;
+        // SAFETY: `bytes` is valid for the duration of the call; DuckDB copies
+        // it. The length fits a `u32`, checked above, so it fits an `idx_t`.
         let raw = unsafe {
             libduckdb_sys::duckdb_create_blob(
                 bytes.as_ptr(),
                 libduckdb_sys::idx_t::try_from(bytes.len()).unwrap_or(libduckdb_sys::idx_t::MAX),
             )
         };
-        Self { raw }
+        Ok(Self { raw })
     }
 
     /// Creates a `DECIMAL(width, scale)` value from its unscaled integer.

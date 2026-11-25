@@ -19,24 +19,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scheduled CI runs of 2026-11-16 and 2026-11-23 failed on, now pass, and so would the
   `scaffold-e2e` job, whose generated extension was refused by v2.0.1. Docs that used
   v2.0.1 as the example of an unlisted release now use v2.0.2.
-- **`VectorWriter::try_write_decimal(idx, width, unscaled)`, a checked
-  `write_decimal`.** `write_decimal` narrows the unscaled integer to `i16`, `i32`
-  or `i64` with `as`, so a value the width cannot hold is stored wrong with no
-  error. The independent review of 0.20.0 pointed at the cast; against a live
-  engine it is a plausible, wrong number: `70000` written to a `DECIMAL(4, 0)`
-  reads back as `4464`, `2^32 + 5` to a `DECIMAL(9, 0)` as `5`, and `2^64 + 7` to a
-  `DECIMAL(18, 0)` as `7`; and `10000`, which fits an `i16`, is stored as it is,
-  one digit wider than the type allows. `try_write_decimal` refuses a value with
-  `|unscaled| >= 10^width` (one comparison against a compile-time table, no
-  `pow`), writes nothing on `Err`, and otherwise writes exactly as
-  `write_decimal` does. `write_decimal` itself is unchanged: its documentation
-  now states the range requirement, and the book's example uses the checked
-  method. A scale is not an argument, since it does not change which unscaled
-  integers a width holds.
+- **`VectorWriter::decimal()` and `DecimalWriter`: checked `DECIMAL` output whose
+  width and scale come from the vector's own type.** `write_decimal` narrows the
+  unscaled integer to `i16`, `i32` or `i64` with `as`, so a value the width
+  cannot hold is stored wrong with no error, and its `width` argument also
+  decides how many bytes it writes. The independent review of 0.20.0 pointed at
+  the cast; against a live engine it is a plausible, wrong number: `70000`
+  written to a `DECIMAL(4, 0)` reads back as `4464`, `2^32 + 5` to a
+  `DECIMAL(9, 0)` as `5`, and `2^64 + 7` to a `DECIMAL(18, 0)` as `7`; and
+  `10000`, which fits an `i16`, is stored as it is, one digit wider than the type
+  allows. `VectorWriter::decimal()` reads the output vector's logical type once,
+  refuses a vector that is not `DECIMAL`, and returns a `DecimalWriter` whose
+  `write(idx, unscaled)` refuses `|unscaled| >= 10^width` (one comparison
+  against a compile-time table), writes nothing on `Err`, and stores the rest in
+  the type's own integer; `width()` and `scale()` report the type. The maintainer
+  review of 2026-11-25 (QRS-004) asked that the checked path take the width from
+  the vector rather than from the caller; an intermediate
+  `try_write_decimal(idx, width, unscaled)`, never released, is replaced by it.
+  `write_decimal` is unchanged: its documentation states the range requirement
+  and that a wrong width writes the wrong integer size, and the book's example
+  uses the checked writer.
   VALIDATED against libduckdb 1.5.6: `tests/ffi_roundtrip/decimal_write.rs`
   writes both sides of every storage boundary (widths 1, 4, 5, 9, 10, 18, 19,
-  38) and the wrapped values above, and all three of its tests fail with the check
-  removed. The pure-Rust check has unit tests for every width from 1 to 38.
+  38) through one callback for every width, refuses the wrapped values above,
+  writes `DECIMAL(10, 3)` at its own scale, and refuses an `INTEGER` output. The
+  pure-Rust check has unit tests for every width from 1 to 38.
+
+- **`ListBuilder::try_finish`: an element-limit overflow cannot go unnoticed
+  (QRS-012).** A row that would take the child vector past the element limit is
+  written as NULL, and `finish` returns nothing, so the NULLs were silent unless
+  the caller asked `overflowed()`. `try_finish` completes the vector the same way
+  and returns an error naming the limit when any row was refused.
+  `try_finish_reports_a_row_refused_for_the_element_limit` in
+  `tests/ffi_roundtrip/list_limits.rs`.
+- **`Value::try_varchar` and `Value::try_blob`**, which refuse a value longer than
+  DuckDB's 4 GiB string limit; see Changed for what `varchar` and `blob` do now.
 
 ### Changed
 
@@ -62,6 +79,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `VARCHAR`/`BLOB` vector's string heap with it, so an unwritten row of such a
   column can hold an earlier call's string record pointing into memory the vector
   no longer holds (read in the v2.0.1 source; LESSONS L21).
+
+- **Breaking:** `Value::varchar` and `Value::blob` panic on a value longer than
+  `u32::MAX` bytes, as `LogicalType`'s plain constructors do for theirs; the new
+  `try_varchar` / `try_blob` return the error. Such a value was accepted and then
+  stored with its length modulo 2^32: VALIDATED on 1.5.6 and 2.0.1, a 4 GiB + 3
+  byte `Value::blob` bound through `PreparedStatement::bind_value` read back as 3
+  bytes, while `bind_blob` and the appender refused the same bytes. Found while
+  sweeping the safe index and length paths after QRS-008 (`AUDIT.md` section 16,
+  NEW-1); `values_over_four_gib_are_refused_by_the_value_constructors`.
 
 ### Fixed
 
@@ -178,6 +204,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI / tooling
 
+- **`scripts/check-api-coverage.py` exits 2 ("could not check") on a header with
+  no `duckdb_ext_api_v1`,** such as DuckDB's C API v2 header, instead of failing
+  with a Python `ValueError` and exit 1, which reads as "the classification is
+  wrong". Its docstring now says that "wrapped" is lexical: it does not mean a
+  public item reaches the slot or a test exercises it (QRS-021).
 - **CI runs once per push.** `ci.yml`'s `push` trigger covers `main` only; branches are tested
   through their pull requests (into `main`, or into a `claude/**` branch for a stacked pull
   request), whose run checks the merge result. Pushing to a `claude/**` branch with an open
