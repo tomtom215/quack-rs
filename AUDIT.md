@@ -9,7 +9,7 @@ review, after 0.19.0), 14 (the eighth review, released as 0.20.0) and 15 (an
 independent production-readiness review of 0.20.0, triaged and acted on) and 16 (the
 maintainer review of 2026-11-25, thirty findings, triaged and acted on). Each ends
 with how it was verified, and later sections correct earlier ones where they were
-wrong (13.4, 14.9 and 15.6 list the corrections).
+wrong (13.4, 14.9, 15.6 and 16.8 list the corrections).
 
 The first audit (sections 1–6) reviewed `v0.16.0`, against **DuckDB 1.5.4**
 (prebuilt `libduckdb`, x86-64 Linux) with `libduckdb-sys 1.10504.0`.
@@ -3945,7 +3945,7 @@ what only the repository owner can do; 16.5 lists those.
 | QRS-017 | Trust model in `SECURITY.md` | f788ff4 |
 | QRS-018 | Stale `deny.toml` comment; SBOM left as a feature request | f788ff4 |
 | QRS-019 | `fetch-duckdb.sh` refuses an unlisted `latest`; digest check documented | a11858d |
-| QRS-020 | No change: a source-built sanitized DuckDB job is still not set up (16.6) | — |
+| QRS-020 | No change: a source-built sanitized DuckDB job is still not set up (16.7) | — |
 | QRS-021 | Coverage script exit 2 on a non-v1 header, "wrapped" defined as lexical; v2 inventory | 215ed11, 2762b3e |
 | QRS-022 | Design note and inventory, no implementation (16.3) | 2762b3e |
 | QRS-023 | In the design note | 2762b3e |
@@ -3978,3 +3978,95 @@ defects; NEW-1 came from the sweep of 16.2's sibling paths.
   filing is public and under the owner's name.
 - **Confirm the yank of 0.3.0 – 0.16.0** was intended (crates.io, 2026-10-31); 15.4 recorded
   the opposite decision.
+
+### 16.6 How the work was checked
+
+The gate list was taken from `.github/workflows/ci.yml` (every `run:` step of every job),
+not from memory. A local runner executed each Linux job's steps as Actions would, in a fresh
+`git worktree` of the commit, under `bash -eo pipefail`, with the job's matrix values and
+environment. Each gate's ledger records the commit it ran on; every run below was on a clean
+tree.
+
+| Commit | Gates | Result |
+|---|---|---|
+| `2329af0` (before) | `cargo test --all-targets` | 1,169 passed, 0 failed (baseline) |
+| `2762b3e` | all 43 Linux gates of `ci.yml` | 43 passed, after a harness fix (below) |
+| `808a3d7` | 26 gates covering every file changed after `2762b3e` | 26 passed |
+| `44a3891` | `asan`; `miri` native and s390x | 3 passed (figures below) |
+| `44a3891` | the 11 gates that build or test `src/vector/decimal.rs`: fmt, clippy, doc, test, release-mode library tests, doctests, the live suites on 1.5, 2.0.1 and 1.4.4, MSRV, semver | 11 passed; tests run: 1,174, 1,143, 236, 3,811, 2,103 and 1,551, none failed |
+
+The first run on `2762b3e` failed 12 gates; all 12 were faults of the local runner, not of
+the code. It set its own `CARGO_TARGET_DIR`, so the steps that look for a built artifact
+under `target/` did not find it (`No libhello_ext.so found`, `append_metadata: No such file
+or directory`, `target/doc/quack_rs is missing`). With the override removed, 11 of the 12
+passed; `scaffold-e2e` failed twice more on a directory left in `/tmp` by an earlier run and
+passed once it was removed.
+
+Figures, each read from its gate's log:
+
+- **DuckDB 2.0.1, live**: the `test-duckdb-2-0` job (bindings relocked to `libduckdb-sys`
+  1.20001.0, the v2.0.1 library) passed on `2762b3e`, `808a3d7` and `44a3891`. Its first run,
+  before `a11858d`, failed two tests; both were engine changes (NEW-2, NEW-3), now handled.
+- **AddressSanitizer**: 469 `ffi_roundtrip` tests passed. The LeakSanitizer probe ran four
+  times: the run that leaks nothing passed, and the three that leak on purpose (a Rust
+  allocation, a logical type, a value) were each reported as a leak, which is what the step
+  requires.
+- **Miri**: 1,136 library tests passed and 7 were ignored on each leg (x86-64, and s390x
+  for big-endian).
+- **Mutation testing** (`cargo-mutants` 27.1.0, the files under `src/` changed since `main`,
+  with `.cargo/mutants.toml`'s exclusions): 178 mutants, 131 caught, 41 unviable, 6 missed.
+  All six were in `src/vector/decimal.rs` (`width()` and `scale()` replaced by a constant).
+  `44a3891` moved the type check into a pure function with unit tests; re-run on that file:
+  10 caught, 1 unviable, 0 missed. CI's incremental mutation job on the pushed commit is the
+  final word.
+- **cargo-semver-checks** 0.51.0: 202 of 202 checks pass on `808a3d7`. The release is still
+  breaking (16.5; `CHANGELOG.md` lists each break): the tool has no lint for a changed
+  parameter type or a new panic.
+- **osv-scanner**: 704 packages in 5 lockfiles, no unfiltered issue. The filter is
+  `osv-scanner.toml`'s one entry, RUSTSEC-2026-0543 (chrono unmaintained, test-only path),
+  matched in 3 lockfiles.
+- **cargo-deny** 0.20.2, on `44a3891`: advisories, bans, licenses and sources ok for the root
+  manifest and for each of the four CI crates (`examples/hello-ext`, `fuzz`, `book/doctest`,
+  `benches/engine`) with `deny.ci-crates.toml`.
+- **Dependency floor** (`duckdb` and `libduckdb-sys` resolved to 1.4.4, `cargo test --lib`):
+  998 tests passed, on `2762b3e`.
+
+### 16.7 Not verified
+
+- **macOS and Windows** legs of `test`, `test-bundled`, `example-check` and `symbol-check`:
+  no such runner here. Covered by CI only.
+- **Source builds of DuckDB** (`test-bundled`, `test-bundled-duckdb-2-0`): not run (a full
+  DuckDB compile per leg). The prebuilt-library jobs covered the same tests.
+- **`wasm`, `fuzz`, `nightly`, `clippy-beta`, `latest-stable`, `coverage.yml`,
+  `benchmarks.yml`, `docs.yml`, `release.yml`**: not run. The informational toolchain legs
+  and the fuzz smoke run are CI's.
+- **The hygiene tools** (`typos` 1.46.0, `taplo` 0.10.0, `cargo-machete` 0.9.2,
+  `actionlint` 1.7.12) were downloaded here without checking their release checksums; their
+  passes are only as good as those binaries.
+- **QRS-020**: no job runs the live suite against a DuckDB built with AddressSanitizer. The
+  prebuilt library uses jemalloc, so LeakSanitizer cannot see DuckDB's own allocations.
+- **QRS-029**: the one-engine-per-process limit is documented from the bindings' source
+  (546 process-wide statics, overwritten per load), not reproduced with two engines.
+- **DuckDB's per-asset digests** (QRS-019): the GitHub API for `duckdb/duckdb` was not
+  reachable from here (16.5).
+
+### 16.8 Corrections
+
+- A delegated reading pass reported that DuckDB 2.0.1's `duckdb_query` returns a parse error
+  for `…; DROP TABLE canary; SELECT (`. Measured on 2.0.0 and 2.0.1: the call reports
+  success and the canary table is gone. Known Limitations says what was measured.
+- Commit `abc1717`'s message says `OwnedDataChunk::from_raw` is no longer `const`. `808a3d7`
+  made it `const` again; the pushed message was not rewritten.
+- `SECURITY.md`'s over-read range was first drafted as up to 87 pointers; the arithmetic
+  (548-slot bindings against the 459-slot table of 1.4.x) gives 89, which is what was
+  committed.
+- Two commits were first made with unformatted code; both were amended before any push.
+
+### 16.9 Lessons
+
+- A fault in the local CI runner looks exactly like a product failure. A change to the
+  runner is checked first on a commit already known to pass.
+- A `cargo-semver-checks` pass is not a semver verdict: a change of parameter type and a new
+  panic both passed it here.
+- A claim about engine behaviour from reading, delegated or not, is measured before it goes
+  into a document (16.8, first item).
