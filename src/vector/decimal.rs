@@ -67,27 +67,36 @@ impl VectorWriter {
         // SAFETY: `as_raw` is the valid vector this writer's constructor was
         // given (its contract).
         let ty = unsafe { crate::vector::vector_get_column_type(self.as_raw()) };
-        // SAFETY: `ty` is a live logical type this function owns.
-        let id = unsafe { ty.get_type_id() };
-        if id != TypeId::Decimal {
-            return Err(ExtensionError::new(format!(
-                "VectorWriter::decimal: the vector's type is {}, not DECIMAL",
-                id.sql_name()
-            )));
-        }
-        // SAFETY: as above; the type is a DECIMAL.
-        let (width, scale) = unsafe { (ty.decimal_width(), ty.decimal_scale()) };
-        if !(1..=38).contains(&width) {
-            return Err(ExtensionError::new(format!(
-                "VectorWriter::decimal: DuckDB reports a DECIMAL width of {width}, outside 1..=38"
-            )));
-        }
+        // SAFETY: `ty` is a live logical type this function owns. The width
+        // and scale accessors check the type themselves and return 0 for a
+        // type that is not DECIMAL (`duckdb_decimal_width` / `_scale`).
+        let (id, width, scale) =
+            unsafe { (ty.get_type_id(), ty.decimal_width(), ty.decimal_scale()) };
+        let (width, scale) = decimal_shape(id, width, scale)?;
         Ok(DecimalWriter {
             writer: self,
             width,
             scale,
         })
     }
+}
+
+/// The width and scale a [`DecimalWriter`] uses, from what the vector's type
+/// reports: an error unless it is a `DECIMAL` of width `1..=38`. Pure, so every
+/// branch is testable without `DuckDB`.
+fn decimal_shape(id: TypeId, width: u8, scale: u8) -> Result<(u8, u8), ExtensionError> {
+    if id != TypeId::Decimal {
+        return Err(ExtensionError::new(format!(
+            "VectorWriter::decimal: the vector's type is {}, not DECIMAL",
+            id.sql_name()
+        )));
+    }
+    if !(1..=38).contains(&width) {
+        return Err(ExtensionError::new(format!(
+            "VectorWriter::decimal: DuckDB reports a DECIMAL width of {width}, outside 1..=38"
+        )));
+    }
+    Ok((width, scale))
 }
 
 impl DecimalWriter<'_> {
@@ -134,5 +143,64 @@ impl DecimalWriter<'_> {
     pub unsafe fn set_null(&mut self, idx: usize) {
         // SAFETY: forwarded; the same contract.
         unsafe { self.writer.set_null(idx) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decimal_shape, DecimalWriter};
+    use crate::types::TypeId;
+    use crate::vector::VectorWriter;
+
+    #[test]
+    fn a_decimal_of_a_valid_width_gives_its_width_and_scale() {
+        for (width, scale) in [(1, 0), (4, 2), (18, 18), (38, 0), (38, 38)] {
+            assert_eq!(
+                decimal_shape(TypeId::Decimal, width, scale).expect("valid"),
+                (width, scale)
+            );
+        }
+    }
+
+    #[test]
+    fn a_type_that_is_not_decimal_is_refused_whatever_it_reports() {
+        for id in [
+            TypeId::Integer,
+            TypeId::HugeInt,
+            TypeId::Double,
+            TypeId::Varchar,
+        ] {
+            let err = decimal_shape(id, 4, 0).expect_err("not DECIMAL");
+            assert!(
+                err.to_string().contains(&format!(
+                    "the vector's type is {}, not DECIMAL",
+                    id.sql_name()
+                )),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_decimal_width_outside_1_to_38_is_refused() {
+        for width in [0, 39, u8::MAX] {
+            let err = decimal_shape(TypeId::Decimal, width, 0).expect_err("bad width");
+            assert!(
+                err.to_string()
+                    .contains(&format!("DECIMAL width of {width}, outside 1..=38")),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_writer_reports_the_width_and_scale_it_was_made_with() {
+        let mut inner = VectorWriter::detached();
+        let writer = DecimalWriter {
+            writer: &mut inner,
+            width: 7,
+            scale: 3,
+        };
+        assert_eq!((writer.width(), writer.scale()), (7, 3));
     }
 }
