@@ -210,6 +210,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- **A design note and a slot inventory for DuckDB's C API v2** (`docs/c-api-v2/`;
+  QRS-021 – QRS-023). quack-rs targets C API v1 and still does; the note sets out
+  what v2 is from the 2.0.1 headers and bindings (a separate 641-slot API with no
+  stable function yet, so every v2 extension is tied to one DuckDB build), three
+  approaches and a recommendation (wait for a stable v2 surface, then a separate
+  crate), work packages and acceptance criteria. `scripts/c-api-v2-inventory.py`
+  regenerates the inventory from a release's headers; for v2.0.1 its 641 names
+  equal the reviewer's independently extracted list. Nothing is implemented.
 Corrections and additions from the maintainer review of 2026-11-25 (`AUDIT.md`
 section 16); each was checked against the code, the DuckDB source, crates.io or a
 run before it was written:
