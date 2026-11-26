@@ -95,10 +95,11 @@ use crate::error::ExtensionError;
 pub struct OwnedDataChunk {
     chunk: libduckdb_sys::duckdb_data_chunk,
     view: DataChunk,
-    /// Rows each vector has room for: `duckdb_vector_size()` for a chunk the
-    /// C API creates or fetches, the array's length for one imported from
+    /// Rows each vector has room for: `None` for a chunk the C API creates or
+    /// fetches, whose capacity is `duckdb_vector_size()` (read when asked, so
+    /// `from_raw` stays `const`); the array's length for one imported from
     /// Arrow.
-    capacity: usize,
+    capacity: Option<usize>,
 }
 
 // ─── Query result ────────────────────────────────────────────────────────────

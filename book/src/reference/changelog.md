@@ -66,12 +66,16 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   callback does not report. A chunk built for appending is an `OwnedDataChunk`
   already (`OwnedDataChunk::new`); an `&OwnedDataChunk` still derefs to
   `&DataChunk` for everything else.
-- **Breaking:** `OwnedDataChunk::from_raw` is no longer a `const fn`, and its
-  `# Safety` section adds a clause: every vector of the chunk must have room for
-  `capacity()` rows (the C API's vector size). A chunk from
-  `duckdb_create_data_chunk` or `duckdb_fetch_chunk` does; one from
-  `duckdb_data_chunk_from_arrow` does not (see Fixed), and quack-rs no longer
-  wraps it with `from_raw`.
+- **Breaking:** `OwnedDataChunk::from_raw`'s `# Safety` section adds a clause:
+  every vector of the chunk must have room for `capacity()` rows (the C API's
+  vector size). A chunk from `duckdb_create_data_chunk` or `duckdb_fetch_chunk`
+  does; one from `duckdb_data_chunk_from_arrow` does not (see Fixed), and
+  quack-rs no longer wraps it with `from_raw`. `from_raw` stays a `const fn`.
+- **`cargo-semver-checks` does not see the breaking changes above.** Run against
+  the published 0.20.0 with CI's flags, it reports no failure once `from_raw`
+  stays `const`: it has no lint for a changed parameter type
+  (`append_default_to_chunk`) or a new panic (`Value::varchar` / `blob`). The
+  next release must still be 0.21.0.
 
 - **The rule for rows a `ChunkWriter` claims is part of its `# Safety` contract
   (QRS-011).** `ChunkWriter::new`, `with_capacity` and

@@ -86,8 +86,9 @@ impl OwnedDataChunk {
     /// it is the Arrow array's length, which `DuckDB` passes through as the
     /// chunk's capacity, and which may be smaller or larger than 2048.
     #[must_use]
-    pub const fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.capacity
+            .unwrap_or_else(|| usize::try_from(crate::vector::vector_size()).unwrap_or(0))
     }
 
     /// Empties the chunk so it can be filled again: its size becomes zero and
@@ -115,11 +116,13 @@ impl OwnedDataChunk {
     ///   such as `Appender::append_default_to_chunk` (feature `duckdb-1-5`)
     ///   check indices against it and rely on it.
     #[must_use]
-    pub unsafe fn from_raw(chunk: libduckdb_sys::duckdb_data_chunk) -> Self {
-        let capacity = usize::try_from(crate::vector::vector_size()).unwrap_or(0);
-        // SAFETY: forwarded; this function's contract is the same, with
-        // `capacity` the C API's vector size.
-        unsafe { Self::from_raw_with_capacity(chunk, capacity) }
+    pub const unsafe fn from_raw(chunk: libduckdb_sys::duckdb_data_chunk) -> Self {
+        Self {
+            chunk,
+            // SAFETY: `chunk` is valid and outlives the view, which this struct owns.
+            view: unsafe { DataChunk::from_raw(chunk) },
+            capacity: None,
+        }
     }
 
     /// Takes ownership of a raw `duckdb_data_chunk` whose vectors have room
@@ -131,6 +134,7 @@ impl OwnedDataChunk {
     /// API's vector size: every vector of `chunk` must have room for at least
     /// `capacity` rows.
     #[must_use]
+    #[cfg(feature = "duckdb-1-5-4")] // only the Arrow import, behind that feature, needs it
     pub(crate) const unsafe fn from_raw_with_capacity(
         chunk: libduckdb_sys::duckdb_data_chunk,
         capacity: usize,
@@ -139,7 +143,7 @@ impl OwnedDataChunk {
             chunk,
             // SAFETY: `chunk` is valid and outlives the view, which this struct owns.
             view: unsafe { DataChunk::from_raw(chunk) },
-            capacity,
+            capacity: Some(capacity),
         }
     }
 
