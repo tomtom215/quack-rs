@@ -3,12 +3,12 @@
 // My way of giving something small back to the open source community
 // and encouraging more Rust development!
 
-//! `VectorWriter::try_write_decimal` against a real engine, next to the
-//! unchecked `write_decimal` it guards.
+//! `VectorWriter::decimal` (a `DecimalWriter`) against a real engine, next to
+//! the unchecked `write_decimal` it guards.
 //!
 //! Each function takes a `HUGEINT` and writes it as the unscaled integer of a
-//! `DECIMAL(width, 0)`, so any value, in range or not, can reach the writer.
-//! Casting the result to `VARCHAR` shows what the engine stored.
+//! `DECIMAL(width, scale)`, so any value, in range or not, can reach the
+//! writer. Casting the result to `VARCHAR` shows what the engine stored.
 
 use quack_rs::data_chunk::DataChunk;
 use quack_rs::query::query;
@@ -18,25 +18,30 @@ use quack_rs::vector::VectorWriter;
 
 use super::Fixture;
 
-/// A function that writes its `HUGEINT` argument with `try_write_decimal` and
-/// reports a refusal as the query's error.
-macro_rules! checked {
-    ($name:ident, $width:expr) => {
-        quack_rs::scalar_callback!($name, |info, input, output| {
-            let info = unsafe { ScalarFunctionInfo::new(info) };
-            let chunk = unsafe { DataChunk::from_raw(input) };
-            let reader = unsafe { chunk.reader(0) };
-            let mut writer = unsafe { VectorWriter::from_vector(output) };
-            for row in 0..chunk.size() {
-                let value = unsafe { reader.read_i128(row) };
-                if let Err(e) = unsafe { writer.try_write_decimal(row, $width, value) } {
-                    info.set_error(&e.to_string());
-                    return;
-                }
-            }
-        });
+// One callback for every width and scale: the `DecimalWriter` reads both from
+// the output vector's type. It writes each `HUGEINT` argument and reports a
+// refusal (a value too wide, or an output that is not DECIMAL) as the query's
+// error.
+quack_rs::scalar_callback!(checked, |info, input, output| {
+    let info = unsafe { ScalarFunctionInfo::new(info) };
+    let chunk = unsafe { DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut writer = unsafe { VectorWriter::from_vector(output) };
+    let mut decimal = match writer.decimal() {
+        Ok(decimal) => decimal,
+        Err(e) => {
+            info.set_error(&e.to_string());
+            return;
+        }
     };
-}
+    for row in 0..chunk.size() {
+        let value = unsafe { reader.read_i128(row) };
+        if let Err(e) = unsafe { decimal.write(row, value) } {
+            info.set_error(&e.to_string());
+            return;
+        }
+    }
+});
 
 /// The same, with the unchecked `write_decimal`.
 macro_rules! unchecked {
@@ -53,26 +58,21 @@ macro_rules! unchecked {
     };
 }
 
-checked!(checked_1, 1);
-checked!(checked_4, 4);
-checked!(checked_5, 5);
-checked!(checked_9, 9);
-checked!(checked_10, 10);
-checked!(checked_18, 18);
-checked!(checked_19, 19);
-checked!(checked_38, 38);
-
 unchecked!(unchecked_4, 4);
 unchecked!(unchecked_9, 9);
 unchecked!(unchecked_18, 18);
 
 fn register(fx: &Fixture, name: &str, width: u8, callback: ScalarFn) {
+    register_as(fx, name, LogicalType::decimal(width, 0), callback);
+}
+
+fn register_as(fx: &Fixture, name: &str, returns: LogicalType, callback: ScalarFn) {
     // SAFETY: the connection is open and the callback matches the signature.
     unsafe {
         ScalarFunctionBuilder::try_new(name)
             .expect("name")
             .param(TypeId::HugeInt)
-            .returns_logical(LogicalType::decimal(width, 0))
+            .returns_logical(returns)
             .function(callback)
             .register(fx.con())
             .unwrap_or_else(|e| panic!("register {name}: {e}"));
@@ -103,20 +103,11 @@ fn refused(fx: &Fixture, name: &str, value: &str) -> String {
 /// largest and smallest value each width holds is written as it is, and the
 /// first value past either end is refused, with nothing written.
 #[test]
-fn try_write_decimal_accepts_the_range_and_refuses_one_past_it_at_every_width() {
+fn decimal_writer_accepts_the_range_and_refuses_one_past_it_at_every_width() {
     let fx = Fixture::open();
-    for (width, callback) in [
-        (1_u8, checked_1 as ScalarFn),
-        (4, checked_4),
-        (5, checked_5),
-        (9, checked_9),
-        (10, checked_10),
-        (18, checked_18),
-        (19, checked_19),
-        (38, checked_38),
-    ] {
+    for width in [1_u8, 4, 5, 9, 10, 18, 19, 38] {
         let name = format!("checked_{width}");
-        register(&fx, &name, width, callback);
+        register(&fx, &name, width, checked);
         let max = "9".repeat(usize::from(width));
         for value in [max.clone(), format!("-{max}"), "0".to_owned()] {
             assert_eq!(stored(&fx, &name, &value), value, "{name}({value})");
@@ -132,19 +123,19 @@ fn try_write_decimal_accepts_the_range_and_refuses_one_past_it_at_every_width() 
     }
 }
 
-/// The hazard `try_write_decimal` exists for, on a real engine: the unchecked
+/// The hazard `DecimalWriter` exists for, on a real engine: the unchecked
 /// writer wraps a value its physical integer cannot hold, so the query returns
 /// a plausible, wrong number with no error, and the checked writer refuses the
 /// same value.
 #[test]
-fn write_decimal_wraps_a_value_that_try_write_decimal_refuses() {
+fn write_decimal_wraps_a_value_that_the_decimal_writer_refuses() {
     let fx = Fixture::open();
     register(&fx, "unchecked_4", 4, unchecked_4);
     register(&fx, "unchecked_9", 9, unchecked_9);
     register(&fx, "unchecked_18", 18, unchecked_18);
-    register(&fx, "checked_4", 4, checked_4);
-    register(&fx, "checked_9", 9, checked_9);
-    register(&fx, "checked_18", 18, checked_18);
+    register(&fx, "checked_4", 4, checked);
+    register(&fx, "checked_9", 9, checked);
+    register(&fx, "checked_18", 18, checked);
 
     // (width, input, what `as i16`/`as i32`/`as i64` leaves of it)
     for (width, input, wrapped) in [
@@ -160,7 +151,7 @@ fn write_decimal_wraps_a_value_that_try_write_decimal_refuses() {
         let message = refused(&fx, &format!("checked_{width}"), input);
         assert!(
             message.contains(&format!("more than {width} digits")),
-            "try_write_decimal({input}) at width {width}: {message}"
+            "DecimalWriter::write({input}) at width {width}: {message}"
         );
     }
 }
@@ -169,10 +160,10 @@ fn write_decimal_wraps_a_value_that_try_write_decimal_refuses() {
 /// wrapped; the unchecked writer stores it, one digit past the declared width.
 /// Whatever `DuckDB` renders for it, the checked writer never produces it.
 #[test]
-fn try_write_decimal_refuses_a_value_with_too_many_digits_that_still_fits_the_integer() {
+fn decimal_writer_refuses_a_value_with_too_many_digits_that_still_fits_the_integer() {
     let fx = Fixture::open();
     register(&fx, "unchecked_4", 4, unchecked_4);
-    register(&fx, "checked_4", 4, checked_4);
+    register(&fx, "checked_4", 4, checked);
     assert!(i16::try_from(10_000_i128).is_ok(), "10000 fits an i16");
 
     let stored_by_unchecked = stored(&fx, "unchecked_4", "10000");
@@ -182,4 +173,35 @@ fn try_write_decimal_refuses_a_value_with_too_many_digits_that_still_fits_the_in
     );
     let message = refused(&fx, "checked_4", "10000");
     assert!(message.contains("more than 4 digits"), "{message}");
+}
+
+/// QRS-004 (`AUDIT.md` section 16): the width and scale come from the output
+/// vector's type, so the same callback writes `DECIMAL(10, 3)` at its own
+/// scale and refuses past its own width, with no width or scale argument.
+#[test]
+fn decimal_writer_takes_width_and_scale_from_the_vectors_type() {
+    let fx = Fixture::open();
+    register_as(&fx, "checked_10_3", LogicalType::decimal(10, 3), checked);
+    assert_eq!(stored(&fx, "checked_10_3", "12345"), "12.345");
+    assert_eq!(stored(&fx, "checked_10_3", "-9999999999"), "-9999999.999");
+    let message = refused(&fx, "checked_10_3", "10000000000");
+    assert!(message.contains("more than 10 digits"), "{message}");
+}
+
+/// A vector that is not `DECIMAL` is refused before anything is written: the
+/// unchecked writer's width argument would have picked the byte count.
+#[test]
+fn decimal_writer_refuses_a_vector_that_is_not_decimal() {
+    let fx = Fixture::open();
+    register_as(
+        &fx,
+        "checked_int",
+        LogicalType::new(TypeId::Integer),
+        checked,
+    );
+    let message = refused(&fx, "checked_int", "1");
+    assert!(
+        message.contains("the vector's type is INTEGER, not DECIMAL"),
+        "{message}"
+    );
 }

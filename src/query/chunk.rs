@@ -76,15 +76,19 @@ impl OwnedDataChunk {
         Ok(unsafe { Self::from_raw(chunk) })
     }
 
-    /// The number of rows a chunk made by [`new`][Self::new] has room for:
-    /// `duckdb_vector_size()`, which is 2048 unless `DuckDB` was built with a
-    /// different `STANDARD_VECTOR_SIZE`.
+    /// The number of rows each of the chunk's vectors has room for.
     ///
-    /// A chunk handed out by [`QueryResult::next_chunk`][super::QueryResult::next_chunk]
-    /// has the same capacity.
+    /// For a chunk made by [`new`][Self::new], or handed out by
+    /// [`QueryResult::next_chunk`][super::QueryResult::next_chunk], that is
+    /// `duckdb_vector_size()`: 2048 unless `DuckDB` was built with a different
+    /// `STANDARD_VECTOR_SIZE`. For a chunk from
+    /// `arrow::data_chunk_from_arrow` (feature `duckdb-1-5-4`)
+    /// it is the Arrow array's length, which `DuckDB` passes through as the
+    /// chunk's capacity, and which may be smaller or larger than 2048.
     #[must_use]
     pub fn capacity(&self) -> usize {
-        usize::try_from(crate::vector::vector_size()).unwrap_or(0)
+        self.capacity
+            .unwrap_or_else(|| usize::try_from(crate::vector::vector_size()).unwrap_or(0))
     }
 
     /// Empties the chunk so it can be filled again: its size becomes zero and
@@ -102,14 +106,44 @@ impl OwnedDataChunk {
     ///
     /// # Safety
     ///
-    /// `chunk` must be a non-null chunk that the caller is responsible for
-    /// destroying, and must not be destroyed by anyone else.
+    /// - `chunk` must be a non-null chunk that the caller is responsible for
+    ///   destroying, and must not be destroyed by anyone else.
+    /// - Every vector of `chunk` must have room for at least
+    ///   [`capacity`][Self::capacity] rows. A chunk from
+    ///   `duckdb_create_data_chunk` or `duckdb_fetch_chunk` does; one from
+    ///   `duckdb_data_chunk_from_arrow` has room for only the Arrow array's
+    ///   length, and must not be passed here. Safe methods
+    ///   such as `Appender::append_default_to_chunk` (feature `duckdb-1-5`)
+    ///   check indices against it and rely on it.
     #[must_use]
     pub const unsafe fn from_raw(chunk: libduckdb_sys::duckdb_data_chunk) -> Self {
         Self {
             chunk,
             // SAFETY: `chunk` is valid and outlives the view, which this struct owns.
             view: unsafe { DataChunk::from_raw(chunk) },
+            capacity: None,
+        }
+    }
+
+    /// Takes ownership of a raw `duckdb_data_chunk` whose vectors have room
+    /// for `capacity` rows.
+    ///
+    /// # Safety
+    ///
+    /// As [`from_raw`][Self::from_raw], with `capacity` in place of the C
+    /// API's vector size: every vector of `chunk` must have room for at least
+    /// `capacity` rows.
+    #[must_use]
+    #[cfg(feature = "duckdb-1-5-4")] // only the Arrow import, behind that feature, needs it
+    pub(crate) const unsafe fn from_raw_with_capacity(
+        chunk: libduckdb_sys::duckdb_data_chunk,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            chunk,
+            // SAFETY: `chunk` is valid and outlives the view, which this struct owns.
+            view: unsafe { DataChunk::from_raw(chunk) },
+            capacity: Some(capacity),
         }
     }
 

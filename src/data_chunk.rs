@@ -230,8 +230,9 @@ impl DataChunk {
     /// - The chunk must be a writable output chunk (not a read-only input chunk).
     /// - The returned value borrows nothing: it must not be used after the
     ///   underlying `duckdb_data_chunk` is destroyed — for an
-    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
-    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped
+    ///   or [`reset`](crate::query::OwnedDataChunk::reset), which may replace
+    ///   its vectors; in a callback, after the callback returns. It caches pointers into the
     ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn writer(&self, col_idx: usize) -> VectorWriter {
         // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
@@ -251,8 +252,9 @@ impl DataChunk {
     /// - `col_idx` must be less than [`column_count`][DataChunk::column_count].
     /// - The returned value borrows nothing: it must not be used after the
     ///   underlying `duckdb_data_chunk` is destroyed — for an
-    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
-    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped
+    ///   or [`reset`](crate::query::OwnedDataChunk::reset), which may replace
+    ///   its vectors; in a callback, after the callback returns. It caches pointers into the
     ///   chunk's buffers, so a read afterwards is a use-after-free.
     ///
     /// Build the reader once per chunk and read every row through it: this
@@ -275,8 +277,9 @@ impl DataChunk {
     /// - The column at `col_idx` must have a STRUCT type with `field_count` fields.
     /// - The returned value borrows nothing: it must not be used after the
     ///   underlying `duckdb_data_chunk` is destroyed — for an
-    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
-    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped
+    ///   or [`reset`](crate::query::OwnedDataChunk::reset), which may replace
+    ///   its vectors; in a callback, after the callback returns. It caches pointers into the
     ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn struct_reader(&self, col_idx: usize, field_count: usize) -> StructReader {
         // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
@@ -298,8 +301,9 @@ impl DataChunk {
     /// - `field_idx` must be a valid field index within the STRUCT.
     /// - The returned value borrows nothing: it must not be used after the
     ///   underlying `duckdb_data_chunk` is destroyed — for an
-    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
-    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped
+    ///   or [`reset`](crate::query::OwnedDataChunk::reset), which may replace
+    ///   its vectors; in a callback, after the callback returns. It caches pointers into the
     ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn struct_field_reader(&self, col_idx: usize, field_idx: usize) -> VectorReader {
         // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
@@ -322,8 +326,9 @@ impl DataChunk {
     /// - The chunk must be a writable output chunk.
     /// - The returned value borrows nothing: it must not be used after the
     ///   underlying `duckdb_data_chunk` is destroyed — for an
-    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped;
-    ///   in a callback, after the callback returns. It caches pointers into the
+    ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped
+    ///   or [`reset`](crate::query::OwnedDataChunk::reset), which may replace
+    ///   its vectors; in a callback, after the callback returns. It caches pointers into the
     ///   chunk's buffers, so a read afterwards is a use-after-free.
     pub unsafe fn struct_writer(&self, col_idx: usize, field_count: usize) -> StructWriter {
         // SAFETY: `self.vector` needs `col_idx < column_count`, which is this function's
@@ -343,8 +348,12 @@ impl DataChunk {
     ///
     /// # Safety
     ///
-    /// This chunk must be a valid, writable output chunk from a table function
-    /// scan callback.
+    /// - This chunk must be a valid, writable output chunk from a table
+    ///   function scan callback.
+    /// - Every row the writer claims and does not give back must be written in
+    ///   every column before it drops, as [`ChunkWriter::new`] requires: an
+    ///   unwritten `VARCHAR` or `BLOB` row can point into string memory `DuckDB`
+    ///   has released.
     pub unsafe fn into_chunk_writer(self) -> ChunkWriter {
         // SAFETY: self.raw is valid per constructor's contract.
         unsafe { ChunkWriter::new(self.raw) }

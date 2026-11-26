@@ -23,6 +23,7 @@
 //!   [`list_builder`][mod@list_builder].
 
 pub mod complex;
+pub mod decimal;
 pub mod list_builder;
 mod nested_null;
 #[cfg(feature = "duckdb-1-5")]
@@ -35,6 +36,7 @@ pub mod uuid;
 pub mod validity;
 pub mod writer;
 
+pub use decimal::DecimalWriter;
 pub use list_builder::{max_child_capacity, ListBuilder, MAX_LIST_CHILD_CAPACITY};
 #[cfg(feature = "duckdb-1-5")]
 pub use ops::OwnedVector;

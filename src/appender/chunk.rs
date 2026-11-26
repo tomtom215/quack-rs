@@ -11,6 +11,8 @@ use libduckdb_sys::duckdb_append_default_to_chunk;
 
 use super::{append_error, AppendError, Appender};
 use crate::data_chunk::DataChunk;
+#[cfg(feature = "duckdb-1-5")]
+use crate::query::OwnedDataChunk;
 
 impl Appender {
     // ── Chunk appends ───────────────────────────────────────────────────
@@ -57,17 +59,44 @@ impl Appender {
     /// Useful when building a chunk to append: columns without an explicit
     /// value can be filled with their schema default.
     ///
+    /// `col` and `row` are checked against the chunk before `DuckDB` sees them.
+    /// `DuckDB` 2.0 does not check the row itself for every column type: in a
+    /// release build, a `VARCHAR` column's row is written without a bounds
+    /// check, so row 2048 of a 2048-row chunk wrote past the vector and
+    /// reported success, and row 2<sup>40</sup> crashed the process (QRS-008,
+    /// `AUDIT.md` section 16). The chunk is an [`OwnedDataChunk`] because its
+    /// capacity is known; a [`DataChunk`] borrowed
+    /// from a callback does not report one.
+    ///
     /// # Errors
     ///
-    /// Returns an [`AppendError`] if the default cannot be written.
+    /// Returns an [`AppendError`] if `col` is not a column of `chunk`, if `row`
+    /// is not below [`chunk.capacity()`](OwnedDataChunk::capacity), or if
+    /// `DuckDB` cannot write the default. Nothing is written on error.
     #[cfg(feature = "duckdb-1-5")]
     pub fn append_default_to_chunk(
         &self,
-        chunk: &DataChunk,
+        chunk: &OwnedDataChunk,
         col: u64,
         row: u64,
     ) -> Result<(), AppendError> {
-        // SAFETY: self.handle and chunk.as_raw() are valid.
+        let columns = chunk.column_count();
+        if usize::try_from(col).map_or(true, |c| c >= columns) {
+            return Err(append_error(&format!(
+                "append_default_to_chunk: column {col} is out of range for a chunk of \
+                 {columns} column(s)"
+            )));
+        }
+        let capacity = chunk.capacity();
+        if usize::try_from(row).map_or(true, |r| r >= capacity) {
+            return Err(append_error(&format!(
+                "append_default_to_chunk: row {row} is out of range for a chunk with room \
+                 for {capacity} row(s)"
+            )));
+        }
+        // SAFETY: self.handle and chunk.as_raw() are valid, and `col` and `row`
+        // are inside the chunk: `col` below its column count, `row` below the
+        // capacity `OwnedDataChunk` guarantees (its `from_raw` contract).
         let state =
             unsafe { duckdb_append_default_to_chunk(self.handle, chunk.as_raw(), col, row) };
         self.check(state)

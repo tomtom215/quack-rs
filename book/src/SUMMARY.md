@@ -43,6 +43,7 @@
 - [NULL Handling & Strings](data/nulls-and-strings.md)
 - [INTERVAL Type](data/intervals.md)
 - [Dates, Times and Timestamps](data/dates-and-times.md)
+- [Numbers: What Is Checked](data/numbers.md)
 - [Running SQL from an Extension](data/running-sql.md)
 - [Bulk Appender](data/appender.md)
 - [Table Metadata](data/table-description.md)

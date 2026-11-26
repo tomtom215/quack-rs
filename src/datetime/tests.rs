@@ -77,19 +77,24 @@ mod unit {
     fn try_f64_to_hugeint_refuses_without_calling_duckdb() {
         // Exact literals, not `2f64.powi(127)`: Miri perturbs `powi`'s result.
         let two_127 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0_f64;
-        // SAFETY: every input is refused before the `DuckDB` call.
+        // The next double below -2^127.
+        let below_min = f64::from_bits((-two_127).to_bits() + 1);
+        // SAFETY: every input is answered before the `DuckDB` call.
         unsafe {
             for refused in [
                 f64::NAN,
                 f64::INFINITY,
                 f64::NEG_INFINITY,
                 two_127,
-                -two_127,
+                below_min,
                 1e40,
                 -1e40,
             ] {
                 assert_eq!(try_f64_to_hugeint(refused), None, "{refused}");
             }
+            // -2^127 is `i128::MIN`, answered here too: DuckDB before 2.0.1
+            // returned 0 for it.
+            assert_eq!(try_f64_to_hugeint(-two_127), Some(i128::MIN));
         }
     }
 
@@ -509,18 +514,34 @@ mod live_tests {
         let below = f64::from_bits(two_127.to_bits() - 1); // largest double < 2^127
                                                            // SAFETY: InMemoryDb::open() initialised the dispatch table.
         unsafe {
+            // The next double below -2^127.
+            let below_min = f64::from_bits((-two_127).to_bits() + 1);
             for refused in [
                 f64::NAN,
                 f64::INFINITY,
                 f64::NEG_INFINITY,
                 two_127,
-                -two_127,
+                below_min,
                 1e40,
+                -1e40,
             ] {
                 assert_eq!(try_f64_to_hugeint(refused), None, "{refused}");
                 // DuckDB itself fails these: it answers 0.
                 assert_eq!(f64_to_hugeint(refused), 0, "{refused}");
             }
+            // -2^127 is `i128::MIN` exactly. DuckDB 2.0.1 converts it; earlier
+            // releases answered 0 (found by the first live run against 2.0.1,
+            // AUDIT.md section 16). `try_f64_to_hugeint` answers it itself.
+            assert_eq!(try_f64_to_hugeint(-two_127), Some(i128::MIN));
+            let converts_min = crate::abi::engine_version()
+                .as_deref()
+                .and_then(crate::abi::parse_version)
+                .is_some_and(|v| v >= (2, 0, 1));
+            assert_eq!(
+                f64_to_hugeint(-two_127),
+                if converts_min { i128::MIN } else { 0 },
+                "DuckDB's own answer for -2^127"
+            );
             for accepted in [below, -below, 42.9, -42.9, 0.4, 0.0] {
                 assert_eq!(
                     try_f64_to_hugeint(accepted),

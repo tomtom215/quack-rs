@@ -74,9 +74,11 @@ curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 \
 
 # Verify against scripts/duckdb-sha256.txt before anything is unpacked. ci.yml
 # is also release.yml's gate, so a replaced library or CLI must not be able to
-# make that gate pass or fail falsely. A pinned tag without a line fails: add
-# one (the table says how). `latest` is the canary that a new DuckDB release
-# exists, so an unlisted latest tag is reported and used unverified.
+# make that gate pass or fail falsely. A tag without a line fails, `latest`
+# included: add one (the table says how). An unlisted `latest` used to be
+# warned about and used unverified, and it fed blocking jobs, so the release
+# gate (QRS-019, AUDIT.md section 16). A new DuckDB release turns those jobs
+# red until it is listed, as the `abi-table` job already does from its header.
 actual=$(sha256sum "$archive" | cut -d' ' -f1)
 expected=$(awk -v t="$tag" -v a="$asset" '$1 == t && $2 == a { print $3 }' "$sums")
 if [ -n "$expected" ]; then
@@ -85,11 +87,13 @@ if [ -n "$expected" ]; then
     echo "error: DuckDB $tag $asset has sha256 $actual, but $sums lists $expected" >&2
     exit 1
   fi
-elif [ "$requested" = "latest" ]; then
-  echo "warning: DuckDB $tag (latest) is not in $sums, so $asset is unverified (sha256 $actual)" >&2
 else
   rm -f "$archive"
-  echo "error: DuckDB $tag $asset has no sha256 in $sums; add one (its header says how)" >&2
+  if [ "$requested" = "latest" ]; then
+    echo "error: DuckDB $tag (latest) $asset has no sha256 in $sums (it hashed to $actual): a DuckDB release not listed yet; add it (the table's header says how)" >&2
+  else
+    echo "error: DuckDB $tag $asset has no sha256 in $sums; add one (its header says how)" >&2
+  fi
   exit 1
 fi
 case "$asset" in

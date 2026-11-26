@@ -10,6 +10,10 @@ calls when it loads the extension. quack-rs generates it with the `entry_point_v
 
 *Added in v0.4.0.*
 
+The `v2` is the second version of quack-rs's macro, not DuckDB's C API v2: both macros
+generate a C API **v1** entry point, and quack-rs does not target DuckDB's separate C API v2
+(`duckdb_extension_v2.h`; see [Known Limitations](../reference/known-limitations.md)).
+
 The `entry_point_v2!` macro gives your closure a `&Connection` instead of a raw
 `duckdb_connection`. The `Connection` type implements the `Registrar` trait, which
 registers every kind of function, macro, cast, copy function and config option;
@@ -175,7 +179,17 @@ Three things are **not** rolled back, because DuckDB keeps them in the database
 configuration, not the catalog: casts, replacement scans and configuration options.
 Register those last, after everything that can fail. A retry registers a cast again (the
 new one replaces the old), appends a second replacement scan, and quack-rs refuses a
-configuration option whose name is taken.
+configuration option whose name is taken. Nor is anything outside the registration
+connection's transaction rolled back: writes through another connection (one the closure
+opened with `Connection::open_connection` commits in its own transactions), and whatever the
+closure does in Rust or outside DuckDB (a global it sets, a file it writes, a request it
+sends).
+
+| Registration | Rolled back with a failed `LOAD` |
+|---|---|
+| Scalar, aggregate and table functions, SQL macros, types, copy functions, tables | Yes (catalog) |
+| Casts, replacement scans, configuration options | No (database configuration) |
+| Writes through another connection; Rust and external side effects | No |
 
 What the transaction means for the closure:
 

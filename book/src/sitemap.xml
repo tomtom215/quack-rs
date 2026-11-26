@@ -29,6 +29,7 @@
   <url><loc>https://quack-rs.com/data/nulls-and-strings.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/data/intervals.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/data/dates-and-times.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://quack-rs.com/data/numbers.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/data/running-sql.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/data/appender.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://quack-rs.com/data/table-description.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>

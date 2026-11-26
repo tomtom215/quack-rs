@@ -25,7 +25,7 @@
 //! `init_extension` uses `Result` for all error propagation and never calls
 //! `unwrap()` or `panic!()` inside an FFI callback.
 //!
-//! # Registration is transactional
+//! # Catalog registration is transactional
 //!
 //! The registration connection is an ordinary connection, so the entry point
 //! runs the closure inside `BEGIN TRANSACTION` on it, `COMMIT`s when the
@@ -44,7 +44,12 @@
 //! replacement scans and configuration options. A retry registers a cast
 //! again (the new one replaces the old) and appends a second replacement
 //! scan, and quack-rs refuses a configuration option whose name is taken, so
-//! register those **last**, after everything that can fail.
+//! register those **last**, after everything that can fail. Nor is anything
+//! outside this connection's transaction: what the closure writes through
+//! another connection (one it opened with [`Connection::open_connection`]
+//! commits in that connection's own transactions), and what it does in Rust
+//! or outside `DuckDB` (a global it sets, a file it writes, a request it
+//! sends).
 //!
 //! What the transaction changes for the closure:
 //!
@@ -200,7 +205,7 @@ pub use registration::{EntryPointOptions, Registration};
 /// The closure runs in one transaction, so a failed `LOAD` leaves no catalog
 /// entry behind; casts, replacement scans and configuration options are not
 /// rolled back. See the
-/// [module documentation](mod@crate::entry_point#registration-is-transactional).
+/// [module documentation](mod@crate::entry_point#catalog-registration-is-transactional).
 ///
 /// # Example
 ///
@@ -237,7 +242,10 @@ macro_rules! entry_point {
 /// Generates the `#[unsafe(no_mangle)] unsafe extern "C"` entry point using the
 /// version-agnostic [`Connection`] facade.
 ///
-/// This is the recommended alternative to [`entry_point!`][crate::entry_point!]. The registration
+/// This is the recommended alternative to [`entry_point!`][crate::entry_point!]. The `v2` is
+/// quack-rs's own: this is the second version of *its* entry-point macro, and it is a C API
+/// **v1** entry point like `entry_point!`, not an entry point for `DuckDB`'s separate C API v2
+/// (`duckdb_extension_v2.h`), which quack-rs does not target. The registration
 /// callback receives a <code>&[Connection]</code> instead of a raw `duckdb_connection`,
 /// giving access to the [`Registrar`][crate::connection::Registrar] trait and to
 /// both the connection and database handles.
@@ -254,7 +262,7 @@ macro_rules! entry_point {
 /// The closure runs in one transaction, so a failed `LOAD` leaves no catalog
 /// entry behind; casts, replacement scans and configuration options are not
 /// rolled back. See the
-/// [module documentation](mod@crate::entry_point#registration-is-transactional).
+/// [module documentation](mod@crate::entry_point#catalog-registration-is-transactional).
 ///
 /// # Example
 ///
@@ -370,7 +378,7 @@ macro_rules! __quack_rs_refuse_panic_abort {
 /// The closure runs in one transaction, so a failed `LOAD` leaves no catalog
 /// entry behind; casts, replacement scans and configuration options are not
 /// rolled back. See the
-/// [module documentation](mod@crate::entry_point#registration-is-transactional).
+/// [module documentation](mod@crate::entry_point#catalog-registration-is-transactional).
 ///
 /// # Return value
 ///
@@ -496,7 +504,7 @@ where
 /// The closure runs in one transaction, so a failed `LOAD` leaves no catalog
 /// entry behind; casts, replacement scans and configuration options are not
 /// rolled back. See the
-/// [module documentation](mod@crate::entry_point#registration-is-transactional).
+/// [module documentation](mod@crate::entry_point#catalog-registration-is-transactional).
 ///
 /// # Return value
 ///

@@ -2,9 +2,9 @@
 #
 # SHA-256 of the DuckDB release assets scripts/fetch-duckdb.sh downloads, one
 # line per asset: <tag> <asset> <sha256>. fetch-duckdb.sh verifies every
-# download against this table and fails on a mismatch, and on a pinned tag that
-# has no line here; `latest` (the canary for new DuckDB releases) is verified
-# when its tag is listed and only warned about when it is not.
+# download against this table and fails on a mismatch, and on a tag that has
+# no line here, `latest` included: a new DuckDB release must be listed before
+# CI uses it.
 #
 # Provenance: each asset was downloaded twice from
 # https://github.com/duckdb/duckdb/releases/download/<tag>/<asset> on
@@ -12,7 +12,10 @@
 # it detects an asset replaced or corrupted after that date (and a bad
 # transfer), not one that was already wrong then. GitHub's API publishes a
 # per-asset digest that would be an independent check; it was not reachable
-# from the environment these were taken in.
+# from the environments these were taken in (2026-11-25, twice). Anyone with
+# GitHub API access can make it:
+#   gh api repos/duckdb/duckdb/releases/tags/vX.Y.Z --jq '.assets[] | [.name, .digest] | @tsv'
+# and compare each `sha256:` digest with the line below.
 #
 # To add a release: download each asset twice (ideally from two networks),
 # compare, and add a line per asset, e.g.

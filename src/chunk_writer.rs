@@ -18,12 +18,20 @@
 //! writes go through [`VectorWriter`]s that do not report back. A claimed row
 //! that is never written is published anyway, holding whatever the output
 //! vector last held: `DuckDB` reuses one output chunk for every scan call, so
-//! that is a value from an earlier call (a wrong answer), and in a `LIST` or
-//! `MAP` column written by hand it is an earlier call's `{offset, length}`
-//! entry, pointing into child data this call did not write.
+//! in a fixed-width column that is a value from an earlier call (a wrong
+//! answer). In a `VARCHAR` or `BLOB` column it is an earlier call's string
+//! record, and the vector dropped its reference to the string memory such a
+//! record points into when `DuckDB` reset the chunk (`ClearAuxiliaryData`,
+//! read in the v2.0.1 source): unless something else still holds that memory,
+//! reading the row reads freed memory. In a `LIST` or `MAP` column written by
+//! hand it is an earlier call's `{offset, length}` entry, pointing into child
+//! data this call did not write.
 //!
 //! So write every row you claim, or give it back with
-//! [`release_row`][ChunkWriter::release_row] before the writer drops. The
+//! [`release_row`][ChunkWriter::release_row] before the writer drops. That is
+//! part of the `# Safety` contract of [`ChunkWriter::new`] and
+//! [`DataChunk::into_chunk_writer`](crate::data_chunk::DataChunk::into_chunk_writer),
+//! not advice: the safe [`next_row`][ChunkWriter::next_row] cannot check it. The
 //! natural loop over a source of unknown length claims one row more than the
 //! source fills:
 //!
@@ -118,6 +126,15 @@ impl ChunkWriter {
     ///   `DuckDB` table function scan callback.
     /// - The `DuckDB` C API dispatch table must be initialised (it always is
     ///   inside a callback).
+    /// - Every row claimed with [`next_row`][Self::next_row] and not given
+    ///   back with [`release_row`][Self::release_row] must be written in every
+    ///   column before the writer drops: the drop publishes it either way.
+    ///   `DuckDB` resets the output chunk before each scan call, which keeps
+    ///   fixed-width data but drops a `VARCHAR` or `BLOB` vector's string heap
+    ///   (`ClearAuxiliaryData`), so an unwritten row of such a column can hold a
+    ///   string record from an earlier call that points into memory the vector
+    ///   no longer holds, and `DuckDB` reads it as the row's value. In a `LIST` or `MAP`
+    ///   column it can hold an earlier call's `{offset, length}` entry.
     #[inline]
     #[must_use]
     pub unsafe fn new(chunk: duckdb_data_chunk) -> Self {
@@ -132,8 +149,8 @@ impl ChunkWriter {
     ///
     /// # Safety
     ///
-    /// Same as [`new`][Self::new]. `capacity` must not exceed the chunk's
-    /// actual capacity.
+    /// Same as [`new`][Self::new], including its rule for claimed rows.
+    /// `capacity` must not exceed the chunk's actual capacity.
     #[inline]
     #[must_use]
     pub const unsafe fn with_capacity(chunk: duckdb_data_chunk, capacity: usize) -> Self {

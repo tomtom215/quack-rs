@@ -140,3 +140,29 @@ fn values_over_four_gib_are_refused_by_append_and_bind() {
     let err = rendered(&fx, |s| s.bind_blob(1, &huge)).expect_err("bind_blob");
     assert!(err.contains("maximum string length"), "{err}");
 }
+
+/// NEW-1 of `AUDIT.md` section 16: a `Value` of more than `u32::MAX` bytes went
+/// through `bind_value` and came back with its length modulo 2^32 (4 GiB + 3
+/// bytes as 3, on 1.5.6 and 2.0.1), while `bind_str` and `bind_blob` refused.
+/// The constructors now refuse it: `try_*` with an error, the plain ones with
+/// a panic. Zero bytes are valid UTF-8, and the `calloc`ed buffer is never
+/// written, so the test costs address space, not memory.
+#[test]
+fn values_over_four_gib_are_refused_by_the_value_constructors() {
+    use quack_rs::value::Value;
+    let huge = vec![0_u8; (1_usize << 32) + 3];
+    // SAFETY: every byte is zero, which is valid UTF-8.
+    let text = unsafe { std::str::from_utf8_unchecked(&huge) };
+    for err in [
+        Value::try_blob(&huge).expect_err("try_blob"),
+        Value::try_varchar(text).expect_err("try_varchar"),
+    ] {
+        assert!(err.to_string().contains("maximum string length"), "{err}");
+    }
+    let panicked = std::panic::catch_unwind(|| Value::blob(&huge)).expect_err("blob panics");
+    let message = panicked.downcast_ref::<String>().map_or("", String::as_str);
+    assert!(message.contains("Value::blob"), "{message}");
+    // The limit itself is still accepted.
+    let fits = &huge[..usize::try_from(u32::MAX).expect("fits")];
+    assert!(Value::try_blob(fits).is_ok());
+}

@@ -44,8 +44,8 @@ impl Appender {
     /// discarded them, so closing again succeeds and writes nothing), and —
     /// instead of `DuckDB`'s silent success — when a row
     /// is unfinished or the appender is poisoned: `DuckDB`'s `Close` writes
-    /// nothing in that state, so the error says how many buffered rows were
-    /// not written. An unfinished row appended by hand can still be completed
+    /// nothing in that state, so the error gives an upper bound on how many
+    /// buffered rows were not written. An unfinished row appended by hand can still be completed
     /// and the appender closed again.
     pub fn close(&self) -> Result<(), AppendError> {
         match self.lifecycle.get() {

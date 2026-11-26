@@ -16,7 +16,7 @@ Each entry is written so it can be copied into a DuckDB issue once reviewed.
 | 3 | `duckdb_config_option_set_default_value` lets a cast exception escape | C program, below | default converted by SQL before the call |
 | 4 | `duckdb_data_chunk_from_arrow` converts before its `try` | C program, below | negative length refused; a very large length cannot be checked and is documented |
 | 5 | Scalar bind data does not take part in expression equality | quack-rs test | documented on `ScalarBindData` |
-| 6 | Aggregate states not all destroyed after a failed `finalize` | quack-rs test | documented under Known Limitations |
+| 6 | Aggregate states not all destroyed after a failed `finalize` (fixed in 2.0.1) | quack-rs test | documented under Known Limitations |
 | 7 | C API aggregate in a streaming window re-reads the first row | C program, below | every aggregate registers a destructor |
 | 8 | Arrow import returns dictionary and constant vectors the C API cannot read | C program, below | columns flattened after import |
 | 9 | Arrow dictionary import with NULLs and >2048 entries writes past a heap buffer | C program, below (valgrind) | such arrays refused before import |
@@ -359,6 +359,11 @@ reports the leaked Rust allocation. Not yet reduced to a plain-C reproducer,
 and where DuckDB drops the states has not been located: `CAPIAggregateFinalize`
 throws `InvalidInputException` after the callback, and
 `~UngroupedAggregateState` would destroy the global state if it ran.
+
+Update, 2026-11-25: DuckDB 2.0.0 destroys every state of the ungrouped query,
+and 2.0.1 every state of the grouped one too (16 initialised, 16 destroyed),
+so this is fixed for a supported release; file it, if at all, against 1.5.x
+only. The test now pins each release's behaviour.
 
 ---
 
@@ -784,8 +789,13 @@ init calls=3001 (successful 3000), destroy saw 4096 states, 1096 never initialis
 uninitialised memory happened to hold it would be miscounted, which does not
 change the finding. Expected: `destroy` only for states `init` completed, or
 a documented contract that says otherwise. quack-rs mitigation: each state's
-wrapper carries a tag derived from its address that `init` writes and
-`destroy` checks, so a never-initialised state is skipped.
+wrapper carries a tag that `init` writes and `destroy` checks, so a
+never-initialised state is skipped. (The tag is derived from the slot's
+contents, not its address: an address tag made the destructor skip every
+state DuckDB had moved, `FfiState` in `src/aggregate/state.rs`.) Re-run
+unchanged against v1.5.6 and v2.0.1 on 2026-11-25: the same output on both.
+The window path has the same defect with worse consequences: there `destroy`
+also receives pointer entries `init` never wrote (`AUDIT.md` section 16).
 
 ---
 
@@ -3916,6 +3926,8 @@ memory, and the documented error path (`duckdb_prepare_error`, then
 `duckdb_destroy_prepare`) reads it and frees it again.
 `duckdb_prepare_extracted_statement` has the same shape. Only a failed
 allocation reaches this; nothing else in the map's construction throws.
+Unchanged in v2.0.1 (`src/main/capi/v1/prepared-c.cpp` lines 85 – 95 at the
+tag, read on 2026-11-25; the fault injection below was not re-run there).
 
 Environment: prebuilt `libduckdb` v1.4.4, v1.4.5 and v1.5.0 to v1.5.5, x86_64
 Linux, glibc. Build: `gcc -rdynamic -I<libduckdb dir> item36.c -L<libduckdb

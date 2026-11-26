@@ -32,9 +32,13 @@ final decision-making authority.
 
 **There is one maintainer, and no other committers.** The rules below that need a
 second person (a second approver, a majority vote, a tie-break) describe what happens
-once there is one; today the maintainer decides. What gates a merge to `main` is the
-`CI passed` check that [RELEASING.md](./RELEASING.md) configures as the required status
-check, not a second reviewer.
+once there is one; today the maintainer decides. What is meant to gate a merge to `main`
+is the `CI passed` check, which [RELEASING.md](./RELEASING.md) says to configure as the
+required status check, not a second reviewer. **It is not configured yet:** on 2026-11-25
+the `main` ruleset required a pull request (with zero approvals) and forbade deletion and
+force pushes, but required no status check, so a pull request could be merged with CI red
+(`AUDIT.md` sections 15.9 and 16). Until the owner adds the rule, the gate is the
+maintainer's own reading of CI.
 
 ## Decision-Making Process
 

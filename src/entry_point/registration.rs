@@ -5,7 +5,7 @@
 
 //! How the entry point runs the registration closure: in one transaction on
 //! the registration connection, or with every statement committing on its own.
-//! See "Registration is transactional" in the [`entry_point`](super) docs.
+//! See "Catalog registration is transactional" in the [`entry_point`](super) docs.
 
 use libduckdb_sys::{duckdb_connection, duckdb_database};
 

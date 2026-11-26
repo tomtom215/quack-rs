@@ -28,7 +28,7 @@ replaced had drifted to fewer than half the jobs.
 | `test-bundled` | Test bundled-test (${{ matrix.os }}) | blocking |
 | `test-bundled-prebuilt` | Test bundled-test-prebuilt (prebuilt libduckdb) | blocking |
 | `test-older-engines` | Test against DuckDB ${{ matrix.engine }} (${{ matrix.features }}) | blocking |
-| `test-duckdb-2-0` | Test against DuckDB v2.0.0 | blocking |
+| `test-duckdb-2-0` | Test against DuckDB ${{ matrix.duckdb }} (v2.0.0 on 1.20000.1, v2.0.1 on 1.20001.0) | blocking |
 | `test-bundled-duckdb-2-0` | Test bundled-test on the DuckDB 2.0 bindings (informational) | informational |
 | `test-duckdb-1-5` | Test duckdb-1-5 / duckdb-1-5-3 / duckdb-1-5-4 features | blocking |
 | `wasm` | WASM (wasm32-unknown-emscripten) | blocking |
@@ -67,7 +67,9 @@ replaced had drifted to fewer than half the jobs.
 | `ci-ok` | CI passed | blocking (aggregate) |
 
 **Branch protection should require exactly one check: `CI passed`** (the
-`ci-ok` job). It `needs:` every blocking job and runs with `if: always()`, so
+`ci-ok` job). As of 2026-11-25 it does not: the `main` ruleset requires a pull
+request but no status check (`AUDIT.md` section 16), so this is a setting for
+the repository owner to add. It `needs:` every blocking job and runs with `if: always()`, so
 it fails when any of them fails or is cancelled.
 `scripts/check-ci-aggregate.py` (run by the `doc` job) fails when a blocking
 job is missing from its `needs`, so a new job cannot drop out of the required

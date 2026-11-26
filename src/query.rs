@@ -95,6 +95,11 @@ use crate::error::ExtensionError;
 pub struct OwnedDataChunk {
     chunk: libduckdb_sys::duckdb_data_chunk,
     view: DataChunk,
+    /// Rows each vector has room for: `None` for a chunk the C API creates or
+    /// fetches, whose capacity is `duckdb_vector_size()` (read when asked, so
+    /// `from_raw` stays `const`); the array's length for one imported from
+    /// Arrow.
+    capacity: Option<usize>,
 }
 
 // ─── Query result ────────────────────────────────────────────────────────────
@@ -161,6 +166,15 @@ impl QueryResult {
 /// fails the call, but the statements before it have already run and, outside
 /// an explicit transaction, committed. A string with no statement at all
 /// (`""`, `";"`) succeeds with an empty result.
+///
+/// On `DuckDB` 2.0 that holds even for text that does not parse as a whole:
+/// the statements before the parse error run, and the call can report success
+/// (measured on 2.0.0 and 2.0.1; 1.x runs nothing). So never pass text you did
+/// not write yourself. To run exactly one statement, use
+/// [`prepare`] and [`PreparedStatement::execute`]: `prepare` refuses text that
+/// holds more than one statement or does not parse, and runs nothing then.
+/// See "`duckdb_query` runs the statements before a parse error on `DuckDB` 2.0"
+/// under Known Limitations in the book.
 ///
 /// # Errors
 ///

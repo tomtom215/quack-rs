@@ -133,3 +133,67 @@ fn raising_the_limit_after_the_first_row_keeps_duckdbs_ceiling() {
         Some("true")
     );
 }
+
+// Each input row is a length; a builder limited to 3 elements writes the rows
+// that fit and reports the overflow through `try_finish`.
+quack_rs::scalar_callback!(limited_to_three, |info, input, output| {
+    let info = unsafe { quack_rs::scalar::ScalarFunctionInfo::new(info) };
+    let chunk = unsafe { quack_rs::data_chunk::DataChunk::from_raw(input) };
+    let reader = unsafe { chunk.reader(0) };
+    let mut builder = unsafe { ListBuilder::new(output) }.with_element_limit(3);
+    for row in 0..chunk.size() {
+        let n = usize::try_from(unsafe { reader.read_i64(row) }).unwrap_or(0);
+        // SAFETY: `row` is in the chunk; the closure writes the `n` elements
+        // it is given.
+        unsafe {
+            builder.push_row(row, n, |w, base| {
+                for i in 0..n {
+                    w.write_i64(base + i, 1);
+                }
+            });
+        }
+    }
+    if let Err(e) = unsafe { builder.try_finish() } {
+        info.set_error(&e.to_string());
+    }
+});
+
+/// QRS-012 (`AUDIT.md` section 16): `finish` returns nothing, so a row
+/// refused for the element limit was a silent NULL unless the caller asked
+/// `overflowed`. `try_finish` reports it, and stays quiet when every row fits.
+#[test]
+fn try_finish_reports_a_row_refused_for_the_element_limit() {
+    let fx = Fixture::open();
+    // SAFETY: `con` is open; the callback matches the declared signature.
+    unsafe {
+        ScalarFunctionBuilder::try_new("limited_to_three")
+            .expect("name")
+            .param(TypeId::BigInt)
+            .returns_logical(LogicalType::list(TypeId::BigInt))
+            .function(limited_to_three)
+            .register(fx.con())
+            .expect("register");
+    }
+    // Three elements in all: exactly the limit.
+    let fits = "SELECT string_agg(l::VARCHAR, ';' ORDER BY n) \
+                FROM (SELECT n, limited_to_three(n) AS l FROM (VALUES (1), (2)) t(n))";
+    assert_eq!(
+        fx.scalar(fits, |r, i| unsafe { r.read_str(i).to_owned() })
+            .as_deref(),
+        Some("[1];[1, 1]")
+    );
+    // SAFETY: the connection is open.
+    let err = unsafe {
+        quack_rs::query::query(
+            fx.con(),
+            "SELECT limited_to_three(n) FROM (VALUES (2), (2)) t(n)",
+        )
+    }
+    .err()
+    .expect("the second row passes the limit");
+    assert!(
+        err.as_str().contains("past its limit of 3 element(s)"),
+        "{}",
+        err.as_str()
+    );
+}

@@ -146,8 +146,10 @@ width has to travel with the value:
 | 10 – 18 | `i64` |
 | 19 – 38 | `i128` |
 
-`read_decimal` / `write_decimal` take the width and pick the right one. Get it
-from the column's `LogicalType`:
+`read_decimal` takes the width and picks the right one; get it from the column's
+`LogicalType`. For output, `VectorWriter::decimal` reads the width and scale from the
+output vector's own type and returns a `DecimalWriter` whose `write` checks each value
+against them:
 
 ```rust
 # use libduckdb_sys::duckdb_vector;
@@ -155,24 +157,30 @@ from the column's `LogicalType`:
 # fn demo(vec: duckdb_vector, reader: &VectorReader, writer: &mut VectorWriter, row: usize) {
 let logical = unsafe { quack_rs::vector::vector_get_column_type(vec) };
 let width = unsafe { logical.decimal_width() };
-let scale = unsafe { logical.decimal_scale() };
-
 let unscaled = unsafe { reader.read_decimal(row, width) };
-// The represented number is unscaled / 10^scale. The doubled value may no
-// longer fit in `width` digits, and `write_decimal` would store it wrong
-// without an error: `70000` in a `DECIMAL(4, 0)` comes back as `4464`.
-// `try_write_decimal` refuses it, and then it is yours to report or NULL.
-if unsafe { writer.try_write_decimal(row, width, unscaled * 2) }.is_err() {
-    unsafe { writer.set_null(row) };
+
+// Fails if the output vector is not a DECIMAL.
+let Ok(mut out) = writer.decimal() else { return };
+// The represented number is unscaled / 10^scale, and the output's scale is
+// `out.scale()`. Doubling can overflow i128 for a DECIMAL(38) input, so use
+// `checked_mul`. The doubled value may also no longer fit the output's width;
+// `write_decimal` would store it wrong without an error (`70000` in a
+// `DECIMAL(4, 0)` comes back as `4464`). `out.write` refuses it, and then it is
+// yours to report or NULL.
+let doubled = unscaled.checked_mul(2);
+if doubled.map_or(true, |v| unsafe { out.write(row, v) }.is_err()) {
+    unsafe { out.set_null(row) };
 }
 # }
 ```
 
-Use `write_decimal` only for a value that cannot exceed the width, such as one
-read back from a column of the same width. For anything computed (a sum, a
-product, a conversion) use `try_write_decimal`: it costs one comparison per
-value, and a scalar function can report its error with
-`ScalarFunctionInfo::set_error`.
+Use `write_decimal`, which takes the width as an argument and checks nothing,
+only for a value that cannot exceed the width, such as one read back from a
+column of the same width: its width also decides how many bytes it writes, so a
+wrong width writes the wrong integer size. For anything computed (a sum, a
+product, a conversion) use `VectorWriter::decimal`: it reads the type once per
+writer and costs one comparison per value, and a scalar function can report its
+error with `ScalarFunctionInfo::set_error`.
 
 `datetime::f64_to_decimal` and `datetime::decimal_to_f64` convert through
 DuckDB's own routines when a floating-point view is what you want.

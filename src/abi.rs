@@ -121,11 +121,10 @@
 //! and holding only the slots the engine has. The count comes from slot 7
 //! (`duckdb_library_version`, in the stable prefix every engine provides, so
 //! safe to read first) and the layout table above; for a release the table does
-//! not list, from the build's `QUACK_RS_BUILT_AGAINST_DUCKDB` declaration if it
-//! names that release, and otherwise [`AbiPolicy::Strict`] takes what `DuckDB`
-//! guarantees for the C API version the extension asked for (the 546 slots of C
-//! API v1.5.6 for v1.5.6 or later, the 357-slot stable prefix before it; it
-//! refuses such an engine anyway, or the build never goes past that) while
+//! not list, [`AbiPolicy::Strict`] takes what `DuckDB` guarantees for the C API
+//! version the extension asked for (the 546 slots of C API v1.5.6 for v1.5.6 or
+//! later, the 357-slot stable prefix before it), whether or not the build's
+//! `QUACK_RS_BUILT_AGAINST_DUCKDB` declaration names that release, while
 //! every other policy takes the whole compiled struct, as the
 //! bindings always did, because those policies exist to run on releases the
 //! table lacks. A slot the engine does not have is NULL: the bindings skip it,
@@ -527,7 +526,13 @@ pub unsafe fn engine_version() -> Option<String> {
 ///
 /// The value is an assertion by the build, not a proof. [`check`] cross-checks it
 /// against [`expected_slot_count`] when the declared release is a known one and
-/// reports [`AbiCheck::DeclaredVersionMismatch`] if they disagree.
+/// reports [`AbiCheck::DeclaredVersionMismatch`] if they disagree. For a release
+/// the table does not list it lets [`AbiPolicy::Strict`] load, but it does not
+/// widen what the entry point reads from the engine's table: that stays what
+/// `DuckDB` guarantees for the C API version the extension asked for (546 slots
+/// for C API v1.5.6 or later), so a wrong declaration cannot make the bindings
+/// read past the table, and a slot past the guarantee is NULL (QRS-007 in
+/// `AUDIT.md` section 16).
 #[must_use]
 pub fn built_against_version() -> Option<&'static str> {
     parse_declared_version(option_env!("QUACK_RS_BUILT_AGAINST_DUCKDB"))

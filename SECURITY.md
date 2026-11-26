@@ -10,7 +10,7 @@
 | 0.20.x         | Yes                                     |
 | 0.19.x         | Yes                                     |
 | 0.18.x         | No (end-of-life)                        |
-| 0.16.x         | No (end-of-life)                        |
+| 0.16.x         | No (end-of-life; 0.16.0 is yanked)       |
 | 0.3.x – 0.15.x | No (end-of-life); **do not use** (below) |
 
 The two newest minor lines are supported. quack-rs is pre-1.0, so Cargo
@@ -34,13 +34,38 @@ Checked against the published crates:
   compiled against; loaded into another DuckDB release, such a build could
   call the wrong functions (`double free or corruption`).
 
-None of these versions has been yanked from crates.io; upgrade to a supported
-line.
+All of them, 0.3.0 to 0.15.0, are yanked on crates.io, and so is 0.16.0
+(checked through the crates.io API on 2026-11-25: every one of those versions is
+`yanked`, with its record last updated on 2026-10-31). A yanked version stays
+downloadable for a lockfile that already names it, so an existing lockfile can
+still hold one; upgrade to a supported line.
 
 crates.io has no 0.1.x or 0.2.x: the first published version is 0.3.0. 0.17.x
 does not appear either because it was never published: 0.17.0 was prepared
 but not released, and its changes ship in 0.18.0 (see the 0.18.0 entry in
 `CHANGELOG.md`). On crates.io, 0.18.0 follows 0.16.0.
+
+## Known defects in supported releases
+
+Fixed on `main` after 0.20.0 and not yet in a release; each is described in the
+`[Unreleased]` section of `CHANGELOG.md` and in `AUDIT.md` sections 15 and 16.
+
+| Defect | Affects | Effect |
+|---|---|---|
+| `LOAD` reads past the end of the engine's C API table | 0.19.x and 0.20.x, loaded into a DuckDB whose table is shorter than the bindings' struct: 1.4.x or 1.5.0 – 1.5.1 for the 546-slot (1.5.6) bindings, and also 1.5.2 – 1.5.6 for the 548-slot (2.0) bindings | A read of up to 89 pointers past the table at load; no crash observed |
+| `Appender::append_default_to_chunk` writes past a vector | 0.19.x and 0.20.x with the `duckdb-1-5` feature, on DuckDB 2.0.0 or 2.0.1 | Safe code writes past a `VARCHAR` vector's buffer (row 2048), or crashes the process (a larger row) |
+| `Value::varchar` / `Value::blob` over 4 GiB | 0.19.x and 0.20.x | The value is stored with its length modulo 2^32: silent truncation, not a memory error |
+
+## Trust model
+
+A loadable extension runs inside the DuckDB process with that process's
+privileges. quack-rs does not sandbox it: DuckDB's settings
+(`enable_external_access`, `allowed_directories`, `allowed_paths`) bind only
+I/O that goes through DuckDB, so an extension that opens files with `std::fs` or
+makes network requests with its own client bypasses them (`LESSONS.md` P17).
+Route SQL-supplied paths through `file_system::FileSystem`, which respects those
+settings, and contain anything else at the operating-system level (a container,
+a separate low-privilege process, restricted credentials and egress).
 
 ## Reporting a Vulnerability
 

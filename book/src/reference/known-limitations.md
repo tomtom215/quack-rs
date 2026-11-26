@@ -44,7 +44,10 @@ DuckDB version", 2.0.0 itself put two slots (`duckdb_create_timestamp_tz_ns` and
 release inserted a slot in the middle of the struct. What to do when a new release appears:
 check the release's `duckdb_extension.h` against the one you built with, then rebuild with
 `QUACK_RS_TARGET_DUCKDB_VERSION` set to it, or move to a quack-rs release that lists it; or stay
-on the default features, which only use the stable prefix and are not affected. See [ABI
+on the default features, which only use the stable prefix and are not affected. A declared
+build reads only the 546 slots DuckDB guarantees for C API v1.5.6 from an unlisted release;
+calling a slot past them (on 2.0, `duckdb_create_timestamp_tz_ns` and
+`duckdb_get_timestamp_tz_ns`) fails as an SQL error there until quack-rs lists the release. See [ABI
 Compatibility](../concepts/abi.md#unknown-duckdb-versions).
 
 ### A function that reads a setting must be marked volatile
@@ -170,16 +173,18 @@ reported upstream as
 older releases, tell your users not to use your aggregates in those shapes. See
 [Pitfall L11](pitfalls.md#l11-c-api-aggregates-crash-under-aggx-over--and-aggx-order-by-y).
 
-### Aggregate states leak when `finalize` reports an error (DuckDB behaviour)
+### Aggregate states leak when `finalize` reports an error (DuckDB before 2.0.1)
 
 When an aggregate's `finalize` callback reports an error
-(`AggregateFunctionInfo::set_error`), DuckDB does not call the destructor
-for every state a grouped query created (4 initialised and 2 destroyed on
-1.5.5; still fewer destroyed than initialised on 2.0.0). Before 2.0.0 an
-ungrouped query is affected too (2 initialised, 1 destroyed), because a C API
-aggregate is planned as a hash aggregate there; 2.0.0 runs it as an ungrouped
-aggregate, which destroys every state after the failure. When `finalize`
-succeeds, every state is destroyed. The extension cannot tell which states were abandoned, so whatever
+(`AggregateFunctionInfo::set_error`), DuckDB before 2.0.1 does not call the
+destructor for every state a grouped query created (4 initialised and 2
+destroyed on 1.5.5; still fewer destroyed than initialised on 2.0.0). Before
+2.0.0 an ungrouped query is affected too (2 initialised, 1 destroyed), because
+a C API aggregate is planned as a hash aggregate there; 2.0.0 runs it as an
+ungrouped aggregate, which destroys every state after the failure. DuckDB 2.0.1
+destroys every state of the grouped query as well (16 initialised, 16
+destroyed; found by the first run of the live suite against 2.0.1, `AUDIT.md`
+section 16). When `finalize` succeeds, every state is destroyed. The extension cannot tell which states were abandoned, so whatever
 they own is leaked: with `FfiState<T>`, whatever `T` owns on the heap, and the
 box of a `T` too large to store inline (see the next section). The query still
 fails with your message. If that leak matters (a long-lived process whose
@@ -235,12 +240,19 @@ window function with a `ROWS` or `RANGE` frame, DuckDB's
 `WindowAggregateStates` destroys its whole table of state pointers, including
 entries it never wrote. The destructor is handed garbage pointers. A plain C
 aggregate shows it, with no Rust involved: on DuckDB 1.5.6 55 of 68 pointers
-passed to the destructor were garbage, and on 2.0.0 65 of 68. quack-rs's
-`FfiState` reports a panic in `T::default()` as a SQL error, which is exactly this
-trigger; its tag check cannot help, since there is no slot to read. Ungrouped,
-grouped, `DISTINCT` and `FILTER` aggregates report a clean error; a window shape
-kills the process (`SIGSEGV` or `SIGBUS`). **`T::default()` must not panic** for an
-aggregate that can run as a window function.
+passed to the destructor were garbage, and on 2.0.0 65 of 68. DuckDB 2.0.1 is
+unchanged (`WindowAggregateStates::Initialize` still sets the count before its
+init loop): in a five-row frame over `range(100)` whose fourth `init` fails, a
+plain C destructor is handed the three states, the failed slot and a NULL entry,
+and dies with `SIGSEGV` on 1.5.6 and 2.0.1. quack-rs's `FfiState` reports a panic
+in `T::default()` as a SQL error, which is exactly this trigger. Since the
+maintainer review of 2026-11-25 its destructor skips a NULL entry (the C
+destructor doing the same survives on both releases), but a non-null garbage
+entry, as in the 68-pointer case, cannot be told from a state, and its tag check
+cannot help, since there is no slot to read. Ungrouped, grouped, `DISTINCT` and
+`FILTER` aggregates report a clean error; a window shape can kill the process
+(`SIGSEGV` or `SIGBUS`). **`T::default()` must not panic** for an aggregate that
+can run as a window function.
 
 ### An abandoned stream keeps its table-function state (DuckDB 1.x behaviour)
 
@@ -274,7 +286,10 @@ the default allocation-error handler aborts. On the DuckDB side,
 callbacks only on error paths and in `data_chunk_to_arrow`'s pre-export
 check, which copies each column it checks. Bound what your callbacks
 allocate, and set DuckDB's `memory_limit` so its own operators fail cleanly
-before the process runs out.
+before the process runs out. That limit does not cover what the extension
+allocates itself: Rust's allocator is the process's, not DuckDB's buffer
+manager, so an aggregate state's heap, a table function's buffers and anything
+else your code allocates count against no DuckDB setting.
 
 One allocation failure is worse than an abort. When `duckdb_prepare` fails to
 allocate while it records a statement's parameter names, it frees the
@@ -427,6 +442,22 @@ quack-rs wraps would reach for:
 The official Rust template and `duckdb-neo` target this API. quack-rs stays on v1
 for the portable binary; see the README's comparison.
 
+### One DuckDB engine per process
+
+The `libduckdb-sys` bindings keep the C API function table in process-wide
+statics (546 `AtomicPtr`s in `libduckdb-sys` 1.10506.1), and every `LOAD`
+overwrites them from the loading engine's table, slot by slot, skipping a slot
+the engine leaves NULL. One engine loading the extension any number of times,
+from any number of connections or threads, stores the same addresses, so that
+is safe. Two different DuckDB libraries in one process that load the same
+extension file (which the dynamic loader maps once) are not: the second load
+overwrites the first engine's pointers, even when quack-rs's ABI check then
+refuses the load (the table is filled before the check), and a slot the second
+engine lacks keeps the first engine's pointer. Calls from the first engine's
+connections can then reach the second engine. Load a quack-rs extension into
+one DuckDB library per process. (Read in the bindings' generated source and in
+`entry_point.rs`; not reproduced.)
+
 ### A quack-rs extension cannot be linked statically into a DuckDB 2.0 host
 
 
@@ -434,7 +465,7 @@ DuckDB 2.0.0 can register an extension compiled into the host program
 (`duckdb_register_static_extension`, in `duckdb_static_extension.h`). For a C API v1 entry
 point it calls the entry point with `get_api` unset, because the extension is expected to call
 DuckDB's linked symbols directly instead of going through the function-pointer table
-(`DuckDB::LoadStaticCAPIExtension`, `extension_load.cpp` in the v2.0.0 source). quack-rs's
+(`DuckDB::LoadStaticCAPIExtension`, `extension_load.cpp` in the v2.0.0 and v2.0.1 source). quack-rs's
 entry points need the table to initialise the bindings, so they refuse with "DuckDB passed no
 get_api function, so the C API cannot be initialised": no panic, no crash, and no extension.
 A Rust program that embeds DuckDB 2.0 and wants a quack-rs extension in-process cannot do
@@ -471,15 +502,19 @@ and a different type on 1.x. Name the fields.
 ### `duckdb_query` runs the statements before a parse error on DuckDB 2.0
 
 Given text that does not parse as a whole, DuckDB 1.4.4 and 1.5.6 report a parser error and
-run nothing. DuckDB 2.0.0 runs the statements that come before the error (the call may then
+run nothing. DuckDB 2.0.0 and 2.0.1 run the statements that come before the error (the call may then
 report the error or, as in the measurement below, success). Measured with a C program that sends `duckdb_query` the text
 `CREATE OR REPLACE MACRO "m"() AS (1); DROP TABLE canary; SELECT ()` (what
 `SqlMacro::register` would have sent for the body `1); DROP TABLE canary; SELECT (`):
 1.4.4 and 1.5.6 returned `Parser Error: syntax error at or near ")"` and the table survived;
-2.0.0 returned success and the table was gone. An extension that passes text it did not
+2.0.0 and 2.0.1 returned success and the table was gone (2.0.1 measured on 2026-11-25, the same
+program against the prebuilt library). An extension that passes text it did not
 write itself to `duckdb_query`, `OwnedConnection::query` or `execute` must check first that it
 parses as the statements it expects: `duckdb_extract_statements` reports a count of 0 for text
-that does not parse as a whole, and the count is the number to require. quack-rs's
+that does not parse as a whole, and the count is the number to require. For exactly one
+statement, `prepare` is the check: on 1.5.6, 2.0.0 and 2.0.1 it refused both the text above
+and a valid two-statement string, and ran neither (measured the same way), so
+`prepare(...)?.execute()` runs one statement or none. quack-rs's
 `SqlMacro::register` requires exactly 1 since 0.20.0.
 
 ### Other DuckDB 2.0 behaviour changes that reach C API extensions

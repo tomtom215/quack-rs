@@ -16,7 +16,7 @@ Before you can cut a release, ensure the following are in place:
 | `CARGO_REGISTRY_TOKEN`, **only until Trusted Publishing is configured**; then delete it. Store it as a secret **of the `crates-io` environment**, never as a repository secret | Settings → Environments → crates-io → Environment secrets |
 | `crates-io` environment with yourself as required reviewer, and **Deployment branches and tags** limited to the tag pattern `v*` | Settings → Environments → crates-io |
 | A tag ruleset restricting who may create `v*` tags | Settings → Rules → Rulesets |
-| Branch protection on `main` requiring the single check **CI passed** | Settings → Rules (or Branches) |
+| Branch protection on `main` requiring the single check **CI passed** (not configured as of 2026-11-25: the ruleset requires a pull request but no status check; `AUDIT.md` section 16) | Settings → Rules (or Branches) |
 | GPG key configured for signed tags | `git config --global user.signingkey <KEY_ID>` |
 
 The `publish` job prefers Trusted Publishing: it exchanges the job's OIDC token

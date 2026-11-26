@@ -19,27 +19,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scheduled CI runs of 2026-11-16 and 2026-11-23 failed on, now pass, and so would the
   `scaffold-e2e` job, whose generated extension was refused by v2.0.1. Docs that used
   v2.0.1 as the example of an unlisted release now use v2.0.2.
-- **`VectorWriter::try_write_decimal(idx, width, unscaled)`, a checked
-  `write_decimal`.** `write_decimal` narrows the unscaled integer to `i16`, `i32`
-  or `i64` with `as`, so a value the width cannot hold is stored wrong with no
-  error. The independent review of 0.20.0 pointed at the cast; against a live
-  engine it is a plausible, wrong number: `70000` written to a `DECIMAL(4, 0)`
-  reads back as `4464`, `2^32 + 5` to a `DECIMAL(9, 0)` as `5`, and `2^64 + 7` to a
-  `DECIMAL(18, 0)` as `7`; and `10000`, which fits an `i16`, is stored as it is,
-  one digit wider than the type allows. `try_write_decimal` refuses a value with
-  `|unscaled| >= 10^width` (one comparison against a compile-time table, no
-  `pow`), writes nothing on `Err`, and otherwise writes exactly as
-  `write_decimal` does. `write_decimal` itself is unchanged: its documentation
-  now states the range requirement, and the book's example uses the checked
-  method. A scale is not an argument, since it does not change which unscaled
-  integers a width holds.
+- **`VectorWriter::decimal()` and `DecimalWriter`: checked `DECIMAL` output whose
+  width and scale come from the vector's own type.** `write_decimal` narrows the
+  unscaled integer to `i16`, `i32` or `i64` with `as`, so a value the width
+  cannot hold is stored wrong with no error, and its `width` argument also
+  decides how many bytes it writes. The independent review of 0.20.0 pointed at
+  the cast; against a live engine it is a plausible, wrong number: `70000`
+  written to a `DECIMAL(4, 0)` reads back as `4464`, `2^32 + 5` to a
+  `DECIMAL(9, 0)` as `5`, and `2^64 + 7` to a `DECIMAL(18, 0)` as `7`; and
+  `10000`, which fits an `i16`, is stored as it is, one digit wider than the type
+  allows. `VectorWriter::decimal()` reads the output vector's logical type once,
+  refuses a vector that is not `DECIMAL`, and returns a `DecimalWriter` whose
+  `write(idx, unscaled)` refuses `|unscaled| >= 10^width` (one comparison
+  against a compile-time table), writes nothing on `Err`, and stores the rest in
+  the type's own integer; `width()` and `scale()` report the type. The maintainer
+  review of 2026-11-25 (QRS-004) asked that the checked path take the width from
+  the vector rather than from the caller; an intermediate
+  `try_write_decimal(idx, width, unscaled)`, never released, is replaced by it.
+  `write_decimal` is unchanged: its documentation states the range requirement
+  and that a wrong width writes the wrong integer size, and the book's example
+  uses the checked writer.
   VALIDATED against libduckdb 1.5.6: `tests/ffi_roundtrip/decimal_write.rs`
   writes both sides of every storage boundary (widths 1, 4, 5, 9, 10, 18, 19,
-  38) and the wrapped values above, and all three of its tests fail with the check
-  removed. The pure-Rust check has unit tests for every width from 1 to 38.
+  38) through one callback for every width, refuses the wrapped values above,
+  writes `DECIMAL(10, 3)` at its own scale, and refuses an `INTEGER` output. The
+  pure-Rust check has unit tests for every width from 1 to 38.
+
+- **`ListBuilder::try_finish`: an element-limit overflow cannot go unnoticed
+  (QRS-012).** A row that would take the child vector past the element limit is
+  written as NULL, and `finish` returns nothing, so the NULLs were silent unless
+  the caller asked `overflowed()`. `try_finish` completes the vector the same way
+  and returns an error naming the limit when any row was refused.
+  `try_finish_reports_a_row_refused_for_the_element_limit` in
+  `tests/ffi_roundtrip/list_limits.rs`.
+- **`Value::try_varchar` and `Value::try_blob`**, which refuse a value longer than
+  DuckDB's 4 GiB string limit; see Changed for what `varchar` and `blob` do now.
+
+### Changed
+
+- **Breaking:** `Appender::append_default_to_chunk` takes `&OwnedDataChunk`
+  instead of `&DataChunk` (QRS-008, above). The row is checked against the chunk's
+  capacity, which an `OwnedDataChunk` knows and a `DataChunk` borrowed from a
+  callback does not report. A chunk built for appending is an `OwnedDataChunk`
+  already (`OwnedDataChunk::new`); an `&OwnedDataChunk` still derefs to
+  `&DataChunk` for everything else.
+- **Breaking:** `OwnedDataChunk::from_raw`'s `# Safety` section adds a clause:
+  every vector of the chunk must have room for `capacity()` rows (the C API's
+  vector size). A chunk from `duckdb_create_data_chunk` or `duckdb_fetch_chunk`
+  does; one from `duckdb_data_chunk_from_arrow` does not (see Fixed), and
+  quack-rs no longer wraps it with `from_raw`. `from_raw` stays a `const fn`.
+- **`cargo-semver-checks` does not see the breaking changes above.** Run against
+  the published 0.20.0 with CI's flags, it reports no failure once `from_raw`
+  stays `const`: it has no lint for a changed parameter type
+  (`append_default_to_chunk`) or a new panic (`Value::varchar` / `blob`). The
+  next release must still be 0.21.0.
+
+- **The rule for rows a `ChunkWriter` claims is part of its `# Safety` contract
+  (QRS-011).** `ChunkWriter::new`, `with_capacity` and
+  `DataChunk::into_chunk_writer` now require every claimed row that is not given
+  back to be written in every column before the writer drops; it was stated only
+  in prose on the safe `next_row`. The docs also no longer call the result only a
+  wrong answer: DuckDB resets the output chunk before every scan call and drops a
+  `VARCHAR`/`BLOB` vector's string heap with it, so an unwritten row of such a
+  column can hold an earlier call's string record pointing into memory the vector
+  no longer holds (read in the v2.0.1 source; LESSONS L21).
+
+- **Breaking:** `Value::varchar` and `Value::blob` panic on a value longer than
+  `u32::MAX` bytes, as `LogicalType`'s plain constructors do for theirs; the new
+  `try_varchar` / `try_blob` return the error. Such a value was accepted and then
+  stored with its length modulo 2^32: VALIDATED on 1.5.6 and 2.0.1, a 4 GiB + 3
+  byte `Value::blob` bound through `PreparedStatement::bind_value` read back as 3
+  bytes, while `bind_blob` and the appender refused the same bytes. Found while
+  sweeping the safe index and length paths after QRS-008 (`AUDIT.md` section 16,
+  NEW-1); `values_over_four_gib_are_refused_by_the_value_constructors`.
+
+### Fixed
+
+- **`datetime::try_f64_to_hugeint(-2^127)` returns `Some(i128::MIN)`.** -2^127 is
+  exactly `i128::MIN`, and DuckDB 2.0.1 converts it (`ConvertFloatingToBigint`
+  now accepts `[-2^127, 2^127)`), but the check refused it, as releases before
+  2.0.1 return 0 for it. It is now answered in Rust, without calling DuckDB, so
+  the result does not depend on the engine. Found by the first run of the live
+  suite against libduckdb v2.0.1 (QRS-005).
+- **`FfiState::destroy_callback` skips a NULL state pointer (QRS-002).** DuckDB's
+  window path hands an aggregate's destructor entries of its state-pointer table
+  that it never wrote when an `init` fails, still on 2.0.1. In a five-row frame
+  they read as NULL on 1.5.6 and 2.0.1, and a plain C destructor dies with
+  SIGSEGV; the same destructor with a NULL check survives (VALIDATED, `AUDIT.md`
+  section 16). `FfiState` reports a panic in `T::default()` as that `init`
+  failure. A non-null garbage entry still cannot be detected, so
+  `T::default()` must still not panic in an aggregate a window can run.
+  `destroy_skips_a_null_inline_state_pointer` and its boxed twin fail under Miri
+  without the check ("got null pointer").
+- **`OwnedDataChunk::capacity` is right for a chunk imported from Arrow.** It
+  returned `duckdb_vector_size()` for every chunk, but
+  `duckdb_data_chunk_from_arrow` sizes the chunk's vectors by the Arrow array's
+  length (`dchunk->Initialize(alloc, types, length)`), so a three-row import has
+  room for three rows, not 2048; code that wrote up to `capacity()` would have
+  written past the vectors. The capacity is now stored when the chunk is made.
+  VALIDATED: `an_imported_chunk_reports_the_arrays_length_as_its_capacity` in
+  `tests/ffi_roundtrip/arrow_import.rs`.
 
 ### Security
 
+- **A `QUACK_RS_TARGET_DUCKDB_VERSION` declaration no longer widens what `LOAD`
+  reads from the engine's table (QRS-007).** For a release the layout table does
+  not list, a declaration naming that release made `AbiPolicy::Strict` take the
+  whole compiled struct, so a wrong declaration (a build relocked to other
+  bindings, a mistyped version) brought back the over-read the entry above fixes.
+  The declaration still lets `Strict` load on that release; the copy is now always
+  what DuckDB guarantees for the C API version asked for (546 slots for C API
+  v1.5.6 or later). A declared build that calls a slot past that gets an SQL error
+  for the call. Unit tests in `entry_point/api_init.rs` pin the fallback for
+  unlisted releases, `v2.0.2` among them.
+- **`Appender::append_default_to_chunk` no longer lets safe code write past a
+  vector (QRS-008).** It handed `col` and `row` to `duckdb_append_default_to_chunk`
+  unchecked, and DuckDB 2.0 does not check the row for every column type in a
+  release build: `VectorStringBuffer::SetValue` indexes a `VARCHAR` vector without
+  a bounds check, and `ValidityMask::SetValid` / `SetInvalid` check only under
+  `#ifdef DEBUG`. VALIDATED against the prebuilt libraries: on a `VARCHAR` column,
+  row 2048 of a 2048-row chunk returned `Ok` on DuckDB 2.0.0 and 2.0.1 (a write
+  past the vector), and row 2^40 and `u64::MAX` crashed the process with SIGSEGV on
+  2.0.1; DuckDB 1.5.6 refuses all of them ("Too many rows for chunk!"). Affected:
+  the `duckdb-1-5` feature from 0.13.0, on a DuckDB 2.0 engine, so the supported
+  lines 0.19.x and 0.20.x. Both indices are now checked against the chunk first
+  and a refused call writes nothing; see **Breaking** under Changed for the
+  signature. `tests/ffi_roundtrip/appender_api.rs` fails on DuckDB 2.0.1 with the
+  two checks removed ("col 0, row 2048 must be refused") and passes with them, on
+  1.5.6 and 2.0.1. Found by the maintainer review of 2026-11-25 (`AUDIT.md`
+  section 16), which had rated it a candidate with no demonstrated undefined
+  behaviour.
 - **`LOAD` no longer reads past the end of the engine's C API table.** Up to 0.20.0
   the entry points gave `libduckdb-sys`'s `duckdb_rs_extension_api_init` the pointer
   from DuckDB's `get_api` as it was. That function reads **every slot of the struct
@@ -55,8 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bindings' `get_api` returns a **zero-padded copy** of the engine's table, as
   long as the bindings' struct, holding the slots the engine has. The count comes
   from slot 7 (`duckdb_library_version`, in the stable prefix every engine
-  provides) and the layout table, or from `QUACK_RS_BUILT_AGAINST_DUCKDB` for a
-  release the table lacks; for a release neither knows, `AbiPolicy::Strict` takes
+  provides) and the layout table; for a release the table lacks (declared by
+  `QUACK_RS_TARGET_DUCKDB_VERSION` or not; see the QRS-007 entry above), `AbiPolicy::Strict` takes
   what DuckDB guarantees for the C API version the extension asked for (the 546
   slots of C API v1.5.6 for v1.5.6 or later, the 357-slot stable prefix before
   it) and every other policy the whole compiled struct, as before,
@@ -103,8 +212,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   committed lockfiles (243 distinct name and version pairs) against the OSV API
   returns no vulnerability.
 
+### Documentation
+
+- **A design note and a slot inventory for DuckDB's C API v2** (`docs/c-api-v2/`;
+  QRS-021 – QRS-023). quack-rs targets C API v1 and still does; the note sets out
+  what v2 is from the 2.0.1 headers and bindings (a separate 641-slot API with no
+  stable function yet, so every v2 extension is tied to one DuckDB build), three
+  approaches and a recommendation (wait for a stable v2 surface, then a separate
+  crate), work packages and acceptance criteria. `scripts/c-api-v2-inventory.py`
+  regenerates the inventory from a release's headers; for v2.0.1 its 641 names
+  equal the reviewer's independently extracted list. Nothing is implemented.
+Corrections and additions from the maintainer review of 2026-11-25 (`AUDIT.md`
+section 16); each was checked against the code, the DuckDB source, crates.io or a
+run before it was written:
+
+- **`SECURITY.md`** said releases before 0.16.0 were never yanked; crates.io lists
+  0.3.0 – 0.16.0 as yanked (2026-10-31). It now lists the defects fixed on `main`
+  that affect the supported 0.19.x and 0.20.x lines, and states the trust model:
+  an extension runs with the process's privileges, and `std::fs` or its own network
+  client bypasses DuckDB's access settings.
+- **`GOVERNANCE.md`, `RELEASING.md`, the workflows README and a `ci.yml` comment**
+  said or implied that `CI passed` is a required check on `main`. The ruleset
+  requires a pull request with zero approvals and no status check; each now says
+  so, and that adding the rule is the owner's.
+- **New book page, "Numbers: What Is Checked"** (QRS-024): which conversions are
+  checked, which are unchecked on purpose, and what is left to the extension
+  (rounding, overflow, floating-point order, NaN). The `DECIMAL` example in "Dates,
+  Times and Timestamps" uses `checked_mul`, so a `DECIMAL(38)` input no longer
+  overflows `i128` in it.
+- **Known Limitations:** one DuckDB engine per process (the bindings' function table
+  is process-wide; QRS-029); `memory_limit` does not cover what the extension
+  allocates (QRS-028); DuckDB 2.0.1 also runs the statements before a parse error,
+  measured, and `prepare` is the single-statement path, measured on 1.5.6, 2.0.0
+  and 2.0.1 (QRS-016, also in the `query` rustdoc); the window-frame crash and the
+  static-link entry re-checked against 2.0.1.
+- **Entry point:** "Registration is transactional" is now "Catalog registration is
+  transactional", with a table of what a failed `LOAD` rolls back (QRS-014);
+  `entry_point_v2!` says it is a C API v1 entry point (QRS-022).
+- **Smaller corrections:** the appender's lost-row count is an upper bound, not an
+  exact count (QRS-009); a chunk's readers and writers must not outlive
+  `OwnedDataChunk::reset` (QRS-010); `deny.toml` no longer cites a removed
+  suppression (QRS-018); upstream reports 6, 10 and 36 are brought to 2.0.1.
+
 ### CI / tooling
 
+- **The live suite runs against DuckDB v2.0.1 on its own bindings (QRS-005).**
+  `test-duckdb-2-0` is a two-leg matrix: v2.0.0 on `libduckdb-sys` 1.20000.1, and
+  v2.0.1 on 1.20001.0, the pair a fresh `cargo update` resolves; each leg runs the
+  live suite, doctests, clippy and rustdoc, with its own cache entry.
+  `extension-load` gains a pinned v2.0.1 leg. VALIDATED locally with the job's
+  commands on a relocked copy: the first run against 2.0.1 failed two tests that
+  pin engine behaviour 2.0.1 changed (-2^127 to `HUGEINT`, above; every state of
+  a grouped aggregate is now destroyed after a failed `finalize`, so that Known
+  Limitations entry is now "before 2.0.1"); after the fixes the whole suite
+  passes there.
+- **`scripts/fetch-duckdb.sh` refuses an unlisted `latest` DuckDB (QRS-019).** It
+  warned and used the binary unverified, and `latest` feeds blocking jobs
+  (`extension-load`, `scaffold-e2e`, `abi-guard`) and so the release gate. A new
+  DuckDB release now fails those jobs until its hashes are added to
+  `scripts/duckdb-sha256.txt`, as the `abi-table` job already does from its
+  header. VALIDATED: with v2.0.1's CLI line removed from a copy of the table,
+  `fetch-duckdb.sh latest cli` exits 1 and unpacks nothing. The table's header
+  now gives the `gh api` command that would check its hashes against GitHub's
+  per-asset digests, which were not reachable from here.
+- **`scripts/check-api-coverage.py` exits 2 ("could not check") on a header with
+  no `duckdb_ext_api_v1`,** such as DuckDB's C API v2 header, instead of failing
+  with a Python `ValueError` and exit 1, which reads as "the classification is
+  wrong". Its docstring now says that "wrapped" is lexical: it does not mean a
+  public item reaches the slot or a test exercises it (QRS-021).
 - **CI runs once per push.** `ci.yml`'s `push` trigger covers `main` only; branches are tested
   through their pull requests (into `main`, or into a `claude/**` branch for a stacked pull
   request), whose run checks the merge result. Pushing to a `claude/**` branch with an open
@@ -170,7 +345,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The incremental mutation gate fails closed, and decides once whether there is anything to
   test.** Its change detection ran `git diff` inside a pipeline ending in `|| true`, without
   `pipefail`: when `git diff` failed (a missing base ref, say), the list came back empty, the
-  shards reported "nothing changed" and the required check `Mutation Testing (incremental)`
+  shards reported "nothing changed" and the check `Mutation Testing (incremental)`
   passed having tested nothing (reproduced on a scratch repository: exit 0, `skip=true`).
   Detection is now one `mutants-changes` job under `set -euo pipefail` (a `git diff` failure
   fails it), the eight shards start only when it found Rust under `src/`, and the gate passes

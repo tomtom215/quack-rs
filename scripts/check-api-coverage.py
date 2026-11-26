@@ -17,7 +17,9 @@ test, a string or a comment names is not wrapped: counting those as wrapped
 put `duckdb_open` and `duckdb_close` (used only by tests) in the total, and a
 name kept in an error message satisfied the check after its wrapper was
 deleted. A used slot is **wrapped** unless the allowlist classes it
-`internal`. Every other slot must be listed in `scripts/api-coverage-allowlist.txt`
+`internal`. Both are lexical facts about the source: "wrapped" does not say that
+a public item reaches the slot, that the wrapper's contract is complete, or that
+a test exercises it (the maintainer review of 2026-11-25, QRS-021). Every other slot must be listed in `scripts/api-coverage-allowlist.txt`
 with a class and a reason:
 
     deprecated   DuckDB marks it deprecated in `duckdb.h`
@@ -46,7 +48,8 @@ corresponds to (`scripts/duckdb-version-from-lock.sh`), the same way
 Exit codes:
     0  every slot is wrapped or listed, and no listed slot is wrapped
     1  the classification is wrong (see the output)
-    2  the header could not be fetched -- "could not check", not a failure
+    2  the header could not be fetched or is not a `duckdb_ext_api_v1` header
+       -- "could not check", not a failure
 
 Usage:
     python3 scripts/check-api-coverage.py
@@ -413,7 +416,14 @@ def main() -> int:
             return 2
         label = f"DuckDB {tag}"
 
-    slots = abi.struct_fields(header, unstable=True, api=None)
+    try:
+        slots = abi.struct_fields(header, unstable=True, api=None)
+    except ValueError as error:
+        # `struct_fields` looks for the `duckdb_ext_api_v1` struct; another
+        # header (the C API v2 one, a truncated download) has none. That is
+        # "could not check", not "the classification is wrong".
+        print(f"{label}: not a duckdb_ext_api_v1 header ({error}); check skipped")
+        return 2
     used_in, not_library = scan(ROOT / "src")
     used = [name for name in slots if name in used_in]
     unused = [name for name in slots if name not in used_in]
