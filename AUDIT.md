@@ -3918,3 +3918,63 @@ later turn an unwind out of `extern "C"` into an abort); it is not undefined beh
 in an extension less informative. The setters stay safe, as INDEP-C (15.1) decided.
 
 Owner-only actions are listed in 16.5 as the work lands.
+
+### 16.4 What became of each row
+
+Commits on branch `claude/kind-mccarthy-joyxvn` (hashes before any squash). "Owner" marks
+what only the repository owner can do; 16.5 lists those.
+
+| ID | Resolution | Commit |
+|---|---|---|
+| QRS-001 | Already fixed on `main`; ships in the next release (owner) | 72d2b3f |
+| QRS-002 | Upstream defect, mitigation kept; destructor skips a NULL entry; docs at 2.0.1 | d442e2d |
+| QRS-003 | Duplicate of upstream report 36; 2.0.1 source re-read | f788ff4 |
+| QRS-004 | `VectorWriter::decimal()` / `DecimalWriter` (width and scale from the vector's type) | 215ed11 |
+| QRS-005 | `test-duckdb-2-0` matrix with v2.0.1 on 1.20001.0; two engine changes found and handled | a11858d |
+| QRS-006 | Docs corrected; the required check is the owner's setting | f788ff4 |
+| QRS-007 | A declared unlisted engine no longer widens the copy under `Strict` | d442e2d |
+| QRS-008 | Bounds checks; `&OwnedDataChunk` (breaking); `OwnedDataChunk::capacity` right for Arrow imports | abc1717, 808a3d7 |
+| QRS-009 | Wording: an upper bound | f788ff4 |
+| QRS-010 | Wording: views must not outlive `reset` | f788ff4 |
+| QRS-011 | Claimed-row rule in the `# Safety` sections; docs no longer say "only a wrong answer" | d442e2d |
+| QRS-012 | `ListBuilder::try_finish` | 215ed11 |
+| QRS-013 | No change (16.3) | — |
+| QRS-014 | Heading narrowed, rollback table | f788ff4 |
+| QRS-015 | No change: not a defect | — |
+| QRS-016 | Measured on 2.0.1; `prepare` documented as the one-statement path | f788ff4 |
+| QRS-017 | Trust model in `SECURITY.md` | f788ff4 |
+| QRS-018 | Stale `deny.toml` comment; SBOM left as a feature request | f788ff4 |
+| QRS-019 | `fetch-duckdb.sh` refuses an unlisted `latest`; digest check documented | a11858d |
+| QRS-020 | No change: a source-built sanitized DuckDB job is still not set up (16.6) | — |
+| QRS-021 | Coverage script exit 2 on a non-v1 header, "wrapped" defined as lexical; v2 inventory | 215ed11, 2762b3e |
+| QRS-022 | Design note and inventory, no implementation (16.3) | 2762b3e |
+| QRS-023 | In the design note | 2762b3e |
+| QRS-024 | Book page "Numbers"; overflow in the book's example fixed | f788ff4 |
+| QRS-025 | Covered by the 2.0.1 job; engine behaviour otherwise out of scope | a11858d |
+| QRS-026 | No change: not a defect | — |
+| QRS-027 | `SECURITY.md` and 15.4 corrected; release and advisory are the owner's | f788ff4 |
+| QRS-028 | Known Limitations: `memory_limit` does not cover the extension's own heap | f788ff4 |
+| QRS-029 | Known Limitations: one DuckDB engine per process | f788ff4 |
+| QRS-030 | No change; the report's premise of no compile-fail examples is wrong (16.1) | — |
+| NEW-1 | `Value::try_varchar` / `try_blob`; the plain constructors panic past 4 GiB | 215ed11 |
+| NEW-2 | DuckDB 2.0.1 converts -2^127 to `HUGEINT`; `try_f64_to_hugeint` answers it itself | a11858d |
+| NEW-3 | DuckDB 2.0.1 destroys every grouped state after a failed `finalize`; tests and docs per release | a11858d |
+
+NEW-2 and NEW-3 are engine changes the first live run against 2.0.1 found, not quack-rs
+defects; NEW-1 came from the sweep of 16.2's sibling paths.
+
+### 16.5 For the owner (nothing here was done)
+
+- **Require `CI passed` on `main`** (QRS-006): a `required_status_checks` rule in the
+  `protect-main` ruleset. Zero approvals is unavoidable with one maintainer; say so in the
+  rule's description.
+- **Release 0.21.0** with the fixes of this section. It is breaking (`CHANGELOG.md` marks
+  each change), although `cargo-semver-checks` reports none (16.6). Whether to backport
+  QRS-001 and QRS-008 to 0.19.x and 0.20.x, and whether to publish a RustSec advisory for
+  them, is the owner's decision; `SECURITY.md` now lists both as known defects of those lines.
+- **Check the DuckDB hashes against GitHub's per-asset digests** (QRS-019): the command is in
+  `scripts/duckdb-sha256.txt`; the API was not reachable from here.
+- **Upstream reports**: QRS-002 (window path) and QRS-003 (report 36) are DuckDB's to fix;
+  filing is public and under the owner's name.
+- **Confirm the yank of 0.3.0 – 0.16.0** was intended (crates.io, 2026-10-31); 15.4 recorded
+  the opposite decision.
