@@ -48,13 +48,15 @@ but not released, and its changes ship in 0.18.0 (see the 0.18.0 entry in
 ## Known defects in supported releases
 
 Fixed on `main` after 0.20.0 and not yet in a release; each is described in the
-`[Unreleased]` section of `CHANGELOG.md` and in `AUDIT.md` sections 15 and 16.
+`[Unreleased]` section of `CHANGELOG.md` and in `AUDIT.md` sections 15 to 17.
 
 | Defect | Affects | Effect |
 |---|---|---|
 | `LOAD` reads past the end of the engine's C API table | 0.19.x and 0.20.x, loaded into a DuckDB whose table is shorter than the bindings' struct: 1.4.x or 1.5.0 – 1.5.1 for the 546-slot (1.5.6) bindings, and also 1.5.2 – 1.5.6 for the 548-slot (2.0) bindings | A read of up to 89 pointers past the table at load; no crash observed |
 | `Appender::append_default_to_chunk` writes past a vector | 0.19.x and 0.20.x with the `duckdb-1-5` feature, on DuckDB 2.0.0 or 2.0.1 | Safe code writes past a `VARCHAR` vector's buffer (row 2048), or crashes the process (a larger row) |
 | `Value::varchar` / `Value::blob` over 4 GiB | 0.19.x and 0.20.x | The value is stored with its length modulo 2^32: silent truncation, not a memory error |
+| `Appender::append_default_to_chunk` writes into an Arrow producer's buffer | 0.19.x and 0.20.x with the `duckdb-1-5-4` feature, on a chunk from `arrow::data_chunk_from_arrow` | Safe code overwrites memory the Arrow producer owns (DuckDB imports fixed-width columns without copying), or crashes the process when that memory is read-only; measured on 1.5.6 and 2.0.1 |
+| A refused `LOAD` overwrites the process's C API function table | 0.19.x and 0.20.x, in a process with two DuckDB library images | The second engine's pointers replace the first's, so the first engine's extension calls reach the other library; shown with mock engine tables, not with two real libraries |
 
 ## Trust model
 

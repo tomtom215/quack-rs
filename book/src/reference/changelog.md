@@ -12,6 +12,26 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`ChunkWriter::begin_row` and `PendingRow`: a claimed output row is published
+  only once committed (F-08, `AUDIT.md` section 17).** `next_row` counts a row as
+  soon as it is claimed, so a scan that stopped between the claim and the writes (a
+  source that ran out, a `?`, a panic) published that row with whatever the reused
+  output vector last held. `begin_row` returns a guard; `commit` keeps the row and
+  dropping the guard otherwise gives it back. It does not check that every column
+  was written, which stays in `ChunkWriter::new`'s `# Safety` contract.
+  `a_pending_row_is_published_only_when_committed` (unit) and
+  `an_uncommitted_pending_row_is_not_published` (live, DuckDB 1.5.6 and 2.0.1)
+  fail with the give-back removed.
+- **`QUACK_RS_REQUIRE_STRICT_ABI=1`: a build in which every entry point applies
+  `AbiPolicy::Strict` (F-06).** For a deployment that must not ship `Warn`,
+  `AllowUnknownEngine` or `Trust`. Read by the build script (a value other than
+  `1`, `0` or empty also turns it on, with a warning); `abi::strict_abi_required()`
+  and `AbiPolicy::effective()` report it. An environment variable, not a feature,
+  so `--all-features` cannot switch it on. `abi_policy_enforced` passes in both
+  builds with opposite expectations; CI runs it once in the strict-only build.
+- **`OwnedDataChunk::is_externally_backed`**: whether a chunk imported from Arrow
+  may still point into the producer's buffers (see Security, F-05).
+
 - **DuckDB v2.0.1 is listed in the C API layout table and the autoload tables.** Its
   `duckdb_ext_api_v1` is v2.0.0's (548 slots, same declarations), so a `duckdb-1-5*`
   build that loads into 2.0.0 now loads into 2.0.1 under `AbiPolicy::Strict` instead of
@@ -60,6 +80,14 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Breaking:** `QueryResult::into_raw` is no longer a `const fn` (see Fixed, F-09).
+- **The scaffold's release profile sets `overflow-checks = true` (F-12)**, and the
+  README and book show it wherever they show the recommended profile: integer
+  overflow then panics in a release build, as it does under `cargo test`, and the
+  callback macros report the panic as a SQL error, instead of wrapping silently.
+  It is a backstop; the docs keep `checked_*` arithmetic as the way to reject a
+  value.
+
 - **Breaking:** `Appender::append_default_to_chunk` takes `&OwnedDataChunk`
   instead of `&DataChunk` (QRS-008, above). The row is checked against the chunk's
   capacity, which an `OwnedDataChunk` knows and a `DataChunk` borrowed from a
@@ -98,6 +126,11 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`QueryResult::into_raw` leaked a failed stream's error message (F-09).** It
+  called `mem::forget(self)`, which also skipped the Rust-owned fetch state. Under
+  Miri, `into_raw_frees_a_failed_streams_message` reports a 17-byte leak with the
+  old body and passes with the new one. 0.20.x only (0.19.x has no `into_raw`).
+
 - **`datetime::try_f64_to_hugeint(-2^127)` returns `Some(i128::MIN)`.** -2^127 is
   exactly `i128::MIN`, and DuckDB 2.0.1 converts it (`ConvertFloatingToBigint`
   now accepts `[-2^127, 2^127)`), but the check refused it, as releases before
@@ -124,6 +157,30 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `tests/ffi_roundtrip/arrow_import.rs`.
 
 ### Security
+
+- **`Appender::append_default_to_chunk` no longer writes into an Arrow producer's
+  buffers (F-05, `AUDIT.md` section 17).** DuckDB imports fixed-width Arrow
+  columns without copying, so the vectors of a chunk from
+  `arrow::data_chunk_from_arrow` are the producer's buffers, and the safe default
+  write wrote into them. VALIDATED on DuckDB 1.5.6 and 2.0.1 with the check
+  removed: the producer's `7` became the column default `42`, and with the buffer
+  in a read-only page the process died with SIGSEGV. An imported chunk is now
+  marked externally backed (cleared by `OwnedDataChunk::reset`, which gives every
+  column a buffer of DuckDB's own) and the safe call refuses it; the `unsafe`
+  writers' `# Safety` sections name the obligation. Affected: 0.19.x and 0.20.x
+  with the `duckdb-1-5-4` feature. The review that raised it called it an
+  investigation candidate, not a confirmed defect.
+- **A refused `LOAD` no longer overwrites the process's C API function table, and
+  a second DuckDB library image is refused (F-07).** `libduckdb-sys` keeps one
+  table per process. The bindings filled it before the layout check ran, so a load
+  `Strict` refused had already replaced the pointers an earlier load published;
+  and a load from a second library image in the same process replaced them with
+  that image's, redirecting the first engine's calls. The verdict is now reached
+  on the version read from the engine's own table before anything is stored, and
+  an engine whose `duckdb_open` differs from the one already published is refused
+  under every policy. `tests/engine_identity.rs` (mock tables, no DuckDB) fails on
+  both counts against 0.20.0's entry point. Affected: 0.19.x and 0.20.x, in a
+  process with two DuckDB library images; not reproduced with two real ones.
 
 - **A `QUACK_RS_TARGET_DUCKDB_VERSION` declaration no longer widens what `LOAD`
   reads from the engine's table (QRS-007).** For a release the layout table does
@@ -217,6 +274,16 @@ quack-rs adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Documentation
 
+- **Production Configuration**, a new reference page: what to set, use and avoid
+  when an extension must not give a wrong answer, crash or leak, from the review
+  of 2026-11-27. The DuckDB facts it states were measured on 2.0.1 (and 1.5.6
+  where it says so): the extension settings' defaults, `lock_configuration`,
+  `decimal_division`'s half-even rounding, and `/` on `DECIMAL`s returning
+  `DOUBLE`. Numbers gains the decimal-division entry.
+- **The grouped-aggregate early-stop leak is unchanged on DuckDB 2.0.1 (F-10):**
+  `tests/aggregate_leaks.rs` against 2.0.1 leaves 0 bytes for inline states and
+  152,551,424 bytes for boxed 512-byte states under `LIMIT 10`.
+
 - **A design note and a slot inventory for DuckDB's C API v2** (`docs/c-api-v2/`;
   QRS-021 – QRS-023). quack-rs targets C API v1 and still does; the note sets out
   what v2 is from the 2.0.1 headers and bindings (a separate 641-slot API with no
@@ -258,6 +325,13 @@ run before it was written:
   suppression (QRS-018); upstream reports 6, 10 and 36 are brought to 2.0.1.
 
 ### CI / tooling
+
+- **cargo-deny 0.22.1, osv-scanner 2.7.1 (checksum from the release's
+  `osv-scanner_SHA256SUMS`, matched by two downloads), `cc` 1.11.3 in `Cargo.lock`
+  (F-29).** Both scanners pass on every manifest and lockfile; osv-scanner finds
+  no unfiltered issue in the five lockfiles' 704 packages.
+- **`test-bundled-prebuilt` builds once with `QUACK_RS_REQUIRE_STRICT_ABI=1`** and
+  runs `abi_policy_enforced` and `engine_identity` there.
 
 - **The live suite runs against DuckDB v2.0.1 on its own bindings (QRS-005).**
   `test-duckdb-2-0` is a two-leg matrix: v2.0.0 on `libduckdb-sys` 1.20000.1, and

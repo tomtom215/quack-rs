@@ -4070,3 +4070,142 @@ Figures, each read from its gate's log:
   panic both passed it here.
 - A claim about engine behaviour from reading, delegated or not, is measured before it goes
   into a document (16.8, first item).
+
+## 17. Independent production-readiness review, 27 November 2026 (33 findings, `main` at `1807567`)
+
+An outside reviewer assessed quack-rs for enterprise and regulated use: 33 findings, F-01 to
+F-33, against `main` at `1807567` and the published `v0.20.0`. The report says it was written
+from source without a checkout, a compiler or a DuckDB, and labels which findings it confirmed
+in source and which it could not reproduce. Every row was re-checked here against the code at
+`1807567`, the released DuckDB 1.5.6 and 2.0.1 libraries and CLIs (fetched by
+`scripts/fetch-duckdb.sh`, which verified each against `scripts/duckdb-sha256.txt`), crates.io's
+index and the projects' download servers.
+
+### 17.1 Triage and resolution
+
+Evidence marks as in 16.1: **V**, a command or program run here, with its result; **S**, read
+here in the source named. Severity is the report's.
+
+| ID | Sev | Status | Evidence | Resolution | Commit |
+|---|---|---|---|---|---|
+| F-01 | P0 | already fixed | S: QRS-001 (16.4) | release 0.21.0, backport/advisory (owner, 17.4) | 72d2b3f |
+| F-02 | P0 | already fixed | S: QRS-008 (16.4) | as F-01 | abc1717 |
+| F-03 | P1 | already fixed | S: NEW-1 (16.4) | as F-01 | 215ed11 |
+| F-04 | P0 | confirmed, not changed | S: `state.rs` documents it (the volatile load of possibly-unwritten state bytes is not defined in Rust's model) | no change; a narrowing is recommended in 17.3 | — |
+| F-05 | P0 (candidate) | **confirmed, worse than reported** | V: 1.5.6 and 2.0.1: the imported vector's data pointer equals the producer's buffer; the safe call turned the producer's `7` into `42`; with the buffer read-only, SIGSEGV | safe call refuses an externally backed chunk; `is_externally_backed`; Safety clauses | 3ad2f4a |
+| F-06 | P0 policy | confirmed | S: `policy_verdict` | `QUACK_RS_REQUIRE_STRICT_ABI=1` forces `Strict` | 2805d79 |
+| F-07 | P1/P0 | **confirmed** | V: mock engines (`tests/engine_identity.rs`) against 0.20.0's entry point: a second image loads over the first; a `Strict`-refused v1.4.4 load leaves its own table published | verdict and identity check before the bindings store anything | 49eef2f |
+| F-08 | P1 | confirmed (API design) | S: `next_row` counts on claim | `begin_row` / `PendingRow` | ffebf92 |
+| F-09 | P2 | **confirmed** | V: Miri reports a 17-byte leak (the message) with the old body | `ManuallyDrop`, fetch state dropped; no longer `const` | 3270c41 |
+| F-10 | P1 | confirmed on 2.0.1 | V: `aggregate_leaks` on 2.0.1: inline 0 bytes, boxed 152,551,424 bytes under `LIMIT 10` | documented per release; upstream item 20 | bdccd84 |
+| F-11 | P2 | confirmed (design choice) | S: typed table functions set one thread | not done: a parallel typed API is feature work | — |
+| F-12 | P1 | confirmed | S: scaffold template | scaffold and docs set `overflow-checks = true` | 248c91e |
+| F-13 | — | confirmed | V: 2.0.1 `decimal_division` half-even; `/` on DECIMAL is DOUBLE; absent on 1.5.6 | Numbers and Production pages | bdccd84 |
+| F-14 | — | confirmed (no primitive) | S | documented; no summation primitive added | bdccd84 |
+| F-15 | — | duplicate | S: pitfall L1 | linked from the Production page | bdccd84 |
+| F-16 | — | already fixed | S: `ListBuilder::try_finish` (QRS-012) | Production page names it; `finish` kept | bdccd84 |
+| F-17 | — | duplicate | S: QRS-014; `entry_point_txn.rs` covers failed, panicking and raw-entry loads | no change | — |
+| F-18 | — | duplicate | S: QRS-016 | Production page | bdccd84 |
+| F-19 | — | duplicate | S: appender docs (`flush` surfaces constraint errors) | Production page | bdccd84 |
+| F-20 | P1 | duplicate | S: `data_chunk_from_arrow` Safety | no adapter built; Production page points at the contract | bdccd84 |
+| F-21 | — | duplicate | S: `SECURITY.md` trust model (QRS-017) | Production page | bdccd84 |
+| F-22 | — | confirmed, not changed | S: `Clone` documented as a second copy | kept (17.3) | — |
+| F-23 | — | confirmed (doc) | S: `audit_tls_provider` reads declarations | Production page | bdccd84 |
+| F-24 | P1 | confirmed earlier | S: 16.5 | owner (17.4) | — |
+| F-25 | P1 | duplicate (QRS-020) | S | not done (17.5) | — |
+| F-26 | — | not done | — | an FFI assurance register is a project of its own | — |
+| F-27 | — | not done | — | state-machine and metamorphic tests not written | — |
+| F-28 | P2 | not measured | — | no LTO/codegen benchmark was run; profile unchanged | — |
+| F-29 | P1 | confirmed | V: crates.io index lists cargo-deny 0.22.1 (rust 1.95); both scanners pass | cargo-deny 0.22.1, osv-scanner 2.7.1, `cc` 1.11.3 | fbffb84 |
+| F-30 | P1 | needs a decision | S: `Cargo.lock` stays on the 1.5.6 bindings because the 2.0 bindings need Rust 1.88, above the 1.86 MSRV | no change; CI already tests 2.0.0 and 2.0.1 on their bindings | — |
+| F-31 | P2 | not done | — | architectural; F-05 and F-08 are instances of it, done | — |
+| F-32 | P2 | not done | — | crate split not attempted | — |
+| F-33 | P2 | not done | — | — | — |
+
+33 rows. By status: 7 confirmed and fixed (F-05 to F-09, F-12, F-29); 4 already fixed on
+`main` (F-01 to F-03, F-16); 8 duplicates of recorded items (F-15, F-17 to F-21, F-25, and F-24
+recorded in 16.5); 3 confirmed or measured and documented without a code change (F-10, F-13,
+F-14); 3 confirmed and deliberately not changed (F-04, F-22, F-23 handled in docs only); 1
+needing a decision (F-30); 7 not done (F-11, F-26 to F-28, F-31 to F-33).
+
+Where the report is wrong or understates:
+
+- **F-05** is not only a candidate: with a read-only buffer it is a crash from safe code, on
+  1.5.6 and 2.0.1. The report was right that capacity and writability are different properties.
+- **F-07**'s ordering concern was a source reading in the report; it is now shown.
+- **"Rust 1.100.1 dated 27 November"**: no `channel-rust-1.100.1.toml` exists on
+  static.rust-lang.org (checked 2026-11-27); 1.100.0 is dated 2026-11-12.
+- **F-29's description of cargo-deny 0.22.1's fixes** could not be checked: the GitHub API is not
+  reachable from here. The update stands on its own (the scans pass with it).
+
+### 17.2 What was measured
+
+- **Baselines, before any change:** `cargo test --all-targets` with
+  `bundled-test-prebuilt,duckdb-1-5-4` against libduckdb 1.5.6: 1,864 passed, 0 failed.
+- **On the final code** (the code of `2805d79`; the later commits change docs and CI only), with
+  the pinned 1.99.1 toolchain: fmt; clippy with `-D warnings` on the default, `duckdb-1-5-4` and
+  `bundled-test-prebuilt,duckdb-1-5-4` feature sets; rustdoc with `-D warnings` on two; all
+  clean. Tests, 0 failed in each: 1,181 (default), 1,322 (`duckdb-1-5-4`), 237 doctests, and
+  1,874 live against libduckdb 1.5.6 (the 1,864 of the baseline and 10 new). **Against 2.0.1:
+  1,874 passed, 0 failed**, on bindings relocked to `libduckdb-sys` 1.20001.0 in a worktree at
+  `2805d79`, as CI's `test-duckdb-2-0` job does. MSRV: `cargo +1.86.0 check` on both feature
+  sets, after the rust-version-aware re-resolution CONTRIBUTING describes, clean.
+- **Rust 1.100.0** (released 2026-11-12): the three clippy runs with `-D warnings`, rustfmt, and
+  the 1,874-test live suite against 1.5.6, all clean. The pin in `rust-toolchain.toml` is not
+  moved here: CONTRIBUTING says it moves by a pull request of its own.
+- **Each regression test was seen to fail without its fix:** F-05 (assertion on 1.5.6 and 2.0.1;
+  SIGSEGV on both for the read-only case), F-07 (both scenarios, against 0.20.0's entry point),
+  F-08 (unit and live; the live test hung under the mutation until it was changed to fail
+  instead), F-09 (Miri leak report), F-06 (opposite expectations in the two builds).
+- **Scanners:** cargo-deny 0.22.1 on the root manifest and the four CI crates: advisories, bans,
+  licenses, sources ok. osv-scanner 2.7.1: 704 packages in 5 lockfiles, no unfiltered issue.
+- **The book page** was rendered with mdbook 0.4.40 and read as a screenshot.
+
+### 17.3 Decisions
+
+- **F-04 not changed.** No Rust construct makes reading bytes DuckDB may never have written
+  defined; the tag check stays a mitigation. A narrowing, CONJECTURED and not implemented: if
+  `init_callback` never reported failure (a panicking `T::default()` marked the slot poisoned
+  and the error were raised from the next `update`, `combine` or `finalize`), DuckDB would stop
+  destroying uninitialised *quack-rs* states, and the window path would stop handing the
+  destructor unwritten pointers, except when another aggregate in the same query fails its
+  `init`. It changes when the error surfaces and needs every callback path to check the poison,
+  including callbacks users write by hand around `FfiState`, so it is a design change for the
+  owner, not a fix.
+- **F-06 as an environment variable**, not a feature: CI's `--all-features` job would otherwise
+  build the strict-only variant and fail the tests of the permissive policies.
+- **F-07 refuses under `Trust` too.** What the identity check protects is the other engine,
+  which never chose a policy.
+- **F-22 not changed.** `SecretEntry: Clone` is documented as making a second copy; removing it
+  breaks callers for a hazard they can see.
+- **F-12 leaves the crate's own profile alone**: Cargo ignores an rlib's profile downstream, and
+  the benches inherit it.
+
+### 17.4 For the owner (nothing here was done)
+
+- Release 0.21.0; the F-05 and F-07 defects are now in `SECURITY.md`'s table for 0.19.x and
+  0.20.x, beside F-01 to F-03. Backports and a RustSec advisory are the owner's decision.
+- Require `CI passed` on `main` (F-24; 16.5 already asks).
+- Move the toolchain pin to 1.100.0 in its own pull request (17.2).
+
+### 17.5 Not verified
+
+- **Two real DuckDB library images in one process** (F-07): only mock tables.
+- **A DuckDB built from source with sanitizers** (F-25, QRS-020): still not set up.
+- **macOS, Windows, wasm, fuzz, coverage, mutation and the release workflow**: not run here.
+- **The CI step added for F-06 and the workflow edits**: run here as the commands they hold, not
+  through Actions. `actionlint` 1.7.12 and `typos` 1.46.0 pass on the tree, and so do the
+  repository's workflow, toolchain-pin, action-pin, CI-aggregate and book-link scripts.
+- **Tool provenance**: mdbook 0.4.40, actionlint and typos were downloaded without a checksum
+  check; osv-scanner was checked against its release's checksum file only.
+- **`hello-ext` with `overflow-checks = true`** was not rebuilt and loaded here; CI's
+  `extension-load` job is the check.
+
+### 17.6 Lessons
+
+- A finding the reporter labels a candidate can be the most serious one: F-05 was one compile
+  and one `mmap` away from a crash.
+- A mutation that makes a scan publish rows forever turns a test into a hang, not a failure;
+  bound what a test scan can emit.
+- A version a review attributes to an upstream project (Rust 1.100.1) is checked at the
+  distribution point before it is repeated.
