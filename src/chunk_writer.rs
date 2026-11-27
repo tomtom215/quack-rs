@@ -219,6 +219,55 @@ impl ChunkWriter {
         self.row_count = row;
     }
 
+    /// Claims the next row as **pending**: it is published only if
+    /// [`PendingRow::commit`] is called, and given back when the guard drops
+    /// otherwise, including on an early `return`, a `?` and a panic.
+    ///
+    /// Returns `None` if the chunk is full. While the guard lives, the writer is
+    /// borrowed, so no other row can be claimed or given back in between.
+    ///
+    /// This closes the hole [`next_row`][Self::next_row] leaves when a scan
+    /// stops between claiming a row and finishing it (`AUDIT.md` section 17,
+    /// F-08): that row is no longer published with stale contents. It does not
+    /// check that every column of the row was written before `commit`; the
+    /// writes go through [`VectorWriter`]s, which do not report back. That
+    /// remains the `# Safety` contract of [`new`][Self::new].
+    ///
+    /// ```rust,no_run
+    /// use quack_rs::chunk_writer::ChunkWriter;
+    /// use libduckdb_sys::{duckdb_function_info, duckdb_data_chunk};
+    ///
+    /// fn parse(raw: &str) -> Result<i64, std::num::ParseIntError> {
+    ///     raw.parse()
+    /// }
+    ///
+    /// unsafe fn scan(output: duckdb_data_chunk) -> Result<(), std::num::ParseIntError> {
+    ///     let mut source = ["1", "2", "x"].into_iter();
+    ///     // SAFETY: `output` is the scan's output chunk, and every committed row
+    ///     // has its one column written.
+    ///     let mut cw = unsafe { ChunkWriter::new(output) };
+    ///     // SAFETY: column 0 exists and is BIGINT.
+    ///     let mut values = unsafe { cw.writer(0) };
+    ///     while let Some(row) = cw.begin_row() {
+    ///         let Some(raw) = source.next() else { break }; // `row` is given back
+    ///         let value = parse(raw)?; // so is this one, on the error path
+    ///         // SAFETY: `row.index()` is below the chunk's capacity.
+    ///         unsafe { values.write_i64(row.index(), value) };
+    ///         row.commit();
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    #[inline]
+    pub fn begin_row(&mut self) -> Option<PendingRow<'_>> {
+        let index = self.next_row()?;
+        Some(PendingRow {
+            writer: self,
+            index,
+            committed: false,
+        })
+    }
+
     /// Returns the number of rows claimed and not given back: the size the
     /// drop publishes.
     #[inline]
@@ -335,6 +384,48 @@ impl Drop for ChunkWriter {
     }
 }
 
+/// A row claimed by [`ChunkWriter::begin_row`]: published only once
+/// [`commit`][Self::commit] is called, given back when dropped otherwise.
+///
+/// Holds the writer mutably, so nothing else can claim or give back a row
+/// while it lives, and the row it gives back is always the last one claimed.
+#[must_use = "a pending row is given back when dropped; call `commit` once it is written"]
+#[derive(Debug)]
+pub struct PendingRow<'w> {
+    writer: &'w mut ChunkWriter,
+    index: usize,
+    committed: bool,
+}
+
+impl PendingRow<'_> {
+    /// The row's index in the output chunk: below the writer's capacity.
+    #[inline]
+    #[must_use]
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Keeps the row: the writer's drop publishes it.
+    ///
+    /// Call it once every column of the row has been written; the writer
+    /// cannot check that (see [`ChunkWriter::begin_row`]).
+    #[inline]
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PendingRow<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            // The guard holds the writer mutably from the claim on, so this is
+            // still its most recently claimed row and `release_row` cannot
+            // panic.
+            self.writer.release_row(self.index);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +498,57 @@ mod tests {
         full.release_row(0);
         assert!(!full.is_full());
         std::mem::forget(full);
+        std::mem::forget(cw);
+    }
+
+    /// F-08 (`AUDIT.md` section 17): a pending row is published only when
+    /// committed. A row abandoned by `break`, by `?` and by a panic is given
+    /// back, and the next claim gets the same index again.
+    #[test]
+    fn a_pending_row_is_published_only_when_committed() {
+        let mut cw = detached(4);
+        let row = cw.begin_row().expect("room");
+        assert_eq!(row.index(), 0);
+        row.commit();
+        assert_eq!(cw.row_count(), 1);
+
+        // Dropped without a commit (the source ran out, then `break`).
+        let row = cw.begin_row().expect("room");
+        assert_eq!(row.index(), 1);
+        drop(row);
+        assert_eq!(cw.row_count(), 1);
+
+        // An error between the claim and the commit.
+        let fill = |cw: &mut ChunkWriter, value: Result<i64, &'static str>| {
+            let row = cw.begin_row().ok_or("full")?;
+            let _value = value?;
+            row.commit();
+            Ok::<(), &'static str>(())
+        };
+        assert_eq!(fill(&mut cw, Err("bad input")), Err("bad input"));
+        assert_eq!(cw.row_count(), 1);
+        assert_eq!(fill(&mut cw, Ok(7)), Ok(()));
+        assert_eq!(cw.row_count(), 2);
+
+        // A panic between the claim and the commit.
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _row = cw.begin_row().expect("room");
+            panic!("user code panicked mid-row");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(cw.row_count(), 2);
+
+        // Full: no row to begin.
+        assert!(cw.begin_row().is_some_and(|r| {
+            r.commit();
+            true
+        }));
+        assert!(cw.begin_row().is_some_and(|r| {
+            r.commit();
+            true
+        }));
+        assert!(cw.begin_row().is_none());
+        assert_eq!(cw.row_count(), 4);
         std::mem::forget(cw);
     }
 

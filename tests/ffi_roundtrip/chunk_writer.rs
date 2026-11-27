@@ -130,6 +130,62 @@ fn a_claimed_row_the_source_cannot_fill_is_given_back_not_published_stale() {
     assert_eq!(stale[capacity..], [SOURCE[0], SOURCE[1], FIRST_CALL]);
 }
 
+// The same two calls with `begin_row` (F-08, `AUDIT.md` section 17): the row
+// claimed after the source runs out is dropped uncommitted, with no explicit
+// give-back. The bind argument is ignored.
+quack_rs::table_scan_callback!(pending_scan, |info, output| {
+    // SAFETY: init data was set above; `output` is the live chunk.
+    let (calls, chunk) = unsafe {
+        (
+            FfiInitData::<AtomicUsize>::get(info).expect("init data"),
+            DataChunk::from_raw(output),
+        )
+    };
+    // SAFETY: `output` is this scan's writable chunk, of one BIGINT column;
+    // every committed row is written.
+    let mut cw = unsafe { chunk.into_chunk_writer() };
+    let mut w = unsafe { cw.writer(0) };
+    // Later calls claim nothing at all, so a guard that failed to give its
+    // row back makes this test fail instead of scanning forever.
+    let mut source: Box<dyn Iterator<Item = i64>> = match calls.fetch_add(1, Ordering::SeqCst) {
+        0 => Box::new(std::iter::repeat(FIRST_CALL)),
+        1 => Box::new(SOURCE.into_iter()),
+        _ => return,
+    };
+    while let Some(row) = cw.begin_row() {
+        let Some(v) = source.next() else { break };
+        unsafe { w.write_i64(row.index(), v) };
+        row.commit();
+    }
+});
+
+#[test]
+fn an_uncommitted_pending_row_is_not_published() {
+    let fx = Fixture::open();
+    // SAFETY: `fx` is open; the callbacks match the declared signature.
+    unsafe {
+        TableFunctionBuilder::new("cw_pending")
+            .param(TypeId::Boolean)
+            .bind(claim_bind)
+            .init(claim_init)
+            .scan(pending_scan)
+            .register(fx.con())
+    }
+    .expect("register cw_pending");
+    // SAFETY: the dispatch table is initialised.
+    let capacity = usize::try_from(unsafe { duckdb_vector_size() }).expect("fits");
+    let mut result = fx.query("SELECT v FROM cw_pending(false)");
+    let mut out = Vec::new();
+    while let Some(chunk) = result.next_chunk().expect("fetch") {
+        // SAFETY: one BIGINT column, read within the chunk's size.
+        let reader = unsafe { chunk.reader(0) };
+        out.extend((0..chunk.size()).map(|row| unsafe { reader.read_i64(row) }));
+    }
+    assert_eq!(out.len(), capacity + SOURCE.len(), "{:?}", &out[capacity..]);
+    assert!(out[..capacity].iter().all(|&v| v == FIRST_CALL));
+    assert_eq!(out[capacity..], SOURCE);
+}
+
 #[test]
 fn a_chunk_writer_reports_the_chunk_and_sets_its_size_on_drop() {
     let _fx = Fixture::open();
