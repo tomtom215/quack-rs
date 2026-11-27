@@ -252,11 +252,19 @@ impl QueryResult {
     /// destroy (`duckdb_destroy_result`) or hand back to
     /// [`from_raw`][Self::from_raw]. Whether [`next_chunk`][Self::next_chunk]
     /// had reached the end is not carried over.
+    ///
+    /// The Rust-side state is released here: before 0.21.0 this `forget` the
+    /// whole value, so a result whose stream had failed leaked the error
+    /// message it held (`AUDIT.md` section 17, F-09). No longer `const` for
+    /// that reason: dropping a `String` is not a `const` operation.
     #[must_use]
-    pub const fn into_raw(self) -> duckdb_result {
-        let raw = self.result;
-        std::mem::forget(self);
-        raw
+    pub fn into_raw(self) -> duckdb_result {
+        let mut this = core::mem::ManuallyDrop::new(self);
+        // Drop what this value owns on the Rust side (a failed stream's
+        // message); only the `duckdb_result` passes to the caller, and
+        // `ManuallyDrop` keeps `Drop` from destroying it.
+        drop(core::mem::replace(&mut this.fetch, FetchState::Ended));
+        this.result
     }
 }
 

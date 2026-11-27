@@ -468,6 +468,24 @@ mod tests {
         );
         assert!(message.contains("catch (...)"), "{message}");
     }
+
+    /// F-09 (`AUDIT.md` section 17): `into_raw` used to `mem::forget` the
+    /// whole value, so a failed stream's message was never freed. The handle
+    /// here is zeroed and never destroyed (that needs an engine); what the
+    /// test checks is that nothing *Rust* owns is left behind, which Miri's
+    /// leak checker reports at the end of the test (CI's `miri` job).
+    #[test]
+    fn into_raw_frees_a_failed_streams_message() {
+        // SAFETY: an all-zero `duckdb_result` is a valid value of the C struct
+        // (null pointers and zero counts); it is not handed to DuckDB.
+        let raw: duckdb_result = unsafe { std::mem::zeroed() };
+        let result = QueryResult {
+            result: raw,
+            fetch: FetchState::Failed(String::from("the stream failed")),
+        };
+        let back = result.into_raw();
+        assert_eq!(back.internal_data, raw.internal_data);
+    }
 }
 
 /// Tests that need a live `DuckDB`.
