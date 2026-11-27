@@ -731,6 +731,7 @@ quack-rs/
 │   ├── build_script_env.rs            # The build script run with a crafted `QUACK_RS_TARGET_DUCKDB_VERSION`
 │   ├── entry_point_expansion.rs       # The entry-point macros compiled as edition 2024 and under `panic = "abort"`
 │   ├── entry_point_lint.rs            # The entry-point macros accept an `unsafe` registration closure warning-free
+│   ├── engine_identity.rs             # A refused load (layout, or a second engine image) leaves the dispatch table alone
 │   ├── ffi_roundtrip.rs               # End-to-end FFI round-trips against a real `DuckDB`
 │   ├── file_handle_close.rs           # `FileHandle`'s `Drop` when the close fails (stubbed C API)
 │   ├── handle_leaks.rs                # Every RAII handle frees what `DuckDB` allocated for it (glibc)

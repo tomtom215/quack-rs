@@ -450,13 +450,20 @@ overwrites them from the loading engine's table, slot by slot, skipping a slot
 the engine leaves NULL. One engine loading the extension any number of times,
 from any number of connections or threads, stores the same addresses, so that
 is safe. Two different DuckDB libraries in one process that load the same
-extension file (which the dynamic loader maps once) are not: the second load
-overwrites the first engine's pointers, even when quack-rs's ABI check then
-refuses the load (the table is filled before the check), and a slot the second
-engine lacks keeps the first engine's pointer. Calls from the first engine's
-connections can then reach the second engine. Load a quack-rs extension into
-one DuckDB library per process. (Read in the bindings' generated source and in
-`entry_point.rs`; not reproduced.)
+extension file (which the dynamic loader maps once) cannot share that table:
+the second engine's pointers would replace the first's, and calls from the
+first engine's connections would reach the second.
+
+Since 0.21.0 the entry point refuses that second load before the table is
+touched. It records the first engine's `duckdb_open` address and refuses a load
+from an engine whose table holds a different one, under every `AbiPolicy`,
+`Trust` included, with an error naming this section. A load the ABI check
+refuses is also decided before anything is stored; up to 0.20.x the table was
+filled first, so a refused load had already replaced a working engine's
+pointers. Both are pinned by `tests/engine_identity.rs`, which serves mock
+engine tables in-process (`AUDIT.md` section 17, F-07); two real DuckDB library
+images in one process have not been tried. The limit itself remains: load a
+quack-rs extension into one DuckDB library per process.
 
 ### A quack-rs extension cannot be linked statically into a DuckDB 2.0 host
 

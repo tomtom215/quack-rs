@@ -59,6 +59,21 @@
 //! mis-dispatches, padded or not; that is what the layout check refuses, and
 //! padding does not change it.
 //!
+//! # Nothing is published for a refused engine
+//!
+//! The bindings' table is one per process, so a refusal must not reach it.
+//! Before 0.21.0 the layout check ran after the bindings had stored the new
+//! engine's pointers, so a load `Strict` refused had already replaced the ones
+//! an earlier, working load published (`AUDIT.md` section 17, F-07; measured
+//! with a mock engine in `tests/engine_identity.rs`). [`bounded_get_api`] now
+//! reaches the [`AbiPolicy`] verdict on the version it read from slot 7, and
+//! refuses an engine whose `duckdb_open` (slot 0) is not the one the process's
+//! table already holds: a second `DuckDB` library image, whose pointers would
+//! redirect the first engine's calls. Either refusal returns a null table, from
+//! which the bindings return without storing anything, and
+//! [`init_dispatch_table`] reports why. The `Warn` diagnostic is still printed
+//! after the load, by `enforce_abi_policy`.
+//!
 //! # Ownership and unwinding
 //!
 //! The padded copy lives in a thread-local owned by this module and is freed when
@@ -71,6 +86,7 @@
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_void, CStr};
 use core::mem::{offset_of, size_of, transmute};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use libduckdb_sys::{
     duckdb_ext_api_v1, duckdb_extension_access, duckdb_extension_info, duckdb_rs_extension_api_init,
@@ -122,6 +138,9 @@ struct Context {
     /// Slots to take from an engine whose release is neither in the layout table
     /// nor declared by the build.
     unknown_slots: usize,
+    /// The policy the layout verdict is reached under, before anything is
+    /// published. `None` skips the verdict (the copy tests below).
+    policy: Option<AbiPolicy>,
 }
 
 thread_local! {
@@ -133,6 +152,53 @@ thread_local! {
     /// the call that needed it; the pointer returned from `bounded_get_api` stays
     /// valid until [`init_dispatch_table`] returns.
     static PADDED: RefCell<Vec<Slot>> = const { RefCell::new(Vec::new()) };
+    /// Why [`bounded_get_api`] refused the engine, for [`init_dispatch_table`]
+    /// to report once the bindings return.
+    static REFUSAL: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The engine image whose function pointers `libduckdb-sys`'s process-wide
+/// dispatch table holds: the address of its `duckdb_open` (slot 0), recorded
+/// by the first load that publishes a table, `0` before it.
+///
+/// The bindings keep one table per process and overwrite it on every load
+/// (and skip, rather than clear, a slot the new table leaves empty). A second
+/// `DuckDB` library image in the same process (two `libduckdb` copies, or a
+/// language runtime's embedded engine next to a system one) would therefore
+/// redirect every call the first engine's extension functions make into the
+/// second image, with the first image's objects. Two loads into the *same*
+/// image hand out the same `duckdb_open`, so they agree; a load into another
+/// is refused before anything is published (`AUDIT.md` section 17, F-07).
+static ENGINE_IDENTITY: AtomicUsize = AtomicUsize::new(0);
+
+/// Records `engine` (a `duckdb_open` address) as the process's engine, or
+/// confirms it is the one already recorded.
+fn claim_engine(cell: &AtomicUsize, engine: usize) -> Result<(), String> {
+    match cell.compare_exchange(0, engine, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => Ok(()),
+        Err(current) if current == engine => Ok(()),
+        Err(_) => Err(String::from(
+            "this extension is already loaded into another DuckDB engine in this process (a \
+             different libduckdb library image). libduckdb-sys keeps one process-wide C API \
+             function table, so loading it here would redirect the other engine's calls into \
+             this one; the load is refused before that table is touched. Load a quack-rs \
+             extension into one DuckDB library per process (Known Limitations, \"One DuckDB \
+             engine per process\").",
+        )),
+    }
+}
+
+/// The layout verdict for an engine reporting `engine_version`, reached before
+/// the bindings see its table: `Some(message)` when `policy` refuses it.
+fn refusal(policy: AbiPolicy, engine_version: Option<&str>) -> Option<String> {
+    if policy == AbiPolicy::Trust {
+        return None;
+    }
+    let check = abi::check_engine_version(engine_version);
+    match super::policy_verdict(policy, &check) {
+        super::AbiVerdict::Refuse(message) => Some(message),
+        super::AbiVerdict::Load | super::AbiVerdict::Warn(_) => None,
+    }
 }
 
 /// Clears [`CONTEXT`] and frees [`PADDED`] when [`init_dispatch_table`] ends,
@@ -145,6 +211,7 @@ impl Drop for Active {
         // worth a panic from a destructor.
         let _ = CONTEXT.try_with(|context| context.set(None));
         let _ = PADDED.try_with(|padded| *padded.borrow_mut() = Vec::new());
+        let _ = REFUSAL.try_with(|refusal| *refusal.borrow_mut() = None);
     }
 }
 
@@ -153,7 +220,11 @@ impl Drop for Active {
 ///
 /// Returns what `duckdb_rs_extension_api_init` returns: `Ok(false)` when the
 /// engine has no API for `api_version`, an error for a version string the
-/// bindings refuse.
+/// bindings refuse. It is also an error, with nothing published, when `policy`
+/// refuses the engine's layout or the process's dispatch table already belongs
+/// to another engine image: the verdict is reached on the version read from
+/// the engine's own table, and a refusal hands the bindings a null table, which
+/// they return from without storing a pointer.
 ///
 /// # Safety
 ///
@@ -167,7 +238,7 @@ pub(super) unsafe fn init_dispatch_table(
     access: *const duckdb_extension_access,
     api_version: &str,
     policy: AbiPolicy,
-) -> Result<bool, &'static str> {
+) -> Result<bool, String> {
     let unknown_slots = if policy == AbiPolicy::Strict {
         guaranteed_slots_for(api_version)
     } else {
@@ -177,6 +248,7 @@ pub(super) unsafe fn init_dispatch_table(
         context.set(Some(Context {
             access,
             unknown_slots,
+            policy: Some(policy),
         }));
     });
     let _active = Active;
@@ -189,7 +261,11 @@ pub(super) unsafe fn init_dispatch_table(
 
     // SAFETY: `bounded` outlives the call. `info` is DuckDB's, passed through;
     // `bounded_get_api` forwards it to the real `get_api` untouched.
-    unsafe { duckdb_rs_extension_api_init(info, &raw const bounded, api_version) }
+    let result = unsafe { duckdb_rs_extension_api_init(info, &raw const bounded, api_version) };
+    if let Some(message) = REFUSAL.with(|refusal| refusal.borrow_mut().take()) {
+        return Err(message);
+    }
+    result.map_err(str::to_owned)
 }
 
 /// The `get_api` the bindings call: `DuckDB`'s own, then a zero-padded copy of as
@@ -222,8 +298,27 @@ unsafe extern "C" fn bounded_get_api(
     }
 
     // SAFETY: `table` is the engine's `duckdb_ext_api_v1`, at least as long as
-    // the stable prefix (see `engine_table_slots_at`).
-    let engine_slots = unsafe { engine_table_slots_at(table, context.unknown_slots) };
+    // the stable prefix (see `engine_version_at`).
+    let version = unsafe { engine_version_at(table) };
+
+    // Decide before publishing: a null table makes the bindings return
+    // `Ok(false)` without storing a pointer, so a refused engine leaves the
+    // process's dispatch table as it was.
+    let refused = context
+        .policy
+        .and_then(|policy| refusal(policy, version.as_deref()))
+        .or_else(|| {
+            // SAFETY: slot 0 (`duckdb_open`) is inside the stable prefix.
+            let open = unsafe { table.read() };
+            // An empty slot 0 (a test's mock) identifies no image.
+            open.and_then(|f| claim_engine(&ENGINE_IDENTITY, f as usize).err())
+        });
+    if let Some(message) = refused {
+        let _ = REFUSAL.try_with(|refusal| *refusal.borrow_mut() = Some(message));
+        return core::ptr::null();
+    }
+
+    let engine_slots = engine_table_slots(version.as_deref(), context.unknown_slots);
     let compiled = abi::compiled_slot_count();
     let copied = engine_slots.min(compiled);
 
@@ -241,7 +336,7 @@ unsafe extern "C" fn bounded_get_api(
         .unwrap_or(core::ptr::null())
 }
 
-/// How many slots of the engine's table at `table` may be read.
+/// The release the engine whose table is at `table` reports, through its slot 7.
 ///
 /// # Safety
 ///
@@ -249,7 +344,7 @@ unsafe extern "C" fn bounded_get_api(
 /// stable prefix: `DuckDB` hands that struct to any extension that asks for a C
 /// API version of `v1.2.0` or later, and the prefix is the part of it that has
 /// not changed since. Slot 7 lies inside it.
-unsafe fn engine_table_slots_at(table: *const Slot, unknown_slots: usize) -> usize {
+unsafe fn engine_version_at(table: *const Slot) -> Option<String> {
     // SAFETY: slot 7 is within the stable prefix (this function's contract).
     let version_fn = unsafe { table.add(LIBRARY_VERSION_SLOT).read() };
     let version = version_fn.and_then(|f| {
@@ -264,9 +359,12 @@ unsafe fn engine_table_slots_at(table: *const Slot, unknown_slots: usize) -> usi
             return None;
         }
         // SAFETY: non-null, NUL-terminated, static (as above).
-        unsafe { CStr::from_ptr(text) }.to_str().ok()
+        unsafe { CStr::from_ptr(text) }
+            .to_str()
+            .ok()
+            .map(str::to_owned)
     });
-    engine_table_slots(version, unknown_slots)
+    version
 }
 
 /// The slot count to take from an engine, from what is known about it. Pure, so
@@ -408,6 +506,7 @@ mod tests {
             cell.set(Some(Context {
                 access: &raw const access,
                 unknown_slots,
+                policy: None,
             }));
         });
         let _active = Active;
@@ -499,6 +598,7 @@ mod tests {
             cell.set(Some(Context {
                 access: &raw const access,
                 unknown_slots: STABLE_API_SLOT_COUNT,
+                policy: None,
             }));
         });
         let _active = Active;
@@ -512,6 +612,53 @@ mod tests {
         // SAFETY: no context is set on this thread, which this function reports.
         let handed = unsafe { bounded_get_api(core::ptr::null_mut(), core::ptr::null()) };
         assert!(handed.is_null());
+    }
+
+    #[test]
+    fn the_first_engine_is_recorded_and_only_that_one_is_accepted() {
+        let cell = AtomicUsize::new(0);
+        assert_eq!(claim_engine(&cell, 0x1000), Ok(()));
+        assert_eq!(cell.load(Ordering::SeqCst), 0x1000);
+        assert_eq!(claim_engine(&cell, 0x1000), Ok(()), "the same image again");
+        let other = claim_engine(&cell, 0x2000).expect_err("another image");
+        assert!(other.contains("another DuckDB engine"), "{other}");
+        assert_eq!(
+            cell.load(Ordering::SeqCst),
+            0x1000,
+            "a refusal records nothing"
+        );
+    }
+
+    #[test]
+    fn the_verdict_before_publishing_refuses_exactly_what_the_policy_refuses() {
+        // A release whose layout matches the build loads under every policy.
+        let matching = match COMPILED {
+            548 => "v2.0.1",
+            _ => "v1.5.6",
+        };
+        for policy in [
+            AbiPolicy::Strict,
+            AbiPolicy::AllowUnknownEngine,
+            AbiPolicy::Warn,
+            AbiPolicy::Trust,
+        ] {
+            assert_eq!(refusal(policy, Some(matching)), None, "{policy:?}");
+        }
+        // `Warn` and `Trust` never refuse; the stable-only build has nothing
+        // to refuse.
+        for engine in [Some("v1.4.4"), Some("v9.9.9"), None] {
+            assert_eq!(refusal(AbiPolicy::Warn, engine), None);
+            assert_eq!(refusal(AbiPolicy::Trust, engine), None);
+        }
+        let refused = |policy, engine| refusal(policy, engine).is_some();
+        let unstable = abi::uses_unstable_api();
+        assert_eq!(refused(AbiPolicy::Strict, Some("v1.4.4")), unstable);
+        assert_eq!(
+            refused(AbiPolicy::AllowUnknownEngine, Some("v1.4.4")),
+            unstable
+        );
+        assert_eq!(refused(AbiPolicy::Strict, Some("v9.9.9")), unstable);
+        assert!(!refused(AbiPolicy::AllowUnknownEngine, Some("v9.9.9")));
     }
 
     #[test]

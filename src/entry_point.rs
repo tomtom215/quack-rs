@@ -646,7 +646,7 @@ where
     // table: see `api_init`.
     let have_api = unsafe {
         api_init::init_dispatch_table(info, access, api_version, options.get_abi_policy())
-            .map_err(|e| crate::error::ExtensionError::new(e.to_string()))?
+            .map_err(crate::error::ExtensionError::new)?
     };
 
     if !have_api {
@@ -736,7 +736,7 @@ where
     // table: see `api_init`.
     let have_api = unsafe {
         api_init::init_dispatch_table(info, access, api_version, options.get_abi_policy())
-            .map_err(|e| ExtensionError::new(e.to_string()))?
+            .map_err(ExtensionError::new)?
     };
 
     if !have_api {

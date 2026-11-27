@@ -568,15 +568,22 @@ fn parse_declared_version(declared: Option<&'static str>) -> Option<&'static str
 /// [`engine_version`].
 #[must_use]
 pub unsafe fn check() -> AbiCheck {
-    let compiled_slots = compiled_slot_count();
-
     if !uses_unstable_api() {
         return AbiCheck::StableOnly;
     }
-
     // SAFETY: forwarded from this function's own contract.
     let engine = unsafe { engine_version() };
-    decide(compiled_slots, built_against_version(), engine.as_deref())
+    check_engine_version(engine.as_deref())
+}
+
+/// [`check`] for an engine version already in hand, without the dispatch
+/// table: what the entry point runs on the version it reads from the engine's
+/// own table, *before* the bindings publish any of that table's pointers.
+pub(crate) fn check_engine_version(engine: Option<&str>) -> AbiCheck {
+    if !uses_unstable_api() {
+        return AbiCheck::StableOnly;
+    }
+    decide(compiled_slot_count(), built_against_version(), engine)
 }
 
 /// The decision the ABI check makes, separated from the two things it reads
