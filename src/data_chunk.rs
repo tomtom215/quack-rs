@@ -227,7 +227,10 @@ impl DataChunk {
     /// # Safety
     ///
     /// - `col_idx` must be less than [`column_count`][DataChunk::column_count].
-    /// - The chunk must be a writable output chunk (not a read-only input chunk).
+    /// - The chunk must be a writable output chunk (not a read-only input chunk,
+    ///   and not a chunk imported from Arrow while it is
+    ///   [externally backed](crate::query::OwnedDataChunk::is_externally_backed):
+    ///   its columns may be the Arrow producer's buffers).
     /// - The returned value borrows nothing: it must not be used after the
     ///   underlying `duckdb_data_chunk` is destroyed — for an
     ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped
@@ -323,7 +326,8 @@ impl DataChunk {
     ///
     /// - `col_idx` must be less than [`column_count`][Self::column_count].
     /// - The column at `col_idx` must have a STRUCT type with `field_count` fields.
-    /// - The chunk must be a writable output chunk.
+    /// - The chunk must be a writable output chunk (not one imported from Arrow
+    ///   while it is [externally backed](crate::query::OwnedDataChunk::is_externally_backed)).
     /// - The returned value borrows nothing: it must not be used after the
     ///   underlying `duckdb_data_chunk` is destroyed — for an
     ///   [`OwnedDataChunk`](crate::query::OwnedDataChunk), after it is dropped

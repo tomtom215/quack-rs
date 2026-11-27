@@ -68,11 +68,20 @@ impl Appender {
     /// capacity is known; a [`DataChunk`] borrowed
     /// from a callback does not report one.
     ///
+    ///
+    /// A chunk imported from Arrow is refused until it is
+    /// [reset](OwnedDataChunk::reset): `DuckDB` imports its fixed-width
+    /// columns without copying, so the default would be written into the Arrow
+    /// producer's buffer. Measured on `DuckDB` 1.5.6 before the check existed:
+    /// the producer's value was overwritten, and with the buffer in a read-only
+    /// page the process died with `SIGSEGV` (`AUDIT.md` section 17, F-05).
+    ///
     /// # Errors
     ///
     /// Returns an [`AppendError`] if `col` is not a column of `chunk`, if `row`
-    /// is not below [`chunk.capacity()`](OwnedDataChunk::capacity), or if
-    /// `DuckDB` cannot write the default. Nothing is written on error.
+    /// is not below [`chunk.capacity()`](OwnedDataChunk::capacity), if the
+    /// chunk is [externally backed](OwnedDataChunk::is_externally_backed), or
+    /// if `DuckDB` cannot write the default. Nothing is written on error.
     #[cfg(feature = "duckdb-1-5")]
     pub fn append_default_to_chunk(
         &self,
@@ -86,6 +95,15 @@ impl Appender {
                 "append_default_to_chunk: column {col} is out of range for a chunk of \
                  {columns} column(s)"
             )));
+        }
+        if chunk.is_externally_backed() {
+            return Err(append_error(
+                "append_default_to_chunk: the chunk was imported from Arrow and its columns \
+                 may be the producer's buffers, which DuckDB imports without copying; \
+                 writing a default would write into memory the producer owns (and may share \
+                 or have mapped read-only). Copy the rows into a chunk from \
+                 `OwnedDataChunk::new`, or call `OwnedDataChunk::reset` first",
+            ));
         }
         let capacity = chunk.capacity();
         if usize::try_from(row).map_or(true, |r| r >= capacity) {

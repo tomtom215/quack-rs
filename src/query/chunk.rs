@@ -100,6 +100,27 @@ impl OwnedDataChunk {
     pub fn reset(&mut self) {
         // SAFETY: `self.chunk` is a live chunk owned by this value.
         unsafe { duckdb_data_chunk_reset(self.chunk) };
+        // `DataChunk::Reset` rebuilds every column from the chunk's own vector
+        // caches, so no column points into an Arrow producer's buffers any more.
+        self.externally_backed = false;
+    }
+
+    /// Whether a column of this chunk may still point into memory that
+    /// `DuckDB` does not own.
+    ///
+    /// True for a chunk from `arrow::data_chunk_from_arrow` (feature
+    /// `duckdb-1-5-4`) until [`reset`][Self::reset]: `DuckDB` imports
+    /// fixed-width Arrow columns without copying, so the chunk's vectors are
+    /// the producer's buffers, which the Arrow C Data Interface asks both
+    /// sides to treat as immutable and which may be shared or read-only.
+    /// Writing into such a chunk writes into the producer's memory.
+    /// [`Appender::append_default_to_chunk`](crate::appender::Appender)
+    /// (feature `duckdb-1-5`) refuses a chunk for which this is true; the
+    /// `unsafe` writers ([`writer`][DataChunk::writer] and friends) leave it to
+    /// the caller.
+    #[must_use]
+    pub const fn is_externally_backed(&self) -> bool {
+        self.externally_backed
     }
 
     /// Takes ownership of a raw `duckdb_data_chunk`.
@@ -112,7 +133,9 @@ impl OwnedDataChunk {
     ///   [`capacity`][Self::capacity] rows. A chunk from
     ///   `duckdb_create_data_chunk` or `duckdb_fetch_chunk` does; one from
     ///   `duckdb_data_chunk_from_arrow` has room for only the Arrow array's
-    ///   length, and must not be passed here. Safe methods
+    ///   length, and must not be passed here (nor one whose columns point into
+    ///   memory `DuckDB` does not own, which this constructor records as
+    ///   [not externally backed][Self::is_externally_backed]). Safe methods
     ///   such as `Appender::append_default_to_chunk` (feature `duckdb-1-5`)
     ///   check indices against it and rely on it.
     #[must_use]
@@ -122,6 +145,7 @@ impl OwnedDataChunk {
             // SAFETY: `chunk` is valid and outlives the view, which this struct owns.
             view: unsafe { DataChunk::from_raw(chunk) },
             capacity: None,
+            externally_backed: false,
         }
     }
 
@@ -144,6 +168,7 @@ impl OwnedDataChunk {
             // SAFETY: `chunk` is valid and outlives the view, which this struct owns.
             view: unsafe { DataChunk::from_raw(chunk) },
             capacity: Some(capacity),
+            externally_backed: true,
         }
     }
 

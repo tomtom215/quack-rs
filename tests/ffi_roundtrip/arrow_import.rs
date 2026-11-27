@@ -62,7 +62,7 @@ fn parent(
 struct IntChild {
     raw: Box<RawArrowArray>,
     _buffers: Box<[*const c_void; 2]>,
-    _data: Box<[i32]>,
+    data: Box<[i32]>,
 }
 
 fn int_child(length: i64, data_len: usize) -> IntChild {
@@ -83,7 +83,7 @@ fn int_child(length: i64, data_len: usize) -> IntChild {
     IntChild {
         raw,
         _buffers: buffers,
-        _data: data,
+        data,
     }
 }
 
@@ -535,4 +535,145 @@ fn only_the_first_column_holds_the_claim_on_the_arrow_array() {
     };
     assert!(!released_while_column_is_referenced(0));
     assert_eq!(released_while_column_is_referenced(1), !shared);
+}
+
+/// The appender table and the one-column `INTEGER` chunk imported from
+/// `child`, for the F-05 tests below (`AUDIT.md` section 17).
+#[cfg(feature = "duckdb-1-5")]
+fn import_one_int_column(
+    fx: &Fixture,
+    con: &OwnedConnection,
+    child: *mut RawArrowArray,
+) -> (
+    quack_rs::query::OwnedDataChunk,
+    quack_rs::appender::Appender,
+) {
+    fx.query("CREATE TABLE f05 (v INTEGER DEFAULT 42)");
+    let mut children = [child];
+    let (raw, _buffers) = parent(4, 1, children.as_mut_ptr());
+    let converted = integer_schema(con);
+    // SAFETY: the records release nothing and are used once.
+    let array = unsafe { ArrowArray::from_raw(raw) };
+    // SAFETY: `con` is live, `converted` came from it, and the array is a
+    // four-row struct of one `int32` child, which conforms to it.
+    let chunk = unsafe { data_chunk_from_arrow(con.as_raw(), array, &converted) }.expect("import");
+    // SAFETY: `con` is open and the table exists.
+    let appender =
+        unsafe { quack_rs::appender::Appender::new(fx.con(), None, c"f05") }.expect("create");
+    (chunk, appender)
+}
+
+/// F-05 (`AUDIT.md` section 17): `DuckDB` imports a fixed-width Arrow column
+/// without copying, so the chunk's vector *is* the producer's buffer. Before
+/// the check, the safe `append_default_to_chunk` wrote the column's default
+/// (42) over the producer's value (7). It is now refused, the producer's
+/// buffer is untouched, and after `reset` the chunk has buffers of its own and
+/// the call succeeds.
+#[cfg(feature = "duckdb-1-5")]
+#[test]
+fn append_default_to_chunk_does_not_write_into_an_arrow_producers_buffer() {
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let mut child = int_child(4, 4);
+    let producer = child.data.as_ptr();
+    let (mut chunk, appender) = import_one_int_column(&fx, &con, &raw mut *child.raw);
+
+    assert!(chunk.is_externally_backed());
+    // SAFETY: column 0 exists.
+    let data = unsafe { libduckdb_sys::duckdb_vector_get_data(chunk.vector(0)) };
+    assert_eq!(
+        data.cast_const().cast::<i32>(),
+        producer,
+        "DuckDB no longer imports int32 without copying; the refusal may be relaxable"
+    );
+
+    let err = appender
+        .append_default_to_chunk(&chunk, 0, 0)
+        .expect_err("an Arrow-backed chunk must be refused");
+    assert!(err.to_string().contains("imported from Arrow"), "{err}");
+    // SAFETY: the producer's buffer is alive (the chunk and `child` hold it).
+    assert_eq!(unsafe { *producer }, 7, "the producer's buffer was written");
+
+    chunk.reset();
+    assert!(!chunk.is_externally_backed());
+    // SAFETY: column 0 exists.
+    let data = unsafe { libduckdb_sys::duckdb_vector_get_data(chunk.vector(0)) };
+    assert_ne!(data.cast_const().cast::<i32>(), producer);
+    appender
+        .append_default_to_chunk(&chunk, 0, 0)
+        .expect("a reset chunk owns its buffers");
+    // SAFETY: row 0 of an INTEGER column, just written.
+    assert_eq!(unsafe { chunk.reader(0).read_i32(0) }, 42);
+    // SAFETY: as above.
+    assert_eq!(unsafe { *producer }, 7);
+    appender.close().expect("close");
+}
+
+/// F-05 with the producer's buffer in a read-only page: before the check the
+/// same safe call died with `SIGSEGV` on `DuckDB` 1.5.6. Linux only, for the
+/// `mmap` flag values.
+#[cfg(all(feature = "duckdb-1-5", target_os = "linux"))]
+#[test]
+fn append_default_to_chunk_refuses_an_arrow_chunk_over_read_only_memory() {
+    extern "C" {
+        fn mmap(
+            addr: *mut c_void,
+            len: usize,
+            prot: i32,
+            flags: i32,
+            fd: i32,
+            off: i64,
+        ) -> *mut c_void;
+        fn mprotect(addr: *mut c_void, len: usize, prot: i32) -> i32;
+        fn munmap(addr: *mut c_void, len: usize) -> i32;
+    }
+    const PROT_READ: i32 = 1;
+    const PROT_WRITE: i32 = 2;
+    const MAP_PRIVATE_ANONYMOUS: i32 = 0x02 | 0x20;
+    const PAGE: usize = 4096;
+
+    // SAFETY: an anonymous private mapping of one page, unmapped below.
+    let page = unsafe {
+        mmap(
+            ptr::null_mut(),
+            PAGE,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page as isize, -1, "mmap failed");
+    // SAFETY: the page is mapped writable and holds four i32s.
+    unsafe {
+        page.cast::<[i32; 4]>().write([7; 4]);
+        assert_eq!(mprotect(page, PAGE, PROT_READ), 0, "mprotect failed");
+    }
+
+    let fx = Fixture::open();
+    // SAFETY: the fixture's database outlives the connection.
+    let con = unsafe { OwnedConnection::open(fx.db()) }.expect("connect");
+    let mut buffers = Box::new([ptr::null(), page.cast_const()]);
+    let mut child = Box::new(RawArrowArray {
+        length: 4,
+        null_count: 0,
+        offset: 0,
+        n_buffers: 2,
+        n_children: 0,
+        buffers: buffers.as_mut_ptr(),
+        children: ptr::null_mut(),
+        dictionary: ptr::null_mut(),
+        release: Some(release_nothing),
+        private_data: ptr::null_mut(),
+    });
+    let (chunk, appender) = import_one_int_column(&fx, &con, &raw mut *child);
+    let err = appender
+        .append_default_to_chunk(&chunk, 0, 0)
+        .expect_err("an Arrow-backed chunk must be refused");
+    assert!(err.to_string().contains("imported from Arrow"), "{err}");
+    drop(chunk);
+    appender.close().expect("close");
+    // SAFETY: the chunk that referenced the page is gone.
+    unsafe { munmap(page, PAGE) };
 }

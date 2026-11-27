@@ -100,6 +100,12 @@ pub struct OwnedDataChunk {
     /// `from_raw` stays `const`); the array's length for one imported from
     /// Arrow.
     capacity: Option<usize>,
+    /// Whether a column may point into memory `DuckDB` does not own: set for
+    /// a chunk imported from Arrow, whose fixed-width columns `DuckDB` imports
+    /// without copying, and cleared by [`reset`][Self::reset], which gives
+    /// every column a fresh buffer of `DuckDB`'s own. Safe methods that make
+    /// `DuckDB` write into the chunk refuse while it is set.
+    externally_backed: bool,
 }
 
 // ─── Query result ────────────────────────────────────────────────────────────
