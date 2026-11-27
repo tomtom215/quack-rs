@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     export_built_against_duckdb_version();
+    export_strict_abi_requirement();
 
     // On Windows, bundled DuckDB uses the Restart Manager API (RmStartSession,
     // RmEndSession, RmRegisterResources, RmGetList) in its AdditionalLockInfo()
@@ -399,6 +400,37 @@ fn export_built_against_duckdb_version() {
             }
             println!("cargo:rustc-env=QUACK_RS_BUILT_AGAINST_DUCKDB={version}");
         }
+    }
+}
+
+/// Forwards `QUACK_RS_REQUIRE_STRICT_ABI` into the crate as
+/// `QUACK_RS_STRICT_ABI_ONLY`, which `abi::strict_abi_required()` reads: a
+/// build that sets it applies `AbiPolicy::Strict` at every entry point,
+/// whatever policy the entry point names (F-06 in `AUDIT.md` section 17). It
+/// is for a deployment that must not ship `Warn`, `AllowUnknownEngine` or
+/// `Trust`, and it is an environment variable rather than a feature so that
+/// `--all-features` (and feature unification) cannot switch it on by accident.
+///
+/// `1` turns it on and `0` or an empty value leaves it off. Any other value
+/// turns it on too, with a warning: a misspelt request for the stricter build
+/// must not silently produce the permissive one.
+fn export_strict_abi_requirement() {
+    println!("cargo:rerun-if-env-changed=QUACK_RS_REQUIRE_STRICT_ABI");
+    match env::var("QUACK_RS_REQUIRE_STRICT_ABI") {
+        Err(_) => {}
+        Ok(value) => match value.trim() {
+            "" | "0" => {}
+            "1" => println!("cargo:rustc-env=QUACK_RS_STRICT_ABI_ONLY=1"),
+            other => {
+                // `{:?}` escapes a newline, so the value cannot start a
+                // directive of its own (as for the version above).
+                println!(
+                    "cargo:warning=QUACK_RS_REQUIRE_STRICT_ABI={other:?} is neither 1 nor 0; \
+                     treating it as 1 (every entry point applies AbiPolicy::Strict)"
+                );
+                println!("cargo:rustc-env=QUACK_RS_STRICT_ABI_ONLY=1");
+            }
+        },
     }
 }
 

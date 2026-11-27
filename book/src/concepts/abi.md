@@ -242,8 +242,28 @@ The refusal lists the fixes, best first:
 
 It never suggests `AllowUnknownEngine` or `Trust`, for the reason above.
 
+## Forbidding the permissive policies in a build
+
+`Warn`, `AllowUnknownEngine` and `Trust` exist for builds that know more than
+the layout table does. A deployment that must not ship any of them can say so
+in the build rather than by reading every entry point: build the extension with
+`QUACK_RS_REQUIRE_STRICT_ABI=1` in the environment, and every entry point
+applies `Strict`, whatever policy its source names.
+[`abi::strict_abi_required`] reports whether a build was made that way, and
+[`AbiPolicy::effective`] gives the policy an entry point will apply. A value
+other than `1`, `0` or empty also turns it on, with a build warning, so a
+misspelt request does not produce the permissive build. It is an environment
+variable, not a Cargo feature, so that `--all-features` and feature unification
+cannot turn it on in a test build that exercises the other policies. CI builds
+once with it set and checks that `Warn` and `Trust` are then refused.
+
+It does not make an unlisted engine loadable: that still needs
+`QUACK_RS_TARGET_DUCKDB_VERSION` (above) or a quack-rs release that lists it.
+
 `scripts/check-abi-table.py` re-derives quack-rs's layout table from every
 upstream release header and runs in CI, so the table tracks DuckDB.
 
 [`abi::check`]: https://docs.rs/quack-rs/latest/quack_rs/abi/fn.check.html
 [`AbiPolicy`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html
+[`abi::strict_abi_required`]: https://docs.rs/quack-rs/latest/quack_rs/abi/fn.strict_abi_required.html
+[`AbiPolicy::effective`]: https://docs.rs/quack-rs/latest/quack_rs/abi/enum.AbiPolicy.html#method.effective

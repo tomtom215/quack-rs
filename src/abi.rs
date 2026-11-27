@@ -711,9 +711,57 @@ pub enum AbiPolicy {
     Trust,
 }
 
+/// Whether this build of quack-rs was made with `QUACK_RS_REQUIRE_STRICT_ABI=1`
+/// in the environment, so that every entry point applies [`AbiPolicy::Strict`]
+/// whatever policy it names.
+///
+/// For a deployment that must not ship [`AbiPolicy::Warn`],
+/// [`AbiPolicy::AllowUnknownEngine`] or [`AbiPolicy::Trust`]: set the variable
+/// in the build that produces the extension, and a permissive policy in the
+/// source has no effect (`AUDIT.md` section 17, F-06). A value other than `0`
+/// or empty also turns it on, with a build warning. It is read when quack-rs is
+/// compiled; Cargo rebuilds the crate when it changes.
+#[must_use]
+pub const fn strict_abi_required() -> bool {
+    option_env!("QUACK_RS_STRICT_ABI_ONLY").is_some()
+}
+
+impl AbiPolicy {
+    /// The policy an entry point applies when its options name `self`:
+    /// [`Strict`][Self::Strict] in a build where [`strict_abi_required`] is
+    /// true, `self` otherwise.
+    #[must_use]
+    pub const fn effective(self) -> Self {
+        effective_policy(self, strict_abi_required())
+    }
+}
+
+/// [`AbiPolicy::effective`] with the build's setting as an argument, so both
+/// settings are testable in one build.
+const fn effective_policy(policy: AbiPolicy, strict_required: bool) -> AbiPolicy {
+    if strict_required {
+        AbiPolicy::Strict
+    } else {
+        policy
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_strict_only_build_applies_strict_whatever_the_entry_point_names() {
+        for policy in [
+            AbiPolicy::Strict,
+            AbiPolicy::Warn,
+            AbiPolicy::AllowUnknownEngine,
+            AbiPolicy::Trust,
+        ] {
+            assert_eq!(effective_policy(policy, true), AbiPolicy::Strict);
+            assert_eq!(effective_policy(policy, false), policy);
+        }
+    }
 
     /// `u64::from_str` takes a leading `+`; a `DuckDB` version string never has
     /// one, in any of the three parts.

@@ -129,6 +129,10 @@ fn each_policy_treats_a_layout_mismatch_as_it_documents() {
         (AbiPolicy::Warn, true),
         (AbiPolicy::Trust, true),
     ] {
+        // A build made with `QUACK_RS_REQUIRE_STRICT_ABI=1` applies `Strict`
+        // whatever the entry point names (F-06): every policy refuses. CI runs
+        // this file once that way.
+        let loads = loads && !quack_rs::abi::strict_abi_required();
         let loader = Loader::serving_an_older_engine(db);
         let mut ran = false;
         // SAFETY: `loader` and `access` outlive the call; the connection the
@@ -152,13 +156,19 @@ fn each_policy_treats_a_layout_mismatch_as_it_documents() {
             assert!(error.contains("v1.4.4"), "{policy:?}: {error}");
         }
     }
-    // The stand-in really does look like a different layout.
+    // The stand-in really does look like a different layout: the last load
+    // (`Trust`) published its table. A refused load publishes nothing (F-07),
+    // so in a strict-only build the table is still the real engine's.
     // SAFETY: the table is initialised.
     let check = unsafe { quack_rs::abi::check() };
-    assert!(
-        matches!(check, AbiCheck::LayoutMismatch { .. }),
-        "{check:?}"
-    );
+    if quack_rs::abi::strict_abi_required() {
+        assert!(matches!(check, AbiCheck::Compatible { .. }), "{check:?}");
+    } else {
+        assert!(
+            matches!(check, AbiCheck::LayoutMismatch { .. }),
+            "{check:?}"
+        );
+    }
 
     // SAFETY: both handles were opened above and are closed once.
     unsafe {

@@ -645,8 +645,13 @@ where
     // bindings' own initialiser, which reads past the end of an older engine's
     // table: see `api_init`.
     let have_api = unsafe {
-        api_init::init_dispatch_table(info, access, api_version, options.get_abi_policy())
-            .map_err(crate::error::ExtensionError::new)?
+        api_init::init_dispatch_table(
+            info,
+            access,
+            api_version,
+            options.get_abi_policy().effective(),
+        )
+        .map_err(crate::error::ExtensionError::new)?
     };
 
     if !have_api {
@@ -657,7 +662,7 @@ where
     // stable prefix. See `crate::abi` for why this matters.
     //
     // SAFETY: the dispatch table was initialised by the call above.
-    unsafe { enforce_abi_policy(info, access, options.get_abi_policy())? };
+    unsafe { enforce_abi_policy(info, access, options.get_abi_policy().effective())? };
 
     // Step 2: Get the database handle. `None` means DuckDB failed and has
     // already recorded why; reporting again would overwrite its message.
@@ -735,8 +740,13 @@ where
     // bindings' own initialiser, which reads past the end of an older engine's
     // table: see `api_init`.
     let have_api = unsafe {
-        api_init::init_dispatch_table(info, access, api_version, options.get_abi_policy())
-            .map_err(ExtensionError::new)?
+        api_init::init_dispatch_table(
+            info,
+            access,
+            api_version,
+            options.get_abi_policy().effective(),
+        )
+        .map_err(ExtensionError::new)?
     };
 
     if !have_api {
@@ -750,7 +760,7 @@ where
     // stable prefix. See `crate::abi` for why this matters.
     //
     // SAFETY: the dispatch table was initialised by the call above.
-    unsafe { enforce_abi_policy(info, access, options.get_abi_policy())? };
+    unsafe { enforce_abi_policy(info, access, options.get_abi_policy().effective())? };
 
     // Step 2: Get the database handle. `None` means DuckDB failed and has
     // already recorded why; reporting again would overwrite its message.

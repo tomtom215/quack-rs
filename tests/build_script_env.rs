@@ -138,3 +138,45 @@ fn only_a_release_version_reaches_a_cargo_directive() {
         }
     }
 }
+
+/// `QUACK_RS_REQUIRE_STRICT_ABI` (F-06, `AUDIT.md` section 17): `1` forwards
+/// the setting, `0` and an empty value do not, and anything else forwards it
+/// with a warning, so a misspelt request cannot produce the permissive build.
+#[test]
+#[cfg_attr(miri, ignore = "spawns the build script")]
+fn the_strict_abi_requirement_fails_closed() {
+    let script = build_script();
+    let run = |value: &str| -> Vec<String> {
+        let out = Command::new(&script)
+            .env_clear()
+            .env("QUACK_RS_REQUIRE_STRICT_ABI", value)
+            .output()
+            .expect("the build script runs");
+        assert!(out.status.success(), "{value:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(String::from)
+            .collect()
+    };
+    let forwarded = |lines: &[String]| {
+        lines
+            .iter()
+            .any(|l| l == "cargo:rustc-env=QUACK_RS_STRICT_ABI_ONLY=1")
+    };
+    let warned = |lines: &[String]| lines.iter().any(|l| l.starts_with("cargo:warning="));
+
+    let lines = run("1");
+    assert!(forwarded(&lines) && !warned(&lines), "{lines:?}");
+    for off in ["0", "", " "] {
+        let lines = run(off);
+        assert!(!forwarded(&lines) && !warned(&lines), "{off:?}: {lines:?}");
+    }
+    for odd in ["yes", "true", "1\ncargo:rustc-cfg=x"] {
+        let lines = run(odd);
+        assert!(forwarded(&lines) && warned(&lines), "{odd:?}: {lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.starts_with("cargo:rustc-cfg")),
+            "{odd:?}: {lines:?}"
+        );
+    }
+}

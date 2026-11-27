@@ -228,6 +228,17 @@ jobs:
           DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
           LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
         run: cargo test --all-targets --features bundled-test-prebuilt,duckdb-1-5-4
+      # A build made with QUACK_RS_REQUIRE_STRICT_ABI=1 applies AbiPolicy::Strict
+      # at every entry point (F-06, AUDIT.md section 17). The two files expect
+      # every policy to be refused in such a build, so this run fails if the
+      # setting stops taking effect. It recompiles quack-rs (the variable is a
+      # rerun-if-env-changed input), not DuckDB.
+      - name: A strict-only build refuses every permissive policy
+        env:
+          DUCKDB_LIB_DIR: ${{ runner.temp }}/libduckdb
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libduckdb
+          QUACK_RS_REQUIRE_STRICT_ABI: "1"
+        run: cargo test --features bundled-test-prebuilt,duckdb-1-5-4 --test abi_policy_enforced --test engine_identity
       # Every Rust block in book/src and README.md, compiled as a doctest
       # against this checkout (and run, unless marked `no_run`). Before this,
       # no CI job compiled the book's examples. (`mdbook test -L target/...`
