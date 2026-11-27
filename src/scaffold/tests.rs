@@ -95,6 +95,8 @@ fn cargo_toml_has_release_profile() {
     assert!(!cargo.content.contains("panic = \"abort\""));
     assert!(cargo.content.contains("lto = true"));
     assert!(cargo.content.contains("strip = true"));
+    // F-12 (`AUDIT.md` section 17): release arithmetic checked as in tests.
+    assert!(cargo.content.contains("overflow-checks = true"));
 }
 
 #[test]

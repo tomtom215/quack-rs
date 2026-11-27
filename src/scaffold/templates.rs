@@ -157,12 +157,12 @@ path = "src/wasm_lib.rs"
 opt-level = 3
 lto = true
 codegen-units = 1
-# Keep this as `unwind`. quack-rs's callback wrappers (`scalar_callback!`,
-# `table_scan_callback!`) and its extension entry point use `catch_unwind` to
-# turn a panic in your code into a DuckDB error. Switching this to abort-on-panic
-# makes that machinery inert, so any panic kills the whole DuckDB process —
+# Keep this as `unwind`. quack-rs's callback wrappers (`scalar_callback!`, `table_scan_callback!`)
+# and its entry point use `catch_unwind` to turn a panic in your code into a DuckDB error.
+# Abort-on-panic makes that machinery inert, so any panic kills the whole DuckDB process —
 # including an embedding application and the user's session.
 panic = "unwind"
+overflow-checks = true  # overflow panics (a SQL error) in release too, not wraps
 strip = true
 "#,
         name = config.name,

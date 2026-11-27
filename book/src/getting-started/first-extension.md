@@ -60,6 +60,7 @@ panic = "unwind"
 lto = true
 opt-level = 3
 codegen-units = 1
+overflow-checks = true
 strip = true
 ```
 

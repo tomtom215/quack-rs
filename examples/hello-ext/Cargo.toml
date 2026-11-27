@@ -27,4 +27,7 @@ panic = "unwind"
 lto = true
 codegen-units = 1
 opt-level = 3
+# Integer overflow panics in release builds too, as in tests, instead of
+# wrapping (the panic becomes a SQL error). See the book's Numbers page.
+overflow-checks = true
 strip = true

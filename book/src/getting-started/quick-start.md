@@ -44,6 +44,8 @@ panic = "unwind"
 lto = true
 opt-level = 3
 codegen-units = 1
+# Recommended: integer overflow panics in release too, as it does in tests.
+overflow-checks = true
 strip = true
 ```
 

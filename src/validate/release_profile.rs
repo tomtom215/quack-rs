@@ -17,6 +17,7 @@
 //! lto = true          # Recommended: reduces binary size
 //! opt-level = 3       # Recommended: maximum optimization
 //! codegen-units = 1   # Recommended: better optimization
+//! overflow-checks = true  # Recommended: overflow panics in release as in tests
 //! ```
 //!
 //! # Why `unwind`, not `abort`

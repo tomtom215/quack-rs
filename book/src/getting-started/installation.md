@@ -124,6 +124,8 @@ panic = "unwind"            # REQUIRED — quack-rs catches panics at every FFI 
 lto = true                  # recommended — reduces binary size, improves performance
 opt-level = 3               # recommended
 codegen-units = 1           # recommended — better optimisation, slower build
+overflow-checks = true      # recommended — overflow panics in release as in tests
+                            #   (see Numbers); a backstop, not a numeric policy
 strip = true                # recommended — reduces binary size
 ```
 

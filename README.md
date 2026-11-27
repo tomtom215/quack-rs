@@ -88,6 +88,7 @@ panic = "unwind"   # required
 lto = true         # the rest are recommended
 opt-level = 3
 codegen-units = 1
+overflow-checks = true
 strip = true
 ```
 

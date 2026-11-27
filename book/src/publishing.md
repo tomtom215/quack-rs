@@ -487,6 +487,7 @@ panic = "unwind"             # Required — "abort" disables quack-rs's panic gu
 opt-level = 3
 lto = true
 codegen-units = 1
+overflow-checks = true       # Recommended — release arithmetic checked as in tests
 strip = true
 ```
 
