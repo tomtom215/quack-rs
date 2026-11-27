@@ -33,7 +33,7 @@ Everyone taking part is expected to follow the
 | Python 3 | 3.11 or later (two scripts use `tomllib`) | `scripts/*.py`, including the live extension check (gates 5b, 7) |
 | DuckDB CLI | 1.4.4 or later; CI also uses 2.0.0 and the latest (currently 2.0.0) | Live extension testing (gate 7, required) |
 | libduckdb shared library | the release `Cargo.lock` pins (currently 1.5.6) | End-to-end tests and book doctests (gate 2c) |
-| `cargo-deny` | 0.20.2 (the version CI installs) | License and advisory checks (gate 8) |
+| `cargo-deny` | 0.22.1 (the version CI installs; needs Rust 1.95) | License and advisory checks (gate 8) |
 | `cargo-mutants` | 27.1.0 (the version CI installs) | Mutation testing (gate 9) |
 | `mdbook` | the version in `book/mdbook-version` | Building the book (only for book changes) |
 | `typos`, `taplo`, `cargo-machete`, `actionlint` | 1.46.0, 0.10.0, 0.9.2, 1.7.12 (the release binaries CI downloads) | Spelling, TOML style, unused dependencies, workflow lint (gate 8b; optional locally) |

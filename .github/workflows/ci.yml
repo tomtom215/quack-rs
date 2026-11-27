@@ -1706,7 +1706,7 @@ jobs:
           # a new rustc warning in any of their dependencies would
           # break CI for a reason unrelated to this repo.
           RUSTFLAGS: ""
-        run: cargo install cargo-deny --locked --version "0.20.2"
+        run: cargo install cargo-deny --locked --version "0.22.1"
       - name: Run cargo-deny check
         run: cargo deny check
       # The other committed graphs (hello-ext, the fuzz crate, the book's
@@ -1742,9 +1742,9 @@ jobs:
           toolchain: 1.99.1
       - name: Install osv-scanner (pinned, checksum-verified)
         run: |
-          VER=2.7.0
+          VER=2.7.1
           # From the release's osv-scanner_SHA256SUMS (linux_amd64).
-          SHA=160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+          SHA=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
           curl -fsSL --retry 5 --retry-connrefused --connect-timeout 20 --max-time 600 -o osv-scanner \
             "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64"
           echo "${SHA}  osv-scanner" | sha256sum -c -
