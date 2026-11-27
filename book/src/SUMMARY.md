@@ -78,6 +78,7 @@
 
 - [Pitfall Catalog](reference/pitfalls.md)
 - [TypeId Reference](reference/type-id.md)
+- [Production Configuration](reference/production.md)
 - [Known Limitations](reference/known-limitations.md)
 - [Changelog](reference/changelog.md)
 

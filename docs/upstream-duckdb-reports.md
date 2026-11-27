@@ -1553,6 +1553,12 @@ line 245) returns at once while `scan_pin_properties` is
 destroy each state after reading it (line 938). A scan that stops early
 leaves the rest.
 
+Still present on v2.0.1 (2026-11-27, through quack-rs's
+`tests/aggregate_leaks.rs` against the released v2.0.1 library, not the C
+program below): under `LIMIT 10`, 152,551,424 bytes of boxed 512-byte states
+were left on the Rust heap, which is 297,952 of the 300,000 states (2,048
+destroyed, by arithmetic from the byte count rather than counted).
+
 ```c
 /* Grouped-aggregate states the scan never reaches are never destroyed. */
 #include <duckdb.h>

@@ -36,10 +36,17 @@ checked against that API's documentation.
   derive the unscaled value from decimal text or integer arithmetic, never through an
   `f64`.
 - **Overflow in your own arithmetic.** Rust's release profile wraps on integer overflow
-  unless `overflow-checks = true` is set, and the profile `quack_scaffold` generates does
-  not set it. Either set it (an overflow then panics, which the callback macros report as
-  the query's error), or use `checked_*` operations and report the error yourself. The book's
-  `DECIMAL` example uses `checked_mul`.
+  unless `overflow-checks = true` is set; the profile `quack_scaffold` generates sets it
+  (from 0.21.0), so an overflow panics, which the callback macros report as the query's
+  error. That is a backstop, and a profile in your own `Cargo.toml` decides it, not
+  quack-rs. Use `checked_*` operations and report the error yourself for values you
+  expect to reject. The book's `DECIMAL` example uses `checked_mul`.
+- **Decimal division.** Plain `/` on two `DECIMAL`s returns a `DOUBLE` (on 2.0.1,
+  `10.00::DECIMAL(18, 2) / 4.00::DECIMAL(18, 2)` is typed `DOUBLE`). DuckDB 2.0 adds
+  `decimal_division(a, b, scale)`, which returns a `DECIMAL` rounded half to even:
+  `decimal_division(1.25, 1.00, 1)` is `1.2`, where `round(1.25, 1)` is `1.3`. Where
+  DuckDB already computes what you need with the rounding you need, call it rather than
+  re-implementing it. 1.5.6 does not have `decimal_division`.
 - **Floating-point aggregates are not reproducible across plans.** DuckDB decides how rows
   are split into aggregate states and in which order `combine` merges them (threads,
   partitions, spilling); quack-rs does not fix either. Floating-point addition is not

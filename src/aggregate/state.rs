@@ -171,7 +171,7 @@ impl core::hash::Hasher for Fnv1a {
 /// dropped. A `T` stored inline costs nothing more: its bytes belong to
 /// `DuckDB`'s hash table, which `DuckDB` frees. What leaks is whatever `T`
 /// itself owns on the heap (a `Vec`, a `String`, a `HashMap`), and, for a
-/// boxed `T`, the box. `DuckDB` 2.0.0 still behaves this way (pinned by
+/// boxed `T`, the box. `DuckDB` 2.0.0 and 2.0.1 still behave this way (pinned by
 /// `tests/aggregate_leaks.rs`). Before 2.0.0 the same holds for a window
 /// frame with an `EXCLUDE` clause, whose segment tree initialises one extra
 /// state per row and never destroys it (item 35; 5000 `T`s undropped over a

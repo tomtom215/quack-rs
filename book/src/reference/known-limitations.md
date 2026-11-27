@@ -202,7 +202,7 @@ one thread, and not on 2.0.0. The behaviour is pinned by
 
 ### Grouped-aggregate states the scan never reaches are never destroyed (DuckDB defect)
 
-DuckDB 1.4.4 to 2.0.0 destroys a grouped aggregate's states as its result
+DuckDB 1.4.4 to 2.0.1 destroys a grouped aggregate's states as its result
 scan passes them. When the scan stops early, the states it has not reached are
 never destroyed — not after the query, not when the connection or the database
 closes. That happens under a `LIMIT` above the aggregate, an error raised
@@ -219,7 +219,15 @@ nothing unless `T` itself owns heap memory (a `Vec`, `String` or `HashMap`).
 A larger `T` is boxed, and the box leaks with it. Until DuckDB fixes this,
 keep aggregate states small and free of heap allocations where you can.
 Pinned by `states_a_grouped_scan_never_reaches_leak_no_rust_heap` in
-`tests/aggregate_leaks.rs`.
+`tests/aggregate_leaks.rs`. Re-measured on 2.0.1 with that test (`AUDIT.md`
+section 17, F-10): inline states grew the Rust heap by 0 bytes under `LIMIT 10`
+and under an error, and boxed ones by 152,551,424 bytes under `LIMIT 10`, so the
+defect is unchanged there.
+
+For a long-running process this is unbounded growth, one query at a time. Where
+an aggregate's state must own heap memory, either keep such queries away from
+`LIMIT`, cancellation and errors above the aggregate, or account for the leak
+in the process's memory budget and restart it; the query's answer is unaffected.
 
 ### Window frames with `EXCLUDE` never destroy one state per row (DuckDB defect)
 
